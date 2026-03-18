@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Image Resize</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; }
+  .container { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  /* Header */
+  header { margin-bottom: 2rem; }
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.25rem; }
+  .subtitle { color: #6b7280; font-size: 0.9rem; line-height: 1.5; }
+
+  /* Card */
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 1.5rem; margin-bottom: 1.5rem; }
+  .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #374151; display: flex; align-items: center; gap: 0.5rem; }
+  .card h2 .step-num { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: #6366f1; color: #fff; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
+
+  /* Drop zone */
+  .dropzone { border: 2px dashed #d1d5db; border-radius: 10px; padding: 2.5rem 1rem; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; background: #fafbfc; position: relative; }
+  .dropzone:hover, .dropzone.drag-over { border-color: #6366f1; background: #eef2ff; }
+  .dropzone:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
+  .dropzone p { color: #6b7280; font-size: 0.95rem; }
+  .dropzone .dz-icon { margin: 0 auto 0.75rem; color: #9ca3af; }
+  .dropzone .hint { font-size: 0.8rem; color: #9ca3af; margin-top: 0.5rem; }
+  .dropzone.has-file { border-color: #10b981; background: #f0fdf4; }
+  .dropzone.has-file .dz-icon { color: #10b981; }
+  .dropzone.has-file p { color: #059669; font-weight: 500; }
+
+  /* File preview bar */
+  .file-info { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 0.65rem 0.85rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 0.85rem; color: #374151; }
+  .file-info .file-thumb { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; border: 1px solid #e5e7eb; flex-shrink: 0; }
+  .file-info .file-details { flex: 1; min-width: 0; }
+  .file-info .file-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-info .file-meta { color: #9ca3af; font-size: 0.78rem; }
+  .file-info .remove-btn { background: none; border: none; cursor: pointer; color: #9ca3af; padding: 4px; border-radius: 4px; transition: color 0.15s; display: flex; }
+  .file-info .remove-btn:hover { color: #ef4444; }
+  .file-info .remove-btn:focus-visible { outline: 2px solid #6366f1; outline-offset: 1px; }
+
+  /* Options grid */
+  .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  @media (min-width: 540px) { .options-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
+  .field label { display: block; font-size: 0.78rem; font-weight: 500; color: #6b7280; margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .field input, .field select { width: 100%; padding: 0.5rem 0.65rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; background: #fff; color: #1a1a2e; transition: border-color 0.15s, box-shadow 0.15s; }
+  .field input:focus, .field select:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+
+  /* Buttons */
+  .btn-row { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; }
+  .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.65rem 1.5rem; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background 0.15s, opacity 0.15s; }
+  .btn:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
+  .btn-primary { background: #6366f1; color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #4f46e5; }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-secondary { background: #f3f4f6; color: #374151; padding: 0.65rem 1.25rem; }
+  .btn-secondary:hover { background: #e5e7eb; }
+  .btn-download { background: #10b981; color: #fff; padding: 0.5rem 1rem; font-size: 0.85rem; }
+  .btn-download:hover { background: #059669; }
+
+  /* Spinner */
+  .spinner { width: 18px; height: 18px; border: 2.5px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Error */
+  .error-box { display: flex; align-items: flex-start; gap: 0.5rem; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.9rem; margin-top: 1rem; }
+  .error-box svg { flex-shrink: 0; margin-top: 1px; }
+
+  /* Results */
+  .result-card { animation: fadeSlideIn 0.3s ease-out; }
+  @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    .result-card { animation: none; }
+    .spinner { animation-duration: 1.5s; }
+  }
+
+  .savings-banner { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1rem; border-radius: 8px; font-size: 0.85rem; font-weight: 500; margin-bottom: 1rem; }
+  .savings-banner.good { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+  .savings-banner.neutral { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 540px) { .comparison { grid-template-columns: 1fr; } }
+  .image-panel { text-align: center; }
+  .image-panel h3 { font-size: 0.85rem; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.75rem; }
+  .image-panel img { max-width: 100%; max-height: 300px; border-radius: 8px; border: 1px solid #e5e7eb; object-fit: contain; background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50%/16px 16px; }
+  .meta { margin-top: 0.5rem; font-size: 0.8rem; color: #6b7280; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem; }
+  .meta span { background: #f3f4f6; padding: 0.15rem 0.5rem; border-radius: 4px; display: inline-block; }
+
+  .result-actions { display: flex; justify-content: center; gap: 0.5rem; margin-top: 1rem; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 0; margin-bottom: 1rem; border-bottom: 2px solid #e5e7eb; }
+  .tab { padding: 0.5rem 1.25rem; font-size: 0.9rem; font-weight: 500; color: #6b7280; background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: color 0.15s, border-color 0.15s; }
+  .tab:hover { color: #374151; }
+  .tab.active { color: #6366f1; border-bottom-color: #6366f1; }
+  .tab:focus-visible { outline: 2px solid #6366f1; outline-offset: -2px; border-radius: 4px 4px 0 0; }
+
+  /* URL input */
+  .url-input-group { display: flex; gap: 0.5rem; }
+  .url-input-group input { flex: 1; padding: 0.6rem 0.75rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; background: #fff; color: #1a1a2e; transition: border-color 0.15s, box-shadow 0.15s; }
+  .url-input-group input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+  .url-input-group input::placeholder { color: #9ca3af; }
+  .url-preview { margin-top: 0.75rem; text-align: center; }
+  .url-preview img { max-width: 100%; max-height: 200px; border-radius: 8px; border: 1px solid #e5e7eb; object-fit: contain; background: repeating-conic-gradient(#f3f4f6 0% 25%, #fff 0% 50%) 50%/16px 16px; }
+  .url-preview .file-meta { color: #9ca3af; font-size: 0.8rem; margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useRef, useCallback } = React;
+
+const THUMBNAIL_API_URL = 'http://localhost:3111/thumbnail';
+const IMAGE_API_URL = 'http://localhost:3111/image';
+
+/* ---- SVG Icons ---- */
+const IconUpload = () => (
+  <svg className="dz-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="17 8 12 3 7 8" />
+    <line x1="12" y1="3" x2="12" y2="15" />
+  </svg>
+);
+
+const IconCheck = () => (
+  <svg className="dz-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+    <polyline points="22 4 12 14.01 9 11.01" />
+  </svg>
+);
+
+const IconX = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
+const IconAlert = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
+
+const IconDownload = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+);
+
+const IconArrowDown = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+
+function App() {
+  const [mode, setMode] = useState('upload'); // 'upload' or 'url'
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [originalMeta, setOriginalMeta] = useState(null);
+  const [imageUrl, setImageUrl] = useState('');
+  const [urlPreview, setUrlPreview] = useState(null);
+  const [urlMeta, setUrlMeta] = useState(null);
+  const [width, setWidth] = useState(200);
+  const [height, setHeight] = useState(200);
+  const [strategy, setStrategy] = useState('scale-to-fit');
+  const [outputFormat, setOutputFormat] = useState('jpeg');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef();
+
+  const handleFile = useCallback((f) => {
+    if (!f) return;
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(f.type)) {
+      setError('Please select a JPEG, PNG, or WebP image.');
+      return;
+    }
+    setFile(f);
+    setError(null);
+    setResult(null);
+    const url = URL.createObjectURL(f);
+    setPreview(url);
+    const img = new Image();
+    img.onload = () => setOriginalMeta({ width: img.naturalWidth, height: img.naturalHeight, size: f.size });
+    img.src = url;
+  }, []);
+
+  const clearFile = useCallback(() => {
+    setFile(null);
+    setPreview(null);
+    setOriginalMeta(null);
+    setResult(null);
+    setError(null);
+    if (inputRef.current) inputRef.current.value = '';
+  }, []);
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    handleFile(f);
+  }, [handleFile]);
+
+  const toBase64 = (f) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(f);
+  });
+
+  const loadUrlPreview = useCallback((url) => {
+    if (!url) { setUrlPreview(null); setUrlMeta(null); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      setUrlPreview(url);
+      setUrlMeta({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => { setUrlPreview(url); setUrlMeta(null); };
+    img.src = url;
+  }, []);
+
+  const handleSubmit = async () => {
+    if (mode === 'upload' && !file) return;
+    if (mode === 'url' && !imageUrl.trim()) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      if (mode === 'upload') {
+        const b64 = await toBase64(file);
+        const res = await fetch(THUMBNAIL_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: b64, width: Number(width), height: Number(height), strategy, outputFormat }),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `Server responded with ${res.status}`);
+        }
+        const data = await res.json();
+        setResult(data);
+      } else {
+        const params = new URLSearchParams({
+          url: imageUrl.trim(),
+          w: String(Number(width)),
+          h: String(Number(height)),
+          strategy,
+          format: outputFormat,
+        });
+        const res = await fetch(`${IMAGE_API_URL}?${params}`);
+        if (!res.ok) {
+          const text = await res.text();
+          let errorMsg;
+          try { errorMsg = JSON.parse(text).error; } catch { errorMsg = text; }
+          throw new Error(errorMsg || `Server responded with ${res.status}`);
+        }
+        // Binary response — convert blob to base64 for display
+        const blob = await res.blob();
+        const fmt = outputFormat;
+        const arrayBuf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuf);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        const b64Thumb = btoa(binary);
+        // Detect actual dimensions from the image
+        const thumbUrl = URL.createObjectURL(blob);
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = thumbUrl;
+        });
+        setResult({
+          thumbnail: b64Thumb,
+          format: fmt,
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+          size: blob.size,
+        });
+        URL.revokeObjectURL(thumbUrl);
+      }
+    } catch (err) {
+      setError(err.message || 'Request failed. Is the engine running on port 3111?');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatBytes = (bytes) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const handleDownload = () => {
+    if (!result) return;
+    const link = document.createElement('a');
+    link.href = `data:image/${result.format};base64,${result.thumbnail}`;
+    const ext = result.format === 'jpeg' ? 'jpg' : result.format;
+    let baseName = 'thumbnail';
+    if (mode === 'upload' && file) baseName = file.name.replace(/\.[^.]+$/, '');
+    else if (mode === 'url' && imageUrl) {
+      try { baseName = new URL(imageUrl).pathname.split('/').pop().replace(/\.[^.]+$/, '') || 'image'; } catch {}
+    }
+    link.download = `${baseName}_${result.width}x${result.height}.${ext}`;
+    link.click();
+  };
+
+  const thumbSrc = result ? `data:image/${result.format};base64,${result.thumbnail}` : null;
+  const activeMeta = mode === 'upload' ? originalMeta : urlMeta;
+  const activePreview = mode === 'upload' ? preview : urlPreview;
+  const savings = result && activeMeta && activeMeta.size ? Math.round((1 - result.size / activeMeta.size) * 100) : null;
+
+  return (
+    <div className="container">
+      <header>
+        <h1>Image Resize</h1>
+        <p className="subtitle">Upload an image or provide a URL, configure options, and generate a thumbnail via the III engine.</p>
+      </header>
+
+      <div className="card">
+        <h2><span className="step-num">1</span> Select Image</h2>
+        <div className="tabs">
+          <button className={`tab${mode === 'upload' ? ' active' : ''}`} onClick={() => setMode('upload')}>Upload File</button>
+          <button className={`tab${mode === 'url' ? ' active' : ''}`} onClick={() => setMode('url')}>From URL</button>
+        </div>
+        {mode === 'upload' && (
+          <React.Fragment>
+            {!file ? (
+              <div
+                className={`dropzone${dragOver ? ' drag-over' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-label="Upload image - click or drag and drop"
+                onClick={() => inputRef.current.click()}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current.click(); } }}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+              >
+                <IconUpload />
+                <p>Drop an image here or click to browse</p>
+                <p className="hint">JPEG, PNG, or WebP</p>
+                <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(e) => handleFile(e.target.files[0])} />
+              </div>
+            ) : (
+              <React.Fragment>
+                <div
+                  className="dropzone has-file"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Change image - click or drag and drop"
+                  onClick={() => inputRef.current.click()}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current.click(); } }}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={onDrop}
+                >
+                  <IconCheck />
+                  <p>Image selected — click to change</p>
+                  <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(e) => handleFile(e.target.files[0])} />
+                </div>
+                <div className="file-info">
+                  <img className="file-thumb" src={preview} alt="" />
+                  <div className="file-details">
+                    <div className="file-name">{file.name}</div>
+                    <div className="file-meta">
+                      {originalMeta ? `${originalMeta.width} × ${originalMeta.height} · ` : ''}
+                      {formatBytes(file.size)}
+                    </div>
+                  </div>
+                  <button className="remove-btn" onClick={(e) => { e.stopPropagation(); clearFile(); }} aria-label="Remove selected image">
+                    <IconX />
+                  </button>
+                </div>
+              </React.Fragment>
+            )}
+          </React.Fragment>
+        )}
+        {mode === 'url' && (
+          <React.Fragment>
+            <div className="url-input-group">
+              <input
+                type="url"
+                placeholder="https://example.com/photo.jpg"
+                value={imageUrl}
+                onChange={(e) => { setImageUrl(e.target.value); setResult(null); setError(null); }}
+                onBlur={() => loadUrlPreview(imageUrl.trim())}
+                onKeyDown={(e) => { if (e.key === 'Enter') loadUrlPreview(imageUrl.trim()); }}
+                aria-label="Image URL"
+              />
+            </div>
+            {urlPreview && (
+              <div className="url-preview">
+                <img src={urlPreview} alt="URL preview" onError={(e) => { e.target.style.display = 'none'; }} />
+                {urlMeta && <div className="file-meta">{urlMeta.width} × {urlMeta.height}</div>}
+              </div>
+            )}
+          </React.Fragment>
+        )}
+      </div>
+
+      <div className="card">
+        <h2><span className="step-num">2</span> Configure Options</h2>
+        <div className="options-grid">
+          <div className="field">
+            <label htmlFor="opt-width">Width (px)</label>
+            <input id="opt-width" type="number" min="1" max="4096" value={width} onChange={(e) => setWidth(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="opt-height">Height (px)</label>
+            <input id="opt-height" type="number" min="1" max="4096" value={height} onChange={(e) => setHeight(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="opt-strategy">Strategy</label>
+            <select id="opt-strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+              <option value="scale-to-fit">Scale to fit</option>
+              <option value="crop-to-fit">Crop to fit</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="opt-format">Output Format</label>
+            <select id="opt-format" value={outputFormat} onChange={(e) => setOutputFormat(e.target.value)}>
+              <option value="jpeg">JPEG</option>
+              <option value="png">PNG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+        </div>
+        <div className="btn-row">
+          <button className="btn btn-primary" disabled={(mode === 'upload' ? !file : !imageUrl.trim()) || loading} onClick={handleSubmit}>
+            {loading && <span className="spinner" />}
+            {loading ? 'Processing…' : mode === 'upload' ? 'Generate Thumbnail' : 'Resize from URL'}
+          </button>
+          {result && (
+            <button className="btn btn-secondary" onClick={clearFile}>
+              Start Over
+            </button>
+          )}
+        </div>
+        {error && <div className="error-box"><IconAlert /><span>{error}</span></div>}
+      </div>
+
+      {result && (
+        <div className="card result-card">
+          <h2><span className="step-num">3</span> Result</h2>
+
+          {savings !== null && (
+            <div className={`savings-banner ${savings > 0 ? 'good' : 'neutral'}`}>
+              <IconArrowDown />
+              {savings > 0
+                ? `${savings}% smaller — saved ${formatBytes(originalMeta.size - result.size)}`
+                : `Output is ${formatBytes(result.size)} (${Math.abs(savings)}% ${savings === 0 ? 'same size' : 'larger'})`
+              }
+            </div>
+          )}
+
+          <div className="comparison">
+            <div className="image-panel">
+              <h3>Original</h3>
+              {activePreview && <img src={activePreview} alt="Original image" />}
+              {activeMeta && (
+                <div className="meta">
+                  <span>{activeMeta.width} × {activeMeta.height}</span>
+                  {activeMeta.size && <span>{formatBytes(activeMeta.size)}</span>}
+                </div>
+              )}
+            </div>
+            <div className="image-panel">
+              <h3>Thumbnail</h3>
+              <img src={thumbSrc} alt="Generated thumbnail" />
+              <div className="meta">
+                <span>{result.width} × {result.height}</span>
+                <span>{formatBytes(result.size)}</span>
+                <span>{result.format.toUpperCase()}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="result-actions">
+            <button className="btn btn-download" onClick={handleDownload}>
+              <IconDownload /> Download Thumbnail
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

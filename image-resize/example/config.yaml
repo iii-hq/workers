@@ -1,0 +1,65 @@
+port: 49134
+
+workers:
+  - class: workers::image_resize::ImageResizeWorker
+    config:
+      width: 200
+      height: 200
+      strategy: scale-to-fit
+      quality:
+        jpeg: 85
+        webp: 80
+
+modules:
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      cors:
+        allowed_origins:
+          - "*"
+        allowed_methods:
+          - GET
+          - POST
+
+  - class: modules::stream::StreamModule
+    config:
+      port: 3112
+      host: 0.0.0.0
+
+  - class: modules::observability::OtelModule
+    config:
+      # === Core Configuration (Required) ===
+      enabled: ${OTEL_ENABLED:true}
+      service_name: ${OTEL_SERVICE_NAME:iii}
+      service_version: ${SERVICE_VERSION:0.2.0}
+      # === Service Identity (Optional) ===
+      service_namespace: ${SERVICE_NAMESPACE:production}  # Optional: environment/namespace for the service
+      # === Trace Exporter Configuration (Required) ===
+      # Exporter type: "otlp" (export to collector) or "memory" (store in-memory) or "both"
+      exporter: ${OTEL_EXPORTER_TYPE:memory}
+      # OTLP endpoint - required when exporter is "otlp" or "both"
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+      # === Sampling Configuration ===
+      # Basic sampling ratio (0.0 to 1.0). Use 1.0 to sample everything.
+      sampling_ratio: 1.0
+
+      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
+
+      # === Metrics Configuration ===
+      metrics_enabled: true
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, otlp
+      metrics_retention_seconds: 3600  # How long to keep metrics in memory (default: 1 hour)
+      metrics_max_count: 10000  # Maximum number of metrics to store
+
+      # === OTEL Logs Configuration ===
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}  # Options: memory, otlp, both
+      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}  # Maximum number of log records to store
+      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}  # How long to keep logs in memory (default: 1 hour)
+      logs_batch_size: ${OTEL_LOGS_BATCH_SIZE:100}  # Batch size for OTLP logs export (default: 100)
+      logs_flush_interval_ms: ${OTEL_LOGS_FLUSH_INTERVAL_MS:5000}  # Flush interval in milliseconds for OTLP logs export (default: 5000ms)
+      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
+      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)

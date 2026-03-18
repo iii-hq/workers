@@ -13,18 +13,19 @@ pub struct ResizeConfig {
     pub quality: QualityConfig,
 }
 
-fn default_width() -> u32 { 200 }
-fn default_height() -> u32 { 200 }
-
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ResizeStrategy {
-    ScaleToFit,
-    CropToFit,
+fn default_width() -> u32 {
+    200
+}
+fn default_height() -> u32 {
+    200
 }
 
-impl Default for ResizeStrategy {
-    fn default() -> Self { ResizeStrategy::ScaleToFit }
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResizeStrategy {
+    #[default]
+    ScaleToFit,
+    CropToFit,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -35,12 +36,19 @@ pub struct QualityConfig {
     pub webp: u8,
 }
 
-fn default_jpeg_quality() -> u8 { 85 }
-fn default_webp_quality() -> u8 { 80 }
+fn default_jpeg_quality() -> u8 {
+    85
+}
+fn default_webp_quality() -> u8 {
+    80
+}
 
 impl Default for QualityConfig {
     fn default() -> Self {
-        QualityConfig { jpeg: default_jpeg_quality(), webp: default_webp_quality() }
+        QualityConfig {
+            jpeg: default_jpeg_quality(),
+            webp: default_webp_quality(),
+        }
     }
 }
 

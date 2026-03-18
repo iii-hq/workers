@@ -2,14 +2,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::{
-    extract_channel_refs, ChannelReader, ChannelWriter, IIIError, StreamChannelRef,
-};
+use iii_sdk::{extract_channel_refs, ChannelReader, ChannelWriter, IIIError, StreamChannelRef};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::ResizeConfig;
-use crate::processing::{ImageMetadata, ThumbnailMetadata, resolve_params, process_image};
+use crate::processing::{process_image, resolve_params, ImageMetadata, ThumbnailMetadata};
 
 // ---------------------------------------------------------------------------
 // ResizeRequest
@@ -59,16 +57,15 @@ pub async fn handle_resize(
             .await;
 
         let binary = reader.next_binary().await?;
-        let image_bytes = binary.ok_or_else(|| {
-            IIIError::Handler("stream closed before binary frame".to_string())
-        })?;
+        let image_bytes = binary
+            .ok_or_else(|| IIIError::Handler("stream closed before binary frame".to_string()))?;
 
         // Retrieve the metadata text that was dispatched to the callback
         let meta_json = {
             let guard = metadata_holder.lock().unwrap();
-            guard.clone().ok_or_else(|| {
-                IIIError::Handler("no metadata text frame received".to_string())
-            })?
+            guard
+                .clone()
+                .ok_or_else(|| IIIError::Handler("no metadata text frame received".to_string()))?
         };
 
         let meta: ImageMetadata = serde_json::from_str(&meta_json)
@@ -161,8 +158,10 @@ pub async fn process_and_write(
 pub fn build_handler(
     engine_ws_base: String,
     config: Arc<ResizeConfig>,
-) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>> + Send + Sync + 'static
-{
+) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
+       + Send
+       + Sync
+       + 'static {
     move |payload: Value| {
         let engine_ws_base = engine_ws_base.clone();
         let config = config.clone();

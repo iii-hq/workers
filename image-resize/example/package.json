@@ -1,0 +1,15 @@
+{
+  "name": "@iii-hq/image-resize-demo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

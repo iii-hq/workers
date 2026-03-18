@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{InitOptions, RegisterFunctionMessage, register_worker};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage};
 use std::sync::Arc;
 
 mod config;
@@ -62,7 +62,13 @@ async fn main() -> Result<()> {
 
     tracing::info!(url = %cli.url, "connecting to III engine");
 
-    let iii = register_worker(&cli.url, InitOptions::default());
+    let iii = register_worker(
+        &cli.url,
+        InitOptions {
+            otel: Some(OtelConfig::default()),
+            ..Default::default()
+        },
+    );
 
     let resize_handler = handler::build_handler(cli.url.clone(), config);
 

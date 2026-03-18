@@ -52,7 +52,10 @@ mod tests {
         assert!(parsed["default_config"]["class"].is_string());
         assert_eq!(parsed["default_config"]["config"]["width"], 200);
         assert_eq!(parsed["default_config"]["config"]["height"], 200);
-        assert_eq!(parsed["default_config"]["config"]["strategy"], "scale-to-fit");
+        assert_eq!(
+            parsed["default_config"]["config"]["strategy"],
+            "scale-to-fit"
+        );
         assert_eq!(parsed["default_config"]["config"]["quality"]["jpeg"], 85);
         assert_eq!(parsed["default_config"]["config"]["quality"]["webp"], 80);
         assert!(!manifest.supported_targets.is_empty());

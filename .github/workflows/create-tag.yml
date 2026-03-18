@@ -1,0 +1,207 @@
+name: Create Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: 'Worker module to version'
+        required: true
+        type: choice
+        options:
+          - image-resize
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      prerelease:
+        description: 'Pre-release label (none = stable release)'
+        required: true
+        type: choice
+        options:
+          - none
+          - alpha
+          - beta
+          - rc
+        default: none
+      dry_run:
+        description: 'Dry run (creates -dry-run.N tag, builds without publishing)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-tag
+  cancel-in-progress: false
+
+jobs:
+  create-tag:
+    name: Bump Version & Create Tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Pre-flight checks
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          if [[ "$BRANCH" != "main" ]]; then
+            echo "::error::Must be on main branch (currently on $BRANCH)"
+            exit 1
+          fi
+
+          if [[ ! -f "$WORKER/Cargo.toml" ]]; then
+            echo "::error::$WORKER/Cargo.toml not found"
+            exit 1
+          fi
+
+      - name: Calculate version
+        id: versions
+        env:
+          WORKER: ${{ inputs.worker }}
+          BUMP: ${{ inputs.bump }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          read_cargo_version() {
+            grep '^version = ' "$1" | head -n1 | cut -d'"' -f2
+          }
+
+          bump_version() {
+            local current="$1"
+            local tag_prefix="$2"
+            local bump_type="$3"
+            local base="${current%%-*}"
+            IFS='.' read -r major minor patch <<< "$base"
+
+            case "$bump_type" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+
+            local new_base="${major}.${minor}.${patch}"
+
+            if [[ "$PRERELEASE" != "none" ]]; then
+              local existing
+              existing=$(git tag -l "${tag_prefix}/v${new_base}-${PRERELEASE}.*" 2>/dev/null | sort -V)
+              local pre_num=1
+              if [[ -n "$existing" ]]; then
+                local latest_pre
+                latest_pre=$(echo "$existing" | tail -n1)
+                pre_num=$(echo "$latest_pre" | grep -oE '\.[0-9]+$' | tr -d '.')
+                pre_num=$((pre_num + 1))
+              fi
+              echo "${new_base}-${PRERELEASE}.${pre_num}"
+            else
+              echo "$new_base"
+            fi
+          }
+
+          next_dry_run_version() {
+            local base="$1"
+            local tag_prefix="$2"
+            local existing
+            existing=$(git tag -l "${tag_prefix}/v${base}-dry-run.*" 2>/dev/null | sort -V)
+            local num=1
+            if [[ -n "$existing" ]]; then
+              local latest
+              latest=$(echo "$existing" | tail -n1)
+              num=$(echo "$latest" | grep -oE '\.[0-9]+$' | tr -d '.')
+              num=$((num + 1))
+            fi
+            echo "${base}-dry-run.${num}"
+          }
+
+          if [[ "$PRERELEASE" != "none" ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          current=$(read_cargo_version "$WORKER/Cargo.toml")
+          new_ver=$(bump_version "$current" "$WORKER" "$BUMP")
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            base_ver="${new_ver%%-*}"
+            new_ver=$(next_dry_run_version "$base_ver" "$WORKER")
+          fi
+
+          echo "version=$new_ver" >> "$GITHUB_OUTPUT"
+          echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "::notice::${WORKER}: ${current} -> ${new_ver}"
+
+      - name: Update manifest
+        if: inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "${WORKER}/Cargo.toml"
+          echo "Updated ${WORKER}/Cargo.toml to ${NEW_VERSION}"
+
+      - name: Validate manifest update
+        if: inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          actual=$(grep '^version = ' "${WORKER}/Cargo.toml" | head -n1 | cut -d'"' -f2)
+          if [[ "$actual" != "$NEW_VERSION" ]]; then
+            echo "::error::${WORKER}/Cargo.toml version mismatch: expected ${NEW_VERSION}, got ${actual}"
+            exit 1
+          fi
+          echo "Validated ${WORKER}/Cargo.toml version: ${actual}"
+
+      - name: Check tag does not exist
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+
+      - name: Configure git identity
+        run: |
+          git config user.name "workers-ci[bot]"
+          git config user.email "workers-ci[bot]@users.noreply.github.com"
+
+      - name: Commit and push
+        if: inputs.dry_run != true
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          git add -A
+          git commit -m "chore: bump ${{ inputs.worker }} to v${{ steps.versions.outputs.version }}"
+          git push origin main
+
+      - name: Create and push tag
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "::notice::Created tag: $TAG"

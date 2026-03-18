@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ImageFormat, imageops::FilterType};
+use image::{imageops::FilterType, DynamicImage, ImageFormat};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
-use crate::config::{ResizeStrategy, ResizeConfig};
+use crate::config::{ResizeConfig, ResizeStrategy};
 
 #[derive(Deserialize, Debug)]
 pub struct ImageMetadata {
@@ -52,10 +52,7 @@ fn parse_image_format(s: &str) -> Result<ImageFormat> {
     }
 }
 
-pub fn resolve_params(
-    config: &ResizeConfig,
-    metadata: &ImageMetadata,
-) -> Result<ProcessingParams> {
+pub fn resolve_params(config: &ResizeConfig, metadata: &ImageMetadata) -> Result<ProcessingParams> {
     let input_format = parse_image_format(&metadata.format)?;
 
     let output_format = match &metadata.output_format {
@@ -483,12 +480,10 @@ mod tests {
         };
         let result = resolve_params(&config, &metadata);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unsupported format")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported format"));
     }
 
     #[test]
