@@ -1,0 +1,24 @@
+[workspace]
+
+[package]
+name = "image-resize"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "image-resize"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = { path = "../../sdk/packages/rust/iii" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+kamadak-exif = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
