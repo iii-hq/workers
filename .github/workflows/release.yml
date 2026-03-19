@@ -75,8 +75,8 @@ jobs:
         id: generate_token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v4
         with:
@@ -109,5 +109,5 @@ jobs:
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
     secrets:
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      GH_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
