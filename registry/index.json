@@ -19,8 +19,7 @@
                     }
                 }
             },
-            "local_path": "../image-resize/target/release/image-resize",
-            "version": "0.1.0"
+            "version": "0.1.2"
         }
     }
 }

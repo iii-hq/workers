@@ -175,6 +175,19 @@ jobs:
           fi
           echo "Validated ${WORKER}/Cargo.toml version: ${actual}"
 
+      - name: Update registry
+        if: inputs.dry_run != true
+        env:
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          jq --arg worker "$WORKER" --arg version "$NEW_VERSION" \
+            '.workers[$worker].version = $version' \
+            registry/index.json > registry/index.json.tmp
+          jq empty registry/index.json.tmp
+          mv registry/index.json.tmp registry/index.json
+          echo "Updated registry/index.json: $WORKER -> $NEW_VERSION"
+
       - name: Check tag does not exist
         env:
           TAG: ${{ steps.versions.outputs.tag }}

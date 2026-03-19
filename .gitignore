@@ -3,3 +3,4 @@ target/
 .claude/
 .idea/
 .DS_Store
+docs
