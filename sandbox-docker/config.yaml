@@ -1,0 +1,8 @@
+default_image: python:3.12-slim
+default_timeout: 3600
+default_memory: 512
+default_cpu: 1.0
+max_sandboxes: 50
+max_cmd_timeout: 300
+workspace_dir: /workspace
+pool_size: 0

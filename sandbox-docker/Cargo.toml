@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "sandbox-docker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sandbox-docker"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = { version = "0.9.0", features = ["otel"] }
+bollard = "0.18"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tar = "0.4"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
