@@ -98,13 +98,17 @@ fn restore_xcrs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 
     let mut xcrs = vcpu.get_xcrs().context("get_xcrs failed")?;
     let max = xcrs.xcrs.len();
+    anyhow::ensure!(
+        saved.len() <= max,
+        "snapshot has {} XCRs but host supports at most {}",
+        saved.len(),
+        max
+    );
     for (i, s) in saved.iter().enumerate() {
-        if i < max {
-            xcrs.xcrs[i].xcr = s.xcr;
-            xcrs.xcrs[i].value = s.value;
-        }
+        xcrs.xcrs[i].xcr = s.xcr;
+        xcrs.xcrs[i].value = s.value;
     }
-    xcrs.nr_xcrs = saved.len().min(max) as u32;
+    xcrs.nr_xcrs = saved.len() as u32;
 
     vcpu.set_xcrs(&xcrs).context("set_xcrs failed")?;
     Ok(())
@@ -117,7 +121,14 @@ fn restore_xsave(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 
     let mut xsave = vcpu.get_xsave().context("get_xsave failed")?;
     let xsave_region = &mut xsave.region;
-    let copy_len = data.len().min(xsave_region.len() * 4);
+    let capacity = xsave_region.len() * 4;
+    anyhow::ensure!(
+        data.len() <= capacity,
+        "xsave data ({} bytes) exceeds host capacity ({} bytes)",
+        data.len(),
+        capacity
+    );
+    let copy_len = data.len();
 
     // SAFETY: We copy raw bytes into the xsave region. copy_len is bounded
     // by the smaller of data.len() and the xsave region capacity.
@@ -135,28 +146,31 @@ fn restore_xsave(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 
 fn restore_regs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
     let values: Vec<u64> = serde_json::from_slice(data).context("failed to deserialize regs")?;
+    anyhow::ensure!(
+        values.len() >= 17,
+        "snapshot regs has {} values, need at least 17 (rax..rip)",
+        values.len()
+    );
 
     let mut regs = vcpu.get_regs().context("get_regs failed")?;
 
-    if values.len() >= 17 {
-        regs.rax = values[0];
-        regs.rbx = values[1];
-        regs.rcx = values[2];
-        regs.rdx = values[3];
-        regs.rsi = values[4];
-        regs.rdi = values[5];
-        regs.rsp = values[6];
-        regs.rbp = values[7];
-        regs.r8 = values[8];
-        regs.r9 = values[9];
-        regs.r10 = values[10];
-        regs.r11 = values[11];
-        regs.r12 = values[12];
-        regs.r13 = values[13];
-        regs.r14 = values[14];
-        regs.r15 = values[15];
-        regs.rip = values[16];
-    }
+    regs.rax = values[0];
+    regs.rbx = values[1];
+    regs.rcx = values[2];
+    regs.rdx = values[3];
+    regs.rsi = values[4];
+    regs.rdi = values[5];
+    regs.rsp = values[6];
+    regs.rbp = values[7];
+    regs.r8 = values[8];
+    regs.r9 = values[9];
+    regs.r10 = values[10];
+    regs.r11 = values[11];
+    regs.r12 = values[12];
+    regs.r13 = values[13];
+    regs.r14 = values[14];
+    regs.r15 = values[15];
+    regs.rip = values[16];
     if values.len() >= 18 {
         regs.rflags = values[17];
     }
@@ -172,7 +186,13 @@ fn restore_lapic(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 
     let mut lapic = vcpu.get_lapic().context("get_lapic failed")?;
     let regs = &mut lapic.regs;
-    let copy_len = data.len().min(regs.len());
+    anyhow::ensure!(
+        data.len() <= regs.len(),
+        "lapic data ({} bytes) exceeds host register size ({} bytes)",
+        data.len(),
+        regs.len()
+    );
+    let copy_len = data.len();
     // SAFETY: lapic.regs is [i8] on x86_64 Linux but we write raw bytes.
     // The KVM API treats this as an opaque byte buffer.
     unsafe {

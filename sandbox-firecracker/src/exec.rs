@@ -158,9 +158,16 @@ fn truncate_output(s: &str, max_bytes: usize) -> String {
 
 fn rand_u64() -> u64 {
     let mut buf = [0u8; 8];
-    // SAFETY: getrandom reads random bytes into a valid buffer.
-    unsafe {
-        libc::getrandom(buf.as_mut_ptr() as *mut libc::c_void, 8, 0);
+    // SAFETY: getrandom reads random bytes into a valid, stack-allocated buffer.
+    let ret = unsafe { libc::getrandom(buf.as_mut_ptr() as *mut libc::c_void, 8, 0) };
+    if ret != 8 {
+        // Fallback: use process-level entropy sources if getrandom fails or short-reads.
+        let fallback = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+            ^ std::process::id() as u64;
+        return fallback;
     }
     u64::from_ne_bytes(buf)
 }
