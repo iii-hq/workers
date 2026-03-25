@@ -25,12 +25,11 @@ impl Template {
             );
         }
 
-        let name = std::ffi::CString::new("iii-template")
-            .context("failed to create memfd name")?;
+        let name = std::ffi::CString::new("iii-template").context("failed to create memfd name")?;
 
         // SAFETY: memfd_create is a Linux syscall that returns a file descriptor.
-        // MFD_CLOEXEC (0x0001) ensures the fd is closed on exec.
-        let memfd = unsafe { libc::memfd_create(name.as_ptr(), 0x0001) };
+        // MFD_CLOEXEC ensures the fd is closed on exec.
+        let memfd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
         if memfd < 0 {
             bail!("memfd_create failed: {}", std::io::Error::last_os_error());
         }
@@ -57,7 +56,10 @@ impl Template {
 
         if ptr == libc::MAP_FAILED {
             unsafe { libc::close(memfd) };
-            bail!("mmap MAP_SHARED failed: {}", std::io::Error::last_os_error());
+            bail!(
+                "mmap MAP_SHARED failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         // SAFETY: ptr is a valid mmap region of mem_size bytes. mem_data.len() <= mem_size

@@ -12,12 +12,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  image-resize:
-    name: image-resize
+  ci:
+    name: ${{ matrix.worker }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [image-resize, sandbox-docker, sandbox-firecracker]
     defaults:
       run:
-        working-directory: image-resize
+        working-directory: ${{ matrix.worker }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,43 +29,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: image-resize -> target
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
-
-  sandbox-docker:
-    name: sandbox-docker
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sandbox-docker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sandbox-docker -> target
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
-
-  sandbox-firecracker:
-    name: sandbox-firecracker
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sandbox-firecracker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sandbox-firecracker -> target
+          workspaces: ${{ matrix.worker }} -> target
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features

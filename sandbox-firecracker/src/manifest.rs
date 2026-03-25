@@ -15,7 +15,7 @@ pub fn build_manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "III engine KVM CoW fork sandbox for sub-millisecond VM spawning".to_string(),
         default_config: serde_json::json!({
-            "class": "modules::sandbox_firecracker::SandboxFirecrackerModule",
+            "class": "workers::sandbox_firecracker::SandboxFirecrackerWorker",
             "config": {
                 "vmstate_path": "./template/vmstate",
                 "memfile_path": "./template/mem",
@@ -42,6 +42,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_object(), "Manifest must be valid JSON object");
         assert_eq!(parsed["name"], "sandbox-firecracker");
+        assert_eq!(
+            parsed["default_config"]["class"],
+            "workers::sandbox_firecracker::SandboxFirecrackerWorker"
+        );
     }
 
     #[test]

@@ -17,7 +17,10 @@ use types::VmInstance;
 pub type VmRegistry = Arc<RwLock<HashMap<String, Arc<Mutex<VmInstance>>>>>;
 
 #[derive(Parser, Debug)]
-#[command(name = "sandbox-firecracker", about = "III engine KVM CoW fork sandbox")]
+#[command(
+    name = "sandbox-firecracker",
+    about = "III engine KVM CoW fork sandbox"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -83,7 +86,13 @@ async fn main() -> Result<()> {
         },
     );
 
-    functions::register_all(&iii, &cli.url, template.clone(), config.clone(), registry.clone());
+    functions::register_all(
+        &iii,
+        &cli.url,
+        template.clone(),
+        config.clone(),
+        registry.clone(),
+    );
 
     tracing::info!("all functions registered, waiting for invocations");
 

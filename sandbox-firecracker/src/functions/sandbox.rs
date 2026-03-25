@@ -34,6 +34,10 @@ pub fn build_create_handler(
         let registry = registry.clone();
 
         Box::pin(async move {
+            // NOTE: There is a small race window between the capacity check and the
+            // insert below because fork_from_template runs outside the lock. This is
+            // acceptable for a lightweight worker: the worst case is slightly exceeding
+            // max_sandboxes by the number of concurrent create calls in flight.
             {
                 let map = registry.read().await;
                 if map.len() >= config.max_sandboxes {
@@ -81,18 +85,23 @@ pub fn build_create_handler(
             }
 
             let iii = register_worker(&url, InitOptions::default());
-            iii.trigger(TriggerRequest {
-                function_id: "state::set".into(),
-                payload: json!({
-                    "scope": "sandbox",
-                    "key": id,
-                    "value": serde_json::to_value(&sandbox).unwrap()
-                }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map_err(|e| IIIError::Handler(format!("state::set failed: {e}")))?;
+            if let Err(e) = iii
+                .trigger(TriggerRequest {
+                    function_id: "state::set".into(),
+                    payload: json!({
+                        "scope": "sandbox",
+                        "key": id,
+                        "value": serde_json::to_value(&sandbox).unwrap()
+                    }),
+                    action: None,
+                    timeout_ms: None,
+                })
+                .await
+            {
+                let mut map = registry.write().await;
+                map.remove(&id);
+                return Err(IIIError::Handler(format!("state::set failed: {e}")));
+            }
 
             Ok(json!({
                 "id": sandbox.id,

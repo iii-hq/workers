@@ -1,4 +1,4 @@
-use iii_sdk::{III, RegisterFunctionMessage};
+use iii_sdk::{RegisterFunctionMessage, III};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -150,10 +150,11 @@ pub fn register_all(
                 "type": "object",
                 "properties": {
                     "sandbox_id": { "type": "string", "description": "Target sandbox ID" },
+                    "id": { "type": "string", "description": "Target sandbox ID (alias for sandbox_id)" },
                     "command": { "type": "string", "description": "Shell command to execute" },
                     "timeout": { "type": "integer", "description": "Command timeout in seconds" }
                 },
-                "required": ["sandbox_id", "command"]
+                "required": ["command"]
             })),
             response_format: Some(json!({
                 "type": "object",
@@ -179,11 +180,12 @@ pub fn register_all(
                 "type": "object",
                 "properties": {
                     "sandbox_id": { "type": "string", "description": "Target sandbox ID" },
+                    "id": { "type": "string", "description": "Target sandbox ID (alias for sandbox_id)" },
                     "code": { "type": "string", "description": "Source code to execute" },
                     "language": { "type": "string", "description": "Language override (defaults to sandbox language)" },
                     "timeout": { "type": "integer", "description": "Execution timeout in seconds" }
                 },
-                "required": ["sandbox_id", "code"]
+                "required": ["code"]
             })),
             response_format: Some(json!({
                 "type": "object",

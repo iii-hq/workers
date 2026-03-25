@@ -65,6 +65,8 @@ impl Drop for VmInstance {
     }
 }
 
+const MAX_SERIAL_BUFFER: usize = 2 * 1024 * 1024; // 2 MB
+
 pub struct Serial {
     input: VecDeque<u8>,
     output: Vec<u8>,
@@ -85,7 +87,9 @@ impl Serial {
     pub fn handle_io_out(&mut self, port: u16, data: &[u8]) {
         if port == 0x3F8 {
             if let Some(&byte) = data.first() {
-                self.output.push(byte);
+                if self.output.len() < MAX_SERIAL_BUFFER {
+                    self.output.push(byte);
+                }
             }
         }
     }
@@ -113,6 +117,10 @@ impl Serial {
         let out = String::from_utf8_lossy(&self.output).to_string();
         self.output.clear();
         out
+    }
+
+    pub fn clear_output(&mut self) {
+        self.output.clear();
     }
 }
 
@@ -159,6 +167,23 @@ mod tests {
     fn test_serial_empty_data_out() {
         let mut serial = Serial::new();
         serial.handle_io_out(0x3F8, &[]);
+        assert!(serial.take_output().is_empty());
+    }
+
+    #[test]
+    fn test_serial_buffer_bounded() {
+        let mut serial = Serial::new();
+        for _ in 0..MAX_SERIAL_BUFFER + 100 {
+            serial.handle_io_out(0x3F8, &[b'A']);
+        }
+        assert_eq!(serial.output.len(), MAX_SERIAL_BUFFER);
+    }
+
+    #[test]
+    fn test_serial_clear_output() {
+        let mut serial = Serial::new();
+        serial.handle_io_out(0x3F8, b"X");
+        serial.clear_output();
         assert!(serial.take_output().is_empty());
     }
 

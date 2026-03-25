@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use crate::kvm::serial::is_serial_port;
 use crate::types::{ExecResult, VmInstance};
 
-const DONE_MARKER: &str = "ZEROBOOT_DONE";
+fn make_done_marker() -> String {
+    format!("DONE_{:032x}", uuid::Uuid::new_v4().as_u128())
+}
 
 pub fn run_code(
     vm: &mut VmInstance,
@@ -23,17 +25,30 @@ pub fn run_code(
     };
 
     let delim = format!("HEREDOC_{:016x}", rand_u64());
+    let marker = make_done_marker();
 
     let cmd = format!(
-        "cat <<'{delim}' > /tmp/code.{ext}\n{code}\n{delim}\n{interpreter} /tmp/code.{ext}; EXIT_CODE=$?; echo \"${{EXIT_CODE}}{DONE_MARKER}\"\n"
+        "cat <<'{delim}' > /tmp/code.{ext}\n{code}\n{delim}\n{interpreter} /tmp/code.{ext}; EXIT_CODE=$?; echo \"${{EXIT_CODE}} {marker}\"\n"
     );
 
-    run_command(vm, &cmd, timeout, max_output)
+    run_command_with_marker(vm, &cmd, &marker, timeout, max_output)
 }
 
 pub fn run_command(
     vm: &mut VmInstance,
     command: &str,
+    timeout: Duration,
+    max_output: usize,
+) -> Result<ExecResult> {
+    let marker = make_done_marker();
+    let wrapped = format!("{command}; EXIT_CODE=$?; echo \"${{EXIT_CODE}} {marker}\"\n");
+    run_command_with_marker(vm, &wrapped, &marker, timeout, max_output)
+}
+
+fn run_command_with_marker(
+    vm: &mut VmInstance,
+    command: &str,
+    marker: &str,
     timeout: Duration,
     max_output: usize,
 ) -> Result<ExecResult> {
@@ -46,6 +61,7 @@ pub fn run_command(
     loop {
         if Instant::now() > deadline {
             let raw = vm.serial.take_output();
+            vm.serial.clear_output();
             let truncated = truncate_output(&raw, max_output);
             return Ok(ExecResult {
                 exit_code: -1,
@@ -60,9 +76,9 @@ pub fn run_command(
                 if is_serial_port(port) {
                     vm.serial.handle_io_out(port, data);
 
-                    if vm.serial.output_contains(DONE_MARKER) {
+                    if vm.serial.output_contains(marker) {
                         let raw = vm.serial.take_output();
-                        let (exit_code, stdout) = parse_exit_code(&raw);
+                        let (exit_code, stdout) = parse_exit_code(&raw, marker);
                         let truncated = truncate_output(&stdout, max_output);
                         return Ok(ExecResult {
                             exit_code,
@@ -112,14 +128,11 @@ pub fn run_command(
     }
 }
 
-fn parse_exit_code(raw: &str) -> (i32, String) {
-    if let Some(marker_pos) = raw.rfind(DONE_MARKER) {
+fn parse_exit_code(raw: &str, marker: &str) -> (i32, String) {
+    if let Some(marker_pos) = raw.rfind(marker) {
         let before_marker = &raw[..marker_pos];
 
-        let code_start = before_marker
-            .rfind('\n')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+        let code_start = before_marker.rfind('\n').map(|p| p + 1).unwrap_or(0);
 
         let code_str = before_marker[code_start..].trim();
         let exit_code = code_str.parse::<i32>().unwrap_or(-1);
@@ -158,26 +171,37 @@ mod tests {
 
     #[test]
     fn test_parse_exit_code_success() {
-        let raw = "hello world\n0ZEROBOOT_DONE";
-        let (code, stdout) = parse_exit_code(raw);
+        let marker = "DONE_test123";
+        let raw = format!("hello world\n0 {marker}");
+        let (code, stdout) = parse_exit_code(&raw, marker);
         assert_eq!(code, 0);
         assert_eq!(stdout, "hello world\n");
     }
 
     #[test]
     fn test_parse_exit_code_nonzero() {
-        let raw = "error output\n1ZEROBOOT_DONE";
-        let (code, stdout) = parse_exit_code(raw);
+        let marker = "DONE_test456";
+        let raw = format!("error output\n1 {marker}");
+        let (code, stdout) = parse_exit_code(&raw, marker);
         assert_eq!(code, 1);
         assert_eq!(stdout, "error output\n");
     }
 
     #[test]
     fn test_parse_exit_code_missing_marker() {
+        let marker = "DONE_missing";
         let raw = "partial output";
-        let (code, stdout) = parse_exit_code(raw);
+        let (code, stdout) = parse_exit_code(raw, marker);
         assert_eq!(code, -1);
         assert_eq!(stdout, "partial output");
+    }
+
+    #[test]
+    fn test_make_done_marker_unique() {
+        let m1 = make_done_marker();
+        let m2 = make_done_marker();
+        assert_ne!(m1, m2);
+        assert!(m1.starts_with("DONE_"));
     }
 
     #[test]

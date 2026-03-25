@@ -23,7 +23,8 @@ pub async fn handle_run(
     let timeout_ms = payload
         .get("timeout_ms")
         .and_then(|v| v.as_u64())
-        .unwrap_or(config.max_cmd_timeout * 1000);
+        .unwrap_or(config.max_cmd_timeout * 1000)
+        .min(config.max_cmd_timeout * 1000);
 
     let existing = iii
         .trigger(TriggerRequest {
@@ -81,7 +82,8 @@ pub async fn handle_code(
     let timeout_ms = payload
         .get("timeout_ms")
         .and_then(|v| v.as_u64())
-        .unwrap_or(config.max_cmd_timeout * 1000);
+        .unwrap_or(config.max_cmd_timeout * 1000)
+        .min(config.max_cmd_timeout * 1000);
 
     let existing = iii
         .trigger(TriggerRequest {
@@ -110,7 +112,8 @@ pub async fn handle_code(
     };
 
     let container_name = format!("iii-sbx-{id}");
-    let code_path = format!("/tmp/code.{ext}");
+    let unique_id = uuid::Uuid::new_v4();
+    let code_path = format!("/tmp/code_{unique_id}.{ext}");
 
     docker::copy_to_container(docker_client, &container_name, &code_path, code.as_bytes())
         .await
@@ -119,11 +122,19 @@ pub async fn handle_code(
     let result = docker::exec_in_container(
         docker_client,
         &container_name,
-        vec![interpreter.to_string(), code_path],
+        vec![interpreter.to_string(), code_path.clone()],
         timeout_ms,
     )
     .await
     .map_err(|e| IIIError::Handler(format!("code exec failed: {e}")))?;
+
+    let _ = docker::exec_in_container(
+        docker_client,
+        &container_name,
+        vec!["rm".to_string(), "-f".to_string(), code_path],
+        5000,
+    )
+    .await;
 
     serde_json::to_value(&result)
         .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))

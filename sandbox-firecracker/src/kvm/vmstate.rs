@@ -134,7 +134,10 @@ mod tests {
                 efer: 0xD01,
                 apic_base: 0xFEE00900,
             },
-            msrs: vec![SavedMsr { index: 0x174, data: 0 }],
+            msrs: vec![SavedMsr {
+                index: 0x174,
+                data: 0,
+            }],
             lapic: vec![0; 1024],
             ioapic_redirtbl: vec![0; 24],
             xcrs: vec![SavedXcr { xcr: 0, value: 7 }],

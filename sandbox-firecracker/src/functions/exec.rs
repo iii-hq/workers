@@ -24,17 +24,14 @@ pub fn build_run_handler(
             let sandbox_id = payload
                 .get("sandbox_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    IIIError::Handler("missing required field: sandbox_id".to_string())
-                })?
+                .or_else(|| payload.get("id").and_then(|v| v.as_str()))
+                .ok_or_else(|| IIIError::Handler("missing sandbox_id or id".to_string()))?
                 .to_string();
 
             let command = payload
                 .get("command")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    IIIError::Handler("missing required field: command".to_string())
-                })?
+                .ok_or_else(|| IIIError::Handler("missing required field: command".to_string()))?
                 .to_string();
 
             let timeout_secs = payload
@@ -48,9 +45,9 @@ pub fn build_run_handler(
 
             let vm_arc = {
                 let map = registry.read().await;
-                map.get(&sandbox_id).cloned().ok_or_else(|| {
-                    IIIError::Handler(format!("sandbox not found: {sandbox_id}"))
-                })?
+                map.get(&sandbox_id)
+                    .cloned()
+                    .ok_or_else(|| IIIError::Handler(format!("sandbox not found: {sandbox_id}")))?
             };
 
             let result = tokio::task::spawn_blocking(move || {
@@ -83,17 +80,14 @@ pub fn build_code_handler(
             let sandbox_id = payload
                 .get("sandbox_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    IIIError::Handler("missing required field: sandbox_id".to_string())
-                })?
+                .or_else(|| payload.get("id").and_then(|v| v.as_str()))
+                .ok_or_else(|| IIIError::Handler("missing sandbox_id or id".to_string()))?
                 .to_string();
 
             let code = payload
                 .get("code")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    IIIError::Handler("missing required field: code".to_string())
-                })?
+                .ok_or_else(|| IIIError::Handler("missing required field: code".to_string()))?
                 .to_string();
 
             let language = payload
@@ -113,9 +107,9 @@ pub fn build_code_handler(
 
             let vm_arc = {
                 let map = registry.read().await;
-                map.get(&sandbox_id).cloned().ok_or_else(|| {
-                    IIIError::Handler(format!("sandbox not found: {sandbox_id}"))
-                })?
+                map.get(&sandbox_id)
+                    .cloned()
+                    .ok_or_else(|| IIIError::Handler(format!("sandbox not found: {sandbox_id}")))?
             };
 
             let result = tokio::task::spawn_blocking(move || {

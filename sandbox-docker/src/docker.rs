@@ -76,11 +76,7 @@ pub async fn create_container(docker: &Docker, opts: &ContainerOpts<'_>) -> Resu
         memory: Some(memory_bytes),
         nano_cpus: Some(nano_cpus),
         pids_limit: Some(256),
-        cap_drop: Some(vec![
-            "NET_RAW".to_string(),
-            "SYS_ADMIN".to_string(),
-            "MKNOD".to_string(),
-        ]),
+        cap_drop: Some(vec!["ALL".to_string()]),
         security_opt: Some(vec!["no-new-privileges:true".to_string()]),
         network_mode,
         ..Default::default()
@@ -95,6 +91,7 @@ pub async fn create_container(docker: &Docker, opts: &ContainerOpts<'_>) -> Resu
         ]),
         working_dir: Some(workdir.to_string()),
         env: Some(env_vec),
+        user: Some("1000:1000".to_string()),
         host_config: Some(host_config),
         ..Default::default()
     };
@@ -141,6 +138,8 @@ pub async fn exec_in_container(
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut total_bytes = 0usize;
+    let mut timed_out = false;
+    let mut truncated = false;
 
     let output = docker
         .start_exec(&exec.id, None)
@@ -170,6 +169,7 @@ pub async fn exec_in_container(
                     total_bytes += chunk;
                     if total_bytes > OUTPUT_CAP {
                         stderr.push_str("\n[output truncated: 10MB limit exceeded]");
+                        truncated = true;
                         break;
                     }
                 }
@@ -179,6 +179,7 @@ pub async fn exec_in_container(
                 Ok(None) => break,
                 Err(_) => {
                     stderr.push_str("\n[timeout exceeded]");
+                    timed_out = true;
                     break;
                 }
             }
@@ -190,7 +191,11 @@ pub async fn exec_in_container(
         .await
         .map_err(|e| anyhow!("failed to inspect exec: {e}"))?;
 
-    let exit_code = inspect.exit_code.unwrap_or(-1);
+    let exit_code = if timed_out || truncated {
+        -1
+    } else {
+        inspect.exit_code.unwrap_or(-1)
+    };
     let duration_ms = start.elapsed().as_millis() as u64;
 
     Ok(ExecResult {
@@ -249,7 +254,7 @@ pub async fn read_file(
     let result = exec_in_container(
         docker,
         container_name,
-        vec!["cat".to_string(), path.to_string()],
+        vec!["cat".to_string(), "--".to_string(), path.to_string()],
         timeout_ms,
     )
     .await?;
@@ -272,11 +277,14 @@ pub async fn list_dir(
         container_name,
         vec![
             "find".to_string(),
+            "--".to_string(),
             path.to_string(),
+            "-mindepth".to_string(),
+            "1".to_string(),
             "-maxdepth".to_string(),
             "1".to_string(),
             "-printf".to_string(),
-            "%y|%s|%f|%p\\n".to_string(),
+            "%y %s %p\\0".to_string(),
         ],
         timeout_ms,
     )
@@ -290,19 +298,21 @@ pub async fn list_dir(
     }
 
     let mut entries = Vec::new();
-    for line in result.stdout.lines() {
-        let parts: Vec<&str> = line.splitn(4, '|').collect();
-        if parts.len() < 4 {
+    for record in result.stdout.split('\0') {
+        if record.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = record.splitn(3, ' ').collect();
+        if parts.len() < 3 {
             continue;
         }
         let is_directory = parts[0] == "d";
         let size = parts[1].parse::<u64>().unwrap_or(0);
-        let name = parts[2].to_string();
-        let entry_path = parts[3].to_string();
-
-        if name == "." || name == ".." {
-            continue;
-        }
+        let entry_path = parts[2].to_string();
+        let name = std::path::Path::new(&entry_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
 
         entries.push(FileInfo {
             name,

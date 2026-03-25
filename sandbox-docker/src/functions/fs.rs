@@ -5,18 +5,22 @@ use crate::config::SandboxWorkerConfig;
 use crate::docker;
 
 fn validate_path(path: &str, workspace_dir: &str) -> Result<(), IIIError> {
-    if path.contains("..") {
-        return Err(IIIError::Handler(
-            "path traversal not allowed: '..' components rejected".to_string(),
-        ));
+    use std::path::{Component, Path};
+    let p = Path::new(path);
+    for c in p.components() {
+        if matches!(c, Component::ParentDir) {
+            return Err(IIIError::Handler("path traversal not allowed".to_string()));
+        }
     }
-
-    if !path.starts_with(workspace_dir) && !path.starts_with("/tmp") {
+    let normalized = p.to_path_buf();
+    let ws = Path::new(workspace_dir);
+    let tmp = Path::new("/tmp");
+    if !normalized.starts_with(ws) && !normalized.starts_with(tmp) {
         return Err(IIIError::Handler(format!(
-            "path must be under {workspace_dir} or /tmp"
+            "path must be under {} or /tmp",
+            workspace_dir
         )));
     }
-
     Ok(())
 }
 

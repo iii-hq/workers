@@ -35,8 +35,8 @@ fn restore_cpuid(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
         });
     }
 
-    let mut cpuid = kvm_bindings::CpuId::new(kvm_entries.len())
-        .context("failed to allocate CpuId")?;
+    let mut cpuid =
+        kvm_bindings::CpuId::new(kvm_entries.len()).context("failed to allocate CpuId")?;
     let cpuid_slice = cpuid.as_mut_slice();
     for (dst, src) in cpuid_slice.iter_mut().zip(kvm_entries.iter()) {
         *dst = *src;
@@ -47,8 +47,7 @@ fn restore_cpuid(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 }
 
 fn restore_sregs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
-    let saved: SavedSregs =
-        serde_json::from_slice(data).context("failed to deserialize sregs")?;
+    let saved: SavedSregs = serde_json::from_slice(data).context("failed to deserialize sregs")?;
 
     let mut sregs = vcpu.get_sregs().context("get_sregs failed")?;
 
@@ -75,10 +74,7 @@ fn restore_sregs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn apply_segment(
-    dst: &mut kvm_bindings::kvm_segment,
-    src: &crate::kvm::vmstate::SavedSegment,
-) {
+fn apply_segment(dst: &mut kvm_bindings::kvm_segment, src: &crate::kvm::vmstate::SavedSegment) {
     dst.base = src.base;
     dst.limit = src.limit;
     dst.selector = src.selector;
@@ -138,8 +134,7 @@ fn restore_xsave(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
 }
 
 fn restore_regs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
-    let values: Vec<u64> =
-        serde_json::from_slice(data).context("failed to deserialize regs")?;
+    let values: Vec<u64> = serde_json::from_slice(data).context("failed to deserialize regs")?;
 
     let mut regs = vcpu.get_regs().context("get_regs failed")?;
 
@@ -192,8 +187,7 @@ fn restore_msrs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
         return Ok(());
     }
 
-    let mut msrs = kvm_bindings::Msrs::new(saved.len())
-        .context("failed to allocate Msrs")?;
+    let mut msrs = kvm_bindings::Msrs::new(saved.len()).context("failed to allocate Msrs")?;
     let entries = msrs.as_mut_slice();
     for (i, s) in saved.iter().enumerate() {
         if i < entries.len() {
@@ -210,7 +204,6 @@ fn restore_mp_state(vcpu: &VcpuFd) -> Result<()> {
     let mp_state = kvm_mp_state {
         mp_state: KVM_MP_STATE_RUNNABLE,
     };
-    vcpu.set_mp_state(mp_state)
-        .context("set_mp_state failed")?;
+    vcpu.set_mp_state(mp_state).context("set_mp_state failed")?;
     Ok(())
 }

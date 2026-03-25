@@ -12,7 +12,9 @@ pub fn fork_from_template(template: &Template) -> Result<VmInstance> {
     let kvm = Kvm::new().context("failed to open /dev/kvm")?;
     let vm_fd = kvm.create_vm().context("failed to create VM")?;
 
-    vm_fd.create_irq_chip().context("failed to create IRQ chip")?;
+    vm_fd
+        .create_irq_chip()
+        .context("failed to create IRQ chip")?;
 
     let mut pit_config = kvm_bindings::kvm_pit_config::default();
     pit_config.flags = 0;
@@ -20,10 +22,27 @@ pub fn fork_from_template(template: &Template) -> Result<VmInstance> {
         .create_pit2(pit_config)
         .context("failed to create PIT2")?;
 
-    for (i, &entry) in template.snapshot.ioapic_redirtbl.iter().enumerate() {
-        if entry != 0 {
-            tracing::trace!(pin = i, entry, "restoring IOAPIC redirect entry");
+    {
+        use kvm_bindings::kvm_irqchip;
+
+        let mut irqchip = kvm_irqchip::default();
+        irqchip.chip_id = 2; // IOAPIC
+        vm_fd
+            .get_irqchip(&mut irqchip)
+            .context("failed to get IOAPIC state")?;
+        // SAFETY: chip_id == 2 means the union holds an ioapic struct.
+        let ioapic = unsafe { &mut irqchip.chip.ioapic };
+        for (i, &entry) in template.snapshot.ioapic_redirtbl.iter().enumerate() {
+            if i < 24 {
+                ioapic.redirtbl[i].bits = entry;
+                if entry != 0 {
+                    tracing::trace!(pin = i, entry, "restoring IOAPIC redirect entry");
+                }
+            }
         }
+        vm_fd
+            .set_irqchip(&irqchip)
+            .context("failed to set IOAPIC state")?;
     }
 
     // SAFETY: We mmap the template memfd with MAP_PRIVATE to get CoW semantics.
@@ -66,8 +85,7 @@ pub fn fork_from_template(template: &Template) -> Result<VmInstance> {
 
     let vcpu_fd = vm_fd.create_vcpu(0).context("failed to create vCPU")?;
 
-    cpu::restore_cpu_state(&vcpu_fd, &template.snapshot)
-        .context("failed to restore CPU state")?;
+    cpu::restore_cpu_state(&vcpu_fd, &template.snapshot).context("failed to restore CPU state")?;
 
     let fork_time_us = start.elapsed().as_micros() as u64;
 

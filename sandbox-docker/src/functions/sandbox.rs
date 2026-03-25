@@ -28,7 +28,7 @@ pub async fn handle_create(
             timeout_ms: None,
         })
         .await
-        .unwrap_or(json!([]));
+        .map_err(|e| IIIError::Handler(format!("state list failed: {e}")))?;
 
     let count = existing.as_array().map(|a| a.len()).unwrap_or(0);
 
@@ -114,18 +114,22 @@ pub async fn handle_create(
     let sandbox_value = serde_json::to_value(&sandbox)
         .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))?;
 
-    iii.trigger(TriggerRequest {
-        function_id: "state::set".into(),
-        payload: json!({
-            "scope": "sandbox",
-            "key": id,
-            "value": sandbox_value,
-        }),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .map_err(|e| IIIError::Handler(format!("state set failed: {e}")))?;
+    if let Err(e) = iii
+        .trigger(TriggerRequest {
+            function_id: "state::set".into(),
+            payload: json!({
+                "scope": "sandbox",
+                "key": id,
+                "value": sandbox_value,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+    {
+        let _ = docker::stop_and_remove(docker_client, &id).await;
+        return Err(IIIError::Handler(format!("state set failed: {e}")));
+    }
 
     Ok(sandbox_value)
 }
