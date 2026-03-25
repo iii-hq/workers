@@ -220,7 +220,13 @@ fn restore_msrs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
         }
     }
 
-    vcpu.set_msrs(&msrs).context("set_msrs failed")?;
+    let written = vcpu.set_msrs(&msrs).context("set_msrs failed")?;
+    anyhow::ensure!(
+        written as usize == saved.len(),
+        "set_msrs wrote {}/{} entries",
+        written,
+        saved.len()
+    );
     Ok(())
 }
 
