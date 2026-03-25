@@ -97,14 +97,14 @@ fn restore_xcrs(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
     }
 
     let mut xcrs = vcpu.get_xcrs().context("get_xcrs failed")?;
-    let xcr_slice = xcrs.as_mut_slice();
+    let max = xcrs.xcrs.len();
     for (i, s) in saved.iter().enumerate() {
-        if i < xcr_slice.len() {
-            xcr_slice[i].xcr = s.xcr;
-            xcr_slice[i].value = s.value;
+        if i < max {
+            xcrs.xcrs[i].xcr = s.xcr;
+            xcrs.xcrs[i].value = s.value;
         }
     }
-    xcrs.as_mut_fam_struct().nr_xcrs = saved.len().min(xcr_slice.len()) as u32;
+    xcrs.nr_xcrs = saved.len().min(max) as u32;
 
     vcpu.set_xcrs(&xcrs).context("set_xcrs failed")?;
     Ok(())
@@ -173,7 +173,11 @@ fn restore_lapic(vcpu: &VcpuFd, data: &[u8]) -> Result<()> {
     let mut lapic = vcpu.get_lapic().context("get_lapic failed")?;
     let regs = &mut lapic.regs;
     let copy_len = data.len().min(regs.len());
-    regs[..copy_len].copy_from_slice(&data[..copy_len]);
+    // SAFETY: lapic.regs is [i8] on x86_64 Linux but we write raw bytes.
+    // The KVM API treats this as an opaque byte buffer.
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), regs.as_mut_ptr() as *mut u8, copy_len);
+    }
 
     vcpu.set_lapic(&lapic).context("set_lapic failed")?;
     Ok(())
