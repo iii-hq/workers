@@ -16,17 +16,20 @@ pub fn fork_from_template(template: &Template) -> Result<VmInstance> {
         .create_irq_chip()
         .context("failed to create IRQ chip")?;
 
-    let mut pit_config = kvm_bindings::kvm_pit_config::default();
-    pit_config.flags = 0;
     vm_fd
-        .create_pit2(pit_config)
+        .create_pit2(kvm_bindings::kvm_pit_config {
+            flags: 0,
+            ..Default::default()
+        })
         .context("failed to create PIT2")?;
 
     {
         use kvm_bindings::kvm_irqchip;
 
-        let mut irqchip = kvm_irqchip::default();
-        irqchip.chip_id = 2; // IOAPIC
+        let mut irqchip = kvm_irqchip {
+            chip_id: 2, // IOAPIC
+            ..Default::default()
+        };
         vm_fd
             .get_irqchip(&mut irqchip)
             .context("failed to get IOAPIC state")?;

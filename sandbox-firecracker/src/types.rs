@@ -174,7 +174,7 @@ mod tests {
     fn test_serial_buffer_bounded() {
         let mut serial = Serial::new();
         for _ in 0..MAX_SERIAL_BUFFER + 100 {
-            serial.handle_io_out(0x3F8, &[b'A']);
+            serial.handle_io_out(0x3F8, b"A");
         }
         assert_eq!(serial.output.len(), MAX_SERIAL_BUFFER);
     }

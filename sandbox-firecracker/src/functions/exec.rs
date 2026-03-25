@@ -58,8 +58,8 @@ pub fn build_run_handler(
             .map_err(|e| IIIError::Handler(format!("spawn_blocking join error: {e}")))?
             .map_err(|e| IIIError::Handler(format!("exec failed: {e}")))?;
 
-            Ok(serde_json::to_value(&result)
-                .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))?)
+            serde_json::to_value(&result)
+                .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))
         })
     }
 }
@@ -120,8 +120,8 @@ pub fn build_code_handler(
             .map_err(|e| IIIError::Handler(format!("spawn_blocking join error: {e}")))?
             .map_err(|e| IIIError::Handler(format!("exec failed: {e}")))?;
 
-            Ok(serde_json::to_value(&result)
-                .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))?)
+            serde_json::to_value(&result)
+                .map_err(|e| IIIError::Handler(format!("serialization failed: {e}")))
         })
     }
 }

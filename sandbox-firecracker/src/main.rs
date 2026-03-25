@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage};
+use iii_sdk::{register_worker, InitOptions, OtelConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
