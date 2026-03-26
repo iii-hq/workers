@@ -36,6 +36,9 @@ pub fn build_status_handler(
                     "runtime": worker.runtime,
                     "running": running,
                     "started_at": worker.started_at.to_rfc3339(),
+                    "status": worker.status,
+                    "restart_count": worker.restart_count,
+                    "last_failure": worker.last_failure,
                 }));
             }
 
