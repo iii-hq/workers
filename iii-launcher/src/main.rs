@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 mod adapter;
 mod docker;
 mod functions;
+mod health;
 mod state;
 
 #[derive(Parser, Debug)]
@@ -177,6 +178,13 @@ async fn main() -> Result<()> {
     );
 
     tracing::info!("all launcher functions registered, waiting for invocations");
+
+    let health_adapter = adapter.clone();
+    let health_state = launcher_state.clone();
+    let health_iii = iii.clone();
+    tokio::spawn(async move {
+        health::run_health_loop(health_adapter, health_state, health_iii).await;
+    });
 
     tokio::signal::ctrl_c().await?;
 
