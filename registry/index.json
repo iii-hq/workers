@@ -1,25 +1,10 @@
 {
-    "version": 1,
+    "version": 2,
     "workers": {
         "image-resize": {
-            "description": "III engine image resize worker",
-            "repo": "iii-hq/workers",
-            "tag_prefix": "image-resize",
-            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
-            "has_checksum": true,
-            "default_config": {
-                "class": "workers::image_resize::ImageResizeWorker",
-                "config": {
-                    "width": 200,
-                    "height": 200,
-                    "strategy": "scale-to-fit",
-                    "quality": {
-                        "jpeg": 85,
-                        "webp": 80
-                    }
-                }
-            },
-            "version": "0.1.2"
+            "description": "Image resize and format conversion",
+            "image": "ghcr.io/iii-hq/image-resize",
+            "latest": "0.1.2"
         }
     }
 }

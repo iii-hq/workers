@@ -29,6 +29,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
+      worker_name: ${{ steps.meta.outputs.worker_name }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
     steps:
@@ -43,7 +44,8 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          VERSION="${TAG#image-resize/v}"
+          WORKER_NAME="${TAG%%/*}"
+          VERSION="${TAG#*/v}"
 
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
@@ -56,8 +58,9 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+          echo "worker_name=$WORKER_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::image-resize release -- tag=$TAG version=$VERSION"
+          echo "::notice::$WORKER_NAME release -- tag=$TAG version=$VERSION"
 
   # ──────────────────────────────────────────────────────────────
   # GitHub Release
@@ -93,21 +96,39 @@ jobs:
           generate_release_notes: true
 
   # ──────────────────────────────────────────────────────────────
-  # Binary Build
+  # OCI Build
   # ──────────────────────────────────────────────────────────────
 
-  binary-build:
-    name: Binary Release
-    needs: [setup, create-release]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_rust-binary.yml
+  oci-build:
+    needs: [setup]
+    if: needs.setup.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_oci-build.yml
     with:
-      bin_name: image-resize
-      manifest_path: image-resize/Cargo.toml
+      worker_name: ${{ needs.setup.outputs.worker_name }}
+      dockerfile_path: ${{ needs.setup.outputs.worker_name }}/Dockerfile
       tag_name: ${{ needs.setup.outputs.tag }}
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      dry_run: false
     secrets:
-      GH_APP_ID: ${{ secrets.III_CI_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Binary Build (deprecated — kept for reference)
+  # ──────────────────────────────────────────────────────────────
+
+  # binary-build:
+  #   name: Binary Release
+  #   needs: [setup, create-release]
+  #   if: ${{ !failure() && !cancelled() }}
+  #   uses: ./.github/workflows/_rust-binary.yml
+  #   with:
+  #     bin_name: image-resize
+  #     manifest_path: image-resize/Cargo.toml
+  #     tag_name: ${{ needs.setup.outputs.tag }}
+  #     is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+  #     skip_create_release: true
+  #     dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+  #   secrets:
+  #     GH_APP_ID: ${{ secrets.III_CI_APP_ID }}
+  #     GH_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}

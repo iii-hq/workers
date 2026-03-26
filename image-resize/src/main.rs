@@ -19,7 +19,7 @@ struct Cli {
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
 
-    /// Output module manifest as JSON and exit
+    /// Output worker manifest as YAML and exit
     #[arg(long)]
     manifest: bool,
 }
@@ -37,7 +37,8 @@ async fn main() -> Result<()> {
 
     if cli.manifest {
         let manifest = manifest::build_manifest();
-        println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
+        let yaml = serde_yaml::to_string(&manifest).expect("failed to serialize manifest");
+        print!("{}", yaml);
         return Ok(());
     }
 
@@ -62,6 +63,12 @@ async fn main() -> Result<()> {
 
     tracing::info!(url = %cli.url, "connecting to III engine");
 
+    // TODO: Once iii-sdk publishes manifest support (WorkerManifestCompact + InitOptions.manifest),
+    // load the embedded manifest from the OCI well-known path and pass it during registration:
+    //
+    //   let manifest = iii_sdk::WorkerManifestCompact::from_file("/iii/worker.yaml").ok();
+    //
+    // Then set `manifest` in InitOptions below. Until then, we rely on Default (manifest: None).
     let iii = register_worker(
         &cli.url,
         InitOptions {

@@ -175,16 +175,17 @@ jobs:
           fi
           echo "Validated ${WORKER}/Cargo.toml version: ${actual}"
 
-      - name: Update registry
+      - name: Update registry/index.json
         if: inputs.dry_run != true
         env:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
         run: |
-          jq --arg worker "$WORKER" --arg version "$NEW_VERSION" \
-            '.workers[$worker].version = $version' \
-            registry/index.json > registry/index.json.tmp
-          jq empty registry/index.json.tmp
+          jq --arg worker "$WORKER" \
+             --arg version "$NEW_VERSION" \
+             --arg image "ghcr.io/iii-hq/$WORKER" \
+             '.workers[$worker].latest = $version | .workers[$worker].image = $image | .version = 2' \
+             registry/index.json > registry/index.json.tmp
           mv registry/index.json.tmp registry/index.json
           echo "Updated registry/index.json: $WORKER -> $NEW_VERSION"
 
