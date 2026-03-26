@@ -1,0 +1,22 @@
+iii: v1
+name: image-resize-demo-rust
+version: 1.0.0
+
+runtime:
+  language: rust
+  entry: src/main.rs
+
+dependencies:
+  setup: |
+    command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)
+  install: |
+    . $HOME/.cargo/env && cargo build --release
+  run: |
+    . $HOME/.cargo/env && cargo run --release
+
+env:
+  III_URL: "ws://host.docker.internal:49134"
+
+resources:
+  memory: 512Mi
+  cpu: "1.0"

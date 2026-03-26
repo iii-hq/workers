@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "image-resize-demo-rust"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+iii-sdk = { path = "../../../motia/sdk/packages/rust/iii" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+base64 = "0.22"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
