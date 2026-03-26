@@ -15,6 +15,20 @@ pub struct ManagedWorker {
     pub started_at: DateTime<Utc>,
     pub status: String,
     pub config: serde_json::Value,
+    #[serde(default)]
+    pub restart_count: u32,
+    #[serde(default)]
+    pub last_failure: Option<String>,
+    #[serde(default)]
+    pub backoff_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+    #[serde(default)]
+    pub cpu_limit: Option<String>,
+    #[serde(default)]
+    pub engine_url: Option<String>,
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

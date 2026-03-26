@@ -57,8 +57,8 @@ pub fn build_start_handler(
             let config_b64 = data_encoding::BASE64.encode(config_json.as_bytes());
 
             let mut env = HashMap::new();
-            env.insert("III_ENGINE_URL".to_string(), engine_url);
-            env.insert("III_AUTH_TOKEN".to_string(), auth_token);
+            env.insert("III_ENGINE_URL".to_string(), engine_url.clone());
+            env.insert("III_AUTH_TOKEN".to_string(), auth_token.clone());
             env.insert("III_WORKER_CONFIG".to_string(), config_b64);
 
             let spec = ContainerSpec {
@@ -75,6 +75,10 @@ pub fn build_start_handler(
                     .map(|s| s.to_string()),
             };
 
+            // Remove any existing container with the same name (stopped or running)
+            let _ = adapter.stop(&name).await;
+            let _ = adapter.remove(&name).await;
+
             let container_id = adapter
                 .start(&spec)
                 .await
@@ -87,6 +91,13 @@ pub fn build_start_handler(
                 started_at: chrono::Utc::now(),
                 status: "running".to_string(),
                 config,
+                restart_count: 0,
+                last_failure: None,
+                backoff_until: None,
+                memory_limit: spec.memory_limit.clone(),
+                cpu_limit: spec.cpu_limit.clone(),
+                engine_url: Some(engine_url.clone()),
+                auth_token: Some(auth_token.clone()),
             };
 
             {
