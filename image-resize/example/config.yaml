@@ -1,14 +1,9 @@
-port: 49134
-
-workers:
-  - class: workers::image_resize::ImageResizeWorker
-    config:
-      width: 200
-      height: 200
-      strategy: scale-to-fit
-      quality:
-        jpeg: 85
-        webp: 80
+# workers:
+  # - name: image-resize
+  # - image: docker.io/andersonofl/image-resize:latest
+    # config: 
+      # III_ENGINE_URL: "ws://localhost:49134"
+      # III_API_URL: "http://localhost:3111"
 
 modules:
   - class: modules::api::RestApiModule
