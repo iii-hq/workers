@@ -76,7 +76,7 @@ pub fn build_start_handler(
             };
 
             // Remove any existing container with the same name (stopped or running)
-            let _ = adapter.stop(&name).await;
+            let _ = adapter.stop(&name, 10).await;
             let _ = adapter.remove(&name).await;
 
             let container_id = adapter

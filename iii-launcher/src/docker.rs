@@ -35,8 +35,14 @@ impl DockerAdapter {
 #[async_trait::async_trait]
 impl RuntimeAdapter for DockerAdapter {
     async fn pull(&self, image: &str) -> Result<ImageInfo> {
-        tracing::info!(image = %image, "pulling image");
-        Self::run_cmd(&["pull", image]).await?;
+        // Check if image exists locally first; only pull from remote if missing
+        let local_check = Self::run_cmd(&["image", "inspect", image]).await;
+        if local_check.is_ok() {
+            tracing::info!(image = %image, "image found locally, skipping pull");
+        } else {
+            tracing::info!(image = %image, "pulling image from registry");
+            Self::run_cmd(&["pull", image]).await?;
+        }
 
         // Get image size via docker inspect
         let size_str =
@@ -111,9 +117,10 @@ impl RuntimeAdapter for DockerAdapter {
         Ok(container_id)
     }
 
-    async fn stop(&self, container_id: &str) -> Result<()> {
-        tracing::info!(container_id = %container_id, "stopping container");
-        Self::run_cmd(&["stop", container_id]).await?;
+    async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()> {
+        tracing::info!(container_id = %container_id, timeout_secs = timeout_secs, "stopping container");
+        let timeout_str = timeout_secs.to_string();
+        Self::run_cmd(&["stop", "--time", &timeout_str, container_id]).await?;
         Ok(())
     }
 

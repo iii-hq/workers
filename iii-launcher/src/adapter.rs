@@ -30,7 +30,7 @@ pub trait RuntimeAdapter: Send + Sync {
     async fn pull(&self, image: &str) -> Result<ImageInfo>;
     async fn extract_file(&self, image: &str, path: &str) -> Result<Vec<u8>>;
     async fn start(&self, spec: &ContainerSpec) -> Result<String>;
-    async fn stop(&self, container_id: &str) -> Result<()>;
+    async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()>;
     async fn status(&self, container_id: &str) -> Result<ContainerStatus>;
     async fn logs(&self, container_id: &str, follow: bool) -> Result<String>;
     async fn remove(&self, container_id: &str) -> Result<()>;

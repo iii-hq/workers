@@ -38,7 +38,7 @@ pub fn build_stop_handler(
             };
 
             adapter
-                .stop(&container_id)
+                .stop(&container_id, 30)
                 .await
                 .map_err(|e| IIIError::Handler(format!("stop failed: {e}")))?;
 
