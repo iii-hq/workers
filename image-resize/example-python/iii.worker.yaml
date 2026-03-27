@@ -13,5 +13,5 @@ resources:
   cpus: 1
 
 scripts:
-  install: "pip install -e ."
+  install: "pip install ."
   start: "python3 -m image_resize_demo"
