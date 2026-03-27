@@ -6,12 +6,12 @@ version: 1.0.0
 runtime:
   language: python
   package_manager: pip
-  entry: image_resize_demo
+  entry: src.main
 
 resources:
-  memory: 256
+  memory: 512
   cpus: 1
 
 scripts:
   install: "pip install iii-sdk"
-  start: "PYTHONPATH=/workspace python3 -m image_resize_demo"
+  start: "python -m src.main"
