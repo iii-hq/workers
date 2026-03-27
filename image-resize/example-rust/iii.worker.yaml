@@ -8,6 +8,7 @@ runtime:
 
 dependencies:
   setup: |
+    apt-get update && apt-get install -y build-essential pkg-config libssl-dev
     command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)
   install: |
     . $HOME/.cargo/env && cargo build --release
