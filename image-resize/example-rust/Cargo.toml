@@ -7,7 +7,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-iii-sdk = { path = "../../../motia/sdk/packages/rust/iii" }
+iii-sdk = "0.10.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
