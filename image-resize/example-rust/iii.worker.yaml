@@ -1,4 +1,5 @@
-iii: v1
+iii: v2
+
 name: image-resize-demo-rust
 version: 1.0.0
 
@@ -8,19 +9,17 @@ version: 1.0.0
 
 runtime:
   language: rust
+  package_manager: cargo
   entry: src/main.rs
 
-dependencies:
+resources:
+  memory: 512
+  cpus: 1
+
+scripts:
   setup: |
     echo "⚠ Rust sandbox dev not supported on Apple Silicon — run on host instead"
   install: |
     echo "skipped"
-  run: |
+  start: |
     echo "Run on host: III_URL=ws://localhost:49134 cargo run" && exit 1
-
-env:
-  III_URL: "ws://localhost:49134"
-
-resources:
-  memory: 512Mi
-  cpu: "1.0"

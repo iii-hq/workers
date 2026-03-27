@@ -1,7 +1,4 @@
-iii: v1
-
-# Worker development environment configuration.
-# Used by `iii worker dev` to build and run the project inside a Docker Sandbox.
+iii: v2
 
 name: image-resize-demo
 version: 1.0.0
@@ -11,28 +8,12 @@ runtime:
   package_manager: bun
   entry: src/index.ts
 
-# System packages to install inside the sandbox VM (apt-get)
-dependencies:
-  system: []
-
-  # Runtime install command (runs first)
-  setup: |
-    curl -fsSL https://bun.sh/install | bash
-
-  # Install project dependencies
-  install: |
-    export PATH=$HOME/.bun/bin:$PATH && bun install
-
-  # Start the worker
-  run: |
-    export PATH=$HOME/.bun/bin:$PATH && bun src/index.ts
-
-# Environment variables injected into the sandbox
-env:
-  III_URL: "ws://host.docker.internal:49134"
-  III_ENGINE_URL: "ws://host.docker.internal:49134"
-
-# Resources (hints for the sandbox VM)
 resources:
-  memory: 512Mi
-  cpu: "1.0"
+  memory: 512
+  cpus: 1
+
+# Optional: explicit scripts override auto-detection
+scripts:
+  setup: "curl -fsSL https://bun.sh/install | bash"
+  install: "export PATH=$HOME/.bun/bin:$PATH && bun install"
+  start: "export PATH=$HOME/.bun/bin:$PATH && bun src/index.ts"

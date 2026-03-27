@@ -1,30 +1,18 @@
-iii: v1
-
-# Worker development environment configuration.
-# Used by `iii worker dev` to build and run the project inside a Docker Sandbox.
+iii: v2
 
 name: image-resize-demo-python
 version: 1.0.0
 
 runtime:
   language: python
+  package_manager: pip
   entry: image_resize_demo
 
-dependencies:
-  setup: |
-    sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
-
-  install: |
-    python3 -m venv .venv && .venv/bin/pip install -e .
-
-  run: |
-    .venv/bin/python -m image_resize_demo
-
-# Environment variables injected into the sandbox
-env:
-  III_URL: "ws://host.docker.internal:49134"
-
-# Resources (hints for the sandbox VM)
 resources:
-  memory: 256Mi
-  cpu: "0.5"
+  memory: 256
+  cpus: 1
+
+scripts:
+  setup: "sudo apt-get update && sudo apt-get install -y python3-venv python3-pip"
+  install: "python3 -m venv .venv && .venv/bin/pip install -e ."
+  start: ".venv/bin/python -m image_resize_demo"
