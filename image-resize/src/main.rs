@@ -42,21 +42,26 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let resize_config = match config::load_config(&cli.config) {
-        Ok(c) => {
-            tracing::info!(
-                width = c.width,
-                height = c.height,
-                strategy = ?c.strategy,
-                "loaded config from {}",
-                cli.config
-            );
-            c
+    let resize_config = if std::path::Path::new(&cli.config).exists() {
+        match config::load_config(&cli.config) {
+            Ok(c) => {
+                tracing::info!(
+                    width = c.width,
+                    height = c.height,
+                    strategy = ?c.strategy,
+                    "loaded config from {}",
+                    cli.config
+                );
+                c
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %cli.config, "failed to parse config, using defaults");
+                config::ResizeConfig::default()
+            }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::ResizeConfig::default()
-        }
+    } else {
+        tracing::info!("using default config");
+        config::ResizeConfig::default()
     };
 
     let config = Arc::new(resize_config);
