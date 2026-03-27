@@ -2,6 +2,3 @@
 name = "image-resize-demo-python"
 version = "1.0.0"
 dependencies = ["iii-sdk>=0.9.0"]
-
-[project.scripts]
-dev = "python -m image_resize_demo"
