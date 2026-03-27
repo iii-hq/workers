@@ -221,8 +221,10 @@ log.info("Image resize demo (Python) started -- registering endpoints...")
 # Keep the process alive so the SDK can receive invocations.
 # The SDK's WebSocket runs in a background thread; we just need
 # to block the main thread until interrupted.
-try:
-    asyncio.get_event_loop().run_forever()
-except KeyboardInterrupt:
-    log.info("Shutting down...")
-    iii.shutdown()
+import signal
+shutdown_event = asyncio.Event()
+signal.signal(signal.SIGINT, lambda *_: shutdown_event.set())
+signal.signal(signal.SIGTERM, lambda *_: shutdown_event.set())
+asyncio.run(shutdown_event.wait())
+log.info("Shutting down...")
+iii.shutdown()
