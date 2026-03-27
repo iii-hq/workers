@@ -2,20 +2,24 @@ iii: v1
 name: image-resize-demo-rust
 version: 1.0.0
 
+# NOTE: Rust compilation inside Docker Sandbox on Apple Silicon is broken
+# (SIGILL/SIGBUS in rustc due to VM CPU emulation). Run directly on host:
+#   cd example-rust && III_URL=ws://localhost:49134 cargo run
+
 runtime:
   language: rust
   entry: src/main.rs
 
 dependencies:
   setup: |
-    sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev && (command -v cargo >/dev/null || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)
+    echo "⚠ Rust sandbox dev not supported on Apple Silicon — run on host instead"
   install: |
-    . $HOME/.cargo/env && cargo clean && cargo build
+    echo "skipped"
   run: |
-    . $HOME/.cargo/env && cargo run
+    echo "Run on host: III_URL=ws://localhost:49134 cargo run" && exit 1
 
 env:
-  III_URL: "ws://host.docker.internal:49134"
+  III_URL: "ws://localhost:49134"
 
 resources:
   memory: 512Mi
