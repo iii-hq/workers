@@ -11,13 +11,13 @@ import logging
 import os
 from typing import Any
 
-from iii import ApiRequest, ApiResponse, Logger, register_worker
+from iii import ApiRequest, ApiResponse, InitOptions, Logger, register_worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("image-resize-demo-python")
 
 engine_url = os.environ.get("III_URL", "ws://localhost:49134")
-iii = register_worker(engine_url, {"otel": {"enabled": True, "service_name": "image-resize-demo-python"}})
+iii = register_worker(engine_url, InitOptions(otel={"enabled": True, "service_name": "image-resize-demo-python"}))
 
 # Serialize access to the resizer (same as the TS example)
 _lock = asyncio.Lock()
