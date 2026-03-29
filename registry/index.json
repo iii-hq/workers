@@ -20,6 +20,20 @@
                 }
             },
             "version": "0.1.2"
+        },
+        "nanochat": {
+            "description": "Karpathy's nanochat LLM worker — train, fine-tune, evaluate, and chat with GPT models",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "nanochat",
+            "language": "python",
+            "supported_targets": ["any"],
+            "has_checksum": false,
+            "default_config": {
+                "source": "sft",
+                "device": "auto",
+                "engine_url": "ws://localhost:49134"
+            },
+            "version": "0.1.0"
         }
     }
 }
