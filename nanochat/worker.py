@@ -51,12 +51,21 @@ def _ensure_nanochat():
 
 
 def safe(fn):
-    async def wrapper(data):
-        try:
-            return await fn(data)
-        except Exception as e:
-            logger.error(f"Handler {fn.__name__} failed", {"error": str(e), "traceback": traceback.format_exc()})
-            return {"error": str(e)}
+    import asyncio as _aio
+    if _aio.iscoroutinefunction(fn):
+        async def wrapper(data):
+            try:
+                return await fn(data)
+            except Exception as e:
+                logger.error(f"Handler {fn.__name__} failed", {"error": str(e), "traceback": traceback.format_exc()})
+                return {"error": str(e)}
+    else:
+        def wrapper(data):
+            try:
+                return fn(data)
+            except Exception as e:
+                logger.error(f"Handler {fn.__name__} failed", {"error": str(e), "traceback": traceback.format_exc()})
+                return {"error": str(e)}
     wrapper.__name__ = fn.__name__
     wrapper.__annotations__ = fn.__annotations__
     return wrapper
@@ -224,11 +233,13 @@ class GPUState:
 
     def load(self, source, device, model_tag=None, step=None):
         _ensure_nanochat()
+        import torch
         from nanochat.checkpoint_manager import load_model
         from nanochat.engine import Engine
         with self._lock:
-            phase = "sft" if source in ("sft", "rl") else "base"
-            model, tokenizer, meta = load_model(source, device, phase, model_tag=model_tag, step=step)
+            phase = "eval"
+            dev = torch.device(device)
+            model, tokenizer, meta = load_model(source, dev, phase, model_tag=model_tag, step=step)
             model.eval()
             self.model = model
             self.tokenizer = tokenizer
@@ -277,7 +288,8 @@ async def fn_chat_complete(data: ChatCompleteInput) -> ChatCompleteOutput:
     model, tokenizer, engine, _meta, source, _device, _tag = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
-    conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
+    messages = [{"role": m["role"] if isinstance(m, dict) else m.role, "content": m["content"] if isinstance(m, dict) else m.content} for m in inp.messages]
+    conversation = {"messages": messages}
 
     if hasattr(tokenizer, "render_conversation"):
         tokens, _mask = tokenizer.render_conversation(conversation, max_tokens=model.config.sequence_len)
@@ -286,7 +298,7 @@ async def fn_chat_complete(data: ChatCompleteInput) -> ChatCompleteOutput:
 
     with torch.no_grad():
         results, _masks = engine.generate_batch(
-            [tokens], num_samples=1,
+            tokens, num_samples=1,
             max_tokens=inp.max_tokens, temperature=inp.temperature, top_k=inp.top_k,
         )
 
@@ -295,9 +307,9 @@ async def fn_chat_complete(data: ChatCompleteInput) -> ChatCompleteOutput:
     if "<|assistant_end|>" in text:
         text = text[:text.index("<|assistant_end|>")]
 
-    conversation.append({"role": "assistant", "content": text.strip()})
+    messages.append({"role": "assistant", "content": text.strip()})
     await state_set("nanochat:sessions", session_id, {
-        "messages": conversation, "model": source, "tokens_generated": len(generated_ids),
+        "messages": messages, "model": source, "tokens_generated": len(generated_ids),
     })
     logger.info("Chat completion", {"session_id": session_id, "tokens": len(generated_ids)})
     return ChatCompleteOutput(content=text.strip(), tokens_generated=len(generated_ids), session_id=session_id).model_dump()
@@ -312,7 +324,8 @@ async def fn_chat_stream(data: ChatCompleteInput) -> ChatCompleteOutput:
     model, tokenizer, engine, _meta, source, _device, _tag = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
-    conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
+    messages = [{"role": m["role"] if isinstance(m, dict) else m.role, "content": m["content"] if isinstance(m, dict) else m.content} for m in inp.messages]
+    conversation = {"messages": messages}
 
     if hasattr(tokenizer, "render_conversation"):
         tokens, _mask = tokenizer.render_conversation(conversation, max_tokens=model.config.sequence_len)
@@ -332,9 +345,9 @@ async def fn_chat_stream(data: ChatCompleteInput) -> ChatCompleteOutput:
             chunks.append(piece)
 
     full_text = "".join(chunks)
-    conversation.append({"role": "assistant", "content": full_text.strip()})
+    messages.append({"role": "assistant", "content": full_text.strip()})
     await state_set("nanochat:sessions", session_id, {
-        "messages": conversation, "model": source, "tokens_generated": len(chunks),
+        "messages": messages, "model": source, "tokens_generated": len(chunks),
     })
     return ChatCompleteOutput(content=full_text.strip(), tokens_generated=len(chunks), session_id=session_id).model_dump()
 
@@ -388,12 +401,16 @@ async def fn_model_sample(data: ModelSampleInput) -> dict:
     _model, tokenizer, engine, _meta, _source, _device, _tag = gpu.snapshot()
     inp = ModelSampleInput.model_validate(data) if isinstance(data, dict) else data
     bos = tokenizer.get_bos_token_id()
-    tokens = [bos] + tokenizer.encode(inp.prompt) if inp.prompt else [bos]
+    if inp.prompt:
+        encoded = tokenizer.encode(inp.prompt)
+        tokens = [bos] + (list(encoded) if not isinstance(encoded, list) else encoded)
+    else:
+        tokens = [bos]
 
     samples = []
     with torch.no_grad():
         results, _masks = engine.generate_batch(
-            [tokens], num_samples=inp.num_samples,
+            tokens, num_samples=inp.num_samples,
             max_tokens=inp.max_tokens, temperature=inp.temperature, top_k=inp.top_k,
         )
     for result_ids in results:
@@ -512,76 +529,91 @@ def _parse_training_line(line: str) -> dict | None:
     return None
 
 
-def _run_subprocess_blocking(module: str, args: list[str], run_id: str, train_type: str,
-                             base_state: dict, on_metrics) -> dict:
-    """Blocking subprocess runner. Called from a thread via asyncio.to_thread."""
-    import subprocess
+# ---------------------------------------------------------------------------
+# Pre-forked subprocess launcher (forked BEFORE iii connects, safe from WebSocket corruption)
+# ---------------------------------------------------------------------------
 
-    cmd = [sys.executable, "-m", module] + args
+_launcher_conn = None
 
-    proc = subprocess.Popen(
-        cmd, cwd=_nanochat_repo_dir(),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-    )
 
-    last_metrics = {}
-    output_tail = []
+def _launcher_child(conn, python_exe: str, repo_dir: str):
+    """Child process: receives (module, args) over pipe, runs subprocess, sends back (returncode, lines)."""
+    import subprocess as sp
+    while True:
+        try:
+            msg = conn.recv()
+        except EOFError:
+            break
+        if msg is None:
+            break
 
-    for line in proc.stdout:
-        line = line.rstrip()
-        output_tail.append(line)
-        if len(output_tail) > 200:
-            output_tail = output_tail[-100:]
+        module, args = msg["module"], msg["args"]
+        cmd = [python_exe, "-m", module] + args
+        try:
+            proc = sp.Popen(
+                cmd, cwd=repo_dir,
+                stdout=sp.PIPE, stderr=sp.STDOUT,
+                text=True, bufsize=1,
+            )
+            lines = []
+            for line in proc.stdout:
+                lines.append(line.rstrip())
+            proc.wait()
+            conn.send({"returncode": proc.returncode, "lines": lines})
+        except Exception as e:
+            conn.send({"returncode": -1, "lines": [f"launcher error: {e}"]})
 
-        metrics = _parse_training_line(line)
-        if metrics:
-            last_metrics.update(metrics)
-            on_metrics(run_id, {**base_state, **last_metrics}, metrics)
 
-    proc.wait()
-
-    status = "complete" if proc.returncode == 0 else "failed"
-    return {
-        "status": status, "returncode": proc.returncode,
-        "last_metrics": last_metrics,
-        "output_tail": "\n".join(output_tail[-50:]),
-    }
+def _start_launcher():
+    """Fork a child process BEFORE iii connects. Uses fork (not spawn) since no iii state exists yet."""
+    import multiprocessing as mp
+    ctx = mp.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe()
+    child = ctx.Process(target=_launcher_child, args=(child_conn, sys.executable, _nanochat_repo_dir()), daemon=True)
+    child.start()
+    child_conn.close()
+    return parent_conn
 
 
 async def _run_training(module: str, args: list[str], run_id: str, train_type: str, extra_state: dict | None = None) -> dict:
-    """Run a nanochat training script in a thread, parse stdout, push metrics to iii state in real-time."""
+    """Run a nanochat training script via the pre-forked launcher.
+    The launcher child does Popen (safe, forked before iii). Results come back over a Pipe."""
     import asyncio
 
     base_state = {"status": "running", "type": train_type, **(extra_state or {})}
     await state_set("nanochat:training", run_id, base_state)
     logger.info(f"Running: {module}", {"run_id": run_id, "type": train_type})
 
-    def on_metrics(rid, state, metrics):
-        iii_client.trigger({"function_id": "state::set", "payload": {
-            "scope": "nanochat:training", "key": rid, "value": state,
-        }})
-        event = metrics.get("event")
-        if event:
-            iii_client.trigger({"function_id": "state::set", "payload": {
-                "scope": "nanochat:evals",
-                "key": f"{train_type}-{event}-{metrics.get('step', 0)}",
-                "value": {"type": event, "run_id": rid, **metrics},
-            }})
+    def _send_and_recv():
+        _launcher_conn.send({"module": module, "args": args})
+        return _launcher_conn.recv()
 
-    result = await asyncio.to_thread(
-        _run_subprocess_blocking, module, args, run_id, train_type, base_state, on_metrics,
-    )
+    result = await asyncio.to_thread(_send_and_recv)
 
+    returncode = result["returncode"]
+    lines = result["lines"]
+
+    last_metrics = {}
+    for line in lines:
+        metrics = _parse_training_line(line)
+        if metrics:
+            last_metrics.update(metrics)
+            event = metrics.get("event")
+            if event:
+                await state_set("nanochat:evals", f"{train_type}-{event}-{metrics.get('step', 0)}", {
+                    "type": event, "run_id": run_id, **metrics,
+                })
+
+    status = "complete" if returncode == 0 else "failed"
     final_state = {
-        **base_state, **result["last_metrics"],
-        "status": result["status"], "returncode": result["returncode"],
-        "output_tail": result["output_tail"],
+        **base_state, **last_metrics,
+        "status": status, "returncode": returncode,
+        "output_tail": "\n".join(lines[-50:]),
     }
     await state_set("nanochat:training", run_id, final_state)
-    logger.info(f"{train_type} training {result['status']}", {"run_id": run_id, "returncode": result["returncode"]})
+    logger.info(f"{train_type} training {status}", {"run_id": run_id, "returncode": returncode})
 
-    return {"status": result["status"], "run_id": run_id, "returncode": result["returncode"], **result["last_metrics"]}
+    return {"status": status, "run_id": run_id, "returncode": returncode, **last_metrics}
 
 
 # ---------------------------------------------------------------------------
@@ -888,11 +920,11 @@ def register_all(iii):
         ("nanochat.tokenizer.decode", fn_tokenizer_decode, "Decode token IDs to text", "http", {"api_path": "/nanochat/tokenizer/decode", "http_method": "POST"}),
         # Tools
         ("nanochat.tools.execute", fn_tools_execute, "Execute Python code (in-process, not sandboxed)", "http", {"api_path": "/nanochat/tools/execute", "http_method": "POST"}),
-        # Training (all queued)
-        ("nanochat.train.tokenizer", fn_train_tokenizer, "Train BPE tokenizer from dataset", "queue", {"queue_name": "nanochat-training"}),
-        ("nanochat.train.base", fn_train_base, "Pretrain base GPT model from scratch", "queue", {"queue_name": "nanochat-training"}),
-        ("nanochat.train.sft", fn_train_sft, "Supervised fine-tuning with task mixture", "queue", {"queue_name": "nanochat-training"}),
-        ("nanochat.train.rl", fn_train_rl, "RL fine-tuning with GRPO on GSM8K", "queue", {"queue_name": "nanochat-training"}),
+        # Training (HTTP triggers, long-running - caller sets timeout)
+        ("nanochat.train.tokenizer", fn_train_tokenizer, "Train BPE tokenizer from dataset", "http", {"api_path": "/nanochat/train/tokenizer", "http_method": "POST"}),
+        ("nanochat.train.base", fn_train_base, "Pretrain base GPT model from scratch", "http", {"api_path": "/nanochat/train/base", "http_method": "POST"}),
+        ("nanochat.train.sft", fn_train_sft, "Supervised fine-tuning with task mixture", "http", {"api_path": "/nanochat/train/sft", "http_method": "POST"}),
+        ("nanochat.train.rl", fn_train_rl, "RL fine-tuning with GRPO on GSM8K", "http", {"api_path": "/nanochat/train/rl", "http_method": "POST"}),
         ("nanochat.train.status", fn_train_status, "Check training run status", "http", {"api_path": "/nanochat/train/status", "http_method": "GET"}),
         # Evaluation
         ("nanochat.eval.core", fn_eval_core, "Run CORE benchmark (DCLM)", "http", {"api_path": "/nanochat/eval/core", "http_method": "POST"}),
@@ -937,6 +969,10 @@ def main():
 
     _ensure_nanochat()
 
+    global _launcher_conn
+    _launcher_conn = _start_launcher()
+    print("[nanochat] subprocess launcher forked")
+
     iii_client = register_worker(
         args.engine_url,
         InitOptions(
@@ -963,7 +999,7 @@ def main():
     n_funcs = 20
     print(f"[nanochat] connected to {args.engine_url}")
     print(f"[nanochat] model: {'loaded (' + gpu.source + ' on ' + gpu.device + ')' if gpu.ready else 'none'}")
-    print(f"[nanochat] {n_funcs} functions, {n_funcs} triggers (16 HTTP + 4 queue)")
+    print(f"[nanochat] {n_funcs} functions, {n_funcs} triggers (all HTTP)")
 
     try:
         signal.pause()
