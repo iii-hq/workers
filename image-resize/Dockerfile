@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 COPY --from=builder /build/target/release/image-resize /worker
 COPY --from=builder /build/worker.yaml /iii/worker.yaml
 
-ENV III_ENGINE_URL=ws://host.docker.internal:49134
+ENV III_ENGINE_URL=ws://host.containers.internal:49134
 
 ENTRYPOINT ["/worker"]
-CMD ["--url", "ws://host.docker.internal:49134"]
+CMD ["--url", "ws://host.containers.internal:49134"]
