@@ -12,7 +12,7 @@ MCP protocol worker — exposes iii-engine functions as MCP tools via stdio and 
 
 **Features:**
 - Dual transport: stdio (Claude Desktop, Cursor) + HTTP (`POST /mcp`)
-- 6 builtin tools: worker register/stop, trigger register/unregister/void/enqueue
+- 6 built-in tools: worker register/stop, trigger register/unregister/void/enqueue
 - 4 MCP resources: `iii://functions`, `iii://workers`, `iii://triggers`, `iii://context`
 - 4 MCP prompts: register-function, build-api, setup-cron, event-pipeline
 - Metadata filtering: only functions with `mcp.expose: true` are exposed (unless `--expose-all`)

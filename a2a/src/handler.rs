@@ -13,9 +13,22 @@ fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn register(iii: &III, expose_all: bool) {
+async fn is_function_exposed(iii: &III, function_id: &str, expose_all: bool) -> bool {
+    if expose_all {
+        return true;
+    }
+    match iii.list_functions().await {
+        Ok(fns) => fns
+            .iter()
+            .any(|f| f.function_id == function_id && has_metadata_flag(f, "a2a.expose")),
+        Err(_) => false,
+    }
+}
+
+pub fn register(iii: &III, expose_all: bool, base_url: String) {
     let iii_card = iii.clone();
     let card_expose_all = expose_all;
+    let card_base_url = base_url.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::agent_card".to_string(),
@@ -27,8 +40,9 @@ pub fn register(iii: &III, expose_all: bool) {
         },
         move |_input: Value| {
             let iii_inner = iii_card.clone();
+            let base = card_base_url.clone();
             async move {
-                let card = build_agent_card(&iii_inner, card_expose_all).await;
+                let card = build_agent_card(&iii_inner, card_expose_all, &base).await;
                 Ok(json!({
                     "status_code": 200,
                     "headers": { "content-type": "application/json" },
@@ -39,6 +53,7 @@ pub fn register(iii: &III, expose_all: bool) {
     );
 
     let iii_rpc = iii.clone();
+    let rpc_expose_all = expose_all;
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::jsonrpc".to_string(),
@@ -71,7 +86,7 @@ pub fn register(iii: &III, expose_all: bool) {
                     }
                 };
 
-                let response = handle_a2a_request(&iii_inner, request).await;
+                let response = handle_a2a_request(&iii_inner, request, rpc_expose_all).await;
 
                 Ok(json!({
                     "status_code": 200,
@@ -101,7 +116,7 @@ pub fn register(iii: &III, expose_all: bool) {
     tracing::info!("A2A registered: GET /.well-known/agent-card.json, POST /a2a");
 }
 
-async fn build_agent_card(iii: &III, expose_all: bool) -> AgentCard {
+async fn build_agent_card(iii: &III, expose_all: bool, base_url: &str) -> AgentCard {
     let skills = match iii.list_functions().await {
         Ok(fns) => fns
             .iter()
@@ -128,7 +143,7 @@ async fn build_agent_card(iii: &III, expose_all: bool) -> AgentCard {
         description: "iii-engine agent — invoke any registered function via A2A".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         supported_interfaces: vec![AgentInterface {
-            url: "http://localhost:3111".to_string(),
+            url: base_url.to_string(),
             protocol_binding: "JSONRPC".to_string(),
             protocol_version: "0.3".to_string(),
         }],
@@ -148,10 +163,10 @@ async fn build_agent_card(iii: &III, expose_all: bool) -> AgentCard {
     }
 }
 
-async fn handle_a2a_request(iii: &III, request: A2ARequest) -> A2AResponse {
+async fn handle_a2a_request(iii: &III, request: A2ARequest, expose_all: bool) -> A2AResponse {
     let id = request.id.clone();
     match request.method.as_str() {
-        "message/send" | "SendMessage" => handle_send(iii, id, request.params).await,
+        "message/send" | "SendMessage" => handle_send(iii, id, request.params, expose_all).await,
         "tasks/get" | "GetTask" => handle_get(iii, id, request.params).await,
         "tasks/cancel" | "CancelTask" => handle_cancel(iii, id, request.params).await,
         "tasks/list" | "ListTasks" => handle_list(iii, id).await,
@@ -264,7 +279,12 @@ fn iso_now() -> String {
     )
 }
 
-async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2AResponse {
+async fn handle_send(
+    iii: &III,
+    id: Option<Value>,
+    params: Option<Value>,
+    expose_all: bool,
+) -> A2AResponse {
     let params: SendMessageParams = match params {
         Some(p) => match serde_json::from_value(p) {
             Ok(p) => p,
@@ -280,10 +300,18 @@ async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2A
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let context_id = params.message.context_id.clone();
 
-    let mut task = Task {
-        id: task_id.clone(),
-        context_id,
-        status: TaskStatus {
+    let mut task = if let Some(existing) = load_task(iii, &task_id).await {
+        if matches!(
+            existing.status.state,
+            TaskState::Completed | TaskState::Canceled | TaskState::Failed | TaskState::Rejected
+        ) {
+            return A2AResponse::success(id, json!({ "task": existing }));
+        }
+        let mut t = existing;
+        if let Some(ref mut history) = t.history {
+            history.push(params.message.clone());
+        }
+        t.status = TaskStatus {
             state: TaskState::Working,
             message: Some(Message {
                 message_id: msg_id(),
@@ -294,10 +322,28 @@ async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2A
                 metadata: None,
             }),
             timestamp: Some(iso_now()),
-        },
-        artifacts: None,
-        history: Some(vec![params.message.clone()]),
-        metadata: params.metadata,
+        };
+        t
+    } else {
+        Task {
+            id: task_id.clone(),
+            context_id,
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: Some(Message {
+                    message_id: msg_id(),
+                    role: MessageRole::Agent,
+                    parts: vec![text_part("Processing...")],
+                    task_id: None,
+                    context_id: None,
+                    metadata: None,
+                }),
+                timestamp: Some(iso_now()),
+            },
+            artifacts: None,
+            history: Some(vec![params.message.clone()]),
+            metadata: params.metadata,
+        }
     };
     store_task(iii, &task).await;
 
@@ -322,6 +368,26 @@ async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2A
     }
     let fn_name = function_id.clone();
 
+    if !is_function_exposed(iii, &function_id, expose_all).await {
+        task.status = TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: msg_id(),
+                role: MessageRole::Agent,
+                parts: vec![text_part(format!(
+                    "Function '{}' is not exposed via a2a.expose metadata",
+                    function_id
+                ))],
+                task_id: None,
+                context_id: None,
+                metadata: None,
+            }),
+            timestamp: Some(iso_now()),
+        };
+        store_task(iii, &task).await;
+        return A2AResponse::success(id, json!({ "task": task }));
+    }
+
     match iii
         .trigger(TriggerRequest {
             function_id,
@@ -332,6 +398,12 @@ async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2A
         .await
     {
         Ok(result) => {
+            let fresh = load_task(iii, &task_id).await;
+            if let Some(ref t) = fresh {
+                if matches!(t.status.state, TaskState::Canceled) {
+                    return A2AResponse::success(id, json!({ "task": t }));
+                }
+            }
             let result_text =
                 serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
             task.status = TaskStatus {

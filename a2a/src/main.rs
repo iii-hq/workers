@@ -21,6 +21,13 @@ struct Args {
         help = "Expose all functions as skills (ignore a2a.expose metadata)"
     )]
     expose_all: bool,
+
+    #[arg(
+        long,
+        default_value = "http://localhost:3111",
+        help = "Public base URL advertised in the agent card"
+    )]
+    base_url: String,
 }
 
 #[tokio::main]
@@ -42,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
-    handler::register(&iii, args.expose_all);
+    handler::register(&iii, args.expose_all, args.base_url);
 
     tracing::info!("A2A endpoints registered on engine port. Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;

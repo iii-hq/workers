@@ -42,6 +42,10 @@ pub struct WorkerStopResult {
     pub message: String,
 }
 
+fn js_string_literal(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
 pub struct WorkerManager {
     engine_url: String,
     workers: Arc<Mutex<HashMap<String, (SpawnedWorker, Child)>>>,
@@ -84,7 +88,7 @@ impl WorkerManager {
             .await
             .map_err(|e| format!("Failed to write worker file: {}", e))?;
 
-        let child = match self
+        let mut child = match self
             .spawn_worker(&params.language, &temp_dir, file_name)
             .await
         {
@@ -94,6 +98,22 @@ impl WorkerManager {
                 return Err(e);
             }
         };
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                return Err(format!(
+                    "Worker exited immediately with status: {}",
+                    status
+                ));
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                return Err(format!("Failed to check worker status: {}", e));
+            }
+            Ok(None) => {}
+        }
 
         let pid = child.id().unwrap_or(0);
 
@@ -148,28 +168,26 @@ impl WorkerManager {
     }
 
     fn generate_node_worker(&self, params: &WorkerCreateParams) -> String {
-        let description = params
-            .description
-            .as_deref()
-            .unwrap_or("Auto-generated function")
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'");
-        let function_name = params
-            .function_name
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'");
+        let engine_url = js_string_literal(&self.engine_url);
+        let function_name = js_string_literal(&params.function_name);
+        let description = js_string_literal(
+            params
+                .description
+                .as_deref()
+                .unwrap_or("Auto-generated function"),
+        );
 
         format!(
             r#"import {{ registerWorker, Logger }} from 'iii-sdk'
 
-const iii = registerWorker('{}')
+const iii = registerWorker({engine_url})
 const logger = new Logger()
 
-const handler = {}
+const handler = {code}
 
-iii.registerFunction({{ id: '{}', description: '{}' }}, handler)
+iii.registerFunction({{ id: {function_name}, description: {description} }}, handler)
 
-logger.info('Function registered: {}')
+logger.info('Function registered: ' + {function_name})
 
 process.on('SIGTERM', () => {{
   logger.info('Worker shutting down')
@@ -180,33 +198,34 @@ process.on('SIGINT', () => {{
   process.exit(0)
 }})
 "#,
-            self.engine_url, params.code, function_name, description, function_name
+            engine_url = engine_url,
+            code = params.code,
+            function_name = function_name,
+            description = description,
         )
     }
 
     fn generate_python_worker(&self, params: &WorkerCreateParams) -> String {
-        let description = params
-            .description
-            .as_deref()
-            .unwrap_or("Auto-generated function")
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'");
-        let function_name = params
-            .function_name
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'");
+        let engine_url = js_string_literal(&self.engine_url);
+        let function_name = js_string_literal(&params.function_name);
+        let description = js_string_literal(
+            params
+                .description
+                .as_deref()
+                .unwrap_or("Auto-generated function"),
+        );
 
         format!(
             r#"import asyncio
 import signal
 from iii_sdk import register_worker, Logger
 
-iii = register_worker('{}')
+iii = register_worker({engine_url})
 logger = Logger()
 
-{}
+{code}
 
-iii.register_function('{}', handler, '{}')
+iii.register_function({function_name}, handler, {description})
 
 def shutdown(sig, frame):
     logger.info('Worker shutting down')
@@ -216,13 +235,16 @@ signal.signal(signal.SIGTERM, shutdown)
 signal.signal(signal.SIGINT, shutdown)
 
 async def main():
-    logger.info('Function registered: {}')
+    logger.info('Function registered: ' + {function_name})
     while True:
         await asyncio.sleep(1)
 
 asyncio.run(main())
 "#,
-            self.engine_url, params.code, function_name, description, function_name
+            engine_url = engine_url,
+            code = params.code,
+            function_name = function_name,
+            description = description,
         )
     }
 
@@ -242,7 +264,7 @@ asyncio.run(main())
             .arg(temp_dir.join(file_name))
             .current_dir(temp_dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("Failed to spawn {} process: {}", cmd, e))

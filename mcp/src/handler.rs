@@ -135,19 +135,19 @@ impl McpHandler {
         let result = match method {
             "initialize" => Ok(initialize_result()),
             "ping" => Ok(json!({})),
-            "tools/list" => self.tools_list().await,
-            "tools/call" => self.tools_call(params).await,
+            "tools/list" => self.tools_list().await.map_err(|e| (INTERNAL_ERROR, e)),
+            "tools/call" => self.tools_call(params).await.map_err(|e| (INVALID_PARAMS, e)),
             "resources/list" => Ok(self.resources_list()),
-            "resources/read" => self.resources_read(params).await,
+            "resources/read" => self.resources_read(params).await.map_err(|e| (INVALID_PARAMS, e)),
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
             "prompts/list" => Ok(prompts::list()),
             "prompts/get" => Ok(prompts::get(params)),
-            _ => Err(format!("Unknown method: {}", method)),
+            _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
         };
 
         json!(match result {
             Ok(value) => JsonRpcResponse::success(id, value),
-            Err(err) => JsonRpcResponse::error(id, METHOD_NOT_FOUND, err),
+            Err((code, msg)) => JsonRpcResponse::error(id, code, msg),
         })
     }
 
@@ -237,6 +237,19 @@ impl McpHandler {
         }
 
         let function_id = params.name.replace("__", "::");
+        if !self.expose_all {
+            if let Ok(fns) = self.iii.list_functions().await {
+                let exposed = fns.iter().any(|f| {
+                    f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
+                });
+                if !exposed {
+                    return Ok(tool_error(&format!(
+                        "Function '{}' is not exposed via mcp.expose metadata",
+                        function_id
+                    )));
+                }
+            }
+        }
         match self
             .iii
             .trigger(TriggerRequest {
@@ -416,7 +429,7 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(json!({})),
         "tools/list" => {
-            let mut tools = Vec::new();
+            let mut tools = builtin_tools();
             if let Ok(fns) = iii.list_functions().await {
                 tools.extend(
                     fns.iter()
@@ -437,6 +450,22 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                 None => return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params")),
             };
             let function_id = p.name.replace("__", "::");
+            if !expose_all {
+                if let Ok(fns) = iii.list_functions().await {
+                    let exposed = fns.iter().any(|f| {
+                        f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
+                    });
+                    if !exposed {
+                        return json!(JsonRpcResponse::success(
+                            id,
+                            tool_error(&format!(
+                                "Function '{}' is not exposed via mcp.expose metadata",
+                                function_id
+                            ))
+                        ));
+                    }
+                }
+            }
             match iii
                 .trigger(TriggerRequest {
                     function_id,
@@ -457,12 +486,12 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
         ]})),
         "prompts/list" => Ok(prompts::list()),
         "prompts/get" => Ok(prompts::get(params)),
-        _ => Err(format!("Unknown method: {}", method)),
+        _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
     };
 
     json!(match result {
         Ok(v) => JsonRpcResponse::success(id, v),
-        Err(e) => JsonRpcResponse::error(id, METHOD_NOT_FOUND, e),
+        Err((code, msg)) => JsonRpcResponse::error(id, code, msg),
     })
 }
 

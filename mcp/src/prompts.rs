@@ -19,6 +19,15 @@ pub fn list() -> Value {
     })
 }
 
+fn require_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, Value> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            json!({ "messages": [{ "role": "user", "content": { "type": "text", "text": format!("Missing required argument: {key}") } }] })
+        })
+}
+
 pub fn get(params: Option<Value>) -> Value {
     let name = params
         .as_ref()
@@ -33,8 +42,14 @@ pub fn get(params: Option<Value>) -> Value {
 
     let text = match name {
         "register-function" => {
-            let lang = args.get("language").and_then(|v| v.as_str()).unwrap_or("node");
-            let fid = args.get("function_id").and_then(|v| v.as_str()).unwrap_or("myservice::handler");
+            let lang = match require_arg(&args, "language") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let fid = match require_arg(&args, "function_id") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             if lang == "python" {
                 format!("Register Python function `{fid}`:\n1. `iii_worker_register` with language='python'\n2. Code: `async def handler(input): ...`\n3. Wire trigger via `iii_trigger_register`\n\n```python\nfrom iii_sdk import register_worker, Logger\niii = register_worker('ws://localhost:49134')\niii.register_function('{fid}', handler)\n```")
             } else {
@@ -42,12 +57,21 @@ pub fn get(params: Option<Value>) -> Value {
             }
         }
         "build-api" => {
-            let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("/hello");
+            let method = match require_arg(&args, "method") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let path = match require_arg(&args, "path") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             format!("Expose HTTP {method} {path}:\n1. Register function\n2. Register trigger:\n```json\n{{ \"trigger_type\": \"http\", \"function_id\": \"api::handler\", \"config\": {{ \"api_path\": \"{path}\", \"http_method\": \"{method}\" }} }}\n```\n3. Input: {{ body, query_params, path_params, headers }}\n4. Return: {{ status_code, headers, body }}")
         }
         "setup-cron" => {
-            let schedule = args.get("schedule").and_then(|v| v.as_str()).unwrap_or("0 * * * *");
+            let schedule = match require_arg(&args, "schedule") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             format!("Cron `{schedule}`:\n1. Register function\n2. Register trigger:\n```json\n{{ \"trigger_type\": \"cron\", \"function_id\": \"jobs::task\", \"config\": {{ \"expression\": \"{schedule}\" }} }}\n```\n3. `iii_trigger_unregister` to stop")
         }
         "event-pipeline" => "Event pipeline:\n```\nHTTP \u{2192} Fn A \u{2192} emit('order.created') \u{2192} Fn B \u{2192} emit('done') \u{2192} Fn C\n```\n1. Register functions per stage\n2. Wire HTTP trigger to entry\n3. Queue triggers: `{ \"trigger_type\": \"queue\", \"config\": { \"topic\": \"order.created\" } }`\n4. `iii_trigger_enqueue` for async, `iii_trigger_void` for fire-and-forget".to_string(),

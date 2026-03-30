@@ -15,9 +15,9 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
 
     loop {
         while let Some(notification) = handler.take_notification().await {
-            let _ = writer.write_all(notification.as_bytes()).await;
-            let _ = writer.write_all(b"\n").await;
-            let _ = writer.flush().await;
+            writer.write_all(notification.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
         }
 
         let mut line = String::new();
@@ -39,7 +39,7 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
                         let r =
                             JsonRpcResponse::error(None, -32700, format!("Parse error: {}", err));
                         if let Ok(v) = serde_json::to_value(&r) {
-                            write_json(&mut writer, &v).await;
+                            write_json(&mut writer, &v).await?;
                         }
                         continue;
                     }
@@ -49,7 +49,7 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
                     continue;
                 };
 
-                write_json(&mut writer, &response).await;
+                write_json(&mut writer, &response).await?;
             }
             Err(err) => {
                 tracing::error!(error = %err, "stdin read error");
@@ -61,13 +61,13 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn write_json(writer: &mut BufWriter<tokio::io::Stdout>, v: &Value) {
-    if let Ok(json) = serde_json::to_string(v) {
-        if writer.write_all(json.as_bytes()).await.is_err()
-            || writer.write_all(b"\n").await.is_err()
-            || writer.flush().await.is_err()
-        {
-            tracing::error!("Failed to write response");
-        }
-    }
+async fn write_json(
+    writer: &mut BufWriter<tokio::io::Stdout>,
+    v: &Value,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_string(v)?;
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
 }
