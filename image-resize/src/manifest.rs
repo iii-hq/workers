@@ -13,7 +13,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "III engine image resize module".to_string(),
+        description: "III engine image resize module — supports JPEG, PNG, WebP, PDF, PSD".to_string(),
         default_config: serde_json::json!({
             "class": "modules::image_resize::ImageResizeModule",
             "config": {
@@ -41,7 +41,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_object(), "Manifest must be valid JSON object");
         assert_eq!(parsed["name"], "image-resize");
-        assert_eq!(parsed["version"], "0.1.0");
+        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

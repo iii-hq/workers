@@ -2,12 +2,14 @@ import { http, Logger } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
-/** Detect image format from the first bytes (magic numbers). */
-function detectFormat(buf: Buffer): 'jpeg' | 'png' | 'webp' {
+/** Detect file format from magic bytes. */
+function detectFormat(buf: Buffer): string {
   if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'
   if (buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp'
-  return 'jpeg' // fallback
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return 'pdf'
+  if (buf[0] === 0x38 && buf[1] === 0x42 && buf[2] === 0x50 && buf[3] === 0x53) return 'psd'
+  return 'jpeg'
 }
 
 // Serialize access to the resizer to avoid concurrent invocation issues.
@@ -128,7 +130,7 @@ useApi(
       width?: number
       height?: number
       strategy?: 'scale-to-fit' | 'crop-to-fit'
-      format?: 'jpeg' | 'png' | 'webp'
+      format?: string
       outputFormat?: 'jpeg' | 'png' | 'webp'
     }
 
@@ -214,8 +216,8 @@ function sendJsonError(res: { status: (n: number) => void; headers: (h: Record<s
       const w = Number(str(qp.w)) || 200
       const h = Number(str(qp.h)) || 200
       const strategy = str(qp.strategy) || 'scale-to-fit'
-      const format = str(qp.format) as 'jpeg' | 'png' | 'webp' | undefined
-      const outputFormat = (str(qp.format) as 'jpeg' | 'png' | 'webp') || 'jpeg'
+      const format = str(qp.format) as string | undefined
+      const outputFormat = (str(qp.output) as 'jpeg' | 'png' | 'webp') || 'jpeg'
 
       // ── Validate URL ──
       if (!url) { sendJsonError(res, 400, 'Missing "url" query parameter'); return }

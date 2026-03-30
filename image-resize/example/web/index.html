@@ -179,21 +179,34 @@ function App() {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef();
 
+  const DOCUMENT_EXTENSIONS = ['.pdf', '.psd'];
+  const isDocumentFile = (f) => {
+    const name = (f.name || '').toLowerCase();
+    return DOCUMENT_EXTENSIONS.some(ext => name.endsWith(ext));
+  };
+
   const handleFile = useCallback((f) => {
     if (!f) return;
-    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
-    if (!allowed.includes(f.type)) {
-      setError('Please select a JPEG, PNG, or WebP image.');
+    const allowedMime = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf',
+      'image/vnd.adobe.photoshop', 'application/vnd.adobe.photoshop'];
+    if (!allowedMime.includes(f.type) && !isDocumentFile(f)) {
+      setError('Please select an image (JPEG, PNG, WebP) or document (PDF, PSD).');
       return;
     }
     setFile(f);
     setError(null);
     setResult(null);
-    const url = URL.createObjectURL(f);
-    setPreview(url);
-    const img = new Image();
-    img.onload = () => setOriginalMeta({ width: img.naturalWidth, height: img.naturalHeight, size: f.size });
-    img.src = url;
+    
+    if (f.type.startsWith('image/') && !f.name.toLowerCase().endsWith('.psd')) {
+      const url = URL.createObjectURL(f);
+      setPreview(url);
+      const img = new Image();
+      img.onload = () => setOriginalMeta({ width: img.naturalWidth, height: img.naturalHeight, size: f.size });
+      img.src = url;
+    } else {
+      setPreview(null);
+      setOriginalMeta({ size: f.size });
+    }
   }, []);
 
   const clearFile = useCallback(() => {
@@ -327,11 +340,11 @@ function App() {
     <div className="container">
       <header>
         <h1>Image Resize</h1>
-        <p className="subtitle">Upload an image or provide a URL, configure options, and generate a thumbnail via the III engine.</p>
+        <p className="subtitle">Upload an image or document, configure options, and generate a thumbnail via the III engine. Supports JPEG, PNG, WebP, PDF, PSD.</p>
       </header>
 
       <div className="card">
-        <h2><span className="step-num">1</span> Select Image</h2>
+        <h2><span className="step-num">1</span> Select File</h2>
         <div className="tabs">
           <button className={`tab${mode === 'upload' ? ' active' : ''}`} onClick={() => setMode('upload')}>Upload File</button>
           <button className={`tab${mode === 'url' ? ' active' : ''}`} onClick={() => setMode('url')}>From URL</button>
@@ -351,9 +364,9 @@ function App() {
                 onDrop={onDrop}
               >
                 <IconUpload />
-                <p>Drop an image here or click to browse</p>
-                <p className="hint">JPEG, PNG, or WebP</p>
-                <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(e) => handleFile(e.target.files[0])} />
+                <p>Drop a file here or click to browse</p>
+                <p className="hint">JPEG, PNG, WebP, PDF, PSD</p>
+                <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.psd" hidden onChange={(e) => handleFile(e.target.files[0])} />
               </div>
             ) : (
               <React.Fragment>
@@ -361,7 +374,7 @@ function App() {
                   className="dropzone has-file"
                   role="button"
                   tabIndex={0}
-                  aria-label="Change image - click or drag and drop"
+                  aria-label="Change file - click or drag and drop"
                   onClick={() => inputRef.current.click()}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current.click(); } }}
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -369,11 +382,11 @@ function App() {
                   onDrop={onDrop}
                 >
                   <IconCheck />
-                  <p>Image selected — click to change</p>
-                  <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(e) => handleFile(e.target.files[0])} />
+                  <p>File selected — click to change</p>
+                  <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.psd" hidden onChange={(e) => handleFile(e.target.files[0])} />
                 </div>
                 <div className="file-info">
-                  <img className="file-thumb" src={preview} alt="" />
+                  {preview ? <img className="file-thumb" src={preview} alt="" /> : <span style={{width:36,height:36,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#e5e7eb',borderRadius:4,fontSize:'0.7rem',fontWeight:600,color:'#6b7280',flexShrink:0}}>{file.name.split('.').pop().toUpperCase()}</span>}
                   <div className="file-details">
                     <div className="file-name">{file.name}</div>
                     <div className="file-meta">
@@ -470,10 +483,15 @@ function App() {
           <div className="comparison">
             <div className="image-panel">
               <h3>Original</h3>
-              {activePreview && <img src={activePreview} alt="Original image" />}
+              {activePreview ? <img src={activePreview} alt="Original image" /> : (
+                file && <div style={{padding:'2rem',textAlign:'center',background:'#f3f4f6',borderRadius:8,border:'1px solid #e5e7eb'}}>
+                  <div style={{fontSize:'2rem',marginBottom:'0.5rem',color:'#6b7280'}}>{file.name.split('.').pop().toUpperCase()}</div>
+                  <div style={{fontSize:'0.85rem',color:'#9ca3af'}}>{file.name}</div>
+                </div>
+              )}
               {activeMeta && (
                 <div className="meta">
-                  <span>{activeMeta.width} × {activeMeta.height}</span>
+                  {activeMeta.width && <span>{activeMeta.width} × {activeMeta.height}</span>}
                   {activeMeta.size && <span>{formatBytes(activeMeta.size)}</span>}
                 </div>
               )}

@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::ResizeConfig;
+use crate::conversion;
 use crate::processing::{process_image, resolve_params, ImageMetadata, ThumbnailMetadata};
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,28 @@ pub async fn process_and_write(
         output_format = ?metadata.output_format,
         "received metadata"
     );
+
+    let (image_bytes, metadata) = if conversion::needs_conversion(&metadata.format) {
+        tracing::info!(format = %metadata.format, "converting document to image");
+        let converted = conversion::convert_to_image(&image_bytes, &metadata.format)
+            .map_err(|e| IIIError::Handler(format!("document conversion failed: {e}")))?;
+        let (w, h) = (converted.width(), converted.height());
+        let png_bytes = conversion::to_png_bytes(&converted)
+            .map_err(|e| IIIError::Handler(format!("PNG encoding failed: {e}")))?;
+        let updated_meta = ImageMetadata {
+            format: "png".to_string(),
+            width: w,
+            height: h,
+            output_format: metadata.output_format.or(Some("jpeg".to_string())),
+            quality: metadata.quality,
+            strategy: metadata.strategy,
+            target_width: metadata.target_width,
+            target_height: metadata.target_height,
+        };
+        (png_bytes, updated_meta)
+    } else {
+        (image_bytes, metadata)
+    };
 
     let params = resolve_params(&config, &metadata)
         .map_err(|e| IIIError::Handler(format!("param resolution failed: {e}")))?;

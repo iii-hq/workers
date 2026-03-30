@@ -22,3 +22,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive"] }
+
+# PDF/PSD-to-image conversion
+pdf2image = "0.1"
+psd = "0.3"

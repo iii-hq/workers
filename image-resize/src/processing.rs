@@ -538,7 +538,46 @@ mod tests {
         let params = resolve_params(&config, &metadata).unwrap();
         assert_eq!(params.input_format, ImageFormat::Jpeg);
         assert_eq!(params.output_format, ImageFormat::Png);
-        // PNG is lossless, so quality defaults to 100
         assert_eq!(params.quality, 100);
     }
+
+    // ── Document-to-thumbnail integration tests ────────────
+
+    fn convert_and_resize(raw_bytes: &[u8], format: &str) -> Vec<u8> {
+        use crate::conversion;
+
+        let img = conversion::convert_to_image(raw_bytes, format).unwrap();
+        let png_bytes = conversion::to_png_bytes(&img).unwrap();
+
+        let params = ProcessingParams {
+            target_width: 200,
+            target_height: 200,
+            strategy: ResizeStrategy::ScaleToFit,
+            quality: 85,
+            input_format: ImageFormat::Png,
+            output_format: ImageFormat::Jpeg,
+        };
+        process_image(&png_bytes, &params).unwrap()
+    }
+
+    #[test]
+    fn test_pdf_to_jpeg_thumbnail() {
+        let pdf = std::fs::read("example/images/handbook.pdf").unwrap();
+        let output = convert_and_resize(&pdf, "pdf");
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
+        assert!(decoded.width() <= 200);
+        assert!(decoded.height() <= 200);
+        assert!(decoded.width() > 0 && decoded.height() > 0);
+    }
+
+    #[test]
+    fn test_psd_to_jpeg_thumbnail() {
+        let psd = std::fs::read("example/images/sample_640\u{00d7}426.psd").unwrap();
+        let output = convert_and_resize(&psd, "psd");
+        let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
+        assert!(decoded.width() <= 200);
+        assert!(decoded.height() <= 200);
+        assert!(decoded.width() > 0 && decoded.height() > 0);
+    }
+
 }

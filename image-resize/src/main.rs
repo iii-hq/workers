@@ -4,6 +4,7 @@ use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage}
 use std::sync::Arc;
 
 mod config;
+mod conversion;
 mod handler;
 mod manifest;
 mod processing;
@@ -91,7 +92,7 @@ async fn main() -> Result<()> {
                         "type": "object",
                         "description": "Optional inline ImageMetadata override",
                         "properties": {
-                            "format": { "type": "string", "enum": ["jpeg", "png", "webp"], "description": "Source image format" },
+                            "format": { "type": "string", "enum": ["jpeg", "png", "webp", "pdf", "psd"], "description": "Source format (image or convertible document)" },
                             "output_format": { "type": "string", "enum": ["jpeg", "png", "webp"], "description": "Desired output format (defaults to source format)" },
                             "width": { "type": "integer" },
                             "height": { "type": "integer" },
