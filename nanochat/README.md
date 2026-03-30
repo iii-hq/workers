@@ -19,19 +19,20 @@ This worker changes that. Once it connects to an iii engine, every capability be
 - A running iii engine on `ws://localhost:49134` (or configure via `--engine-url`)
 - For GPU inference/training: CUDA-capable GPU with sufficient VRAM
 
-The nanochat source must be available locally. By default, the worker expects it at `./nanochat/` (symlink or copy from the nanochat repo). Override with `--nanochat-dir` or `NANOCHAT_DIR` env var.
+The nanochat source is included as a git submodule. If you cloned without `--recurse-submodules`, run `git submodule update --init`. To use a different nanochat checkout, set `NANOCHAT_DIR` or pass `--nanochat-dir`.
 
 ## Quick start
 
 ```bash
-# Clone nanochat
-git clone https://github.com/karpathy/nanochat.git /tmp/nanochat
-
-# Symlink into worker directory
-ln -s /tmp/nanochat/nanochat ./nanochat
+# Clone the workers repo with the nanochat submodule
+git clone --recurse-submodules https://github.com/iii-hq/workers.git
+cd workers/nanochat
 
 # Install dependencies
 pip install iii-sdk torch tiktoken tokenizers rustbpe
+
+# Install nanochat's own dependencies
+pip install -r nanochat-upstream/pyproject.toml  # or: cd nanochat-upstream && pip install -e .
 
 # Start without a model (for testing registration and non-GPU functions)
 python worker.py --no-autoload
@@ -43,9 +44,11 @@ python worker.py --source sft --device cuda
 python worker.py --source base --device mps
 ```
 
+The nanochat source is included as a git submodule at `nanochat-upstream/` pointing to [karpathy/nanochat](https://github.com/karpathy/nanochat). Training functions run the actual nanochat scripts as subprocesses from this directory, so you get 100% fidelity to the original implementation.
+
 ## Functions
 
-The worker registers 13 functions, each with an HTTP or queue trigger. Every handler uses Pydantic type hints for automatic request/response schema extraction:the engine knows the exact input/output shape of every function.
+The worker registers 20 functions, each with an HTTP or queue trigger. Every handler uses Pydantic type hints for automatic request/response schema extraction, so the engine knows the exact input/output shape of every function.
 
 **nanochat.chat.complete**:`POST /nanochat/chat/completions`
 

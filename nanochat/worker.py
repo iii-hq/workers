@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from iii import InitOptions, Logger, TelemetryOptions, register_worker
 
-NANOCHAT_DIR = os.environ.get("NANOCHAT_DIR", str(Path(__file__).parent / "nanochat"))
+NANOCHAT_DIR = os.environ.get("NANOCHAT_DIR", str(Path(__file__).parent / "nanochat-upstream" / "nanochat"))
 
 logger = Logger(service_name="iii-nanochat")
 
@@ -433,449 +433,173 @@ async def fn_tools_execute(data: ExecuteCodeInput) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Training handlers (all queued, long-running)
+# Subprocess runner for training scripts (100% nanochat fidelity)
+# ---------------------------------------------------------------------------
+
+def _nanochat_repo_dir() -> str:
+    """Root of the nanochat repo (contains scripts/, tasks/, nanochat/)."""
+    return str(Path(NANOCHAT_DIR).parent)
+
+
+def _run_nanochat_script(module: str, args: list[str], run_id: str, train_type: str):
+    """Run a nanochat script as subprocess. Returns (returncode, stdout, stderr)."""
+    import subprocess
+    cmd = [sys.executable, "-m", module] + args
+    logger.info(f"Running: {' '.join(cmd)}", {"run_id": run_id, "type": train_type})
+
+    proc = subprocess.Popen(
+        cmd, cwd=_nanochat_repo_dir(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+
+    output_lines = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        output_lines.append(line)
+        if len(output_lines) % 50 == 0:
+            logger.info(f"[{train_type}] {line}", {"run_id": run_id})
+
+    proc.wait()
+    full_output = "\n".join(output_lines)
+    return proc.returncode, full_output
+
+
+# ---------------------------------------------------------------------------
+# Training handlers (all queued, run actual nanochat scripts as subprocess)
 # ---------------------------------------------------------------------------
 
 async def fn_train_tokenizer(data: TrainTokenizerInput) -> dict:
-    _ensure_nanochat()
-    import torch
-    from nanochat.tokenizer import RustBPETokenizer
-    from nanochat.common import get_base_dir
-    from nanochat.dataset import parquets_iter_batched
-
     inp = TrainTokenizerInput.model_validate(data) if isinstance(data, dict) else data
     run_id = str(uuid.uuid4())[:8]
     await state_set("nanochat:training", run_id, {"status": "running", "type": "tokenizer"})
-    logger.info("Tokenizer training started", {"run_id": run_id, "vocab_size": inp.vocab_size})
 
-    total_chars = 0
-    def text_iterator():
-        nonlocal total_chars
-        for batch in parquets_iter_batched(split="train"):
-            for doc in batch:
-                text = doc[:inp.doc_cap]
-                total_chars += len(text)
-                if total_chars > inp.max_chars:
-                    return
-                yield text
+    args = [
+        "--max-chars", str(inp.max_chars),
+        "--doc-cap", str(inp.doc_cap),
+        "--vocab-size", str(inp.vocab_size),
+    ]
 
-    tokenizer = RustBPETokenizer.train_from_iterator(text_iterator(), inp.vocab_size)
+    returncode, output = _run_nanochat_script("scripts.tok_train", args, run_id, "tokenizer")
 
-    base_dir = get_base_dir()
-    tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    os.makedirs(tokenizer_dir, exist_ok=True)
-    tokenizer.save(tokenizer_dir)
-
-    token_bytes = torch.zeros(tokenizer.get_vocab_size(), dtype=torch.int32)
-    for i in range(tokenizer.get_vocab_size()):
-        token_bytes[i] = len(tokenizer.decode([i]).encode("utf-8"))
-    torch.save(token_bytes, os.path.join(tokenizer_dir, "token_bytes.pt"))
-
+    status = "complete" if returncode == 0 else "failed"
     await state_set("nanochat:training", run_id, {
-        "status": "complete", "type": "tokenizer",
-        "vocab_size": tokenizer.get_vocab_size(), "total_chars": total_chars,
-        "path": tokenizer_dir,
+        "status": status, "type": "tokenizer", "returncode": returncode,
+        "output_tail": output[-2000:] if output else "",
     })
-    logger.info("Tokenizer training complete", {"run_id": run_id, "vocab_size": tokenizer.get_vocab_size()})
-    return {"status": "complete", "run_id": run_id, "vocab_size": tokenizer.get_vocab_size(), "path": tokenizer_dir}
+    logger.info(f"Tokenizer training {status}", {"run_id": run_id, "returncode": returncode})
+    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
 
 
 async def fn_train_base(data: TrainBaseInput) -> dict:
-    _ensure_nanochat()
-    import torch
-    from nanochat.common import autodetect_device_type, get_base_dir
-    from nanochat.gpt import GPT, GPTConfig
-    from nanochat.tokenizer import get_tokenizer
-    from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
-    from nanochat.checkpoint_manager import save_checkpoint
-    from nanochat.loss_eval import evaluate_bpb
-    from nanochat.tokenizer import get_token_bytes
-
     inp = TrainBaseInput.model_validate(data) if isinstance(data, dict) else data
-    device = inp.device or autodetect_device_type()
     run_id = str(uuid.uuid4())[:8]
+    await state_set("nanochat:training", run_id, {"status": "running", "type": "base", "depth": inp.depth})
 
-    tokenizer = get_tokenizer()
-    vocab_size = tokenizer.get_vocab_size()
-
-    base_dim = inp.depth * inp.aspect_ratio
-    model_dim = ((base_dim + inp.head_dim - 1) // inp.head_dim) * inp.head_dim
-    num_heads = model_dim // inp.head_dim
-    config = GPTConfig(
-        sequence_len=inp.max_seq_len, vocab_size=vocab_size,
-        n_layer=inp.depth, n_head=num_heads, n_kv_head=num_heads,
-        n_embd=model_dim, window_pattern=inp.window_pattern,
-    )
-
-    model = GPT(config).to(device)
-    model.init_weights()
-    n_params = sum(p.numel() for p in model.parameters())
-
+    args = [
+        "--run", inp.run_name,
+        "--depth", str(inp.depth),
+        "--aspect-ratio", str(inp.aspect_ratio),
+        "--head-dim", str(inp.head_dim),
+        "--max-seq-len", str(inp.max_seq_len),
+        "--window-pattern", inp.window_pattern,
+        "--target-param-data-ratio", str(inp.target_param_data_ratio),
+        "--device-batch-size", str(inp.device_batch_size),
+        "--warmup-steps", str(inp.warmup_steps),
+        "--warmdown-ratio", str(inp.warmdown_ratio),
+        "--eval-every", str(inp.eval_every),
+    ]
     if inp.num_iterations > 0:
-        num_iterations = inp.num_iterations
-    else:
-        tokens_needed = int(n_params * inp.target_param_data_ratio)
-        tokens_per_step = inp.device_batch_size * inp.max_seq_len
-        num_iterations = tokens_needed // tokens_per_step
-
-    model_tag = inp.model_tag or f"d{inp.depth}"
-
-    await state_set("nanochat:training", run_id, {
-        "status": "running", "type": "base", "depth": inp.depth,
-        "parameters": n_params, "num_iterations": num_iterations,
-        "device": device, "step": 0, "model_tag": model_tag,
-    })
-    logger.info("Base training started", {
-        "run_id": run_id, "depth": inp.depth, "params": n_params,
-        "iterations": num_iterations, "device": device,
-    })
-
+        args += ["--num-iterations", str(inp.num_iterations)]
+    if inp.save_every > 0:
+        args += ["--save-every", str(inp.save_every)]
+    if inp.device:
+        args += ["--device-type", inp.device]
+    if inp.model_tag:
+        args += ["--model-tag", inp.model_tag]
     if inp.fp8:
-        try:
-            from nanochat.fp8 import convert_to_fp8
-            convert_to_fp8(model)
-        except ImportError:
-            logger.warn("FP8 not available, continuing with default precision")
+        args += ["--fp8"]
 
-    model = torch.compile(model)
-    optimizer = model.setup_optimizer()
-    model.train()
+    returncode, output = _run_nanochat_script("scripts.base_train", args, run_id, "base")
 
-    B, T = inp.device_batch_size, inp.max_seq_len
-    train_loader = tokenizing_distributed_data_loader_bos_bestfit(tokenizer, B, T, "train", device=device)
-    token_bytes = get_token_bytes(device)
-
-    base_dir = get_base_dir()
-    checkpoint_dir = os.path.join(base_dir, "checkpoints", model_tag)
-
-    for step_i, (inputs, targets) in enumerate(train_loader):
-        if step_i >= num_iterations:
-            break
-
-        progress = step_i / num_iterations
-        if step_i < inp.warmup_steps:
-            lr_frac = step_i / inp.warmup_steps
-        elif progress > (1.0 - inp.warmdown_ratio):
-            warmdown_progress = (progress - (1.0 - inp.warmdown_ratio)) / inp.warmdown_ratio
-            lr_frac = 0.05 + 0.95 * (1.0 + __import__('math').cos(warmdown_progress * __import__('math').pi)) / 2
-        else:
-            lr_frac = 1.0
-
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = param_group["initial_lr"] * lr_frac
-
-        optimizer.zero_grad()
-        _logits, loss = model(inputs, targets)
-        loss.backward()
-        optimizer.step()
-
-        if step_i % 100 == 0:
-            await state_set("nanochat:training", run_id, {
-                "status": "running", "type": "base", "step": step_i,
-                "loss": loss.item(), "num_iterations": num_iterations,
-                "lr_frac": lr_frac, "model_tag": model_tag,
-            })
-            logger.info("Base step", {"run_id": run_id, "step": step_i, "loss": loss.item()})
-
-        if inp.eval_every > 0 and step_i > 0 and step_i % inp.eval_every == 0:
-            model.eval()
-            val_loader = tokenizing_distributed_data_loader_bos_bestfit(tokenizer, B, T, "val", device=device)
-            val_bpb = evaluate_bpb(model, val_loader, steps=20, token_bytes=token_bytes)
-            model.train()
-            await state_set("nanochat:evals", f"base-bpb-{step_i}", {
-                "type": "bpb", "bpb": val_bpb, "step": step_i, "run_id": run_id,
-            })
-
-        if inp.save_every > 0 and step_i > 0 and step_i % inp.save_every == 0:
-            model.eval()
-            meta_data = {
-                "step": step_i, "model_config": {
-                    "sequence_len": config.sequence_len, "vocab_size": config.vocab_size,
-                    "n_layer": config.n_layer, "n_head": config.n_head,
-                    "n_kv_head": config.n_kv_head, "n_embd": config.n_embd,
-                    "window_pattern": config.window_pattern,
-                },
-            }
-            save_checkpoint(checkpoint_dir, step_i, model.state_dict(), optimizer.state_dict(), meta_data)
-            model.train()
-
-    model.eval()
-    meta_data = {
-        "step": num_iterations, "model_config": {
-            "sequence_len": config.sequence_len, "vocab_size": config.vocab_size,
-            "n_layer": config.n_layer, "n_head": config.n_head,
-            "n_kv_head": config.n_kv_head, "n_embd": config.n_embd,
-            "window_pattern": config.window_pattern,
-        },
-    }
-    save_checkpoint(checkpoint_dir, num_iterations, model.state_dict(), optimizer.state_dict(), meta_data)
-
+    status = "complete" if returncode == 0 else "failed"
     await state_set("nanochat:training", run_id, {
-        "status": "complete", "type": "base", "step": num_iterations,
-        "model_tag": model_tag, "checkpoint_dir": checkpoint_dir,
+        "status": status, "type": "base", "depth": inp.depth,
+        "returncode": returncode, "output_tail": output[-2000:] if output else "",
     })
-    logger.info("Base training complete", {"run_id": run_id, "steps": num_iterations})
-    return {"status": "complete", "run_id": run_id, "steps": num_iterations, "model_tag": model_tag}
+    logger.info(f"Base training {status}", {"run_id": run_id, "returncode": returncode})
+    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
 
 
 async def fn_train_sft(data: TrainSFTInput) -> dict:
-    _ensure_nanochat()
-    import torch
-    from nanochat.common import autodetect_device_type, get_base_dir
-    from nanochat.checkpoint_manager import load_model, save_checkpoint
-    from nanochat.tokenizer import get_token_bytes
-    from nanochat.loss_eval import evaluate_bpb
-
     inp = TrainSFTInput.model_validate(data) if isinstance(data, dict) else data
-    device = inp.device or autodetect_device_type()
     run_id = str(uuid.uuid4())[:8]
+    await state_set("nanochat:training", run_id, {"status": "running", "type": "sft"})
 
-    model, tokenizer, meta = load_model(inp.source, device, "base", model_tag=inp.model_tag, step=inp.step)
-    model_config = meta.get("model_config", {})
-    max_seq_len = model_config.get("sequence_len", 2048)
-    device_batch_size = inp.device_batch_size or 4
-
-    sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "tasks"))
-    from nanochat.tokenizer import RustBPETokenizer
-
-    try:
-        from tasks.smoltalk import SmolTalk
-        from tasks.mmlu import MMLU
-        from tasks.gsm8k import GSM8K
-        from tasks.common import TaskMixture
-    except ImportError:
-        sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "tasks"))
-        from smoltalk import SmolTalk
-        from mmlu import MMLU
-        from gsm8k import GSM8K
-        from common import TaskMixture
-
-    train_tasks = [SmolTalk(split="train")]
-    for _ in range(inp.mmlu_epochs):
-        train_tasks.append(MMLU(subset="all", split="auxiliary_train"))
-    for _ in range(inp.gsm8k_epochs):
-        train_tasks.append(GSM8K(subset="main", split="train"))
-    train_dataset = TaskMixture(train_tasks)
-
-    dataset_size = len(train_dataset)
+    args = [
+        "--run", inp.run_name,
+        "--mmlu-epochs", str(inp.mmlu_epochs),
+        "--gsm8k-epochs", str(inp.gsm8k_epochs),
+        "--eval-every", str(inp.eval_every),
+        "--warmdown-ratio", str(inp.warmdown_ratio),
+    ]
     if inp.num_iterations > 0:
-        num_iterations = inp.num_iterations
-    else:
-        tokens_per_step = device_batch_size * max_seq_len
-        num_iterations = (dataset_size * max_seq_len) // tokens_per_step
+        args += ["--num-iterations", str(inp.num_iterations)]
+    if inp.device_batch_size:
+        args += ["--device-batch-size", str(inp.device_batch_size)]
+    if inp.save_every > 0:
+        args += ["--save-every", str(inp.save_every)]
+    if inp.device:
+        args += ["--device-type", inp.device]
+    if inp.model_tag:
+        args += ["--model-tag", inp.model_tag]
+    if inp.step:
+        args += ["--model-step", str(inp.step)]
 
+    returncode, output = _run_nanochat_script("scripts.chat_sft", args, run_id, "sft")
+
+    status = "complete" if returncode == 0 else "failed"
     await state_set("nanochat:training", run_id, {
-        "status": "running", "type": "sft", "source": inp.source,
-        "device": device, "num_iterations": num_iterations, "step": 0,
-        "dataset_size": dataset_size,
+        "status": status, "type": "sft", "returncode": returncode,
+        "output_tail": output[-2000:] if output else "",
     })
-    logger.info("SFT training started", {"run_id": run_id, "device": device, "iterations": num_iterations})
-
-    optimizer = model.setup_optimizer()
-    model.train()
-    token_bytes = get_token_bytes(device)
-
-    base_dir = get_base_dir()
-    model_tag = inp.model_tag or "sft"
-    checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", model_tag)
-
-    bos_token = tokenizer.get_bos_token_id()
-    cursor = 0
-
-    for step_i in range(num_iterations):
-        batch_inputs, batch_targets = [], []
-        for _ in range(device_batch_size):
-            conversation = train_dataset[cursor % dataset_size]
-            cursor += 1
-            ids, mask = tokenizer.render_conversation(conversation, max_tokens=max_seq_len)
-            ids = ids[:max_seq_len + 1]
-            mask = mask[:max_seq_len + 1]
-            while len(ids) < max_seq_len + 1:
-                ids.append(bos_token)
-                mask.append(0)
-            batch_inputs.append(ids[:max_seq_len])
-            targets = [ids[i+1] if mask[i+1] == 1 else -1 for i in range(max_seq_len)]
-            batch_targets.append(targets)
-
-        inputs_t = torch.tensor(batch_inputs, dtype=torch.int32, device=device)
-        targets_t = torch.tensor(batch_targets, dtype=torch.long, device=device)
-
-        progress = step_i / num_iterations
-        if progress > (1.0 - inp.warmdown_ratio):
-            warmdown_progress = (progress - (1.0 - inp.warmdown_ratio)) / inp.warmdown_ratio
-            import math
-            lr_frac = 0.0 + 1.0 * (1.0 + math.cos(warmdown_progress * math.pi)) / 2
-        else:
-            lr_frac = 1.0
-        for pg in optimizer.param_groups:
-            pg["lr"] = pg["initial_lr"] * lr_frac
-
-        optimizer.zero_grad()
-        _logits, loss = model(inputs_t, targets_t)
-        loss.backward()
-        optimizer.step()
-
-        if step_i % 50 == 0:
-            await state_set("nanochat:training", run_id, {
-                "status": "running", "type": "sft", "step": step_i,
-                "loss": loss.item(), "num_iterations": num_iterations,
-            })
-            logger.info("SFT step", {"run_id": run_id, "step": step_i, "loss": loss.item()})
-
-        if inp.eval_every > 0 and step_i > 0 and step_i % inp.eval_every == 0:
-            model.eval()
-            from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
-            val_loader = tokenizing_distributed_data_loader_bos_bestfit(tokenizer, device_batch_size, max_seq_len, "val", device=device)
-            val_bpb = evaluate_bpb(model, val_loader, steps=20, token_bytes=token_bytes)
-            model.train()
-            await state_set("nanochat:evals", f"sft-bpb-{step_i}", {"type": "bpb", "bpb": val_bpb, "step": step_i})
-
-        if inp.save_every > 0 and step_i > 0 and step_i % inp.save_every == 0:
-            model.eval()
-            save_checkpoint(checkpoint_dir, step_i, model.state_dict(), optimizer.state_dict(), {
-                "step": step_i, "model_config": model_config,
-            })
-            model.train()
-
-    model.eval()
-    save_checkpoint(checkpoint_dir, num_iterations, model.state_dict(), optimizer.state_dict(), {
-        "step": num_iterations, "model_config": model_config,
-    })
-
-    await state_set("nanochat:training", run_id, {
-        "status": "complete", "type": "sft", "step": num_iterations,
-        "checkpoint_dir": checkpoint_dir,
-    })
-    logger.info("SFT training complete", {"run_id": run_id, "steps": num_iterations})
-    return {"status": "complete", "run_id": run_id, "steps": num_iterations}
+    logger.info(f"SFT training {status}", {"run_id": run_id, "returncode": returncode})
+    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
 
 
 async def fn_train_rl(data: TrainRLInput) -> dict:
-    _ensure_nanochat()
-    import torch
-    from nanochat.common import autodetect_device_type, get_base_dir
-    from nanochat.checkpoint_manager import load_model, save_checkpoint
-    from nanochat.engine import Engine
-
     inp = TrainRLInput.model_validate(data) if isinstance(data, dict) else data
-    device = inp.device or autodetect_device_type()
     run_id = str(uuid.uuid4())[:8]
+    await state_set("nanochat:training", run_id, {"status": "running", "type": "rl"})
 
-    model, tokenizer, meta = load_model(inp.source, device, "sft", model_tag=inp.model_tag, step=inp.step)
-    model_config = meta.get("model_config", {})
-    engine = Engine(model, tokenizer)
+    args = [
+        "--run", inp.run_name,
+        "--num-epochs", str(inp.num_epochs),
+        "--examples-per-step", str(inp.examples_per_step),
+        "--num-samples", str(inp.num_samples),
+        "--max-new-tokens", str(inp.max_new_tokens),
+        "--temperature", str(inp.temperature),
+        "--top-k", str(inp.top_k),
+        "--device-batch-size", str(inp.device_batch_size),
+        "--eval-every", str(inp.eval_every),
+        "--save-every", str(inp.save_every),
+    ]
+    if inp.device:
+        args += ["--device-type", inp.device]
+    if inp.model_tag:
+        args += ["--model-tag", inp.model_tag]
+    if inp.step:
+        args += ["--model-step", str(inp.step)]
 
-    try:
-        from tasks.gsm8k import GSM8K
-    except ImportError:
-        sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "tasks"))
-        from gsm8k import GSM8K
+    returncode, output = _run_nanochat_script("scripts.chat_rl", args, run_id, "rl")
 
-    train_task = GSM8K(subset="main", split="train")
-    task_size = len(train_task)
-
-    total_steps = (task_size * inp.num_epochs) // inp.examples_per_step
+    status = "complete" if returncode == 0 else "failed"
     await state_set("nanochat:training", run_id, {
-        "status": "running", "type": "rl", "device": device,
-        "total_steps": total_steps, "step": 0,
+        "status": status, "type": "rl", "returncode": returncode,
+        "output_tail": output[-2000:] if output else "",
     })
-    logger.info("RL training started", {"run_id": run_id, "device": device, "total_steps": total_steps})
-
-    optimizer = model.setup_optimizer()
-    assistant_end = tokenizer.encode_special("<|assistant_end|>")
-
-    base_dir = get_base_dir()
-    checkpoint_dir = os.path.join(base_dir, "chatrl_checkpoints", inp.model_tag or "rl")
-
-    step = 0
-    for epoch in range(inp.num_epochs):
-        for example_idx in range(0, task_size, inp.examples_per_step):
-            batch_examples = list(range(example_idx, min(example_idx + inp.examples_per_step, task_size)))
-
-            all_inputs, all_targets, all_advantages = [], [], []
-
-            for idx in batch_examples:
-                conversation = train_task[idx]
-                tokens = tokenizer.render_for_completion(conversation)
-                prefix_length = len(tokens)
-
-                model.eval()
-                generated_seqs, masks = engine.generate_batch(
-                    tokens, num_samples=inp.num_samples,
-                    max_tokens=inp.max_new_tokens,
-                    temperature=inp.temperature, top_k=inp.top_k,
-                )
-
-                rewards = []
-                for sample_tokens in generated_seqs:
-                    gen_text = tokenizer.decode(sample_tokens[prefix_length:])
-                    reward = train_task.reward(conversation, gen_text) if hasattr(train_task, 'reward') else 0.0
-                    rewards.append(reward)
-
-                rewards_t = torch.tensor(rewards, dtype=torch.float, device=device)
-                advantages = rewards_t - rewards_t.mean()
-
-                max_len = max(len(s) for s in generated_seqs)
-                for i, seq in enumerate(generated_seqs):
-                    padded = seq + [assistant_end] * (max_len - len(seq))
-                    mask = masks[i] + [0] * (max_len - len(masks[i]))
-                    inp_ids = padded[:-1]
-                    tgt_ids = [padded[j+1] if mask[j+1] == 1 else -1 for j in range(len(padded)-1)]
-                    all_inputs.append(inp_ids)
-                    all_targets.append(tgt_ids)
-                    all_advantages.append(advantages[i].item())
-
-            if not all_inputs:
-                continue
-
-            model.train()
-            max_len = max(len(x) for x in all_inputs)
-            for i in range(len(all_inputs)):
-                all_inputs[i] += [assistant_end] * (max_len - len(all_inputs[i]))
-                all_targets[i] += [-1] * (max_len - len(all_targets[i]))
-
-            for batch_start in range(0, len(all_inputs), inp.device_batch_size):
-                batch_end = min(batch_start + inp.device_batch_size, len(all_inputs))
-                inp_t = torch.tensor(all_inputs[batch_start:batch_end], dtype=torch.long, device=device)
-                tgt_t = torch.tensor(all_targets[batch_start:batch_end], dtype=torch.long, device=device)
-                adv_t = torch.tensor(all_advantages[batch_start:batch_end], dtype=torch.float, device=device)
-
-                optimizer.zero_grad()
-                logits = model(inp_t)
-                log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-                token_log_probs = log_probs.gather(2, tgt_t.clamp(min=0).unsqueeze(-1)).squeeze(-1)
-                mask = (tgt_t != -1).float()
-                per_sample_loss = -(token_log_probs * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-                loss = (per_sample_loss * adv_t).mean()
-                loss.backward()
-                optimizer.step()
-
-            step += 1
-            if step % 10 == 0:
-                mean_reward = sum(all_advantages) / max(len(all_advantages), 1)
-                await state_set("nanochat:training", run_id, {
-                    "status": "running", "type": "rl", "step": step,
-                    "total_steps": total_steps, "mean_advantage": mean_reward,
-                })
-                logger.info("RL step", {"run_id": run_id, "step": step})
-
-            if inp.save_every > 0 and step > 0 and step % inp.save_every == 0:
-                model.eval()
-                save_checkpoint(checkpoint_dir, step, model.state_dict(), optimizer.state_dict(), {
-                    "step": step, "model_config": model_config,
-                })
-                model.train()
-
-    model.eval()
-    save_checkpoint(checkpoint_dir, step, model.state_dict(), optimizer.state_dict(), {
-        "step": step, "model_config": model_config,
-    })
-
-    await state_set("nanochat:training", run_id, {
-        "status": "complete", "type": "rl", "step": step, "checkpoint_dir": checkpoint_dir,
-    })
-    logger.info("RL training complete", {"run_id": run_id, "steps": step})
-    return {"status": "complete", "run_id": run_id, "steps": step}
+    logger.info(f"RL training {status}", {"run_id": run_id, "returncode": returncode})
+    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
 
 
 async def fn_train_status(data: TrainStatusInput) -> dict:
@@ -886,7 +610,7 @@ async def fn_train_status(data: TrainStatusInput) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Evaluation handlers
+# Evaluation handlers (import and call real nanochat functions)
 # ---------------------------------------------------------------------------
 
 async def fn_eval_core(data: EvalCoreInput) -> dict:
@@ -896,7 +620,9 @@ async def fn_eval_core(data: EvalCoreInput) -> dict:
 
     inp = EvalCoreInput.model_validate(data) if isinstance(data, dict) else data
 
-    sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "scripts"))
+    scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     from base_eval import evaluate_core
 
     device = gpu.model.get_device() if hasattr(gpu.model, "get_device") else gpu.device
@@ -941,49 +667,34 @@ async def fn_eval_chat(data: EvalChatInput) -> dict:
 
     inp = EvalChatInput.model_validate(data) if isinstance(data, dict) else data
 
-    sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "scripts"))
-    sys.path.insert(0, os.path.join(str(Path(NANOCHAT_DIR).parent), "tasks"))
+    scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
+    tasks_dir = os.path.join(_nanochat_repo_dir(), "tasks")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    if tasks_dir not in sys.path:
+        sys.path.insert(0, tasks_dir)
 
-    from chat_eval import run_generative_eval, run_categorical_eval
+    from chat_eval import run_chat_eval
 
-    try:
-        from tasks.gsm8k import GSM8K
-        from tasks.mmlu import MMLU
-        from tasks.arc import ARC
-    except ImportError:
-        from gsm8k import GSM8K
-        from mmlu import MMLU
-        from arc import ARC
+    available_tasks = ["GSM8K", "MMLU", "ARC-Easy", "ARC-Challenge", "HumanEval", "SpellingBee"]
 
-    available_tasks = {
-        "gsm8k": lambda: GSM8K(subset="main", split="test"),
-        "mmlu": lambda: MMLU(subset="all", split="test"),
-        "arc": lambda: ARC(split="test"),
-    }
-
-    if inp.task_name and inp.task_name in available_tasks:
-        tasks_to_run = {inp.task_name: available_tasks[inp.task_name]}
-    elif inp.task_name:
-        raise ValueError(f"Unknown task: {inp.task_name}. Available: {list(available_tasks.keys())}")
+    if inp.task_name:
+        task_names = [inp.task_name]
     else:
-        tasks_to_run = available_tasks
+        task_names = available_tasks
 
     results = {}
-    for name, task_fn in tasks_to_run.items():
-        task_obj = task_fn()
-        if hasattr(task_obj, "reward"):
-            acc = run_generative_eval(
-                task_obj, gpu.tokenizer, gpu.model, gpu.engine,
-                num_samples=inp.num_samples, max_new_tokens=inp.max_new_tokens,
-                temperature=inp.temperature, top_k=inp.top_k,
-                max_problems=inp.max_problems,
+    for task_name in task_names:
+        try:
+            acc = run_chat_eval(
+                task_name, gpu.model, gpu.tokenizer, gpu.engine,
+                batch_size=inp.batch_size, num_samples=inp.num_samples,
+                max_new_tokens=inp.max_new_tokens, temperature=inp.temperature,
+                top_k=inp.top_k, max_problems=inp.max_problems,
             )
-        else:
-            acc = run_categorical_eval(
-                task_obj, gpu.tokenizer, gpu.model,
-                batch_size=inp.batch_size, max_problems=inp.max_problems,
-            )
-        results[name] = acc
+            results[task_name] = acc
+        except Exception as e:
+            results[task_name] = {"error": str(e)}
 
     await state_set("nanochat:evals", f"chat-{int(time.time())}", {
         "type": "chat", "results": results, "model": gpu.source,
