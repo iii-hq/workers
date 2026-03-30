@@ -1,151 +1,126 @@
 # nanochat worker
 
-A Python worker that brings [Karpathy's nanochat](https://github.com/karpathy/nanochat) (the minimal full-stack ChatGPT clone) onto the III engine. Train GPT models from scratch, fine-tune them, evaluate benchmarks, and serve chat completions, all as live iii functions that any connected worker can discover and call.
+A Python worker that brings [Karpathy's nanochat](https://github.com/karpathy/nanochat) onto the III engine. 20 functions covering the full LLM pipeline: tokenizer training, base pretraining, supervised fine-tuning, RL fine-tuning (GRPO), CORE/BPB/ChatCORE evaluation, inference with tool use, checkpoint management, and conversation persistence.
 
-nanochat is ~7,000 lines of Python that trains a GPT-2 level model in ~2 hours on 8xH100 for ~$48. This worker wraps its entire pipeline (tokenizer, pretraining, SFT, evaluation, inference, tool use) into 13 registered functions with typed schemas and proper triggers.
-
-## Why this exists
-
-nanochat is a standalone Python script. You train a model, then serve it with FastAPI. Nothing else on the engine can talk to it.
-
-This worker changes that. Once it connects to an iii engine, every capability becomes a function that any other worker (Rust, TypeScript, Python) can invoke via `trigger("nanochat.chat.complete", ...)`. Training runs report progress to iii state. Conversations persist across sessions. The model can be hot-swapped without restarting the worker.
+nanochat trains a GPT-2 level model in ~2 hours on 8xH100 for ~$48. This worker wraps the entire pipeline as iii functions that any connected worker (Rust, TypeScript, Python) can call. Training runs the actual nanochat scripts as subprocesses via a pre-forked launcher, so you get 100% fidelity to the original implementation. Inference, evaluation, and tokenization run in-process for speed.
 
 ## Prerequisites
 
 - Python 3.10+
-- iii-sdk 0.10.0+ (`pip install iii-sdk`)
-- PyTorch 2.0+ (`pip install torch`)
-- nanochat dependencies: `pip install tiktoken tokenizers rustbpe datasets pyarrow psutil`
-- A running iii engine on `ws://localhost:49134` (or configure via `--engine-url`)
-- For GPU inference/training: CUDA-capable GPU with sufficient VRAM
-
-The nanochat source is included as a git submodule. If you cloned without `--recurse-submodules`, run `git submodule update --init`. To use a different nanochat checkout, set `NANOCHAT_DIR` or pass `--nanochat-dir`.
+- PyTorch 2.0+
+- iii-sdk 0.10.0+
+- nanochat dependencies: tiktoken, tokenizers, rustbpe, pyarrow, wandb
+- A running iii engine on `ws://localhost:49134`
+- For training/inference: CUDA GPU recommended. CPU and MPS work but are slow.
 
 ## Quick start
 
 ```bash
-# Clone the workers repo with the nanochat submodule
 git clone --recurse-submodules https://github.com/iii-hq/workers.git
 cd workers/nanochat
 
-# Install dependencies
-pip install iii-sdk torch tiktoken tokenizers rustbpe
-
-# Install nanochat's own dependencies
+pip install iii-sdk torch tiktoken tokenizers rustbpe pyarrow wandb pydantic
 cd nanochat-upstream && pip install -e . && cd ..
 
-# Start without a model (for testing registration and non-GPU functions)
+# Start without loading a model
 python worker.py --no-autoload
 
-# Start with a trained SFT model on CUDA
+# Start with a trained SFT model
 python worker.py --source sft --device cuda
-
-# Start with a base model on MPS (Apple Silicon)
-python worker.py --source base --device mps
 ```
 
-The nanochat source is included as a git submodule at `nanochat-upstream/` pointing to [karpathy/nanochat](https://github.com/karpathy/nanochat). Training functions run the actual nanochat scripts as subprocesses from this directory, so you get 100% fidelity to the original implementation.
+The nanochat source is included as a git submodule at `nanochat-upstream/`. Training functions run the actual nanochat scripts (`scripts/base_train.py`, `scripts/chat_sft.py`, etc.) as subprocesses from this directory.
 
 ## Functions
 
-The worker registers 20 functions, each with an HTTP or queue trigger. Every handler uses Pydantic type hints for automatic request/response schema extraction, so the engine knows the exact input/output shape of every function.
+20 functions, 20 triggers (all HTTP). Every handler uses Pydantic type hints for automatic request/response schema extraction.
 
-**nanochat.chat.complete** - `POST /nanochat/chat/completions`
+**Chat**
 
-Takes a list of messages (OpenAI-style `role`/`content` format), generates a completion using the loaded model. Supports `temperature`, `top_k`, and `max_tokens`. Persists the full conversation to iii state under `nanochat:sessions` with the returned `session_id`.
+- `nanochat.chat.complete` POST - Generate a chat completion. Takes OpenAI-style messages, returns content + session_id. Conversation persisted to iii state.
+- `nanochat.chat.stream` POST - Same as complete but generates token-by-token internally.
+- `nanochat.chat.history` GET - Read conversation history from iii state by session_id.
 
-**nanochat.chat.stream** - `POST /nanochat/chat/stream`
+**Model**
 
-Same as `chat.complete` but generates tokens one at a time internally. Currently returns the full text (not SSE streaming). Thetoken-by-token generation prevents the model from generating past `<|assistant_end|>` tokens, matching nanochat's original behavior.
+- `nanochat.model.load` POST - Load a checkpoint into memory. Accepts source (base/sft/rl), model_tag, step, device.
+- `nanochat.model.status` GET - Current model config: loaded, source, device, n_layer, n_embd, vocab_size, parameters.
+- `nanochat.model.sample` POST - Generate raw text samples with configurable prompt, temperature, top_k, num_samples.
 
-**nanochat.chat.history** - `GET /nanochat/chat/history`
+**Tokenizer**
 
-Reads conversation history from iii state. Pass `session_id` to get a specific session, or omit it to list all sessions.
+- `nanochat.tokenizer.encode` POST - Text to BPE token IDs.
+- `nanochat.tokenizer.decode` POST - Token IDs to text.
 
-**nanochat.model.load** - `POST /nanochat/model/load`
+**Training** (runs actual nanochat scripts via pre-forked subprocess launcher)
 
-Loads a nanochat checkpoint into GPU memory. Accepts `source` ("base", "sft", or "rl"), optional `model_tag`, `step`, and `device`. After loading, writes model metadata to `nanochat:models` state scope. The loaded model is immediately available to all chat and eval functions.
+- `nanochat.train.tokenizer` POST - Train BPE tokenizer from dataset. Runs `scripts/tok_train.py`.
+- `nanochat.train.base` POST - Pretrain base GPT model. Runs `scripts/base_train.py` with full Muon optimizer, gradient accumulation, LR scheduling, FP8, checkpoint saving.
+- `nanochat.train.sft` POST - Supervised fine-tuning with real task mixture (SmolTalk, MMLU, GSM8K, SpellingBee). Runs `scripts/chat_sft.py`.
+- `nanochat.train.rl` POST - GRPO reinforcement learning on GSM8K. Runs `scripts/chat_rl.py`.
+- `nanochat.train.status` GET - Training run progress from iii state.
 
-**nanochat.model.status** - `GET /nanochat/model/status`
+**Evaluation** (imports and calls real nanochat eval functions)
 
-Returns current model state: whether a model is loaded, its source, device, architecture config (`n_layer`, `n_embd`, `vocab_size`, `sequence_len`), and total parameter count.
+- `nanochat.eval.core` POST - CORE benchmark (DCLM). Calls `base_eval.evaluate_core()`.
+- `nanochat.eval.loss` POST - Bits-per-byte on validation set. Calls `loss_eval.evaluate_bpb()`.
+- `nanochat.eval.chat` POST - ChatCORE evaluation (GSM8K, MMLU, ARC-Easy, ARC-Challenge, HumanEval, SpellingBee). Calls `chat_eval.run_chat_eval()`.
 
-**nanochat.tokenizer.encode** - `POST /nanochat/tokenizer/encode`
+**Checkpoints**
 
-Encodes text (string or list of strings) to BPE token IDs using nanochat's RustBPE tokenizer. Prepends BOS token automatically. Returns the token list and count.
+- `nanochat.checkpoint.save` POST - Save current model to disk.
+- `nanochat.checkpoint.list` GET - List available checkpoints by source.
 
-**nanochat.tokenizer.decode** - `POST /nanochat/tokenizer/decode`
+**Health**
 
-Decodes a list of token IDs back to text.
-
-**nanochat.tools.execute** - `POST /nanochat/tools/execute`
-
-Executes Python code in-process via `exec()`. Not sandboxed. Returns stdout, stderr, success status, and any errors. This mirrors nanochat's built-in tool use (calculator, code execution) that models learn during SFT training. Do not expose to untrusted input without additional isolation.
-
-**nanochat.eval.core** - `POST /nanochat/eval/core`
-
-Runs the CORE benchmark (DCLM paper) on the loaded model. Results are stored to `nanochat:evals` state scope with timestamps.
-
-**nanochat.eval.loss** - `POST /nanochat/eval/loss`
-
-Evaluates bits-per-byte on the validation set. This is the vocab-size-invariant loss metric nanochat uses to compare models across different tokenizers.
-
-**nanochat.train.sft**:Queue `nanochat-training`
-
-Runs supervised fine-tuning. This is a long-running function designed to be triggered via queue (`TriggerAction.Enqueue(queue="nanochat-training")`). Reports step-by-step progress and loss values to `nanochat:training` state scope. Other workers can poll `nanochat.train.status` to monitor progress.
-
-**nanochat.train.status** - `GET /nanochat/train/status`
-
-Reads training run status from iii state. Pass `run_id` to get a specific run, or omit it to list all runs.
-
-**nanochat.health** - `GET /nanochat/health`
-
-Returns worker health, model loaded status, device, and source.
+- `nanochat.health` GET - Worker health, model loaded status, device.
+- `nanochat.tools.execute` POST - Execute Python code in-process (not sandboxed).
 
 ## State scopes
 
-All persistent state goes through iii `state::get/set` primitives. The worker uses four scopes:
+All state goes through iii `state::get/set`. Five scopes:
 
-- **nanochat:sessions**:Conversation history keyed by session_id. Each entry contains the full message list, model source used, and token count.
-- **nanochat:models**:Model metadata. The `current` key always reflects the loaded model's config.
-- **nanochat:training**:Training run progress keyed by run_id. Contains status (running/complete/failed), step count, loss values, and device info.
-- **nanochat:evals**:Evaluation results keyed by `core-{timestamp}` or `loss-{timestamp}`. Contains metric values and model source.
+- **nanochat:sessions** - Conversation history keyed by session_id.
+- **nanochat:models** - Model metadata. The `current` key reflects the loaded model.
+- **nanochat:training** - Training run progress keyed by run_id. Updated with parsed metrics from subprocess stdout (step, loss, tok/sec, MFU, BPB, CORE scores).
+- **nanochat:evals** - Evaluation results keyed by type and timestamp.
+- **nanochat:checkpoints** - Checkpoint metadata.
 
-## Testing
+## How training works
 
-Tested against a live iii engine (v0.10.0) on macOS with Python 3.11. All 13 functions and 13 triggers register on connect. Functions that need a loaded model return clear error messages when none is loaded. The worker stays alive through all error cases.
+Training functions can't fork subprocesses from inside iii-sdk handlers (fork corrupts the WebSocket on macOS). The worker solves this with a pre-forked subprocess launcher:
+
+1. Before connecting to the iii engine, the worker forks a child process using `multiprocessing` with explicit fork context.
+2. The child process waits for job requests on a Pipe.
+3. When a training function is triggered, it sends the script name and arguments to the child via the Pipe.
+4. The child runs `subprocess.Popen` (safe because it was forked before the WebSocket existed).
+5. The child captures all stdout and sends it back.
+6. The handler parses stdout for metrics (step, loss, BPB, CORE, ChatCORE, reward) and writes them to iii state.
+
+This gives 100% fidelity to nanochat's training scripts while keeping the iii worker alive.
+
+## E2E test results
+
+Tested on macOS (Apple Silicon, CPU) with iii engine v0.10.0 and Python 3.11. Trained a 2-layer, 1.9M parameter GPT model from scratch (5 steps on CPU), loaded the checkpoint, and ran inference through the worker.
 
 ```text
-OK   nanochat.health              {"status": "ok", "model_loaded": false}
-OK   nanochat.model.status        {"loaded": false}
-OK   nanochat.chat.history        {"sessions": []}
-OK   nanochat.train.status        {"runs": []}
-OK   nanochat.tools.execute       {"success": true, "stdout": "3628800\n"}
-WARN nanochat.tokenizer.encode    {"error": "tokenizer.pkl not found"}
-WARN nanochat.tokenizer.decode    {"error": "tokenizer.pkl not found"}
-WARN nanochat.chat.complete       {"error": "No model loaded"}
-WARN nanochat.eval.core           {"error": "No model loaded"}
-OK   nanochat.health              {"status": "ok"}  (still alive after errors)
+1. Load model   -> loaded=True, params=1,966,134, n_layer=2, n_embd=128
+2. Sample        -> "<|bos|>Hello! if ifite Sther made Oite were are..."
+3. Chat          -> completion with session tracking (26 tokens)
+4. History       -> 1 session stored in iii state
+5. Tokenizer     -> encode: 5 tokens, decode roundtrip OK
+6. Tools         -> print(42) = 42
+7. Model status  -> full config visible (device, layers, vocab, params)
+8. Health        -> worker alive after all operations
 
-10/10 responded, 0 crashes
+8/8 passed
 ```
 
-The WARN results are expected. `tokenizer.encode`/`decode` need a trained tokenizer (run `tok_train.py` first or load a model), and `chat.complete`/`eval.core` need a loaded model via `nanochat.model.load`.
-
-### Known issues
-
-**Null payloads time out.** The iii-sdk v0.10.0 Python SDK drops invocations with `payload: None`. Always pass `payload: {}` for functions that don't need input.
-
-**Unhandled handler exceptions crash the WebSocket.** If a handler raises without catching, the SDK's connection state corrupts and all subsequent calls fail with `function_not_found` until the worker reconnects. Every handler in this worker is wrapped with `safe()` to prevent this.
-
-**`multiprocessing.Process` breaks the connection.** nanochat's original code execution sandbox uses `multiprocessing.Process`, but `fork()` in a multi-threaded Python process corrupts the SDK's asyncio event loop. We use in-process `exec()` with stdout/stderr capture instead.
+The generated text is gibberish because the model was only trained for 5 steps. With real GPU training (8xH100, ~2 hours), the model produces coherent chat responses, solves math problems with tool use, and scores competitively on CORE benchmarks.
 
 ## Calling from other workers
 
-Any worker on the same engine can invoke nanochat functions:
-
 ```python
-# Python
 from iii import register_worker
 iii = register_worker("ws://localhost:49134")
 
@@ -160,7 +135,6 @@ print(result["content"])
 ```
 
 ```typescript
-// TypeScript
 import { registerWorker } from 'iii-sdk'
 const iii = registerWorker('ws://localhost:49134')
 
@@ -173,13 +147,15 @@ const result = await iii.trigger({
 })
 ```
 
-```rust
-// Rust
-let result = iii.trigger("nanochat.chat.complete", json!({
-    "messages": [{"role": "user", "content": "What is the capital of France?"}],
-    "temperature": 0.8
-})).await?;
-```
+## Known issues
+
+**Null payloads time out.** iii-sdk v0.10.0 drops invocations with `payload: None`. Always pass `{}`.
+
+**Handler exceptions crash WebSocket.** Unhandled exceptions corrupt the SDK's connection. Every handler is wrapped with `safe()` which logs server-side and returns `{"error": "..."}`.
+
+**fork() from handler threads crashes WebSocket.** Both `subprocess.Popen` and `os.system` from inside `run_in_executor` or `asyncio.to_thread` corrupt the asyncio event loop on macOS. The pre-forked launcher solves this for training. `tools.execute` uses in-process `exec()`.
+
+**torch.compile hangs on CPU.** nanochat's `base_train.py` calls `torch.compile(model)` which takes extremely long on CPU. Use GPU for real training.
 
 ## License
 
