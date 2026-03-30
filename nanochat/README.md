@@ -32,7 +32,7 @@ cd workers/nanochat
 pip install iii-sdk torch tiktoken tokenizers rustbpe
 
 # Install nanochat's own dependencies
-pip install -r nanochat-upstream/pyproject.toml  # or: cd nanochat-upstream && pip install -e .
+cd nanochat-upstream && pip install -e . && cd ..
 
 # Start without a model (for testing registration and non-GPU functions)
 python worker.py --no-autoload
@@ -50,43 +50,43 @@ The nanochat source is included as a git submodule at `nanochat-upstream/` point
 
 The worker registers 20 functions, each with an HTTP or queue trigger. Every handler uses Pydantic type hints for automatic request/response schema extraction, so the engine knows the exact input/output shape of every function.
 
-**nanochat.chat.complete**:`POST /nanochat/chat/completions`
+**nanochat.chat.complete** - `POST /nanochat/chat/completions`
 
 Takes a list of messages (OpenAI-style `role`/`content` format), generates a completion using the loaded model. Supports `temperature`, `top_k`, and `max_tokens`. Persists the full conversation to iii state under `nanochat:sessions` with the returned `session_id`.
 
-**nanochat.chat.stream**:`POST /nanochat/chat/stream`
+**nanochat.chat.stream** - `POST /nanochat/chat/stream`
 
-Same as `chat.complete` but generates tokens one at a time internally. Currently returns the full text (not SSE streaming):the token-by-token generation prevents the model from generating past `<|assistant_end|>` tokens, matching nanochat's original behavior.
+Same as `chat.complete` but generates tokens one at a time internally. Currently returns the full text (not SSE streaming). Thetoken-by-token generation prevents the model from generating past `<|assistant_end|>` tokens, matching nanochat's original behavior.
 
-**nanochat.chat.history**:`GET /nanochat/chat/history`
+**nanochat.chat.history** - `GET /nanochat/chat/history`
 
 Reads conversation history from iii state. Pass `session_id` to get a specific session, or omit it to list all sessions.
 
-**nanochat.model.load**:`POST /nanochat/model/load`
+**nanochat.model.load** - `POST /nanochat/model/load`
 
 Loads a nanochat checkpoint into GPU memory. Accepts `source` ("base", "sft", or "rl"), optional `model_tag`, `step`, and `device`. After loading, writes model metadata to `nanochat:models` state scope. The loaded model is immediately available to all chat and eval functions.
 
-**nanochat.model.status**:`GET /nanochat/model/status`
+**nanochat.model.status** - `GET /nanochat/model/status`
 
 Returns current model state: whether a model is loaded, its source, device, architecture config (`n_layer`, `n_embd`, `vocab_size`, `sequence_len`), and total parameter count.
 
-**nanochat.tokenizer.encode**:`POST /nanochat/tokenizer/encode`
+**nanochat.tokenizer.encode** - `POST /nanochat/tokenizer/encode`
 
 Encodes text (string or list of strings) to BPE token IDs using nanochat's RustBPE tokenizer. Prepends BOS token automatically. Returns the token list and count.
 
-**nanochat.tokenizer.decode**:`POST /nanochat/tokenizer/decode`
+**nanochat.tokenizer.decode** - `POST /nanochat/tokenizer/decode`
 
 Decodes a list of token IDs back to text.
 
-**nanochat.tools.execute**:`POST /nanochat/tools/execute`
+**nanochat.tools.execute** - `POST /nanochat/tools/execute`
 
-Executes arbitrary Python code in a sandboxed environment. Returns stdout, stderr, success status, and any errors. This mirrors nanochat's built-in tool use (calculator, code execution) that models learn during SFT training.
+Executes Python code in-process via `exec()`. Not sandboxed. Returns stdout, stderr, success status, and any errors. This mirrors nanochat's built-in tool use (calculator, code execution) that models learn during SFT training. Do not expose to untrusted input without additional isolation.
 
-**nanochat.eval.core**:`POST /nanochat/eval/core`
+**nanochat.eval.core** - `POST /nanochat/eval/core`
 
 Runs the CORE benchmark (DCLM paper) on the loaded model. Results are stored to `nanochat:evals` state scope with timestamps.
 
-**nanochat.eval.loss**:`POST /nanochat/eval/loss`
+**nanochat.eval.loss** - `POST /nanochat/eval/loss`
 
 Evaluates bits-per-byte on the validation set. This is the vocab-size-invariant loss metric nanochat uses to compare models across different tokenizers.
 
@@ -94,11 +94,11 @@ Evaluates bits-per-byte on the validation set. This is the vocab-size-invariant 
 
 Runs supervised fine-tuning. This is a long-running function designed to be triggered via queue (`TriggerAction.Enqueue(queue="nanochat-training")`). Reports step-by-step progress and loss values to `nanochat:training` state scope. Other workers can poll `nanochat.train.status` to monitor progress.
 
-**nanochat.train.status**:`GET /nanochat/train/status`
+**nanochat.train.status** - `GET /nanochat/train/status`
 
 Reads training run status from iii state. Pass `run_id` to get a specific run, or omit it to list all runs.
 
-**nanochat.health**:`GET /nanochat/health`
+**nanochat.health** - `GET /nanochat/health`
 
 Returns worker health, model loaded status, device, and source.
 
@@ -113,9 +113,9 @@ All persistent state goes through iii `state::get/set` primitives. The worker us
 
 ## Testing
 
-Tested against a live iii engine (v0.10.0) on macOS with Python 3.11. All 13 functions and 13 triggers register on connect. Functions that need a loaded model return clear error messages when none is loaded:the worker stays alive through all error cases.
+Tested against a live iii engine (v0.10.0) on macOS with Python 3.11. All 13 functions and 13 triggers register on connect. Functions that need a loaded model return clear error messages when none is loaded. The worker stays alive through all error cases.
 
-```
+```text
 OK   nanochat.health              {"status": "ok", "model_loaded": false}
 OK   nanochat.model.status        {"loaded": false}
 OK   nanochat.chat.history        {"sessions": []}
@@ -130,7 +130,7 @@ OK   nanochat.health              {"status": "ok"}  (still alive after errors)
 10/10 responded, 0 crashes
 ```
 
-The WARN results are expected:`tokenizer.encode`/`decode` need a trained tokenizer (run `tok_train.py` first or load a model), and `chat.complete`/`eval.core` need a loaded model via `nanochat.model.load`.
+The WARN results are expected. `tokenizer.encode`/`decode` need a trained tokenizer (run `tok_train.py` first or load a model), and `chat.complete`/`eval.core` need a loaded model via `nanochat.model.load`.
 
 ### Known issues
 

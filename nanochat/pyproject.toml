@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
 [project]
 name = "iii-nanochat"
 version = "0.1.0"
-description = "nanochat LLM worker for iii-engine — train, fine-tune, evaluate, and chat with GPT models"
+description = "nanochat LLM worker for iii-engine"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [

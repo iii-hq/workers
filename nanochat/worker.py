@@ -239,9 +239,9 @@ class GPUState:
             self.device = device
 
     def snapshot(self):
-        """Return a consistent snapshot of (model, tokenizer, engine, meta, source, device) under lock."""
+        """Return a consistent snapshot under lock."""
         with self._lock:
-            return self.model, self.tokenizer, self.engine, self.meta, self.source, self.device
+            return self.model, self.tokenizer, self.engine, self.meta, self.source, self.device, self.model_tag
 
     @property
     def ready(self):
@@ -274,7 +274,7 @@ async def fn_chat_complete(data: ChatCompleteInput) -> ChatCompleteOutput:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
-    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
+    model, tokenizer, engine, _meta, source, _device, _tag = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
     conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
@@ -309,7 +309,7 @@ async def fn_chat_stream(data: ChatCompleteInput) -> ChatCompleteOutput:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
-    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
+    model, tokenizer, engine, _meta, source, _device, _tag = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
     conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
@@ -356,22 +356,23 @@ async def fn_model_load(data: ModelLoadInput) -> ModelStatusOutput:
     inp = ModelLoadInput.model_validate(data) if isinstance(data, dict) else data
     device = inp.device or autodetect_device_type()
     gpu.load(inp.source, device, model_tag=inp.model_tag, step=inp.step)
+    model, _tok, _eng, meta, source, dev, tag = gpu.snapshot()
     await state_set("nanochat:models", "current", {
-        "source": gpu.source, "model_tag": gpu.model_tag, "device": gpu.device,
-        "config": gpu.meta.get("model_config", {}) if gpu.meta else {},
-        "parameters": sum(p.numel() for p in gpu.model.parameters()),
+        "source": source, "model_tag": tag, "device": dev,
+        "config": meta.get("model_config", {}) if meta else {},
+        "parameters": sum(p.numel() for p in model.parameters()),
     })
-    logger.info("Model loaded", {"source": inp.source, "device": device})
+    logger.info("Model loaded", {"source": source, "device": dev})
     return await fn_model_status({})
 
 
 async def fn_model_status(data: dict) -> ModelStatusOutput:
     if not gpu.ready:
         return ModelStatusOutput(loaded=False).model_dump()
-    model, _tok, _eng, meta, source, device = gpu.snapshot()
+    model, _tok, _eng, meta, source, device, model_tag = gpu.snapshot()
     config = meta.get("model_config", {}) if meta else {}
     return ModelStatusOutput(
-        loaded=True, source=source, model_tag=gpu.model_tag, device=device,
+        loaded=True, source=source, model_tag=model_tag, device=device,
         n_layer=config.get("n_layer"), n_embd=config.get("n_embd"),
         vocab_size=config.get("vocab_size"), sequence_len=config.get("sequence_len"),
         parameters=sum(p.numel() for p in model.parameters()) if model else None,
@@ -384,7 +385,7 @@ async def fn_model_sample(data: ModelSampleInput) -> dict:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
-    _model, tokenizer, engine, _meta, _source, _device = gpu.snapshot()
+    _model, tokenizer, engine, _meta, _source, _device, _tag = gpu.snapshot()
     inp = ModelSampleInput.model_validate(data) if isinstance(data, dict) else data
     bos = tokenizer.get_bos_token_id()
     tokens = [bos] + tokenizer.encode(inp.prompt) if inp.prompt else [bos]
@@ -412,7 +413,9 @@ async def fn_tokenizer_encode(data: TokenizeInput) -> dict:
     _ensure_nanochat()
     from nanochat.tokenizer import get_tokenizer
     inp = TokenizeInput.model_validate(data) if isinstance(data, dict) else data
-    tokenizer = gpu.tokenizer or get_tokenizer()
+    _model, tokenizer, _eng, _meta, _src, _dev, _tag = gpu.snapshot()
+    if tokenizer is None:
+        tokenizer = get_tokenizer()
     bos = tokenizer.get_bos_token_id()
     encoded = tokenizer.encode(inp.text, prepend=bos)
     count = sum(len(t) for t in encoded) if isinstance(inp.text, list) else len(encoded)
@@ -423,7 +426,9 @@ async def fn_tokenizer_decode(data: DecodeInput) -> dict:
     _ensure_nanochat()
     from nanochat.tokenizer import get_tokenizer
     inp = DecodeInput.model_validate(data) if isinstance(data, dict) else data
-    tokenizer = gpu.tokenizer or get_tokenizer()
+    _model, tokenizer, _eng, _meta, _src, _dev, _tag = gpu.snapshot()
+    if tokenizer is None:
+        tokenizer = get_tokenizer()
     return {"text": tokenizer.decode(inp.tokens)}
 
 
@@ -699,7 +704,7 @@ async def fn_eval_core(data: EvalCoreInput) -> dict:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
     _ensure_nanochat()
 
-    model, tokenizer, _engine, _meta, source, device = gpu.snapshot()
+    model, tokenizer, _engine, _meta, source, device, _tag = gpu.snapshot()
     inp = EvalCoreInput.model_validate(data) if isinstance(data, dict) else data
 
     scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
@@ -730,7 +735,7 @@ async def fn_eval_loss(data: EvalLossInput) -> dict:
     from nanochat.tokenizer import get_token_bytes
     from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 
-    model, tokenizer, _engine, _meta, source, device = gpu.snapshot()
+    model, tokenizer, _engine, _meta, source, device, _tag = gpu.snapshot()
     inp = EvalLossInput.model_validate(data) if isinstance(data, dict) else data
     token_bytes = get_token_bytes(device)
     B, T = inp.device_batch_size, model.config.sequence_len
@@ -748,7 +753,7 @@ async def fn_eval_chat(data: EvalChatInput) -> dict:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
     _ensure_nanochat()
 
-    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
+    model, tokenizer, engine, _meta, source, _device, _tag = gpu.snapshot()
     inp = EvalChatInput.model_validate(data) if isinstance(data, dict) else data
 
     scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
@@ -797,21 +802,22 @@ async def fn_checkpoint_save(data: CheckpointSaveInput) -> dict:
     from nanochat.checkpoint_manager import save_checkpoint
     from nanochat.common import get_base_dir
 
+    model, _tok, _eng, meta, source, _dev, model_tag = gpu.snapshot()
     inp = CheckpointSaveInput.model_validate(data) if isinstance(data, dict) else data
-    tag = inp.tag or gpu.model_tag or "manual"
+    tag = inp.tag or model_tag or "manual"
     step = inp.step or int(time.time())
 
     base_dir = get_base_dir()
-    phase_dir = {"base": "checkpoints", "sft": "chatsft_checkpoints", "rl": "chatrl_checkpoints"}.get(gpu.source, "checkpoints")
+    phase_dir = {"base": "checkpoints", "sft": "chatsft_checkpoints", "rl": "chatrl_checkpoints"}.get(source, "checkpoints")
     checkpoint_dir = os.path.join(base_dir, phase_dir, tag)
 
-    model_config = gpu.meta.get("model_config", {}) if gpu.meta else {}
-    save_checkpoint(checkpoint_dir, step, gpu.model.state_dict(), None, {
+    model_config = meta.get("model_config", {}) if meta else {}
+    save_checkpoint(checkpoint_dir, step, model.state_dict(), None, {
         "step": step, "model_config": model_config,
     })
 
     await state_set("nanochat:checkpoints", f"{tag}-{step}", {
-        "tag": tag, "step": step, "source": gpu.source, "path": checkpoint_dir,
+        "tag": tag, "step": step, "source": source, "path": checkpoint_dir,
     })
     logger.info("Checkpoint saved", {"tag": tag, "step": step})
     return {"tag": tag, "step": step, "path": checkpoint_dir}
