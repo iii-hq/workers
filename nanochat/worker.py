@@ -433,7 +433,7 @@ async def fn_tools_execute(data: ExecuteCodeInput) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess runner for training scripts (100% nanochat fidelity)
+# Subprocess runner with real-time stdout parsing -> iii state
 # ---------------------------------------------------------------------------
 
 def _nanochat_repo_dir() -> str:
@@ -441,11 +441,71 @@ def _nanochat_repo_dir() -> str:
     return str(Path(NANOCHAT_DIR).parent)
 
 
-def _run_nanochat_script(module: str, args: list[str], run_id: str, train_type: str):
-    """Run a nanochat script as subprocess. Returns (returncode, stdout, stderr)."""
+def _parse_training_line(line: str) -> dict | None:
+    """Parse nanochat stdout into structured metrics. Returns None for non-metric lines."""
+    import re
+
+    # base_train / chat_sft step line:
+    # "step 00100/05000 (2.00%) | loss: 4.123456 | lrm: 0.50 | dt: 123.45ms | tok/sec: 123,456 | bf16_mfu: 0.45"
+    m = re.match(r"step\s+(\d+)(?:/(\d+))?\s+\((\d+\.\d+)%\)\s*\|(.+)", line)
+    if m:
+        metrics = {"step": int(m.group(1)), "pct": float(m.group(3))}
+        if m.group(2):
+            metrics["total_steps"] = int(m.group(2))
+        for pair in m.group(4).split("|"):
+            pair = pair.strip()
+            kv = pair.split(":")
+            if len(kv) == 2:
+                key = kv[0].strip().replace(" ", "_")
+                val = kv[1].strip().replace(",", "").rstrip("ms").rstrip("m")
+                try:
+                    metrics[key] = float(val)
+                except ValueError:
+                    metrics[key] = val
+        return metrics
+
+    # Validation BPB: "Step 00250 | Validation bpb: 1.234567"
+    m = re.match(r"Step\s+(\d+)\s+\|\s+Validation bpb:\s+(\S+)", line)
+    if m:
+        return {"step": int(m.group(1)), "val_bpb": float(m.group(2)), "event": "eval_bpb"}
+
+    # CORE metric: "Step 00250 | CORE metric: 0.1234"
+    m = re.match(r"Step\s+(\d+)\s+\|\s+CORE metric:\s+(\S+)", line)
+    if m:
+        return {"step": int(m.group(1)), "core_metric": float(m.group(2)), "event": "eval_core"}
+
+    # ChatCORE: "Step 00200 | ChatCORE: 0.1234 | ChatCORE_cat: 0.2345"
+    m = re.match(r"Step\s+(\d+)\s+\|\s+ChatCORE:\s+(\S+)\s+\|\s+ChatCORE_cat:\s+(\S+)", line)
+    if m:
+        return {"step": int(m.group(1)), "chatcore": float(m.group(2)), "chatcore_cat": float(m.group(3)), "event": "eval_chatcore"}
+
+    # RL step: "Step 10/100 | Average reward: 0.5 | Average sequence length: 128.00"
+    m = re.match(r"Step\s+(\d+)/(\d+)\s+\|\s+Average reward:\s+(\S+)\s+\|\s+Average sequence length:\s+(\S+)", line)
+    if m:
+        return {"step": int(m.group(1)), "total_steps": int(m.group(2)), "avg_reward": float(m.group(3)), "avg_seq_len": float(m.group(4))}
+
+    # RL pass@k: "Step 10 | pass@1: 0.25, pass@16: 0.75"
+    m = re.match(r"Step\s+(\d+)\s+\|\s+(pass@.+)", line)
+    if m:
+        metrics = {"step": int(m.group(1)), "event": "eval_passk"}
+        for pair in m.group(2).split(","):
+            kv = pair.strip().split(":")
+            if len(kv) == 2:
+                metrics[kv[0].strip()] = float(kv[1].strip())
+        return metrics
+
+    return None
+
+
+async def _run_training(module: str, args: list[str], run_id: str, train_type: str, extra_state: dict | None = None) -> dict:
+    """Run a nanochat training script as subprocess, parse stdout, push metrics to iii state in real-time."""
     import subprocess
+
     cmd = [sys.executable, "-m", module] + args
-    logger.info(f"Running: {' '.join(cmd)}", {"run_id": run_id, "type": train_type})
+    logger.info(f"Running: {module}", {"run_id": run_id, "type": train_type})
+
+    base_state = {"status": "running", "type": train_type, **(extra_state or {})}
+    await state_set("nanochat:training", run_id, base_state)
 
     proc = subprocess.Popen(
         cmd, cwd=_nanochat_repo_dir(),
@@ -453,26 +513,49 @@ def _run_nanochat_script(module: str, args: list[str], run_id: str, train_type: 
         text=True, bufsize=1,
     )
 
-    output_lines = []
+    last_metrics = {}
+    output_tail = []
+
     for line in proc.stdout:
         line = line.rstrip()
-        output_lines.append(line)
-        if len(output_lines) % 50 == 0:
-            logger.info(f"[{train_type}] {line}", {"run_id": run_id})
+        output_tail.append(line)
+        if len(output_tail) > 200:
+            output_tail = output_tail[-100:]
+
+        metrics = _parse_training_line(line)
+        if metrics:
+            last_metrics.update(metrics)
+            await state_set("nanochat:training", run_id, {
+                **base_state, **last_metrics,
+            })
+
+            event = metrics.get("event")
+            if event:
+                await state_set("nanochat:evals", f"{train_type}-{event}-{metrics.get('step', 0)}", {
+                    "type": event, "run_id": run_id, **metrics,
+                })
 
     proc.wait()
-    full_output = "\n".join(output_lines)
-    return proc.returncode, full_output
+
+    status = "complete" if proc.returncode == 0 else "failed"
+    final_state = {
+        **base_state, **last_metrics,
+        "status": status, "returncode": proc.returncode,
+        "output_tail": "\n".join(output_tail[-50:]),
+    }
+    await state_set("nanochat:training", run_id, final_state)
+    logger.info(f"{train_type} training {status}", {"run_id": run_id, "returncode": proc.returncode})
+
+    return {"status": status, "run_id": run_id, "returncode": proc.returncode, **last_metrics}
 
 
 # ---------------------------------------------------------------------------
-# Training handlers (all queued, run actual nanochat scripts as subprocess)
+# Training handlers (all queued, run actual nanochat scripts with live state)
 # ---------------------------------------------------------------------------
 
 async def fn_train_tokenizer(data: TrainTokenizerInput) -> dict:
     inp = TrainTokenizerInput.model_validate(data) if isinstance(data, dict) else data
     run_id = str(uuid.uuid4())[:8]
-    await state_set("nanochat:training", run_id, {"status": "running", "type": "tokenizer"})
 
     args = [
         "--max-chars", str(inp.max_chars),
@@ -480,21 +563,13 @@ async def fn_train_tokenizer(data: TrainTokenizerInput) -> dict:
         "--vocab-size", str(inp.vocab_size),
     ]
 
-    returncode, output = _run_nanochat_script("scripts.tok_train", args, run_id, "tokenizer")
-
-    status = "complete" if returncode == 0 else "failed"
-    await state_set("nanochat:training", run_id, {
-        "status": status, "type": "tokenizer", "returncode": returncode,
-        "output_tail": output[-2000:] if output else "",
-    })
-    logger.info(f"Tokenizer training {status}", {"run_id": run_id, "returncode": returncode})
-    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
+    return await _run_training("scripts.tok_train", args, run_id, "tokenizer",
+                               {"vocab_size": inp.vocab_size})
 
 
 async def fn_train_base(data: TrainBaseInput) -> dict:
     inp = TrainBaseInput.model_validate(data) if isinstance(data, dict) else data
     run_id = str(uuid.uuid4())[:8]
-    await state_set("nanochat:training", run_id, {"status": "running", "type": "base", "depth": inp.depth})
 
     args = [
         "--run", inp.run_name,
@@ -520,21 +595,13 @@ async def fn_train_base(data: TrainBaseInput) -> dict:
     if inp.fp8:
         args += ["--fp8"]
 
-    returncode, output = _run_nanochat_script("scripts.base_train", args, run_id, "base")
-
-    status = "complete" if returncode == 0 else "failed"
-    await state_set("nanochat:training", run_id, {
-        "status": status, "type": "base", "depth": inp.depth,
-        "returncode": returncode, "output_tail": output[-2000:] if output else "",
-    })
-    logger.info(f"Base training {status}", {"run_id": run_id, "returncode": returncode})
-    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
+    return await _run_training("scripts.base_train", args, run_id, "base",
+                               {"depth": inp.depth, "model_tag": inp.model_tag or f"d{inp.depth}"})
 
 
 async def fn_train_sft(data: TrainSFTInput) -> dict:
     inp = TrainSFTInput.model_validate(data) if isinstance(data, dict) else data
     run_id = str(uuid.uuid4())[:8]
-    await state_set("nanochat:training", run_id, {"status": "running", "type": "sft"})
 
     args = [
         "--run", inp.run_name,
@@ -556,21 +623,13 @@ async def fn_train_sft(data: TrainSFTInput) -> dict:
     if inp.step:
         args += ["--model-step", str(inp.step)]
 
-    returncode, output = _run_nanochat_script("scripts.chat_sft", args, run_id, "sft")
-
-    status = "complete" if returncode == 0 else "failed"
-    await state_set("nanochat:training", run_id, {
-        "status": status, "type": "sft", "returncode": returncode,
-        "output_tail": output[-2000:] if output else "",
-    })
-    logger.info(f"SFT training {status}", {"run_id": run_id, "returncode": returncode})
-    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
+    return await _run_training("scripts.chat_sft", args, run_id, "sft",
+                               {"source": inp.source})
 
 
 async def fn_train_rl(data: TrainRLInput) -> dict:
     inp = TrainRLInput.model_validate(data) if isinstance(data, dict) else data
     run_id = str(uuid.uuid4())[:8]
-    await state_set("nanochat:training", run_id, {"status": "running", "type": "rl"})
 
     args = [
         "--run", inp.run_name,
@@ -591,15 +650,7 @@ async def fn_train_rl(data: TrainRLInput) -> dict:
     if inp.step:
         args += ["--model-step", str(inp.step)]
 
-    returncode, output = _run_nanochat_script("scripts.chat_rl", args, run_id, "rl")
-
-    status = "complete" if returncode == 0 else "failed"
-    await state_set("nanochat:training", run_id, {
-        "status": status, "type": "rl", "returncode": returncode,
-        "output_tail": output[-2000:] if output else "",
-    })
-    logger.info(f"RL training {status}", {"run_id": run_id, "returncode": returncode})
-    return {"status": status, "run_id": run_id, "returncode": returncode, "output_tail": output[-2000:]}
+    return await _run_training("scripts.chat_rl", args, run_id, "rl")
 
 
 async def fn_train_status(data: TrainStatusInput) -> dict:
