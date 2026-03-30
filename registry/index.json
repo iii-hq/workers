@@ -30,7 +30,7 @@
             "has_checksum": false,
             "default_config": {
                 "source": "sft",
-                "device": "auto",
+                "device": null,
                 "engine_url": "ws://localhost:49134"
             },
             "version": "0.1.0"

@@ -831,10 +831,14 @@ async def fn_checkpoint_list(data: CheckpointListInput) -> dict:
         for tag_dir in sorted(os.listdir(search_dir)):
             tag_path = os.path.join(search_dir, tag_dir)
             if os.path.isdir(tag_path):
-                steps = sorted([
-                    int(f.split("_")[1].split(".")[0])
-                    for f in os.listdir(tag_path) if f.startswith("model_") and f.endswith(".pt")
-                ])
+                steps = []
+                for f in os.listdir(tag_path):
+                    if f.startswith("model_") and f.endswith(".pt"):
+                        try:
+                            steps.append(int(f[6:-3]))
+                        except ValueError:
+                            continue
+                steps.sort()
                 checkpoints.append({"tag": tag_dir, "steps": steps, "path": tag_path})
 
     return {"source": inp.source, "checkpoints": checkpoints}
