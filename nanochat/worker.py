@@ -55,7 +55,8 @@ def safe(fn):
         try:
             return await fn(data)
         except Exception as e:
-            return {"error": str(e), "traceback": traceback.format_exc()}
+            logger.error(f"Handler {fn.__name__} failed", {"error": str(e), "traceback": traceback.format_exc()})
+            return {"error": str(e)}
     wrapper.__name__ = fn.__name__
     wrapper.__annotations__ = fn.__annotations__
     return wrapper
@@ -237,6 +238,11 @@ class GPUState:
             self.model_tag = model_tag
             self.device = device
 
+    def snapshot(self):
+        """Return a consistent snapshot of (model, tokenizer, engine, meta, source, device) under lock."""
+        with self._lock:
+            return self.model, self.tokenizer, self.engine, self.meta, self.source, self.device
+
     @property
     def ready(self):
         return self.engine is not None
@@ -268,29 +274,30 @@ async def fn_chat_complete(data: ChatCompleteInput) -> ChatCompleteOutput:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
+    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
     conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
 
-    if hasattr(gpu.tokenizer, "render_conversation"):
-        tokens, _mask = gpu.tokenizer.render_conversation(conversation, max_tokens=gpu.model.config.sequence_len)
+    if hasattr(tokenizer, "render_conversation"):
+        tokens, _mask = tokenizer.render_conversation(conversation, max_tokens=model.config.sequence_len)
     else:
-        tokens = gpu.tokenizer.render_for_completion(conversation)
+        tokens = tokenizer.render_for_completion(conversation)
 
     with torch.no_grad():
-        results, _masks = gpu.engine.generate_batch(
+        results, _masks = engine.generate_batch(
             [tokens], num_samples=1,
             max_tokens=inp.max_tokens, temperature=inp.temperature, top_k=inp.top_k,
         )
 
     generated_ids = results[0]
-    text = gpu.tokenizer.decode(generated_ids)
+    text = tokenizer.decode(generated_ids)
     if "<|assistant_end|>" in text:
         text = text[:text.index("<|assistant_end|>")]
 
     conversation.append({"role": "assistant", "content": text.strip()})
     await state_set("nanochat:sessions", session_id, {
-        "messages": conversation, "model": gpu.source, "tokens_generated": len(generated_ids),
+        "messages": conversation, "model": source, "tokens_generated": len(generated_ids),
     })
     logger.info("Chat completion", {"session_id": session_id, "tokens": len(generated_ids)})
     return ChatCompleteOutput(content=text.strip(), tokens_generated=len(generated_ids), session_id=session_id).model_dump()
@@ -302,23 +309,24 @@ async def fn_chat_stream(data: ChatCompleteInput) -> ChatCompleteOutput:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
+    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
     inp = ChatCompleteInput.model_validate(data) if isinstance(data, dict) else data
     session_id = inp.session_id or str(uuid.uuid4())
     conversation = [{"role": m.role, "content": m.content} for m in inp.messages]
 
-    if hasattr(gpu.tokenizer, "render_conversation"):
-        tokens, _mask = gpu.tokenizer.render_conversation(conversation, max_tokens=gpu.model.config.sequence_len)
+    if hasattr(tokenizer, "render_conversation"):
+        tokens, _mask = tokenizer.render_conversation(conversation, max_tokens=model.config.sequence_len)
     else:
-        tokens = gpu.tokenizer.render_for_completion(conversation)
+        tokens = tokenizer.render_for_completion(conversation)
 
     chunks = []
     with torch.no_grad():
-        for token_col, _token_masks in gpu.engine.generate(
+        for token_col, _token_masks in engine.generate(
             [tokens], num_samples=1,
             max_tokens=inp.max_tokens, temperature=inp.temperature, top_k=inp.top_k,
         ):
             token_id = token_col[0].item()
-            piece = gpu.tokenizer.decode([token_id])
+            piece = tokenizer.decode([token_id])
             if "<|assistant_end|>" in piece:
                 break
             chunks.append(piece)
@@ -326,7 +334,7 @@ async def fn_chat_stream(data: ChatCompleteInput) -> ChatCompleteOutput:
     full_text = "".join(chunks)
     conversation.append({"role": "assistant", "content": full_text.strip()})
     await state_set("nanochat:sessions", session_id, {
-        "messages": conversation, "model": gpu.source, "tokens_generated": len(chunks),
+        "messages": conversation, "model": source, "tokens_generated": len(chunks),
     })
     return ChatCompleteOutput(content=full_text.strip(), tokens_generated=len(chunks), session_id=session_id).model_dump()
 
@@ -360,12 +368,13 @@ async def fn_model_load(data: ModelLoadInput) -> ModelStatusOutput:
 async def fn_model_status(data: dict) -> ModelStatusOutput:
     if not gpu.ready:
         return ModelStatusOutput(loaded=False).model_dump()
-    config = gpu.meta.get("model_config", {}) if gpu.meta else {}
+    model, _tok, _eng, meta, source, device = gpu.snapshot()
+    config = meta.get("model_config", {}) if meta else {}
     return ModelStatusOutput(
-        loaded=True, source=gpu.source, model_tag=gpu.model_tag, device=gpu.device,
+        loaded=True, source=source, model_tag=gpu.model_tag, device=device,
         n_layer=config.get("n_layer"), n_embd=config.get("n_embd"),
         vocab_size=config.get("vocab_size"), sequence_len=config.get("sequence_len"),
-        parameters=sum(p.numel() for p in gpu.model.parameters()) if gpu.model else None,
+        parameters=sum(p.numel() for p in model.parameters()) if model else None,
     ).model_dump()
 
 
@@ -375,18 +384,19 @@ async def fn_model_sample(data: ModelSampleInput) -> dict:
     if not gpu.ready:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
 
+    _model, tokenizer, engine, _meta, _source, _device = gpu.snapshot()
     inp = ModelSampleInput.model_validate(data) if isinstance(data, dict) else data
-    bos = gpu.tokenizer.get_bos_token_id()
-    tokens = [bos] + gpu.tokenizer.encode(inp.prompt) if inp.prompt else [bos]
+    bos = tokenizer.get_bos_token_id()
+    tokens = [bos] + tokenizer.encode(inp.prompt) if inp.prompt else [bos]
 
     samples = []
     with torch.no_grad():
-        results, _masks = gpu.engine.generate_batch(
+        results, _masks = engine.generate_batch(
             [tokens], num_samples=inp.num_samples,
             max_tokens=inp.max_tokens, temperature=inp.temperature, top_k=inp.top_k,
         )
     for result_ids in results:
-        text = gpu.tokenizer.decode(result_ids)
+        text = tokenizer.decode(result_ids)
         if "<|assistant_end|>" in text:
             text = text[:text.index("<|assistant_end|>")]
         samples.append(text)
@@ -497,15 +507,12 @@ def _parse_training_line(line: str) -> dict | None:
     return None
 
 
-async def _run_training(module: str, args: list[str], run_id: str, train_type: str, extra_state: dict | None = None) -> dict:
-    """Run a nanochat training script as subprocess, parse stdout, push metrics to iii state in real-time."""
+def _run_subprocess_blocking(module: str, args: list[str], run_id: str, train_type: str,
+                             base_state: dict, on_metrics) -> dict:
+    """Blocking subprocess runner. Called from a thread via asyncio.to_thread."""
     import subprocess
 
     cmd = [sys.executable, "-m", module] + args
-    logger.info(f"Running: {module}", {"run_id": run_id, "type": train_type})
-
-    base_state = {"status": "running", "type": train_type, **(extra_state or {})}
-    await state_set("nanochat:training", run_id, base_state)
 
     proc = subprocess.Popen(
         cmd, cwd=_nanochat_repo_dir(),
@@ -525,28 +532,51 @@ async def _run_training(module: str, args: list[str], run_id: str, train_type: s
         metrics = _parse_training_line(line)
         if metrics:
             last_metrics.update(metrics)
-            await state_set("nanochat:training", run_id, {
-                **base_state, **last_metrics,
-            })
-
-            event = metrics.get("event")
-            if event:
-                await state_set("nanochat:evals", f"{train_type}-{event}-{metrics.get('step', 0)}", {
-                    "type": event, "run_id": run_id, **metrics,
-                })
+            on_metrics(run_id, {**base_state, **last_metrics}, metrics)
 
     proc.wait()
 
     status = "complete" if proc.returncode == 0 else "failed"
-    final_state = {
-        **base_state, **last_metrics,
+    return {
         "status": status, "returncode": proc.returncode,
+        "last_metrics": last_metrics,
         "output_tail": "\n".join(output_tail[-50:]),
     }
-    await state_set("nanochat:training", run_id, final_state)
-    logger.info(f"{train_type} training {status}", {"run_id": run_id, "returncode": proc.returncode})
 
-    return {"status": status, "run_id": run_id, "returncode": proc.returncode, **last_metrics}
+
+async def _run_training(module: str, args: list[str], run_id: str, train_type: str, extra_state: dict | None = None) -> dict:
+    """Run a nanochat training script in a thread, parse stdout, push metrics to iii state in real-time."""
+    import asyncio
+
+    base_state = {"status": "running", "type": train_type, **(extra_state or {})}
+    await state_set("nanochat:training", run_id, base_state)
+    logger.info(f"Running: {module}", {"run_id": run_id, "type": train_type})
+
+    def on_metrics(rid, state, metrics):
+        iii_client.trigger({"function_id": "state::set", "payload": {
+            "scope": "nanochat:training", "key": rid, "value": state,
+        }})
+        event = metrics.get("event")
+        if event:
+            iii_client.trigger({"function_id": "state::set", "payload": {
+                "scope": "nanochat:evals",
+                "key": f"{train_type}-{event}-{metrics.get('step', 0)}",
+                "value": {"type": event, "run_id": rid, **metrics},
+            }})
+
+    result = await asyncio.to_thread(
+        _run_subprocess_blocking, module, args, run_id, train_type, base_state, on_metrics,
+    )
+
+    final_state = {
+        **base_state, **result["last_metrics"],
+        "status": result["status"], "returncode": result["returncode"],
+        "output_tail": result["output_tail"],
+    }
+    await state_set("nanochat:training", run_id, final_state)
+    logger.info(f"{train_type} training {result['status']}", {"run_id": run_id, "returncode": result["returncode"]})
+
+    return {"status": result["status"], "run_id": run_id, "returncode": result["returncode"], **result["last_metrics"]}
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +699,7 @@ async def fn_eval_core(data: EvalCoreInput) -> dict:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
     _ensure_nanochat()
 
+    model, tokenizer, _engine, _meta, source, device = gpu.snapshot()
     inp = EvalCoreInput.model_validate(data) if isinstance(data, dict) else data
 
     scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
@@ -676,12 +707,12 @@ async def fn_eval_core(data: EvalCoreInput) -> dict:
         sys.path.insert(0, scripts_dir)
     from base_eval import evaluate_core
 
-    device = gpu.model.get_device() if hasattr(gpu.model, "get_device") else gpu.device
-    result = evaluate_core(gpu.model, gpu.tokenizer, device, max_per_task=inp.max_per_task)
+    dev = model.get_device() if hasattr(model, "get_device") else device
+    result = evaluate_core(model, tokenizer, dev, max_per_task=inp.max_per_task)
 
     await state_set("nanochat:evals", f"core-{int(time.time())}", {
         "type": "core", "core_metric": result["core_metric"],
-        "results": result["results"], "model": gpu.source,
+        "results": result["results"], "model": source,
     })
 
     return {
@@ -699,16 +730,17 @@ async def fn_eval_loss(data: EvalLossInput) -> dict:
     from nanochat.tokenizer import get_token_bytes
     from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
 
+    model, tokenizer, _engine, _meta, source, device = gpu.snapshot()
     inp = EvalLossInput.model_validate(data) if isinstance(data, dict) else data
-    token_bytes = get_token_bytes(gpu.device)
-    B, T = inp.device_batch_size, gpu.model.config.sequence_len
-    batches = tokenizing_distributed_data_loader_bos_bestfit(gpu.tokenizer, B, T, inp.split, device=gpu.device)
-    bpb = evaluate_bpb(gpu.model, batches, steps=inp.steps, token_bytes=token_bytes)
+    token_bytes = get_token_bytes(device)
+    B, T = inp.device_batch_size, model.config.sequence_len
+    batches = tokenizing_distributed_data_loader_bos_bestfit(tokenizer, B, T, inp.split, device=device)
+    bpb = evaluate_bpb(model, batches, steps=inp.steps, token_bytes=token_bytes)
 
     await state_set("nanochat:evals", f"loss-{int(time.time())}", {
-        "type": "bpb", "bpb": bpb, "split": inp.split, "model": gpu.source,
+        "type": "bpb", "bpb": bpb, "split": inp.split, "model": source,
     })
-    return {"bits_per_byte": bpb, "split": inp.split, "model": gpu.source}
+    return {"bits_per_byte": bpb, "split": inp.split, "model": source}
 
 
 async def fn_eval_chat(data: EvalChatInput) -> dict:
@@ -716,6 +748,7 @@ async def fn_eval_chat(data: EvalChatInput) -> dict:
         raise RuntimeError("No model loaded. Trigger 'nanochat.model.load' first.")
     _ensure_nanochat()
 
+    model, tokenizer, engine, _meta, source, _device = gpu.snapshot()
     inp = EvalChatInput.model_validate(data) if isinstance(data, dict) else data
 
     scripts_dir = os.path.join(_nanochat_repo_dir(), "scripts")
@@ -738,7 +771,7 @@ async def fn_eval_chat(data: EvalChatInput) -> dict:
     for task_name in task_names:
         try:
             acc = run_chat_eval(
-                task_name, gpu.model, gpu.tokenizer, gpu.engine,
+                task_name, model, tokenizer, engine,
                 batch_size=inp.batch_size, num_samples=inp.num_samples,
                 max_new_tokens=inp.max_new_tokens, temperature=inp.temperature,
                 top_k=inp.top_k, max_problems=inp.max_problems,
@@ -748,9 +781,9 @@ async def fn_eval_chat(data: EvalChatInput) -> dict:
             results[task_name] = {"error": str(e)}
 
     await state_set("nanochat:evals", f"chat-{int(time.time())}", {
-        "type": "chat", "results": results, "model": gpu.source,
+        "type": "chat", "results": results, "model": source,
     })
-    return {"results": results, "model": gpu.source}
+    return {"results": results, "model": source}
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +877,7 @@ def register_all(iii):
         ("nanochat.tokenizer.encode", fn_tokenizer_encode, "Encode text to BPE token IDs", "http", {"api_path": "/nanochat/tokenizer/encode", "http_method": "POST"}),
         ("nanochat.tokenizer.decode", fn_tokenizer_decode, "Decode token IDs to text", "http", {"api_path": "/nanochat/tokenizer/decode", "http_method": "POST"}),
         # Tools
-        ("nanochat.tools.execute", fn_tools_execute, "Execute Python code in sandbox", "http", {"api_path": "/nanochat/tools/execute", "http_method": "POST"}),
+        ("nanochat.tools.execute", fn_tools_execute, "Execute Python code (in-process, not sandboxed)", "http", {"api_path": "/nanochat/tools/execute", "http_method": "POST"}),
         # Training (all queued)
         ("nanochat.train.tokenizer", fn_train_tokenizer, "Train BPE tokenizer from dataset", "queue", {"queue_name": "nanochat-training"}),
         ("nanochat.train.base", fn_train_base, "Pretrain base GPT model from scratch", "queue", {"queue_name": "nanochat-training"}),
