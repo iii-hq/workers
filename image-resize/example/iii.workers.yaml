@@ -1,0 +1,8 @@
+workers:
+  image-resize:
+    image: docker.io/andersonofl/image-resize:latest
+    env:
+      III_ENGINE_URL: "ws://localhost:49134"
+    resources:
+      cpus: '0.5'
+      memory: 256Mi

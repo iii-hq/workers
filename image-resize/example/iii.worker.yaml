@@ -5,7 +5,6 @@ version: 1.0.0
 
 runtime:
   language: typescript
-  package_manager: bun
   entry: src/index.ts
 
 resources:
@@ -13,6 +12,5 @@ resources:
   cpus: 1
 
 scripts:
-  setup: "curl -fsSL https://bun.sh/install | bash"
-  install: "export PATH=$HOME/.bun/bin:$PATH && bun install"
-  start: "export PATH=$HOME/.bun/bin:$PATH && bun src/index.ts"
+  install: "npm install"
+  start: "npm run dev"

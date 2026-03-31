@@ -1,5 +1,3 @@
-port: 49134
-
 modules:
   - class: modules::api::RestApiModule
     config:
