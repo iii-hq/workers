@@ -3,4 +3,4 @@ target/
 .claude/
 .idea/
 .DS_Store
-docs
+docsmcp/Cargo.lock
