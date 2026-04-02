@@ -20,6 +20,30 @@
                 }
             },
             "version": "0.1.2"
+        },
+        "mcp": {
+            "description": "MCP protocol worker — expose iii-engine functions as MCP tools (stdio + Streamable HTTP)",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "mcp",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "engine_url": "ws://localhost:49134",
+                "expose_all": false
+            },
+            "version": "0.3.0"
+        },
+        "a2a": {
+            "description": "A2A protocol worker — expose iii-engine functions as A2A skills (agent card + JSON-RPC)",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "a2a",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "engine_url": "ws://localhost:49134",
+                "expose_all": false
+            },
+            "version": "0.3.0"
         }
     }
 }
