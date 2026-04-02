@@ -449,34 +449,67 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                 },
                 None => return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params")),
             };
-            let function_id = p.name.replace("__", "::");
-            if !expose_all {
-                if let Ok(fns) = iii.list_functions().await {
-                    let exposed = fns.iter().any(|f| {
-                        f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
-                    });
-                    if !exposed {
-                        return json!(JsonRpcResponse::success(
-                            id,
-                            tool_error(&format!(
-                                "Function '{}' is not exposed via mcp.expose metadata",
-                                function_id
-                            ))
-                        ));
+            match p.name.as_str() {
+                "iii_worker_register" | "iii_worker_stop" | "iii_trigger_register" | "iii_trigger_unregister" => {
+                    Ok(tool_error("This tool requires stdio transport (worker/trigger management is not available over HTTP)"))
+                }
+                "iii_trigger_void" => {
+                    let fid = str_field(&p.arguments, "function_id");
+                    if fid.is_empty() {
+                        Ok(tool_error("Missing required field: function_id"))
+                    } else {
+                        let payload = p.arguments.get("payload").cloned().unwrap_or(json!({}));
+                        match iii.trigger(TriggerRequest {
+                            function_id: fid.clone(), payload,
+                            action: Some(TriggerAction::Void), timeout_ms: None,
+                        }).await {
+                            Ok(_) => Ok(tool_result(&format!("Triggered (void): {}", fid))),
+                            Err(e) => Ok(tool_error(&format!("Error: {}", e))),
+                        }
                     }
                 }
-            }
-            match iii
-                .trigger(TriggerRequest {
-                    function_id,
-                    payload: p.arguments,
-                    action: None,
-                    timeout_ms: None,
-                })
-                .await
-            {
-                Ok(r) => Ok(tool_json(&r)),
-                Err(e) => Ok(tool_error(&format!("Error: {}", e))),
+                "iii_trigger_enqueue" => {
+                    let fid = str_field(&p.arguments, "function_id");
+                    if fid.is_empty() {
+                        Ok(tool_error("Missing required field: function_id"))
+                    } else {
+                        let payload = p.arguments.get("payload").cloned().unwrap_or(json!({}));
+                        let queue = str_field_or(&p.arguments, "queue", "default");
+                        match iii.trigger(TriggerRequest {
+                            function_id: fid, payload,
+                            action: Some(TriggerAction::Enqueue { queue }), timeout_ms: None,
+                        }).await {
+                            Ok(r) => Ok(tool_json(&r)),
+                            Err(e) => Ok(tool_error(&format!("Error: {}", e))),
+                        }
+                    }
+                }
+                _ => {
+                    let function_id = p.name.replace("__", "::");
+                    if !expose_all {
+                        if let Ok(fns) = iii.list_functions().await {
+                            let exposed = fns.iter().any(|f| {
+                                f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
+                            });
+                            if !exposed {
+                                return json!(JsonRpcResponse::success(
+                                    id,
+                                    tool_error(&format!(
+                                        "Function '{}' is not exposed via mcp.expose metadata",
+                                        function_id
+                                    ))
+                                ));
+                            }
+                        }
+                    }
+                    match iii.trigger(TriggerRequest {
+                        function_id, payload: p.arguments,
+                        action: None, timeout_ms: None,
+                    }).await {
+                        Ok(r) => Ok(tool_json(&r)),
+                        Err(e) => Ok(tool_error(&format!("Error: {}", e))),
+                    }
+                }
             }
         }
         "resources/list" => Ok(json!({ "resources": [
