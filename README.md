@@ -1,4 +1,4 @@
-# Motia Workers
+# III Workers
 
 Worker modules for the [III engine](https://github.com/iii-hq/iii).
 
