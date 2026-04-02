@@ -41,6 +41,87 @@ iii.registerFunction({
 }, handler)
 ```
 
+#### Testing with MCP Inspector
+
+Use [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to debug and validate the MCP worker interactively.
+
+**Setup:**
+
+Create `mcp-inspector-config.json`:
+```json
+{
+  "mcpServers": {
+    "iii-mcp": {
+      "command": "./mcp/target/release/iii-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+**Web UI (interactive):**
+```bash
+npx @modelcontextprotocol/inspector \
+  --config mcp-inspector-config.json \
+  --server iii-mcp
+```
+Opens a browser at `http://localhost:6274` where you can list tools, call functions, read resources, and test prompts.
+
+**CLI (scriptable):**
+```bash
+# List tools
+npx @modelcontextprotocol/inspector --cli \
+  --config mcp-inspector-config.json \
+  --server iii-mcp \
+  --method tools/list
+
+# Call a tool
+npx @modelcontextprotocol/inspector --cli \
+  --config mcp-inspector-config.json \
+  --server iii-mcp \
+  --method tools/call \
+  --tool-name demo__echo \
+  --tool-arg 'message=hello'
+
+# List resources
+npx @modelcontextprotocol/inspector --cli \
+  --config mcp-inspector-config.json \
+  --server iii-mcp \
+  --method resources/list
+```
+
+**End-to-end test:**
+
+```bash
+# Terminal 1: start engine
+iii --use-default-config
+
+# Terminal 2: start MCP worker
+iii-mcp --debug
+
+# Terminal 3: start a test worker with metadata
+node -e "
+import { registerWorker } from 'iii-sdk'
+const iii = registerWorker('ws://localhost:49134')
+iii.registerFunction({
+  id: 'demo::echo',
+  description: 'Echo input',
+  metadata: { \"mcp.expose\": true },
+  request_format: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] }
+}, async (input) => ({ echoed: input.message }))
+setInterval(() => {}, 10000)
+" --input-type=module
+
+# Terminal 4: validate (wait ~6s for function discovery)
+npx @modelcontextprotocol/inspector --cli \
+  --config mcp-inspector-config.json \
+  --server iii-mcp \
+  --method tools/list
+# Should show demo__echo alongside the 6 built-in tools
+```
+
+> Functions registered without `mcp.expose: true` metadata will not appear in `tools/list` unless `--expose-all` is set. The engine polls for new functions every 5 seconds, so allow a brief delay after registration.
+
 ---
 
 ### a2a
