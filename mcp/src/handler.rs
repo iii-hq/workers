@@ -346,6 +346,7 @@ impl McpHandler {
             trigger_type: p.trigger_type.clone(),
             function_id: p.function_id.clone(),
             config: p.config,
+            metadata: None,
         }) {
             Ok(trigger) => {
                 let id = uuid::Uuid::new_v4().to_string();
@@ -399,7 +400,8 @@ pub fn register_http(iii: &III, expose_all: bool) {
     if let Err(e) = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
         function_id: "mcp::handler".to_string(),
-        config: json!({ "api_path": "/mcp", "http_method": "POST" }),
+        config: json!({ "api_path": "mcp", "http_method": "POST" }),
+        metadata: None,
     }) {
         tracing::error!(error = %e, "Failed to register MCP HTTP trigger");
     } else {
