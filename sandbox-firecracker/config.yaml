@@ -1,0 +1,8 @@
+vmstate_path: ./template/vmstate
+memfile_path: ./template/mem
+mem_size_mb: 256
+default_timeout: 30
+max_sandboxes: 1000
+max_cmd_timeout: 60
+max_output_bytes: 1048576
+default_language: python

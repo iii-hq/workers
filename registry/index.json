@@ -20,6 +20,45 @@
                 }
             },
             "version": "0.1.2"
+        },
+        "sandbox-docker": {
+            "description": "Docker container sandbox worker — create, exec, filesystem ops",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "sandbox-docker",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "class": "workers::sandbox_docker::SandboxDockerWorker",
+                "config": {
+                    "default_image": "python:3.12-slim",
+                    "default_timeout": 3600,
+                    "default_memory": 512,
+                    "max_sandboxes": 50,
+                    "workspace_dir": "/workspace"
+                }
+            },
+            "version": "0.1.0"
+        },
+        "sandbox-firecracker": {
+            "description": "KVM CoW fork sandbox worker — sub-ms spawn, hardware isolation (Linux-only)",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "sandbox-firecracker",
+            "supported_targets": ["x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "class": "workers::sandbox_firecracker::SandboxFirecrackerWorker",
+                "config": {
+                    "vmstate_path": "./template/vmstate",
+                    "memfile_path": "./template/mem",
+                    "mem_size_mb": 256,
+                    "default_timeout": 30,
+                    "max_sandboxes": 1000,
+                    "max_cmd_timeout": 60,
+                    "max_output_bytes": 1048576,
+                    "default_language": "python"
+                }
+            },
+            "version": "0.1.0"
         }
     }
 }
