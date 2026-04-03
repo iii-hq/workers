@@ -8,3 +8,5 @@ export const iii = registerWorker(engineWsUrl, {
     serviceName: 'image-resize-demo',
   },
 })
+
+console.info('III worker started', { myCustomVar: process.env.MY_CUSTOM_VAR })
