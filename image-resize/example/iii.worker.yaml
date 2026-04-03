@@ -3,6 +3,9 @@ iii: v1
 name: image-resize-demo
 version: 1.0.0
 
+env:
+  MY_CUSTOM_VAR: "hello222"
+
 runtime:
   language: typescript
   entry: src/index.ts

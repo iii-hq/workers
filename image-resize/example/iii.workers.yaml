@@ -3,6 +3,8 @@ workers:
     image: docker.io/andersonofl/image-resize:latest
     env:
       III_ENGINE_URL: "ws://localhost:49134"
+      III_API_URL: "http://localhost:3111"
     resources:
       cpus: '0.5'
       memory: 256Mi
+      
