@@ -13,6 +13,7 @@ iii-sdk = { path = "/Users/doggao/personal/iii.trigger-list/sdk/packages/rust/ii
 tower-lsp-server = "0.23"
 tree-sitter = "0.24"
 tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
 dashmap = "6"
 serde_json = "1"

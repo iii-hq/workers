@@ -70,6 +70,20 @@ pub fn get_completions(
             Vec::new()
         }
 
+        CompletionContext::KnownValue { field_name } => {
+            let values = engine.get_known_values(field_name);
+            values
+                .into_iter()
+                .map(|value| CompletionItem {
+                    label: value.clone(),
+                    kind: Some(CompletionItemKind::VALUE),
+                    detail: Some(field_name.clone()),
+                    insert_text: Some(value),
+                    ..Default::default()
+                })
+                .collect()
+        }
+
         CompletionContext::None => Vec::new(),
     }
 }

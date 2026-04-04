@@ -1,7 +1,7 @@
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use iii_sdk::{
     register_worker, FunctionInfo, FunctionsAvailableGuard, IIIConnectionState, InitOptions,
-    TriggerTypeInfo, WorkerInfo, WorkerMetadata, III,
+    TriggerInfo, TriggerTypeInfo, WorkerInfo, WorkerMetadata, III,
 };
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +10,11 @@ pub struct EngineClient {
     pub functions: DashMap<String, FunctionInfo>,
     pub trigger_types: DashMap<String, TriggerTypeInfo>,
     pub workers: DashMap<String, WorkerInfo>,
+    /// Known values extracted from trigger configs
+    pub known_stream_names: DashSet<String>,
+    pub known_topics: DashSet<String>,
+    pub known_api_paths: DashSet<String>,
+    pub known_scopes: DashSet<String>,
     guard: Mutex<Option<FunctionsAvailableGuard>>,
 }
 
@@ -35,6 +40,10 @@ impl EngineClient {
             functions: DashMap::new(),
             trigger_types: DashMap::new(),
             workers: DashMap::new(),
+            known_stream_names: DashSet::new(),
+            known_topics: DashSet::new(),
+            known_api_paths: DashSet::new(),
+            known_scopes: DashSet::new(),
             guard: Mutex::new(None),
         })
     }
@@ -82,6 +91,57 @@ impl EngineClient {
             for w in workers {
                 self.workers.insert(w.id.clone(), w);
             }
+        }
+
+        // Extract known names from trigger configs
+        if let Ok(triggers) = self.iii.list_triggers(false).await {
+            self.extract_known_values(&triggers);
+        }
+    }
+
+    /// Parse trigger configs to extract known stream names, topics, api paths, etc.
+    fn extract_known_values(&self, triggers: &[TriggerInfo]) {
+        self.known_stream_names.clear();
+        self.known_topics.clear();
+        self.known_api_paths.clear();
+        self.known_scopes.clear();
+
+        for trigger in triggers {
+            match trigger.trigger_type.as_str() {
+                "stream" | "stream:join" | "stream:leave" => {
+                    if let Some(name) = trigger.config.get("stream_name").and_then(|v| v.as_str()) {
+                        self.known_stream_names.insert(name.to_string());
+                    }
+                }
+                "queue" | "subscribe" => {
+                    if let Some(topic) = trigger.config.get("topic").and_then(|v| v.as_str()) {
+                        self.known_topics.insert(topic.to_string());
+                    }
+                }
+                "http" => {
+                    if let Some(path) = trigger.config.get("api_path").and_then(|v| v.as_str()) {
+                        self.known_api_paths.insert(path.to_string());
+                    }
+                }
+                "state" => {
+                    if let Some(scope) = trigger.config.get("scope").and_then(|v| v.as_str()) {
+                        self.known_scopes.insert(scope.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Get known values for a field name (stream_name, topic, api_path, scope, etc.)
+    pub fn get_known_values(&self, field_name: &str) -> Vec<String> {
+        match field_name {
+            "stream_name" => self.known_stream_names.iter().map(|v| v.clone()).collect(),
+            "topic" => self.known_topics.iter().map(|v| v.clone()).collect(),
+            "api_path" => self.known_api_paths.iter().map(|v| v.clone()).collect(),
+            "scope" => self.known_scopes.iter().map(|v| v.clone()).collect(),
+            "queue" => self.known_topics.iter().map(|v| v.clone()).collect(), // queues use topics
+            _ => Vec::new(),
         }
     }
 

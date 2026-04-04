@@ -1,50 +1,77 @@
 use tower_lsp_server::ls_types::Position;
 use tree_sitter::{Node, Parser, Point};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Language {
+    TypeScript,
+    Python,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionContext {
-    /// Cursor is inside a function_id string in trigger() or registerTrigger()
     FunctionId,
-    /// Cursor is inside a type string in registerTrigger()
     TriggerType,
-    /// Cursor is inside a payload/data object in trigger() — suggest property names
-    /// from the function's request_format schema
     PayloadProperty { function_id: String },
-    /// Cursor is inside a config object in registerTrigger() — suggest property names
-    /// from the trigger type's trigger_request_format schema
     TriggerConfigProperty { trigger_type: String },
-    /// Cursor is not in a completable position
+    KnownValue { field_name: String },
     None,
 }
 
 #[derive(Debug)]
 pub struct AnalysisResult {
     pub context: CompletionContext,
-    /// The current text content of the string at cursor (without quotes)
     pub current_text: String,
 }
 
-/// Analyze a TypeScript source file at the given cursor position.
-/// Tries the original source first, then falls back to patching unclosed
-/// strings at the cursor so tree-sitter can produce a valid AST.
-pub fn analyze(source: &str, position: Position) -> AnalysisResult {
-    // Try original source at position and position-1
-    let result = try_analyze(source, position);
+// --- Node kind helpers (language-aware) ---
+
+fn is_call(kind: &str) -> bool {
+    kind == "call_expression" || kind == "call"
+}
+
+fn is_object(kind: &str) -> bool {
+    kind == "object" || kind == "dictionary"
+}
+
+fn is_arguments(kind: &str) -> bool {
+    kind == "arguments" || kind == "argument_list"
+}
+
+fn is_string_content(kind: &str) -> bool {
+    kind == "string_fragment" || kind == "string_content"
+}
+
+fn is_method_access(kind: &str) -> bool {
+    kind == "member_expression" || kind == "attribute"
+}
+
+/// Method names that map to `trigger()`
+fn is_trigger_method(name: &str) -> bool {
+    name == "trigger"
+}
+
+/// Method names that map to `registerTrigger()` / `register_trigger()`
+fn is_register_trigger_method(name: &str) -> bool {
+    name == "registerTrigger" || name == "register_trigger"
+}
+
+// --- Public API ---
+
+pub fn analyze(source: &str, position: Position, language: Language) -> AnalysisResult {
+    let result = try_analyze(source, position, language);
     if result.context != CompletionContext::None {
         return result;
     }
 
-    // Try with patched unclosed string
     if let Some(patched) = patch_unclosed_string(source, position) {
-        let result = try_analyze(&patched, position);
+        let result = try_analyze(&patched, position, language);
         if result.context != CompletionContext::None {
             return result;
         }
     }
 
-    // Try with patched unclosed brackets (for payload context in incomplete code)
     if let Some(patched) = patch_unclosed_brackets(source, position) {
-        let result = try_analyze(&patched, position);
+        let result = try_analyze(&patched, position, language);
         if result.context != CompletionContext::None {
             return result;
         }
@@ -56,9 +83,8 @@ pub fn analyze(source: &str, position: Position) -> AnalysisResult {
     }
 }
 
-/// Try analysis at both the given position and position-1.
-fn try_analyze(source: &str, position: Position) -> AnalysisResult {
-    let result = analyze_source(source, position);
+fn try_analyze(source: &str, position: Position, language: Language) -> AnalysisResult {
+    let result = analyze_source(source, position, language);
     if result.context != CompletionContext::None {
         return result;
     }
@@ -67,46 +93,81 @@ fn try_analyze(source: &str, position: Position) -> AnalysisResult {
             line: position.line,
             character: position.character - 1,
         };
-        return analyze_source(source, inner);
+        return analyze_source(source, inner, language);
     }
     result
 }
 
-/// Patch the source by closing an unclosed string at the cursor position.
-/// When the user types `function_id: '` and hasn't closed the quote yet,
-/// tree-sitter produces ERROR nodes. This inserts a closing quote so
-/// tree-sitter can build a valid AST.
+// --- Source patching ---
+
 fn patch_unclosed_string(source: &str, position: Position) -> Option<String> {
     let byte_offset = position_to_byte_offset(source, position)?;
-
     if byte_offset == 0 {
         return Option::None;
     }
 
-    let line_start = source[..byte_offset].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_start = source[..byte_offset]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
     let line_before = &source[line_start..byte_offset];
 
-    // Count quotes before cursor on this line
     let single_quotes = line_before.chars().filter(|&c| c == '\'').count();
     let double_quotes = line_before.chars().filter(|&c| c == '"').count();
 
     if single_quotes % 2 == 1 {
         let mut patched = source.to_string();
-        patched.insert_str(byte_offset, "' })");
-        return Some(patched);
+        patched.insert(byte_offset, '\'');
+        // Also close any unclosed brackets/parens
+        return Some(close_brackets(&patched));
     }
 
     if double_quotes % 2 == 1 {
         let mut patched = source.to_string();
-        patched.insert_str(byte_offset, "\" })");
-        return Some(patched);
+        patched.insert(byte_offset, '"');
+        return Some(close_brackets(&patched));
     }
 
     Option::None
 }
 
-/// Patch the source by closing unclosed brackets/parens at the cursor position.
-/// Handles cases like `iii.trigger({function_id: 'x', payload: {}` missing `})`.
+/// Append closing brackets/parens to balance the source.
+fn close_brackets(source: &str) -> String {
+    let mut open_parens: i32 = 0;
+    let mut open_braces: i32 = 0;
+    let mut in_string = false;
+    let mut string_char = ' ';
+
+    for ch in source.chars() {
+        if in_string {
+            if ch == string_char {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                in_string = true;
+                string_char = ch;
+            }
+            '(' => open_parens += 1,
+            ')' => open_parens -= 1,
+            '{' => open_braces += 1,
+            '}' => open_braces -= 1,
+            _ => {}
+        }
+    }
+
+    let mut result = source.to_string();
+    for _ in 0..open_braces.max(0) {
+        result.push('}');
+    }
+    for _ in 0..open_parens.max(0) {
+        result.push(')');
+    }
+    result
+}
+
 fn patch_unclosed_brackets(source: &str, position: Position) -> Option<String> {
     let byte_offset = position_to_byte_offset(source, position)?;
     let before = &source[..byte_offset];
@@ -166,7 +227,6 @@ fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
         byte_offset += line.len() + 1;
     }
 
-    // Cursor past last line
     if line_num == source.lines().count() {
         Some(source.len())
     } else {
@@ -174,17 +234,22 @@ fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
     }
 }
 
-fn analyze_source(source: &str, position: Position) -> AnalysisResult {
+// --- Core analysis ---
+
+fn analyze_source(source: &str, position: Position, language: Language) -> AnalysisResult {
     let none = AnalysisResult {
         context: CompletionContext::None,
         current_text: String::new(),
     };
 
     let mut parser = Parser::new();
-    if parser
-        .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-        .is_err()
-    {
+    let lang_ok = match language {
+        Language::TypeScript => {
+            parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+        }
+        Language::Python => parser.set_language(&tree_sitter_python::LANGUAGE.into()),
+    };
+    if lang_ok.is_err() {
         return none;
     }
 
@@ -201,10 +266,28 @@ fn analyze_source(source: &str, position: Position) -> AnalysisResult {
         Option::None => return none,
     };
 
-    // Try string context first (function_id, type completions)
+    // Try string context (function_id, type, known values)
     if let Some((string_node, current_text)) = find_string_at_cursor(node, source) {
-        let context = determine_context(string_node, source);
+        // Try dict-style context: string → pair → object → arguments → call
+        let context = determine_context_pair(string_node, source);
         if context != CompletionContext::None {
+            return AnalysisResult {
+                context,
+                current_text,
+            };
+        }
+
+        // Try keyword argument context (Python): string → keyword_argument → argument_list → call
+        let context = determine_context_kwarg(string_node, source);
+        if context != CompletionContext::None {
+            return AnalysisResult {
+                context,
+                current_text,
+            };
+        }
+
+        // Check known value fields (works for both pair and kwarg)
+        if let Some(context) = check_known_value_field(string_node, source) {
             return AnalysisResult {
                 context,
                 current_text,
@@ -212,7 +295,7 @@ fn analyze_source(source: &str, position: Position) -> AnalysisResult {
         }
     }
 
-    // Try object context (payload properties or trigger config properties)
+    // Try object/dict context (payload properties, trigger config properties)
     let context = determine_object_context(node, source);
 
     AnalysisResult {
@@ -221,14 +304,16 @@ fn analyze_source(source: &str, position: Position) -> AnalysisResult {
     }
 }
 
-/// Find the string node containing the cursor and extract its text content.
+// --- String detection ---
+
 fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, String)> {
     let kind = node.kind();
 
-    if kind == "string_fragment" || kind == "template_string" {
+    // string_fragment (TS) or string_content (Python)
+    if is_string_content(kind) {
         let text = node.utf8_text(source.as_bytes()).unwrap_or("");
         let string_node = node.parent()?;
-        if string_node.kind() == "string" || string_node.kind() == "template_string" {
+        if string_node.kind() == "string" {
             return Some((string_node, text.to_string()));
         }
     }
@@ -238,7 +323,7 @@ fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, 
         return Some((node, text));
     }
 
-    // Check if we're on a quote character that's part of a string
+    // Quote character that's part of a string
     if kind == "'" || kind == "\"" {
         if let Some(parent) = node.parent() {
             if parent.kind() == "string" {
@@ -251,11 +336,10 @@ fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, 
     None
 }
 
-/// Extract the text content from a string node (without quotes).
 fn extract_string_content(string_node: Node, source: &str) -> String {
     let mut cursor = string_node.walk();
     for child in string_node.children(&mut cursor) {
-        if child.kind() == "string_fragment" {
+        if is_string_content(child.kind()) {
             return child
                 .utf8_text(source.as_bytes())
                 .unwrap_or("")
@@ -265,80 +349,160 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
     String::new()
 }
 
-/// Walk up the AST from a string node to determine the completion context.
-/// Expected chain: string -> pair -> object -> arguments -> call_expression
-fn determine_context(string_node: Node, source: &str) -> CompletionContext {
-    // string -> pair
+// --- Context detection: dict/object style (TS + Python dict) ---
+// Chain: string → pair → object/dictionary → arguments/argument_list → call_expression/call
+
+fn determine_context_pair(string_node: Node, source: &str) -> CompletionContext {
     let pair = match string_node.parent() {
         Some(p) if p.kind() == "pair" => p,
         _ => return CompletionContext::None,
     };
 
-    // Get the key of the pair
     let key = match pair.child_by_field_name("key") {
         Some(k) => k,
         None => return CompletionContext::None,
     };
-    let key_text = key.utf8_text(source.as_bytes()).unwrap_or("");
+    // Python dict keys are strings like 'function_id', strip quotes
+    let key_text = strip_quotes(key.utf8_text(source.as_bytes()).unwrap_or(""));
 
-    // pair -> object
     let object = match pair.parent() {
-        Some(o) if o.kind() == "object" => o,
+        Some(o) if is_object(o.kind()) => o,
         _ => return CompletionContext::None,
     };
 
-    // object -> arguments
     let arguments = match object.parent() {
-        Some(a) if a.kind() == "arguments" => a,
+        Some(a) if is_arguments(a.kind()) => a,
         _ => return CompletionContext::None,
     };
 
-    // arguments -> call_expression
     let call = match arguments.parent() {
-        Some(c) if c.kind() == "call_expression" => c,
+        Some(c) if is_call(c.kind()) => c,
         _ => return CompletionContext::None,
     };
 
-    // Get the method name from the call expression
     let method_name = match extract_method_name(call, source) {
         Some(name) => name,
         None => return CompletionContext::None,
     };
 
-    match (method_name.as_str(), key_text) {
-        ("trigger", "function_id") => CompletionContext::FunctionId,
-        ("registerTrigger", "function_id") => CompletionContext::FunctionId,
-        ("registerTrigger", "type") => CompletionContext::TriggerType,
-        _ => CompletionContext::None,
+    match_method_and_key(&method_name, &key_text)
+}
+
+// --- Context detection: keyword argument style (Python only) ---
+// Chain: string → keyword_argument → argument_list → call
+
+fn determine_context_kwarg(string_node: Node, source: &str) -> CompletionContext {
+    let kwarg = match string_node.parent() {
+        Some(k) if k.kind() == "keyword_argument" => k,
+        _ => return CompletionContext::None,
+    };
+
+    let name_node = match kwarg.child_by_field_name("name") {
+        Some(n) => n,
+        None => return CompletionContext::None,
+    };
+    let arg_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
+
+    let arg_list = match kwarg.parent() {
+        Some(a) if is_arguments(a.kind()) => a,
+        _ => return CompletionContext::None,
+    };
+
+    let call = match arg_list.parent() {
+        Some(c) if is_call(c.kind()) => c,
+        _ => return CompletionContext::None,
+    };
+
+    let method_name = match extract_method_name(call, source) {
+        Some(name) => name,
+        None => return CompletionContext::None,
+    };
+
+    match_method_and_key(&method_name, arg_name)
+}
+
+/// Shared logic for matching method name + key/arg name to a context.
+fn match_method_and_key(method: &str, key: &str) -> CompletionContext {
+    if is_trigger_method(method) && key == "function_id" {
+        CompletionContext::FunctionId
+    } else if is_register_trigger_method(method) && key == "function_id" {
+        CompletionContext::FunctionId
+    } else if is_register_trigger_method(method) && key == "type" {
+        CompletionContext::TriggerType
+    } else {
+        CompletionContext::None
     }
 }
 
-/// Extract the method name from a call_expression node.
+// --- Method name extraction ---
+
 fn extract_method_name(call: Node, source: &str) -> Option<String> {
     let func = call.child_by_field_name("function")?;
 
-    if func.kind() == "member_expression" {
-        let property = func.child_by_field_name("property")?;
-        let name = property.utf8_text(source.as_bytes()).ok()?;
-        return Some(name.to_string());
+    if is_method_access(func.kind()) {
+        // TS: member_expression has field "property"
+        // Python: attribute has field "attribute"
+        let field_name = if func.kind() == "member_expression" {
+            "property"
+        } else {
+            "attribute"
+        };
+        let prop = func.child_by_field_name(field_name)?;
+        return Some(prop.utf8_text(source.as_bytes()).ok()?.to_string());
     }
 
     if func.kind() == "identifier" {
-        let name = func.utf8_text(source.as_bytes()).ok()?;
-        return Some(name.to_string());
+        return Some(func.utf8_text(source.as_bytes()).ok()?.to_string());
     }
 
     None
 }
 
-/// Detect if the cursor is inside a nested object (payload or config) in a trigger/registerTrigger call.
+// --- Known value fields ---
+
+const KNOWN_VALUE_FIELDS: &[&str] = &["stream_name", "topic", "api_path", "scope", "queue"];
+
+fn check_known_value_field(string_node: Node, source: &str) -> Option<CompletionContext> {
+    let parent = string_node.parent()?;
+
+    // Check pair style (TS objects / Python dicts)
+    if parent.kind() == "pair" {
+        let key = parent.child_by_field_name("key")?;
+        let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
+        if KNOWN_VALUE_FIELDS.contains(&key_text.as_str()) {
+            return Some(CompletionContext::KnownValue {
+                field_name: key_text,
+            });
+        }
+    }
+
+    // Check keyword_argument style (Python kwargs)
+    if parent.kind() == "keyword_argument" {
+        let name = parent.child_by_field_name("name")?;
+        let arg_name = name.utf8_text(source.as_bytes()).ok()?;
+        if KNOWN_VALUE_FIELDS.contains(&arg_name) {
+            return Some(CompletionContext::KnownValue {
+                field_name: arg_name.to_string(),
+            });
+        }
+    }
+
+    None
+}
+
+// --- Object/dict context (payload properties, trigger config properties) ---
+
 fn determine_object_context(node: Node, source: &str) -> CompletionContext {
     let mut current = node;
-
     loop {
-        if current.kind() == "object" {
-            if let Some(context) = check_nested_object(current, source) {
-                return context;
+        if is_object(current.kind()) {
+            // Try pair style: object → pair → outer_object → arguments → call
+            if let Some(ctx) = check_nested_object_pair(current, source) {
+                return ctx;
+            }
+            // Try kwarg style: object → keyword_argument → argument_list → call
+            if let Some(ctx) = check_nested_object_kwarg(current, source) {
+                return ctx;
             }
         }
 
@@ -347,60 +511,94 @@ fn determine_object_context(node: Node, source: &str) -> CompletionContext {
             None => break,
         }
     }
-
     CompletionContext::None
 }
 
-/// Check if an object node is the value of a known pair inside a trigger/registerTrigger call.
-/// Handles:
-///   - payload/data in trigger() → PayloadProperty
-///   - config in registerTrigger() → TriggerConfigProperty
-fn check_nested_object(object: Node, source: &str) -> Option<CompletionContext> {
+/// Object is value of a pair in a dict: object → pair → outer_object → arguments → call
+fn check_nested_object_pair(object: Node, source: &str) -> Option<CompletionContext> {
     let pair = object.parent()?;
     if pair.kind() != "pair" {
         return None;
     }
 
     let key = pair.child_by_field_name("key")?;
-    let key_text = key.utf8_text(source.as_bytes()).ok()?;
+    let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
 
     let outer_object = pair.parent()?;
-    if outer_object.kind() != "object" {
+    if !is_object(outer_object.kind()) {
         return None;
     }
 
     let arguments = outer_object.parent()?;
-    if arguments.kind() != "arguments" {
+    if !is_arguments(arguments.kind()) {
         return None;
     }
 
     let call = arguments.parent()?;
-    if call.kind() != "call_expression" {
+    if !is_call(call.kind()) {
+        return None;
+    }
+
+    let method_name = extract_method_name(call, source)?;
+
+    match (method_name.as_str(), key_text.as_str()) {
+        (m, "payload" | "data") if is_trigger_method(m) => {
+            let fid = find_string_value_in_object(outer_object, "function_id", source)?;
+            Some(CompletionContext::PayloadProperty { function_id: fid })
+        }
+        (m, "config") if is_register_trigger_method(m) => {
+            let tt = find_string_value_in_object(outer_object, "type", source)?;
+            Some(CompletionContext::TriggerConfigProperty { trigger_type: tt })
+        }
+        _ => None,
+    }
+}
+
+/// Object is value of a keyword argument: dict → keyword_argument → argument_list → call
+fn check_nested_object_kwarg(object: Node, source: &str) -> Option<CompletionContext> {
+    let kwarg = object.parent()?;
+    if kwarg.kind() != "keyword_argument" {
+        return None;
+    }
+
+    let name = kwarg.child_by_field_name("name")?;
+    let key_text = name.utf8_text(source.as_bytes()).ok()?;
+
+    let arg_list = kwarg.parent()?;
+    if !is_arguments(arg_list.kind()) {
+        return None;
+    }
+
+    let call = arg_list.parent()?;
+    if !is_call(call.kind()) {
         return None;
     }
 
     let method_name = extract_method_name(call, source)?;
 
     match (method_name.as_str(), key_text) {
-        ("trigger", "payload" | "data") => {
-            let function_id = find_function_id_in_object(outer_object, source)?;
-            Some(CompletionContext::PayloadProperty { function_id })
+        (m, "payload" | "data") if is_trigger_method(m) => {
+            let fid = find_kwarg_string_value(arg_list, "function_id", source)?;
+            Some(CompletionContext::PayloadProperty { function_id: fid })
         }
-        ("registerTrigger", "config") => {
-            let trigger_type = find_string_value_in_object(outer_object, "type", source)?;
-            Some(CompletionContext::TriggerConfigProperty { trigger_type })
+        (m, "config") if is_register_trigger_method(m) => {
+            let tt = find_kwarg_string_value(arg_list, "type", source)?;
+            Some(CompletionContext::TriggerConfigProperty { trigger_type: tt })
         }
         _ => None,
     }
 }
 
-/// Find a string value for a given key in an object node.
+// --- Value extraction helpers ---
+
+/// Find a string value for a key in an object/dictionary node (pair children).
 fn find_string_value_in_object(object: Node, target_key: &str, source: &str) -> Option<String> {
     let mut cursor = object.walk();
     for child in object.children(&mut cursor) {
         if child.kind() == "pair" {
             if let Some(key) = child.child_by_field_name("key") {
-                if key.utf8_text(source.as_bytes()).ok()? == target_key {
+                let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
+                if key_text == target_key {
                     if let Some(value) = child.child_by_field_name("value") {
                         if value.kind() == "string" {
                             return Some(extract_string_content(value, source));
@@ -413,13 +611,13 @@ fn find_string_value_in_object(object: Node, target_key: &str, source: &str) -> 
     None
 }
 
-/// Find the function_id string value from pairs in an object node.
-fn find_function_id_in_object(object: Node, source: &str) -> Option<String> {
-    let mut cursor = object.walk();
-    for child in object.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key) = child.child_by_field_name("key") {
-                if key.utf8_text(source.as_bytes()).ok()? == "function_id" {
+/// Find a string value from a keyword_argument sibling in an argument_list.
+fn find_kwarg_string_value(arg_list: Node, target_name: &str, source: &str) -> Option<String> {
+    let mut cursor = arg_list.walk();
+    for child in arg_list.children(&mut cursor) {
+        if child.kind() == "keyword_argument" {
+            if let Some(name) = child.child_by_field_name("name") {
+                if name.utf8_text(source.as_bytes()).ok()? == target_name {
                     if let Some(value) = child.child_by_field_name("value") {
                         if value.kind() == "string" {
                             return Some(extract_string_content(value, source));
@@ -431,6 +629,15 @@ fn find_function_id_in_object(object: Node, source: &str) -> Option<String> {
     }
     None
 }
+
+/// Strip surrounding quotes from a string (Python dict keys are quoted).
+fn strip_quotes(s: &str) -> String {
+    s.trim_matches('\'').trim_matches('"').to_string()
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -440,133 +647,98 @@ mod tests {
         Position { line, character }
     }
 
+    // --- TypeScript tests ---
+
     #[test]
-    fn trigger_function_id() {
+    fn ts_trigger_function_id() {
         let source = r#"iii.trigger({ function_id: 'todos::create' })"#;
-        let result = analyze(source, pos(0, 28));
+        let result = analyze(source, pos(0, 28), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn trigger_function_id_empty_string() {
+    fn ts_trigger_function_id_empty() {
         let source = r#"iii.trigger({ function_id: '' })"#;
-        let result = analyze(source, pos(0, 27));
+        let result = analyze(source, pos(0, 27), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "");
     }
 
     #[test]
-    fn register_trigger_type() {
+    fn ts_register_trigger_type() {
         let source = r#"iii.registerTrigger({ type: 'http', function_id: 'greet' })"#;
-        let result = analyze(source, pos(0, 29));
+        let result = analyze(source, pos(0, 29), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::TriggerType);
-        assert_eq!(result.current_text, "http");
     }
 
     #[test]
-    fn register_trigger_function_id() {
+    fn ts_register_trigger_function_id() {
         let source = r#"iii.registerTrigger({ type: 'http', function_id: 'greet' })"#;
-        let result = analyze(source, pos(0, 50));
+        let result = analyze(source, pos(0, 50), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "greet");
     }
 
     #[test]
-    fn not_in_completable_position() {
+    fn ts_not_in_completable_position() {
         let source = r#"const name = 'hello world';"#;
-        let result = analyze(source, pos(0, 15));
+        let result = analyze(source, pos(0, 15), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
-    fn cursor_in_comment() {
+    fn ts_cursor_in_comment() {
         let source = r#"// iii.trigger({ function_id: 'test' })"#;
-        let result = analyze(source, pos(0, 31));
+        let result = analyze(source, pos(0, 31), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
-    fn await_trigger() {
+    fn ts_await_trigger() {
         let source = r#"await iii.trigger({ function_id: 'test' })"#;
-        let result = analyze(source, pos(0, 34));
+        let result = analyze(source, pos(0, 34), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "test");
     }
 
     #[test]
-    fn multiline_trigger() {
+    fn ts_multiline_trigger() {
         let source = "iii.trigger({\n  function_id: 'todos::create',\n  payload: {}\n})";
-        let result = analyze(source, pos(1, 17));
+        let result = analyze(source, pos(1, 17), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "todos::create");
     }
 
     #[test]
-    fn nested_object_not_completable() {
+    fn ts_nested_object_not_completable() {
         let source = r#"iii.trigger({ options: { function_id: 'test' } })"#;
-        let result = analyze(source, pos(0, 39));
+        let result = analyze(source, pos(0, 39), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
-    fn double_quoted_string() {
+    fn ts_double_quoted_string() {
         let source = r#"iii.trigger({ function_id: "todos::create" })"#;
-        let result = analyze(source, pos(0, 28));
+        let result = analyze(source, pos(0, 28), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
-        assert_eq!(result.current_text, "todos::create");
     }
 
-    // --- Unclosed string tests (the real-world typing scenario) ---
-    // After typing `'`, the cursor is one past the quote character.
-
     #[test]
-    fn unclosed_string_trigger() {
+    fn ts_unclosed_string() {
         let source = "iii.trigger({function_id: '";
-        // Cursor after the quote = column 27 (past end of 27-char line)
-        let result = analyze(source, pos(0, 27));
+        let result = analyze(source, pos(0, 27), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 
     #[test]
-    fn unclosed_string_register_trigger_type() {
-        let source = "iii.registerTrigger({ type: '";
-        let result = analyze(source, pos(0, 29));
-        assert_eq!(result.context, CompletionContext::TriggerType);
-    }
-
-    #[test]
-    fn unclosed_string_partial_text() {
-        // User has typed 'to' and is still typing
+    fn ts_unclosed_string_partial() {
         let source = "iii.trigger({function_id: 'to";
-        let result = analyze(source, pos(0, 29));
+        let result = analyze(source, pos(0, 29), Language::TypeScript);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "to");
     }
 
     #[test]
-    fn unclosed_string_in_real_file() {
-        // Cursor after the quote = column 27 (line 1 has 27 chars)
-        let source = "const x = 1;\niii.trigger({function_id: '\nconst y = 2;";
-        let result = analyze(source, pos(1, 27));
-        assert_eq!(result.context, CompletionContext::FunctionId);
-    }
-
-    #[test]
-    fn unclosed_double_quote() {
-        let source = "iii.trigger({function_id: \"";
-        let result = analyze(source, pos(0, 27));
-        assert_eq!(result.context, CompletionContext::FunctionId);
-    }
-
-    // --- Payload property completion tests ---
-
-    #[test]
-    fn payload_property_empty_object() {
-        // Cursor inside empty payload object
+    fn ts_payload_property() {
         let source = "iii.trigger({ function_id: 'todos::create', payload: {} })";
-        // Position inside the {} of payload — column 54 is between { and }
-        let result = analyze(source, pos(0, 54));
+        let result = analyze(source, pos(0, 54), Language::TypeScript);
         assert_eq!(
             result.context,
             CompletionContext::PayloadProperty {
@@ -576,71 +748,9 @@ mod tests {
     }
 
     #[test]
-    fn payload_property_multiline() {
-        let source = "iii.trigger({\n  function_id: 'todos::create',\n  payload: {\n    \n  }\n})";
-        // Cursor on the empty line inside payload (line 3)
-        let result = analyze(source, pos(3, 4));
-        assert_eq!(
-            result.context,
-            CompletionContext::PayloadProperty {
-                function_id: "todos::create".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn payload_not_in_trigger() {
-        // payload inside some other function — should NOT trigger
-        let source = "foo({ function_id: 'test', payload: {} })";
-        let result = analyze(source, pos(0, 36));
-        assert_eq!(result.context, CompletionContext::None);
-    }
-
-    #[test]
-    fn data_property_also_works() {
-        let source = "iii.trigger({ function_id: 'todos::create', data: {} })";
-        let result = analyze(source, pos(0, 51));
-        assert_eq!(
-            result.context,
-            CompletionContext::PayloadProperty {
-                function_id: "todos::create".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn payload_unclosed_brackets() {
-        // Real-world case: user is typing and hasn't closed }) yet
-        let source = "iii.trigger({function_id: 'myscope::create_todo', payload: {}";
-        // Cursor at col 60 (on the } of payload object)
-        let result = analyze(source, pos(0, 60));
-        assert_eq!(
-            result.context,
-            CompletionContext::PayloadProperty {
-                function_id: "myscope::create_todo".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn payload_unclosed_with_cursor_inside() {
-        // User typed { and cursor is right after it
-        let source = "iii.trigger({function_id: 'myscope::create_todo', payload: {";
-        let result = analyze(source, pos(0, 60));
-        assert_eq!(
-            result.context,
-            CompletionContext::PayloadProperty {
-                function_id: "myscope::create_todo".to_string()
-            }
-        );
-    }
-
-    // --- Trigger config property completion tests ---
-
-    #[test]
-    fn trigger_config_http() {
+    fn ts_trigger_config() {
         let source = "iii.registerTrigger({ type: 'http', function_id: 'x', config: {} })";
-        let result = analyze(source, pos(0, 63));
+        let result = analyze(source, pos(0, 63), Language::TypeScript);
         assert_eq!(
             result.context,
             CompletionContext::TriggerConfigProperty {
@@ -650,90 +760,131 @@ mod tests {
     }
 
     #[test]
-    fn trigger_config_cron() {
-        let source = "iii.registerTrigger({ type: 'cron', function_id: 'x', config: {} })";
-        let result = analyze(source, pos(0, 63));
+    fn ts_known_value_stream_name() {
+        let source = "iii.registerTrigger({ type: 'stream', function_id: 'x', config: { stream_name: '' } })";
+        let result = analyze(source, pos(0, 80), Language::TypeScript);
         assert_eq!(
             result.context,
-            CompletionContext::TriggerConfigProperty {
-                trigger_type: "cron".to_string()
+            CompletionContext::KnownValue {
+                field_name: "stream_name".to_string()
+            }
+        );
+    }
+
+    // --- Python dict-style tests ---
+
+    #[test]
+    fn py_trigger_function_id_dict() {
+        let source = "iii.trigger({'function_id': 'todos::create'})";
+        let result = analyze(source, pos(0, 29), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
+    fn py_register_trigger_type_dict() {
+        let source = "iii.register_trigger({'type': 'http', 'function_id': 'x'})";
+        let result = analyze(source, pos(0, 31), Language::Python);
+        assert_eq!(result.context, CompletionContext::TriggerType);
+    }
+
+    #[test]
+    fn py_register_trigger_function_id_dict() {
+        let source = "iii.register_trigger({'type': 'http', 'function_id': 'greet'})";
+        let result = analyze(source, pos(0, 55), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn py_payload_dict() {
+        let source = "iii.trigger({'function_id': 'x', 'payload': {}})";
+        let result = analyze(source, pos(0, 45), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::PayloadProperty {
+                function_id: "x".to_string()
             }
         );
     }
 
     #[test]
-    fn trigger_config_not_in_trigger() {
-        // config inside trigger() (not registerTrigger) should NOT match
-        let source = "iii.trigger({ function_id: 'x', config: {} })";
-        let result = analyze(source, pos(0, 40));
+    fn py_trigger_config_dict() {
+        let source = "iii.register_trigger({'type': 'http', 'function_id': 'x', 'config': {}})";
+        let result = analyze(source, pos(0, 69), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::TriggerConfigProperty {
+                trigger_type: "http".to_string()
+            }
+        );
+    }
+
+    // --- Python keyword argument tests ---
+
+    #[test]
+    fn py_trigger_function_id_kwarg() {
+        let source = "iii.trigger(function_id='todos::create')";
+        let result = analyze(source, pos(0, 25), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
+    fn py_register_trigger_type_kwarg() {
+        let source = "iii.register_trigger(type='http', function_id='x')";
+        let result = analyze(source, pos(0, 27), Language::Python);
+        assert_eq!(result.context, CompletionContext::TriggerType);
+    }
+
+    #[test]
+    fn py_payload_kwarg() {
+        let source = "iii.trigger(function_id='x', payload={})";
+        let result = analyze(source, pos(0, 38), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::PayloadProperty {
+                function_id: "x".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn py_trigger_config_kwarg() {
+        let source = "iii.register_trigger(type='http', function_id='x', config={})";
+        let result = analyze(source, pos(0, 59), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::TriggerConfigProperty {
+                trigger_type: "http".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn py_known_value_dict() {
+        // Known value inside a dict-style config with non-empty string
+        let source = "iii.register_trigger({'type': 'stream', 'function_id': 'x', 'config': {'stream_name': 'users'}})";
+        // Cursor inside 'users'
+        let result = analyze(source, pos(0, 88), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::KnownValue {
+                field_name: "stream_name".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn py_not_in_completable_position() {
+        let source = "x = 'hello world'";
+        let result = analyze(source, pos(0, 6), Language::Python);
         assert_eq!(result.context, CompletionContext::None);
     }
 
     #[test]
-    fn trigger_config_unclosed() {
-        let source = "iii.registerTrigger({ type: 'http', function_id: 'x', config: {";
-        let result = analyze(source, pos(0, 64));
-        assert_eq!(
-            result.context,
-            CompletionContext::TriggerConfigProperty {
-                trigger_type: "http".to_string()
-            }
-        );
-    }
-}
-
-#[cfg(test)]
-mod debug_payload {
-    use super::*;
-    use tree_sitter::Point;
-
-    #[test]
-    fn debug_real_payload() {
-        let source = "iii.trigger({function_id: 'myscope::create_todo', payload: {}";
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        eprintln!("AST: {}", root.to_sexp());
-        
-        for col in 58..62 {
-            let node = root.descendant_for_point_range(Point::new(0, col), Point::new(0, col));
-            if let Some(n) = node {
-                eprintln!("Col {}: kind={:?} named={}", col, n.kind(), n.is_named());
-                let mut p = n.parent();
-                let mut depth = 0;
-                while let Some(parent) = p {
-                    depth += 1;
-                    if depth > 8 { break; }
-                    eprintln!("  {}parent: kind={:?}", " ".repeat(depth), parent.kind());
-                    p = parent.parent();
-                }
-            }
-        }
-    }
-    
-    #[test]
-    fn debug_complete_payload() {
-        let source = "iii.trigger({function_id: 'myscope::create_todo', payload: {} })";
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        eprintln!("COMPLETE AST: {}", root.to_sexp());
-        
-        for col in 58..62 {
-            let node = root.descendant_for_point_range(Point::new(0, col), Point::new(0, col));
-            if let Some(n) = node {
-                eprintln!("Col {}: kind={:?} named={}", col, n.kind(), n.is_named());
-                let mut p = n.parent();
-                let mut depth = 0;
-                while let Some(parent) = p {
-                    depth += 1;
-                    if depth > 8 { break; }
-                    eprintln!("  {}parent: kind={:?}", " ".repeat(depth), parent.kind());
-                    p = parent.parent();
-                }
-            }
-        }
+    fn py_comment_not_completable() {
+        let source = "# iii.trigger(function_id='test')";
+        let result = analyze(source, pos(0, 27), Language::Python);
+        assert_eq!(result.context, CompletionContext::None);
     }
 }

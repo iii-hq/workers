@@ -29,9 +29,28 @@ struct Backend {
     documents: DashMap<Uri, String>,
 }
 
+fn detect_language(uri: &Uri) -> Option<analyzer::Language> {
+    let path = uri.as_str();
+    if path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".jsx")
+    {
+        Some(analyzer::Language::TypeScript)
+    } else if path.ends_with(".py") {
+        Some(analyzer::Language::Python)
+    } else {
+        None
+    }
+}
+
 impl Backend {
     async fn run_diagnostics(&self, uri: Uri, source: &str) {
-        let diags = diagnostics::diagnose(source, &self.engine);
+        let lang = match detect_language(&uri) {
+            Some(l) => l,
+            None => return,
+        };
+        let diags = diagnostics::diagnose(source, &self.engine, lang);
         self.client.publish_diagnostics(uri, diags, None).await;
     }
 }
@@ -50,6 +69,7 @@ impl LanguageServer for Backend {
                         ":".to_string(),
                         "{".to_string(),
                         " ".to_string(),
+                        "=".to_string(), // Python keyword args: function_id=
                     ]),
                     resolve_provider: Some(false),
                     ..Default::default()
@@ -66,7 +86,6 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        // Start engine connection and seed cache
         self.engine.start().await;
 
         if self.engine.is_connected() {
@@ -111,7 +130,6 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        // Clear diagnostics when file is closed
         self.client
             .publish_diagnostics(params.text_document.uri.clone(), Vec::new(), None)
             .await;
@@ -125,13 +143,19 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
+        let lang = match detect_language(uri) {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+
         let source = match self.documents.get(uri) {
             Some(doc) => doc.value().clone(),
             None => return Ok(None),
         };
 
-        let result = analyzer::analyze(&source, position);
-        let items = completions::get_completions(&result.context, &result.current_text, &self.engine);
+        let result = analyzer::analyze(&source, position, lang);
+        let items =
+            completions::get_completions(&result.context, &result.current_text, &self.engine);
 
         if items.is_empty() {
             Ok(None)
@@ -144,12 +168,17 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
+        let lang = match detect_language(uri) {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+
         let source = match self.documents.get(uri) {
             Some(doc) => doc.value().clone(),
             None => return Ok(None),
         };
 
-        let result = analyzer::analyze(&source, position);
+        let result = analyzer::analyze(&source, position, lang);
 
         if result.current_text.is_empty() {
             return Ok(None);
@@ -170,7 +199,6 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-
     tracing::info!("starting iii-lsp, connecting to {}", cli.url);
 
     let engine = engine_client::EngineClient::new(&cli.url);
@@ -185,7 +213,5 @@ async fn main() {
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
-
-    // Clean shutdown after server exits
     engine.shutdown().await;
 }
