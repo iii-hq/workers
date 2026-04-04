@@ -39,6 +39,8 @@ fn detect_language(uri: &Uri) -> Option<analyzer::Language> {
         Some(analyzer::Language::TypeScript)
     } else if path.ends_with(".py") {
         Some(analyzer::Language::Python)
+    } else if path.ends_with(".rs") {
+        Some(analyzer::Language::Rust)
     } else {
         None
     }

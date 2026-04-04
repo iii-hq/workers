@@ -30,6 +30,7 @@ pub fn diagnose(source: &str, engine: &Arc<EngineClient>, language: Language) ->
             parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
         }
         Language::Python => parser.set_language(&tree_sitter_python::LANGUAGE.into()),
+        Language::Rust => parser.set_language(&tree_sitter_rust::LANGUAGE.into()),
     };
     if lang_ok.is_err() {
         return Vec::new();
@@ -89,7 +90,7 @@ fn is_call(kind: &str) -> bool {
 }
 
 fn is_method_access(kind: &str) -> bool {
-    kind == "member_expression" || kind == "attribute"
+    kind == "member_expression" || kind == "attribute" || kind == "field_expression"
 }
 
 fn is_object(kind: &str) -> bool {
@@ -109,10 +110,10 @@ fn strip_quotes(s: &str) -> String {
 fn extract_method_name(call: Node, source: &str) -> Option<String> {
     let func = call.child_by_field_name("function")?;
     if is_method_access(func.kind()) {
-        let field = if func.kind() == "member_expression" {
-            "property"
-        } else {
-            "attribute"
+        let field = match func.kind() {
+            "member_expression" => "property",
+            "field_expression" => "field",
+            _ => "attribute",
         };
         let prop = func.child_by_field_name(field)?;
         return Some(prop.utf8_text(source.as_bytes()).ok()?.to_string());
@@ -246,7 +247,7 @@ fn find_arguments<'a>(call: Node<'a>) -> Option<Node<'a>> {
 fn find_child_object<'a>(parent: Node<'a>) -> Option<Node<'a>> {
     let mut cursor = parent.walk();
     for child in parent.children(&mut cursor) {
-        if is_object(child.kind()) {
+        if is_object(child.kind()) || child.kind() == "struct_expression" {
             return Some(child);
         }
     }
@@ -256,20 +257,55 @@ fn find_child_object<'a>(parent: Node<'a>) -> Option<Node<'a>> {
 // --- Helpers: dict/object pair extraction ---
 
 fn find_string_pair(object: Node, key_name: &str, source: &str) -> Option<(String, Range)> {
-    let mut cursor = object.walk();
-    for child in object.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key) = child.child_by_field_name("key") {
-                let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
-                if key_text == key_name {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "string" {
-                            let text = extract_string_content(value, source);
-                            return Some((text, to_range(value)));
-                        }
-                    }
-                }
+    // For struct_expression, look inside field_initializer_list
+    let container = if object.kind() == "struct_expression" {
+        object.child_by_field_name("body")?
+    } else {
+        object
+    };
+
+    let mut cursor = container.walk();
+    for child in container.children(&mut cursor) {
+        let (field_name, value_node) = if child.kind() == "pair" {
+            // TS/Python: pair with key/value fields
+            let key = child.child_by_field_name("key")?;
+            let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
+            let value = child.child_by_field_name("value")?;
+            (key_text, value)
+        } else if child.kind() == "field_initializer" {
+            // Rust: field_initializer with field/value fields
+            let field = child.child_by_field_name("field")?;
+            let field_text = field.utf8_text(source.as_bytes()).ok()?.to_string();
+            let value = child.child_by_field_name("value")?;
+            (field_text, value)
+        } else {
+            continue;
+        };
+
+        if field_name == key_name {
+            // Direct string
+            if value_node.kind() == "string" || value_node.kind() == "string_literal" {
+                let text = extract_string_content(value_node, source);
+                return Some((text, to_range(value_node)));
             }
+            // Rust: "x".to_string() or "x".into() — find string_literal in subtree
+            if let Some(s) = find_string_in_subtree(value_node, source) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Find a string_literal node anywhere in a subtree (handles "x".to_string()).
+fn find_string_in_subtree(node: Node, source: &str) -> Option<(String, Range)> {
+    if node.kind() == "string_literal" || node.kind() == "string" {
+        return Some((extract_string_content(node, source), to_range(node)));
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(result) = find_string_in_subtree(child, source) {
+            return Some(result);
         }
     }
     None

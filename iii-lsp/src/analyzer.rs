@@ -5,6 +5,7 @@ use tree_sitter::{Node, Parser, Point};
 pub enum Language {
     TypeScript,
     Python,
+    Rust,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +43,7 @@ fn is_string_content(kind: &str) -> bool {
 }
 
 fn is_method_access(kind: &str) -> bool {
-    kind == "member_expression" || kind == "attribute"
+    kind == "member_expression" || kind == "attribute" || kind == "field_expression"
 }
 
 /// Method names that map to `trigger()`
@@ -117,28 +118,29 @@ fn patch_unclosed_string(source: &str, position: Position) -> Option<String> {
 
     if single_quotes % 2 == 1 {
         let mut patched = source.to_string();
-        patched.insert(byte_offset, '\'');
-        // Also close any unclosed brackets/parens
-        return Some(close_brackets(&patched));
+        // Close the quote + any unclosed brackets AT the cursor position
+        let suffix = build_closing_suffix(&source[..byte_offset], '\'');
+        patched.insert_str(byte_offset, &suffix);
+        return Some(patched);
     }
 
     if double_quotes % 2 == 1 {
         let mut patched = source.to_string();
-        patched.insert(byte_offset, '"');
-        return Some(close_brackets(&patched));
+        let suffix = build_closing_suffix(&source[..byte_offset], '"');
+        patched.insert_str(byte_offset, &suffix);
     }
 
     Option::None
 }
 
-/// Append closing brackets/parens to balance the source.
-fn close_brackets(source: &str) -> String {
+/// Build a suffix that closes the quote and any unclosed brackets before the cursor.
+fn build_closing_suffix(before_cursor: &str, quote: char) -> String {
     let mut open_parens: i32 = 0;
     let mut open_braces: i32 = 0;
     let mut in_string = false;
     let mut string_char = ' ';
 
-    for ch in source.chars() {
+    for ch in before_cursor.chars() {
         if in_string {
             if ch == string_char {
                 in_string = false;
@@ -158,14 +160,16 @@ fn close_brackets(source: &str) -> String {
         }
     }
 
-    let mut result = source.to_string();
+    let mut suffix = String::new();
+    suffix.push(quote);
     for _ in 0..open_braces.max(0) {
-        result.push('}');
+        suffix.push(' ');
+        suffix.push('}');
     }
     for _ in 0..open_parens.max(0) {
-        result.push(')');
+        suffix.push(')');
     }
-    result
+    suffix
 }
 
 fn patch_unclosed_brackets(source: &str, position: Position) -> Option<String> {
@@ -248,6 +252,7 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
             parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
         }
         Language::Python => parser.set_language(&tree_sitter_python::LANGUAGE.into()),
+        Language::Rust => parser.set_language(&tree_sitter_rust::LANGUAGE.into()),
     };
     if lang_ok.is_err() {
         return none;
@@ -286,7 +291,16 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
             };
         }
 
-        // Check known value fields (works for both pair and kwarg)
+        // Try Rust struct field context: string → ... → field_initializer → struct_expression
+        let context = determine_context_rust_field(string_node, source);
+        if context != CompletionContext::None {
+            return AnalysisResult {
+                context,
+                current_text,
+            };
+        }
+
+        // Check known value fields (works for pair, kwarg, and field_initializer)
         if let Some(context) = check_known_value_field(string_node, source) {
             return AnalysisResult {
                 context,
@@ -309,24 +323,30 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
 fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, String)> {
     let kind = node.kind();
 
-    // string_fragment (TS) or string_content (Python)
+    // string_fragment (TS) or string_content (Python/Rust)
     if is_string_content(kind) {
         let text = node.utf8_text(source.as_bytes()).unwrap_or("");
         let string_node = node.parent()?;
-        if string_node.kind() == "string" {
+        if string_node.kind() == "string" || string_node.kind() == "string_literal" {
             return Some((string_node, text.to_string()));
         }
     }
 
-    if kind == "string" {
+    if kind == "string" || kind == "string_literal" {
         let text = extract_string_content(node, source);
         return Some((node, text));
     }
 
     // Quote character that's part of a string
-    if kind == "'" || kind == "\"" {
+    // TS: anonymous "'" or "\"" nodes
+    // Python: named "string_start" / "string_end" nodes
+    if kind == "'"
+        || kind == "\""
+        || kind == "string_start"
+        || kind == "string_end"
+    {
         if let Some(parent) = node.parent() {
-            if parent.kind() == "string" {
+            if parent.kind() == "string" || parent.kind() == "string_literal" {
                 let text = extract_string_content(parent, source);
                 return Some((parent, text));
             }
@@ -440,12 +460,10 @@ fn extract_method_name(call: Node, source: &str) -> Option<String> {
     let func = call.child_by_field_name("function")?;
 
     if is_method_access(func.kind()) {
-        // TS: member_expression has field "property"
-        // Python: attribute has field "attribute"
-        let field_name = if func.kind() == "member_expression" {
-            "property"
-        } else {
-            "attribute"
+        let field_name = match func.kind() {
+            "member_expression" => "property",
+            "field_expression" => "field",
+            _ => "attribute", // Python
         };
         let prop = func.child_by_field_name(field_name)?;
         return Some(prop.utf8_text(source.as_bytes()).ok()?.to_string());
@@ -458,36 +476,117 @@ fn extract_method_name(call: Node, source: &str) -> Option<String> {
     None
 }
 
+// --- Rust struct field context ---
+// Chain: string_literal → ... → field_initializer → field_initializer_list → struct_expression
+// Rust SDK uses struct literals: TriggerRequest { function_id: "x".to_string() }
+
+fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionContext {
+    // Walk up from string to find the field_initializer (may pass through .to_string() call)
+    let mut current = string_node;
+    let field_init = loop {
+        match current.parent() {
+            Some(p) if p.kind() == "field_initializer" => break p,
+            // Stop if we've gone too far up
+            Some(p) if p.kind() == "field_initializer_list" || p.kind() == "struct_expression" => {
+                return CompletionContext::None
+            }
+            Some(p) => current = p,
+            None => return CompletionContext::None,
+        }
+    };
+
+    let field_name_node = match field_init.child_by_field_name("field") {
+        Some(f) => f,
+        None => return CompletionContext::None,
+    };
+    let field_text = field_name_node
+        .utf8_text(source.as_bytes())
+        .unwrap_or("");
+
+    // field_initializer → field_initializer_list → struct_expression
+    let field_list = match field_init.parent() {
+        Some(p) if p.kind() == "field_initializer_list" => p,
+        _ => return CompletionContext::None,
+    };
+
+    let struct_expr = match field_list.parent() {
+        Some(p) if p.kind() == "struct_expression" => p,
+        _ => return CompletionContext::None,
+    };
+
+    let struct_name_node = match struct_expr.child_by_field_name("name") {
+        Some(n) => n,
+        None => return CompletionContext::None,
+    };
+    let struct_name = struct_name_node
+        .utf8_text(source.as_bytes())
+        .unwrap_or("");
+
+    // Match struct type + field name to context
+    match (struct_name, field_text) {
+        ("TriggerRequest", "function_id") => CompletionContext::FunctionId,
+        ("RegisterTriggerInput", "function_id") => CompletionContext::FunctionId,
+        ("RegisterTriggerInput", "trigger_type") => CompletionContext::TriggerType,
+        _ => CompletionContext::None,
+    }
+}
+
 // --- Known value fields ---
 
 const KNOWN_VALUE_FIELDS: &[&str] = &["stream_name", "topic", "api_path", "scope", "queue"];
 
 fn check_known_value_field(string_node: Node, source: &str) -> Option<CompletionContext> {
-    let parent = string_node.parent()?;
+    // Walk up to find the container (may pass through .to_string() in Rust)
+    let mut current = string_node;
+    loop {
+        let parent = current.parent()?;
 
-    // Check pair style (TS objects / Python dicts)
-    if parent.kind() == "pair" {
-        let key = parent.child_by_field_name("key")?;
-        let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
-        if KNOWN_VALUE_FIELDS.contains(&key_text.as_str()) {
-            return Some(CompletionContext::KnownValue {
-                field_name: key_text,
-            });
+        // Check pair style (TS objects / Python dicts)
+        if parent.kind() == "pair" {
+            let key = parent.child_by_field_name("key")?;
+            let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
+            if KNOWN_VALUE_FIELDS.contains(&key_text.as_str()) {
+                return Some(CompletionContext::KnownValue {
+                    field_name: key_text,
+                });
+            }
+            return None;
         }
-    }
 
-    // Check keyword_argument style (Python kwargs)
-    if parent.kind() == "keyword_argument" {
-        let name = parent.child_by_field_name("name")?;
-        let arg_name = name.utf8_text(source.as_bytes()).ok()?;
-        if KNOWN_VALUE_FIELDS.contains(&arg_name) {
-            return Some(CompletionContext::KnownValue {
-                field_name: arg_name.to_string(),
-            });
+        // Check keyword_argument style (Python kwargs)
+        if parent.kind() == "keyword_argument" {
+            let name = parent.child_by_field_name("name")?;
+            let arg_name = name.utf8_text(source.as_bytes()).ok()?;
+            if KNOWN_VALUE_FIELDS.contains(&arg_name) {
+                return Some(CompletionContext::KnownValue {
+                    field_name: arg_name.to_string(),
+                });
+            }
+            return None;
         }
-    }
 
-    None
+        // Check field_initializer style (Rust structs)
+        if parent.kind() == "field_initializer" {
+            let field = parent.child_by_field_name("field")?;
+            let field_text = field.utf8_text(source.as_bytes()).ok()?;
+            if KNOWN_VALUE_FIELDS.contains(&field_text) {
+                return Some(CompletionContext::KnownValue {
+                    field_name: field_text.to_string(),
+                });
+            }
+            return None;
+        }
+
+        // Stop at container boundaries
+        if parent.kind() == "field_initializer_list"
+            || is_object(parent.kind())
+            || is_arguments(parent.kind())
+        {
+            return None;
+        }
+
+        current = parent;
+    }
 }
 
 // --- Object/dict context (payload properties, trigger config properties) ---
@@ -886,5 +985,73 @@ mod tests {
         let source = "# iii.trigger(function_id='test')";
         let result = analyze(source, pos(0, 27), Language::Python);
         assert_eq!(result.context, CompletionContext::None);
+    }
+
+    // --- Rust tests ---
+
+    #[test]
+    fn rs_trigger_function_id() {
+        let source = r#"iii.trigger(TriggerRequest { function_id: "todos::create".to_string(), payload: json!({}), action: None, timeout_ms: None })"#;
+        // Cursor inside "todos::create"
+        let result = analyze(source, pos(0, 43), Language::Rust);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
+    fn rs_register_trigger_type() {
+        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "x".to_string(), config: json!({}), metadata: None })"#;
+        let result = analyze(source, pos(0, 59), Language::Rust);
+        assert_eq!(result.context, CompletionContext::TriggerType);
+        assert_eq!(result.current_text, "http");
+    }
+
+    #[test]
+    fn rs_register_trigger_function_id() {
+        let source = r#"iii.register_trigger(RegisterTriggerInput { trigger_type: "http".to_string(), function_id: "greet".to_string(), config: json!({}), metadata: None })"#;
+        let result = analyze(source, pos(0, 92), Language::Rust);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "greet");
+    }
+
+    #[test]
+    fn rs_not_in_completable_position() {
+        let source = r#"let name = "hello";"#;
+        let result = analyze(source, pos(0, 13), Language::Rust);
+        assert_eq!(result.context, CompletionContext::None);
+    }
+
+    #[test]
+    fn rs_comment_not_completable() {
+        let source = r#"// iii.trigger(TriggerRequest { function_id: "test" })"#;
+        let result = analyze(source, pos(0, 46), Language::Rust);
+        assert_eq!(result.context, CompletionContext::None);
+    }
+
+    // --- Real multi-line file tests (the actual scenario from the editor) ---
+
+    #[test]
+    fn ts_real_file_unclosed_string() {
+        // Simulates a real TS file where the user is typing on one line
+        let source = "import { iii } from './iii'\n\nconst result = await iii.trigger({ function_id: '\n\nconst x = 1;\n";
+        // Cursor after the quote on line 2
+        let result = analyze(source, pos(2, 50), Language::TypeScript);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn py_real_file_unclosed_string_dict() {
+        // Line 2: "result = iii.trigger({'function_id': '" = 38 chars
+        let source = "from iii import iii\n\nresult = iii.trigger({'function_id': '\n\nx = 1\n";
+        let result = analyze(source, pos(2, 38), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn py_real_file_unclosed_string_kwarg() {
+        // Line 2: "result = iii.trigger(function_id='" = 34 chars
+        let source = "from iii import iii\n\nresult = iii.trigger(function_id='\n\nx = 1\n";
+        let result = analyze(source, pos(2, 34), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
     }
 }
