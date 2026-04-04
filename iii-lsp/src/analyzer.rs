@@ -10,6 +10,9 @@ pub enum CompletionContext {
     /// Cursor is inside a payload/data object in trigger() — suggest property names
     /// from the function's request_format schema
     PayloadProperty { function_id: String },
+    /// Cursor is inside a config object in registerTrigger() — suggest property names
+    /// from the trigger type's trigger_request_format schema
+    TriggerConfigProperty { trigger_type: String },
     /// Cursor is not in a completable position
     None,
 }
@@ -209,8 +212,8 @@ fn analyze_source(source: &str, position: Position) -> AnalysisResult {
         }
     }
 
-    // Try payload object context (property suggestions from request_format)
-    let context = determine_payload_context(node, source);
+    // Try object context (payload properties or trigger config properties)
+    let context = determine_object_context(node, source);
 
     AnalysisResult {
         context,
@@ -328,14 +331,13 @@ fn extract_method_name(call: Node, source: &str) -> Option<String> {
     None
 }
 
-/// Detect if the cursor is inside a payload/data object in a trigger() call.
-/// Walks up the AST looking for: cursor → ... → object(payload value) → pair(payload) → object(args) → arguments → call_expression(trigger)
-fn determine_payload_context(node: Node, source: &str) -> CompletionContext {
+/// Detect if the cursor is inside a nested object (payload or config) in a trigger/registerTrigger call.
+fn determine_object_context(node: Node, source: &str) -> CompletionContext {
     let mut current = node;
 
     loop {
         if current.kind() == "object" {
-            if let Some(context) = check_payload_object(current, source) {
+            if let Some(context) = check_nested_object(current, source) {
                 return context;
             }
         }
@@ -349,28 +351,24 @@ fn determine_payload_context(node: Node, source: &str) -> CompletionContext {
     CompletionContext::None
 }
 
-/// Check if an object node is the value of a "payload" or "data" pair inside a trigger() call.
-fn check_payload_object(object: Node, source: &str) -> Option<CompletionContext> {
-    // object must be the value of a pair
+/// Check if an object node is the value of a known pair inside a trigger/registerTrigger call.
+/// Handles:
+///   - payload/data in trigger() → PayloadProperty
+///   - config in registerTrigger() → TriggerConfigProperty
+fn check_nested_object(object: Node, source: &str) -> Option<CompletionContext> {
     let pair = object.parent()?;
     if pair.kind() != "pair" {
         return None;
     }
 
-    // pair key must be "payload" or "data"
     let key = pair.child_by_field_name("key")?;
     let key_text = key.utf8_text(source.as_bytes()).ok()?;
-    if key_text != "payload" && key_text != "data" {
-        return None;
-    }
 
-    // pair must be inside the outer arguments object
     let outer_object = pair.parent()?;
     if outer_object.kind() != "object" {
         return None;
     }
 
-    // outer object must be inside arguments of a call_expression
     let arguments = outer_object.parent()?;
     if arguments.kind() != "arguments" {
         return None;
@@ -382,14 +380,37 @@ fn check_payload_object(object: Node, source: &str) -> Option<CompletionContext>
     }
 
     let method_name = extract_method_name(call, source)?;
-    if method_name != "trigger" {
-        return None;
+
+    match (method_name.as_str(), key_text) {
+        ("trigger", "payload" | "data") => {
+            let function_id = find_function_id_in_object(outer_object, source)?;
+            Some(CompletionContext::PayloadProperty { function_id })
+        }
+        ("registerTrigger", "config") => {
+            let trigger_type = find_string_value_in_object(outer_object, "type", source)?;
+            Some(CompletionContext::TriggerConfigProperty { trigger_type })
+        }
+        _ => None,
     }
+}
 
-    // Find function_id from sibling pairs in the outer object
-    let function_id = find_function_id_in_object(outer_object, source)?;
-
-    Some(CompletionContext::PayloadProperty { function_id })
+/// Find a string value for a given key in an object node.
+fn find_string_value_in_object(object: Node, target_key: &str, source: &str) -> Option<String> {
+    let mut cursor = object.walk();
+    for child in object.children(&mut cursor) {
+        if child.kind() == "pair" {
+            if let Some(key) = child.child_by_field_name("key") {
+                if key.utf8_text(source.as_bytes()).ok()? == target_key {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if value.kind() == "string" {
+                            return Some(extract_string_content(value, source));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Find the function_id string value from pairs in an object node.
@@ -610,6 +631,52 @@ mod tests {
             result.context,
             CompletionContext::PayloadProperty {
                 function_id: "myscope::create_todo".to_string()
+            }
+        );
+    }
+
+    // --- Trigger config property completion tests ---
+
+    #[test]
+    fn trigger_config_http() {
+        let source = "iii.registerTrigger({ type: 'http', function_id: 'x', config: {} })";
+        let result = analyze(source, pos(0, 63));
+        assert_eq!(
+            result.context,
+            CompletionContext::TriggerConfigProperty {
+                trigger_type: "http".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn trigger_config_cron() {
+        let source = "iii.registerTrigger({ type: 'cron', function_id: 'x', config: {} })";
+        let result = analyze(source, pos(0, 63));
+        assert_eq!(
+            result.context,
+            CompletionContext::TriggerConfigProperty {
+                trigger_type: "cron".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn trigger_config_not_in_trigger() {
+        // config inside trigger() (not registerTrigger) should NOT match
+        let source = "iii.trigger({ function_id: 'x', config: {} })";
+        let result = analyze(source, pos(0, 40));
+        assert_eq!(result.context, CompletionContext::None);
+    }
+
+    #[test]
+    fn trigger_config_unclosed() {
+        let source = "iii.registerTrigger({ type: 'http', function_id: 'x', config: {";
+        let result = analyze(source, pos(0, 64));
+        assert_eq!(
+            result.context,
+            CompletionContext::TriggerConfigProperty {
+                trigger_type: "http".to_string()
             }
         );
     }

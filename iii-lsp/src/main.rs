@@ -131,7 +131,7 @@ impl LanguageServer for Backend {
         };
 
         let result = analyzer::analyze(&source, position);
-        let items = completions::get_completions(&result.context, &self.engine);
+        let items = completions::get_completions(&result.context, &result.current_text, &self.engine);
 
         if items.is_empty() {
             Ok(None)

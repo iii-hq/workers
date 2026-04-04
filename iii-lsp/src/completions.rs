@@ -4,14 +4,27 @@ use iii_sdk::{FunctionInfo, TriggerTypeInfo};
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 
-pub fn get_completions(context: &CompletionContext, engine: &Arc<EngineClient>) -> Vec<CompletionItem> {
+pub fn get_completions(
+    context: &CompletionContext,
+    current_text: &str,
+    engine: &Arc<EngineClient>,
+) -> Vec<CompletionItem> {
     match context {
         CompletionContext::FunctionId => {
+            // If user typed a namespace prefix like "todos::", filter to that namespace
+            let namespace_filter = if current_text.contains("::") {
+                current_text.split("::").next()
+            } else {
+                None
+            };
+
             let mut items = Vec::new();
             for entry in engine.functions.iter() {
                 let func: &FunctionInfo = entry.value();
-                if func.function_id.starts_with("engine::") {
-                    continue;
+                if let Some(ns) = namespace_filter {
+                    if !func.function_id.starts_with(&format!("{}::", ns)) {
+                        continue;
+                    }
                 }
                 items.push(CompletionItem {
                     label: func.function_id.clone(),
@@ -28,9 +41,6 @@ pub fn get_completions(context: &CompletionContext, engine: &Arc<EngineClient>) 
             let mut items = Vec::new();
             for entry in engine.trigger_types.iter() {
                 let tt: &TriggerTypeInfo = entry.value();
-                if tt.id.starts_with("engine::") {
-                    continue;
-                }
                 items.push(CompletionItem {
                     label: tt.id.clone(),
                     kind: Some(CompletionItemKind::ENUM),
@@ -45,6 +55,15 @@ pub fn get_completions(context: &CompletionContext, engine: &Arc<EngineClient>) 
         CompletionContext::PayloadProperty { function_id } => {
             if let Some(func) = engine.get_function(function_id) {
                 if let Some(schema) = &func.request_format {
+                    return extract_properties_from_schema(schema);
+                }
+            }
+            Vec::new()
+        }
+
+        CompletionContext::TriggerConfigProperty { trigger_type } => {
+            if let Some(tt) = engine.get_trigger_type(trigger_type) {
+                if let Some(schema) = &tt.trigger_request_format {
                     return extract_properties_from_schema(schema);
                 }
             }
