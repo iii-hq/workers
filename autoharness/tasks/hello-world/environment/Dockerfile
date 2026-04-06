@@ -1,0 +1,1 @@
+FROM autoagent-base:latest

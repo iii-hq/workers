@@ -1,0 +1,8 @@
+data/
+node_modules/
+__pycache__/
+*.pyc
+.env
+target/
+tasks/*/logs/
+.agent/

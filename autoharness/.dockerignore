@@ -1,0 +1,9 @@
+.git
+data/
+tasks/*/logs/
+node_modules/
+target/
+__pycache__
+*.pyc
+.env
+workers/
