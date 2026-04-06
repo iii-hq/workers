@@ -1,18 +1,20 @@
-# autoagent-iii
+# autoharness
 
-> Like autoagent but with structured experiment tracking, parallel execution, adaptive search, and real-time monitoring — all powered by [iii-engine](https://github.com/iii-hq/iii-engine) Worker/Function/Trigger primitives.
+> The forge where agent harnesses are shaped. Autonomous agent engineering on [iii-engine](https://github.com/iii-hq/iii-engine) — structured experiment tracking, adaptive search, and real-time monitoring through Worker/Function/Trigger primitives.
 
-Give an AI agent a task, let it build and iterate on an agent harness autonomously overnight. It modifies the system prompt, tools, agent configuration, and orchestration, runs the benchmark, checks the score, keeps or discards the change, and repeats. The difference from vanilla [autoagent](https://github.com/kevinrgu/autoagent): every experiment is tracked in a structured state store, the search strategy adapts automatically, failures are diagnosed across runs, and you get 33 REST endpoints for live monitoring.
+Give an AI agent a task, let it build and iterate on an agent harness autonomously overnight. It modifies the system prompt, tools, agent configuration, and orchestration, runs the benchmark, checks the score, keeps or discards the change, and repeats. Every experiment is tracked in a structured state store, the search strategy adapts automatically based on what's working, failures are diagnosed across runs, and you get 26 REST endpoints for live monitoring.
+
+Inspired by [kevinrgu/autoagent](https://github.com/kevinrgu/autoagent). Built from scratch on iii-engine primitives — same relationship as karpathy/autoresearch to [n-autoresearch](https://github.com/iii-hq/n-autoresearch).
 
 ![progress](progress.png)
 
 ## Why This Exists
 
-The original autoagent is a great idea executed simply: single file harness, `results.tsv`, hill-climbing, Docker isolation. It works. But after watching it run overnight you notice the gaps:
+The autoagent concept is a great idea executed simply: single file harness, `results.tsv`, hill-climbing, Docker isolation. It works. But after watching it run overnight you notice the gaps:
 
 **You can't query experiment history.** The TSV is append-only. Want to find all experiments that touched the system prompt and improved? Grep through a flat file. Want the keep rate for the last 10 runs? Count lines manually.
 
-**You can't run tasks in parallel.** One task at a time, one experiment at a time. With 50+ benchmark tasks, each taking 2-5 minutes, a single experiment cycle takes hours. Multiple GPUs or runners sit idle.
+**You can't run tasks in parallel.** One task at a time, one experiment at a time. With 50+ benchmark tasks, each taking 2-5 minutes, a single experiment cycle takes hours.
 
 **The search is blind.** Hill-climbing treats every experiment equally. It doesn't know that "tools" changes have a 40% keep rate while "system_prompt" changes have 5%. It doesn't notice that two near-misses in different categories could be combined. It doesn't switch from exploration to exploitation when the score plateaus.
 
@@ -20,21 +22,17 @@ The original autoagent is a great idea executed simply: single file harness, `re
 
 **No failure analysis.** If task 7 fails in every single experiment, the meta-agent doesn't know. It keeps trying random changes instead of focusing on what's actually broken.
 
-autoagent-iii fixes all of these by replacing the flat-file state with iii-engine's Worker/Function/Trigger primitives. The same experiment loop, the same Docker isolation, the same single-file harness — but with infrastructure that makes the loop smarter.
+autoharness fixes all of these by replacing the flat-file state with iii-engine's Worker/Function/Trigger primitives. The same experiment loop, the same Docker isolation, the same single-file harness — but with infrastructure that makes the loop smarter.
 
 ## How It Works
 
-The repo has a few files and directories that matter:
-
 - **`agent.py`** — the entire harness under test in a single file. Config, tool definitions, agent construction, orchestration, and the Harbor adapter boundary. The adapter section is marked as fixed; everything above it is the edit surface for the meta-agent.
-- **`agent-claude.py`** — alternative harness using the Claude Agent SDK instead of OpenAI.
 - **`program.md`** — instructions for the meta-agent and the directive (what kind of agent to build). This file is edited by the human.
 - **`tasks/`** — evaluation tasks in [Harbor](https://github.com/laude-institute/harbor) format. Three sample tasks are included.
-- **`workers/orchestrator/`** — Python worker that registers 33 functions with iii-engine for experiment tracking, task execution, search strategy, harness management, runner pooling, and reporting.
-- **`workers/runner/`** — Rust worker that executes tasks inside Docker containers, captures ATIF trajectories, and parses scores.
+- **`orchestrator/orchestrator.py`** — Python worker that registers 26 functions with iii-engine for experiment tracking, task execution, search strategy, harness management, and reporting.
 - **`iii-config.yaml`** — iii-engine runtime configuration (state store, REST API, PubSub, cron, OpenTelemetry).
-- **`plot_progress.py`** — generates the progress chart above from experiment history via the iii REST API.
-- **`bench.sh`** — one-command benchmark runner that handles the full cycle: setup tag, register experiment, run all tasks, record results, show summary and suggestions.
+- **`plot_progress.py`** — generates the progress chart above from experiment history via the iii REST API. Supports multiple datasets overlaid on one chart.
+- **`bench.sh`** — one-command benchmark runner that handles the full cycle: setup tag, register experiment, run all tasks via Harbor, record results, show summary and suggestions.
 
 The metric is total **score** produced by the benchmark's task test suites. The meta-agent hill-climbs on this score, but with guidance: the orchestrator tells it which categories to explore, which near-misses to combine, and when to switch from exploration to exploitation.
 
@@ -51,16 +49,15 @@ The metric is total **score** produced by the benchmark's task test suites. The 
           |  iii-engine                            |
           |  State KV . REST API . PubSub . Cron  |
           +--------+-----------------+------------+
-                   |                 |
-    +--------------v---+   +---------v-------------+
-    |  Orchestrator     |   |  Runner Workers       |
-    |  (Python)         |   |  (Rust)               |
-    |  33 functions     |   |  Docker containers    |
-    |  33 HTTP triggers |   |  ATIF trajectories    |
-    +------------------+   +-----------------------+
+                   |
+    +--------------v-----------------+
+    |  autoharness orchestrator      |
+    |  (Python worker)               |
+    |  26 functions, 26 HTTP triggers|
+    +--------------------------------+
 ```
 
-The orchestrator is the brain. It connects to iii-engine over WebSocket and registers 33 functions across six groups, each exposed as an HTTP endpoint:
+The orchestrator connects to iii-engine over WebSocket and registers 26 functions across five groups, each exposed as an HTTP endpoint:
 
 | Group | Functions | What it does |
 |-------|-----------|-------------|
@@ -68,14 +65,9 @@ The orchestrator is the brain. It connects to iii-engine over WebSocket and regi
 | `task::*` | 5 | Benchmark execution. List available tasks, run individual tasks via Harbor, batch-run all tasks with configurable concurrency, retrieve per-task scores, surface failures with stdout/stderr tails. |
 | `search::*` | 4 | Adaptive strategy. Get the current search mode, override it manually, auto-adapt based on keep rate / crash rate / plateau detection / near-miss availability, suggest concrete next directions with category stats and failure patterns. |
 | `harness::*` | 5 | Harness management. Read the current agent.py with editable-region detection, diff against previous commit, save named snapshots to the KV store, restore any snapshot to disk (auth-protected), list all snapshots. |
-| `pool::*` | 7 | Runner pool. Register Docker runners, heartbeat to stay alive, reap stale runners via cron, list all runners with status, atomically acquire an idle runner for an experiment, release when done, deregister on shutdown. |
-| `report::*` | 5 | Monitoring and export. Full summary with stats and score progression, TSV export in original autoagent format, per-task diff between any two experiments showing regressions and improvements, top-N leaderboard, list all tags. |
-
-The runner workers are optional. They connect to the same iii-engine, register themselves in the pool, and execute tasks inside Docker containers with resource limits (`--memory 2g --cpus 2 --pids-limit 256 --read-only`). The orchestrator can also run tasks directly via Harbor's CLI without the Rust runner.
+| `report::*` | 5 | Monitoring and export. Full summary with stats and score progression, TSV export compatible with autoagent format, per-task diff between any two experiments showing regressions and improvements, top-N leaderboard, list all tags. |
 
 ## The Experiment Loop
-
-This is the same loop as autoagent, but with structured API calls instead of file manipulation:
 
 **Step 1: Get search guidance.** The meta-agent calls `POST /api/search/suggest` which returns the current strategy mode (explore, exploit, combine, or ablation), category-level statistics showing which types of changes have the highest keep rates, a list of underexplored categories, available near-misses for combination, recently recurring failure tasks, and concrete English-language suggestions for what to try next.
 
@@ -105,7 +97,7 @@ The system doesn't just hill-climb blindly. After each experiment, `search::adap
 
 ## Near-Miss Detection
 
-Most experiment frameworks treat "didn't beat the best" as a binary failure. autoagent-iii tracks near-misses: experiments that came close but didn't quite make it. The threshold is configurable (`NEAR_MISS_THRESHOLD`, default 0.02 aggregate score and 1 passed task).
+Most experiment frameworks treat "didn't beat the best" as a binary failure. autoharness tracks near-misses: experiments that came close but didn't quite make it. The threshold is configurable (`NEAR_MISS_THRESHOLD`, default 0.02 aggregate score and 1 passed task).
 
 Near-misses matter because they represent partially successful ideas. An experiment that adds a file-reading tool might fail because it slightly regresses on tasks that don't need file reading, but it dramatically improves on tasks that do. Another experiment that adds a verification step might fail for a different reason. Combining both — file reading plus verification — might beat the best on all fronts.
 
@@ -124,28 +116,23 @@ This changes the meta-agent's behavior. Instead of making random improvements an
 Requirements: Docker, Python 3.10+, [iii-engine](https://github.com/iii-hq/iii-engine), [Harbor](https://github.com/laude-institute/harbor), and whatever model-provider credentials your agent harness requires.
 
 ```bash
-# Install Harbor
 uv tool install harbor
 
-# Clone and enter
-git clone <this-repo>
-cd autoagent-iii
+cd autoharness
 
-# Set up credentials
 cat > .env << 'EOF'
 ANTHROPIC_API_KEY=sk-ant-...
 EOF
 
-# Build base Docker image
 docker build -t autoagent-base -f Dockerfile.base .
 
-# Start iii-engine (terminal 1)
+# Terminal 1
 iii --config iii-config.yaml
 
-# Start orchestrator (terminal 2)
-cd workers/orchestrator && python3 orchestrator.py
+# Terminal 2
+cd orchestrator && python3 orchestrator.py
 
-# Run the benchmark (terminal 3)
+# Terminal 3
 ./bench.sh apr06
 ```
 
@@ -154,7 +141,6 @@ The `bench.sh` script handles the full cycle: sets up the tag, registers the exp
 To run the meta-agent loop autonomously:
 
 ```bash
-# Point your coding agent at the repo
 claude -p "Read program.md and let's kick off a new experiment!"
 ```
 
@@ -170,7 +156,7 @@ tasks/my-task/
   instruction.md      -- the prompt sent to the agent
   tests/
     test.sh           -- verifier entry point, writes reward to /logs/verifier/reward.txt
-  environment/
+  environment/        -- optional, only if task needs custom setup
     Dockerfile        -- task container (FROM autoagent-base)
 ```
 
@@ -180,7 +166,7 @@ The `task.toml` configuration controls timeouts, resource limits, network access
 schema_version = "1.1"
 
 [task]
-name = "autoagent/my-task"
+name = "autoharness/my-task"
 description = "What the task tests"
 
 [agent]
@@ -206,8 +192,6 @@ harbor run -d swe-bench/swe-bench-verified -a claude-code --env-file .env
 
 ## Generating the Progress Chart
 
-The `plot_progress.py` script pulls experiment history from the iii REST API and generates the progress chart shown at the top of this README. It supports multiple datasets overlaid on one chart, matching the style of the original autoagent's `progress.png`.
-
 ```bash
 # Single dataset
 python3 plot_progress.py --tag apr06 --output progress.png
@@ -219,11 +203,11 @@ python3 plot_progress.py --tag spreadsheet --tag terminal --output progress.png
 python3 plot_progress.py --tag apr06 --api http://remote-host:3111
 ```
 
-The chart shows kept experiments as large colored dots with description labels, discarded experiments as small faded dots, crashed experiments as red X marks, and a step line tracking the running best score per dataset. The Y-axis is percentage (0-100%).
+The chart shows kept experiments as large colored dots with description labels, discarded experiments as small faded dots, and a step line tracking the running best score per dataset. The Y-axis is percentage (0-100%). Supports up to 4 datasets overlaid with distinct colors.
 
 ## Monitoring
 
-The orchestrator exposes 33 HTTP endpoints at `http://localhost:3111`. During a run, you can query any of them for live status:
+The orchestrator exposes 26 HTTP endpoints at `http://localhost:3111`. During a run:
 
 ```bash
 # Full summary: stats, best score, category breakdown, strategy, cost
@@ -245,7 +229,7 @@ curl -X POST http://localhost:3111/api/report/diff \
 # Near-misses available for combination
 curl -X POST http://localhost:3111/api/experiment/near-misses -d '{"tag":"apr06"}'
 
-# Export in original autoagent TSV format
+# Export in TSV format
 curl -X POST http://localhost:3111/api/report/tsv -d '{"tag":"apr06"}'
 
 # List all experiment tags
@@ -297,17 +281,6 @@ POST /api/harness/restore         {"name"}  (auth required)
 GET  /api/harness/snapshots
 ```
 
-### Runner Pool
-
-```
-POST /api/pool/register           {"runner_id", "name"?, "type"?, "max_concurrent"?}
-POST /api/pool/heartbeat          {"runner_id"}
-POST /api/pool/reap               {}
-GET  /api/pool/list
-POST /api/pool/acquire            {"experiment_id"}
-POST /api/pool/release            {"runner_id", "experiment_id"}
-```
-
 ### Reports
 
 ```
@@ -324,12 +297,8 @@ The orchestrator supports bearer token authentication via the `AUTOAGENT_AUTH_TO
 
 Additional security measures:
 - Path traversal protection on task names (regex validation + resolve + prefix check)
-- Docker containers run with resource limits (`--memory 2g --cpus 2 --pids-limit 256`)
-- Container filesystem is read-only (`--read-only`) with tmpfs for `/tmp`
 - HMAC timing-safe comparison for auth tokens
 - Snapshot restore validates content size (500KB limit) and file extension
-- Runner pool uses atomic acquire with asyncio lock to prevent race conditions
-- Stale runner reaping separated from listing to avoid read-side mutations
 
 ## Configuration
 
@@ -338,7 +307,6 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `III_WS_URL` | `ws://localhost:49134` | iii-engine WebSocket URL |
-| `III_REST_PORT` | `3111` | REST API port (set in iii-config.yaml) |
 | `AUTOAGENT_AUTH_TOKEN` | (empty) | Bearer token for write endpoints |
 | `HARNESS_PATH` | `../../agent.py` | Path to the agent harness file |
 | `TASKS_DIR` | `../../tasks` | Path to the benchmark tasks directory |
@@ -347,77 +315,52 @@ All configuration is via environment variables:
 | `MAX_CONSECUTIVE_CRASHES` | `3` | Crashes before auto-abort |
 | `NEAR_MISS_THRESHOLD` | `0.02` | Score threshold for near-miss detection |
 | `MAX_EXPERIMENTS` | `200` | Budget cap per tag |
-| `AUTOAGENT_BASE_IMAGE` | `autoagent-base:latest` | Docker image for runners |
-| `TASK_TIMEOUT` | `600` | Runner task timeout in seconds |
-| `MAX_CONCURRENT` | `4` | Runner max concurrent tasks |
 
-## What Changed from Original autoagent
+## What Changed from autoagent
 
-| Concern | Original | autoagent-iii |
-|---------|----------|--------------|
-| State management | `results.tsv` flat file, append-only, no queries | Structured KV store with scoped queries via iii-engine |
-| Task execution | Serial, one task at a time | Parallel via runner pool with semaphore-controlled concurrency |
-| Search strategy | Blind hill-climbing, no memory of what works | Adaptive explore/exploit/combine/ablation with auto-transitions |
-| Crash handling | Silent failures, no tracking | Consecutive crash counter, auto-abort at 3, crash rate feeds into strategy |
+| Concern | autoagent | autoharness |
+|---------|-----------|-------------|
+| State management | `results.tsv` flat file, append-only | Structured KV store with scoped queries via iii-engine |
+| Task execution | Serial, one at a time | Parallel with configurable concurrency via Harbor |
+| Search strategy | Blind hill-climbing | Adaptive explore/exploit/combine/ablation with auto-transitions |
+| Crash handling | Silent failures | Consecutive crash counter, auto-abort at 3, crash rate feeds strategy |
 | Near-miss detection | Everything below best is equally "failed" | Tracks experiments within threshold, surfaces for combination |
 | Failure analysis | Manual trajectory reading | Per-task failure tracking, common failure aggregation, task-level diffs |
-| Monitoring | Read files manually, no live status | 33 REST endpoints, full summary, leaderboard, TSV export |
+| Monitoring | Read files manually | 26 REST endpoints, summary, leaderboard, TSV export |
 | Harness management | Git commits only | Named snapshots with instant restore, diff against previous commit |
 | Cost tracking | None | Token count and cost estimation per experiment |
 | Observability | None | OpenTelemetry tracing and metrics via iii-engine |
 | Change classification | None | 12 categories with per-category yield tracking |
-| Progress visualization | Single-dataset `progress.png` | Multi-dataset overlay chart with category breakdown |
-| Security | None | Bearer token auth, path traversal protection, Docker resource limits |
+| Progress visualization | Single-dataset chart | Multi-dataset overlay chart matching autoagent style |
 
 ## Project Structure
 
 ```
-autoagent-iii/
-  agent.py                          -- OpenAI Agents SDK harness (editable + fixed adapter)
-  agent-claude.py                   -- Claude Agent SDK harness (alternative)
-  program.md                        -- meta-agent instructions and experiment loop rules
-  bench.sh                          -- one-command benchmark runner
-  plot_progress.py                  -- progress chart generator (pulls from iii API)
-  iii-config.yaml                   -- iii-engine runtime configuration
-  Dockerfile.base                   -- base Docker image for task containers
-  pyproject.toml                    -- Python dependencies
-  package.json                      -- Node.js metadata and npm scripts
-  .env                              -- credentials (gitignored)
-  .dockerignore                     -- Docker build context exclusions
-  progress.png                      -- generated progress chart
-  tasks/                            -- benchmark tasks in Harbor format
-    hello-world/                    -- sample: file creation
-    fizzbuzz/                       -- sample: code generation
-    file-organizer/                 -- sample: multi-step filesystem
-  workers/
-    orchestrator/
-      orchestrator.py               -- Python worker: 33 functions, 33 triggers
-      test_orchestrator.py          -- integration tests (56 tests)
-    runner/
-      Cargo.toml                    -- Rust worker dependencies
-      src/
-        main.rs                     -- runner init, pool registration, signal handling
-        config.rs                   -- environment configuration
-        functions/
-          task.rs                   -- Docker task execution with resource limits
-          health.rs                 -- heartbeat relay to pool
-  data/                             -- iii-engine state store (gitignored)
-  jobs/                             -- Harbor job outputs (gitignored)
+autoharness/
+  orchestrator/
+    orchestrator.py               -- Python worker: 26 functions, 26 triggers
+    test_orchestrator.py          -- 50 integration tests
+  agent.py                        -- agent harness template (editable + fixed adapter)
+  program.md                      -- meta-agent instructions and experiment loop
+  bench.sh                        -- one-command benchmark runner
+  plot_progress.py                -- multi-dataset progress chart generator
+  iii-config.yaml                 -- iii-engine runtime configuration
+  Dockerfile.base                 -- base Docker image for task containers
+  pyproject.toml                  -- Python dependencies
+  progress.png                    -- generated progress chart
+  tasks/
+    hello-world/                  -- sample: file creation
+    fizzbuzz/                     -- sample: code generation
+    file-organizer/               -- sample: multi-step filesystem
 ```
 
 ## Cleanup
 
-Docker images and containers accumulate across runs. Clean up regularly:
+Docker images and containers accumulate across runs:
 
 ```bash
-# Harbor's cached task images
 harbor cache clean -f
-
-# Docker prune
 docker system prune -a -f
-
-# Just dead containers
-docker container prune -f
 ```
 
 ## License
