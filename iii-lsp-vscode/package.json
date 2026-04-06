@@ -8,7 +8,9 @@
   },
   "activationEvents": [
     "onLanguage:typescript",
-    "onLanguage:typescriptreact"
+    "onLanguage:typescriptreact",
+    "onLanguage:python",
+    "onLanguage:rust"
   ],
   "main": "./extension.js",
   "contributes": {
