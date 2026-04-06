@@ -20,13 +20,19 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
 
         if let Some(req) = &func.request_format {
             if let Ok(pretty) = serde_json::to_string_pretty(req) {
-                content.push_str(&format!("\n\n**Request format:**\n```json\n{}\n```", pretty));
+                content.push_str(&format!(
+                    "\n\n**Request format:**\n```json\n{}\n```",
+                    pretty
+                ));
             }
         }
 
         if let Some(resp) = &func.response_format {
             if let Ok(pretty) = serde_json::to_string_pretty(resp) {
-                content.push_str(&format!("\n\n**Response format:**\n```json\n{}\n```", pretty));
+                content.push_str(&format!(
+                    "\n\n**Response format:**\n```json\n{}\n```",
+                    pretty
+                ));
             }
         }
 
@@ -63,8 +69,6 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn format_function_hover() {
         // Test the markdown formatting logic directly

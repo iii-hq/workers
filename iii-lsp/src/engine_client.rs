@@ -198,7 +198,10 @@ mod tests {
 
         assert_eq!(functions.len(), 1);
         let entry = functions.get("test::hello").unwrap();
-        assert_eq!(entry.value().description.as_deref(), Some("A test function"));
+        assert_eq!(
+            entry.value().description.as_deref(),
+            Some("A test function")
+        );
     }
 
     #[test]

@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 use tree_sitter::{Node, Parser};
 
+type ConfigResult = Option<(Vec<String>, Vec<(String, String)>, Range)>;
+
 struct TriggerCall {
     function_id: String,
     function_id_range: Range,
@@ -188,8 +190,7 @@ fn extract_register_trigger_call(call: Node, source: &str) -> Option<RegisterTri
 
     // Try dict-style
     if let Some(args_object) = find_child_object(arguments) {
-        let (trigger_type, trigger_type_range) =
-            find_string_pair(args_object, "type", source)?;
+        let (trigger_type, trigger_type_range) = find_string_pair(args_object, "type", source)?;
         let (function_id, function_id_range) = find_string_pair(args_object, "function_id", source)
             .unwrap_or((String::new(), to_range(args_object)));
         let (has_config, config_keys, config_values, config_range) =
@@ -234,6 +235,7 @@ fn extract_register_trigger_call(call: Node, source: &str) -> Option<RegisterTri
 
 // --- Helpers: find in arguments ---
 
+#[allow(clippy::manual_find)]
 fn find_arguments<'a>(call: Node<'a>) -> Option<Node<'a>> {
     let mut cursor = call.walk();
     for child in call.children(&mut cursor) {
@@ -244,6 +246,7 @@ fn find_arguments<'a>(call: Node<'a>) -> Option<Node<'a>> {
     None
 }
 
+#[allow(clippy::manual_find)]
 fn find_child_object<'a>(parent: Node<'a>) -> Option<Node<'a>> {
     let mut cursor = parent.walk();
     for child in parent.children(&mut cursor) {
@@ -334,10 +337,7 @@ fn find_object_pair(
     None
 }
 
-fn find_config_object_pair(
-    object: Node,
-    source: &str,
-) -> Option<(Vec<String>, Vec<(String, String)>, Range)> {
+fn find_config_object_pair(object: Node, source: &str) -> ConfigResult {
     let mut cursor = object.walk();
     for child in object.children(&mut cursor) {
         if child.kind() == "pair" {
@@ -378,11 +378,7 @@ fn find_kwarg_string(arg_list: Node, name: &str, source: &str) -> Option<(String
     None
 }
 
-fn find_kwarg_object(
-    arg_list: Node,
-    names: &[&str],
-    source: &str,
-) -> Option<(Vec<String>, Range)> {
+fn find_kwarg_object(arg_list: Node, names: &[&str], source: &str) -> Option<(Vec<String>, Range)> {
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
         if child.kind() == "keyword_argument" {
@@ -401,10 +397,7 @@ fn find_kwarg_object(
     None
 }
 
-fn find_kwarg_config_object(
-    arg_list: Node,
-    source: &str,
-) -> Option<(Vec<String>, Vec<(String, String)>, Range)> {
+fn find_kwarg_config_object(arg_list: Node, source: &str) -> ConfigResult {
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
         if child.kind() == "keyword_argument" {
@@ -466,10 +459,7 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
     for child in string_node.children(&mut cursor) {
         let k = child.kind();
         if k == "string_fragment" || k == "string_content" {
-            return child
-                .utf8_text(source.as_bytes())
-                .unwrap_or("")
-                .to_string();
+            return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
         }
     }
     String::new()
@@ -669,7 +659,6 @@ fn check_register_trigger_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::FunctionInfo;
 
     fn parse_ts(source: &str) -> tree_sitter::Tree {
         let mut parser = Parser::new();

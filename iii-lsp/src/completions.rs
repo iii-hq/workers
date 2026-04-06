@@ -104,10 +104,7 @@ fn extract_properties_from_schema(schema: &serde_json::Value) -> Vec<CompletionI
     properties
         .iter()
         .map(|(name, prop)| {
-            let type_str = prop
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("any");
+            let type_str = prop.get("type").and_then(|t| t.as_str()).unwrap_or("any");
             let description = prop.get("description").and_then(|d| d.as_str());
             let is_required = required.contains(&name.as_str());
 
@@ -121,8 +118,7 @@ fn extract_properties_from_schema(schema: &serde_json::Value) -> Vec<CompletionI
                 label: name.clone(),
                 kind: Some(CompletionItemKind::PROPERTY),
                 detail: Some(detail),
-                documentation: description
-                    .map(|d| Documentation::String(d.to_string())),
+                documentation: description.map(|d| Documentation::String(d.to_string())),
                 insert_text: Some(format!("{}: ", name)),
                 ..Default::default()
             }

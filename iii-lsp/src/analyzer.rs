@@ -340,11 +340,7 @@ fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, 
     // Quote character that's part of a string
     // TS: anonymous "'" or "\"" nodes
     // Python: named "string_start" / "string_end" nodes
-    if kind == "'"
-        || kind == "\""
-        || kind == "string_start"
-        || kind == "string_end"
-    {
+    if kind == "'" || kind == "\"" || kind == "string_start" || kind == "string_end" {
         if let Some(parent) = node.parent() {
             if parent.kind() == "string" || parent.kind() == "string_literal" {
                 let text = extract_string_content(parent, source);
@@ -360,10 +356,7 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
     let mut cursor = string_node.walk();
     for child in string_node.children(&mut cursor) {
         if is_string_content(child.kind()) {
-            return child
-                .utf8_text(source.as_bytes())
-                .unwrap_or("")
-                .to_string();
+            return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
         }
     }
     String::new()
@@ -443,9 +436,7 @@ fn determine_context_kwarg(string_node: Node, source: &str) -> CompletionContext
 
 /// Shared logic for matching method name + key/arg name to a context.
 fn match_method_and_key(method: &str, key: &str) -> CompletionContext {
-    if is_trigger_method(method) && key == "function_id" {
-        CompletionContext::FunctionId
-    } else if is_register_trigger_method(method) && key == "function_id" {
+    if (is_trigger_method(method) || is_register_trigger_method(method)) && key == "function_id" {
         CompletionContext::FunctionId
     } else if is_register_trigger_method(method) && key == "type" {
         CompletionContext::TriggerType
@@ -499,9 +490,7 @@ fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionCo
         Some(f) => f,
         None => return CompletionContext::None,
     };
-    let field_text = field_name_node
-        .utf8_text(source.as_bytes())
-        .unwrap_or("");
+    let field_text = field_name_node.utf8_text(source.as_bytes()).unwrap_or("");
 
     // field_initializer → field_initializer_list → struct_expression
     let field_list = match field_init.parent() {
@@ -518,9 +507,7 @@ fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionCo
         Some(n) => n,
         None => return CompletionContext::None,
     };
-    let struct_name = struct_name_node
-        .utf8_text(source.as_bytes())
-        .unwrap_or("");
+    let struct_name = struct_name_node.utf8_text(source.as_bytes()).unwrap_or("");
 
     // Match struct type + field name to context
     match (struct_name, field_text) {
