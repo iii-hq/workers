@@ -1,5 +1,5 @@
 """
-autoagent-iii harness — the file that the meta-agent modifies.
+autoharness — the agent harness file that the meta-agent modifies.
 
 Everything above the FIXED ADAPTER line is fair game for the meta-agent.
 Everything below is the Harbor integration and must not be modified
@@ -42,8 +42,10 @@ MAX_TURNS = 30
 def run_shell(command: str) -> str:
     """Execute a shell command and return combined stdout+stderr."""
     try:
+        task_cwd = os.environ.get("TASK_DIR", "/task")
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=120
+            command, shell=True, capture_output=True, text=True, timeout=120,
+            cwd=task_cwd,
         )
         output = result.stdout + result.stderr
         total_tokens = 0
@@ -61,7 +63,7 @@ def create_tools():
 
 def create_agent():
     return Agent(
-        name="autoagent",
+        name="harness-agent",
         instructions=SYSTEM_PROMPT,
         model=MODEL,
         tools=create_tools(),
@@ -108,7 +110,7 @@ def to_atif(result: RunResult, duration: float, instruction: str) -> dict:
     }
 
 
-class AutoAgent:
+class HarnessAgent:
     """Harbor BaseAgent adapter."""
 
     async def run(self, task_path: str) -> dict:

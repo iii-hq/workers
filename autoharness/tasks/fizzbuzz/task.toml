@@ -1,7 +1,7 @@
 schema_version = "1.1"
 
 [task]
-name = "autoagent/fizzbuzz"
+name = "autoharness/fizzbuzz"
 description = "Write a FizzBuzz program that outputs 1-100"
 keywords = ["programming", "python", "logic"]
 

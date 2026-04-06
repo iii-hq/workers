@@ -16,7 +16,7 @@ logger = Logger("orchestrator")
 
 VERSION = "0.1.0"
 WS_URL = os.environ.get("III_WS_URL", "ws://localhost:49134")
-WORKER_NAME = "autoagent-orchestrator"
+WORKER_NAME = "autoharness-orchestrator"
 MAX_CONSECUTIVE_CRASHES = int(os.environ.get("MAX_CONSECUTIVE_CRASHES", "3"))
 NEAR_MISS_THRESHOLD = float(os.environ.get("NEAR_MISS_THRESHOLD", "0.02"))
 MAX_EXPERIMENTS = int(os.environ.get("MAX_EXPERIMENTS", "200"))
@@ -24,7 +24,7 @@ HARNESS_PATH = os.environ.get("HARNESS_PATH", os.path.join(os.path.dirname(__fil
 TASKS_DIR = os.environ.get("TASKS_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "tasks"))
 HARBOR_TIMEOUT = int(os.environ.get("HARBOR_TIMEOUT", "600"))
 HARBOR_CONCURRENCY = int(os.environ.get("HARBOR_CONCURRENCY", "4"))
-AUTH_TOKEN = os.environ.get("AUTOAGENT_AUTH_TOKEN", "")
+AUTH_TOKEN = os.environ.get("AUTOHARNESS_AUTH_TOKEN", "")
 VALID_STRATEGIES = {"explore", "exploit", "combine", "ablation"}
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
@@ -80,7 +80,7 @@ def _is_near_miss(improved, best, delta_passed, delta_score):
         not improved
         and best is not None
         and abs(delta_passed) <= 1
-        and delta_score > -NEAR_MISS_THRESHOLD
+        and abs(delta_score) <= NEAR_MISS_THRESHOLD
     )
 
 
@@ -181,7 +181,7 @@ def register_experiment_functions(sdk, kv):
 
         tag_data = {
             "name": tag,
-            "branch": f"autoagent/{tag}",
+            "branch": f"autoharness/{tag}",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "best_passed": 0,
             "best_score": 0.0,
@@ -242,6 +242,8 @@ def register_experiment_functions(sdk, kv):
         exp = await kv.get(SCOPES["experiments"], eid)
         if not exp:
             return _err({"error": f"Experiment {eid} not found"}, 404)
+        if exp.get("status") in ("keep", "discard", "crash"):
+            return _ok({"experiment_id": eid, "status": exp["status"], "action": "no_op", "reason": "already terminal"})
 
         async with _tag_lock(exp["tag"]):
             best = await kv.get(SCOPES["best"], exp["tag"])
@@ -327,6 +329,8 @@ def register_experiment_functions(sdk, kv):
         exp = await kv.get(SCOPES["experiments"], eid)
         if not exp:
             return _err({"error": f"Experiment {eid} not found"}, 404)
+        if exp.get("status") in ("keep", "discard", "crash"):
+            return _ok({"experiment_id": eid, "status": exp["status"], "action": "no_op", "reason": "already terminal"})
 
         exp["status"] = "crash"
         exp["error"] = inp.get("error", "unknown")
@@ -375,8 +379,19 @@ def register_experiment_functions(sdk, kv):
 
     async def near_misses(data):
         inp = _unwrap_input(data)
+        tag = inp.get("tag")
+        current_best = await kv.get(SCOPES["best"], tag)
         all_nm = await kv.list(SCOPES["near_misses"])
-        tag_nm = [n for n in all_nm if n.get("tag") == inp.get("tag")]
+        tag_nm = []
+        for n in all_nm:
+            if n.get("tag") != tag:
+                continue
+            if current_best:
+                delta_p = n.get("passed", 0) - current_best["passed"]
+                delta_s = n.get("aggregate_score", 0) - current_best["aggregate_score"]
+                if abs(delta_p) > 1 or abs(delta_s) > NEAR_MISS_THRESHOLD:
+                    continue
+            tag_nm.append(n)
         filtered = sorted(tag_nm, key=lambda n: n.get("delta_score", 0), reverse=True)
         limit = inp.get("limit", 20)
         return _ok({"near_misses": filtered[:limit], "total": len(filtered)})
@@ -444,7 +459,7 @@ def register_task_functions(sdk, kv):
 
             score = 0.0
             reward_file = task_path / "logs" / "reward.txt"
-            if reward_file.exists():
+            if reward_file.exists() and reward_file.stat().st_mtime >= start:
                 try:
                     score = float(reward_file.read_text().strip())
                 except ValueError:
@@ -452,7 +467,7 @@ def register_task_functions(sdk, kv):
 
             trajectory = None
             traj_file = task_path / "logs" / "agent" / "trajectory.json"
-            if traj_file.exists():
+            if traj_file.exists() and traj_file.stat().st_mtime >= start:
                 try:
                     trajectory = json.loads(traj_file.read_text())
                 except json.JSONDecodeError:
@@ -612,6 +627,7 @@ def register_search_functions(sdk, kv):
         inp = _unwrap_input(data)
         all_exps = await kv.list(SCOPES["experiments"])
         tag_exps = [e for e in all_exps if e.get("tag") == inp.get("tag") and e.get("status") != "running"]
+        tag_exps.sort(key=lambda e: e.get("started_at", ""))
 
         if len(tag_exps) < 5:
             return _ok({"mode": "explore", "reason": "too few experiments to adapt"})

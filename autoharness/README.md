@@ -1,16 +1,18 @@
 # autoharness
 
-> The forge where agent harnesses are shaped. Autonomous agent engineering on [iii-engine](https://github.com/iii-hq/iii-engine) — structured experiment tracking, adaptive search, and real-time monitoring through Worker/Function/Trigger primitives.
+Self-improving agent harness on [iii-engine](https://github.com/iii-hq/iii-engine).
+
+> The forge where agent harnesses are shaped. Autonomous agent engineering with structured experiment tracking, adaptive search, and real-time monitoring through Worker/Function/Trigger primitives.
 
 Give an AI agent a task, let it build and iterate on an agent harness autonomously overnight. It modifies the system prompt, tools, agent configuration, and orchestration, runs the benchmark, checks the score, keeps or discards the change, and repeats. Every experiment is tracked in a structured state store, the search strategy adapts automatically based on what's working, failures are diagnosed across runs, and you get 26 REST endpoints for live monitoring.
 
-Inspired by [kevinrgu/autoagent](https://github.com/kevinrgu/autoagent). Built from scratch on iii-engine primitives — same relationship as karpathy/autoresearch to [n-autoresearch](https://github.com/iii-hq/n-autoresearch).
+Inspired by the [autoagent](https://github.com/kevinrgu/autoagent) concept. Built from scratch on iii-engine primitives — same relationship as karpathy/autoresearch to [n-autoresearch](https://github.com/iii-hq/n-autoresearch).
 
 ![progress](progress.png)
 
 ## Why This Exists
 
-The autoagent concept is a great idea executed simply: single file harness, `results.tsv`, hill-climbing, Docker isolation. It works. But after watching it run overnight you notice the gaps:
+The original concept is a great idea executed simply: single file harness, `results.tsv`, hill-climbing, Docker isolation. It works. But after watching it run overnight you notice the gaps:
 
 **You can't query experiment history.** The TSV is append-only. Want to find all experiments that touched the system prompt and improved? Grep through a flat file. Want the keep rate for the last 10 runs? Count lines manually.
 
@@ -38,7 +40,7 @@ The metric is total **score** produced by the benchmark's task test suites. The 
 
 ## Architecture
 
-```
+```text
 +------------------------------------------------------------+
 |  Meta-Agent (Claude, GPT-5, Codex, etc.)                   |
 |  Reads program.md, modifies agent.py, runs experiments     |
@@ -65,7 +67,7 @@ The orchestrator connects to iii-engine over WebSocket and registers 26 function
 | `task::*` | 5 | Benchmark execution. List available tasks, run individual tasks via Harbor, batch-run all tasks with configurable concurrency, retrieve per-task scores, surface failures with stdout/stderr tails. |
 | `search::*` | 4 | Adaptive strategy. Get the current search mode, override it manually, auto-adapt based on keep rate / crash rate / plateau detection / near-miss availability, suggest concrete next directions with category stats and failure patterns. |
 | `harness::*` | 5 | Harness management. Read the current agent.py with editable-region detection, diff against previous commit, save named snapshots to the KV store, restore any snapshot to disk (auth-protected), list all snapshots. |
-| `report::*` | 5 | Monitoring and export. Full summary with stats and score progression, TSV export compatible with autoagent format, per-task diff between any two experiments showing regressions and improvements, top-N leaderboard, list all tags. |
+| `report::*` | 5 | Monitoring and export. Full summary with stats and score progression, TSV export, per-task diff between any two experiments showing regressions and improvements, top-N leaderboard, list all tags. |
 
 ## The Experiment Loop
 
@@ -121,10 +123,13 @@ uv tool install harbor
 cd autoharness
 
 cat > .env << 'EOF'
-ANTHROPIC_API_KEY=sk-ant-...
+# Default harness (agent.py) uses gpt-5 via OpenAI Agents SDK
+OPENAI_API_KEY=sk-...
+# To use agent-claude.py instead, set HARNESS_PATH=agent-claude.py and:
+# ANTHROPIC_API_KEY=sk-ant-...
 EOF
 
-docker build -t autoagent-base -f Dockerfile.base .
+docker build -t autoharness-base -f Dockerfile.base .
 
 # Terminal 1
 iii --config iii-config.yaml
@@ -150,14 +155,14 @@ The meta-agent reads `program.md`, inspects the current harness, runs the benchm
 
 Each task is a self-contained directory under `tasks/` following [Harbor's task format](https://harborframework.com/docs/tasks):
 
-```
+```text
 tasks/my-task/
   task.toml           -- config (timeouts, resources, metadata)
   instruction.md      -- the prompt sent to the agent
   tests/
     test.sh           -- verifier entry point, writes reward to /logs/verifier/reward.txt
   environment/        -- optional, only if task needs custom setup
-    Dockerfile        -- task container (FROM autoagent-base)
+    Dockerfile        -- task container (FROM autoharness-base)
 ```
 
 The `task.toml` configuration controls timeouts, resource limits, network access, and environment variables:
@@ -242,7 +247,7 @@ All endpoints at `http://localhost:3111`. POST endpoints accept JSON bodies. GET
 
 ### Experiment Lifecycle
 
-```
+```http
 POST /api/experiment/setup        {"tag": "apr06"}
 POST /api/experiment/register     {"tag", "hypothesis", "description", "category", "commit_sha", "diff_summary"}
 POST /api/experiment/complete     {"experiment_id", "passed", "total_tasks", "aggregate_score", "task_scores", "duration_seconds", "tokens_used", "estimated_cost"}
@@ -254,7 +259,7 @@ POST /api/experiment/near-misses  {"tag", "limit"?}
 
 ### Task Execution
 
-```
+```http
 GET  /api/task/list
 POST /api/task/run                {"task_name", "experiment_id", "timeout"?}
 POST /api/task/batch              {"experiment_id", "concurrency"?, "timeout"?, "tasks"?}
@@ -264,7 +269,7 @@ POST /api/task/failures           {"experiment_id"}
 
 ### Search Strategy
 
-```
+```http
 POST /api/search/suggest          {"tag"}
 POST /api/search/strategy         {"tag"}
 POST /api/search/set-strategy     {"tag", "mode", "reason"}
@@ -273,7 +278,7 @@ POST /api/search/adapt            {"tag"}
 
 ### Harness Management
 
-```
+```http
 GET  /api/harness/read
 GET  /api/harness/diff
 POST /api/harness/snapshot        {"name", "commit_sha"?, "experiment_id"?}
@@ -283,7 +288,7 @@ GET  /api/harness/snapshots
 
 ### Reports
 
-```
+```http
 POST /api/report/summary          {"tag"}
 POST /api/report/leaderboard      {"tag", "limit"?}
 POST /api/report/diff             {"experiment_a", "experiment_b"}
@@ -293,7 +298,7 @@ GET  /api/report/tags
 
 ## Security
 
-The orchestrator supports bearer token authentication via the `AUTOAGENT_AUTH_TOKEN` environment variable. When set, write operations (harness snapshot/restore) require the token in the `Authorization: Bearer <token>` header. When not set, all endpoints are open — suitable for local development.
+The orchestrator supports bearer token authentication via the `AUTOHARNESS_AUTH_TOKEN` environment variable. When set, write operations (harness snapshot/restore) require the token in the `Authorization: Bearer <token>` header. When not set, all endpoints are open — suitable for local development.
 
 Additional security measures:
 - Path traversal protection on task names (regex validation + resolve + prefix check)
@@ -307,7 +312,7 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `III_WS_URL` | `ws://localhost:49134` | iii-engine WebSocket URL |
-| `AUTOAGENT_AUTH_TOKEN` | (empty) | Bearer token for write endpoints |
+| `AUTOHARNESS_AUTH_TOKEN` | (empty) | Bearer token for write endpoints |
 | `HARNESS_PATH` | `../../agent.py` | Path to the agent harness file |
 | `TASKS_DIR` | `../../tasks` | Path to the benchmark tasks directory |
 | `HARBOR_TIMEOUT` | `600` | Per-task timeout in seconds |
@@ -316,9 +321,9 @@ All configuration is via environment variables:
 | `NEAR_MISS_THRESHOLD` | `0.02` | Score threshold for near-miss detection |
 | `MAX_EXPERIMENTS` | `200` | Budget cap per tag |
 
-## What Changed from autoagent
+## What Changed from the Original
 
-| Concern | autoagent | autoharness |
+| Concern | Original | autoharness |
 |---------|-----------|-------------|
 | State management | `results.tsv` flat file, append-only | Structured KV store with scoped queries via iii-engine |
 | Task execution | Serial, one at a time | Parallel with configurable concurrency via Harbor |
@@ -331,11 +336,11 @@ All configuration is via environment variables:
 | Cost tracking | None | Token count and cost estimation per experiment |
 | Observability | None | OpenTelemetry tracing and metrics via iii-engine |
 | Change classification | None | 12 categories with per-category yield tracking |
-| Progress visualization | Single-dataset chart | Multi-dataset overlay chart matching autoagent style |
+| Progress visualization | Single-dataset chart | Multi-dataset overlay chart with multiple datasets |
 
 ## Project Structure
 
-```
+```text
 autoharness/
   orchestrator/
     orchestrator.py               -- Python worker: 26 functions, 26 triggers

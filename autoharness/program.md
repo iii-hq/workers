@@ -1,4 +1,4 @@
-# autoagent-iii — Meta-Agent Program
+# autoharness — Meta-Agent Program
 
 You are the meta-agent. Your job: build a generally capable autonomous coding agent by iteratively improving `agent.py`. The iii-engine orchestrator tracks every experiment, auto-decides keep/discard, adapts search strategy, and gives you guidance. Use the API.
 
@@ -9,7 +9,7 @@ You are the meta-agent. Your job: build a generally capable autonomous coding ag
    ```bash
    curl -X POST http://localhost:3111/api/experiment/setup -d '{"tag":"apr04"}'
    ```
-3. **Create the git branch**: `git checkout -b autoagent/<tag>`
+3. **Create the git branch**: `git checkout -b autoharness/<tag>`
 4. **Read the harness**:
    ```bash
    curl http://localhost:3111/api/harness/read
@@ -61,14 +61,14 @@ curl -X POST http://localhost:3111/api/search/suggest -d '{"tag":"apr04"}'
 
 Returns: strategy mode, underexplored categories, high-yield categories, near-misses, common failure tasks, and concrete suggestions. **Read this before every experiment.**
 
-### 2. Modify agent.py
+### 2. Modify the harness
 
-Edit the editable section with your hypothesis. One change per experiment.
+Edit the editable section of `$HARNESS_PATH` (default: `agent.py`) with your hypothesis. One change per experiment.
 
 ### 3. Git commit + Register
 
 ```bash
-git add agent.py && git commit -m "experiment: <description>"
+git add "$HARNESS_PATH" && git commit -m "experiment: <description>"
 COMMIT=$(git rev-parse --short HEAD)
 ```
 
@@ -160,7 +160,7 @@ curl -X POST http://localhost:3111/api/report/diff -d '{"experiment_a":"exp-xxx"
 # Near-misses (for combination strategy)
 curl -X POST http://localhost:3111/api/experiment/near-misses -d '{"tag":"apr04"}'
 
-# TSV export (original autoagent format)
+# TSV export
 curl -X POST http://localhost:3111/api/report/tsv -d '{"tag":"apr04"}'
 ```
 

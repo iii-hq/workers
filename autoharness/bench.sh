@@ -5,7 +5,7 @@ API="http://localhost:3111"
 TAG="${1:-$(date +%b%d | tr '[:upper:]' '[:lower:]')}"
 
 echo "=========================================="
-echo "  autoagent-iii benchmark runner"
+echo "  autoharness benchmark runner"
 echo "  tag: $TAG"
 echo "=========================================="
 
@@ -35,11 +35,11 @@ if ! curl -sf "$API/api/report/tags" >/dev/null 2>&1; then
     III_PID=$!
     sleep 2
 
-    cd workers/orchestrator
+    cd orchestrator
     python3 orchestrator.py &
     ORCH_PID=$!
     sleep 3
-    cd ../..
+    cd ..
 
     echo "Started iii-engine (PID $III_PID) + orchestrator (PID $ORCH_PID)"
 

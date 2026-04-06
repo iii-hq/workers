@@ -1,5 +1,5 @@
 """
-Integration tests for autoagent-iii orchestrator.
+Integration tests for autoharness orchestrator.
 
 Requires iii-engine running at localhost:3111 (REST) / localhost:49134 (WS).
 Start with: iii --config iii-config.yaml
@@ -8,6 +8,7 @@ Then:       python test_orchestrator.py
 """
 
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -22,6 +23,9 @@ def api(path, data=None, method="POST"):
     url = f"{BASE}{path}"
     body = json.dumps(data).encode() if data else None
     headers = {"Content-Type": "application/json"} if body else {}
+    token = os.environ.get("AUTOHARNESS_AUTH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -339,7 +343,7 @@ def test_harness_restore():
 def main():
     global PASS, FAIL
 
-    print(f"autoagent-iii orchestrator tests (tag={TAG})")
+    print(f"autoharness orchestrator tests (tag={TAG})")
     print(f"API: {BASE}")
 
     try:

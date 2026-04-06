@@ -1,7 +1,7 @@
 schema_version = "1.1"
 
 [task]
-name = "autoagent/hello-world"
+name = "autoharness/hello-world"
 description = "Create a file hello.txt containing 'Hello, World!'"
 keywords = ["trivial", "file-creation"]
 

@@ -1,7 +1,7 @@
 """
-Generate autoagent-iii progress chart from experiment history.
+Generate autoharness progress chart from experiment history.
 
-Matches the style of kevinrgu/autoagent progress.png:
+Chart style:
 - Multi-dataset overlay on one chart
 - Percentage Y-axis (0-100%)
 - Step lines for running best per dataset
@@ -101,7 +101,7 @@ def plot_tag(ax, experiments, tag, color, offset=0):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot autoagent-iii progress")
+    parser = argparse.ArgumentParser(description="Plot autoharness progress")
     parser.add_argument("--tag", required=True, action="append", help="Experiment run tag (can specify multiple)")
     parser.add_argument("--api", default="http://localhost:3111", help="iii-engine REST API")
     parser.add_argument("--output", default="progress.png", help="Output image path")
@@ -115,7 +115,10 @@ def main():
     for i, tag in enumerate(args.tag):
         color = PALETTE[i % len(PALETTE)]
         data = fetch_json(f"{args.api}/api/experiment/history", {"tag": tag, "limit": 500})
-        experiments = data if isinstance(data, list) else data.get("experiments", [])
+        payload = data.get("body", data) if isinstance(data, dict) else data
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        experiments = payload if isinstance(payload, list) else payload.get("experiments", [])
 
         if not experiments:
             print(f"No experiments found for tag '{tag}'")
@@ -126,7 +129,7 @@ def main():
         tag_labels.append(tag)
 
     title_datasets = " and ".join(t.replace("-", " ").title() for t in tag_labels) if tag_labels else "No Data"
-    ax.set_title(f"AutoAgent Progress: {title_datasets}", fontsize=16, fontweight="bold", pad=15)
+    ax.set_title(f"Autoharness Progress: {title_datasets}", fontsize=16, fontweight="bold", pad=15)
 
     ax.set_xlabel("Experiment #", fontsize=13)
     ax.set_ylabel("Score", fontsize=13)

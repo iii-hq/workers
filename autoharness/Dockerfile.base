@@ -12,7 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /task/logs
+RUN groupadd -g 1000 taskgroup && \
+    useradd -u 1000 -g taskgroup -m taskuser && \
+    mkdir -p /task/logs && \
+    chown -R taskuser:taskgroup /task
+
 WORKDIR /task
+USER taskuser
+ENV HOME=/home/taskuser
 
 CMD ["sleep", "infinity"]
