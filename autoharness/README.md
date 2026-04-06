@@ -422,4 +422,4 @@ docker container prune -f
 
 ## License
 
-MIT
+Apache-2.0
