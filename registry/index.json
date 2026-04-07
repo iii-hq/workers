@@ -23,7 +23,6 @@
             "version": "0.1.2"
         },
         "todo-worker": {
-            "type": "oci",
             "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
             "image": "docker.io/andersonofl/todo-worker",
             "repo": "iii-hq/workers",
