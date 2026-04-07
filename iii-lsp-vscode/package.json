@@ -3,6 +3,7 @@
   "displayName": "III Language Server",
   "description": "Autocompletion and hover for III engine functions and triggers",
   "version": "0.1.0",
+  "publisher": "iii-hq",
   "engines": {
     "vscode": "^1.75.0"
   },

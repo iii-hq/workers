@@ -635,6 +635,7 @@ fn check_register_trigger_call(
         }
     }
 
+    // Quartz-style 6-field cron: sec min hour day month weekday
     if call.trigger_type == "cron" {
         for (key, value) in &call.config_values {
             if key == "expression" {

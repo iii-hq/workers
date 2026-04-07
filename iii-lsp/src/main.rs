@@ -119,15 +119,15 @@ impl LanguageServer for Backend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
-        self.run_diagnostics(uri.clone(), &text).await;
-        self.documents.insert(uri, text);
+        self.documents.insert(uri.clone(), text.clone());
+        self.run_diagnostics(uri, &text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
             let uri = params.text_document.uri;
-            self.run_diagnostics(uri.clone(), &change.text).await;
-            self.documents.insert(uri, change.text);
+            self.documents.insert(uri.clone(), change.text.clone());
+            self.run_diagnostics(uri, &change.text).await;
         }
     }
 

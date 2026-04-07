@@ -51,8 +51,11 @@ impl EngineClient {
     pub async fn start(self: &Arc<Self>) {
         self.seed_cache().await;
 
-        let client = Arc::clone(self);
+        let weak = Arc::downgrade(self);
         let guard = self.iii.on_functions_available(move |functions| {
+            let Some(client) = weak.upgrade() else {
+                return;
+            };
             client.functions.clear();
             for func in &functions {
                 client
@@ -60,8 +63,11 @@ impl EngineClient {
                     .insert(func.function_id.clone(), func.clone());
             }
 
-            let client = Arc::clone(&client);
+            let weak = Arc::downgrade(&client);
             tokio::task::spawn(async move {
+                let Some(client) = weak.upgrade() else {
+                    return;
+                };
                 client.reseed_secondary_caches().await;
             });
         });

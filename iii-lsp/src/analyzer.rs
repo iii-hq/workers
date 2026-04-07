@@ -128,6 +128,7 @@ fn patch_unclosed_string(source: &str, position: Position) -> Option<String> {
         let mut patched = source.to_string();
         let suffix = build_closing_suffix(&source[..byte_offset], '"');
         patched.insert_str(byte_offset, &suffix);
+        return Some(patched);
     }
 
     Option::None
@@ -220,13 +221,20 @@ fn patch_unclosed_brackets(source: &str, position: Position) -> Option<String> {
 
 fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
     let line_num = position.line as usize;
-    let col = position.character as usize;
+    let col_utf16 = position.character as usize;
 
     let mut byte_offset = 0;
     for (i, line) in source.lines().enumerate() {
         if i == line_num {
-            byte_offset += col.min(line.len());
-            return Some(byte_offset);
+            // LSP positions use UTF-16 code units, convert to byte offset
+            let mut utf16_units = 0;
+            for (byte_idx, ch) in line.char_indices() {
+                if utf16_units >= col_utf16 {
+                    return Some(byte_offset + byte_idx);
+                }
+                utf16_units += ch.len_utf16();
+            }
+            return Some(byte_offset + line.len());
         }
         byte_offset += line.len() + 1;
     }
