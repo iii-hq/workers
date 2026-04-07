@@ -9,6 +9,8 @@ on:
         type: choice
         options:
           - image-resize
+          - iii-lsp
+          - iii-lsp-vscode
       bump:
         description: 'Version bump type'
         required: true
@@ -62,6 +64,7 @@ jobs:
           token: ${{ steps.generate_token.outputs.token }}
 
       - name: Pre-flight checks
+        id: preflight
         env:
           WORKER: ${{ inputs.worker }}
         run: |
@@ -71,8 +74,12 @@ jobs:
             exit 1
           fi
 
-          if [[ ! -f "$WORKER/Cargo.toml" ]]; then
-            echo "::error::$WORKER/Cargo.toml not found"
+          if [[ -f "$WORKER/Cargo.toml" ]]; then
+            echo "manifest_type=cargo" >> "$GITHUB_OUTPUT"
+          elif [[ -f "$WORKER/package.json" ]]; then
+            echo "manifest_type=node" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No Cargo.toml or package.json found in $WORKER/"
             exit 1
           fi
 
@@ -140,7 +147,16 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
-          current=$(read_cargo_version "$WORKER/Cargo.toml")
+          read_node_version() {
+            jq -r '.version' "$1"
+          }
+
+          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
+          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
+            current=$(read_cargo_version "$WORKER/Cargo.toml")
+          else
+            current=$(read_node_version "$WORKER/package.json")
+          fi
           new_ver=$(bump_version "$current" "$WORKER" "$BUMP")
 
           if [[ "$DRY_RUN" == "true" ]]; then
@@ -159,8 +175,15 @@ jobs:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
         run: |
-          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "${WORKER}/Cargo.toml"
-          echo "Updated ${WORKER}/Cargo.toml to ${NEW_VERSION}"
+          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
+          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
+            sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "${WORKER}/Cargo.toml"
+            echo "Updated ${WORKER}/Cargo.toml to ${NEW_VERSION}"
+          else
+            jq --arg v "$NEW_VERSION" '.version = $v' "${WORKER}/package.json" > "${WORKER}/package.json.tmp"
+            mv "${WORKER}/package.json.tmp" "${WORKER}/package.json"
+            echo "Updated ${WORKER}/package.json to ${NEW_VERSION}"
+          fi
 
       - name: Validate manifest update
         if: inputs.dry_run != true
@@ -168,15 +191,20 @@ jobs:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
         run: |
-          actual=$(grep '^version = ' "${WORKER}/Cargo.toml" | head -n1 | cut -d'"' -f2)
+          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
+          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
+            actual=$(grep '^version = ' "${WORKER}/Cargo.toml" | head -n1 | cut -d'"' -f2)
+          else
+            actual=$(jq -r '.version' "${WORKER}/package.json")
+          fi
           if [[ "$actual" != "$NEW_VERSION" ]]; then
-            echo "::error::${WORKER}/Cargo.toml version mismatch: expected ${NEW_VERSION}, got ${actual}"
+            echo "::error::Manifest version mismatch: expected ${NEW_VERSION}, got ${actual}"
             exit 1
           fi
-          echo "Validated ${WORKER}/Cargo.toml version: ${actual}"
+          echo "Validated manifest version: ${actual}"
 
       - name: Update registry
-        if: inputs.dry_run != true
+        if: inputs.dry_run != true && inputs.worker != 'iii-lsp-vscode'
         env:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
