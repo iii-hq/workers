@@ -21,6 +21,16 @@
                 }
             },
             "version": "0.1.2"
+        },
+        "iii-lsp": {
+            "type": "binary",
+            "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "iii-lsp",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
+            "version": "0.1.0"
         }
     }
 }
