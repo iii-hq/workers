@@ -40,5 +40,9 @@
   "type": "commonjs",
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.7.1",
+    "ovsx": "^0.10.10"
   }
 }
