@@ -61,16 +61,11 @@ workers:
       logs_flush_interval_ms: ${OTEL_LOGS_FLUSH_INTERVAL_MS:5000}  # Flush interval in milliseconds for OTLP logs export (default: 5000ms)
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
       logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)
-
   - name: image-resize
-    image: docker.io/andersonofl/image-resize:latest
     config:
-      III_ENGINE_URL: ws://localhost:49134
-
-  - name: todo-worker-python
-    image: andersonofl/todo-worker-python:latest
-    config:
-      GPG_KEY: 7169605F62C751356D054A26A821E680E5FA6305
-      III_URL: ws://localhost:49134
-      PYTHON_SHA256: c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684
-      PYTHON_VERSION: 3.12.13
+      height: 200
+      quality:
+        jpeg: 85
+        webp: 80
+      strategy: scale-to-fit
+      width: 200
