@@ -1,6 +1,30 @@
 use tower_lsp_server::ls_types::Position;
 use tree_sitter::{Node, Parser, Point};
 
+/// Convert a UTF-16 column offset to a byte column offset within a line.
+pub(crate) fn utf16_col_to_byte_col(line: &str, col_utf16: usize) -> usize {
+    let mut utf16_units = 0;
+    for (byte_idx, ch) in line.char_indices() {
+        if utf16_units >= col_utf16 {
+            return byte_idx;
+        }
+        utf16_units += ch.len_utf16();
+    }
+    line.len()
+}
+
+/// Convert a byte column offset to a UTF-16 column offset within a line.
+pub(crate) fn byte_col_to_utf16_col(line: &str, byte_col: usize) -> u32 {
+    let mut utf16_units: u32 = 0;
+    for (byte_idx, ch) in line.char_indices() {
+        if byte_idx >= byte_col {
+            break;
+        }
+        utf16_units += ch.len_utf16() as u32;
+    }
+    utf16_units
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Language {
     TypeScript,
@@ -224,22 +248,19 @@ fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
     let col_utf16 = position.character as usize;
 
     let mut byte_offset = 0;
-    for (i, line) in source.lines().enumerate() {
-        if i == line_num {
-            // LSP positions use UTF-16 code units, convert to byte offset
-            let mut utf16_units = 0;
-            for (byte_idx, ch) in line.char_indices() {
-                if utf16_units >= col_utf16 {
-                    return Some(byte_offset + byte_idx);
-                }
-                utf16_units += ch.len_utf16();
-            }
-            return Some(byte_offset + line.len());
+    let mut current_line = 0;
+
+    // Split on \n to handle both LF and CRLF (tower-lsp doesn't normalize)
+    for raw_line in source.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if current_line == line_num {
+            return Some(byte_offset + utf16_col_to_byte_col(line, col_utf16));
         }
-        byte_offset += line.len() + 1;
+        byte_offset += raw_line.len() + 1; // +1 for the \n
+        current_line += 1;
     }
 
-    if line_num == source.lines().count() {
+    if line_num == current_line {
         Some(source.len())
     } else {
         Option::None
@@ -271,7 +292,13 @@ fn analyze_source(source: &str, position: Position, language: Language) -> Analy
         Option::None => return none,
     };
 
-    let point = Point::new(position.line as usize, position.character as usize);
+    // Tree-sitter Point expects byte column, not UTF-16 code units
+    let byte_col = source
+        .lines()
+        .nth(position.line as usize)
+        .map(|line| utf16_col_to_byte_col(line, position.character as usize))
+        .unwrap_or(0);
+    let point = Point::new(position.line as usize, byte_col);
     let root = tree.root_node();
 
     let node = match root.descendant_for_point_range(point, point) {

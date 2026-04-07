@@ -1,4 +1,4 @@
-use crate::analyzer::Language;
+use crate::analyzer::{byte_col_to_utf16_col, Language};
 use crate::engine_client::EngineClient;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
@@ -152,7 +152,7 @@ fn extract_trigger_call(call: Node, source: &str) -> Option<TriggerCall> {
             if let Some(info) = find_object_pair(args_object, &["payload", "data"], source) {
                 (true, info.0, info.1)
             } else {
-                (false, Vec::new(), to_range(args_object))
+                (false, Vec::new(), to_range(args_object, source))
             };
         return Some(TriggerCall {
             function_id,
@@ -169,7 +169,7 @@ fn extract_trigger_call(call: Node, source: &str) -> Option<TriggerCall> {
         if let Some(info) = find_kwarg_object(arguments, &["payload", "data"], source) {
             (true, info.0, info.1)
         } else {
-            (false, Vec::new(), to_range(arguments))
+            (false, Vec::new(), to_range(arguments, source))
         };
     Some(TriggerCall {
         function_id,
@@ -192,12 +192,12 @@ fn extract_register_trigger_call(call: Node, source: &str) -> Option<RegisterTri
     if let Some(args_object) = find_child_object(arguments) {
         let (trigger_type, trigger_type_range) = find_string_pair(args_object, "type", source)?;
         let (function_id, function_id_range) = find_string_pair(args_object, "function_id", source)
-            .unwrap_or((String::new(), to_range(args_object)));
+            .unwrap_or((String::new(), to_range(args_object, source)));
         let (has_config, config_keys, config_values, config_range) =
             if let Some(info) = find_config_object_pair(args_object, source) {
                 (true, info.0, info.1, info.2)
             } else {
-                (false, Vec::new(), Vec::new(), to_range(args_object))
+                (false, Vec::new(), Vec::new(), to_range(args_object, source))
             };
         return Some(RegisterTriggerCall {
             trigger_type,
@@ -214,12 +214,12 @@ fn extract_register_trigger_call(call: Node, source: &str) -> Option<RegisterTri
     // Try keyword-argument style
     let (trigger_type, trigger_type_range) = find_kwarg_string(arguments, "type", source)?;
     let (function_id, function_id_range) = find_kwarg_string(arguments, "function_id", source)
-        .unwrap_or((String::new(), to_range(arguments)));
+        .unwrap_or((String::new(), to_range(arguments, source)));
     let (has_config, config_keys, config_values, config_range) =
         if let Some(info) = find_kwarg_config_object(arguments, source) {
             (true, info.0, info.1, info.2)
         } else {
-            (false, Vec::new(), Vec::new(), to_range(arguments))
+            (false, Vec::new(), Vec::new(), to_range(arguments, source))
         };
     Some(RegisterTriggerCall {
         trigger_type,
@@ -289,7 +289,7 @@ fn find_string_pair(object: Node, key_name: &str, source: &str) -> Option<(Strin
             // Direct string
             if value_node.kind() == "string" || value_node.kind() == "string_literal" {
                 let text = extract_string_content(value_node, source);
-                return Some((text, to_range(value_node)));
+                return Some((text, to_range(value_node, source)));
             }
             // Rust: "x".to_string() or "x".into() — find string_literal in subtree
             if let Some(s) = find_string_in_subtree(value_node, source) {
@@ -303,7 +303,7 @@ fn find_string_pair(object: Node, key_name: &str, source: &str) -> Option<(Strin
 /// Find a string_literal node anywhere in a subtree (handles "x".to_string()).
 fn find_string_in_subtree(node: Node, source: &str) -> Option<(String, Range)> {
     if node.kind() == "string_literal" || node.kind() == "string" {
-        return Some((extract_string_content(node, source), to_range(node)));
+        return Some((extract_string_content(node, source), to_range(node, source)));
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -327,7 +327,7 @@ fn find_object_pair(
                 if key_names.contains(&key_text.as_str()) {
                     if let Some(value) = child.child_by_field_name("value") {
                         if is_object(value.kind()) {
-                            return Some((extract_object_keys(value, source), to_range(value)));
+                            return Some((extract_object_keys(value, source), to_range(value, source)));
                         }
                     }
                 }
@@ -348,7 +348,7 @@ fn find_config_object_pair(object: Node, source: &str) -> ConfigResult {
                         if is_object(value.kind()) {
                             let keys = extract_object_keys(value, source);
                             let kvs = extract_object_string_values(value, source);
-                            return Some((keys, kvs, to_range(value)));
+                            return Some((keys, kvs, to_range(value, source)));
                         }
                     }
                 }
@@ -368,7 +368,7 @@ fn find_kwarg_string(arg_list: Node, name: &str, source: &str) -> Option<(String
                 if n.utf8_text(source.as_bytes()).ok()? == name {
                     if let Some(value) = child.child_by_field_name("value") {
                         if value.kind() == "string" {
-                            return Some((extract_string_content(value, source), to_range(value)));
+                            return Some((extract_string_content(value, source), to_range(value, source)));
                         }
                     }
                 }
@@ -387,7 +387,7 @@ fn find_kwarg_object(arg_list: Node, names: &[&str], source: &str) -> Option<(Ve
                 if names.contains(&arg_name) {
                     if let Some(value) = child.child_by_field_name("value") {
                         if is_object(value.kind()) {
-                            return Some((extract_object_keys(value, source), to_range(value)));
+                            return Some((extract_object_keys(value, source), to_range(value, source)));
                         }
                     }
                 }
@@ -407,7 +407,7 @@ fn find_kwarg_config_object(arg_list: Node, source: &str) -> ConfigResult {
                         if is_object(value.kind()) {
                             let keys = extract_object_keys(value, source);
                             let kvs = extract_object_string_values(value, source);
-                            return Some((keys, kvs, to_range(value)));
+                            return Some((keys, kvs, to_range(value, source)));
                         }
                     }
                 }
@@ -465,17 +465,27 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
     String::new()
 }
 
-fn to_range(node: Node) -> Range {
+fn to_range(node: Node, source: &str) -> Range {
     let start = node.start_position();
     let end = node.end_position();
+    let start_char = source
+        .lines()
+        .nth(start.row)
+        .map(|line| byte_col_to_utf16_col(line, start.column))
+        .unwrap_or(start.column as u32);
+    let end_char = source
+        .lines()
+        .nth(end.row)
+        .map(|line| byte_col_to_utf16_col(line, end.column))
+        .unwrap_or(end.column as u32);
     Range {
         start: Position {
             line: start.row as u32,
-            character: start.column as u32,
+            character: start_char,
         },
         end: Position {
             line: end.row as u32,
-            character: end.column as u32,
+            character: end_char,
         },
     }
 }
