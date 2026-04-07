@@ -327,7 +327,10 @@ fn find_object_pair(
                 if key_names.contains(&key_text.as_str()) {
                     if let Some(value) = child.child_by_field_name("value") {
                         if is_object(value.kind()) {
-                            return Some((extract_object_keys(value, source), to_range(value, source)));
+                            return Some((
+                                extract_object_keys(value, source),
+                                to_range(value, source),
+                            ));
                         }
                     }
                 }
@@ -368,7 +371,10 @@ fn find_kwarg_string(arg_list: Node, name: &str, source: &str) -> Option<(String
                 if n.utf8_text(source.as_bytes()).ok()? == name {
                     if let Some(value) = child.child_by_field_name("value") {
                         if value.kind() == "string" {
-                            return Some((extract_string_content(value, source), to_range(value, source)));
+                            return Some((
+                                extract_string_content(value, source),
+                                to_range(value, source),
+                            ));
                         }
                     }
                 }
@@ -387,7 +393,10 @@ fn find_kwarg_object(arg_list: Node, names: &[&str], source: &str) -> Option<(Ve
                 if names.contains(&arg_name) {
                     if let Some(value) = child.child_by_field_name("value") {
                         if is_object(value.kind()) {
-                            return Some((extract_object_keys(value, source), to_range(value, source)));
+                            return Some((
+                                extract_object_keys(value, source),
+                                to_range(value, source),
+                            ));
                         }
                     }
                 }
