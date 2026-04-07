@@ -1,0 +1,5 @@
+retention_hours: 24
+drift_threshold: 0.15
+cron_drift_check: "0 */10 * * * *"
+max_spans_per_function: 1000
+baseline_window_minutes: 60
