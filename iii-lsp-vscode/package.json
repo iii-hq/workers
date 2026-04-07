@@ -1,0 +1,44 @@
+{
+  "name": "iii-lsp",
+  "displayName": "III Language Server",
+  "description": "Autocompletion and hover for III engine functions and triggers",
+  "version": "0.1.0",
+  "publisher": "iii-hq",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:python",
+    "onLanguage:rust"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "III LSP",
+      "properties": {
+        "iii-lsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the iii-lsp binary. If empty, looks for 'iii-lsp' on PATH."
+        },
+        "iii-lsp.engineUrl": {
+          "type": "string",
+          "default": "ws://127.0.0.1:49134",
+          "description": "WebSocket URL of the III engine."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
