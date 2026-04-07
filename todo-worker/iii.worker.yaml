@@ -1,0 +1,18 @@
+iii: v1
+name: todo-worker
+version: 0.1.0
+
+env:
+  III_URL: "ws://localhost:49134"
+
+runtime:
+  language: typescript
+  entry: src/index.ts
+
+resources:
+  memory: 256
+  cpus: 1
+
+scripts:
+  install: "npm install"
+  start: "npm run dev"

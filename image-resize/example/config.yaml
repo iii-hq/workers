@@ -61,3 +61,9 @@ workers:
       logs_flush_interval_ms: ${OTEL_LOGS_FLUSH_INTERVAL_MS:5000}  # Flush interval in milliseconds for OTLP logs export (default: 5000ms)
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
       logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)
+
+  - name: image-resize
+    image: docker.io/andersonofl/image-resize:latest
+    config:
+      III_ENGINE_URL: ws://localhost:49134
+
