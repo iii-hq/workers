@@ -113,6 +113,9 @@ jobs:
         with:
           token: ${{ steps.generate_token.outputs.token }}
 
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'
         env:
