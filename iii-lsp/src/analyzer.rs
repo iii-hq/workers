@@ -72,7 +72,7 @@ fn is_method_access(kind: &str) -> bool {
 
 /// Method names that map to `trigger()`
 fn is_trigger_method(name: &str) -> bool {
-    name == "trigger"
+    name == "trigger" || name == "trigger_async"
 }
 
 /// Method names that map to `registerTrigger()` / `register_trigger()`
@@ -903,6 +903,14 @@ mod tests {
     }
 
     #[test]
+    fn py_trigger_async_function_id_dict() {
+        let source = "await iii.trigger_async({'function_id': 'todos::create'})";
+        let result = analyze(source, pos(0, 41), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
     fn py_register_trigger_type_dict() {
         let source = "iii.register_trigger({'type': 'http', 'function_id': 'x'})";
         let result = analyze(source, pos(0, 31), Language::Python);
@@ -929,6 +937,18 @@ mod tests {
     }
 
     #[test]
+    fn py_payload_async_dict() {
+        let source = "await iii.trigger_async({'function_id': 'x', 'payload': {}})";
+        let result = analyze(source, pos(0, 57), Language::Python);
+        assert_eq!(
+            result.context,
+            CompletionContext::PayloadProperty {
+                function_id: "x".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn py_trigger_config_dict() {
         let source = "iii.register_trigger({'type': 'http', 'function_id': 'x', 'config': {}})";
         let result = analyze(source, pos(0, 69), Language::Python);
@@ -946,6 +966,14 @@ mod tests {
     fn py_trigger_function_id_kwarg() {
         let source = "iii.trigger(function_id='todos::create')";
         let result = analyze(source, pos(0, 25), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+        assert_eq!(result.current_text, "todos::create");
+    }
+
+    #[test]
+    fn py_trigger_async_function_id_kwarg() {
+        let source = "await iii.trigger_async(function_id='todos::create')";
+        let result = analyze(source, pos(0, 37), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
         assert_eq!(result.current_text, "todos::create");
     }
@@ -1074,6 +1102,24 @@ mod tests {
         // Line 2: "result = iii.trigger(function_id='" = 34 chars
         let source = "from iii import iii\n\nresult = iii.trigger(function_id='\n\nx = 1\n";
         let result = analyze(source, pos(2, 34), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn py_real_file_unclosed_string_async_dict() {
+        // Line 2: "result = await iii.trigger_async({'function_id': '" = 50 chars
+        let source =
+            "from iii import iii\n\nresult = await iii.trigger_async({'function_id': '\n\nx = 1\n";
+        let result = analyze(source, pos(2, 50), Language::Python);
+        assert_eq!(result.context, CompletionContext::FunctionId);
+    }
+
+    #[test]
+    fn py_real_file_unclosed_string_async_kwarg() {
+        // Line 2: "result = await iii.trigger_async(function_id='" = 46 chars
+        let source =
+            "from iii import iii\n\nresult = await iii.trigger_async(function_id='\n\nx = 1\n";
+        let result = analyze(source, pos(2, 46), Language::Python);
         assert_eq!(result.context, CompletionContext::FunctionId);
     }
 }

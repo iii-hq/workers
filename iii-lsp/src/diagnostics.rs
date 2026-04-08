@@ -127,7 +127,7 @@ fn extract_method_name(call: Node, source: &str) -> Option<String> {
 }
 
 fn is_trigger_method(name: &str) -> bool {
-    name == "trigger"
+    name == "trigger" || name == "trigger_async"
 }
 
 fn is_register_trigger_method(name: &str) -> bool {
@@ -733,6 +733,18 @@ mod tests {
     }
 
     #[test]
+    fn py_finds_trigger_async_calls_dict() {
+        let source =
+            "await iii.trigger_async({'function_id': 'todos::create', 'payload': {'title': 'test'}})";
+        let tree = parse_py(source);
+        let (calls, _) = find_all_calls(tree.root_node(), source);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "todos::create");
+        assert!(calls[0].has_payload);
+        assert_eq!(calls[0].payload_keys, vec!["title"]);
+    }
+
+    #[test]
     fn py_finds_register_trigger_dict() {
         let source = "iii.register_trigger({'type': 'http', 'function_id': 'x', 'config': {'api_path': '/test'}})";
         let tree = parse_py(source);
@@ -747,6 +759,18 @@ mod tests {
     #[test]
     fn py_finds_trigger_calls_kwarg() {
         let source = "iii.trigger(function_id='todos::create', payload={'title': 'test'})";
+        let tree = parse_py(source);
+        let (calls, _) = find_all_calls(tree.root_node(), source);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "todos::create");
+        assert!(calls[0].has_payload);
+        assert_eq!(calls[0].payload_keys, vec!["title"]);
+    }
+
+    #[test]
+    fn py_finds_trigger_async_calls_kwarg() {
+        let source =
+            "await iii.trigger_async(function_id='todos::create', payload={'title': 'test'})";
         let tree = parse_py(source);
         let (calls, _) = find_all_calls(tree.root_node(), source);
         assert_eq!(calls.len(), 1);

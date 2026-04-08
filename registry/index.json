@@ -31,6 +31,20 @@
             "has_checksum": true,
             "default_config": {},
             "version": "0.1.0"
+        },
+        "todo-worker": {
+            "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
+            "image": "docker.io/andersonofl/todo-worker",
+            "repo": "iii-hq/workers",
+            "version": "0.1.0",
+            "latest": "latest"
+        },
+        "todo-worker-python": {
+            "description": "Quickstart CRUD todo worker using the Python iii SDK",
+            "image": "docker.io/andersonofl/todo-worker-python",
+            "repo": "iii-hq/workers",
+            "version": "0.1.0",
+            "latest": "latest"
         }
     }
 }
