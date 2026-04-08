@@ -110,4 +110,4 @@ jobs:
         run: npm ci
 
       - name: Package check (dry run)
-        run: npx @vscode/vsce package --out /dev/null
+        run: npx @vscode/vsce package --out tmp.vsix && rm -f tmp.vsix
