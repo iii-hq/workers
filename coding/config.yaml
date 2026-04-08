@@ -1,0 +1,4 @@
+workspace_dir: "/tmp/iii-coding-workspace"
+supported_languages: ["rust", "typescript", "python"]
+execute_timeout_ms: 30000
+max_file_size_kb: 256
