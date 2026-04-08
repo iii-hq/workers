@@ -1,13 +1,13 @@
-name: Release
+name: Release LSP
 
 on:
   push:
     tags:
-      - 'image-resize/v*'
+      - 'iii-lsp/v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., image-resize/v1.0.0)'
+        description: 'Tag to release (e.g., iii-lsp/v1.0.0)'
         required: true
         type: string
 
@@ -15,14 +15,10 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-image-resize-${{ github.ref }}
+  group: release-iii-lsp-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # Setup: Parse tag metadata
-  # ──────────────────────────────────────────────────────────────
-
   setup:
     name: Setup
     runs-on: ubuntu-latest
@@ -43,7 +39,7 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          VERSION="${TAG#image-resize/v}"
+          VERSION="${TAG#iii-lsp/v}"
 
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
@@ -57,11 +53,7 @@ jobs:
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::image-resize release -- tag=$TAG version=$VERSION"
-
-  # ──────────────────────────────────────────────────────────────
-  # GitHub Release
-  # ──────────────────────────────────────────────────────────────
+          echo "::notice::iii-lsp release -- tag=$TAG version=$VERSION"
 
   create-release:
     name: Create GitHub Release
@@ -87,14 +79,10 @@ jobs:
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
-          name: image-resize ${{ needs.setup.outputs.version }}
+          name: iii-lsp ${{ needs.setup.outputs.version }}
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
-
-  # ──────────────────────────────────────────────────────────────
-  # Binary Build
-  # ──────────────────────────────────────────────────────────────
 
   binary-build:
     name: Binary Release
@@ -102,8 +90,8 @@ jobs:
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
-      bin_name: image-resize
-      manifest_path: image-resize/Cargo.toml
+      bin_name: iii-lsp
+      manifest_path: iii-lsp/Cargo.toml
       tag_name: ${{ needs.setup.outputs.tag }}
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
       skip_create_release: true
