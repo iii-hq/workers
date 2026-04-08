@@ -63,16 +63,7 @@ jobs:
       run:
         working-directory: iii-lsp-vscode
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v4
-        with:
-          token: ${{ steps.generate_token.outputs.token }}
 
       - uses: actions/setup-node@v4
         with:
@@ -100,7 +91,6 @@ jobs:
         if: needs.setup.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
           name: iii-lsp-vscode ${{ needs.setup.outputs.version }}
           draft: false
