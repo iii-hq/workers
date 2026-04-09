@@ -3,11 +3,11 @@ name: Release LSP
 on:
   push:
     tags:
-      - 'iii-lsp/v*'
+      - 'iii-lsp-vscode/v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., iii-lsp/v1.0.0)'
+        description: 'Tag to release (e.g., iii-lsp-vscode/v1.0.0)'
         required: true
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-iii-lsp-${{ github.ref }}
+  group: release-vscode-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          VERSION="${TAG#iii-lsp/v}"
+          VERSION="${TAG#iii-lsp-vscode/v}"
 
           if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
             echo "dry_run=true" >> "$GITHUB_OUTPUT"
@@ -53,49 +53,47 @@ jobs:
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::iii-lsp release -- tag=$TAG version=$VERSION"
+          echo "::notice::iii-lsp-vscode release -- tag=$TAG version=$VERSION"
 
-  create-release:
-    name: Create GitHub Release
+  publish:
+    name: Package & Publish
     needs: [setup]
-    if: needs.setup.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    defaults:
+      run:
+        working-directory: iii-lsp-vscode
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v4
-        with:
-          token: ${{ steps.generate_token.outputs.token }}
 
-      - name: Create GitHub Release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package VSIX
+        run: npx @vscode/vsce package --out iii-lsp-${{ needs.setup.outputs.version }}.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: needs.setup.outputs.dry_run != 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx @vscode/vsce publish --pat "$VSCE_PAT"
+
+      - name: Publish to OpenVSX
+        if: needs.setup.outputs.dry_run != 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish iii-lsp-${{ needs.setup.outputs.version }}.vsix --pat "$OVSX_PAT"
+
+      - name: Upload VSIX to GitHub Release
+        if: needs.setup.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
-          name: iii-lsp ${{ needs.setup.outputs.version }}
+          name: iii-lsp-vscode ${{ needs.setup.outputs.version }}
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
-
-  binary-build:
-    name: Binary Release
-    needs: [setup, create-release]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_rust-binary.yml
-    with:
-      bin_name: iii-lsp
-      manifest_path: iii-lsp/Cargo.toml
-      tag_name: ${{ needs.setup.outputs.tag }}
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-    secrets:
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          files: iii-lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
