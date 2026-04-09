@@ -30,8 +30,10 @@ jobs:
     steps:
       - name: Resolve tag
         id: resolve
+        env:
+          RAW_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
+          TAG=$(echo "$RAW_TAG" | xargs)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata from tag
