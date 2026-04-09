@@ -30,11 +30,6 @@ on:
         required: false
         type: boolean
         default: false
-    secrets:
-      GH_APP_ID:
-        required: true
-      GH_APP_PRIVATE_KEY:
-        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -48,24 +43,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Generate token
-        if: inputs.skip_create_release != true && inputs.dry_run != true
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v4
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        with:
-          token: ${{ steps.generate_token.outputs.token }}
 
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
           draft: false
@@ -102,16 +86,7 @@ jobs:
             os: ubuntu-22.04
 
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.GH_APP_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v4
-        with:
-          token: ${{ steps.generate_token.outputs.token }}
 
       - name: Rewrite SSH to HTTPS for public deps
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -154,5 +129,5 @@ jobs:
           zip: windows
           checksum: sha256
           manifest-path: ${{ inputs.manifest_path }}
-          token: ${{ steps.generate_token.outputs.token }}
+          token: ${{ github.token }}
           dry-run: ${{ inputs.dry_run }}
