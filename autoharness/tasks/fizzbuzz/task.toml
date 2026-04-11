@@ -1,0 +1,24 @@
+schema_version = "1.1"
+
+[task]
+name = "autoharness/fizzbuzz"
+description = "Write a FizzBuzz program that outputs 1-100"
+keywords = ["programming", "python", "logic"]
+
+[metadata]
+difficulty = "easy"
+category = "programming"
+
+[verifier]
+timeout_sec = 30.0
+
+[agent]
+timeout_sec = 180.0
+
+[environment]
+cpus = 2
+memory_mb = 4096
+allow_internet = true
+
+[environment.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
