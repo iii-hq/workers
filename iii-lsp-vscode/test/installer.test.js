@@ -29,12 +29,16 @@ test('unsupported platform error', () => {
 
 test('archive extension by platform', () => {
   assert.equal(
-    installer.getArchiveName('win32', 'x64'),
-    'iii-lsp-x86_64-pc-windows-msvc.zip'
+    installer.getArchiveName('aarch64-apple-darwin', 'darwin'),
+    'iii-lsp-aarch64-apple-darwin.tar.gz'
   );
   assert.equal(
-    installer.getArchiveName('linux', 'x64'),
+    installer.getArchiveName('x86_64-unknown-linux-gnu', 'linux'),
     'iii-lsp-x86_64-unknown-linux-gnu.tar.gz'
+  );
+  assert.equal(
+    installer.getArchiveName('x86_64-pc-windows-msvc', 'win32'),
+    'iii-lsp-x86_64-pc-windows-msvc.zip'
   );
 });
 
@@ -49,5 +53,16 @@ test('pinned release url', () => {
   assert.equal(
     installer.RELEASE_BASE_URL,
     'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.0'
+  );
+});
+
+test('checksum and download url', () => {
+  assert.equal(
+    installer.getChecksumName('aarch64-apple-darwin'),
+    'iii-lsp-aarch64-apple-darwin.sha256'
+  );
+  assert.equal(
+    installer.getDownloadUrl('iii-lsp-aarch64-apple-darwin.tar.gz'),
+    'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.0/iii-lsp-aarch64-apple-darwin.tar.gz'
   );
 });

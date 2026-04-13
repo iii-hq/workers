@@ -15,7 +15,7 @@ const PLATFORM_TARGETS = {
   'win32/x64': 'x86_64-pc-windows-msvc',
 };
 
-function getPlatformTarget(platform, arch) {
+function getPlatformTarget(platform = process.platform, arch = process.arch) {
   const key = `${platform}/${arch}`;
   const target = PLATFORM_TARGETS[key];
 
@@ -26,17 +26,16 @@ function getPlatformTarget(platform, arch) {
   return target;
 }
 
-function getArchiveName(platform, arch) {
-  const target = getPlatformTarget(platform, arch);
+function getArchiveName(target, platform = process.platform) {
   return `iii-lsp-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
 }
 
-function getBinaryName(platform) {
+function getBinaryName(platform = process.platform) {
   return platform === 'win32' ? 'iii-lsp.exe' : 'iii-lsp';
 }
 
-function getChecksumName(platform, arch) {
-  return `${getArchiveName(platform, arch)}.sha256`;
+function getChecksumName(target) {
+  return `iii-lsp-${target}.sha256`;
 }
 
 function getDownloadUrl(assetName) {
