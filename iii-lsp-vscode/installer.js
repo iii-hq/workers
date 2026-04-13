@@ -65,7 +65,16 @@ function normalizeChecksum(text) {
 
 async function fileExists(filePath) {
   try {
-    await fsp.access(filePath, fs.constants.F_OK);
+    const stat = await fsp.stat(filePath);
+
+    if (!stat.isFile()) {
+      return false;
+    }
+
+    if (process.platform !== 'win32') {
+      await fsp.access(filePath, fs.constants.X_OK);
+    }
+
     return true;
   } catch {
     return false;

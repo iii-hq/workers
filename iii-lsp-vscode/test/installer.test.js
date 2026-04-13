@@ -3,11 +3,14 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const tar = require('tar');
 
 const installer = require('../installer');
 const {
   SERVER_VERSION,
   ensureServerBinary,
+  extractArchive,
+  fileExists,
   getDownloadUrl,
   normalizeChecksum,
 } = installer;
@@ -119,6 +122,51 @@ test('parses sha256 files from GitHub release assets', () => {
 
 test('rejects malformed sha256 files', () => {
   assert.throws(() => normalizeChecksum('not-a-checksum'), /Invalid sha256/);
+});
+
+test('fileExists requires a regular executable binary on non-win32', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+  const tempFile = path.join(tempDir, 'iii-lsp');
+
+  await fs.mkdir(path.join(tempDir, 'subdir'), { recursive: true });
+  await fs.writeFile(tempFile, 'fake binary');
+
+  assert.equal(await fileExists(path.join(tempDir, 'subdir')), false);
+  assert.equal(await fileExists(tempFile), false);
+
+  if (process.platform !== 'win32') {
+    await fs.chmod(tempFile, 0o755);
+  }
+
+  assert.equal(await fileExists(tempFile), true);
+});
+
+test('extractArchive unpacks a tar.gz binary and marks it executable', async () => {
+  if (process.platform === 'win32') {
+    return;
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-lsp-vscode-test-'));
+  const archiveDir = path.join(tempDir, 'archive');
+  const installDir = path.join(tempDir, 'install');
+  const archivePath = path.join(tempDir, 'iii-lsp-linux.tar.gz');
+  const binaryPath = path.join(archiveDir, 'iii-lsp');
+
+  await fs.mkdir(archiveDir, { recursive: true });
+  await fs.writeFile(binaryPath, '#!/bin/sh\necho iii-lsp\n');
+  await fs.chmod(binaryPath, 0o644);
+  await tar.c({
+    gzip: true,
+    cwd: archiveDir,
+    file: archivePath,
+  }, ['iii-lsp']);
+
+  const extractedPath = await extractArchive(archivePath, installDir, 'linux');
+  const extractedStat = await fs.stat(extractedPath);
+
+  assert.equal(extractedPath, path.join(installDir, 'iii-lsp'));
+  assert.equal(await fileExists(extractedPath), true);
+  assert.ok((extractedStat.mode & 0o111) !== 0);
 });
 
 test('installs missing binary and saves global serverPath', async () => {
