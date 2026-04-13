@@ -37,6 +37,11 @@
   },
   "keywords": [],
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iii-hq/workers.git",
+    "directory": "iii-lsp-vscode"
+  },
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
