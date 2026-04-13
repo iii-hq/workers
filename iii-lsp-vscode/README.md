@@ -67,10 +67,8 @@ Build a local VSIX and install it in Cursor:
 
 ```bash
 cd iii-lsp-vscode
-docker build -t iii-lsp-vscode-dev .
-docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace iii-lsp-vscode-dev npm ci
-docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace iii-lsp-vscode-dev npx vsce package --out iii-lsp-cursor.vsix
-cursor --install-extension iii-lsp-cursor.vsix --force
+make build
+cursor --install-extension iii-lsp.vsix --force
 ```
 
 Open a supported file to activate the extension:
