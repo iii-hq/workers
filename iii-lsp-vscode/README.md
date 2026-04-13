@@ -22,6 +22,8 @@ Autocompletion, hover documentation, and diagnostics for [III engine](https://gi
 
 After the extension is installed, open a supported TypeScript, TSX, Python, or Rust file to activate it. On first activation, the extension downloads the matching `iii-lsp/v0.1.0` binary, verifies its SHA-256 checksum, installs it under extension global storage, and saves the installed path to `iii-lsp.serverPath`.
 
+If automatic install fails, the extension warns and falls back to the configured `iii-lsp.serverPath` or `iii-lsp` on `PATH`.
+
 ### From source (development)
 
 1. Install dependencies:
@@ -63,7 +65,7 @@ After the extension is installed, open a supported TypeScript, TSX, Python, or R
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `iii-lsp.serverPath` | Auto-filled on first activation | Path to the installed or custom `iii-lsp` binary |
+| `iii-lsp.serverPath` | `""` (auto-filled after first activation) | Path to the installed or custom `iii-lsp` binary |
 | `iii-lsp.engineUrl` | `ws://127.0.0.1:49134` | WebSocket URL of the III engine |
 
 Configure via **Settings** > search "III LSP", or in `settings.json`:
