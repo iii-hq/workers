@@ -1,6 +1,6 @@
 # III Language Server - VS Code Extension
 
-Autocompletion, hover documentation, and diagnostics for [III engine](https://github.com/iii-org) functions and triggers.
+Autocompletion, hover documentation, and diagnostics for [III engine](https://github.com/iii-hq/iii) functions and triggers.
 
 ## Supported Languages
 
@@ -60,6 +60,26 @@ If automatic install fails, the extension warns and falls back to the configured
    ```bash
    code --install-extension iii-lsp-*.vsix
    ```
+
+### Local smoke test with Cursor
+
+Build a local VSIX and install it in Cursor:
+
+```bash
+cd iii-lsp-vscode
+docker build -t iii-lsp-vscode-dev .
+docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace iii-lsp-vscode-dev npm ci
+docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/npm-cache -v "$PWD:/workspace" -w /workspace iii-lsp-vscode-dev npx vsce package --out iii-lsp-cursor.vsix
+cursor --install-extension iii-lsp-cursor.vsix --force
+```
+
+Open a supported file to activate the extension:
+
+```bash
+cursor ../iii-lsp/src/main.rs
+```
+
+After activation, `iii-lsp.serverPath` should point to the downloaded binary in Cursor settings. To install the same VSIX in VS Code instead, replace `cursor` with `code`.
 
 ## Settings
 
