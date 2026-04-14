@@ -43,10 +43,10 @@ pub async fn handle(payload: Value) -> Result<Value, IIIError> {
         .unwrap_or("rust");
 
     match trigger_type {
-        "http" | "cron" | "queue" | "subscribe" => {}
+        "http" | "cron" | "durable::subscriber" => {}
         _ => {
             return Err(IIIError::Handler(format!(
-                "unsupported trigger type: {}. supported: http, cron, queue, subscribe",
+                "unsupported trigger type: {}. supported: http, cron, durable::subscriber",
                 trigger_type
             )));
         }

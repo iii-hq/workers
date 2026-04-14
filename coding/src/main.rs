@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "trigger_type": { "type": "string", "enum": ["http", "cron", "queue", "subscribe"] },
+                                "trigger_type": { "type": "string", "enum": ["http", "cron", "durable::subscriber"] },
                                 "function_id": { "type": "string" },
                                 "config": { "type": "object" }
                             },
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
                 "type": "object",
                 "properties": {
                     "function_id": { "type": "string" },
-                    "trigger_type": { "type": "string", "enum": ["http", "cron", "queue", "subscribe"] },
+                    "trigger_type": { "type": "string", "enum": ["http", "cron", "durable::subscriber"] },
                     "config": { "type": "object" },
                     "language": { "type": "string", "enum": ["rust", "typescript", "python"], "default": "rust" }
                 },
