@@ -1,0 +1,31 @@
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - '*'
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  - name: iii-observability
+    config:
+      enabled: ${OTEL_ENABLED:true}
+      service_name: ${OTEL_SERVICE_NAME:iii}
+      service_version: ${SERVICE_VERSION:0.1.0}
+      exporter: ${OTEL_EXPORTER_TYPE:memory}
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+      sampling_ratio: 1.0
+      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
+      metrics_enabled: true
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}
+      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}
