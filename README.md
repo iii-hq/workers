@@ -4,6 +4,57 @@ Worker modules for the [III engine](https://github.com/iii-hq/iii).
 
 ## Modules
 
+### todo-worker-python
+
+A Python-based todo CRUD worker that connects to the III engine via WebSocket and exposes a REST API for managing todos.
+
+**Routes:**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/todos` | Create a new todo |
+| `GET` | `/todos` | List all todos |
+| `GET` | `/todos/:id` | Get a todo by ID |
+| `PUT` | `/todos/:id` | Update a todo |
+| `DELETE` | `/todos/:id` | Delete a todo |
+
+**Features:**
+- In-memory todo storage
+- Full CRUD operations with validation
+- OpenTelemetry observability support
+
+#### Prerequisites
+
+- Python 3.10+
+- A running III engine instance
+
+#### Install
+
+```bash
+cd todo-worker-python
+pip install .
+```
+
+#### Usage
+
+```bash
+# Run with defaults (connects to ws://localhost:49134)
+todo-worker
+
+# Custom engine URL
+III_URL=ws://host:port todo-worker
+```
+
+#### Docker
+
+```bash
+cd todo-worker-python
+docker build -t todo-worker-python .
+docker run --rm -e III_URL=ws://host:port todo-worker-python
+```
+
+---
+
 ### image-resize
 
 A Rust-based image resize worker that connects to the III engine via WebSocket and processes images through stream channels.
