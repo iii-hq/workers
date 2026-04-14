@@ -12,6 +12,7 @@ dependencies = [
     "iii-sdk",
     "opentelemetry-api",
     "opentelemetry-sdk",
+    "watchfiles",
 ]
 
 [project.scripts]

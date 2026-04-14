@@ -15,4 +15,4 @@ resources:
 
 scripts:
   install: "pip install ."
-  start: "python -m src.main"
+  start: "watchfiles 'python -m src.main'"
