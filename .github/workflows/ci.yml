@@ -109,5 +109,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+
       - name: Package check (dry run)
-        run: npx @vscode/vsce package --out tmp.vsix && rm -f tmp.vsix
+        run: npm run package:check
