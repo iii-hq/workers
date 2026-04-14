@@ -74,6 +74,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set extension version from release tag
+        env:
+          RELEASE_VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          npm version --no-git-tag-version --allow-same-version "$RELEASE_VERSION"
+
+          ACTUAL_VERSION=$(node -p "require('./package.json').version")
+          if [[ "$ACTUAL_VERSION" != "$RELEASE_VERSION" ]]; then
+            echo "::error::Manifest version mismatch: expected ${RELEASE_VERSION}, got ${ACTUAL_VERSION}"
+            exit 1
+          fi
+
+          echo "::notice::iii-lsp-vscode package version set to ${ACTUAL_VERSION}"
+
       - name: Package VSIX
         run: npx @vscode/vsce package --out iii-lsp-${{ needs.setup.outputs.version }}.vsix
 
