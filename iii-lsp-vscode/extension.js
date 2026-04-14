@@ -44,7 +44,7 @@ async function activate(context) {
 
   client = new LanguageClient(
     "iii-lsp",
-    "III Language Server",
+    "iii Language Server",
     serverOptions,
     clientOptions
   );

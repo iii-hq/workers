@@ -1,8 +1,8 @@
-# III Language Server - VS Code Extension
+# iii Language Server - VS Code Extension
 
-Autocompletion, hover documentation, and diagnostics for [III engine](https://github.com/iii-hq/iii) functions and triggers.
+Autocompletion, hover documentation, and diagnostics for [iii engine](https://github.com/iii-hq/iii) functions and triggers.
 
-![III LSP demo](https://raw.githubusercontent.com/iii-hq/workers/main/iii-lsp-vscode/lsp.gif)
+![iii LSP demo](https://raw.githubusercontent.com/iii-hq/workers/main/iii-lsp-vscode/lsp.gif)
 
 ## Supported Languages
 
@@ -18,7 +18,7 @@ Autocompletion, hover documentation, and diagnostics for [III engine](https://gi
 
    To use a custom binary instead, set `iii-lsp.serverPath` to an existing executable path before activation.
 
-2. **III engine** running locally (default: `ws://127.0.0.1:49134`)
+2. **iii engine** running locally (default: `ws://127.0.0.1:49134`)
 
 ## Installation
 
@@ -86,9 +86,9 @@ After activation, `iii-lsp.serverPath` should point to the downloaded binary in 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `iii-lsp.serverPath` | `""` (auto-filled after first activation) | Path to the installed or custom `iii-lsp` binary |
-| `iii-lsp.engineUrl` | `ws://127.0.0.1:49134` | WebSocket URL of the III engine |
+| `iii-lsp.engineUrl` | `ws://127.0.0.1:49134` | WebSocket URL of the iii engine |
 
-Configure via **Settings** > search "III LSP", or in `settings.json`:
+Configure via **Settings** > search "iii LSP", or in `settings.json`:
 
 ```json
 {

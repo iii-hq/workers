@@ -1,7 +1,7 @@
 {
   "name": "iii-lsp",
-  "displayName": "III Language Server",
-  "description": "Autocompletion and hover for III engine functions and triggers",
+  "displayName": "iii Language Server",
+  "description": "Autocompletion and hover for iii engine functions and triggers",
   "version": "0.1.0",
   "publisher": "iii-hq",
   "engines": {
@@ -16,7 +16,7 @@
   "main": "./extension.js",
   "contributes": {
     "configuration": {
-      "title": "III LSP",
+      "title": "iii LSP",
       "properties": {
         "iii-lsp.serverPath": {
           "type": "string",
@@ -26,7 +26,7 @@
         "iii-lsp.engineUrl": {
           "type": "string",
           "default": "ws://127.0.0.1:49134",
-          "description": "WebSocket URL of the III engine."
+          "description": "WebSocket URL of the iii engine."
         }
       }
     }
