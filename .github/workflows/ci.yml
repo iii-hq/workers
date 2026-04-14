@@ -12,8 +12,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: Test, Format, Lint
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      image-resize: ${{ steps.filter.outputs.image-resize }}
+      iii-lsp: ${{ steps.filter.outputs.iii-lsp }}
+      iii-lsp-vscode: ${{ steps.filter.outputs.iii-lsp-vscode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            image-resize:
+              - 'image-resize/**'
+            iii-lsp:
+              - 'iii-lsp/**'
+            iii-lsp-vscode:
+              - 'iii-lsp-vscode/**'
+
+  image-resize:
+    name: "image-resize: Test, Format, Lint"
+    needs: changes
+    if: needs.changes.outputs.image-resize == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,3 +59,58 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+  iii-lsp:
+    name: "iii-lsp: Test, Format, Lint"
+    needs: changes
+    if: needs.changes.outputs.iii-lsp == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iii-lsp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: iii-lsp -> target
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  iii-lsp-vscode:
+    name: "iii-lsp-vscode: Lint"
+    needs: changes
+    if: needs.changes.outputs.iii-lsp-vscode == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iii-lsp-vscode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package check (dry run)
+        run: npm run package:check

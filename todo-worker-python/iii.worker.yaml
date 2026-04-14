@@ -1,0 +1,18 @@
+iii: v1
+name: todo-worker-python
+version: 0.1.0
+
+env:
+  III_URL: "ws://localhost:49134"
+
+runtime:
+  language: python
+  entry: src/main.py
+
+resources:
+  memory: 256
+  cpus: 1
+
+scripts:
+  install: "pip install ."
+  start: "python -m src.main"

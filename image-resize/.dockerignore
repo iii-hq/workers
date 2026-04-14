@@ -1,0 +1,6 @@
+target/
+.git/
+*.md
+docs/
+iii-launcher/
+.github/
