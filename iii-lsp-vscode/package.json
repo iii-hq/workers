@@ -1,0 +1,56 @@
+{
+  "name": "iii-lsp",
+  "displayName": "III Language Server",
+  "description": "Autocompletion and hover for III engine functions and triggers",
+  "version": "0.1.0",
+  "publisher": "iii-hq",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:python",
+    "onLanguage:rust"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "III LSP",
+      "properties": {
+        "iii-lsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the iii-lsp binary. If empty, looks for 'iii-lsp' on PATH."
+        },
+        "iii-lsp.engineUrl": {
+          "type": "string",
+          "default": "ws://127.0.0.1:49134",
+          "description": "WebSocket URL of the III engine."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "package:check": "vsce package --out tmp.vsix && rm -f tmp.vsix"
+  },
+  "keywords": [],
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iii-hq/workers.git",
+    "directory": "iii-lsp-vscode"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "tar": "^7.5.13",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.7.1",
+    "ovsx": "^0.10.10"
+  }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "iii-lsp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "iii-lsp"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = { git = "ssh://git@github.com/iii-hq/iii.git" }
+tower-lsp-server = "0.23"
+tree-sitter = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.23"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+dashmap = "6"
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

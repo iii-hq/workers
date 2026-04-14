@@ -1,0 +1,19 @@
+{
+  "name": "@iii/todo-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "iii-sdk": "0.9.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

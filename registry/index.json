@@ -2,13 +2,14 @@
     "version": 1,
     "workers": {
         "image-resize": {
+            "type": "binary",
             "description": "III engine image resize worker",
             "repo": "iii-hq/workers",
             "tag_prefix": "image-resize",
             "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
             "has_checksum": true,
             "default_config": {
-                "class": "workers::image_resize::ImageResizeWorker",
+                "name": "image-resize",
                 "config": {
                     "width": 200,
                     "height": 200,
@@ -21,19 +22,29 @@
             },
             "version": "0.1.2"
         },
-        "nanochat": {
-            "description": "Karpathy's nanochat LLM worker — train, fine-tune, evaluate, and chat with GPT models",
+        "iii-lsp": {
+            "type": "binary",
+            "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
             "repo": "iii-hq/workers",
-            "tag_prefix": "nanochat",
-            "language": "python",
-            "supported_targets": ["any"],
-            "has_checksum": false,
-            "default_config": {
-                "source": "sft",
-                "device": null,
-                "engine_url": "ws://localhost:49134"
-            },
+            "tag_prefix": "iii-lsp",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
             "version": "0.1.0"
+        },
+        "todo-worker": {
+            "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
+            "image": "docker.io/andersonofl/todo-worker",
+            "repo": "iii-hq/workers",
+            "version": "0.1.0",
+            "latest": "latest"
+        },
+        "todo-worker-python": {
+            "description": "Quickstart CRUD todo worker using the Python iii SDK",
+            "image": "docker.io/andersonofl/todo-worker-python",
+            "repo": "iii-hq/workers",
+            "version": "0.1.0",
+            "latest": "latest"
         }
     }
 }
