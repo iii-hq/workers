@@ -14,6 +14,9 @@
     "onLanguage:rust"
   ],
   "main": "./extension.js",
+  "categories": [
+    "Programming Languages"
+  ],
   "contributes": {
     "configuration": {
       "title": "iii LSP",
@@ -35,7 +38,18 @@
     "test": "node --test",
     "package:check": "vsce package --out tmp.vsix && rm -f tmp.vsix"
   },
-  "keywords": [],
+  "keywords": [
+    "iii",
+    "III",
+    "iii-lsp",
+    "III-lsp",
+    "iii language server",
+    "language server",
+    "lsp",
+    "autocomplete",
+    "hover",
+    "diagnostics"
+  ],
   "author": "",
   "repository": {
     "type": "git",
