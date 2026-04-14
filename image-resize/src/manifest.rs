@@ -41,7 +41,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_object(), "Manifest must be valid JSON object");
         assert_eq!(parsed["name"], "image-resize");
-        assert_eq!(parsed["version"], "0.1.0");
+        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
