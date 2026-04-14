@@ -2,13 +2,14 @@
     "version": 1,
     "workers": {
         "image-resize": {
+            "type": "binary",
             "description": "III engine image resize worker",
             "repo": "iii-hq/workers",
             "tag_prefix": "image-resize",
             "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
             "has_checksum": true,
             "default_config": {
-                "class": "workers::image_resize::ImageResizeWorker",
+                "name": "image-resize",
                 "config": {
                     "width": 200,
                     "height": 200,
@@ -21,29 +22,29 @@
             },
             "version": "0.1.2"
         },
-        "mcp": {
-            "description": "MCP protocol worker — expose iii-engine functions as MCP tools (stdio + Streamable HTTP)",
+        "iii-lsp": {
+            "type": "binary",
+            "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
             "repo": "iii-hq/workers",
-            "tag_prefix": "mcp",
+            "tag_prefix": "iii-lsp",
             "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
             "has_checksum": true,
-            "default_config": {
-                "engine_url": "ws://localhost:49134",
-                "expose_all": false
-            },
-            "version": "0.3.0"
+            "default_config": {},
+            "version": "0.1.0"
         },
-        "a2a": {
-            "description": "A2A protocol worker — expose iii-engine functions as A2A skills (agent card + JSON-RPC)",
+        "todo-worker": {
+            "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
+            "image": "docker.io/andersonofl/todo-worker",
             "repo": "iii-hq/workers",
-            "tag_prefix": "a2a",
-            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
-            "has_checksum": true,
-            "default_config": {
-                "engine_url": "ws://localhost:49134",
-                "expose_all": false
-            },
-            "version": "0.3.0"
+            "version": "0.1.0",
+            "latest": "latest"
+        },
+        "todo-worker-python": {
+            "description": "Quickstart CRUD todo worker using the Python iii SDK",
+            "image": "docker.io/andersonofl/todo-worker-python",
+            "repo": "iii-hq/workers",
+            "version": "0.1.0",
+            "latest": "latest"
         }
     }
 }
