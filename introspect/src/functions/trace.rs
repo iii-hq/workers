@@ -137,10 +137,10 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
         }));
 
         for t in &func_triggers {
-            if t.trigger_type == "subscribe" {
+            if t.trigger_type == "durable::subscriber" {
                 if let Some(topic) = t.config.get("topic").and_then(|v| v.as_str()) {
                     for other_t in &triggers {
-                        if other_t.trigger_type == "subscribe"
+                        if other_t.trigger_type == "durable::subscriber"
                             && other_t
                                 .config
                                 .get("topic")

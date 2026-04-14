@@ -48,7 +48,7 @@ const ENGINE_INTERNAL_PREFIXES: &[&str] = &[
 ];
 
 const ENGINE_INTERNAL_EXACT: &[&str] = &[
-    "publish", "enqueue",
+    "publish", "iii::durable::publish",
 ];
 
 fn is_engine_internal(function_id: &str) -> bool {
@@ -269,7 +269,7 @@ mod tests {
         assert!(is_engine_internal("engine::health"));
         assert!(is_engine_internal("iii::config"));
         assert!(is_engine_internal("publish"));
-        assert!(is_engine_internal("enqueue"));
+        assert!(is_engine_internal("iii::durable::publish"));
         assert!(is_engine_internal("iii.on_functions_available.abc"));
         assert!(!is_engine_internal("eval::metrics"));
         assert!(!is_engine_internal("introspect::functions"));

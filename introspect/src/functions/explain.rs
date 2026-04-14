@@ -165,7 +165,7 @@ fn describe_trigger(trigger: &TriggerInfo) -> String {
                 .unwrap_or("unknown schedule");
             format!("Cron schedule: {}", expr)
         }
-        "subscribe" => {
+        "durable::subscriber" => {
             let topic = trigger
                 .config
                 .get("topic")
@@ -247,12 +247,12 @@ fn build_function_explanation(
 
     let inbound: Vec<String> = all_triggers
         .iter()
-        .filter(|t| t.trigger_type == "subscribe")
+        .filter(|t| t.trigger_type == "durable::subscriber")
         .filter(|t| {
             let topic = t.config.get("topic").and_then(|v| v.as_str());
             let our_topics: Vec<&str> = func_triggers
                 .iter()
-                .filter(|ft| ft.trigger_type == "subscribe")
+                .filter(|ft| ft.trigger_type == "durable::subscriber")
                 .filter_map(|ft| ft.config.get("topic").and_then(|v| v.as_str()))
                 .collect();
             if let Some(topic) = topic {
