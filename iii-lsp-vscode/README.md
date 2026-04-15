@@ -2,7 +2,7 @@
 
 Autocompletion, hover documentation, and diagnostics for [iii engine](https://github.com/iii-hq/iii) functions and triggers.
 
-![iii LSP demo](https://raw.githubusercontent.com/iii-hq/workers/main/iii-lsp-vscode/lsp.gif)
+![iii LSP demo](https://raw.githubusercontent.com/iii-hq/workers/main/iii-lsp-vscode/images/lsp.gif)
 
 ## Supported Languages
 
