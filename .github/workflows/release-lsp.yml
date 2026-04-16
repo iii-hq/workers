@@ -113,3 +113,56 @@ jobs:
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
           files: iii-lsp-vscode/iii-lsp-${{ needs.setup.outputs.version }}.vsix
+
+  sync-manifest:
+    name: Sync package.json on main
+    needs: [setup, publish]
+    if: needs.setup.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Update iii-lsp-vscode/package.json
+        id: update
+        env:
+          NEW_VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          CURRENT=$(jq -r '.version' iii-lsp-vscode/package.json)
+          if [[ "$CURRENT" == "$NEW_VERSION" ]]; then
+            echo "::notice::package.json already at ${NEW_VERSION}; nothing to sync"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          jq --arg v "$NEW_VERSION" '.version = $v' iii-lsp-vscode/package.json > iii-lsp-vscode/package.json.tmp
+          mv iii-lsp-vscode/package.json.tmp iii-lsp-vscode/package.json
+
+          ACTUAL=$(jq -r '.version' iii-lsp-vscode/package.json)
+          if [[ "$ACTUAL" != "$NEW_VERSION" ]]; then
+            echo "::error::Manifest version mismatch: expected ${NEW_VERSION}, got ${ACTUAL}"
+            exit 1
+          fi
+
+          echo "::notice::iii-lsp-vscode/package.json: ${CURRENT} -> ${NEW_VERSION}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          git config user.name "workers-ci[bot]"
+          git config user.email "workers-ci[bot]@users.noreply.github.com"
+          git add iii-lsp-vscode/package.json
+          git commit -m "chore: sync iii-lsp-vscode package.json to v${NEW_VERSION}"
+          git push origin main
