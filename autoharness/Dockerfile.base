@@ -1,0 +1,24 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 1000 taskgroup && \
+    useradd -u 1000 -g taskgroup -m taskuser && \
+    mkdir -p /task/logs && \
+    chown -R taskuser:taskgroup /task
+
+WORKDIR /task
+USER taskuser
+ENV HOME=/home/taskuser
+
+CMD ["sleep", "infinity"]
