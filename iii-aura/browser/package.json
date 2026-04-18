@@ -1,0 +1,18 @@
+{
+  "name": "iii-aura-browser",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "iii-browser-sdk": "^0.11.0-next.9"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iii-aura"
+version = "0.1.0"
+description = "On-device multimodal voice + vision worker for the iii engine"
+requires-python = ">=3.12"
+dependencies = [
+    "iii-sdk>=0.11.0.dev9",
+    "litert-lm>=0.10.1",
+    "numpy>=2.0",
+    "huggingface-hub>=0.16.0",
+]
+
+[project.optional-dependencies]
+mac = [
+    "mlx-audio>=0.4.2",
+    "misaki[en]>=0.9.4",
+    "num2words>=0.5.14",
+]
+linux = [
+    "kokoro-onnx>=0.5.0",
+]
+dev = [
+    "ruff",
+]
+
+[project.scripts]
+iii-aura = "iii_aura.worker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iii_aura"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
