@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
         trigger_type: "cron".to_string(),
         function_id: "eval::drift".to_string(),
         config: json!({ "expression": cron_expression }),
+        metadata: None,
     }) {
         Ok(_) => tracing::info!("cron trigger registered for eval::drift"),
         Err(e) => tracing::warn!(error = %e, "failed to register cron trigger"),
@@ -85,6 +86,7 @@ async fn main() -> Result<()> {
         trigger_type: "subscribe".to_string(),
         function_id: "eval::ingest".to_string(),
         config: json!({ "topic": "telemetry.spans" }),
+        metadata: None,
     }) {
         Ok(_) => tracing::info!("subscribe trigger registered for eval::ingest on telemetry.spans"),
         Err(e) => tracing::warn!(error = %e, "failed to register subscribe trigger"),
@@ -97,6 +99,7 @@ async fn main() -> Result<()> {
             "api_path": "eval/analyze",
             "http_method": "POST"
         }),
+        metadata: None,
     }) {
         Ok(_) => tracing::info!("http trigger registered for eval::analyze_traces"),
         Err(e) => tracing::warn!(error = %e, "failed to register http trigger for analyze_traces"),
