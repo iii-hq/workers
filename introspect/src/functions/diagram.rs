@@ -202,6 +202,7 @@ mod tests {
             trigger_type: "http".to_string(),
             function_id: "test::echo".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         }];
 
         let result = generate_mermaid(&functions, &workers, &triggers);

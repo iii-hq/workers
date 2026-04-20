@@ -328,6 +328,7 @@ mod tests {
             trigger_type: "http".to_string(),
             function_id: "eval::metrics".to_string(),
             config: json!({ "api_path": "eval/metrics", "http_method": "POST" }),
+            metadata: None,
         };
         let desc = describe_trigger(&trigger);
         assert_eq!(desc, "HTTP POST /eval/metrics");
@@ -340,6 +341,7 @@ mod tests {
             trigger_type: "cron".to_string(),
             function_id: "eval::drift".to_string(),
             config: json!({ "expression": "0 */10 * * * *" }),
+            metadata: None,
         };
         let desc = describe_trigger(&trigger);
         assert_eq!(desc, "Cron schedule: 0 */10 * * * *");
@@ -349,9 +351,10 @@ mod tests {
     fn test_describe_trigger_subscribe() {
         let trigger = TriggerInfo {
             id: "t3".to_string(),
-            trigger_type: "subscribe".to_string(),
+            trigger_type: "durable::subscriber".to_string(),
             function_id: "eval::ingest".to_string(),
             config: json!({ "topic": "telemetry.spans" }),
+            metadata: None,
         };
         let desc = describe_trigger(&trigger);
         assert_eq!(desc, "Subscribes to topic 'telemetry.spans'");
@@ -364,6 +367,7 @@ mod tests {
             trigger_type: "state".to_string(),
             function_id: "some::fn".to_string(),
             config: json!({ "scope": "eval:spans" }),
+            metadata: None,
         };
         let desc = describe_trigger(&trigger);
         assert_eq!(desc, "Triggered by state change in scope 'eval:spans'");
@@ -376,6 +380,7 @@ mod tests {
             trigger_type: "custom".to_string(),
             function_id: "some::fn".to_string(),
             config: json!({}),
+            metadata: None,
         };
         let desc = describe_trigger(&trigger);
         assert_eq!(desc, "Trigger type: custom");
@@ -429,6 +434,7 @@ mod tests {
             trigger_type: "http".to_string(),
             function_id: "eval::metrics".to_string(),
             config: json!({ "api_path": "eval/metrics", "http_method": "POST" }),
+            metadata: None,
         };
 
         let result = build_function_explanation(&func, &[&trigger], "iii-eval", &[]);

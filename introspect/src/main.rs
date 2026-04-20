@@ -329,6 +329,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/trace",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_explain = iii.register_trigger(RegisterTriggerInput {
@@ -338,6 +339,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/explain",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _fn_topology_refresh = iii.register_function_with(
@@ -358,6 +360,7 @@ async fn main() -> Result<()> {
         config: serde_json::json!({
             "cron": config.cron_topology_refresh,
         }),
+        metadata: None,
     });
 
     let _http_functions = iii.register_trigger(RegisterTriggerInput {
@@ -367,6 +370,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/functions",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_workers = iii.register_trigger(RegisterTriggerInput {
@@ -376,6 +380,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/workers",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_triggers = iii.register_trigger(RegisterTriggerInput {
@@ -385,6 +390,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/triggers",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_topology = iii.register_trigger(RegisterTriggerInput {
@@ -394,6 +400,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/topology",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_diagram = iii.register_trigger(RegisterTriggerInput {
@@ -403,6 +410,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/diagram",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_health = iii.register_trigger(RegisterTriggerInput {
@@ -412,6 +420,7 @@ async fn main() -> Result<()> {
             "api_path": "introspect/health",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     tracing::info!("iii-introspect registered 9 functions and 11 triggers, waiting for invocations");
