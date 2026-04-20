@@ -273,6 +273,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/chat",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_discover = iii.register_trigger(RegisterTriggerInput {
@@ -282,6 +283,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/discover",
             "http_method": "GET"
         }),
+        metadata: None,
     });
 
     let _http_chat_stream = iii.register_trigger(RegisterTriggerInput {
@@ -291,6 +293,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/chat/stream",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_plan = iii.register_trigger(RegisterTriggerInput {
@@ -300,6 +303,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/plan",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_session_create = iii.register_trigger(RegisterTriggerInput {
@@ -309,6 +313,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/session",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_session_history = iii.register_trigger(RegisterTriggerInput {
@@ -318,6 +323,7 @@ async fn main() -> Result<()> {
             "api_path": "agent/session/history",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let iii_for_refresh = iii.clone();
@@ -362,6 +368,7 @@ async fn main() -> Result<()> {
         config: json!({
             "cron_expression": config.cron_session_cleanup
         }),
+        metadata: None,
     });
 
     tracing::info!("iii-agent registered 7 functions, 6 HTTP triggers, 1 cron trigger, 1 subscribe trigger");
