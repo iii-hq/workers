@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
                 "api_path": api_path,
                 "http_method": http_method,
             }),
+            metadata: None,
         }) {
             Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
             Err(e) => tracing::warn!(error = %e, function_id, "failed to register http trigger"),
