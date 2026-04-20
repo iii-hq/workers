@@ -1,0 +1,57 @@
+max_timeout_ms: 30000
+default_timeout_ms: 10000
+max_output_bytes: 1048576
+working_dir: null
+inherit_env: false
+allowed_env:
+  - PATH
+  - HOME
+  - LANG
+  - LC_ALL
+  - TERM
+allowlist:
+  - ls
+  - cat
+  - pwd
+  - echo
+  - grep
+  - find
+  - wc
+  - head
+  - tail
+  - sort
+  - uniq
+  - cut
+  - awk
+  - sed
+  - date
+  - whoami
+  - hostname
+  - which
+  - git
+  - jq
+  - curl
+  - node
+  - npm
+  - python3
+  - cargo
+  - rustc
+  - uname
+  - df
+  - du
+  - ps
+  - env
+  - printenv
+  - basename
+  - dirname
+denylist_patterns:
+  - "rm\\s+-rf\\s+/"
+  - ":\\(\\)\\s*\\{\\s*:\\|"
+  - "mkfs"
+  - "dd\\s+if="
+  - "shutdown"
+  - "reboot"
+  - "/etc/passwd"
+  - "/etc/shadow"
+max_concurrent_jobs: 16
+job_retention_secs: 3600
