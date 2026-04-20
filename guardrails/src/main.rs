@@ -249,6 +249,7 @@ async fn main() -> Result<()> {
             "api_path": "guardrails/check_input",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_check_output = iii.register_trigger(RegisterTriggerInput {
@@ -258,6 +259,7 @@ async fn main() -> Result<()> {
             "api_path": "guardrails/check_output",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_classify = iii.register_trigger(RegisterTriggerInput {
@@ -267,6 +269,7 @@ async fn main() -> Result<()> {
             "api_path": "guardrails/classify",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _queue_check = iii.register_trigger(RegisterTriggerInput {
@@ -275,6 +278,7 @@ async fn main() -> Result<()> {
         config: serde_json::json!({
             "topic": "guardrails.check"
         }),
+        metadata: None,
     });
 
     tracing::info!("iii-guardrails registered 3 functions and 4 triggers, waiting for invocations");
