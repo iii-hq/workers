@@ -285,6 +285,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/scaffold",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_generate_function = iii.register_trigger(RegisterTriggerInput {
@@ -294,6 +295,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/generate-function",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_generate_trigger = iii.register_trigger(RegisterTriggerInput {
@@ -303,6 +305,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/generate-trigger",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_execute = iii.register_trigger(RegisterTriggerInput {
@@ -312,6 +315,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/execute",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_test = iii.register_trigger(RegisterTriggerInput {
@@ -321,6 +325,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/test",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     let _http_deploy = iii.register_trigger(RegisterTriggerInput {
@@ -330,6 +335,7 @@ async fn main() -> Result<()> {
             "api_path": "coding/deploy",
             "http_method": "POST"
         }),
+        metadata: None,
     });
 
     tracing::info!("iii-coding registered 6 functions and 6 triggers, waiting for invocations");

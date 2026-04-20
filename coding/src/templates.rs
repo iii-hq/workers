@@ -46,7 +46,7 @@ name = "{name}"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = {{ version = "0.10.0", features = ["otel"] }}
+iii-sdk = "0.11.0"
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }}
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
@@ -232,6 +232,7 @@ pub async fn handle(_iii: &III, _payload: Value) -> Result<Value, IIIError> {{
         trigger_type: "{trigger_type}".to_string(),
         function_id: "{function_id}".to_string(),
         config: serde_json::json!({config}),
+        metadata: None,
     }});
 "#,
             i = i,
@@ -385,7 +386,7 @@ pub fn typescript_worker_template(name: &str, functions: &[FunctionDef], trigger
     "test": "vitest run"
   }},
   "dependencies": {{
-    "iii-sdk": "^0.10.0"
+    "iii-sdk": "^0.11.0"
   }},
   "devDependencies": {{
     "typescript": "^5.0.0",
@@ -543,7 +544,7 @@ name = "{name}"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "iii-sdk>=0.10.0",
+    "iii-sdk>=0.11.0",
 ]
 
 [project.optional-dependencies]
@@ -810,6 +811,7 @@ pub fn generate_trigger_code_rust(trigger: &TriggerDef) -> String {
     trigger_type: "{trigger_type}".to_string(),
     function_id: "{function_id}".to_string(),
     config: serde_json::json!({config}),
+    metadata: None,
 }});"#,
         trigger_type = trigger.trigger_type,
         function_id = trigger.function_id,
