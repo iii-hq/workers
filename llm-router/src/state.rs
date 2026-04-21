@@ -92,6 +92,21 @@ fn extract_value(val: &Value, scope: &str, key: &str) -> Result<Option<Value>, I
     }
 }
 
+// Deserialize a state::list item into T. Handles both envelope
+// { key, value } and bare-value shapes so callers don't re-implement the
+// fallback. Returns None on shape mismatch or deserialize error, both kinds
+// of failure are expected in mixed-shape responses.
+pub fn parse_item<T: serde::de::DeserializeOwned>(item: &Value) -> Option<T> {
+    if let Some(obj) = item.as_object() {
+        if let Some(v) = obj.get("value") {
+            if let Ok(parsed) = serde_json::from_value::<T>(v.clone()) {
+                return Some(parsed);
+            }
+        }
+    }
+    serde_json::from_value::<T>(item.clone()).ok()
+}
+
 // state::list envelope. Handle three shapes seen across engine versions:
 //   { "items": [...] }  (0.11.0)
 //   [ ... ]              (0.11.2 bare array)

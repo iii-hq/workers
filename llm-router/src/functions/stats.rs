@@ -48,6 +48,12 @@ pub fn handler(
             // Narrow the prefix to the shared leading digits of horizon..now,
             // so state::list returns only entries that might match instead of
             // the full audit log.
+            //
+            // Known limitation: iii-sdk 0.11.2 exposes no cursor/paginated
+            // state::list, so the scan still materializes a Vec before the
+            // hard cap applies. Track SDK-side pagination in iii-hq/iii and
+            // switch to a streaming scan once available. Until then the
+            // prefix narrowing + hard cap is the best we can do.
             let prefix = scan_prefix(horizon, now);
             let items = state::state_list(&iii, &cfg.state_scope, &prefix).await?;
 
@@ -59,23 +65,23 @@ pub fn handler(
             let mut by_policy: std::collections::HashMap<String, u64> =
                 std::collections::HashMap::new();
 
+            if items.len() > SCAN_HARD_CAP {
+                tracing::warn!(
+                    returned = items.len(),
+                    cap = SCAN_HARD_CAP,
+                    "routing_log scan returned more than SCAN_HARD_CAP; aggregate is truncated"
+                );
+            }
+
             for it in items {
                 scanned += 1;
                 if scanned > SCAN_HARD_CAP {
                     truncated = true;
                     break;
                 }
-                let v = match it.as_object() {
-                    Some(obj) if obj.contains_key("value") => obj.get("value").cloned(),
-                    _ => Some(it.clone()),
-                };
-                let Some(v) = v else { continue };
-                let e = match serde_json::from_value::<RoutingLogEntry>(v) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "skipping malformed routing_log entry");
-                        continue;
-                    }
+                let Some(e) = state::parse_item::<RoutingLogEntry>(&it) else {
+                    tracing::warn!("skipping malformed routing_log entry");
+                    continue;
                 };
                 if e.timestamp_ms < horizon {
                     continue;

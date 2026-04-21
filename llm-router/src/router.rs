@@ -70,6 +70,20 @@ pub fn pick_ab_variant<R: Rng>(variants: &[AbVariant], rng: &mut R) -> Option<St
     None
 }
 
+pub fn policy_specificity(p: &Policy) -> usize {
+    let mut score = 0usize;
+    if p.match_rule.tenant.is_some() {
+        score += 1;
+    }
+    if p.match_rule.feature.is_some() {
+        score += 1;
+    }
+    if let Some(tags) = &p.match_rule.tags {
+        score += tags.len();
+    }
+    score
+}
+
 pub fn skip_unavailable(model: &str, health: &[ModelHealth], error_rate_skip: f64) -> bool {
     if let Some(h) = health.iter().find(|h| h.model == model) {
         if !h.available {
@@ -121,7 +135,15 @@ pub fn decide(
     rng: &mut impl Rng,
 ) -> RoutingDecision {
     let mut matched: Vec<&Policy> = ctx.policies.iter().filter(|p| match_policy(req, p)).collect();
-    matched.sort_by_key(|p| std::cmp::Reverse(p.priority));
+    // Deterministic ordering: priority desc, then specificity desc (more
+    // match-rule fields = more specific), then policy id asc as a stable
+    // tie-breaker so the same inputs always pick the same policy.
+    matched.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| policy_specificity(b).cmp(&policy_specificity(a)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 
     // Path 1: policy match → resolve → health → budget.
     if let Some(policy) = matched.first().copied() {
@@ -155,14 +177,25 @@ pub fn decide(
 
         if skip_unavailable(&chosen, ctx.health, cfg.health_skip_threshold_error_rate) {
             if let Some(fb) = &policy.action.fallback {
-                return RoutingDecision {
-                    model: fb.clone(),
-                    reason: format!("{} (primary unhealthy → fallback)", reason),
-                    policy_id: Some(policy.id.clone()),
-                    ab_test_id: None,
-                    fallback: None,
-                    confidence: confidence * 0.8,
-                };
+                if skip_unavailable(fb, ctx.health, cfg.health_skip_threshold_error_rate) {
+                    // Both primary and fallback are unhealthy. Return the
+                    // primary with a warning so the caller sees the
+                    // degradation instead of masking it with a bad fallback.
+                    reason = format!(
+                        "{} (primary + fallback both unhealthy — returning primary)",
+                        reason
+                    );
+                    confidence *= 0.4;
+                } else {
+                    return RoutingDecision {
+                        model: fb.clone(),
+                        reason: format!("{} (primary unhealthy → fallback)", reason),
+                        policy_id: Some(policy.id.clone()),
+                        ab_test_id: None,
+                        fallback: None,
+                        confidence: confidence * 0.8,
+                    };
+                }
             }
         }
 
@@ -170,13 +203,24 @@ pub fn decide(
             if let Some(max_per_req) = policy.action.max_cost_per_request_usd {
                 if max_per_req > remaining && remaining > 0.0 {
                     if let Some(downgraded) = downgrade_to_fit(remaining, req, ctx.models) {
+                        let degraded = skip_unavailable(
+                            &downgraded,
+                            ctx.health,
+                            cfg.health_skip_threshold_error_rate,
+                        );
+                        let mut dreason = format!("budget constraint: downgraded from {}", chosen);
+                        let mut dconf = confidence * 0.7;
+                        if degraded {
+                            dreason = format!("{} (downgrade target unhealthy)", dreason);
+                            dconf *= 0.5;
+                        }
                         return RoutingDecision {
                             model: downgraded,
-                            reason: format!("budget constraint: downgraded from {}", chosen),
+                            reason: dreason,
                             policy_id: Some(policy.id.clone()),
                             ab_test_id: None,
                             fallback: policy.action.fallback.clone(),
-                            confidence: confidence * 0.7,
+                            confidence: dconf,
                         };
                     }
                     reason = format!(

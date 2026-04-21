@@ -47,6 +47,7 @@ fn default_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutingRequest {
     #[serde(default)]
     pub tenant: Option<String>,
@@ -175,6 +176,7 @@ pub struct ClassifierConfig {
 /// Users register whatever model IDs their gateway supports, with optional
 /// quality/pricing attributes used only for the downgrade and stats paths.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRegistration {
     pub model: String,
     /// Any label the user wants: `low`, `medium`, `high`, `flagship`, etc.

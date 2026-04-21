@@ -41,7 +41,10 @@ async fn handle(iii: III, cfg: Arc<RouterConfig>, payload: Value) -> Result<Valu
 
     let classifier_id = req
         .classifier_id
-        .clone()
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
         .unwrap_or_else(|| cfg.classifier_default_id.clone());
 
     let (policies, ab_tests, health, classifier, models) = tokio::join!(
@@ -141,27 +144,18 @@ async fn load_typed<T: serde::de::DeserializeOwned>(
     let items = state::state_list(iii, &cfg.state_scope, prefix).await?;
     let mut out = Vec::with_capacity(items.len());
     for it in items {
-        // Entries may be wrapped { key, value } envelopes or bare values
-        // depending on engine version; try both.
-        let (key, val) = match it.as_object() {
-            Some(obj) if obj.contains_key("value") => (
-                obj.get("key").and_then(|k| k.as_str()).map(String::from),
-                obj.get("value").cloned().unwrap_or(Value::Null),
-            ),
-            _ => (None, it.clone()),
-        };
-        if val.is_null() {
-            continue;
-        }
-        match serde_json::from_value::<T>(val.clone()) {
-            Ok(parsed) => out.push(parsed),
-            Err(e) => {
+        let key_hint = it
+            .as_object()
+            .and_then(|o| o.get("key"))
+            .and_then(|k| k.as_str());
+        match state::parse_item::<T>(&it) {
+            Some(parsed) => out.push(parsed),
+            None => {
                 tracing::warn!(
                     scope = %cfg.state_scope,
                     prefix = %prefix,
-                    key = %key.as_deref().unwrap_or("<unknown>"),
+                    key = %key_hint.unwrap_or("<unknown>"),
                     target_type = %type_name::<T>(),
-                    error = %e,
                     "skipping malformed state entry"
                 );
             }

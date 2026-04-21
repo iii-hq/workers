@@ -54,8 +54,16 @@ async fn main() -> Result<()> {
             c
         }
         Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::RouterConfig::default()
+            // Distinguish a missing config (acceptable — use defaults) from a
+            // present-but-invalid one (abort: running with wrong routing
+            // settings is worse than not starting).
+            if is_missing_file(&e) {
+                tracing::warn!(path = %cli.config, "config file not found, using defaults");
+                config::RouterConfig::default()
+            } else {
+                tracing::error!(error = %e, path = %cli.config, "invalid config, aborting startup");
+                return Err(e);
+            }
         }
     };
     let cfg = Arc::new(router_config);
@@ -70,7 +78,7 @@ async fn main() -> Result<()> {
     );
 
     register_functions(&iii, cfg.clone());
-    register_triggers(&iii);
+    register_triggers(&iii)?;
 
     tracing::info!(
         "iii-llm-router registered {} functions and HTTP triggers, ready",
@@ -130,7 +138,8 @@ fn register_functions(iii: &iii_sdk::III, cfg: Arc<config::RouterConfig>) {
     reg!("router::stats", functions::stats::handler(iii.clone(), cfg.clone()));
 }
 
-fn register_triggers(iii: &iii_sdk::III) {
+fn register_triggers(iii: &iii_sdk::III) -> Result<()> {
+    let mut errors: Vec<(String, iii_sdk::IIIError)> = Vec::new();
     for (fn_id, path, method) in [
         ("router::decide", "router/decide", "POST"),
         ("router::policy_create", "router/policy/create", "POST"),
@@ -157,7 +166,28 @@ fn register_triggers(iii: &iii_sdk::III) {
             config: json!({ "api_path": path, "http_method": method }),
             metadata: None,
         }) {
-            tracing::warn!(error = %e, "failed to register trigger for {}", fn_id);
+            tracing::error!(error = %e, "failed to register trigger for {}", fn_id);
+            errors.push((fn_id.to_string(), e));
         }
     }
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "iii-llm-router startup aborted: {} trigger registration(s) failed",
+            errors.len()
+        );
+    }
+    Ok(())
+}
+
+fn is_missing_file(e: &anyhow::Error) -> bool {
+    // Walk the source chain to avoid brittle string matching on the outer
+    // with_context() wrapper.
+    for cause in e.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::NotFound {
+                return true;
+            }
+        }
+    }
+    false
 }

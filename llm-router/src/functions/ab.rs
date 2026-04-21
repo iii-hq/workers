@@ -165,10 +165,7 @@ pub fn report_handler(
             .await?;
             let events: Vec<AbEvent> = items
                 .into_iter()
-                .filter_map(|it| {
-                    it.get("value")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                })
+                .filter_map(|it| state::parse_item::<AbEvent>(&it))
                 .collect();
 
             let mut summary: std::collections::HashMap<String, (u64, f64, f64, f64)> =

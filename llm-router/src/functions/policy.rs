@@ -33,6 +33,7 @@ pub fn create_handler(
             if p.id.is_empty() {
                 p.id = format!("pol-{}", Uuid::new_v4());
             }
+            validate_policy_semantics(&p)?;
             p.created_at_ms = crate::functions::decide::now_ms();
             state::state_set(
                 &iii,
@@ -68,6 +69,7 @@ pub fn update_handler(
             let mut p: Policy = serde_json::from_value(existing)
                 .map_err(|e| IIIError::Handler(format!("parse stored policy: {}", e)))?;
             merge_policy(&mut p, &payload)?;
+            validate_policy_semantics(&p)?;
             state::state_set(
                 &iii,
                 &cfg.state_scope,
@@ -124,10 +126,7 @@ pub fn list_handler(
             let items = state::state_list(&iii, &cfg.state_scope, "policies:").await?;
             let mut out: Vec<Policy> = items
                 .into_iter()
-                .filter_map(|it| {
-                    it.get("value")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                })
+                .filter_map(|it| state::parse_item::<Policy>(&it))
                 .collect();
             if let Some(t) = &tenant {
                 out.retain(|p| p.match_rule.tenant.as_deref() == Some(t.as_str()));
@@ -208,32 +207,10 @@ async fn load_list<T: serde::de::DeserializeOwned>(
     prefix: &str,
 ) -> Result<Vec<T>, IIIError> {
     let items = state::state_list(iii, &cfg.state_scope, prefix).await?;
-    let mut out = Vec::with_capacity(items.len());
-    for it in items {
-        let (key, val) = match it.as_object() {
-            Some(obj) if obj.contains_key("value") => (
-                obj.get("key").and_then(|k| k.as_str()).map(String::from),
-                obj.get("value").cloned().unwrap_or(Value::Null),
-            ),
-            _ => (None, it.clone()),
-        };
-        if val.is_null() {
-            continue;
-        }
-        match serde_json::from_value::<T>(val) {
-            Ok(parsed) => out.push(parsed),
-            Err(e) => {
-                tracing::warn!(
-                    scope = %cfg.state_scope,
-                    prefix = %prefix,
-                    key = %key.as_deref().unwrap_or("<unknown>"),
-                    error = %e,
-                    "skipping malformed state entry"
-                );
-            }
-        }
-    }
-    Ok(out)
+    Ok(items
+        .into_iter()
+        .filter_map(|it| state::parse_item::<T>(&it))
+        .collect())
 }
 
 fn parse_policy(payload: Value) -> Result<Policy, IIIError> {
@@ -245,6 +222,21 @@ fn parse_policy(payload: Value) -> Result<Policy, IIIError> {
     }
     serde_json::from_value::<Policy>(v)
         .map_err(|e| IIIError::Handler(format!("parse policy: {}", e)))
+}
+
+fn validate_policy_semantics(p: &Policy) -> Result<(), IIIError> {
+    if p.action.model.trim().is_empty() {
+        return Err(IIIError::Handler("policy.action.model must be non-empty".into()));
+    }
+    if let Some(max) = p.action.max_cost_per_request_usd {
+        if max < 0.0 || max.is_nan() {
+            return Err(IIIError::Handler(format!(
+                "policy.action.max_cost_per_request_usd must be >= 0 (got {})",
+                max
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn merge_policy(target: &mut Policy, patch: &Value) -> Result<(), IIIError> {

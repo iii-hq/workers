@@ -96,10 +96,7 @@ pub fn list_handler(
             let items = state::state_list(&iii, &cfg.state_scope, "models:").await?;
             let out: Vec<ModelRegistration> = items
                 .into_iter()
-                .filter_map(|it| {
-                    it.get("value")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                })
+                .filter_map(|it| state::parse_item::<ModelRegistration>(&it))
                 .collect();
             Ok(json!({ "models": out, "count": out.len() }))
         })

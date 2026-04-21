@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouterConfig {
     #[serde(default = "default_state_scope")]
     pub state_scope: String,
