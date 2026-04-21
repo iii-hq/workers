@@ -69,22 +69,56 @@ pub fn record_handler(
                 .get("variant_model")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| IIIError::Handler("missing 'variant_model'".into()))?
+                .trim()
                 .to_string();
+            if variant.is_empty() {
+                return Err(IIIError::Handler("empty 'variant_model'".into()));
+            }
+
+            // Verify the variant belongs to the test before persisting.
+            let test_val = state::state_get(&iii, &cfg.state_scope, &key_test(&test_id))
+                .await?
+                .ok_or_else(|| {
+                    IIIError::Handler(format!("no such ab-test: {}", test_id))
+                })?;
+            let test: AbTest = serde_json::from_value(test_val).map_err(|e| {
+                IIIError::Handler(format!("parse test {}: {}", test_id, e))
+            })?;
+            if !test.variants.iter().any(|v| v.model == variant) {
+                return Err(IIIError::Handler(format!(
+                    "variant_model '{}' is not registered on ab-test '{}'",
+                    variant, test_id
+                )));
+            }
+
+            let quality_score = payload
+                .get("quality_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            if !(0.0..=1.0).contains(&quality_score) || quality_score.is_nan() {
+                return Err(IIIError::Handler(format!(
+                    "quality_score must be within 0.0..=1.0 (got {})",
+                    quality_score
+                )));
+            }
+            let latency_ms = payload
+                .get("latency_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if latency_ms < 0 {
+                return Err(IIIError::Handler("latency_ms must be >= 0".into()));
+            }
+            let cost_usd = payload.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if cost_usd < 0.0 || cost_usd.is_nan() {
+                return Err(IIIError::Handler("cost_usd must be >= 0".into()));
+            }
+
             let ev = AbEvent {
                 test_id: test_id.clone(),
                 variant_model: variant,
-                quality_score: payload
-                    .get("quality_score")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0),
-                latency_ms: payload
-                    .get("latency_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-                cost_usd: payload
-                    .get("cost_usd")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0),
+                quality_score,
+                latency_ms: latency_ms as u64,
+                cost_usd,
                 recorded_at_ms: crate::functions::decide::now_ms(),
             };
             let evt_id = format!("evt-{}", Uuid::new_v4());
@@ -206,13 +240,22 @@ pub fn conclude_handler(
             let winner = payload
                 .get("winner_model")
                 .and_then(|v| v.as_str())
-                .map(String::from);
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| IIIError::Handler("missing 'winner_model'".into()))?;
 
             let test_val = state::state_get(&iii, &cfg.state_scope, &key_test(&test_id))
                 .await?
                 .ok_or_else(|| IIIError::Handler(format!("no such ab-test: {}", test_id)))?;
             let mut test: AbTest = serde_json::from_value(test_val)
                 .map_err(|e| IIIError::Handler(format!("parse test: {}", e)))?;
+            if !test.variants.iter().any(|v| v.model == winner) {
+                return Err(IIIError::Handler(format!(
+                    "winner_model '{}' is not one of the variants on ab-test '{}'",
+                    winner, test_id
+                )));
+            }
+
             test.status = "concluded".into();
             state::state_set(
                 &iii,
@@ -221,10 +264,17 @@ pub fn conclude_handler(
                 serde_json::to_value(&test).unwrap(),
             )
             .await?;
+
+            // Rollout is intentionally not automatic here: a policy can target
+            // the test via match-rules without naming the winner, so a write
+            // would need policy IDs we don't have. Callers drive the rollout
+            // explicitly via router::policy_update.
             Ok(json!({
                 "concluded": true,
                 "test_id": test_id,
                 "winner_model": winner,
+                "rollout_applied": false,
+                "note": "call router::policy_update to roll the winner into the active policy",
             }))
         })
     }

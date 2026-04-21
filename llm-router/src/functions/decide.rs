@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iii_sdk::{IIIError, III};
 use rand::SeedableRng;
 use serde_json::{json, Value};
+use std::any::type_name;
 use uuid::Uuid;
 
 use crate::config::RouterConfig;
@@ -31,10 +32,11 @@ pub fn build_handler(
 }
 
 async fn handle(iii: III, cfg: Arc<RouterConfig>, payload: Value) -> Result<Value, IIIError> {
-    let req: RoutingRequest = serde_json::from_value(payload)
+    let mut req: RoutingRequest = serde_json::from_value(payload)
         .map_err(|e| IIIError::Handler(format!("parse request: {}", e)))?;
+    req.prompt = req.prompt.trim().to_string();
     if req.prompt.is_empty() {
-        return Err(IIIError::Handler("missing 'prompt'".to_string()));
+        return Err(IIIError::Handler("missing or empty 'prompt'".to_string()));
     }
 
     let classifier_id = req
@@ -55,8 +57,9 @@ async fn handle(iii: III, cfg: Arc<RouterConfig>, payload: Value) -> Result<Valu
     let classifier = classifier?;
     let models = models?;
 
-    let seed = now_ms();
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    // Entropy-backed RNG — millisecond-timestamp seeding collided on burst
+    // requests, biasing A/B variant picks.
+    let mut rng = rand::rngs::StdRng::from_entropy();
     let ctx = DecideContext {
         policies: &policies,
         ab_tests: &ab_tests,
@@ -138,9 +141,29 @@ async fn load_typed<T: serde::de::DeserializeOwned>(
     let items = state::state_list(iii, &cfg.state_scope, prefix).await?;
     let mut out = Vec::with_capacity(items.len());
     for it in items {
-        if let Some(v) = it.get("value") {
-            if let Ok(parsed) = serde_json::from_value::<T>(v.clone()) {
-                out.push(parsed);
+        // Entries may be wrapped { key, value } envelopes or bare values
+        // depending on engine version; try both.
+        let (key, val) = match it.as_object() {
+            Some(obj) if obj.contains_key("value") => (
+                obj.get("key").and_then(|k| k.as_str()).map(String::from),
+                obj.get("value").cloned().unwrap_or(Value::Null),
+            ),
+            _ => (None, it.clone()),
+        };
+        if val.is_null() {
+            continue;
+        }
+        match serde_json::from_value::<T>(val.clone()) {
+            Ok(parsed) => out.push(parsed),
+            Err(e) => {
+                tracing::warn!(
+                    scope = %cfg.state_scope,
+                    prefix = %prefix,
+                    key = %key.as_deref().unwrap_or("<unknown>"),
+                    target_type = %type_name::<T>(),
+                    error = %e,
+                    "skipping malformed state entry"
+                );
             }
         }
     }

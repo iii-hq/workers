@@ -1,30 +1,42 @@
 use serde_json::{json, Value};
 
+// Canonical list of router functions and their descriptions. Both
+// register_functions() in main.rs and build_manifest() below derive from
+// this, so the published manifest and the registered handlers can never drift.
+pub const FUNCTIONS: &[(&str, &str)] = &[
+    ("router::decide", "Pick a model for a request (hot path)"),
+    ("router::policy_create", "Register a routing policy"),
+    ("router::policy_update", "Patch a policy"),
+    ("router::policy_delete", "Remove a policy"),
+    ("router::policy_list", "List all policies"),
+    ("router::policy_test", "Dry-run router::decide without logging"),
+    ("router::classify", "Run prompt-complexity classifier only"),
+    ("router::classifier_config", "Configure the category→model mapping"),
+    ("router::ab_create", "Create an A/B test"),
+    ("router::ab_record", "Record a quality/latency/cost outcome"),
+    ("router::ab_report", "Aggregate A/B samples"),
+    ("router::ab_conclude", "Mark an A/B test concluded"),
+    ("router::health_update", "Update per-model health + latency"),
+    ("router::health_list", "List health for all models"),
+    (
+        "router::model_register",
+        "Register a model (name, quality, pricing)",
+    ),
+    ("router::model_unregister", "Remove a model registration"),
+    ("router::model_list", "List registered models"),
+    ("router::stats", "Usage stats over a window"),
+];
+
 pub fn build_manifest() -> Value {
+    let fns: Vec<Value> = FUNCTIONS
+        .iter()
+        .map(|(id, desc)| json!({ "id": id, "description": desc }))
+        .collect();
     json!({
         "name": "iii-llm-router",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Unopinionated LLM routing brain. Wraps any gateway (LiteLLM/Bifrost/OpenRouter). Models, classifiers, policies, A/B tests, health — all registered at runtime via state.",
-        "functions": [
-            { "id": "router::decide", "description": "Pick a model for a request (hot path)" },
-            { "id": "router::policy_create", "description": "Register a routing policy" },
-            { "id": "router::policy_update", "description": "Patch a policy" },
-            { "id": "router::policy_delete", "description": "Remove a policy" },
-            { "id": "router::policy_list", "description": "List all policies" },
-            { "id": "router::policy_test", "description": "Dry-run router::decide without logging" },
-            { "id": "router::classify", "description": "Run prompt-complexity classifier only" },
-            { "id": "router::classifier_config", "description": "Configure the category→model mapping" },
-            { "id": "router::ab_create", "description": "Create an A/B test" },
-            { "id": "router::ab_record", "description": "Record a quality/latency/cost outcome" },
-            { "id": "router::ab_report", "description": "Aggregate A/B samples" },
-            { "id": "router::ab_conclude", "description": "Mark an A/B test concluded" },
-            { "id": "router::health_update", "description": "Update per-model health + latency" },
-            { "id": "router::health_list", "description": "List health for all models" },
-            { "id": "router::model_register", "description": "Register a model (name, quality, pricing)" },
-            { "id": "router::model_unregister", "description": "Remove a model registration" },
-            { "id": "router::model_list", "description": "List registered models" },
-            { "id": "router::stats", "description": "Usage stats over a window" },
-        ],
+        "functions": fns,
     })
 }
 
@@ -38,7 +50,7 @@ mod tests {
         assert!(m.get("name").is_some());
         assert!(m.get("version").is_some());
         let fns = m.get("functions").unwrap().as_array().unwrap();
-        assert_eq!(fns.len(), 18);
+        assert_eq!(fns.len(), FUNCTIONS.len());
     }
 
     #[test]
@@ -46,5 +58,10 @@ mod tests {
         let s = serde_json::to_string(&build_manifest()).unwrap();
         assert!(s.contains("router::decide"));
         assert!(s.contains("router::model_register"));
+    }
+
+    #[test]
+    fn functions_const_has_18_entries() {
+        assert_eq!(FUNCTIONS.len(), 18);
     }
 }

@@ -28,9 +28,22 @@ pub fn update_handler(
                 .get("model")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| IIIError::Handler("missing 'model'".into()))?
+                .trim()
                 .to_string();
+            if model.is_empty() {
+                return Err(IIIError::Handler("empty 'model'".into()));
+            }
             let mut h: ModelHealth = serde_json::from_value(payload)
                 .map_err(|e| IIIError::Handler(format!("parse health: {}", e)))?;
+            if let Some(rate) = h.error_rate {
+                if !(0.0..=1.0).contains(&rate) || rate.is_nan() {
+                    return Err(IIIError::Handler(format!(
+                        "error_rate must be within 0.0..=1.0 (got {})",
+                        rate
+                    )));
+                }
+            }
+            h.model = model.clone();
             h.last_checked_ms = crate::functions::decide::now_ms();
             state::state_set(
                 &iii,

@@ -72,7 +72,10 @@ async fn main() -> Result<()> {
     register_functions(&iii, cfg.clone());
     register_triggers(&iii);
 
-    tracing::info!("iii-llm-router registered 18 functions and 18 HTTP triggers, ready");
+    tracing::info!(
+        "iii-llm-router registered {} functions and HTTP triggers, ready",
+        manifest::FUNCTIONS.len()
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-llm-router shutting down");
@@ -81,101 +84,50 @@ async fn main() -> Result<()> {
 }
 
 fn register_functions(iii: &iii_sdk::III, cfg: Arc<config::RouterConfig>) {
-    let mk = |id: &str, desc: &str| RegisterFunctionMessage {
-        id: id.to_string(),
-        description: Some(desc.to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
+    // iii_sdk::III::register_function_with returns an infallible FunctionRef,
+    // so no error path to aggregate here — register_triggers below is the one
+    // that can fail. If the SDK ever makes this fallible we'll want to
+    // collect errors and abort startup.
+    let desc_for = |id: &str| -> &'static str {
+        manifest::FUNCTIONS
+            .iter()
+            .find(|(fid, _)| *fid == id)
+            .map(|(_, d)| *d)
+            .unwrap_or("")
     };
 
-    let _ = iii.register_function_with(
-        mk("router::decide", "Pick a model for a request (hot path)"),
-        functions::decide::build_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::policy_create", "Register a routing policy"),
-        functions::policy::create_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::policy_update", "Patch a policy"),
-        functions::policy::update_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::policy_delete", "Remove a policy"),
-        functions::policy::delete_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::policy_list", "List all policies"),
-        functions::policy::list_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::policy_test", "Dry-run router::decide without logging"),
-        functions::policy::test_handler(iii.clone(), cfg.clone()),
-    );
+    macro_rules! reg {
+        ($id:expr, $handler:expr) => {{
+            let msg = RegisterFunctionMessage {
+                id: $id.to_string(),
+                description: Some(desc_for($id).to_string()),
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
+            iii.register_function_with(msg, $handler);
+        }};
+    }
 
-    let _ = iii.register_function_with(
-        mk("router::classify", "Run prompt-complexity classifier"),
-        functions::classify::classify_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk(
-            "router::classifier_config",
-            "Configure the category→model mapping",
-        ),
-        functions::classify::config_handler(iii.clone(), cfg.clone()),
-    );
-
-    let _ = iii.register_function_with(
-        mk("router::ab_create", "Create an A/B test"),
-        functions::ab::create_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk(
-            "router::ab_record",
-            "Record a quality/latency/cost outcome",
-        ),
-        functions::ab::record_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::ab_report", "Aggregate A/B samples"),
-        functions::ab::report_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::ab_conclude", "Mark an A/B test concluded"),
-        functions::ab::conclude_handler(iii.clone(), cfg.clone()),
-    );
-
-    let _ = iii.register_function_with(
-        mk("router::health_update", "Update per-model health"),
-        functions::health::update_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::health_list", "List health for all models"),
-        functions::health::list_handler(iii.clone(), cfg.clone()),
-    );
-
-    let _ = iii.register_function_with(
-        mk(
-            "router::model_register",
-            "Register a model with quality and pricing",
-        ),
-        functions::model::register_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::model_unregister", "Remove a model registration"),
-        functions::model::unregister_handler(iii.clone(), cfg.clone()),
-    );
-    let _ = iii.register_function_with(
-        mk("router::model_list", "List registered models"),
-        functions::model::list_handler(iii.clone(), cfg.clone()),
-    );
-
-    let _ = iii.register_function_with(
-        mk("router::stats", "Usage stats over a window"),
-        functions::stats::handler(iii.clone(), cfg.clone()),
-    );
+    reg!("router::decide", functions::decide::build_handler(iii.clone(), cfg.clone()));
+    reg!("router::policy_create", functions::policy::create_handler(iii.clone(), cfg.clone()));
+    reg!("router::policy_update", functions::policy::update_handler(iii.clone(), cfg.clone()));
+    reg!("router::policy_delete", functions::policy::delete_handler(iii.clone(), cfg.clone()));
+    reg!("router::policy_list", functions::policy::list_handler(iii.clone(), cfg.clone()));
+    reg!("router::policy_test", functions::policy::test_handler(iii.clone(), cfg.clone()));
+    reg!("router::classify", functions::classify::classify_handler(iii.clone(), cfg.clone()));
+    reg!("router::classifier_config", functions::classify::config_handler(iii.clone(), cfg.clone()));
+    reg!("router::ab_create", functions::ab::create_handler(iii.clone(), cfg.clone()));
+    reg!("router::ab_record", functions::ab::record_handler(iii.clone(), cfg.clone()));
+    reg!("router::ab_report", functions::ab::report_handler(iii.clone(), cfg.clone()));
+    reg!("router::ab_conclude", functions::ab::conclude_handler(iii.clone(), cfg.clone()));
+    reg!("router::health_update", functions::health::update_handler(iii.clone(), cfg.clone()));
+    reg!("router::health_list", functions::health::list_handler(iii.clone(), cfg.clone()));
+    reg!("router::model_register", functions::model::register_handler(iii.clone(), cfg.clone()));
+    reg!("router::model_unregister", functions::model::unregister_handler(iii.clone(), cfg.clone()));
+    reg!("router::model_list", functions::model::list_handler(iii.clone(), cfg.clone()));
+    reg!("router::stats", functions::stats::handler(iii.clone(), cfg.clone()));
 }
 
 fn register_triggers(iii: &iii_sdk::III) {

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyMatch {
     #[serde(default)]
     pub tenant: Option<String>,
@@ -11,6 +12,7 @@ pub struct PolicyMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyAction {
     /// Opaque model identifier. Pass "auto" to defer to the classifier.
     /// Router never interprets this — the downstream gateway does.
@@ -22,10 +24,11 @@ pub struct PolicyAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub id: String,
     pub name: String,
-    #[serde(default, rename = "match")]
+    #[serde(default, rename = "match", alias = "match_rule")]
     pub match_rule: PolicyMatch,
     pub action: PolicyAction,
     #[serde(default = "default_priority")]
@@ -101,10 +104,11 @@ pub struct AbVariant {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AbTest {
     pub id: String,
     pub name: String,
-    #[serde(default, rename = "match")]
+    #[serde(default, rename = "match", alias = "match_rule")]
     pub match_rule: PolicyMatch,
     pub variants: Vec<AbVariant>,
     #[serde(default = "default_metric")]

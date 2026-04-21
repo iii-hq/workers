@@ -25,7 +25,11 @@ pub fn classify_handler(
                 .get("prompt")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| IIIError::Handler("missing 'prompt'".into()))?
+                .trim()
                 .to_string();
+            if prompt.is_empty() {
+                return Err(IIIError::Handler("empty 'prompt'".into()));
+            }
             let classifier_id = payload
                 .get("classifier_id")
                 .and_then(|v| v.as_str())

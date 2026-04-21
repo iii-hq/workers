@@ -1,13 +1,13 @@
 use crate::config::RouterConfig;
 use crate::types::{
-    AbTest, AbVariant, ClassifierConfig, ModelHealth, ModelRegistration, Policy, PolicyMatch,
-    RoutingDecision, RoutingRequest,
+    AbTest, AbVariant, ClassifierConfig, ModelHealth, ModelRegistration, Policy, RoutingDecision,
+    RoutingRequest,
 };
 use rand::Rng;
 
-/// Router is intentionally UNOPINIONATED about model names.
-/// It only matches user-registered policies, classifiers, models, and health
-/// records stored in engine state. No hardcoded model catalog.
+// Router is intentionally UNOPINIONATED about model names. It only matches
+// user-registered policies, classifiers, models, and health records stored in
+// engine state. No hardcoded model catalog.
 
 pub fn match_policy(req: &RoutingRequest, p: &Policy) -> bool {
     if !p.enabled {
@@ -54,16 +54,18 @@ pub fn match_ab(req: &RoutingRequest, t: &AbTest) -> bool {
 }
 
 pub fn pick_ab_variant<R: Rng>(variants: &[AbVariant], rng: &mut R) -> Option<String> {
-    let total: u32 = variants.iter().map(|v| v.weight).sum();
+    // Accumulate as u64 so N variants with max-u32 weights can't overflow.
+    let total: u64 = variants.iter().map(|v| v.weight as u64).sum();
     if total == 0 {
         return None;
     }
     let mut pick = rng.gen_range(0..total);
     for v in variants {
-        if pick < v.weight {
+        let w = v.weight as u64;
+        if pick < w {
             return Some(v.model.clone());
         }
-        pick -= v.weight;
+        pick -= w;
     }
     None
 }
@@ -119,22 +121,10 @@ pub fn decide(
     rng: &mut impl Rng,
 ) -> RoutingDecision {
     let mut matched: Vec<&Policy> = ctx.policies.iter().filter(|p| match_policy(req, p)).collect();
-    matched.sort_by(|a, b| b.priority.cmp(&a.priority));
+    matched.sort_by_key(|p| std::cmp::Reverse(p.priority));
 
-    if let Some(ab) = ctx.ab_tests.iter().find(|t| match_ab(req, t)) {
-        if let Some(model) = pick_ab_variant(&ab.variants, rng) {
-            return RoutingDecision {
-                model,
-                reason: format!("ab-test: {}", ab.name),
-                policy_id: matched.first().map(|p| p.id.clone()),
-                ab_test_id: Some(ab.id.clone()),
-                fallback: matched.first().and_then(|p| p.action.fallback.clone()),
-                confidence: 1.0,
-            };
-        }
-    }
-
-    if let Some(policy) = matched.first() {
+    // Path 1: policy match → resolve → health → budget.
+    if let Some(policy) = matched.first().copied() {
         let mut chosen = policy.action.model.clone();
         let mut confidence = 0.9;
         let mut reason = format!("policy: {}", policy.name);
@@ -207,16 +197,44 @@ pub fn decide(
         };
     }
 
+    // Path 2: no policy — try classifier, still subject to health check.
     if let Some(classifier) = ctx.classifier {
         let (cls, conf) = heuristic_complexity(&req.prompt);
         if let Some(m) = classifier.thresholds.get(cls) {
+            let mut confidence = conf;
+            let mut reason = format!("no policy, classifier: {}", cls);
+            if skip_unavailable(m, ctx.health, cfg.health_skip_threshold_error_rate) {
+                reason = format!("{} (model unhealthy, no policy fallback)", reason);
+                confidence *= 0.5;
+            }
             return RoutingDecision {
                 model: m.clone(),
-                reason: format!("no policy, classifier: {}", cls),
+                reason,
                 policy_id: None,
                 ab_test_id: None,
                 fallback: None,
-                confidence: conf,
+                confidence,
+            };
+        }
+    }
+
+    // Path 3: no policy, no classifier — AB test is the last resort. Still
+    // subject to health check.
+    if let Some(ab) = ctx.ab_tests.iter().find(|t| match_ab(req, t)) {
+        if let Some(model) = pick_ab_variant(&ab.variants, rng) {
+            let mut confidence = 1.0;
+            let mut reason = format!("ab-test: {}", ab.name);
+            if skip_unavailable(&model, ctx.health, cfg.health_skip_threshold_error_rate) {
+                reason = format!("{} (variant unhealthy, no policy fallback)", reason);
+                confidence *= 0.5;
+            }
+            return RoutingDecision {
+                model,
+                reason,
+                policy_id: None,
+                ab_test_id: Some(ab.id.clone()),
+                fallback: None,
+                confidence,
             };
         }
     }
@@ -275,7 +293,7 @@ fn matches_higher_or_equal(have: &Option<String>, want: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::PolicyAction;
+    use crate::types::{PolicyAction, PolicyMatch};
     use rand::SeedableRng;
     use std::collections::HashMap;
 

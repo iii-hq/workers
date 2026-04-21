@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::config::RouterConfig;
 use crate::router::{decide, match_policy, DecideContext};
 use crate::state;
-use crate::types::{Policy, RoutingRequest};
+use crate::types::{
+    AbTest, ClassifierConfig, ModelHealth, ModelRegistration, Policy, RoutingRequest,
+};
 
 fn key_for(id: &str) -> String {
     format!("policies:{}", id)
@@ -65,7 +67,7 @@ pub fn update_handler(
                 .ok_or_else(|| IIIError::Handler(format!("policy not found: {}", id)))?;
             let mut p: Policy = serde_json::from_value(existing)
                 .map_err(|e| IIIError::Handler(format!("parse stored policy: {}", e)))?;
-            merge_policy(&mut p, &payload);
+            merge_policy(&mut p, &payload)?;
             state::state_set(
                 &iii,
                 &cfg.state_scope,
@@ -151,14 +153,28 @@ pub fn test_handler(
         Box::pin(async move {
             let req: RoutingRequest = serde_json::from_value(payload)
                 .map_err(|e| IIIError::Handler(format!("parse request: {}", e)))?;
-            let items = state::state_list(&iii, &cfg.state_scope, "policies:").await?;
-            let policies: Vec<Policy> = items
-                .into_iter()
-                .filter_map(|it| {
-                    it.get("value")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                })
-                .collect();
+
+            // Mirror the production decide path — load every scope the real
+            // handler consults so dry-runs can't silently diverge.
+            let classifier_id = req
+                .classifier_id
+                .clone()
+                .unwrap_or_else(|| cfg.classifier_default_id.clone());
+            let policies = load_policies(&iii, &cfg).await?;
+            let ab_tests = load_list::<AbTest>(&iii, &cfg, "ab_tests:").await?;
+            let health = load_list::<ModelHealth>(&iii, &cfg, "model_health:").await?;
+            let models = load_list::<ModelRegistration>(&iii, &cfg, "models:").await?;
+            let classifier = match state::state_get(
+                &iii,
+                &cfg.state_scope,
+                &format!("classifier:{}", classifier_id),
+            )
+            .await?
+            {
+                Some(v) => serde_json::from_value::<ClassifierConfig>(v).ok(),
+                None => None,
+            };
+
             let matched: Vec<_> = policies
                 .iter()
                 .filter(|p| match_policy(&req, p))
@@ -168,7 +184,10 @@ pub fn test_handler(
             let mut rng = rand::rngs::StdRng::seed_from_u64(0);
             let ctx = DecideContext {
                 policies: &policies,
-                ..DecideContext::default()
+                ab_tests: &ab_tests,
+                health: &health,
+                classifier: classifier.as_ref(),
+                models: &models,
             };
             let decision = decide(&req, ctx, &cfg, &mut rng);
             Ok(json!({
@@ -177,6 +196,44 @@ pub fn test_handler(
             }))
         })
     }
+}
+
+async fn load_policies(iii: &III, cfg: &RouterConfig) -> Result<Vec<Policy>, IIIError> {
+    load_list::<Policy>(iii, cfg, "policies:").await
+}
+
+async fn load_list<T: serde::de::DeserializeOwned>(
+    iii: &III,
+    cfg: &RouterConfig,
+    prefix: &str,
+) -> Result<Vec<T>, IIIError> {
+    let items = state::state_list(iii, &cfg.state_scope, prefix).await?;
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        let (key, val) = match it.as_object() {
+            Some(obj) if obj.contains_key("value") => (
+                obj.get("key").and_then(|k| k.as_str()).map(String::from),
+                obj.get("value").cloned().unwrap_or(Value::Null),
+            ),
+            _ => (None, it.clone()),
+        };
+        if val.is_null() {
+            continue;
+        }
+        match serde_json::from_value::<T>(val) {
+            Ok(parsed) => out.push(parsed),
+            Err(e) => {
+                tracing::warn!(
+                    scope = %cfg.state_scope,
+                    prefix = %prefix,
+                    key = %key.as_deref().unwrap_or("<unknown>"),
+                    error = %e,
+                    "skipping malformed state entry"
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn parse_policy(payload: Value) -> Result<Policy, IIIError> {
@@ -190,24 +247,32 @@ fn parse_policy(payload: Value) -> Result<Policy, IIIError> {
         .map_err(|e| IIIError::Handler(format!("parse policy: {}", e)))
 }
 
-fn merge_policy(target: &mut Policy, patch: &Value) {
+fn merge_policy(target: &mut Policy, patch: &Value) -> Result<(), IIIError> {
     if let Some(n) = patch.get("name").and_then(|v| v.as_str()) {
         target.name = n.to_string();
     }
     if let Some(m) = patch.get("match") {
-        if let Ok(mm) = serde_json::from_value(m.clone()) {
-            target.match_rule = mm;
-        }
+        target.match_rule = serde_json::from_value(m.clone())
+            .map_err(|e| IIIError::Handler(format!("invalid 'match' in patch: {}", e)))?;
     }
     if let Some(a) = patch.get("action") {
-        if let Ok(aa) = serde_json::from_value(a.clone()) {
-            target.action = aa;
-        }
+        target.action = serde_json::from_value(a.clone())
+            .map_err(|e| IIIError::Handler(format!("invalid 'action' in patch: {}", e)))?;
     }
-    if let Some(p) = patch.get("priority").and_then(|v| v.as_i64()) {
+    if let Some(raw) = patch.get("priority") {
+        let p = raw
+            .as_i64()
+            .ok_or_else(|| IIIError::Handler("invalid 'priority': not an integer".into()))?;
+        if p < i32::MIN as i64 || p > i32::MAX as i64 {
+            return Err(IIIError::Handler(format!(
+                "'priority' out of range for i32: {}",
+                p
+            )));
+        }
         target.priority = p as i32;
     }
     if let Some(e) = patch.get("enabled").and_then(|v| v.as_bool()) {
         target.enabled = e;
     }
+    Ok(())
 }
