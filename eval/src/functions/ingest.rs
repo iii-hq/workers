@@ -54,12 +54,25 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
         "worker_id": payload.get("worker_id"),
     });
 
-    let existing = state_get(iii, SCOPE_SPANS, &function_id).await.unwrap_or(json!(null));
+    // Read errors must NOT be swallowed — treating a backend failure as an
+    // empty array would cause the subsequent state_set to overwrite any
+    // existing spans with just the new one. Propagate so the caller can
+    // retry or surface the failure.
+    // Note: the get→modify→set sequence below is not transactional. The iii
+    // engine has no CAS primitive yet, so concurrent ingests for the same
+    // function_id can race and drop spans. Accepted limitation; tighten by
+    // serializing per-function ingest at the caller if stricter consistency
+    // is required.
+    let existing = state_get(iii, SCOPE_SPANS, &function_id).await?;
 
     let mut spans: Vec<Value> = if existing.is_array() {
         serde_json::from_value(existing).unwrap_or_default()
-    } else {
+    } else if existing.is_null() {
         Vec::new()
+    } else {
+        return Err(IIIError::Handler(format!(
+            "unexpected span state shape for {function_id}: {existing}"
+        )));
     };
 
     spans.push(span);

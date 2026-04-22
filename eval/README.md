@@ -14,6 +14,7 @@ Every observability platform shows you dashboards. None of them score your funct
 | `eval::drift` | Compare current metrics against saved baselines across 5 dimensions |
 | `eval::baseline` | Snapshot current metrics as the drift reference point |
 | `eval::report` | Combined metrics + drift + score report for all functions |
+| `eval::analyze_traces` | Aggregate span stats + error summary across a time window, grouped by function |
 
 ## iii Primitives Used
 
@@ -39,7 +40,7 @@ cargo build --release
 ./target/release/iii-eval --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
-```
+```text
 Options:
   --config <PATH>    Path to config.yaml [default: ./config.yaml]
   --url <URL>        WebSocket URL of the iii engine [default: ws://127.0.0.1:49134]

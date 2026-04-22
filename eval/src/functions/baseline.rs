@@ -10,11 +10,19 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing function_id".to_string()))?;
 
-    let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, function_id).await.unwrap_or(json!(null));
+    // Surface backend read failures instead of flattening them into
+    // "no span data" — that message would otherwise hide an unreachable
+    // state store and make the baseline look like a data problem.
+    let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, function_id).await?;
     let spans: Vec<Value> = if existing.is_array() {
         serde_json::from_value(existing).unwrap_or_default()
-    } else {
+    } else if existing.is_null() {
         Vec::new()
+    } else {
+        return Err(IIIError::Handler(format!(
+            "unexpected span state shape for {}: {}",
+            function_id, existing
+        )));
     };
 
     if spans.is_empty() {

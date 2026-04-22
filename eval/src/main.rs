@@ -72,37 +72,47 @@ async fn main() -> Result<()> {
 
     let cron_expression = config.cron_drift_check.clone();
 
-    match iii_arc.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "eval::drift".to_string(),
-        config: json!({ "expression": cron_expression }),
-        metadata: None,
-    }) {
-        Ok(_) => tracing::info!("cron trigger registered for eval::drift"),
-        Err(e) => tracing::warn!(error = %e, "failed to register cron trigger"),
+    // Aggregate trigger registration errors and fail startup if ANY of them
+    // failed. Continuing on warnings hides a non-functional worker (no
+    // ingest/drift/analyze pipeline) behind a "ready" log line.
+    let mut trigger_errors: Vec<String> = Vec::new();
+    let triggers = [
+        (
+            "cron",
+            "eval::drift",
+            json!({ "expression": cron_expression }),
+        ),
+        (
+            "subscribe",
+            "eval::ingest",
+            json!({ "topic": "telemetry.spans" }),
+        ),
+        (
+            "http",
+            "eval::analyze_traces",
+            json!({ "api_path": "eval/analyze", "http_method": "POST" }),
+        ),
+    ];
+    for (ttype, fn_id, cfg) in triggers {
+        match iii_arc.register_trigger(RegisterTriggerInput {
+            trigger_type: ttype.to_string(),
+            function_id: fn_id.to_string(),
+            config: cfg,
+            metadata: None,
+        }) {
+            Ok(_) => tracing::info!(kind = ttype, function = fn_id, "trigger registered"),
+            Err(e) => {
+                tracing::error!(error = %e, kind = ttype, function = fn_id, "trigger registration failed");
+                trigger_errors.push(format!("{ttype}:{fn_id}: {e}"));
+            }
+        }
     }
-
-    match iii_arc.register_trigger(RegisterTriggerInput {
-        trigger_type: "subscribe".to_string(),
-        function_id: "eval::ingest".to_string(),
-        config: json!({ "topic": "telemetry.spans" }),
-        metadata: None,
-    }) {
-        Ok(_) => tracing::info!("subscribe trigger registered for eval::ingest on telemetry.spans"),
-        Err(e) => tracing::warn!(error = %e, "failed to register subscribe trigger"),
-    }
-
-    match iii_arc.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "eval::analyze_traces".to_string(),
-        config: json!({
-            "api_path": "eval/analyze",
-            "http_method": "POST"
-        }),
-        metadata: None,
-    }) {
-        Ok(_) => tracing::info!("http trigger registered for eval::analyze_traces"),
-        Err(e) => tracing::warn!(error = %e, "failed to register http trigger for analyze_traces"),
+    if !trigger_errors.is_empty() {
+        anyhow::bail!(
+            "iii-eval startup aborted — {} trigger registration(s) failed: {}",
+            trigger_errors.len(),
+            trigger_errors.join(", ")
+        );
     }
 
     tracing::info!("iii-eval worker ready, waiting for invocations");

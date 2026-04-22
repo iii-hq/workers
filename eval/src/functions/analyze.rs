@@ -166,9 +166,10 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         if is_err {
             stats.error_count += 1;
             total_errors += 1;
-            if let Some(msg) = extract_error_message(span) {
-                stats.last_error = Some(msg);
-            }
+            // Every error span overwrites last_error, including the None
+            // case (message missing). Keeping a stale message from an
+            // earlier span would misreport the "last" error.
+            stats.last_error = extract_error_message(span);
         }
 
         if let Some(ts) = extract_timestamp_ms(span) {

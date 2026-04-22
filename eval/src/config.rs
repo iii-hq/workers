@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EvalConfig {
     #[serde(default = "default_retention_hours")]
     pub retention_hours: u64,
@@ -51,7 +52,30 @@ impl Default for EvalConfig {
 pub fn load_config(path: &str) -> Result<EvalConfig> {
     let contents = std::fs::read_to_string(path)?;
     let config: EvalConfig = serde_yaml::from_str(&contents)?;
+    validate(&config)?;
     Ok(config)
+}
+
+fn validate(cfg: &EvalConfig) -> Result<()> {
+    if cfg.retention_hours == 0 {
+        anyhow::bail!("config: retention_hours must be >= 1");
+    }
+    if !cfg.drift_threshold.is_finite() || cfg.drift_threshold < 0.0 {
+        anyhow::bail!(
+            "config: drift_threshold must be a finite non-negative number (got {})",
+            cfg.drift_threshold
+        );
+    }
+    if cfg.cron_drift_check.trim().is_empty() {
+        anyhow::bail!("config: cron_drift_check must be non-empty");
+    }
+    if cfg.max_spans_per_function == 0 {
+        anyhow::bail!("config: max_spans_per_function must be >= 1");
+    }
+    if cfg.baseline_window_minutes == 0 {
+        anyhow::bail!("config: baseline_window_minutes must be >= 1");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

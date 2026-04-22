@@ -51,6 +51,13 @@ pub async fn handle(iii: &Arc<III>, _payload: Value) -> Result<Value, IIIError> 
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
+        // score and drift measure different things: score is an absolute
+        // health snapshot (is this function good in isolation?), drift is
+        // relative to the function's own baseline (has it regressed?). A
+        // function can be healthy but drifted (baseline was higher) or
+        // unhealthy but stable (always bad). These thresholds pick the
+        // absolute bar deliberately — treat them as ops SLOs, not
+        // regression signals.
         let mut fn_score: f64 = 100.0;
 
         if success_rate < 0.95 {

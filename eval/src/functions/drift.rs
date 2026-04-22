@@ -9,7 +9,11 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
     let function_ids: Vec<String> = if let Some(fid) = payload.get("function_id").and_then(|v| v.as_str()) {
         vec![fid.to_string()]
     } else {
-        let index_val = state_get(iii, crate::functions::ingest::SCOPE_INDEX, crate::functions::ingest::INDEX_KEY).await.unwrap_or(json!(null));
+        // Propagate read failures — "no current data" would otherwise hide
+        // a broken state backend behind a benign-looking "no drift" result.
+        let index_val = state_get(iii, crate::functions::ingest::SCOPE_INDEX, crate::functions::ingest::INDEX_KEY)
+            .await
+            .map_err(|e| IIIError::Handler(format!("failed to read function index: {e}")))?;
         if index_val.is_array() {
             serde_json::from_value(index_val).unwrap_or_default()
         } else {
@@ -21,7 +25,9 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
     let mut results: Vec<Value> = Vec::new();
 
     for fid in &function_ids {
-        let baseline_val = state_get(iii, crate::functions::ingest::SCOPE_BASELINES, fid).await.unwrap_or(json!(null));
+        let baseline_val = state_get(iii, crate::functions::ingest::SCOPE_BASELINES, fid)
+            .await
+            .map_err(|e| IIIError::Handler(format!("failed to read baseline for {fid}: {e}")))?;
 
         if baseline_val.is_null() {
             results.push(json!({
@@ -32,7 +38,9 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
             continue;
         }
 
-        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid).await.unwrap_or(json!(null));
+        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid)
+            .await
+            .map_err(|e| IIIError::Handler(format!("failed to read spans for {fid}: {e}")))?;
         let spans: Vec<Value> = if existing.is_array() {
             serde_json::from_value(existing).unwrap_or_default()
         } else {
