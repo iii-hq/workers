@@ -164,7 +164,7 @@ This makes tests resilient to UI changes. Refs are structural, not visual.
 
 ## Functions
 
-### Browser Tools (12)
+### Browser Tools (14)
 
 | Function | Description |
 |----------|-------------|
@@ -183,7 +183,7 @@ This makes tests resilient to UI changes. Refs are structural, not visual.
 | `proof::browser::exec` | Execute raw Playwright code |
 | `proof::browser::assert` | Record a pass/fail assertion |
 
-### Pipeline (10)
+### Pipeline (12)
 
 | Function | Description |
 |----------|-------------|

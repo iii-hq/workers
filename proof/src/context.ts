@@ -35,10 +35,19 @@ export async function scanChanges(
     }
     case "commit": {
       const hash = commitHash ?? "HEAD";
-      diff = await git.diff([`${hash}^..${hash}`]);
-      const summary = await git.diffSummary([`${hash}^..${hash}`]);
+      // Initial commit has no parent — diff against the empty tree so the
+      // diff still reflects everything the commit introduced.
+      const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      let base = `${hash}^`;
+      try {
+        await git.raw(["rev-parse", "--verify", `${hash}^`]);
+      } catch {
+        base = EMPTY_TREE;
+      }
+      diff = await git.diff([`${base}..${hash}`]);
+      const summary = await git.diffSummary([`${base}..${hash}`]);
       files = summary.files.map((f) => f.file).slice(0, MAX_FILES);
-      const log = await git.log({ from: `${hash}^`, to: hash, maxCount: 1 });
+      const log = await git.log({ from: base, to: hash, maxCount: 1 });
       commits = log.all.map((c) => ({ hash: c.hash, subject: c.message.split("\n")[0] }));
       break;
     }

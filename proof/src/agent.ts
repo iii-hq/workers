@@ -42,6 +42,7 @@ export async function runAgent(
     },
   ];
 
+  let hitIterationLimit = true;
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -102,14 +103,25 @@ export async function runAgent(
 
     await pushStepProgress(trigger, runId, steps);
 
-    if (response.stop_reason === "end_turn") break;
+    if (response.stop_reason === "end_turn") {
+      hitIterationLimit = false;
+      break;
+    }
 
     if (toolResults.length > 0) {
       messages.push({ role: "assistant", content: response.content as any[] });
       messages.push({ role: "user", content: toolResults });
     } else {
+      hitIterationLimit = false;
       break;
     }
+  }
+
+  if (hitIterationLimit) {
+    // Surface the stall instead of exiting silently — MAX_ITERATIONS
+    // usually means the agent is stuck in a tool-call loop.
+    console.warn(`proof: agent hit MAX_ITERATIONS (${MAX_ITERATIONS}) without end_turn`);
+    if (runStatus === "pass") runStatus = "error";
   }
 
   if (steps.length === 0 && recordedActions.length > 0) {
