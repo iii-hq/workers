@@ -36,11 +36,60 @@ pub async fn handle(iii: &III) -> Result<Value, IIIError> {
     }))
 }
 
-fn sanitize_id(id: &str) -> String {
-    id.replace("::", "_")
-        .replace('-', "_")
-        .replace('.', "_")
-        .replace(' ', "_")
+// Short stable digest appended to node IDs so two IDs that would collapse
+// under character normalization (e.g. "foo::bar" and "foo--bar") still get
+// distinct Mermaid nodes. DefaultHasher is deterministic within a single
+// process for the same input, which is all Mermaid output needs.
+fn id_digest(raw: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    raw.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+fn sanitize_id_kind(kind: &str, id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{}_{}_{}", kind, safe, &id_digest(id)[..8])
+}
+
+fn fn_node_id(id: &str) -> String {
+    sanitize_id_kind("fn", id)
+}
+
+fn worker_node_id(id: &str) -> String {
+    sanitize_id_kind("worker", id)
+}
+
+fn trigger_node_id(id: &str) -> String {
+    sanitize_id_kind("trigger", id)
+}
+
+// Escape a user-supplied string for safe placement inside Mermaid quoted
+// labels. Mermaid breaks on literal double-quotes, backticks, brackets,
+// pipes, and newlines inside "..." labels.
+fn mermaid_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("&quot;"),
+            '\\' => out.push_str("&#92;"),
+            '`' => out.push_str("&#96;"),
+            '[' => out.push_str("&#91;"),
+            ']' => out.push_str("&#93;"),
+            '{' => out.push_str("&#123;"),
+            '}' => out.push_str("&#125;"),
+            '|' => out.push_str("&#124;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 const ENGINE_INTERNAL_PREFIXES: &[&str] = &[
@@ -107,24 +156,34 @@ fn generate_mermaid(
         }
 
         let worker_name = w.name.clone().unwrap_or_else(|| w.id.clone());
-        let safe_id = sanitize_id(&w.id);
-        diagram.push_str(&format!("    subgraph {}[\"{}\"]\n", safe_id, worker_name));
+        let safe_id = worker_node_id(&w.id);
+        diagram.push_str(&format!(
+            "    subgraph {}[\"{}\"]\n",
+            safe_id,
+            mermaid_label(&worker_name)
+        ));
 
         for f in user_fns {
-            let func_safe = sanitize_id(f);
-            diagram.push_str(&format!("        {}[\"{}\"]\n", func_safe, f));
+            let func_safe = fn_node_id(f);
+            diagram.push_str(&format!(
+                "        {}[\"{}\"]\n",
+                func_safe,
+                mermaid_label(f)
+            ));
         }
 
         diagram.push_str("    end\n");
     }
 
     for t in &user_triggers {
-        let trigger_safe = sanitize_id(&t.id);
-        let func_safe = sanitize_id(&t.function_id);
-        let label = &t.trigger_type;
+        let trigger_safe = trigger_node_id(&t.id);
+        let func_safe = fn_node_id(&t.function_id);
         diagram.push_str(&format!(
             "    {}{{\"{}\"}} -->|{}| {}\n",
-            trigger_safe, t.id, label, func_safe
+            trigger_safe,
+            mermaid_label(&t.id),
+            mermaid_label(&t.trigger_type),
+            func_safe
         ));
     }
 
@@ -144,7 +203,7 @@ fn generate_summary_diagram(
 
     for w in workers {
         let worker_name = w.name.clone().unwrap_or_else(|| w.id.clone());
-        let safe_id = sanitize_id(&w.id);
+        let safe_id = worker_node_id(&w.id);
         let user_fn_count = w
             .functions
             .iter()
@@ -157,7 +216,9 @@ fn generate_summary_diagram(
 
         diagram.push_str(&format!(
             "    {}[\"{}\\n({} functions)\"]\n",
-            safe_id, worker_name, user_fn_count
+            safe_id,
+            mermaid_label(&worker_name),
+            user_fn_count
         ));
         diagram.push_str(&format!("    summary --> {}\n", safe_id));
     }
@@ -209,7 +270,10 @@ mod tests {
         let result = generate_mermaid(&functions, &workers, &triggers);
         assert!(result.contains("graph TD"));
         assert!(result.contains("my-worker"));
-        assert!(result.contains("test_echo"));
+        // Type-prefixed node id (fn_…) and visible label (`test::echo`)
+        // both must appear.
+        assert!(result.contains("fn_test"));
+        assert!(result.contains("test::echo"));
         assert!(result.contains("http"));
     }
 
@@ -258,9 +322,12 @@ mod tests {
         ];
 
         let result = generate_mermaid(&functions, &workers, &[]);
-        assert!(result.contains("test_echo"));
-        assert!(!result.contains("state_get"));
-        assert!(!result.contains("stream_set"));
+        // User function is present; engine-internal state/stream ones are
+        // filtered. Check against the visible Mermaid labels (raw ids),
+        // since node ids are now type-prefixed + hashed.
+        assert!(result.contains("test::echo"));
+        assert!(!result.contains("state::get"));
+        assert!(!result.contains("stream::set"));
         assert!(!result.contains("Unassigned"));
     }
 
@@ -280,9 +347,30 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_id() {
-        assert_eq!(sanitize_id("test::echo"), "test_echo");
-        assert_eq!(sanitize_id("my-worker"), "my_worker");
-        assert_eq!(sanitize_id("a.b.c"), "a_b_c");
+    fn node_ids_are_type_prefixed_and_collision_safe() {
+        // Different raw IDs that collapse under simple char normalization
+        // must still produce distinct node IDs.
+        let a = fn_node_id("foo::bar");
+        let b = fn_node_id("foo--bar");
+        assert_ne!(a, b);
+        assert!(a.starts_with("fn_"));
+        assert!(b.starts_with("fn_"));
+
+        let w = worker_node_id("w1");
+        assert!(w.starts_with("worker_"));
+
+        let t = trigger_node_id("t1");
+        assert!(t.starts_with("trigger_"));
+    }
+
+    #[test]
+    fn mermaid_label_escapes_breakers() {
+        assert_eq!(mermaid_label("hi"), "hi");
+        assert_eq!(mermaid_label("a\"b"), "a&quot;b");
+        let bad = mermaid_label("x[y]|z\nfoo");
+        assert!(!bad.contains('['));
+        assert!(!bad.contains(']'));
+        assert!(!bad.contains('|'));
+        assert!(!bad.contains('\n'));
     }
 }

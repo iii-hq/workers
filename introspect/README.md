@@ -39,7 +39,7 @@ cargo build --release
 ./target/release/iii-introspect --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
-```
+```text
 Options:
   --config <PATH>    Path to config.yaml [default: ./config.yaml]
   --url <URL>        WebSocket URL of the iii engine [default: ws://127.0.0.1:49134]

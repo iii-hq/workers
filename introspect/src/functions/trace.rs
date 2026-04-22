@@ -136,22 +136,51 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
             "outputs": func_info.and_then(|f| f.response_format.as_ref()),
         }));
 
+        // Two functions subscribed to the same topic are sibling consumers,
+        // not upstream/downstream of each other. Don't enqueue them as
+        // traversal steps — instead collect them under related_subscribers
+        // so callers can still see the relationship without a false edge.
+        let mut related: Vec<String> = Vec::new();
         for t in &func_triggers {
-            if t.trigger_type == "durable::subscriber" {
-                if let Some(topic) = t.config.get("topic").and_then(|v| v.as_str()) {
-                    for other_t in &triggers {
-                        if other_t.trigger_type == "durable::subscriber"
-                            && other_t
-                                .config
-                                .get("topic")
-                                .and_then(|v| v.as_str())
-                                == Some(topic)
-                            && other_t.function_id != current_fid
-                        {
-                            queue.push(other_t.function_id.clone());
-                        }
+            if t.trigger_type != "durable::subscriber" {
+                continue;
+            }
+            let topic = match t.config.get("topic").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+            for other_t in &triggers {
+                if other_t.function_id == current_fid {
+                    continue;
+                }
+                let other_topic = other_t
+                    .config
+                    .get("topic")
+                    .and_then(|v| v.as_str());
+                if other_topic != Some(topic) {
+                    continue;
+                }
+                if other_t.trigger_type == "durable::subscriber" {
+                    if !related.contains(&other_t.function_id) {
+                        related.push(other_t.function_id.clone());
                     }
                 }
+                // Non-subscriber peers on the same topic (publish/output)
+                // are left to other traversal paths; this block only
+                // handles peer-consumer mislabelling.
+            }
+        }
+        if !related.is_empty() {
+            if let Some(obj) = chain.last_mut().and_then(|v| v.as_object_mut()) {
+                obj.insert(
+                    "related_subscribers".to_string(),
+                    serde_json::Value::Array(
+                        related
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
             }
         }
     }
@@ -165,11 +194,43 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
     }))
 }
 
-fn sanitize_id(id: &str) -> String {
-    id.replace("::", "_")
-        .replace('-', "_")
-        .replace('.', "_")
-        .replace(' ', "_")
+fn id_digest(raw: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    raw.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+fn sanitize_id_kind(kind: &str, id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{}_{}_{}", kind, safe, &id_digest(id)[..8])
+}
+
+// Escape user-supplied text for inclusion in a Mermaid "..." label.
+// Mermaid breaks on unescaped quotes, pipes, brackets, and newlines.
+fn mermaid_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("&quot;"),
+            '\\' => out.push_str("&#92;"),
+            '`' => out.push_str("&#96;"),
+            '[' => out.push_str("&#91;"),
+            ']' => out.push_str("&#93;"),
+            '{' => out.push_str("&#123;"),
+            '}' => out.push_str("&#125;"),
+            '|' => out.push_str("&#124;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn build_trace_mermaid(
@@ -187,21 +248,25 @@ fn build_trace_mermaid(
             .get("worker")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let safe_fid = sanitize_id(fid);
+        let fn_id = sanitize_id_kind("fn", fid);
 
         diagram.push_str(&format!(
             "    {}[\"{}\\n({})\"]",
-            safe_fid, fid, worker
+            fn_id,
+            mermaid_label(fid),
+            mermaid_label(worker),
         ));
         diagram.push('\n');
 
         if let Some(triggers) = triggers_by_function.get(fid) {
             for t in triggers {
-                let trigger_safe = sanitize_id(&t.id);
-                let label = &t.trigger_type;
+                let trigger_id = sanitize_id_kind("trigger", &t.id);
                 diagram.push_str(&format!(
                     "    {}{{\"{}\"}} -->|{}| {}\n",
-                    trigger_safe, label, label, safe_fid
+                    trigger_id,
+                    mermaid_label(&t.id),
+                    mermaid_label(&t.trigger_type),
+                    fn_id,
                 ));
             }
         }
@@ -215,8 +280,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sanitize_id() {
-        assert_eq!(sanitize_id("introspect::functions"), "introspect_functions");
+    fn node_ids_are_type_prefixed_and_distinct() {
+        let a = sanitize_id_kind("fn", "introspect::functions");
+        let b = sanitize_id_kind("fn", "introspect--functions");
+        assert!(a.starts_with("fn_"));
+        assert!(b.starts_with("fn_"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mermaid_label_escapes_breakers() {
+        let out = mermaid_label("a\"b|c[d]\ne");
+        assert!(!out.contains('"'));
+        assert!(!out.contains('|'));
+        assert!(!out.contains('['));
+        assert!(!out.contains(']'));
+        assert!(!out.contains('\n'));
     }
 
     #[test]

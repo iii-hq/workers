@@ -29,10 +29,16 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    if function_id.is_none() && worker_name.is_none() {
-        return Err(IIIError::Handler(
-            "provide either function_id or worker_name".to_string(),
-        ));
+    // Exclusive-or. Accepting both returns an explanation framed around
+    // whichever selector is consumed first and silently ignores the other,
+    // which has led to confusing "wrong context" results in practice.
+    match (&function_id, &worker_name) {
+        (None, None) | (Some(_), Some(_)) => {
+            return Err(IIIError::Handler(
+                "provide exactly one of function_id or worker_name".to_string(),
+            ));
+        }
+        _ => {}
     }
 
     let (functions_result, workers_result, triggers_result) = tokio::join!(
@@ -58,12 +64,19 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
         map
     };
 
-    let func_to_worker: HashMap<String, String> = {
-        let mut map = HashMap::new();
+    // Multiple workers can advertise the same function_id (e.g., scaled-out
+    // replicas). Keep every host and surface the ambiguity instead of
+    // letting HashMap::insert overwrite earlier entries with whichever worker
+    // happens to be processed last.
+    let func_to_workers: HashMap<String, Vec<String>> = {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for w in &workers {
             if let Some(name) = &w.name {
                 for f in &w.functions {
-                    map.insert(f.clone(), name.clone());
+                    let entry = map.entry(f.clone()).or_default();
+                    if !entry.contains(name) {
+                        entry.push(name.clone());
+                    }
                 }
             }
         }
@@ -80,10 +93,15 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
             .cloned()
             .unwrap_or_default();
 
-        let worker = func_to_worker
+        let hosts = func_to_workers
             .get(fid.as_str())
             .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or_default();
+        let worker = match hosts.as_slice() {
+            [] => "unknown".to_string(),
+            [one] => one.clone(),
+            many => format!("{} (hosted on {} workers)", many.join(", "), many.len()),
+        };
 
         return Ok(build_function_explanation(func, &func_triggers, &worker, &triggers));
     }
@@ -139,6 +157,54 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
     }
 
     unreachable!()
+}
+
+// Return a whitelisted, non-sensitive subset of a trigger's config for the
+// explain output. Embedding the raw config could surface auth tokens,
+// worker-supplied metadata, or credentials that happen to live on the
+// trigger row — default-deny, opt-in per trigger type.
+fn public_trigger_config(trigger: &TriggerInfo) -> Value {
+    match trigger.trigger_type.as_str() {
+        "http" => {
+            let method = trigger
+                .config
+                .get("http_method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("POST");
+            let path = trigger
+                .config
+                .get("api_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!({ "http_method": method, "api_path": path })
+        }
+        "cron" => {
+            let expr = trigger
+                .config
+                .get("expression")
+                .or_else(|| trigger.config.get("cron"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!({ "expression": expr })
+        }
+        "durable::subscriber" => {
+            let topic = trigger
+                .config
+                .get("topic")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!({ "topic": topic })
+        }
+        "state" => {
+            let scope = trigger
+                .config
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!({ "scope": scope })
+        }
+        _ => json!({}),
+    }
 }
 
 fn describe_trigger(trigger: &TriggerInfo) -> String {
@@ -228,7 +294,7 @@ fn build_function_explanation(
         .map(|t| {
             json!({
                 "type": t.trigger_type,
-                "config": t.config
+                "config": public_trigger_config(t)
             })
         })
         .collect();
@@ -245,21 +311,33 @@ fn build_function_explanation(
         .map(|s| describe_schema_fields(s))
         .unwrap_or_default();
 
+    // `inbound` captures upstream links to this function. Peer consumers
+    // on the same topic are NOT upstream — two functions subscribed to
+    // the same topic are sibling consumers of whatever publisher(s) feed
+    // the topic, not feeders of each other. Skip same-topic
+    // `durable::subscriber` triggers to avoid mislabelling peers as
+    // inbound edges in the explain graph.
+    let our_topics: Vec<&str> = func_triggers
+        .iter()
+        .filter(|ft| ft.trigger_type == "durable::subscriber")
+        .filter_map(|ft| ft.config.get("topic").and_then(|v| v.as_str()))
+        .collect();
     let inbound: Vec<String> = all_triggers
         .iter()
-        .filter(|t| t.trigger_type == "durable::subscriber")
+        .filter(|t| t.function_id != func.function_id)
         .filter(|t| {
-            let topic = t.config.get("topic").and_then(|v| v.as_str());
-            let our_topics: Vec<&str> = func_triggers
-                .iter()
-                .filter(|ft| ft.trigger_type == "durable::subscriber")
-                .filter_map(|ft| ft.config.get("topic").and_then(|v| v.as_str()))
-                .collect();
-            if let Some(topic) = topic {
-                our_topics.contains(&topic) && t.function_id != func.function_id
-            } else {
-                false
+            let topic = match t.config.get("topic").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => return false,
+            };
+            if !our_topics.contains(&topic) {
+                return false;
             }
+            // Sibling consumer on the same topic — not inbound.
+            if t.trigger_type == "durable::subscriber" {
+                return false;
+            }
+            true
         })
         .map(|t| t.function_id.clone())
         .collect();

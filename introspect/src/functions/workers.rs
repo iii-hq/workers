@@ -19,9 +19,13 @@ pub fn build_handler(
 
 pub async fn handle(iii: &III) -> Result<Value, IIIError> {
     let workers = iii.list_workers().await?;
+    // Capture the total up front so we can move each WorkerInfo into the
+    // json! macro below instead of cloning its Vec<String>/Option<String>
+    // fields field-by-field. Anonymous count falls out of the difference.
+    let total = workers.len();
 
     let entries: Vec<Value> = workers
-        .iter()
+        .into_iter()
         .filter(|w| w.name.is_some() || w.function_count > 0)
         .map(|w| {
             serde_json::json!({
@@ -38,7 +42,7 @@ pub async fn handle(iii: &III) -> Result<Value, IIIError> {
         })
         .collect();
 
-    let anonymous_count = workers.len() - entries.len();
+    let anonymous_count = total - entries.len();
 
     Ok(serde_json::json!({
         "workers": entries,

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -83,20 +82,17 @@ pub async fn build_topology(iii: &III) -> Result<Value, IIIError> {
 
     let anonymous_count = workers.len() - named_workers.len();
 
-    let mut functions_per_worker: HashMap<String, usize> = HashMap::new();
-    for w in &named_workers {
-        functions_per_worker.insert(
-            w.name.clone().unwrap_or_else(|| w.id.clone()),
-            w.function_count,
-        );
-    }
-
-    let fpw_entries: Vec<Value> = functions_per_worker
+    // Build one entry per worker keyed by the stable worker id, not by
+    // display name. Two workers sharing the same name (common with
+    // replicas or when `name` is unset and we fall back to id) would
+    // otherwise collapse into a single row and hide the rest.
+    let fpw_entries: Vec<Value> = named_workers
         .iter()
-        .map(|(name, count)| {
+        .map(|w| {
             serde_json::json!({
-                "worker": name,
-                "function_count": count
+                "id": w.id,
+                "worker": w.name.clone().unwrap_or_else(|| w.id.clone()),
+                "function_count": w.function_count,
             })
         })
         .collect();
