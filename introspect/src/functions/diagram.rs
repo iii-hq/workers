@@ -189,6 +189,7 @@ mod tests {
             function_count: 1,
             functions: vec!["test::echo".to_string()],
             active_invocations: 0,
+            isolation: None,
         }];
         let functions = vec![FunctionInfo {
             function_id: "test::echo".to_string(),
@@ -230,6 +231,7 @@ mod tests {
                 "stream::set".to_string(),
             ],
             active_invocations: 0,
+            isolation: None,
         }];
         let functions = vec![
             FunctionInfo {
