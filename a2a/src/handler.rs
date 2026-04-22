@@ -101,6 +101,7 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
         trigger_type: "http".to_string(),
         function_id: "a2a::agent_card".to_string(),
         config: json!({ "api_path": "/.well-known/agent-card.json", "http_method": "GET" }),
+        metadata: None,
     }) {
         tracing::error!(error = %e, "Failed to register a2a::agent_card trigger");
     }
@@ -109,6 +110,7 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
         trigger_type: "http".to_string(),
         function_id: "a2a::jsonrpc".to_string(),
         config: json!({ "api_path": "/a2a", "http_method": "POST" }),
+        metadata: None,
     }) {
         tracing::error!(error = %e, "Failed to register a2a::jsonrpc trigger");
     }
