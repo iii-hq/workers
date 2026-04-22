@@ -120,6 +120,12 @@ class HarnessAgent:
         with open(instruction_file) as f:
             instruction = f.read()
 
+        # run_shell reads TASK_DIR from the environment to chdir into the
+        # task workspace. Propagate task_path here so `ls`, `cat`, test
+        # commands, and file writes hit the task dir even when HarnessAgent
+        # is invoked from an arbitrary working directory.
+        os.environ["TASK_DIR"] = task_path
+
         start = time.time()
         result = await run_task(instruction)
         duration = time.time() - start

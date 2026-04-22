@@ -4,7 +4,7 @@ Self-improving agent harness on [iii-engine](https://github.com/iii-hq/iii-engin
 
 > The forge where agent harnesses are shaped. Autonomous agent engineering with structured experiment tracking, adaptive search, and real-time monitoring through Worker/Function/Trigger primitives.
 
-Give an AI agent a task, let it build and iterate on an agent harness autonomously overnight. It modifies the system prompt, tools, agent configuration, and orchestration, runs the benchmark, checks the score, keeps or discards the change, and repeats. Every experiment is tracked in a structured state store, the search strategy adapts automatically based on what's working, failures are diagnosed across runs, and you get 26 REST endpoints for live monitoring.
+Give an AI agent a task, let it build and iterate on an agent harness autonomously overnight. It modifies the system prompt, tools, agent configuration, and orchestration, runs the benchmark, checks the score, keeps or discards the change, and repeats. Every experiment is tracked in a structured state store, the search strategy adapts automatically based on what's working, failures are diagnosed across runs, and you get 27 REST endpoints for live monitoring.
 
 Inspired by the [autoagent](https://github.com/kevinrgu/autoagent) concept. Built from scratch on iii-engine primitives — same relationship as karpathy/autoresearch to [n-autoresearch](https://github.com/iii-hq/n-autoresearch).
 
@@ -31,7 +31,7 @@ autoharness fixes all of these by replacing the flat-file state with iii-engine'
 - **`agent.py`** — the entire harness under test in a single file. Config, tool definitions, agent construction, orchestration, and the Harbor adapter boundary. The adapter section is marked as fixed; everything above it is the edit surface for the meta-agent.
 - **`program.md`** — instructions for the meta-agent and the directive (what kind of agent to build). This file is edited by the human.
 - **`tasks/`** — evaluation tasks in [Harbor](https://github.com/laude-institute/harbor) format. Three sample tasks are included.
-- **`orchestrator/orchestrator.py`** — Python worker that registers 26 functions with iii-engine for experiment tracking, task execution, search strategy, harness management, and reporting.
+- **`orchestrator/orchestrator.py`** — Python worker that registers 27 functions with iii-engine for experiment tracking, task execution, search strategy, harness management, and reporting.
 - **`iii-config.yaml`** — iii-engine runtime configuration (state store, REST API, PubSub, cron, OpenTelemetry).
 - **`plot_progress.py`** — generates the progress chart above from experiment history via the iii REST API. Supports multiple datasets overlaid on one chart.
 - **`bench.sh`** — one-command benchmark runner that handles the full cycle: setup tag, register experiment, run all tasks via Harbor, record results, show summary and suggestions.
@@ -55,11 +55,11 @@ The metric is total **score** produced by the benchmark's task test suites. The 
     +--------------v-----------------+
     |  autoharness orchestrator      |
     |  (Python worker)               |
-    |  26 functions, 26 HTTP triggers|
+    |  27 functions, 27 HTTP triggers|
     +--------------------------------+
 ```
 
-The orchestrator connects to iii-engine over WebSocket and registers 26 functions across five groups, each exposed as an HTTP endpoint:
+The orchestrator connects to iii-engine over WebSocket and registers 27 functions across five groups, each exposed as an HTTP endpoint:
 
 | Group | Functions | What it does |
 |-------|-----------|-------------|
@@ -212,7 +212,7 @@ The chart shows kept experiments as large colored dots with description labels, 
 
 ## Monitoring
 
-The orchestrator exposes 26 HTTP endpoints at `http://localhost:3111`. During a run:
+The orchestrator exposes 27 HTTP endpoints at `http://localhost:3111`. During a run:
 
 ```bash
 # Full summary: stats, best score, category breakdown, strategy, cost
@@ -331,7 +331,7 @@ All configuration is via environment variables:
 | Crash handling | Silent failures | Consecutive crash counter, auto-abort at 3, crash rate feeds strategy |
 | Near-miss detection | Everything below best is equally "failed" | Tracks experiments within threshold, surfaces for combination |
 | Failure analysis | Manual trajectory reading | Per-task failure tracking, common failure aggregation, task-level diffs |
-| Monitoring | Read files manually | 26 REST endpoints, summary, leaderboard, TSV export |
+| Monitoring | Read files manually | 27 REST endpoints, summary, leaderboard, TSV export |
 | Harness management | Git commits only | Named snapshots with instant restore, diff against previous commit |
 | Cost tracking | None | Token count and cost estimation per experiment |
 | Observability | None | OpenTelemetry tracing and metrics via iii-engine |
@@ -343,7 +343,7 @@ All configuration is via environment variables:
 ```text
 autoharness/
   orchestrator/
-    orchestrator.py               -- Python worker: 26 functions, 26 triggers
+    orchestrator.py               -- Python worker: 27 functions, 27 triggers
     test_orchestrator.py          -- 50 integration tests
   agent.py                        -- agent harness template (editable + fixed adapter)
   program.md                      -- meta-agent instructions and experiment loop
