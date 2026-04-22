@@ -1,0 +1,1 @@
+iii-headquarters is the team github account for this extension on https://open-vsx.org/extension/iii-hq/iii-lsp
