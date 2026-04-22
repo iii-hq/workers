@@ -9,33 +9,28 @@ allowed_env:
   - LANG
   - LC_ALL
   - TERM
+# Default allowlist is intentionally read-only. Tools that can shell out
+# (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, cargo
+# build.rs, node -e, python3 -c, npm run) are left out on purpose — add them
+# per deployment after you've decided on the threat model. This worker is
+# NOT a sandbox.
 allowlist:
   - ls
   - cat
   - pwd
   - echo
   - grep
-  - find
   - wc
   - head
   - tail
   - sort
   - uniq
   - cut
-  - awk
-  - sed
   - date
   - whoami
   - hostname
   - which
-  - git
   - jq
-  - curl
-  - node
-  - npm
-  - python3
-  - cargo
-  - rustc
   - uname
   - df
   - du
@@ -53,5 +48,13 @@ denylist_patterns:
   - "reboot"
   - "/etc/passwd"
   - "/etc/shadow"
+  # Sub-execution / write escapes for commonly-added tools
+  - "\\bfind\\b[^|;&]*-exec(dir)?\\b"
+  - "\\bawk\\b[^|;&]*system\\s*\\("
+  - "\\bsed\\b[^|;&]*(-i\\b|\\be\\b)"
+  - "\\bcurl\\b[^|;&]*(file://|-o\\s|--output-dir\\b|-F\\s+@)"
+  - "\\bgit\\b[^|;&]*(--upload-pack|--receive-pack|core\\.pager|core\\.hooksPath|GIT_SSH_COMMAND)"
+  - "\\b(node|python3?)\\b[^|;&]*\\s-(e|c)\\b"
+  - "\\bnpm\\b[^|;&]*\\brun\\b"
 max_concurrent_jobs: 16
 job_retention_secs: 3600

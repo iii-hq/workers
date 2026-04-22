@@ -66,40 +66,48 @@ pub async fn get(id: &str) -> Option<Arc<Mutex<JobHandle>>> {
     JOBS.map.lock().await.get(id).cloned()
 }
 
+// Snapshot the map before awaiting per-job locks. Holding the map guard
+// across `handle.lock().await` head-of-line-blocks every other job
+// operation (insert, get) for the duration of the iteration.
+async fn snapshot() -> Vec<(String, Arc<Mutex<JobHandle>>)> {
+    let guard = JOBS.map.lock().await;
+    guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
 pub async fn remove_old(retention_secs: u64) {
     let now = now_ms();
     let threshold_ms = retention_secs.saturating_mul(1000);
-    let mut guard = JOBS.map.lock().await;
-    let to_remove: Vec<String> = {
-        let mut out = Vec::new();
-        for (id, handle) in guard.iter() {
-            let h = handle.lock().await;
-            if let Some(fin) = h.record.finished_at_ms {
-                if now.saturating_sub(fin) > threshold_ms {
-                    out.push(id.clone());
-                }
+    let handles = snapshot().await;
+    let mut to_remove: Vec<String> = Vec::new();
+    for (id, handle) in handles {
+        let h = handle.lock().await;
+        if let Some(fin) = h.record.finished_at_ms {
+            if now.saturating_sub(fin) > threshold_ms {
+                to_remove.push(id);
             }
         }
-        out
-    };
-    for id in to_remove {
-        guard.remove(&id);
+    }
+    if !to_remove.is_empty() {
+        let mut guard = JOBS.map.lock().await;
+        for id in to_remove {
+            guard.remove(&id);
+        }
     }
 }
 
 pub async fn list_all() -> Vec<JobRecord> {
-    let guard = JOBS.map.lock().await;
-    let mut out = Vec::with_capacity(guard.len());
-    for handle in guard.values() {
+    let handles = snapshot().await;
+    let mut out = Vec::with_capacity(handles.len());
+    for (_, handle) in handles {
         out.push(handle.lock().await.record.clone());
     }
     out
 }
 
 pub async fn running_count() -> usize {
-    let guard = JOBS.map.lock().await;
+    let handles = snapshot().await;
     let mut n = 0;
-    for handle in guard.values() {
+    for (_, handle) in handles {
         if handle.lock().await.record.status == JobStatus::Running {
             n += 1;
         }

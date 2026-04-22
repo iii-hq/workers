@@ -8,7 +8,7 @@ pub fn build_manifest() -> Value {
         "functions": [
             {
                 "id": "shell::exec",
-                "description": "Execute a command synchronously and return full stdout/stderr",
+                "description": "Execute a command synchronously and return stdout/stderr (capped at max_output_bytes; truncation flagged per stream)",
             },
             {
                 "id": "shell::exec_bg",

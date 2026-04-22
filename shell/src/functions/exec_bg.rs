@@ -81,19 +81,37 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
             Some(h) => h,
             None => return,
         };
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut stdout_trunc = false;
-        let mut stderr_trunc = false;
 
-        if let Some(mut out) = stdout_pipe {
-            read_bounded(&mut out, limit, &mut stdout_buf, &mut stdout_trunc).await;
-        }
-        if let Some(mut err) = stderr_pipe {
-            read_bounded(&mut err, limit, &mut stderr_buf, &mut stderr_trunc).await;
-        }
+        // Drain stdout and stderr concurrently. Sequential reads deadlock
+        // when the child fills one pipe's buffer (~64 KiB on Linux) before
+        // closing the other — matches the pattern used by run_to_completion.
+        let stdout_task = stdout_pipe.map(|mut out| {
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut trunc = false;
+                read_bounded(&mut out, limit, &mut buf, &mut trunc).await;
+                (buf, trunc)
+            })
+        });
+        let stderr_task = stderr_pipe.map(|mut err| {
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut trunc = false;
+                read_bounded(&mut err, limit, &mut buf, &mut trunc).await;
+                (buf, trunc)
+            })
+        });
 
-        let status = {
+        let (stdout_buf, stdout_trunc) = match stdout_task {
+            Some(t) => t.await.unwrap_or_else(|_| (Vec::new(), false)),
+            None => (Vec::new(), false),
+        };
+        let (stderr_buf, stderr_trunc) = match stderr_task {
+            Some(t) => t.await.unwrap_or_else(|_| (Vec::new(), false)),
+            None => (Vec::new(), false),
+        };
+
+        {
             let mut h = handle.lock().await;
             if let Some(mut ch) = h.child.take() {
                 drop(h);
@@ -114,11 +132,8 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
                         h2.record.status = JobStatus::Failed;
                     }
                 }
-                h2.record.status.clone()
-            } else {
-                h.record.status.clone()
             }
-        };
+        }
 
         let mut h = handle.lock().await;
         h.record.stdout = String::from_utf8_lossy(&stdout_buf).into_owned();
@@ -126,7 +141,6 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         h.record.stdout_truncated = stdout_trunc;
         h.record.stderr_truncated = stderr_trunc;
         h.record.finished_at_ms = Some(jobs::now_ms());
-        let _ = status;
     });
 
     Ok(json!({

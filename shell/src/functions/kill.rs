@@ -33,9 +33,17 @@ async fn handle(payload: Value) -> Result<Value, IIIError> {
             "reason": "not running",
         }));
     }
-    if let Some(child) = h.child.as_mut() {
-        let _ = child.start_kill();
-    }
+    let Some(child) = h.child.as_mut() else {
+        return Ok(json!({
+            "job_id": job_id,
+            "killed": false,
+            "status": h.record.status,
+            "reason": "missing child handle",
+        }));
+    };
+    child
+        .start_kill()
+        .map_err(|e| IIIError::Handler(format!("failed to kill job {}: {}", job_id, e)))?;
     h.record.status = JobStatus::Killed;
     h.record.finished_at_ms = Some(jobs::now_ms());
     Ok(json!({
