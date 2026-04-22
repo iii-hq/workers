@@ -423,7 +423,7 @@ async fn main() -> Result<()> {
         metadata: None,
     });
 
-    tracing::info!("iii-introspect registered 9 functions and 11 triggers, waiting for invocations");
+    tracing::info!("iii-introspect registered 9 functions and 9 triggers, waiting for invocations");
 
     tokio::signal::ctrl_c().await?;
 
