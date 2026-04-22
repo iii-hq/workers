@@ -117,7 +117,7 @@ Your gateway (LiteLLM/Bifrost/OpenRouter/your-own) takes `model` and forwards. T
 
 ## SDK + stack
 
-- `iii-sdk 0.11.0` stable
+- `iii-sdk =0.11.3`
 - State via `state::get`/`set`/`delete`/`list` against scope `llm-router`
 - `rand` for A/B variant weighted sampling
 - `serde_json` everywhere — all state blobs are JSON

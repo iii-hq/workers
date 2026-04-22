@@ -30,6 +30,7 @@ impl EngineClient {
                     os: std::env::consts::OS.to_string(),
                     pid: Some(std::process::id()),
                     telemetry: None,
+                    ..Default::default()
                 }),
                 ..Default::default()
             },

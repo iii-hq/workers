@@ -84,24 +84,33 @@ mod tests {
 
     #[test]
     fn validate_rejects_out_of_range_error_rate() {
-        let mut c = RouterConfig::default();
-        c.health_skip_threshold_error_rate = 2.0;
+        let c = RouterConfig {
+            health_skip_threshold_error_rate: 2.0,
+            ..RouterConfig::default()
+        };
         assert!(validate(&c).is_err());
-        c.health_skip_threshold_error_rate = -0.1;
+        let c = RouterConfig {
+            health_skip_threshold_error_rate: -0.1,
+            ..RouterConfig::default()
+        };
         assert!(validate(&c).is_err());
     }
 
     #[test]
     fn validate_rejects_empty_strings() {
-        let mut c = RouterConfig::default();
-        c.state_scope = "".into();
+        let c = RouterConfig {
+            state_scope: "".into(),
+            ..RouterConfig::default()
+        };
         assert!(validate(&c).is_err());
     }
 
     #[test]
     fn validate_rejects_zero_stats_days() {
-        let mut c = RouterConfig::default();
-        c.stats_default_days = 0;
+        let c = RouterConfig {
+            stats_default_days: 0,
+            ..RouterConfig::default()
+        };
         assert!(validate(&c).is_err());
     }
 }

@@ -9,7 +9,7 @@ name = "iii-lsp"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = { git = "ssh://git@github.com/iii-hq/iii.git" }
+iii-sdk = "=0.11.3"
 tower-lsp-server = "0.23"
 tree-sitter = "0.24"
 tree-sitter-typescript = "0.23"

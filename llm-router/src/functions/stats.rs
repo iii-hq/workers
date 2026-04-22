@@ -49,11 +49,13 @@ pub fn handler(
             // so state::list returns only entries that might match instead of
             // the full audit log.
             //
-            // Known limitation: iii-sdk 0.11.2 exposes no cursor/paginated
-            // state::list, so the scan still materializes a Vec before the
-            // hard cap applies. Track SDK-side pagination in iii-hq/iii and
-            // switch to a streaming scan once available. Until then the
-            // prefix narrowing + hard cap is the best we can do.
+            // Known limitation: iii-sdk 0.11.3 `state::list` takes only
+            // `{scope}`, so the prefix we pass is client-side-only. The
+            // engine returns the whole scope; we rely on `parse_item::<T>`
+            // type-discrimination + the `timestamp_ms < horizon` check to
+            // filter. scan_prefix is therefore informational (and ready for
+            // a future engine prefix-filter). Track pagination + prefix in
+            // iii-hq/iii. SCAN_HARD_CAP is the only backstop today.
             let prefix = scan_prefix(horizon, now);
             let items = state::state_list(&iii, &cfg.state_scope, &prefix).await?;
 
