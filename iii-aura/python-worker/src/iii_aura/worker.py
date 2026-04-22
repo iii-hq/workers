@@ -15,6 +15,8 @@ import concurrent.futures.thread as _cft
 import json
 import os
 import re
+import signal
+import threading
 import time
 import uuid
 from typing import Any
@@ -157,7 +159,21 @@ async def _ingest_turn(data: dict[str, Any]) -> dict[str, Any]:
         text_response = _clean_model_tokens(inference.tool_result.get("response", ""))
     else:
         transcription = None
-        text_response = response["content"][0]["text"]
+        # Defensive read — if the tool call didn't fire and the response
+        # shape is unexpected, fall back to an empty string so the turn
+        # completes instead of raising and aborting the whole session.
+        text_response = ""
+        try:
+            content_items = response.get("content") if isinstance(response, dict) else None
+            if isinstance(content_items, list) and content_items:
+                first = content_items[0]
+                if isinstance(first, dict) and isinstance(first.get("text"), str):
+                    text_response = first["text"]
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.warn(
+                "unexpected LLM response shape, returning empty text",
+                {"error": str(exc)},
+            )
 
     logger.info("LLM complete", {"llm_time": round(llm_time, 2), "text": text_response[:80]})
 
@@ -284,6 +300,19 @@ def main():
     )
 
     logger.info("iii-aura worker started")
+
+    # Block main thread until a signal arrives — without this the process
+    # would exit right after registration and the async handlers above
+    # would never get to run.
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    stop.wait()
+    logger.info("iii-aura shutting down")
+    try:
+        iii.shutdown()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
 
 import { registerWorker, TriggerAction } from 'iii-browser-sdk'
 import type { ChannelReader, ISdk } from 'iii-browser-sdk'
+import * as vad from '@ricky0123/vad-web'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -91,6 +92,23 @@ async function connectIII() {
 
       const reader = data.reader
 
+      // Fallback in case the `audio_end` control message is dropped on the
+      // channel — without it the UI would be stuck in 'speaking'. Timeout
+      // forces the same cleanup path that audio_end would have taken.
+      const PLAYBACK_TIMEOUT_MS = 60_000
+      let playbackTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        console.warn('ui::aura::playback: no audio_end within timeout, resetting')
+        stopPlayback()
+        setState('listening')
+        playbackTimeout = null
+      }, PLAYBACK_TIMEOUT_MS)
+      const clearPlaybackTimeout = () => {
+        if (playbackTimeout) {
+          clearTimeout(playbackTimeout)
+          playbackTimeout = null
+        }
+      }
+
       reader.onBinary((pcmBytes: Uint8Array) => {
         if (ignoreIncomingAudio) return
         const int16 = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength / 2)
@@ -103,6 +121,7 @@ async function connectIII() {
         try {
           const parsed = JSON.parse(msg)
           if (parsed.type === 'audio_end') {
+            clearPlaybackTimeout()
             if (ignoreIncomingAudio) {
               ignoreIncomingAudio = false
               stopPlayback()
@@ -155,7 +174,7 @@ async function sendTurn(audioSamples: Float32Array) {
   setState('processing')
   setStatus('processing', 'Processing')
   const hasImage = cameraEnabled
-  addMessage('user', '<span class="loading-dots"><span></span><span></span><span></span></span>', hasImage ? 'with camera' : '', true)
+  addLoadingMessage(hasImage ? 'with camera' : '')
 
   // Convert float32@16kHz to WAV bytes
   const wavBytes = float32ToWav(audioSamples)
@@ -370,14 +389,31 @@ function setStatus(cls: string, text: string) {
   statusEl.textContent = text
 }
 
-function addMessage(role: string, text: string, meta?: string, html = false) {
+// Role-tagged message renderer. Always uses textContent for `text` and `meta`
+// to keep LLM-generated content out of the DOM parser — untrusted HTML can't
+// ship here. Callers that need the loading-dots affordance use
+// `addLoadingMessage()` below, which constructs the DOM directly.
+function addMessage(role: string, text: string, meta?: string) {
   const div = document.createElement('div')
   div.className = `msg ${role}`
-  if (html) {
-    div.innerHTML = text
-  } else {
-    div.textContent = text
+  div.textContent = text
+  if (meta) {
+    const metaEl = document.createElement('div')
+    metaEl.className = 'meta'
+    metaEl.textContent = meta
+    div.appendChild(metaEl)
   }
+  messagesEl.appendChild(div)
+  messagesEl.scrollTop = messagesEl.scrollHeight
+}
+
+function addLoadingMessage(meta: string) {
+  const div = document.createElement('div')
+  div.className = 'msg user'
+  const dots = document.createElement('span')
+  dots.className = 'loading-dots'
+  for (let i = 0; i < 3; i++) dots.appendChild(document.createElement('span'))
+  div.appendChild(dots)
   if (meta) {
     const metaEl = document.createElement('div')
     metaEl.className = 'meta'
@@ -476,8 +512,7 @@ export async function init() {
   await startCamera()
   await connectIII()
 
-  // Initialize Silero VAD from CDN
-  const vad = (window as any).vad as any
+  // Initialize Silero VAD (bundled via npm)
   myvad = await vad.MicVAD.new({
     getStream: async () => new MediaStream(mediaStream!.getAudioTracks()),
     positiveSpeechThreshold: 0.5,
@@ -488,9 +523,7 @@ export async function init() {
     onSpeechStart: handleSpeechStart,
     onSpeechEnd: handleSpeechEnd,
     onVADMisfire: () => console.log('VAD misfire (too short)'),
-    onnxWASMBasePath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/',
-    baseAssetPath: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/',
-  })
+  } as any)
   myvad.start()
 
   const initAudio = () => {
