@@ -9,7 +9,7 @@ description = "III SDK Python Todo Worker"
 authors = [{ name = "III" }]
 requires-python = ">=3.10"
 dependencies = [
-    "iii-sdk",
+    "iii-sdk==0.11.3",
     "opentelemetry-api",
     "opentelemetry-sdk",
     "watchfiles",

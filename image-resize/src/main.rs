@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
 
     let resize_handler = handler::build_handler(cli.url.clone(), config);
 
-    let _fn_ref = iii.register_function(
+    let _fn_ref = iii.register_function_with(
         RegisterFunctionMessage {
             id: "image_resize::resize".to_string(),
             description: Some("Resize an image via channel I/O".to_string()),
