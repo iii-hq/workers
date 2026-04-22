@@ -50,10 +50,35 @@ pub fn get(params: Option<Value>) -> Value {
                 Ok(v) => v,
                 Err(e) => return e,
             };
-            if lang == "python" {
-                format!("Register Python function `{fid}`:\n1. `iii_worker_register` with language='python'\n2. Code: `async def handler(input): ...`\n3. Wire trigger via `iii_trigger_register`\n\n```python\nfrom iii_sdk import register_worker, Logger\niii = register_worker('ws://localhost:49134')\niii.register_function('{fid}', handler)\n```")
-            } else {
-                format!("Register Node.js function `{fid}`:\n1. `iii_worker_register` with language='node'\n2. Code: `async (input) => {{ ... }}`\n3. Wire trigger via `iii_trigger_register`\n\n```js\nimport {{ registerWorker, Logger }} from 'iii-sdk'\nconst iii = registerWorker('ws://localhost:49134')\niii.registerFunction({{ id: '{fid}' }}, handler)\n```")
+            // Only node/python are supported by the worker manager — anything
+            // else would generate a misleading node-flavored prompt and then
+            // fail at spawn time. Reject up front with a clear message.
+            match lang {
+                "python" => format!(
+                    "Register Python function `{fid}`:\n\
+                     1. `iii_worker_register` with language='python'\n\
+                     2. Code: `async def handler(input): ...`\n\
+                     3. Wire trigger via `iii_trigger_register`\n\n\
+                     ```python\nfrom iii_sdk import register_worker, Logger\n\
+                     iii = register_worker('ws://localhost:49134')\n\
+                     # metadata={{'mcp.expose': True}} so the function appears in tools/list\n\
+                     iii.register_function('{fid}', handler, metadata={{'mcp.expose': True}})\n\
+                     ```"
+                ),
+                "node" => format!(
+                    "Register Node.js function `{fid}`:\n\
+                     1. `iii_worker_register` with language='node'\n\
+                     2. Code: `async (input) => {{ ... }}`\n\
+                     3. Wire trigger via `iii_trigger_register`\n\n\
+                     ```js\nimport {{ registerWorker, Logger }} from 'iii-sdk'\n\
+                     const iii = registerWorker('ws://localhost:49134')\n\
+                     // metadata: {{ 'mcp.expose': true }} so the function appears in tools/list\n\
+                     iii.registerFunction('{fid}', handler, {{ metadata: {{ 'mcp.expose': true }} }})\n\
+                     ```"
+                ),
+                _ => format!(
+                    "Unsupported language `{lang}`. Pass `language=node` or `language=python`."
+                ),
             }
         }
         "build-api" => {

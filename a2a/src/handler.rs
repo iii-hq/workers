@@ -21,7 +21,19 @@ async fn is_function_exposed(iii: &III, function_id: &str, expose_all: bool) -> 
         Ok(fns) => fns
             .iter()
             .any(|f| f.function_id == function_id && has_metadata_flag(f, "a2a.expose")),
-        Err(_) => false,
+        Err(e) => {
+            // Log the registry error distinctly so an engine outage doesn't
+            // surface to callers as "not exposed" (a policy failure). Returning
+            // false here still denies access — fail closed is the right default
+            // for a security gate — but the log lets operators tell the two
+            // cases apart.
+            tracing::error!(
+                error = %e,
+                function_id = %function_id,
+                "a2a.expose check failed: could not list functions, denying access"
+            );
+            false
+        }
     }
 }
 
@@ -532,14 +544,22 @@ fn resolve_function(message: &Message) -> (String, Value) {
         }
     }
 
+    // Only treat the message as a direct function invocation when the very
+    // first token looks like `namespace::fn_name`. Otherwise free-form
+    // text like "please run orders::process" would resolve the function_id
+    // to "please", then fail with a confusing not-exposed error.
     let text = text.trim();
-    if text.contains("::") {
-        let parts: Vec<&str> = text.splitn(2, char::is_whitespace).collect();
-        if parts.len() == 2 {
-            let payload = serde_json::from_str(parts[1]).unwrap_or(json!({ "input": parts[1] }));
-            return (parts[0].to_string(), payload);
+    let first_token = text
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or("");
+    if first_token.contains("::") {
+        let rest = text[first_token.len()..].trim_start();
+        if !rest.is_empty() {
+            let payload = serde_json::from_str(rest).unwrap_or(json!({ "input": rest }));
+            return (first_token.to_string(), payload);
         }
-        return (text.to_string(), json!({}));
+        return (first_token.to_string(), json!({}));
     }
 
     (String::new(), json!({}))

@@ -63,14 +63,14 @@ impl WorkerManager {
         &self,
         params: WorkerCreateParams,
     ) -> Result<WorkerCreateResult, String> {
-        let uuid = Uuid::new_v4().to_string();
-        let worker_id = format!("worker-{}", &uuid[..8]);
+        // Full UUID (not truncated) — truncating to 8 hex chars gave us 32
+        // bits of entropy, and a collision in the HashMap::insert path
+        // below caused the replaced entry's Child to drop, which
+        // kill_on_drop(true) turns into SIGKILL on an unrelated worker.
+        let worker_id = format!("worker-{}", Uuid::new_v4());
 
-        let temp_dir = std::env::temp_dir().join(format!("iii-{}", &worker_id));
-        tokio::fs::create_dir_all(&temp_dir)
-            .await
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-
+        // Validate language BEFORE creating the temp dir so unsupported
+        // values don't leave iii-* directories behind in the system temp.
         let (file_name, code) = match params.language.as_str() {
             "node" | "javascript" | "js" => {
                 let code = self.generate_node_worker(&params);
@@ -83,10 +83,16 @@ impl WorkerManager {
             _ => return Err(format!("Unsupported language: {}", params.language)),
         };
 
-        let file_path = temp_dir.join(file_name);
-        tokio::fs::write(&file_path, &code)
+        let temp_dir = std::env::temp_dir().join(format!("iii-{}", &worker_id));
+        tokio::fs::create_dir_all(&temp_dir)
             .await
-            .map_err(|e| format!("Failed to write worker file: {}", e))?;
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
+        let file_path = temp_dir.join(file_name);
+        if let Err(e) = tokio::fs::write(&file_path, &code).await {
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+            return Err(format!("Failed to write worker file: {}", e));
+        }
 
         let mut child = match self
             .spawn_worker(&params.language, &temp_dir, file_name)
@@ -117,6 +123,19 @@ impl WorkerManager {
 
         let pid = child.id().unwrap_or(0);
 
+        // Drain stderr into the worker-manager log. Without this the child
+        // blocks once the stderr pipe buffer fills (~64 KiB on Linux).
+        if let Some(stderr) = child.stderr.take() {
+            let wid = worker_id.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::warn!(worker_id = %wid, stderr = %line, "worker stderr");
+                }
+            });
+        }
+
         let spawned = SpawnedWorker {
             id: worker_id.clone(),
             language: params.language.clone(),
@@ -145,26 +164,32 @@ impl WorkerManager {
     }
 
     pub async fn stop_worker(&self, params: WorkerStopParams) -> Result<WorkerStopResult, String> {
-        let mut workers = self.workers.lock().await;
+        // Drop the map mutex before awaiting kill/rmdir — holding it would
+        // block every concurrent create_worker/stop_worker for the
+        // duration of I/O.
+        let entry = {
+            let mut workers = self.workers.lock().await;
+            workers.remove(&params.id)
+        };
 
-        if let Some((info, mut child)) = workers.remove(&params.id) {
-            if let Err(e) = child.kill().await {
-                tracing::warn!(worker_id = %params.id, error = %e, "Failed to kill worker process");
-            }
+        let Some((info, mut child)) = entry else {
+            return Err(format!("Worker not found: {}", params.id));
+        };
 
-            if let Err(e) = tokio::fs::remove_dir_all(&info.temp_dir).await {
-                tracing::warn!(worker_id = %params.id, error = %e, "Failed to remove temp dir");
-            }
-
-            tracing::info!(worker_id = %params.id, "Stopped worker");
-
-            Ok(WorkerStopResult {
-                id: params.id,
-                message: "Worker stopped and cleaned up".to_string(),
-            })
-        } else {
-            Err(format!("Worker not found: {}", params.id))
+        if let Err(e) = child.kill().await {
+            tracing::warn!(worker_id = %params.id, error = %e, "Failed to kill worker process");
         }
+
+        if let Err(e) = tokio::fs::remove_dir_all(&info.temp_dir).await {
+            tracing::warn!(worker_id = %params.id, error = %e, "Failed to remove temp dir");
+        }
+
+        tracing::info!(worker_id = %params.id, "Stopped worker");
+
+        Ok(WorkerStopResult {
+            id: params.id,
+            message: "Worker stopped and cleaned up".to_string(),
+        })
     }
 
     fn generate_node_worker(&self, params: &WorkerCreateParams) -> String {
