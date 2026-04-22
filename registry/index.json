@@ -1,6 +1,79 @@
 {
     "version": 1,
     "workers": {
+        "a2a": {
+            "type": "binary",
+            "description": "A2A (Agent-to-Agent) JSON-RPC protocol worker",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "a2a",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "expose_all": false,
+                "base_url": "http://localhost:3111"
+            },
+            "version": "0.3.0"
+        },
+        "agent": {
+            "type": "binary",
+            "description": "Chat + planning agent that discovers and drives other iii workers",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "agent",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "anthropic_model": "claude-haiku-4-5-20251001",
+                "max_tokens": 4096,
+                "max_iterations": 10,
+                "session_ttl_hours": 24
+            },
+            "version": "0.1.0"
+        },
+        "coding": {
+            "type": "binary",
+            "description": "Code-generation / refactor assistant",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "coding",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
+            "version": "0.1.0"
+        },
+        "eval": {
+            "type": "binary",
+            "description": "OTel span ingestion, percentiles, baseline + drift detection, health score",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "eval",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "retention_hours": 24,
+                "drift_threshold": 0.15,
+                "cron_drift_check": "0 */10 * * * *",
+                "max_spans_per_function": 1000
+            },
+            "version": "0.1.0"
+        },
+        "experiment": {
+            "type": "binary",
+            "description": "A/B experiment tracking with weighted variants and outcome aggregation",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "experiment",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
+            "version": "0.1.0"
+        },
+        "guardrails": {
+            "type": "binary",
+            "description": "PII, prompt-injection, and length guardrails for input/output",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "guardrails",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
+            "version": "0.1.0"
+        },
         "image-resize": {
             "type": "binary",
             "description": "III engine image resize worker",
@@ -24,12 +97,65 @@
         },
         "iii-lsp": {
             "type": "binary",
-            "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
+            "description": "III Language Server \u2014 autocompletion and hover for III engine functions and triggers",
             "repo": "iii-hq/workers",
             "tag_prefix": "iii-lsp",
             "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
             "has_checksum": true,
             "default_config": {},
+            "version": "0.1.0"
+        },
+        "introspect": {
+            "type": "binary",
+            "description": "Live topology, trace walks, Mermaid diagrams, per-function explain",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "introspect",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {},
+            "version": "0.1.0"
+        },
+        "llm-router": {
+            "type": "binary",
+            "description": "Unopinionated LLM routing brain \u2014 policies, classifiers, A/B tests, health + budget aware",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "llm-router",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "state_scope": "llm-router",
+                "classifier_default_id": "default",
+                "stats_default_days": 7,
+                "health_skip_threshold_error_rate": 0.3
+            },
+            "version": "0.1.0"
+        },
+        "mcp": {
+            "type": "binary",
+            "description": "Model Context Protocol surface \u2014 stdio + HTTP JSON-RPC, exposes iii functions as MCP tools",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "mcp",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "expose_all": false
+            },
+            "version": "0.3.0"
+        },
+        "shell": {
+            "type": "binary",
+            "description": "Unix shell execution worker \u2014 allowlist + denylist, timeout + output caps, background jobs",
+            "repo": "iii-hq/workers",
+            "tag_prefix": "shell",
+            "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            "has_checksum": true,
+            "default_config": {
+                "max_timeout_ms": 30000,
+                "default_timeout_ms": 10000,
+                "max_output_bytes": 1048576,
+                "max_concurrent_jobs": 16,
+                "job_retention_secs": 3600
+            },
             "version": "0.1.0"
         },
         "todo-worker": {
