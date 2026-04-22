@@ -72,12 +72,14 @@ pub fn build_history_handler(
 
 pub fn build_cleanup_handler(
     iii: III,
+    ttl_hours: u64,
 ) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
        + Send
        + Sync
        + 'static {
     move |_payload: Value| {
         let iii = iii.clone();
+        let ttl_hours = ttl_hours as i64;
 
         Box::pin(async move {
             let sessions = state::state_list(&iii, "agent:sessions").await;
@@ -103,7 +105,7 @@ pub fn build_cleanup_handler(
                                     .map(|created| {
                                         let age = now
                                             .signed_duration_since(created.with_timezone(&chrono::Utc));
-                                        age.num_hours() > 24
+                                        age.num_hours() > ttl_hours
                                     })
                                     .unwrap_or(false);
 

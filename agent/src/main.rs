@@ -344,7 +344,8 @@ async fn main() -> Result<()> {
         });
     });
 
-    let session_cleanup_handler = functions::session::build_cleanup_handler(iii.clone());
+    let session_cleanup_handler =
+        functions::session::build_cleanup_handler(iii.clone(), config.session_ttl_hours);
     let _cleanup_fn = iii.register_function_with(
         RegisterFunctionMessage {
             id: "agent::session_cleanup".to_string(),

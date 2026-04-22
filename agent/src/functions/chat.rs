@@ -185,6 +185,10 @@ fn parse_ui_elements(text: &str) -> Vec<Value> {
     vec![json!({"type": "text", "content": text})]
 }
 
+// Session records are stored as { "created_at": <rfc3339>, "messages": [...] }.
+// Read the messages array out of that envelope rather than treating the
+// whole record as Vec<Message> — preserves `created_at` so cleanup's
+// age-based expiry and history tools keep working across turns.
 async fn load_history(iii: &III, session_id: &str) -> Vec<Message> {
     if session_id.is_empty() {
         return Vec::new();
@@ -192,8 +196,13 @@ async fn load_history(iii: &III, session_id: &str) -> Vec<Message> {
 
     match state::state_get(iii, "agent:sessions", session_id).await {
         Ok(val) => {
-            if let Some(history) = val.get("value") {
-                serde_json::from_value::<Vec<Message>>(history.clone()).unwrap_or_default()
+            let inner = val.get("value").unwrap_or(&val);
+            if let Some(arr) = inner.get("messages") {
+                serde_json::from_value::<Vec<Message>>(arr.clone()).unwrap_or_default()
+            } else if inner.is_array() {
+                // Legacy shape: the value was saved as a bare messages array
+                // by an earlier version. Load it so old sessions still open.
+                serde_json::from_value::<Vec<Message>>(inner.clone()).unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -202,12 +211,27 @@ async fn load_history(iii: &III, session_id: &str) -> Vec<Message> {
     }
 }
 
+// Preserve (or mint) created_at so session_cleanup's TTL still fires and
+// session_history's response shape stays stable after every turn.
 async fn save_history(iii: &III, session_id: &str, messages: &[Message]) {
     if session_id.is_empty() {
         return;
     }
 
-    let value = serde_json::to_value(messages).unwrap_or(json!([]));
+    let created_at = match state::state_get(iii, "agent:sessions", session_id).await {
+        Ok(val) => val
+            .get("value")
+            .and_then(|v| v.get("created_at"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        Err(_) => chrono::Utc::now().to_rfc3339(),
+    };
+
+    let value = json!({
+        "created_at": created_at,
+        "messages": serde_json::to_value(messages).unwrap_or(json!([])),
+    });
     let _ = state::state_set(iii, "agent:sessions", session_id, &value).await;
 }
 

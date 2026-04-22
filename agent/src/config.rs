@@ -10,7 +10,6 @@ pub struct AgentConfig {
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
     #[serde(default = "default_session_ttl_hours")]
-    #[allow(dead_code)]
     pub session_ttl_hours: u64,
     #[serde(default = "default_cron_session_cleanup")]
     pub cron_session_cleanup: String,
@@ -51,7 +50,27 @@ impl Default for AgentConfig {
 pub fn load_config(path: &str) -> Result<AgentConfig> {
     let contents = std::fs::read_to_string(path)?;
     let config: AgentConfig = serde_yaml::from_str(&contents)?;
+    validate(&config)?;
     Ok(config)
+}
+
+fn validate(cfg: &AgentConfig) -> Result<()> {
+    if cfg.anthropic_model.trim().is_empty() {
+        anyhow::bail!("config: anthropic_model must be non-empty");
+    }
+    if cfg.max_tokens == 0 {
+        anyhow::bail!("config: max_tokens must be >= 1");
+    }
+    if cfg.max_iterations == 0 {
+        anyhow::bail!("config: max_iterations must be >= 1");
+    }
+    if cfg.session_ttl_hours == 0 {
+        anyhow::bail!("config: session_ttl_hours must be >= 1");
+    }
+    if cfg.cron_session_cleanup.trim().is_empty() {
+        anyhow::bail!("config: cron_session_cleanup must be non-empty");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

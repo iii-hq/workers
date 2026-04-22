@@ -3,12 +3,25 @@ use serde_json::json;
 
 use crate::llm::ToolDef;
 
-const INCLUDED_PREFIXES: &[&str] = &[
-    "eval::", "introspect::", "sensor::", "guardrails::",
-    "coding::", "experiment::",
+// Infrastructure namespaces the agent should never call as tools (it would
+// recurse into itself, leak engine internals, or invoke routing primitives
+// directly). Everything else is exposed — new worker namespaces are
+// auto-discovered without a code change. Override with
+// `discovery_excluded_prefixes` in config when a deployment needs a tighter
+// boundary.
+pub const DEFAULT_EXCLUDED_PREFIXES: &[&str] = &[
+    "agent::",
+    "engine::",
+    "state::",
+    "stream::",
+    "iii.",
 ];
 
 pub async fn discover_tools(iii: &III) -> Vec<ToolDef> {
+    discover_tools_with(iii, DEFAULT_EXCLUDED_PREFIXES).await
+}
+
+pub async fn discover_tools_with(iii: &III, excluded: &[&str]) -> Vec<ToolDef> {
     let functions = match iii.list_functions().await {
         Ok(fns) => fns,
         Err(e) => {
@@ -20,7 +33,7 @@ pub async fn discover_tools(iii: &III) -> Vec<ToolDef> {
     let tools: Vec<ToolDef> = functions
         .into_iter()
         .filter(|f| !f.function_id.is_empty())
-        .filter(|f| is_included(&f.function_id))
+        .filter(|f| !is_excluded(&f.function_id, excluded))
         .filter(|f| has_valid_schema(f))
         .map(|f| function_to_tool(&f))
         .filter(|t| !t.name.is_empty())
@@ -61,7 +74,7 @@ pub fn sanitize_tool_name(function_id: &str) -> String {
 pub fn functions_to_tools(functions: &[FunctionInfo]) -> Vec<ToolDef> {
     functions
         .iter()
-        .filter(|f| is_included(&f.function_id))
+        .filter(|f| !is_excluded(&f.function_id, DEFAULT_EXCLUDED_PREFIXES))
         .map(|f| function_to_tool(f))
         .collect()
 }
@@ -78,10 +91,37 @@ pub fn build_capabilities_summary(tools: &[ToolDef]) -> String {
     summary
 }
 
-fn is_included(function_id: &str) -> bool {
-    INCLUDED_PREFIXES
-        .iter()
-        .any(|prefix| function_id.starts_with(prefix))
+// Build the capabilities summary keyed by engine `function_id` (eval::metrics)
+// rather than the Anthropic-sanitized tool name (eval__metrics). Use this
+// when the model is asked to echo a function_id back — e.g., the planner
+// fills `steps[*].function_id`, which downstream executors invoke as-is.
+pub async fn build_planner_capabilities(iii: &III) -> String {
+    let functions = match iii.list_functions().await {
+        Ok(fns) => fns,
+        Err(_) => return "No external functions are currently available.".to_string(),
+    };
+
+    let eligible: Vec<FunctionInfo> = functions
+        .into_iter()
+        .filter(|f| !f.function_id.is_empty())
+        .filter(|f| !is_excluded(&f.function_id, DEFAULT_EXCLUDED_PREFIXES))
+        .filter(has_valid_schema)
+        .collect();
+
+    if eligible.is_empty() {
+        return "No external functions are currently available.".to_string();
+    }
+
+    let mut summary = String::from("Available functions (call these exact ids):\n");
+    for f in eligible {
+        let desc = f.description.as_deref().unwrap_or("");
+        summary.push_str(&format!("- {}: {}\n", f.function_id, desc));
+    }
+    summary
+}
+
+fn is_excluded(function_id: &str, excluded: &[&str]) -> bool {
+    excluded.iter().any(|prefix| function_id.starts_with(prefix))
 }
 
 fn has_valid_schema(f: &FunctionInfo) -> bool {
@@ -125,33 +165,23 @@ mod tests {
     }
 
     #[test]
-    fn test_included_eval() {
-        assert!(is_included("eval::metrics"));
-        assert!(is_included("eval::analyze_traces"));
+    fn test_worker_prefixes_not_excluded() {
+        assert!(!is_excluded("eval::metrics", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("introspect::topology", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("sensor::scan", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("guardrails::check_input", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("coding::scaffold", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("experiment::create", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded("publish", DEFAULT_EXCLUDED_PREFIXES));
     }
 
     #[test]
-    fn test_included_introspect() {
-        assert!(is_included("introspect::topology"));
-        assert!(is_included("introspect::explain"));
-    }
-
-    #[test]
-    fn test_included_all_prefixes() {
-        assert!(is_included("sensor::scan"));
-        assert!(is_included("guardrails::check_input"));
-        assert!(is_included("coding::scaffold"));
-        assert!(is_included("experiment::create"));
-    }
-
-    #[test]
-    fn test_not_included() {
-        assert!(!is_included("state::get"));
-        assert!(!is_included("engine::health"));
-        assert!(!is_included("stream::set"));
-        assert!(!is_included("agent::chat"));
-        assert!(!is_included("publish"));
-        assert!(!is_included("iii.on_functions_available.abc"));
+    fn test_infrastructure_prefixes_excluded() {
+        assert!(is_excluded("state::get", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(is_excluded("engine::health", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(is_excluded("stream::set", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(is_excluded("agent::chat", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(is_excluded("iii.on_functions_available.abc", DEFAULT_EXCLUDED_PREFIXES));
     }
 
     #[test]

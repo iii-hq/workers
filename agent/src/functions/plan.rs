@@ -38,8 +38,10 @@ async fn handle_plan(
         .ok_or_else(|| IIIError::Handler("missing 'query' field".to_string()))?
         .to_string();
 
-    let tools = discovery::discover_tools(&iii).await;
-    let capabilities = discovery::build_capabilities_summary(&tools);
+    // Planner output is fed to downstream executors via function_id, so the
+    // capabilities block must name engine ids (eval::metrics) not the
+    // sanitized tool names (eval__metrics) the chat handler uses.
+    let capabilities = discovery::build_planner_capabilities(&iii).await;
 
     let system = format!(
         "You are a planning agent for the iii engine. Given a user query, generate an execution \

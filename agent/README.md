@@ -38,7 +38,11 @@ cargo build --release
 ## Usage
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... ./target/release/iii-agent --url ws://127.0.0.1:49134 --config ./config.yaml
+# Load the key from your secret manager (keychain, 1password, doppler, etc.)
+# into the environment before launching the worker — never paste the literal
+# key on the command line, since it lands in shell history and `ps` output.
+export ANTHROPIC_API_KEY="$(security find-generic-password -s anthropic-api-key -w)"
+./target/release/iii-agent --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
 ```

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::config::AgentConfig;
 use crate::discovery;
@@ -36,11 +37,16 @@ async fn handle_chat_stream(
     llm: Arc<LlmClient>,
     payload: Value,
 ) -> Result<Value, IIIError> {
+    // Mint a fresh session_id when the caller omits one. Without this,
+    // every session-less request writes events into the shared
+    // `agent:events:` group, so concurrent callers interleave each
+    // other's streamed output.
     let session_id = payload
         .get("session_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let user_message = payload
         .get("message")
@@ -307,8 +313,11 @@ async fn load_history(iii: &III, session_id: &str) -> Vec<Message> {
 
     match state::state_get(iii, "agent:sessions", session_id).await {
         Ok(val) => {
-            if let Some(history) = val.get("value") {
-                serde_json::from_value::<Vec<Message>>(history.clone()).unwrap_or_default()
+            let inner = val.get("value").unwrap_or(&val);
+            if let Some(arr) = inner.get("messages") {
+                serde_json::from_value::<Vec<Message>>(arr.clone()).unwrap_or_default()
+            } else if inner.is_array() {
+                serde_json::from_value::<Vec<Message>>(inner.clone()).unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -322,6 +331,19 @@ async fn save_history(iii: &III, session_id: &str, messages: &[Message]) {
         return;
     }
 
-    let value = serde_json::to_value(messages).unwrap_or(json!([]));
+    let created_at = match state::state_get(iii, "agent:sessions", session_id).await {
+        Ok(val) => val
+            .get("value")
+            .and_then(|v| v.get("created_at"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        Err(_) => chrono::Utc::now().to_rfc3339(),
+    };
+
+    let value = json!({
+        "created_at": created_at,
+        "messages": serde_json::to_value(messages).unwrap_or(json!([])),
+    });
     let _ = state::state_set(iii, "agent:sessions", session_id, &value).await;
 }
