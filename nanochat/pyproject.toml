@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "iii-nanochat"
@@ -24,3 +24,9 @@ train = ["wandb"]
 
 [project.scripts]
 iii-nanochat = "worker:main"
+
+# Ship the worker as a top-level module (worker.py) rather than a package —
+# `nanochat/` is the repo directory, not a Python package. nanochat-upstream/
+# is intentionally excluded; it's a vendored checkout, not part of this dist.
+[tool.setuptools]
+py-modules = ["worker"]

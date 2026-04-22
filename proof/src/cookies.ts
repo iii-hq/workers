@@ -7,6 +7,21 @@ import type { BrowserSession } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
+// Note on platform coverage: Chrome/Firefox cookies on macOS and Windows are
+// encrypted with OS keychains and this extractor does NOT decrypt them. The
+// calls below return `[]` on those platforms in practice. Linux is the only
+// supported extraction target today; callers should treat zero results as
+// "cookies unavailable for this platform" rather than "user is signed out".
+
+// Validate that a value is a safe DNS hostname before interpolating it into
+// a sqlite3 LIKE pattern. Anything off the allow-list bails out rather than
+// leaning on quote-escaping, which leaves wildcards/metacharacters exploitable.
+function assertSafeHostname(domain: string): void {
+  if (!/^[A-Za-z0-9.-]+$/.test(domain) || domain.length > 253) {
+    throw new Error(`extractAndInjectCookies: refusing unsafe hostname ${JSON.stringify(domain)}`);
+  }
+}
+
 type ExtractedCookie = {
   name: string;
   value: string;
@@ -42,6 +57,7 @@ export async function extractAndInjectCookies(
 }
 
 async function extractCookiesForDomain(domain: string): Promise<ExtractedCookie[]> {
+  assertSafeHostname(domain);
   const cookies = await extractChromeCookies(domain);
   if (cookies.length > 0) return cookies;
   return extractFirefoxCookies(domain);
@@ -65,7 +81,7 @@ async function extractChromeCookies(domain: string): Promise<ExtractedCookie[]> 
     const { stdout } = await execFileAsync("sqlite3", [
       "-json",
       cookieDbPath,
-      `SELECT name, value, host_key as domain, path, expires_utc, is_secure, is_httponly, samesite FROM cookies WHERE host_key LIKE '%${domain.replace(/'/g, "''")}'`,
+      `SELECT name, value, host_key as domain, path, expires_utc, is_secure, is_httponly, samesite FROM cookies WHERE host_key LIKE '%${domain}'`,
     ]);
 
     if (!stdout.trim()) return [];
@@ -130,7 +146,7 @@ async function extractFirefoxCookies(domain: string): Promise<ExtractedCookie[]>
     const { stdout } = await execFileAsync("sqlite3", [
       "-json",
       cookieDb,
-      `SELECT name, value, host as domain, path, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies WHERE host LIKE '%${domain.replace(/'/g, "''")}'`,
+      `SELECT name, value, host as domain, path, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies WHERE host LIKE '%${domain}'`,
     ]);
 
     if (!stdout.trim()) return [];

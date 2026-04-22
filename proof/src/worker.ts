@@ -9,6 +9,7 @@ import {
   handlePlaywrightExec, closeBrowser, closeAll,
 } from "./browser.js";
 import { extractAndInjectCookies } from "./cookies.js";
+import { toolNameToFunctionId } from "./tools.js";
 import type { BrowserSession, RunInput, SavedFlow } from "./types.js";
 
 const iii = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
@@ -36,21 +37,28 @@ function requireSession(): BrowserSession {
 // Browser lifecycle — registered as iii functions
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::browser::launch" }, async (input) => {
+iii.registerFunction("proof::browser::launch", async (input) => {
   const { runId, headed, cdp } = input;
   acquireRun(runId);
-  let cdpUrl: string | undefined;
-  if (cdp === "auto") {
-    cdpUrl = (await autoDiscoverCdp()) ?? undefined;
-  } else if (cdp) {
-    cdpUrl = cdp;
+  try {
+    let cdpUrl: string | undefined;
+    if (cdp === "auto") {
+      cdpUrl = (await autoDiscoverCdp()) ?? undefined;
+    } else if (cdp) {
+      cdpUrl = cdp;
+    }
+    await launchBrowser(runId, headed, cdpUrl);
+    logger.info("Browser launched", { runId, headed, cdp: cdpUrl ?? "none" });
+    return { runId, launched: true };
+  } catch (err) {
+    // Release the run lock on any failure so subsequent attempts don't
+    // wedge on "Another run is in progress" until proof::cleanup fires.
+    releaseRun();
+    throw err;
   }
-  await launchBrowser(runId, headed, cdpUrl);
-  logger.info("Browser launched", { runId, headed, cdp: cdpUrl ?? "none" });
-  return { runId, launched: true };
 });
 
-iii.registerFunction({ id: "proof::browser::close" }, async (input) => {
+iii.registerFunction("proof::browser::close", async (input) => {
   const result = await closeBrowser(input.runId);
   releaseRun();
   logger.info("Browser closed", { runId: input.runId });
@@ -61,38 +69,38 @@ iii.registerFunction({ id: "proof::browser::close" }, async (input) => {
 // Browser tools — 12 functions called by the agent via iii.trigger()
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::browser::navigate" }, async (input) =>
+iii.registerFunction("proof::browser::navigate", async (input) =>
   handleNavigate(input.url, requireSession()));
 
-iii.registerFunction({ id: "proof::browser::snapshot" }, async () => {
+iii.registerFunction("proof::browser::snapshot", async () => {
   const s = requireSession();
   return buildSnapshot(s.page, s.refMap);
 });
 
-iii.registerFunction({ id: "proof::browser::click" }, async (input) =>
+iii.registerFunction("proof::browser::click", async (input) =>
   handleClick(input.ref, requireSession()));
 
-iii.registerFunction({ id: "proof::browser::type" }, async (input) =>
+iii.registerFunction("proof::browser::type", async (input) =>
   handleType(input.ref, input.text, requireSession()));
 
-iii.registerFunction({ id: "proof::browser::select" }, async (input) =>
+iii.registerFunction("proof::browser::select", async (input) =>
   handleSelect(input.ref, input.value, requireSession()));
 
-iii.registerFunction({ id: "proof::browser::press" }, async (input) =>
+iii.registerFunction("proof::browser::press", async (input) =>
   handlePress(input.ref, input.key, requireSession()));
 
-iii.registerFunction({ id: "proof::browser::screenshot" }, async () =>
+iii.registerFunction("proof::browser::screenshot", async () =>
   handleScreenshot(requireSession()));
 
-iii.registerFunction({ id: "proof::browser::assert" }, async (input) => {
+iii.registerFunction("proof::browser::assert", async (input) => {
   logger.info("Assertion", { assertion: input.assertion, passed: input.passed });
   return { assertion: input.assertion, passed: input.passed };
 });
 
-iii.registerFunction({ id: "proof::browser::console_logs" }, async (input) =>
+iii.registerFunction("proof::browser::console_logs", async (input) =>
   handleConsoleLogs(requireSession(), input));
 
-iii.registerFunction({ id: "proof::browser::network" }, async (input) =>
+iii.registerFunction("proof::browser::network", async (input) =>
   handleNetworkRequests(requireSession(), {
     method: input.method,
     urlContains: input.url_contains,
@@ -100,20 +108,20 @@ iii.registerFunction({ id: "proof::browser::network" }, async (input) =>
     clear: input.clear,
   }));
 
-iii.registerFunction({ id: "proof::browser::performance" }, async () =>
+iii.registerFunction("proof::browser::performance", async () =>
   handlePerformanceMetrics(requireSession()));
 
-iii.registerFunction({ id: "proof::browser::exec" }, async (input) =>
+iii.registerFunction("proof::browser::exec", async (input) =>
   handlePlaywrightExec(input.code, requireSession()));
 
-iii.registerFunction({ id: "proof::cookies::inject" }, async (input) => {
+iii.registerFunction("proof::cookies::inject", async (input) => {
   const session = requireSession();
   const count = await extractAndInjectCookies(session, input.url);
   logger.info("Cookies injected", { url: input.url, count });
   return { injected: count };
 });
 
-iii.registerFunction({ id: "proof::cdp::discover" }, async () => {
+iii.registerFunction("proof::cdp::discover", async () => {
   const url = await autoDiscoverCdp();
   return { found: !!url, url };
 });
@@ -122,17 +130,17 @@ iii.registerFunction({ id: "proof::cdp::discover" }, async () => {
 // Pipeline functions — all inter-function calls go through iii.trigger()
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::scan" }, async (input) => {
+iii.registerFunction("proof::scan", async (input) => {
   logger.info("Scanning changes", { target: input.target ?? "unstaged" });
   return scanChanges(input.target, input.cwd, input.main_branch, input.commit_hash);
 });
 
-iii.registerFunction({ id: "proof::coverage" }, async (input) => {
+iii.registerFunction("proof::coverage", async (input) => {
   logger.info("Analyzing test coverage", { files: input.files?.length });
   return analyzeTestCoverage(input.files ?? [], input.cwd);
 });
 
-iii.registerFunction({ id: "proof::execute" }, async (input) => {
+iii.registerFunction("proof::execute", async (input) => {
   const { diff, files, base_url, instruction, runId, headed, commits, coverage, cdp, cookies } = input;
   logger.info("Executing agent loop", { runId, file_count: files?.length });
 
@@ -159,7 +167,7 @@ iii.registerFunction({ id: "proof::execute" }, async (input) => {
   }
 });
 
-iii.registerFunction({ id: "proof::report" }, async (input) => {
+iii.registerFunction("proof::report", async (input) => {
   const { report, scan } = input;
   logger.info("Test report", {
     status: report.status,
@@ -208,7 +216,7 @@ iii.registerFunction({ id: "proof::report" }, async (input) => {
   return report;
 });
 
-iii.registerFunction({ id: "proof::run" }, async (input: RunInput) => {
+iii.registerFunction("proof::run", async (input: RunInput) => {
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const baseUrl = input.base_url ?? "http://localhost:3000";
   logger.info("Starting proof run", { runId, target: input.target ?? "unstaged" });
@@ -247,7 +255,7 @@ iii.registerFunction({ id: "proof::run" }, async (input: RunInput) => {
 // Flow replay — all browser calls through iii.trigger()
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::replay" }, async (input) => {
+iii.registerFunction("proof::replay", async (input) => {
   const { slug } = input;
   const flow = (await iii.trigger({
     function_id: "state::get",
@@ -270,7 +278,7 @@ iii.registerFunction({ id: "proof::replay" }, async (input) => {
     for (const action of flow.actions) {
       try {
         await iii.trigger({
-          function_id: `proof::browser::${action.tool.replace("browser_", "")}`,
+          function_id: toolNameToFunctionId(action.tool),
           payload: action.input,
         });
         results.push({ tool: action.tool, status: "pass" });
@@ -294,11 +302,11 @@ iii.registerFunction({ id: "proof::replay" }, async (input) => {
 // State queries — all through iii.trigger()
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::flows" }, async () => {
+iii.registerFunction("proof::flows", async () => {
   return iii.trigger({ function_id: "state::list", payload: { scope: "proof:flows" } });
 });
 
-iii.registerFunction({ id: "proof::history" }, async (input) => {
+iii.registerFunction("proof::history", async (input) => {
   const reports = await iii.trigger({ function_id: "state::list", payload: { scope: "proof:reports" } }) as any[];
   if (!Array.isArray(reports)) return [];
   return reports
@@ -310,7 +318,7 @@ iii.registerFunction({ id: "proof::history" }, async (input) => {
     }));
 });
 
-iii.registerFunction({ id: "proof::cleanup" }, async () => {
+iii.registerFunction("proof::cleanup", async () => {
   await closeAll();
   releaseRun();
   logger.info("All browsers closed");
@@ -321,7 +329,7 @@ iii.registerFunction({ id: "proof::cleanup" }, async () => {
 // Queue-based runs — iii primitive, Expect can't do this
 // ---------------------------------------------------------------------------
 
-iii.registerFunction({ id: "proof::enqueue" }, async (input: RunInput) => {
+iii.registerFunction("proof::enqueue", async (input: RunInput) => {
   return iii.trigger({
     function_id: "proof::run",
     payload: input,

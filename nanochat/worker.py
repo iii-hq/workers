@@ -367,7 +367,15 @@ async def fn_model_load(data: ModelLoadInput) -> ModelStatusOutput:
     _ensure_nanochat()
     from nanochat.common import autodetect_device_type
     inp = ModelLoadInput.model_validate(data) if isinstance(data, dict) else data
-    device = inp.device or autodetect_device_type()
+    # Treat the literal string "auto" the same as "no device specified" —
+    # the registry's default_config uses "auto" which would otherwise pass
+    # through to gpu.load() as-is and fail further down (torch.device("auto")
+    # is not a valid device).
+    raw_device = inp.device
+    if raw_device in (None, "", "auto"):
+        device = autodetect_device_type()
+    else:
+        device = raw_device
     gpu.load(inp.source, device, model_tag=inp.model_tag, step=inp.step)
     model, _tok, _eng, meta, source, dev, tag = gpu.snapshot()
     await state_set("nanochat:models", "current", {
@@ -454,12 +462,42 @@ async def fn_tokenizer_decode(data: DecodeInput) -> dict:
 # ---------------------------------------------------------------------------
 
 async def fn_tools_execute(data: ExecuteCodeInput) -> dict:
+    """Execute Python code in-process.
+
+    SECURITY: this is NOT a sandbox. The handler hands the code full
+    __builtins__, so imports, file I/O, network calls, and process-level
+    state (including the `gpu` module global) are all reachable. Only
+    invoke with code you fully trust. The timeout is enforced via
+    SIGALRM on POSIX; non-POSIX platforms skip timeout enforcement.
+    """
     inp = ExecuteCodeInput.model_validate(data) if isinstance(data, dict) else data
     stdout_buf, stderr_buf = io.StringIO(), io.StringIO()
+
+    timeout_s = max(1, int(getattr(inp, "timeout", 10) or 10))
+
+    def _run():
+        exec(inp.code, {"__builtins__": __builtins__}, {})
+
     try:
-        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-            exec(inp.code, {"__builtins__": __builtins__}, {})
-        return {"success": True, "stdout": stdout_buf.getvalue(), "stderr": stderr_buf.getvalue(), "error": None}
+        import signal as _signal
+        has_alarm = hasattr(_signal, "SIGALRM") and hasattr(_signal, "alarm")
+
+        def _timeout_handler(_signum, _frame):
+            raise TimeoutError(f"fn_tools_execute: timed out after {timeout_s}s")
+
+        prev_handler = None
+        if has_alarm:
+            prev_handler = _signal.signal(_signal.SIGALRM, _timeout_handler)
+            _signal.alarm(timeout_s)
+        try:
+            with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                _run()
+            return {"success": True, "stdout": stdout_buf.getvalue(), "stderr": stderr_buf.getvalue(), "error": None}
+        finally:
+            if has_alarm:
+                _signal.alarm(0)
+                if prev_handler is not None:
+                    _signal.signal(_signal.SIGALRM, prev_handler)
     except Exception as e:
         return {"success": False, "stdout": stdout_buf.getvalue(), "stderr": stderr_buf.getvalue(), "error": str(e)}
 

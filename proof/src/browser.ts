@@ -234,6 +234,8 @@ export async function handlePerformanceMetrics(session: BrowserSession) {
   });
 }
 
+const PLAYWRIGHT_EXEC_TIMEOUT_MS = 30_000;
+
 export async function handlePlaywrightExec(
   code: string,
   session: BrowserSession,
@@ -246,7 +248,16 @@ export async function handlePlaywrightExec(
   };
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const fn = new AsyncFunction("page", "context", "browser", "ref", code);
-  return fn(page, context, browser, ref);
+  // Hard timeout — runaway user code must not pin the worker event loop.
+  return await Promise.race([
+    fn(page, context, browser, ref),
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`handlePlaywrightExec: timed out after ${PLAYWRIGHT_EXEC_TIMEOUT_MS}ms`)),
+        PLAYWRIGHT_EXEC_TIMEOUT_MS,
+      ),
+    ),
+  ]);
 }
 
 export async function closeBrowser(runId: string): Promise<{ replayEvents: unknown[] }> {
