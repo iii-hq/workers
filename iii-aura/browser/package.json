@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "iii-browser-sdk": "^0.11.0-next.9"
+    "iii-browser-sdk": "0.11.3"
   },
   "devDependencies": {
     "vite": "^6.0.0",
