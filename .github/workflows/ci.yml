@@ -24,6 +24,7 @@ jobs:
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       all: ${{ steps.bucket.outputs.all }}
+      source_changed: ${{ steps.bucket.outputs.source_changed }}
       vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
@@ -66,18 +67,40 @@ jobs:
               and (p / "iii.worker.yaml").exists()
           )
 
+          # Files inside a worker dir that don't count as a "source" change.
+          # If a worker only touched these, version-bump and tests/ gates are
+          # downgraded to notices in pr-checks.
+          import fnmatch
+          metadata_globs = (
+              "iii.worker.yaml",
+              "README.md",
+              "AGENTS.md",
+              "AGENTS-*.md",
+              "Cargo.lock",
+          )
+
+          def is_metadata(rel: str) -> bool:
+              return any(fnmatch.fnmatch(rel, g) for g in metadata_globs)
+
           changed_workers = set()
+          worker_files: dict[str, list[str]] = {}
           vscode_changed = False
           for f in changed:
               parts = f.split("/", 1)
               if len(parts) < 2:
                   continue
-              top = parts[0]
+              top, rel = parts[0], parts[1]
               if top == "iii-lsp-vscode":
                   vscode_changed = True
                   continue
               if top in worker_dirs:
                   changed_workers.add(top)
+                  worker_files.setdefault(top, []).append(rel)
+
+          source_changed = sorted(
+              w for w in changed_workers
+              if any(not is_metadata(rel) for rel in worker_files.get(w, []))
+          )
 
           rust, node, python = [], [], []
           for w in sorted(changed_workers):
@@ -102,11 +125,15 @@ jobs:
           out.write(f"node={json.dumps(node)}\n")
           out.write(f"python={json.dumps(python)}\n")
           out.write(f"all={json.dumps(sorted(changed_workers))}\n")
+          out.write(f"source_changed={json.dumps(source_changed)}\n")
           out.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
           out.write(f"any={'true' if (changed_workers or vscode_changed) else 'false'}\n")
           out.close()
 
-          print(f"::notice::changed rust={rust} node={node} python={python} vscode={vscode_changed}")
+          print(
+              f"::notice::changed rust={rust} node={node} python={python} "
+              f"vscode={vscode_changed} source_changed={source_changed}"
+          )
           PY
 
   # ──────────────────────────────────────────────────────────────
@@ -139,14 +166,24 @@ jobs:
         env:
           WORKER: ${{ matrix.worker }}
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+          SOURCE_CHANGED: ${{ needs.discover.outputs.source_changed }}
         run: |
           python3 - <<'PY'
-          import os, pathlib, re, subprocess, sys, yaml
+          import json, os, pathlib, re, subprocess, sys, yaml
 
           worker = os.environ["WORKER"]
           base = os.environ["BASE_REF"]
+          source_changed = set(json.loads(os.environ.get("SOURCE_CHANGED") or "[]"))
+          strict = worker in source_changed
           root = pathlib.Path(worker)
           errs = []
+
+          def soft(msg: str) -> None:
+              # Strict for workers with real source changes; notice otherwise.
+              if strict:
+                  errs.append(msg)
+              else:
+                  print(f"::notice::{msg} (skipped: {worker} only changed metadata)")
 
           # 1. README.md present and non-empty
           readme = root / "README.md"
@@ -230,7 +267,7 @@ jobs:
                               f"(no base version), pr={pr_ver}"
                           )
                       elif parse_semver(pr_ver) <= parse_semver(base_ver):
-                          errs.append(
+                          soft(
                               f"{worker}/{manifest_name} version must be greater than base: "
                               f"pr={pr_ver} base={base_ver}"
                           )
@@ -242,7 +279,7 @@ jobs:
           # 4. tests dir present and non-empty
           tests_dir = root / "tests"
           if not tests_dir.exists() or not any(tests_dir.iterdir()):
-              errs.append(f"{worker}/tests/ is missing or empty")
+              soft(f"{worker}/tests/ is missing or empty")
 
           if errs:
               for e in errs:
@@ -318,9 +355,10 @@ jobs:
           fi
 
       - name: Biome lint
-        run: npx --yes @biomejs/biome@1.9.4 ci ${{ matrix.worker }}
+        run: npx --yes @biomejs/biome@2.4.10 ci ${{ matrix.worker }}
 
       - name: Run tests
+        if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: npm test
 
@@ -357,6 +395,7 @@ jobs:
         run: pip install -e ".[dev]" || pip install -e .
 
       - name: Run pytest
+        if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: pytest -q
 

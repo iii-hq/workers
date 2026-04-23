@@ -1,5 +1,5 @@
-import { useApi } from './hooks.js'
 import { createHandlers } from './handlers.js'
+import { useApi } from './hooks.js'
 import { TodoStore } from './store.js'
 
 const store = new TodoStore()

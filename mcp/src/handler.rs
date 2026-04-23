@@ -706,7 +706,10 @@ pub async fn read_resource(
             )
         }
         "iii://triggers" => {
-            let v = iii.list_triggers(true).await.map_err(|e| format!("{}", e))?;
+            let v = iii
+                .list_triggers(true)
+                .await
+                .map_err(|e| format!("{}", e))?;
             (
                 serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
                 "application/json",

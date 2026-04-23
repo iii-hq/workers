@@ -1,24 +1,24 @@
-import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
-import { scanChanges, analyzeTestCoverage } from './context.js'
+import { Logger, registerWorker, TriggerAction } from 'iii-sdk'
 import { runAgent } from './agent.js'
 import {
-  launchBrowser,
-  getSession,
-  buildSnapshot,
   autoDiscoverCdp,
-  handleNavigate,
+  buildSnapshot,
+  closeAll,
+  closeBrowser,
+  getSession,
   handleClick,
-  handleType,
-  handleSelect,
-  handlePress,
-  handleScreenshot,
   handleConsoleLogs,
+  handleNavigate,
   handleNetworkRequests,
   handlePerformanceMetrics,
   handlePlaywrightExec,
-  closeBrowser,
-  closeAll,
+  handlePress,
+  handleScreenshot,
+  handleSelect,
+  handleType,
+  launchBrowser,
 } from './browser.js'
+import { analyzeTestCoverage, scanChanges } from './context.js'
 import { extractAndInjectCookies } from './cookies.js'
 import { toolNameToFunctionId } from './tools.js'
 import type { BrowserSession, RunInput, SavedFlow } from './types.js'

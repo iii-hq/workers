@@ -124,7 +124,7 @@ fn pseudo_random_variation() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    
+
     ((nanos % 1000) as f64 / 1000.0) - 0.5
 }
 

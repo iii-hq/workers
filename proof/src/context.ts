@@ -1,7 +1,7 @@
-import { simpleGit, type SimpleGit } from 'simple-git'
-import type { ScanResult } from './types.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { type SimpleGit, simpleGit } from 'simple-git'
+import type { ScanResult } from './types.js'
 
 const MAX_DIFF_CHARS = 50_000
 const MAX_FILES = 12

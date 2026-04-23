@@ -29,12 +29,15 @@ fn jpeg_fixture_scales_within_box() {
     };
 
     let out = process_image(&bytes, &params).expect("process jpeg");
-    let decoded = image::load_from_memory_with_format(&out, ImageFormat::Jpeg)
-        .expect("decode jpeg output");
+    let decoded =
+        image::load_from_memory_with_format(&out, ImageFormat::Jpeg).expect("decode jpeg output");
 
     assert!(decoded.width() <= 128, "width {} > 128", decoded.width());
     assert!(decoded.height() <= 128, "height {} > 128", decoded.height());
-    assert!(decoded.width() == 128 || decoded.height() == 128, "scale-to-fit should hit a bound");
+    assert!(
+        decoded.width() == 128 || decoded.height() == 128,
+        "scale-to-fit should hit a bound"
+    );
 }
 
 #[test]
@@ -50,8 +53,8 @@ fn png_fixture_crops_to_exact_size() {
     };
 
     let out = process_image(&bytes, &params).expect("process png");
-    let decoded = image::load_from_memory_with_format(&out, ImageFormat::Png)
-        .expect("decode png output");
+    let decoded =
+        image::load_from_memory_with_format(&out, ImageFormat::Png).expect("decode png output");
 
     assert_eq!(decoded.width(), 96);
     assert_eq!(decoded.height(), 96);
@@ -70,8 +73,8 @@ fn webp_to_jpeg_format_conversion() {
     };
 
     let out = process_image(&bytes, &params).expect("process webp -> jpeg");
-    let decoded = image::load_from_memory_with_format(&out, ImageFormat::Jpeg)
-        .expect("decode jpeg output");
+    let decoded =
+        image::load_from_memory_with_format(&out, ImageFormat::Jpeg).expect("decode jpeg output");
 
     assert!(decoded.width() <= 64);
     assert!(decoded.height() <= 64);

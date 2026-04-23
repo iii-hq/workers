@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Page } from 'playwright'
+import { type Browser, chromium, type Page } from 'playwright'
 import type { BrowserSession, ConsoleEntry, NetworkEntry, RefEntry } from './types.js'
 
 const INTERACTIVE_ROLES = new Set([
