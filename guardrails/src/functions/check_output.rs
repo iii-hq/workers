@@ -21,7 +21,10 @@ pub async fn handle(
         .ok_or_else(|| IIIError::Handler("missing required field: text".to_string()))?
         .to_string();
 
-    let context = payload.get("context").cloned().unwrap_or(serde_json::json!({}));
+    let context = payload
+        .get("context")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     let pii_matches = check_pii(&text, &compiled_patterns);
     let secret_matches = check_secrets(&text, &compiled_secrets);

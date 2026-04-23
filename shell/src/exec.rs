@@ -78,8 +78,10 @@ pub async fn run_to_completion(
         }
     };
 
-    let (stdout_bytes, stdout_truncated) = stdout_task.await.map_err(|e| format!("stdout: {}", e))?;
-    let (stderr_bytes, stderr_truncated) = stderr_task.await.map_err(|e| format!("stderr: {}", e))?;
+    let (stdout_bytes, stdout_truncated) =
+        stdout_task.await.map_err(|e| format!("stdout: {}", e))?;
+    let (stderr_bytes, stderr_truncated) =
+        stderr_task.await.map_err(|e| format!("stderr: {}", e))?;
 
     Ok(ExecOutcome {
         stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
@@ -178,7 +180,11 @@ mod tests {
         let mut cfg = test_cfg();
         cfg.max_output_bytes = 16;
         let out = run_to_completion(
-            &["sh".into(), "-c".into(), "printf 'x%.0s' $(seq 1 100)".into()],
+            &[
+                "sh".into(),
+                "-c".into(),
+                "printf 'x%.0s' $(seq 1 100)".into(),
+            ],
             &cfg,
             3000,
         )

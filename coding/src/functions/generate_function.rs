@@ -64,7 +64,11 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
     let function_id = format!(
         "fn_{}_{}",
         id.replace("::", "_").replace('-', "_"),
-        uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000")
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("0000")
     );
 
     let function_state = serde_json::json!({

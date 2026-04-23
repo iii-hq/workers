@@ -549,10 +549,7 @@ fn resolve_function(message: &Message) -> (String, Value) {
     // text like "please run orders::process" would resolve the function_id
     // to "please", then fail with a confusing not-exposed error.
     let text = text.trim();
-    let first_token = text
-        .split(char::is_whitespace)
-        .next()
-        .unwrap_or("");
+    let first_token = text.split(char::is_whitespace).next().unwrap_or("");
     if first_token.contains("::") {
         let rest = text[first_token.len()..].trim_start();
         if !rest.is_empty() {

@@ -83,7 +83,9 @@ max_file_size_kb: 512
         let config = CodingConfig::default();
         assert_eq!(config.workspace_dir, "/tmp/iii-coding-workspace");
         assert!(config.supported_languages.contains(&"rust".to_string()));
-        assert!(config.supported_languages.contains(&"typescript".to_string()));
+        assert!(config
+            .supported_languages
+            .contains(&"typescript".to_string()));
         assert!(config.supported_languages.contains(&"python".to_string()));
         assert_eq!(config.execute_timeout_ms, 30000);
         assert_eq!(config.max_file_size_kb, 256);

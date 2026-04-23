@@ -5,8 +5,18 @@ use std::sync::Arc;
 use crate::config::EvalConfig;
 use crate::functions::state::state_get;
 
-pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Result<Value, IIIError> {
-    let index_val = state_get(iii, crate::functions::ingest::SCOPE_INDEX, crate::functions::ingest::INDEX_KEY).await.unwrap_or(json!(null));
+pub async fn handle(
+    iii: &Arc<III>,
+    config: &EvalConfig,
+    payload: Value,
+) -> Result<Value, IIIError> {
+    let index_val = state_get(
+        iii,
+        crate::functions::ingest::SCOPE_INDEX,
+        crate::functions::ingest::INDEX_KEY,
+    )
+    .await
+    .unwrap_or(json!(null));
     let function_ids: Vec<String> = if index_val.is_array() {
         serde_json::from_value(index_val).unwrap_or_default()
     } else {
@@ -16,7 +26,9 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
     let mut function_reports: Vec<Value> = Vec::new();
 
     for fid in &function_ids {
-        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid).await.unwrap_or(json!(null));
+        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid)
+            .await
+            .unwrap_or(json!(null));
         let spans: Vec<Value> = if existing.is_array() {
             serde_json::from_value(existing).unwrap_or_default()
         } else {
@@ -29,7 +41,9 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
 
         let metrics = crate::functions::metrics::compute_metrics(&spans, fid);
 
-        let baseline_val = state_get(iii, crate::functions::ingest::SCOPE_BASELINES, fid).await.unwrap_or(json!(null));
+        let baseline_val = state_get(iii, crate::functions::ingest::SCOPE_BASELINES, fid)
+            .await
+            .unwrap_or(json!(null));
         let has_baseline = !baseline_val.is_null();
 
         let drift_result = if has_baseline {

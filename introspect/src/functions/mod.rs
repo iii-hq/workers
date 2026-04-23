@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod diagram;
 pub mod explain;
 pub mod functions;

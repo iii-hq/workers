@@ -41,12 +41,10 @@ pub fn check_injection(text: &str, keywords: &[String]) -> Vec<InjectionMatch> {
     keywords
         .iter()
         .filter_map(|kw| {
-            lower
-                .find(&kw.to_lowercase())
-                .map(|pos| InjectionMatch {
-                    keyword: kw.clone(),
-                    position: pos,
-                })
+            lower.find(&kw.to_lowercase()).map(|pos| InjectionMatch {
+                keyword: kw.clone(),
+                position: pos,
+            })
         })
         .collect()
 }

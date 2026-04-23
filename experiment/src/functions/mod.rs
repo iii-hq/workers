@@ -74,7 +74,8 @@ fn register_propose(iii: &Arc<III>) {
         RegisterFunctionMessage {
             id: "experiment::propose".to_string(),
             description: Some(
-                "Generate a hypothesis with modified parameters for the target function".to_string(),
+                "Generate a hypothesis with modified parameters for the target function"
+                    .to_string(),
             ),
             request_format: Some(json!({
                 "type": "object",
@@ -94,7 +95,9 @@ fn register_propose(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { propose::handle(iii, payload).await })
         },
@@ -173,9 +176,9 @@ fn register_decide(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
-            Box::pin(async move { decide::handle(payload).await })
-        },
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > { Box::pin(async move { decide::handle(payload).await }) },
     );
 }
 
@@ -212,7 +215,9 @@ fn register_loop(iii: &Arc<III>, config: &Arc<ExperimentConfig>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             let cfg = config_clone.clone();
             Box::pin(async move { loop_run::handle(iii, cfg, payload).await })
@@ -252,7 +257,9 @@ fn register_status(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { status::handle(iii, payload).await })
         },
@@ -286,7 +293,9 @@ fn register_stop(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { stop::handle(iii, payload).await })
         },

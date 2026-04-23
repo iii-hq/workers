@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{
+    register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput,
+};
 use std::sync::Arc;
 
 mod checks;
@@ -87,7 +89,8 @@ async fn main() -> Result<()> {
             RegisterFunctionMessage {
                 id: "guardrails::check_input".to_string(),
                 description: Some(
-                    "Check input text for PII, injection attacks, and length violations".to_string(),
+                    "Check input text for PII, injection attacks, and length violations"
+                        .to_string(),
                 ),
                 request_format: Some(serde_json::json!({
                     "type": "object",
@@ -182,7 +185,8 @@ async fn main() -> Result<()> {
                 let patterns_c = patterns_c.clone();
                 let secrets_c = secrets_c.clone();
                 Box::pin(async move {
-                    functions::check_output::handle(iii_c, cfg_c, patterns_c, secrets_c, payload).await
+                    functions::check_output::handle(iii_c, cfg_c, patterns_c, secrets_c, payload)
+                        .await
                 })
                     as std::pin::Pin<
                         Box<

@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

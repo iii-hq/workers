@@ -59,7 +59,9 @@ fn register_ingest(iii: &Arc<III>, config: &Arc<EvalConfig>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             let cfg = config_clone.clone();
             Box::pin(async move {
@@ -86,7 +88,14 @@ fn register_ingest(iii: &Arc<III>, config: &Arc<EvalConfig>) {
 
                     if !index.contains(&fid) {
                         index.push(fid);
-                        if let Err(e) = state::state_set(&iii, ingest::SCOPE_INDEX, ingest::INDEX_KEY, json!(index)).await {
+                        if let Err(e) = state::state_set(
+                            &iii,
+                            ingest::SCOPE_INDEX,
+                            ingest::INDEX_KEY,
+                            json!(index),
+                        )
+                        .await
+                        {
                             tracing::warn!(error = %e, "failed to update function index");
                         }
                     }
@@ -129,7 +138,9 @@ fn register_metrics(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { metrics::handle(&iii, payload).await })
         },
@@ -142,7 +153,9 @@ fn register_score(iii: &Arc<III>) {
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "eval::score".to_string(),
-            description: Some("Score overall system health across all tracked functions".to_string()),
+            description: Some(
+                "Score overall system health across all tracked functions".to_string(),
+            ),
             request_format: Some(json!({
                 "type": "object",
                 "properties": {}
@@ -160,7 +173,9 @@ fn register_score(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { score::handle(&iii, payload).await })
         },
@@ -192,7 +207,9 @@ fn register_drift(iii: &Arc<III>, config: &Arc<EvalConfig>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             let cfg = config_clone.clone();
             Box::pin(async move { drift::handle(&iii, &cfg, payload).await })
@@ -225,7 +242,9 @@ fn register_baseline(iii: &Arc<III>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             Box::pin(async move { baseline::handle(&iii, payload).await })
         },
@@ -239,7 +258,9 @@ fn register_report(iii: &Arc<III>, config: &Arc<EvalConfig>) {
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "eval::report".to_string(),
-            description: Some("Generate full evaluation report with metrics, scores, and drift".to_string()),
+            description: Some(
+                "Generate full evaluation report with metrics, scores, and drift".to_string(),
+            ),
             request_format: Some(json!({
                 "type": "object",
                 "properties": {}
@@ -256,7 +277,9 @@ fn register_report(iii: &Arc<III>, config: &Arc<EvalConfig>) {
             metadata: None,
             invocation: None,
         },
-        move |payload: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>> {
+        move |payload: Value| -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+        > {
             let iii = iii_clone.clone();
             let cfg = config_clone.clone();
             Box::pin(async move { report::handle(&iii, &cfg, payload).await })

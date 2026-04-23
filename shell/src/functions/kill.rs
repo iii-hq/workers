@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 
 use crate::jobs::{self, JobStatus};
 
-pub fn build_handler()
--> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
+pub fn build_handler(
+) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
        + Send
        + Sync
        + 'static {

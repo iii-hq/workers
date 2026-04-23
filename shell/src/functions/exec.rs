@@ -25,19 +25,18 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         .get("command")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing 'command'".to_string()))?;
-    let args: Option<Vec<String>> = payload
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
-    let timeout_ms = payload
-        .get("timeout_ms")
-        .and_then(|v| v.as_u64());
+    let args: Option<Vec<String>> = payload.get("args").and_then(|v| v.as_array()).map(|a| {
+        a.iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect()
+    });
+    let timeout_ms = payload.get("timeout_ms").and_then(|v| v.as_u64());
 
     let argv = parse_argv(command, args.as_ref())
         .map_err(|e| IIIError::Handler(format!("argv: {}", e)))?;
 
     cfg.is_command_allowed(&argv)
-        .map_err(|e| IIIError::Handler(e))?;
+        .map_err(IIIError::Handler)?;
 
     let timeout = cfg.resolve_timeout(timeout_ms);
 

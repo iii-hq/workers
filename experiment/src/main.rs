@@ -10,7 +10,10 @@ mod manifest;
 mod state;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-experiment", about = "III engine generic optimization loop worker")]
+#[command(
+    name = "iii-experiment",
+    about = "III engine generic optimization loop worker"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -96,7 +99,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    tracing::info!("iii-experiment registered 7 functions and 7 http triggers, waiting for invocations");
+    tracing::info!(
+        "iii-experiment registered 7 functions and 7 http triggers, waiting for invocations"
+    );
 
     tokio::signal::ctrl_c().await?;
 

@@ -136,9 +136,15 @@ impl McpHandler {
             "initialize" => Ok(initialize_result()),
             "ping" => Ok(json!({})),
             "tools/list" => self.tools_list().await.map_err(|e| (INTERNAL_ERROR, e)),
-            "tools/call" => self.tools_call(params).await.map_err(|e| (INVALID_PARAMS, e)),
+            "tools/call" => self
+                .tools_call(params)
+                .await
+                .map_err(|e| (INVALID_PARAMS, e)),
             "resources/list" => Ok(self.resources_list()),
-            "resources/read" => self.resources_read(params).await.map_err(|e| (INVALID_PARAMS, e)),
+            "resources/read" => self
+                .resources_read(params)
+                .await
+                .map_err(|e| (INVALID_PARAMS, e)),
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
             "prompts/list" => Ok(prompts::list()),
             "prompts/get" => Ok(prompts::get(params)),
@@ -239,9 +245,9 @@ impl McpHandler {
         let function_id = params.name.replace("__", "::");
         if !self.expose_all {
             if let Ok(fns) = self.iii.list_functions().await {
-                let exposed = fns.iter().any(|f| {
-                    f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
-                });
+                let exposed = fns
+                    .iter()
+                    .any(|f| f.function_id == function_id && has_metadata_flag(f, "mcp.expose"));
                 if !exposed {
                     return Ok(tool_error(&format!(
                         "Function '{}' is not exposed via mcp.expose metadata",
@@ -452,19 +458,27 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                 None => return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params")),
             };
             match p.name.as_str() {
-                "iii_worker_register" | "iii_worker_stop" | "iii_trigger_register" | "iii_trigger_unregister" => {
-                    Ok(tool_error("This tool requires stdio transport (worker/trigger management is not available over HTTP)"))
-                }
+                "iii_worker_register"
+                | "iii_worker_stop"
+                | "iii_trigger_register"
+                | "iii_trigger_unregister" => Ok(tool_error(
+                    "This tool requires stdio transport (worker/trigger management is not available over HTTP)",
+                )),
                 "iii_trigger_void" => {
                     let fid = str_field(&p.arguments, "function_id");
                     if fid.is_empty() {
                         Ok(tool_error("Missing required field: function_id"))
                     } else {
                         let payload = p.arguments.get("payload").cloned().unwrap_or(json!({}));
-                        match iii.trigger(TriggerRequest {
-                            function_id: fid.clone(), payload,
-                            action: Some(TriggerAction::Void), timeout_ms: None,
-                        }).await {
+                        match iii
+                            .trigger(TriggerRequest {
+                                function_id: fid.clone(),
+                                payload,
+                                action: Some(TriggerAction::Void),
+                                timeout_ms: None,
+                            })
+                            .await
+                        {
                             Ok(_) => Ok(tool_result(&format!("Triggered (void): {}", fid))),
                             Err(e) => Ok(tool_error(&format!("Error: {}", e))),
                         }
@@ -477,10 +491,15 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                     } else {
                         let payload = p.arguments.get("payload").cloned().unwrap_or(json!({}));
                         let queue = str_field_or(&p.arguments, "queue", "default");
-                        match iii.trigger(TriggerRequest {
-                            function_id: fid, payload,
-                            action: Some(TriggerAction::Enqueue { queue }), timeout_ms: None,
-                        }).await {
+                        match iii
+                            .trigger(TriggerRequest {
+                                function_id: fid,
+                                payload,
+                                action: Some(TriggerAction::Enqueue { queue }),
+                                timeout_ms: None,
+                            })
+                            .await
+                        {
                             Ok(r) => Ok(tool_json(&r)),
                             Err(e) => Ok(tool_error(&format!("Error: {}", e))),
                         }
@@ -504,10 +523,15 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                             }
                         }
                     }
-                    match iii.trigger(TriggerRequest {
-                        function_id, payload: p.arguments,
-                        action: None, timeout_ms: None,
-                    }).await {
+                    match iii
+                        .trigger(TriggerRequest {
+                            function_id,
+                            payload: p.arguments,
+                            action: None,
+                            timeout_ms: None,
+                        })
+                        .await
+                    {
                         Ok(r) => Ok(tool_json(&r)),
                         Err(e) => Ok(tool_error(&format!("Error: {}", e))),
                     }

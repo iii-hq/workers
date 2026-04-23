@@ -14,7 +14,10 @@ mod state;
 mod types;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-llm-router", about = "Policy-based LLM routing brain for iii")]
+#[command(
+    name = "iii-llm-router",
+    about = "Policy-based LLM routing brain for iii"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -118,24 +121,78 @@ fn register_functions(iii: &iii_sdk::III, cfg: Arc<config::RouterConfig>) {
         }};
     }
 
-    reg!("router::decide", functions::decide::build_handler(iii.clone(), cfg.clone()));
-    reg!("router::policy_create", functions::policy::create_handler(iii.clone(), cfg.clone()));
-    reg!("router::policy_update", functions::policy::update_handler(iii.clone(), cfg.clone()));
-    reg!("router::policy_delete", functions::policy::delete_handler(iii.clone(), cfg.clone()));
-    reg!("router::policy_list", functions::policy::list_handler(iii.clone(), cfg.clone()));
-    reg!("router::policy_test", functions::policy::test_handler(iii.clone(), cfg.clone()));
-    reg!("router::classify", functions::classify::classify_handler(iii.clone(), cfg.clone()));
-    reg!("router::classifier_config", functions::classify::config_handler(iii.clone(), cfg.clone()));
-    reg!("router::ab_create", functions::ab::create_handler(iii.clone(), cfg.clone()));
-    reg!("router::ab_record", functions::ab::record_handler(iii.clone(), cfg.clone()));
-    reg!("router::ab_report", functions::ab::report_handler(iii.clone(), cfg.clone()));
-    reg!("router::ab_conclude", functions::ab::conclude_handler(iii.clone(), cfg.clone()));
-    reg!("router::health_update", functions::health::update_handler(iii.clone(), cfg.clone()));
-    reg!("router::health_list", functions::health::list_handler(iii.clone(), cfg.clone()));
-    reg!("router::model_register", functions::model::register_handler(iii.clone(), cfg.clone()));
-    reg!("router::model_unregister", functions::model::unregister_handler(iii.clone(), cfg.clone()));
-    reg!("router::model_list", functions::model::list_handler(iii.clone(), cfg.clone()));
-    reg!("router::stats", functions::stats::handler(iii.clone(), cfg.clone()));
+    reg!(
+        "router::decide",
+        functions::decide::build_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::policy_create",
+        functions::policy::create_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::policy_update",
+        functions::policy::update_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::policy_delete",
+        functions::policy::delete_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::policy_list",
+        functions::policy::list_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::policy_test",
+        functions::policy::test_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::classify",
+        functions::classify::classify_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::classifier_config",
+        functions::classify::config_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::ab_create",
+        functions::ab::create_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::ab_record",
+        functions::ab::record_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::ab_report",
+        functions::ab::report_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::ab_conclude",
+        functions::ab::conclude_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::health_update",
+        functions::health::update_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::health_list",
+        functions::health::list_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::model_register",
+        functions::model::register_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::model_unregister",
+        functions::model::unregister_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::model_list",
+        functions::model::list_handler(iii.clone(), cfg.clone())
+    );
+    reg!(
+        "router::stats",
+        functions::stats::handler(iii.clone(), cfg.clone())
+    );
 }
 
 fn register_triggers(iii: &iii_sdk::III) -> Result<()> {
@@ -156,7 +213,11 @@ fn register_triggers(iii: &iii_sdk::III) -> Result<()> {
         ("router::health_update", "router/health/update", "POST"),
         ("router::health_list", "router/health/list", "GET"),
         ("router::model_register", "router/model/register", "POST"),
-        ("router::model_unregister", "router/model/unregister", "POST"),
+        (
+            "router::model_unregister",
+            "router/model/unregister",
+            "POST",
+        ),
         ("router::model_list", "router/model/list", "GET"),
         ("router::stats", "router/stats", "GET"),
     ] {

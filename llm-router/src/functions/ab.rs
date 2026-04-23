@@ -78,12 +78,9 @@ pub fn record_handler(
             // Verify the variant belongs to the test before persisting.
             let test_val = state::state_get(&iii, &cfg.state_scope, &key_test(&test_id))
                 .await?
-                .ok_or_else(|| {
-                    IIIError::Handler(format!("no such ab-test: {}", test_id))
-                })?;
-            let test: AbTest = serde_json::from_value(test_val).map_err(|e| {
-                IIIError::Handler(format!("parse test {}: {}", test_id, e))
-            })?;
+                .ok_or_else(|| IIIError::Handler(format!("no such ab-test: {}", test_id)))?;
+            let test: AbTest = serde_json::from_value(test_val)
+                .map_err(|e| IIIError::Handler(format!("parse test {}: {}", test_id, e)))?;
             if !test.variants.iter().any(|v| v.model == variant) {
                 return Err(IIIError::Handler(format!(
                     "variant_model '{}' is not registered on ab-test '{}'",
@@ -108,7 +105,10 @@ pub fn record_handler(
             if latency_ms < 0 {
                 return Err(IIIError::Handler("latency_ms must be >= 0".into()));
             }
-            let cost_usd = payload.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let cost_usd = payload
+                .get("cost_usd")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             if cost_usd < 0.0 || cost_usd.is_nan() {
                 return Err(IIIError::Handler("cost_usd must be >= 0".into()));
             }
@@ -157,12 +157,9 @@ pub fn report_handler(
             let test: AbTest = serde_json::from_value(test_val)
                 .map_err(|e| IIIError::Handler(format!("parse test: {}", e)))?;
 
-            let items = state::state_list(
-                &iii,
-                &cfg.state_scope,
-                &format!("ab_events:{}:", test_id),
-            )
-            .await?;
+            let items =
+                state::state_list(&iii, &cfg.state_scope, &format!("ab_events:{}:", test_id))
+                    .await?;
             let events: Vec<AbEvent> = items
                 .into_iter()
                 .filter_map(|it| state::parse_item::<AbEvent>(&it))
@@ -171,7 +168,9 @@ pub fn report_handler(
             let mut summary: std::collections::HashMap<String, (u64, f64, f64, f64)> =
                 std::collections::HashMap::new();
             for e in &events {
-                let row = summary.entry(e.variant_model.clone()).or_insert((0, 0.0, 0.0, 0.0));
+                let row = summary
+                    .entry(e.variant_model.clone())
+                    .or_insert((0, 0.0, 0.0, 0.0));
                 row.0 += 1;
                 row.1 += e.quality_score;
                 row.2 += e.latency_ms as f64;
@@ -182,10 +181,7 @@ pub fn report_handler(
                 .variants
                 .iter()
                 .map(|v| {
-                    let (n, q, l, c) = summary
-                        .get(&v.model)
-                        .copied()
-                        .unwrap_or((0, 0.0, 0.0, 0.0));
+                    let (n, q, l, c) = summary.get(&v.model).copied().unwrap_or((0, 0.0, 0.0, 0.0));
                     let n_f = (n as f64).max(1.0);
                     json!({
                         "model": v.model,

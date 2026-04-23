@@ -118,13 +118,10 @@ async fn execute_rust(
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run binary: {}", e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run binary: {}", e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),
@@ -157,13 +154,10 @@ async fn execute_typescript(
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run {}: {}", runtime, e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run {}: {}", runtime, e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),
@@ -189,13 +183,10 @@ async fn execute_python(
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run python3: {}", e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run python3: {}", e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),

@@ -51,7 +51,10 @@ mod tests {
             parsed["default_config"]["config"]["workspace_dir"],
             "/tmp/iii-coding-workspace"
         );
-        assert_eq!(parsed["default_config"]["config"]["execute_timeout_ms"], 30000);
+        assert_eq!(
+            parsed["default_config"]["config"]["execute_timeout_ms"],
+            30000
+        );
         assert_eq!(parsed["default_config"]["config"]["max_file_size_kb"], 256);
         assert!(!manifest.supported_targets.is_empty());
     }

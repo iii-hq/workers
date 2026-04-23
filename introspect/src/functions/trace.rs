@@ -72,10 +72,7 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
 
     let root_function_id = if let Some(fid) = function_id {
         if !func_map.contains_key(&fid) {
-            return Err(IIIError::Handler(format!(
-                "function '{}' not found",
-                fid
-            )));
+            return Err(IIIError::Handler(format!("function '{}' not found", fid)));
         }
         fid
     } else if let Some(tid) = trigger_id {
@@ -153,18 +150,14 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
                 if other_t.function_id == current_fid {
                     continue;
                 }
-                let other_topic = other_t
-                    .config
-                    .get("topic")
-                    .and_then(|v| v.as_str());
+                let other_topic = other_t.config.get("topic").and_then(|v| v.as_str());
                 if other_topic != Some(topic) {
                     continue;
                 }
-                if other_t.trigger_type == "durable::subscriber" {
-                    if !related.contains(&other_t.function_id) {
+                if other_t.trigger_type == "durable::subscriber"
+                    && !related.contains(&other_t.function_id) {
                         related.push(other_t.function_id.clone());
                     }
-                }
                 // Non-subscriber peers on the same topic (publish/output)
                 // are left to other traversal paths; this block only
                 // handles peer-consumer mislabelling.
@@ -175,10 +168,7 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
                 obj.insert(
                     "related_subscribers".to_string(),
                     serde_json::Value::Array(
-                        related
-                            .into_iter()
-                            .map(serde_json::Value::String)
-                            .collect(),
+                        related.into_iter().map(serde_json::Value::String).collect(),
                     ),
                 );
             }

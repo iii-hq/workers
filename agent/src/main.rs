@@ -333,14 +333,11 @@ async fn main() -> Result<()> {
 
         let iii_inner = iii_for_refresh.clone();
         tokio::spawn(async move {
-            let _ = state::state_set(
-                &iii_inner,
-                "agent:tools",
-                "cached",
-                &tools_json,
-            )
-            .await;
-            tracing::info!(count = tools_json.as_array().map(|a| a.len()).unwrap_or(0), "tool cache refreshed");
+            let _ = state::state_set(&iii_inner, "agent:tools", "cached", &tools_json).await;
+            tracing::info!(
+                count = tools_json.as_array().map(|a| a.len()).unwrap_or(0),
+                "tool cache refreshed"
+            );
         });
     });
 
@@ -372,7 +369,9 @@ async fn main() -> Result<()> {
         metadata: None,
     });
 
-    tracing::info!("iii-agent registered 7 functions, 6 HTTP triggers, 1 cron trigger, 1 subscribe trigger");
+    tracing::info!(
+        "iii-agent registered 7 functions, 6 HTTP triggers, 1 cron trigger, 1 subscribe trigger"
+    );
 
     tokio::signal::ctrl_c().await?;
 

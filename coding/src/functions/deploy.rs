@@ -45,7 +45,11 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
     let deployment_id = format!(
         "deploy_{}_{}",
         worker_id,
-        uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000")
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("0000")
     );
 
     let instructions = match language {
@@ -53,12 +57,8 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
             "1. cd into the worker directory\n2. Run: cargo build --release\n3. Start the worker: ./target/release/{} --url ws://<engine-host>:49134\n4. Verify registration via introspect::functions",
             name
         ),
-        "typescript" => format!(
-            "1. cd into the worker directory\n2. Run: npm install\n3. Run: npm run build\n4. Start the worker: III_URL=ws://<engine-host>:49134 npm start\n5. Verify registration via introspect::functions"
-        ),
-        "python" => format!(
-            "1. cd into the worker directory\n2. Run: pip install -e .\n3. Start the worker: III_URL=ws://<engine-host>:49134 python3 src/worker.py\n4. Verify registration via introspect::functions"
-        ),
+        "typescript" => "1. cd into the worker directory\n2. Run: npm install\n3. Run: npm run build\n4. Start the worker: III_URL=ws://<engine-host>:49134 npm start\n5. Verify registration via introspect::functions".to_string(),
+        "python" => "1. cd into the worker directory\n2. Run: pip install -e .\n3. Start the worker: III_URL=ws://<engine-host>:49134 python3 src/worker.py\n4. Verify registration via introspect::functions".to_string(),
         _ => "Refer to the generated files for deployment instructions.".to_string(),
     };
 
