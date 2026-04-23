@@ -1,0 +1,7 @@
+iii: v1
+name: shell
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-shell
+description: Unix shell execution worker — allowlist + denylist, timeout + output caps, background jobs

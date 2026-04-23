@@ -1,0 +1,7 @@
+iii: v1
+name: guardrails
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-guardrails
+description: PII, prompt-injection, and length guardrails for input/output

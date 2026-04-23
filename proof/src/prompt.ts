@@ -1,4 +1,4 @@
-import type { CoverageReport } from "./context.js";
+import type { CoverageReport } from './context.js'
 
 export const SYSTEM_PROMPT = `You are a QA engineer testing a web application in a real browser. You verify that code changes work correctly by interacting with the live app.
 
@@ -71,7 +71,7 @@ If something fails:
 - Check browser_console_logs for errors after page loads and form submissions.
 - If a page requires authentication you cannot provide, skip with STEP_DONE noting auth-blocked.
 - Always finish with RUN_COMPLETED.
-- Keep tests focused on what the diff actually changed.`;
+- Keep tests focused on what the diff actually changed.`
 
 export function buildUserPrompt(
   diff: string,
@@ -81,33 +81,31 @@ export function buildUserPrompt(
   commits?: Array<{ hash: string; subject: string }>,
   coverage?: CoverageReport,
 ): string {
-  const parts: string[] = [];
+  const parts: string[] = []
 
   if (instruction) {
-    parts.push(`## Instruction\n${instruction}`);
+    parts.push(`## Instruction\n${instruction}`)
   }
 
-  parts.push(`## Base URL\n${baseUrl}`);
-  parts.push(`## Changed Files (${files.length})\n${files.map((f) => `- ${f}`).join("\n")}`);
+  parts.push(`## Base URL\n${baseUrl}`)
+  parts.push(`## Changed Files (${files.length})\n${files.map((f) => `- ${f}`).join('\n')}`)
 
   if (commits?.length) {
-    parts.push(
-      `## Recent Commits\n${commits.map((c) => `- ${c.hash.slice(0, 7)} ${c.subject}`).join("\n")}`,
-    );
+    parts.push(`## Recent Commits\n${commits.map((c) => `- ${c.hash.slice(0, 7)} ${c.subject}`).join('\n')}`)
   }
 
   if (coverage && coverage.totalCount > 0) {
     const lines = coverage.entries.map((e) =>
       e.covered
-        ? `  [covered] ${e.path}${e.testFiles.length ? ` (tested by: ${e.testFiles.join(", ")})` : ""}`
+        ? `  [covered] ${e.path}${e.testFiles.length ? ` (tested by: ${e.testFiles.join(', ')})` : ''}`
         : `  [no test] ${e.path}`,
-    );
+    )
     parts.push(
-      `## Test Coverage (${coverage.percent}% — ${coverage.coveredCount}/${coverage.totalCount} files)\n${lines.join("\n")}\nPrioritize browser-testing files WITHOUT existing test coverage.`,
-    );
+      `## Test Coverage (${coverage.percent}% — ${coverage.coveredCount}/${coverage.totalCount} files)\n${lines.join('\n')}\nPrioritize browser-testing files WITHOUT existing test coverage.`,
+    )
   }
 
-  parts.push(`## Diff\n\`\`\`diff\n${diff}\n\`\`\``);
+  parts.push(`## Diff\n\`\`\`diff\n${diff}\n\`\`\``)
 
-  return parts.join("\n\n");
+  return parts.join('\n\n')
 }

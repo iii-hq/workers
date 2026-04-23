@@ -180,7 +180,6 @@ useApi(
   },
 )
 
-
 // ── URL-based image resize endpoint (Next.js-style) ─────
 
 const MAX_FETCH_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -193,7 +192,16 @@ const MIME_TYPES: Record<string, string> = {
 
 const imageLogger = new Logger(undefined, 'api::get::/image')
 
-function sendJsonError(res: { status: (n: number) => void; headers: (h: Record<string, string>) => void; stream: NodeJS.WritableStream; close: () => void }, statusCode: number, error: string) {
+function sendJsonError(
+  res: {
+    status: (n: number) => void
+    headers: (h: Record<string, string>) => void
+    stream: NodeJS.WritableStream
+    close: () => void
+  },
+  statusCode: number,
+  error: string,
+) {
   res.status(statusCode)
   res.headers({ 'content-type': 'application/json' })
   res.stream.end(JSON.stringify({ error }))
@@ -207,8 +215,7 @@ function sendJsonError(res: { status: (n: number) => void; headers: (h: Record<s
     { id: function_id, metadata: { tags: ['image', 'resize', 'url'] } },
     http(async (req, res) => {
       const qp = req.query_params ?? {}
-      const str = (v: string | string[] | undefined): string | undefined =>
-        Array.isArray(v) ? v[0] : v
+      const str = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v)
 
       const url = str(qp.url)
       const w = Number(str(qp.w)) || 200
@@ -218,24 +225,33 @@ function sendJsonError(res: { status: (n: number) => void; headers: (h: Record<s
       const outputFormat = (str(qp.format) as 'jpeg' | 'png' | 'webp') || 'jpeg'
 
       // ── Validate URL ──
-      if (!url) { sendJsonError(res, 400, 'Missing "url" query parameter'); return }
+      if (!url) {
+        sendJsonError(res, 400, 'Missing "url" query parameter')
+        return
+      }
 
       let parsed: URL
-      try { parsed = new URL(url) } catch {
-        sendJsonError(res, 400, 'Invalid URL'); return
+      try {
+        parsed = new URL(url)
+      } catch {
+        sendJsonError(res, 400, 'Invalid URL')
+        return
       }
 
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        sendJsonError(res, 400, 'Only http:// and https:// URLs are allowed'); return
+        sendJsonError(res, 400, 'Only http:// and https:// URLs are allowed')
+        return
       }
 
       // ── Validate dimensions ──
       if (w < 1 || w > 4096 || h < 1 || h > 4096) {
-        sendJsonError(res, 400, 'Width and height must be between 1 and 4096'); return
+        sendJsonError(res, 400, 'Width and height must be between 1 and 4096')
+        return
       }
 
       if (strategy !== 'scale-to-fit' && strategy !== 'crop-to-fit') {
-        sendJsonError(res, 400, 'Strategy must be "scale-to-fit" or "crop-to-fit"'); return
+        sendJsonError(res, 400, 'Strategy must be "scale-to-fit" or "crop-to-fit"')
+        return
       }
 
       // ── Fetch the remote image ──
@@ -250,25 +266,30 @@ function sendJsonError(res: { status: (n: number) => void; headers: (h: Record<s
         clearTimeout(timeout)
 
         if (!fetchRes.ok) {
-          sendJsonError(res, 502, `Failed to fetch image: upstream returned ${fetchRes.status}`); return
+          sendJsonError(res, 502, `Failed to fetch image: upstream returned ${fetchRes.status}`)
+          return
         }
 
         const contentLength = Number(fetchRes.headers.get('content-length') || 0)
         if (contentLength > MAX_FETCH_SIZE) {
-          sendJsonError(res, 400, `Image too large (${contentLength} bytes). Maximum is ${MAX_FETCH_SIZE} bytes.`); return
+          sendJsonError(res, 400, `Image too large (${contentLength} bytes). Maximum is ${MAX_FETCH_SIZE} bytes.`)
+          return
         }
 
         const arrayBuf = await fetchRes.arrayBuffer()
         if (arrayBuf.byteLength > MAX_FETCH_SIZE) {
-          sendJsonError(res, 400, `Image too large (${arrayBuf.byteLength} bytes). Maximum is ${MAX_FETCH_SIZE} bytes.`); return
+          sendJsonError(res, 400, `Image too large (${arrayBuf.byteLength} bytes). Maximum is ${MAX_FETCH_SIZE} bytes.`)
+          return
         }
 
         imageBuffer = Buffer.from(arrayBuf)
       } catch (err) {
-        const message = err instanceof Error && err.name === 'AbortError'
-          ? 'Upstream image fetch timed out'
-          : `Failed to fetch image: ${err}`
-        sendJsonError(res, 502, message); return
+        const message =
+          err instanceof Error && err.name === 'AbortError'
+            ? 'Upstream image fetch timed out'
+            : `Failed to fetch image: ${err}`
+        sendJsonError(res, 502, message)
+        return
       }
 
       // ── Detect format & process ──

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       worker:
-        description: 'Worker module to version'
+        description: 'Worker module to release'
         required: true
         type: choice
         options:
@@ -14,15 +14,18 @@ on:
           - eval
           - experiment
           - guardrails
-          - image-resize
           - iii-lsp
           - iii-lsp-vscode
+          - image-resize
           - introspect
           - llm-router
           - mcp
+          - proof
           - shell
+          - todo-worker
+          - todo-worker-python
       bump:
-        description: 'Version bump type'
+        description: 'Version bump'
         required: true
         type: choice
         options:
@@ -30,21 +33,14 @@ on:
           - minor
           - major
         default: patch
-      prerelease:
-        description: 'Pre-release label (none = stable release)'
+      tag:
+        description: 'Registry tag (passed to POST /publish; not part of git tag name)'
         required: true
         type: choice
         options:
-          - none
-          - alpha
-          - beta
-          - rc
-        default: none
-      dry_run:
-        description: 'Dry run (creates -dry-run.N tag, builds without publishing)'
-        required: false
-        type: boolean
-        default: false
+          - latest
+          - next
+        default: latest
 
 permissions:
   contents: write
@@ -55,7 +51,7 @@ concurrency:
 
 jobs:
   create-tag:
-    name: Bump Version & Create Tag
+    name: Bump version & create tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -67,14 +63,13 @@ jobs:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ steps.generate_token.outputs.token }}
 
       - name: Pre-flight checks
-        id: preflight
         env:
           WORKER: ${{ inputs.worker }}
         run: |
@@ -83,148 +78,160 @@ jobs:
             echo "::error::Must be on main branch (currently on $BRANCH)"
             exit 1
           fi
-
-          if [[ -f "$WORKER/Cargo.toml" ]]; then
-            echo "manifest_type=cargo" >> "$GITHUB_OUTPUT"
-          elif [[ -f "$WORKER/package.json" ]]; then
-            echo "manifest_type=node" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::No Cargo.toml or package.json found in $WORKER/"
+          if [[ ! -d "$WORKER" ]]; then
+            echo "::error::Worker directory does not exist: $WORKER"
             exit 1
           fi
 
-      - name: Calculate version
+      - name: Discover manifest type
+        id: meta
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          # iii-lsp-vscode does not have iii.worker.yaml (special VS Code extension flow)
+          if [[ "$WORKER" == "iii-lsp-vscode" ]]; then
+            echo "manifest=package.json" >> "$GITHUB_OUTPUT"
+            echo "manifest_type=node" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! -f "$WORKER/iii.worker.yaml" ]]; then
+            echo "::error::$WORKER/iii.worker.yaml is missing"
+            exit 1
+          fi
+          MANIFEST=$(grep '^manifest:' "$WORKER/iii.worker.yaml" | head -n1 | awk '{print $2}')
+          if [[ -z "$MANIFEST" ]]; then
+            echo "::error::$WORKER/iii.worker.yaml has no 'manifest' key"
+            exit 1
+          fi
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          case "$MANIFEST" in
+            Cargo.toml) echo "manifest_type=cargo" >> "$GITHUB_OUTPUT" ;;
+            package.json) echo "manifest_type=node" >> "$GITHUB_OUTPUT" ;;
+            pyproject.toml) echo "manifest_type=python" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Unsupported manifest: $MANIFEST"; exit 1 ;;
+          esac
+
+      - name: Calculate next version
         id: versions
         env:
           WORKER: ${{ inputs.worker }}
           BUMP: ${{ inputs.bump }}
-          PRERELEASE: ${{ inputs.prerelease }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
-          read_cargo_version() {
-            grep '^version = ' "$1" | head -n1 | cut -d'"' -f2
+          read_version() {
+            case "$MANIFEST_TYPE" in
+              cargo)
+                grep '^version = ' "$1" | head -n1 | cut -d'"' -f2
+                ;;
+              node)
+                jq -r '.version' "$1"
+                ;;
+              python)
+                # PEP 621 [project] version = "..."
+                python3 -c "
+          import re, sys
+          text = open(sys.argv[1]).read()
+          in_proj = False
+          for line in text.splitlines():
+              s = line.strip()
+              if s.startswith('['):
+                  in_proj = (s == '[project]')
+                  continue
+              if in_proj:
+                  m = re.match(r'version\s*=\s*\"([^\"]+)\"', s)
+                  if m:
+                      print(m.group(1))
+                      sys.exit(0)
+          " "$1"
+                ;;
+            esac
           }
 
           bump_version() {
             local current="$1"
-            local tag_prefix="$2"
-            local bump_type="$3"
             local base="${current%%-*}"
             IFS='.' read -r major minor patch <<< "$base"
-
-            case "$bump_type" in
+            case "$BUMP" in
               major) major=$((major + 1)); minor=0; patch=0 ;;
               minor) minor=$((minor + 1)); patch=0 ;;
               patch) patch=$((patch + 1)) ;;
             esac
-
-            local new_base="${major}.${minor}.${patch}"
-
-            if [[ "$PRERELEASE" != "none" ]]; then
-              local existing
-              existing=$(git tag -l "${tag_prefix}/v${new_base}-${PRERELEASE}.*" 2>/dev/null | sort -V)
-              local pre_num=1
-              if [[ -n "$existing" ]]; then
-                local latest_pre
-                latest_pre=$(echo "$existing" | tail -n1)
-                pre_num=$(echo "$latest_pre" | grep -oE '\.[0-9]+$' | tr -d '.')
-                pre_num=$((pre_num + 1))
-              fi
-              echo "${new_base}-${PRERELEASE}.${pre_num}"
-            else
-              echo "$new_base"
-            fi
+            echo "${major}.${minor}.${patch}"
           }
 
-          next_dry_run_version() {
-            local base="$1"
-            local tag_prefix="$2"
-            local existing
-            existing=$(git tag -l "${tag_prefix}/v${base}-dry-run.*" 2>/dev/null | sort -V)
-            local num=1
-            if [[ -n "$existing" ]]; then
-              local latest
-              latest=$(echo "$existing" | tail -n1)
-              num=$(echo "$latest" | grep -oE '\.[0-9]+$' | tr -d '.')
-              num=$((num + 1))
-            fi
-            echo "${base}-dry-run.${num}"
-          }
-
-          if [[ "$PRERELEASE" != "none" ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          current=$(read_version "$WORKER/$MANIFEST")
+          if [[ -z "$current" ]]; then
+            echo "::error::Could not read version from $WORKER/$MANIFEST"
+            exit 1
           fi
-
-          read_node_version() {
-            jq -r '.version' "$1"
-          }
-
-          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
-          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
-            current=$(read_cargo_version "$WORKER/Cargo.toml")
-          else
-            current=$(read_node_version "$WORKER/package.json")
-          fi
-          new_ver=$(bump_version "$current" "$WORKER" "$BUMP")
-
-          if [[ "$DRY_RUN" == "true" ]]; then
-            base_ver="${new_ver%%-*}"
-            new_ver=$(next_dry_run_version "$base_ver" "$WORKER")
-          fi
-
+          new_ver=$(bump_version "$current")
+          echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "version=$new_ver" >> "$GITHUB_OUTPUT"
           echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
-          echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "::notice::${WORKER}: ${current} -> ${new_ver}"
 
       - name: Update manifest
-        if: inputs.dry_run != true
         env:
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
+          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
-          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
-          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
-            sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "${WORKER}/Cargo.toml"
-            echo "Updated ${WORKER}/Cargo.toml to ${NEW_VERSION}"
-          else
-            jq --arg v "$NEW_VERSION" '.version = $v' "${WORKER}/package.json" > "${WORKER}/package.json.tmp"
-            mv "${WORKER}/package.json.tmp" "${WORKER}/package.json"
-            echo "Updated ${WORKER}/package.json to ${NEW_VERSION}"
-          fi
+          path="$WORKER/$MANIFEST"
+          case "$MANIFEST_TYPE" in
+            cargo)
+              sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "$path"
+              ;;
+            node)
+              jq --arg v "$NEW_VERSION" '.version = $v' "$path" > "${path}.tmp"
+              mv "${path}.tmp" "$path"
+              ;;
+            python)
+              python3 - <<PY
+          import re, pathlib
+          p = pathlib.Path("$path")
+          text = p.read_text()
+          out, in_proj, replaced = [], False, False
+          for line in text.splitlines():
+              s = line.strip()
+              if s.startswith("["):
+                  in_proj = (s == "[project]")
+              if in_proj and not replaced and re.match(r'version\s*=\s*"[^"]+"', s):
+                  line = re.sub(r'version\s*=\s*"[^"]+"', 'version = "${NEW_VERSION}"', line)
+                  replaced = True
+              out.append(line)
+          if not replaced:
+              raise SystemExit("could not find version in [project]")
+          p.write_text("\n".join(out) + ("\n" if text.endswith("\n") else ""))
+          PY
+              ;;
+          esac
+          echo "Updated $path to ${NEW_VERSION}"
 
       - name: Validate manifest update
-        if: inputs.dry_run != true
         env:
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
           WORKER: ${{ inputs.worker }}
+          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
+          MANIFEST: ${{ steps.meta.outputs.manifest }}
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
-          MANIFEST_TYPE="${{ steps.preflight.outputs.manifest_type }}"
-          if [[ "$MANIFEST_TYPE" == "cargo" ]]; then
-            actual=$(grep '^version = ' "${WORKER}/Cargo.toml" | head -n1 | cut -d'"' -f2)
-          else
-            actual=$(jq -r '.version' "${WORKER}/package.json")
-          fi
+          case "$MANIFEST_TYPE" in
+            cargo)   actual=$(grep '^version = ' "$WORKER/$MANIFEST" | head -n1 | cut -d'"' -f2) ;;
+            node)    actual=$(jq -r '.version' "$WORKER/$MANIFEST") ;;
+            python)  actual=$(python3 -c "import re,sys; t=open(sys.argv[1]).read(); proj=False
+          for ln in t.splitlines():
+              s=ln.strip()
+              if s.startswith('['): proj=(s=='[project]'); continue
+              if proj:
+                  m=re.match(r'version\s*=\s*\"([^\"]+)\"', s)
+                  if m: print(m.group(1)); sys.exit(0)" "$WORKER/$MANIFEST") ;;
+          esac
           if [[ "$actual" != "$NEW_VERSION" ]]; then
-            echo "::error::Manifest version mismatch: expected ${NEW_VERSION}, got ${actual}"
+            echo "::error::Manifest mismatch: expected $NEW_VERSION, got $actual"
             exit 1
           fi
-          echo "Validated manifest version: ${actual}"
-
-      - name: Update registry
-        if: inputs.dry_run != true && inputs.worker != 'iii-lsp-vscode'
-        env:
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
-          WORKER: ${{ inputs.worker }}
-        run: |
-          jq --arg worker "$WORKER" --arg version "$NEW_VERSION" \
-            '.workers[$worker].version = $version' \
-            registry/index.json > registry/index.json.tmp
-          jq empty registry/index.json.tmp
-          mv registry/index.json.tmp registry/index.json
-          echo "Updated registry/index.json: $WORKER -> $NEW_VERSION"
+          echo "Validated $WORKER/$MANIFEST = $actual"
 
       - name: Check tag does not exist
         env:
@@ -241,18 +248,26 @@ jobs:
           git config user.email "workers-ci[bot]@users.noreply.github.com"
 
       - name: Commit and push
-        if: inputs.dry_run != true
         env:
-          TAG: ${{ steps.versions.outputs.tag }}
+          WORKER: ${{ inputs.worker }}
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
           git add -A
-          git commit -m "chore: bump ${{ inputs.worker }} to v${{ steps.versions.outputs.version }}"
+          git commit -m "chore(${WORKER}): bump to v${NEW_VERSION}"
           git push origin main
 
-      - name: Create and push tag
+      - name: Create and push annotated tag
         env:
           TAG: ${{ steps.versions.outputs.tag }}
+          REGISTRY_TAG: ${{ inputs.tag }}
+          WORKER: ${{ inputs.worker }}
+          NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
-          git tag -a "$TAG" -m "Release $TAG"
+          git tag -a "$TAG" -m "Release $TAG
+
+          worker: $WORKER
+          version: $NEW_VERSION
+          registry-tag: $REGISTRY_TAG
+          "
           git push origin "$TAG"
-          echo "::notice::Created tag: $TAG"
+          echo "::notice::Created tag: $TAG (registry-tag=$REGISTRY_TAG)"

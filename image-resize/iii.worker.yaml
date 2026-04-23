@@ -1,0 +1,7 @@
+iii: v1
+name: image-resize
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: image-resize
+description: III engine image resize worker (JPEG/PNG/WebP, EXIF orient, scale-to-fit / crop-to-fit)

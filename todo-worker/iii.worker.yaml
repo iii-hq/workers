@@ -1,6 +1,10 @@
 iii: v1
 name: todo-worker
 version: 0.1.0
+language: node
+deploy: image
+manifest: package.json
+description: Quickstart CRUD todo worker using the Node.js iii SDK
 
 env:
   III_URL: "ws://localhost:49134"

@@ -1,0 +1,11 @@
+workers:
+  # === iii:image-resize BEGIN ===
+  - class: workers::image_resize::ImageResizeWorker
+    config:
+      height: 200
+      quality:
+        jpeg: 85
+        webp: 80
+      strategy: scale-to-fit
+      width: 200
+  # === iii:image-resize END ===

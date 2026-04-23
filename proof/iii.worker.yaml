@@ -1,0 +1,6 @@
+iii: v1
+name: proof
+language: node
+deploy: image
+manifest: package.json
+description: AI-powered browser testing worker for iii — scans code changes, generates test plans, runs them in a real browser

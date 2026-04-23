@@ -3,7 +3,21 @@ name: Release
 on:
   push:
     tags:
+      - 'a2a/v*'
+      - 'agent/v*'
+      - 'coding/v*'
+      - 'eval/v*'
+      - 'experiment/v*'
+      - 'guardrails/v*'
+      - 'iii-lsp/v*'
       - 'image-resize/v*'
+      - 'introspect/v*'
+      - 'llm-router/v*'
+      - 'mcp/v*'
+      - 'proof/v*'
+      - 'shell/v*'
+      - 'todo-worker/v*'
+      - 'todo-worker-python/v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -13,58 +27,108 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
-  group: release-image-resize-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Setup: Parse tag metadata
+  # Setup: parse tag, read iii.worker.yaml, extract registry-tag.
   # ──────────────────────────────────────────────────────────────
-
   setup:
     name: Setup
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.resolve.outputs.tag }}
+      tag: ${{ steps.meta.outputs.tag }}
+      worker: ${{ steps.meta.outputs.worker }}
       version: ${{ steps.meta.outputs.version }}
+      deploy: ${{ steps.meta.outputs.deploy }}
+      language: ${{ steps.meta.outputs.language }}
+      bin: ${{ steps.meta.outputs.bin }}
+      manifest: ${{ steps.meta.outputs.manifest }}
+      registry_tag: ${{ steps.meta.outputs.registry_tag }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
     steps:
-      - name: Resolve tag
-        id: resolve
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Parse tag + worker manifest
+        id: meta
         env:
           RAW_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG=$(echo "$RAW_TAG" | xargs)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import os, re, subprocess, sys, yaml
 
-      - name: Extract metadata from tag
-        id: meta
-        env:
-          TAG: ${{ steps.resolve.outputs.tag }}
-        run: |
-          VERSION="${TAG#image-resize/v}"
+          raw = os.environ["RAW_TAG"].strip()
+          m = re.match(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$", raw)
+          if not m:
+              print(f"::error::Invalid tag shape: {raw}")
+              sys.exit(1)
+          worker, version = m.group(1), m.group(2)
 
-          if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
-            echo "dry_run=true" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -([a-z]+)\.[0-9]+$ ]]; then
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "dry_run=false" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
+          if re.search(r"-dry-run\.\d+$", version):
+              dry_run, is_pre = "true", "true"
+          elif re.search(r"-[a-z]+\.\d+$", version):
+              dry_run, is_pre = "false", "true"
+          else:
+              dry_run, is_pre = "false", "false"
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::image-resize release -- tag=$TAG version=$VERSION"
+          meta_path = f"{worker}/iii.worker.yaml"
+          if not os.path.exists(meta_path):
+              print(f"::error::{meta_path} not found")
+              sys.exit(1)
+          meta = yaml.safe_load(open(meta_path).read()) or {}
+          deploy = meta.get("deploy")
+          language = meta.get("language")
+          bin_name = meta.get("bin") or meta.get("name") or worker
+          manifest = meta.get("manifest")
+          if deploy not in ("binary", "image"):
+              print(f"::error::{worker}: deploy must be binary|image (got {deploy!r})")
+              sys.exit(1)
+
+          # Pull registry-tag from the annotated tag message; fall back to 'latest'.
+          registry_tag = "latest"
+          try:
+              msg = subprocess.check_output(
+                  ["git", "tag", "-l", "--format=%(contents)", raw], text=True
+              )
+              for line in msg.splitlines():
+                  s = line.strip()
+                  if s.startswith("registry-tag:"):
+                      registry_tag = s.split(":", 1)[1].strip() or "latest"
+                      break
+          except subprocess.CalledProcessError:
+              pass
+
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          for k, v in [
+              ("tag", raw),
+              ("worker", worker),
+              ("version", version),
+              ("deploy", deploy),
+              ("language", language or ""),
+              ("bin", bin_name),
+              ("manifest", manifest or ""),
+              ("registry_tag", registry_tag),
+              ("is_prerelease", is_pre),
+              ("dry_run", dry_run),
+          ]:
+              out.write(f"{k}={v}\n")
+          out.close()
+          print(f"::notice::release {worker} v{version} deploy={deploy} registry-tag={registry_tag}")
+          PY
 
   # ──────────────────────────────────────────────────────────────
-  # GitHub Release
+  # Create the GitHub Release shell (skipped on dry runs).
   # ──────────────────────────────────────────────────────────────
-
   create-release:
     name: Create GitHub Release
     needs: [setup]
@@ -74,30 +138,60 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.setup.outputs.tag }}
-          name: image-resize ${{ needs.setup.outputs.version }}
+          name: ${{ needs.setup.outputs.worker }} ${{ needs.setup.outputs.version }}
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
 
   # ──────────────────────────────────────────────────────────────
-  # Binary Build
+  # Binary path: build multi-arch via the existing reusable.
   # ──────────────────────────────────────────────────────────────
-
   binary-build:
-    name: Binary Release
+    name: Binary build
     needs: [setup, create-release]
-    if: ${{ !failure() && !cancelled() }}
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'binary' }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
-      bin_name: image-resize
-      manifest_path: image-resize/Cargo.toml
+      bin_name: ${{ needs.setup.outputs.bin }}
+      manifest_path: ${{ needs.setup.outputs.worker }}/${{ needs.setup.outputs.manifest }}
       tag_name: ${{ needs.setup.outputs.tag }}
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+    secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
+  # Container path: build multi-arch image, push to ghcr.io.
+  # ──────────────────────────────────────────────────────────────
+  container-build:
+    name: Container build
+    needs: [setup, create-release]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'image' }}
+    uses: ./.github/workflows/_container.yml
+    with:
+      worker: ${{ needs.setup.outputs.worker }}
+      version: ${{ needs.setup.outputs.version }}
+      registry_tag: ${{ needs.setup.outputs.registry_tag }}
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+    secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
+  # Publish to the workers registry API.
+  # ──────────────────────────────────────────────────────────────
+  publish:
+    name: Publish to registry
+    needs: [setup, binary-build, container-build]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
+    uses: ./.github/workflows/_publish-registry.yml
+    with:
+      worker: ${{ needs.setup.outputs.worker }}
+      version: ${{ needs.setup.outputs.version }}
+      deploy: ${{ needs.setup.outputs.deploy }}
+      registry_tag: ${{ needs.setup.outputs.registry_tag }}
+      tag: ${{ needs.setup.outputs.tag }}
+      bin: ${{ needs.setup.outputs.bin }}
+      image_tag: ${{ needs.container-build.outputs.image_tag }}
     secrets: inherit
