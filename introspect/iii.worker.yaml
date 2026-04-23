@@ -1,0 +1,7 @@
+iii: v1
+name: introspect
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-introspect
+description: Live topology, trace walks, Mermaid diagrams, per-function explain

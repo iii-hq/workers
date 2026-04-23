@@ -1,0 +1,7 @@
+iii: v1
+name: mcp
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-mcp
+description: Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions as MCP tools

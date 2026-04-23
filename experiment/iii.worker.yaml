@@ -1,0 +1,7 @@
+iii: v1
+name: experiment
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-experiment
+description: A/B experiment tracking with weighted variants and outcome aggregation

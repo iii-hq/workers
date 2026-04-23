@@ -1,6 +1,10 @@
 iii: v1
 name: todo-worker-python
 version: 0.1.0
+language: python
+deploy: image
+manifest: pyproject.toml
+description: Quickstart CRUD todo worker using the Python iii SDK
 
 env:
   III_URL: "ws://localhost:49134"

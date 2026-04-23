@@ -53,12 +53,13 @@ Rust workers that ship as standalone binaries (`a2a`, `agent`, `coding`,
 `llm-router`, `mcp`, `shell`) are released via GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
-   type (`patch`/`minor`/`major`), and optional prerelease label.
-2. A tag of the form `<worker>/v<X.Y.Z>` is pushed to `main`.
-3. The matching **Release** workflow fires on the tag, builds cross-compiled
+   type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
+2. A tag of the form `<worker>/v<X.Y.Z>` is pushed to `main`, with the
+   registry tag embedded in the tag's annotated message.
+3. The unified **Release** workflow fires on the tag, builds cross-compiled
    binaries for 9 targets (Linux gnu/musl, macOS x86_64 + aarch64, Windows
-   x86_64/i686/aarch64, armv7), and uploads them to a GitHub Release with
-   SHA-256 checksums.
+   x86_64/i686/aarch64, armv7), uploads them to a GitHub Release with
+   SHA-256 checksums, and calls `POST /publish` on the registry API.
 
 Targets per build:
 
@@ -81,11 +82,42 @@ entry declares the worker kind (`binary` / container image), the release tag
 prefix, supported targets, and a default config. `iii worker add <name>`
 reads this file to locate the right asset for the host.
 
+## Add a new worker
+
+See [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md) for the full checklist
+covering folder layout, `iii.worker.yaml`, lint, tests, deploy type
+(`binary` vs. `image`), and the release flow.
+
 ## CI
 
-Pull requests trigger per-worker `cargo fmt --check`, `cargo clippy
---all-targets --all-features -- -D warnings`, and `cargo test --all-features`
-for Rust modules that changed (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+Pull requests trigger per-worker lint + tests for the changed worker(s).
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes by
+reading each worker's `iii.worker.yaml`, then routes:
+
+- Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
+- Node → `biome ci` against [`biome.json`](biome.json) and `npm test`
+- Python → `ruff check` + `ruff format --check` against [`ruff.toml`](ruff.toml) and `pytest`
+
+The `pr-checks` job additionally enforces, per changed worker: `README.md`
+present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
+version is greater than the version on the PR's base branch.
+
+## CD
+
+Releases are cut manually via the **Create Tag** workflow
+([`.github/workflows/create-tag.yml`](.github/workflows/create-tag.yml)) —
+pick a worker, a bump type, and a registry tag (`latest` / `next`). The
+resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) that:
+
+1. Routes on `deploy` from `iii.worker.yaml`:
+   - `binary` → cross-compile to 9 targets via
+     [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
+   - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
+     [`_container.yml`](.github/workflows/_container.yml).
+2. Calls `POST /publish` against the workers registry API
+   ([`openapi.yaml`](openapi.yaml)) via
+   [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
 
 ## License
 

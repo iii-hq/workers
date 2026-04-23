@@ -1,0 +1,7 @@
+iii: v1
+name: iii-lsp
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-lsp
+description: III Language Server — autocompletion and hover for III engine functions and triggers

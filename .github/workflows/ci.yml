@@ -12,92 +12,302 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  changes:
-    name: Detect changes
+  # ──────────────────────────────────────────────────────────────
+  # Discover: enumerate changed workers, read their iii.worker.yaml,
+  # bucket them per language for the matrix jobs below.
+  # ──────────────────────────────────────────────────────────────
+  discover:
+    name: Discover changed workers
     runs-on: ubuntu-latest
     outputs:
-      a2a: ${{ steps.filter.outputs.a2a }}
-      agent: ${{ steps.filter.outputs.agent }}
-      coding: ${{ steps.filter.outputs.coding }}
-      eval: ${{ steps.filter.outputs.eval }}
-      experiment: ${{ steps.filter.outputs.experiment }}
-      guardrails: ${{ steps.filter.outputs.guardrails }}
-      image-resize: ${{ steps.filter.outputs.image-resize }}
-      iii-lsp: ${{ steps.filter.outputs.iii-lsp }}
-      iii-lsp-vscode: ${{ steps.filter.outputs.iii-lsp-vscode }}
-      introspect: ${{ steps.filter.outputs.introspect }}
-      llm-router: ${{ steps.filter.outputs.llm-router }}
-      mcp: ${{ steps.filter.outputs.mcp }}
-      shell: ${{ steps.filter.outputs.shell }}
+      rust: ${{ steps.bucket.outputs.rust }}
+      node: ${{ steps.bucket.outputs.node }}
+      python: ${{ steps.bucket.outputs.python }}
+      all: ${{ steps.bucket.outputs.all }}
+      source_changed: ${{ steps.bucket.outputs.source_changed }}
+      vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
+      any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            a2a:
-              - 'a2a/**'
-            agent:
-              - 'agent/**'
-            coding:
-              - 'coding/**'
-            eval:
-              - 'eval/**'
-            experiment:
-              - 'experiment/**'
-            guardrails:
-              - 'guardrails/**'
-            image-resize:
-              - 'image-resize/**'
-            iii-lsp:
-              - 'iii-lsp/**'
-            iii-lsp-vscode:
-              - 'iii-lsp-vscode/**'
-            introspect:
-              - 'introspect/**'
-            llm-router:
-              - 'llm-router/**'
-            mcp:
-              - 'mcp/**'
-            shell:
-              - 'shell/**'
+          fetch-depth: 0
 
-  rust-worker:
-    name: "${{ matrix.worker }}: Test, Format, Lint"
-    needs: changes
-    if: |
-      (matrix.worker == 'a2a' && needs.changes.outputs.a2a == 'true') ||
-      (matrix.worker == 'agent' && needs.changes.outputs.agent == 'true') ||
-      (matrix.worker == 'coding' && needs.changes.outputs.coding == 'true') ||
-      (matrix.worker == 'eval' && needs.changes.outputs.eval == 'true') ||
-      (matrix.worker == 'experiment' && needs.changes.outputs.experiment == 'true') ||
-      (matrix.worker == 'guardrails' && needs.changes.outputs.guardrails == 'true') ||
-      (matrix.worker == 'image-resize' && needs.changes.outputs.image-resize == 'true') ||
-      (matrix.worker == 'introspect' && needs.changes.outputs.introspect == 'true') ||
-      (matrix.worker == 'llm-router' && needs.changes.outputs.llm-router == 'true') ||
-      (matrix.worker == 'mcp' && needs.changes.outputs.mcp == 'true') ||
-      (matrix.worker == 'shell' && needs.changes.outputs.shell == 'true')
+      - name: Compute base ref
+        id: base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Bucket changed workers
+        id: bucket
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+
+          base = os.environ["BASE"]
+          try:
+              changed = subprocess.check_output(
+                  ["git", "diff", "--name-only", f"{base}...HEAD"], text=True
+              ).splitlines()
+          except subprocess.CalledProcessError:
+              changed = subprocess.check_output(
+                  ["git", "diff", "--name-only", "HEAD~1...HEAD"], text=True
+              ).splitlines()
+
+          repo_root = pathlib.Path(".").resolve()
+          ignore = {".git", ".github", "registry", "target", "node_modules"}
+          worker_dirs = sorted(
+              p.name
+              for p in repo_root.iterdir()
+              if p.is_dir() and not p.name.startswith(".") and p.name not in ignore
+              and (p / "iii.worker.yaml").exists()
+          )
+
+          # Files inside a worker dir that don't count as a "source" change.
+          # If a worker only touched these, version-bump and tests/ gates are
+          # downgraded to notices in pr-checks.
+          import fnmatch
+          metadata_globs = (
+              "iii.worker.yaml",
+              "README.md",
+              "AGENTS.md",
+              "AGENTS-*.md",
+              "Cargo.lock",
+          )
+
+          def is_metadata(rel: str) -> bool:
+              return any(fnmatch.fnmatch(rel, g) for g in metadata_globs)
+
+          changed_workers = set()
+          worker_files: dict[str, list[str]] = {}
+          vscode_changed = False
+          for f in changed:
+              parts = f.split("/", 1)
+              if len(parts) < 2:
+                  continue
+              top, rel = parts[0], parts[1]
+              if top == "iii-lsp-vscode":
+                  vscode_changed = True
+                  continue
+              if top in worker_dirs:
+                  changed_workers.add(top)
+                  worker_files.setdefault(top, []).append(rel)
+
+          source_changed = sorted(
+              w for w in changed_workers
+              if any(not is_metadata(rel) for rel in worker_files.get(w, []))
+          )
+
+          rust, node, python = [], [], []
+          for w in sorted(changed_workers):
+              meta_path = pathlib.Path(w) / "iii.worker.yaml"
+              lang = None
+              for line in meta_path.read_text().splitlines():
+                  s = line.strip()
+                  if s.startswith("language:"):
+                      lang = s.split(":", 1)[1].strip()
+                      break
+              if lang == "rust":
+                  rust.append(w)
+              elif lang == "node":
+                  node.append(w)
+              elif lang == "python":
+                  python.append(w)
+              else:
+                  print(f"::warning::{w} has unknown language={lang}")
+
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          out.write(f"rust={json.dumps(rust)}\n")
+          out.write(f"node={json.dumps(node)}\n")
+          out.write(f"python={json.dumps(python)}\n")
+          out.write(f"all={json.dumps(sorted(changed_workers))}\n")
+          out.write(f"source_changed={json.dumps(source_changed)}\n")
+          out.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
+          out.write(f"any={'true' if (changed_workers or vscode_changed) else 'false'}\n")
+          out.close()
+
+          print(
+              f"::notice::changed rust={rust} node={node} python={python} "
+              f"vscode={vscode_changed} source_changed={source_changed}"
+          )
+          PY
+
+  # ──────────────────────────────────────────────────────────────
+  # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
+  # Runs once per changed worker (excluding iii-lsp-vscode).
+  # ──────────────────────────────────────────────────────────────
+  pr-checks:
+    name: "${{ matrix.worker }}: PR checks"
+    needs: discover
+    if: needs.discover.outputs.all != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        worker:
-          - a2a
-          - agent
-          - coding
-          - eval
-          - experiment
-          - guardrails
-          - image-resize
-          - introspect
-          - llm-router
-          - mcp
-          - shell
+        worker: ${{ fromJSON(needs.discover.outputs.all) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_REF"
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Validate worker
+        env:
+          WORKER: ${{ matrix.worker }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+          SOURCE_CHANGED: ${{ needs.discover.outputs.source_changed }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, sys, yaml
+
+          worker = os.environ["WORKER"]
+          base = os.environ["BASE_REF"]
+          source_changed = set(json.loads(os.environ.get("SOURCE_CHANGED") or "[]"))
+          strict = worker in source_changed
+          root = pathlib.Path(worker)
+          errs = []
+
+          def soft(msg: str) -> None:
+              # Strict for workers with real source changes; notice otherwise.
+              if strict:
+                  errs.append(msg)
+              else:
+                  print(f"::notice::{msg} (skipped: {worker} only changed metadata)")
+
+          # 1. README.md present and non-empty
+          readme = root / "README.md"
+          if not readme.exists():
+              errs.append(f"{worker}/README.md is missing")
+          elif readme.stat().st_size == 0:
+              errs.append(f"{worker}/README.md is empty")
+
+          # 2. iii.worker.yaml parses and has required fields
+          meta_path = root / "iii.worker.yaml"
+          if not meta_path.exists():
+              errs.append(f"{worker}/iii.worker.yaml is missing")
+              meta = {}
+          else:
+              meta = yaml.safe_load(meta_path.read_text()) or {}
+              for key in ("name", "language", "deploy", "manifest"):
+                  if not meta.get(key):
+                      errs.append(f"{worker}/iii.worker.yaml is missing key: {key}")
+              if meta.get("name") and meta["name"] != worker:
+                  errs.append(
+                      f"{worker}/iii.worker.yaml name={meta['name']!r} does not match folder"
+                  )
+              if meta.get("deploy") not in ("binary", "image"):
+                  errs.append(
+                      f"{worker}/iii.worker.yaml deploy must be 'binary' or 'image'"
+                  )
+              if meta.get("language") not in ("rust", "node", "python"):
+                  errs.append(
+                      f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python'"
+                  )
+
+          # 3. manifest version on PR > version on base
+          def read_version(text: str, kind: str) -> str | None:
+              if kind == "Cargo.toml":
+                  for line in text.splitlines():
+                      m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
+                      if m:
+                          return m.group(1)
+              elif kind == "package.json":
+                  import json
+                  return json.loads(text).get("version")
+              elif kind == "pyproject.toml":
+                  for line in text.splitlines():
+                      m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
+                      if m:
+                          return m.group(1)
+              return None
+
+          def parse_semver(v: str) -> tuple:
+              # Strip prerelease/build for ordering: <X>.<Y>.<Z>[-pre]
+              core, _, pre = v.partition("-")
+              parts = [int(x) for x in core.split(".")]
+              while len(parts) < 3:
+                  parts.append(0)
+              # No pre = greater than any pre at the same core
+              return (tuple(parts), 1 if not pre else 0, pre)
+
+          manifest_name = meta.get("manifest")
+          if manifest_name:
+              manifest_path = root / manifest_name
+              if not manifest_path.exists():
+                  errs.append(f"{worker}/{manifest_name} not found")
+              else:
+                  pr_ver = read_version(manifest_path.read_text(), manifest_name)
+                  if not pr_ver:
+                      errs.append(f"could not read version from {worker}/{manifest_name}")
+                  else:
+                      try:
+                          base_blob = subprocess.check_output(
+                              ["git", "show", f"origin/{base}:{worker}/{manifest_name}"],
+                              text=True,
+                              stderr=subprocess.DEVNULL,
+                          )
+                          base_ver = read_version(base_blob, manifest_name)
+                      except subprocess.CalledProcessError:
+                          base_ver = None  # New worker on this PR
+
+                      if base_ver is None:
+                          print(
+                              f"::notice::{worker}: new worker on this PR "
+                              f"(no base version), pr={pr_ver}"
+                          )
+                      elif parse_semver(pr_ver) <= parse_semver(base_ver):
+                          soft(
+                              f"{worker}/{manifest_name} version must be greater than base: "
+                              f"pr={pr_ver} base={base_ver}"
+                          )
+                      else:
+                          print(
+                              f"::notice::{worker}: version {base_ver} -> {pr_ver}"
+                          )
+
+          # 4. tests dir present and non-empty
+          tests_dir = root / "tests"
+          if not tests_dir.exists() or not any(tests_dir.iterdir()):
+              soft(f"{worker}/tests/ is missing or empty")
+
+          if errs:
+              for e in errs:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print(f"::notice::{worker}: all PR checks passed")
+          PY
+
+  # ──────────────────────────────────────────────────────────────
+  # Rust per-worker lint + test
+  # ──────────────────────────────────────────────────────────────
+  rust:
+    name: "${{ matrix.worker }}: rust lint + test"
+    needs: discover
+    if: needs.discover.outputs.rust != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.rust) }}
     defaults:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -116,41 +326,86 @@ jobs:
       - name: Run tests
         run: cargo test --all-features
 
-  iii-lsp:
-    name: "iii-lsp: Test, Format, Lint"
-    needs: changes
-    if: needs.changes.outputs.iii-lsp == 'true'
+  # ──────────────────────────────────────────────────────────────
+  # Node per-worker lint (biome) + test
+  # ──────────────────────────────────────────────────────────────
+  node:
+    name: "${{ matrix.worker }}: node lint + test"
+    needs: discover
+    if: needs.discover.outputs.node != '[]'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: iii-lsp
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.node) }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
         with:
-          components: rustfmt, clippy
+          node-version: 22
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: iii-lsp -> target
+      - name: Install dependencies
+        working-directory: ${{ matrix.worker }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Biome lint
+        run: npx --yes @biomejs/biome@2.4.10 ci ${{ matrix.worker }}
 
       - name: Run tests
-        run: cargo test --all-features
+        if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
+        working-directory: ${{ matrix.worker }}
+        run: npm test
 
+  # ──────────────────────────────────────────────────────────────
+  # Python per-worker lint (ruff) + test (pytest)
+  # ──────────────────────────────────────────────────────────────
+  python:
+    name: "${{ matrix.worker }}: python lint + test"
+    needs: discover
+    if: needs.discover.outputs.python != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.python) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff + pytest
+        run: pip install --quiet ruff pytest
+
+      - name: Ruff lint
+        run: ruff check ${{ matrix.worker }}
+
+      - name: Ruff format check
+        run: ruff format --check ${{ matrix.worker }}
+
+      - name: Install worker
+        working-directory: ${{ matrix.worker }}
+        run: pip install -e ".[dev]" || pip install -e .
+
+      - name: Run pytest
+        if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
+        working-directory: ${{ matrix.worker }}
+        run: pytest -q
+
+  # ──────────────────────────────────────────────────────────────
+  # iii-lsp-vscode: special-case (VS Code extension, not a standard worker)
+  # ──────────────────────────────────────────────────────────────
   iii-lsp-vscode:
-    name: "iii-lsp-vscode: Lint"
-    needs: changes
-    if: needs.changes.outputs.iii-lsp-vscode == 'true'
+    name: "iii-lsp-vscode: lint + test"
+    needs: discover
+    if: needs.discover.outputs.vscode_changed == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

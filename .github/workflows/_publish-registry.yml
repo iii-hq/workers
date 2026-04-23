@@ -1,0 +1,165 @@
+name: Publish to workers registry
+
+on:
+  workflow_call:
+    inputs:
+      worker:
+        description: 'Worker name (folder)'
+        required: true
+        type: string
+      version:
+        description: 'Semver version'
+        required: true
+        type: string
+      deploy:
+        description: 'binary | image'
+        required: true
+        type: string
+      registry_tag:
+        description: 'Registry tag (latest, next, ...)'
+        required: false
+        type: string
+        default: latest
+      tag:
+        description: 'Git tag (e.g., image-resize/v1.0.0)'
+        required: true
+        type: string
+      bin:
+        description: 'Cargo binary name (binary deploy only)'
+        required: false
+        type: string
+        default: ''
+      image_tag:
+        description: 'Fully-qualified image reference (image deploy only)'
+        required: false
+        type: string
+        default: ''
+      api_url:
+        description: 'Workers registry base URL'
+        required: false
+        type: string
+        default: 'https://api.workers.iii.dev'
+
+jobs:
+  publish:
+    name: POST /publish (${{ inputs.worker }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Build payload
+        id: payload
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          DEPLOY: ${{ inputs.deploy }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          TAG: ${{ inputs.tag }}
+          BIN: ${{ inputs.bin }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys, urllib.request, yaml
+
+          worker = os.environ["WORKER"]
+          version = os.environ["VERSION"]
+          deploy = os.environ["DEPLOY"]
+          reg_tag = os.environ["REGISTRY_TAG"] or "latest"
+          tag = os.environ["TAG"]
+          repo_url = os.environ["REPO_URL"]
+          bin_name = os.environ.get("BIN") or worker
+          image_tag = os.environ.get("IMAGE_TAG", "")
+
+          root = pathlib.Path(worker)
+          meta = yaml.safe_load((root / "iii.worker.yaml").read_text()) or {}
+
+          readme_path = root / "README.md"
+          readme = readme_path.read_text() if readme_path.exists() else ""
+
+          config_path = root / "config.yaml"
+          config = {}
+          if config_path.exists():
+              config = yaml.safe_load(config_path.read_text()) or {}
+
+          payload = {
+              "worker_name": worker,
+              "version": version,
+              "tag": reg_tag,
+              "type": deploy,
+              "readme": readme,
+              "repo": repo_url,
+              "description": meta.get("description", ""),
+              "dependencies": meta.get("dependencies", []),
+              "config": config,
+          }
+
+          if deploy == "binary":
+              targets = [
+                  "x86_64-apple-darwin",
+                  "aarch64-apple-darwin",
+                  "x86_64-pc-windows-msvc",
+                  "i686-pc-windows-msvc",
+                  "aarch64-pc-windows-msvc",
+                  "x86_64-unknown-linux-gnu",
+                  "x86_64-unknown-linux-musl",
+                  "aarch64-unknown-linux-gnu",
+                  "armv7-unknown-linux-gnueabihf",
+              ]
+              base = f"{repo_url}/releases/download/{tag}"
+              binaries = {}
+              for t in targets:
+                  ext = "zip" if "windows" in t else "tar.gz"
+                  asset = f"{bin_name}-{t}.{ext}"
+                  asset_url = f"{base}/{asset}"
+                  sha_url = f"{asset_url}.sha256"
+                  try:
+                      with urllib.request.urlopen(sha_url, timeout=20) as r:
+                          sha_text = r.read().decode("utf-8").strip()
+                      sha = sha_text.split()[0]
+                      binaries[t] = {"url": asset_url, "sha256": sha}
+                  except Exception as e:
+                      print(f"::warning::missing checksum for {t}: {e}")
+              if not binaries:
+                  print("::error::no binary artefacts could be resolved")
+                  sys.exit(1)
+              payload["binaries"] = binaries
+          elif deploy == "image":
+              if not image_tag:
+                  print("::error::deploy=image but no image_tag provided")
+                  sys.exit(1)
+              payload["image_tag"] = image_tag
+          else:
+              print(f"::error::unsupported deploy={deploy}")
+              sys.exit(1)
+
+          out = pathlib.Path("payload.json")
+          out.write_text(json.dumps(payload, indent=2))
+          print(json.dumps({k: payload[k] for k in payload if k != "readme"}, indent=2))
+          PY
+
+      - name: POST /publish
+        env:
+          API_URL: ${{ inputs.api_url }}
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+        run: |
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          http=$(curl -sS -o response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X POST "$API_URL/publish" \
+            --data-binary @payload.json)
+          echo "HTTP $http"
+          cat response.json
+          if [[ "$http" != "200" ]]; then
+            echo "::error::publish failed with HTTP $http"
+            exit 1
+          fi

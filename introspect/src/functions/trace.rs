@@ -155,9 +155,10 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
                     continue;
                 }
                 if other_t.trigger_type == "durable::subscriber"
-                    && !related.contains(&other_t.function_id) {
-                        related.push(other_t.function_id.clone());
-                    }
+                    && !related.contains(&other_t.function_id)
+                {
+                    related.push(other_t.function_id.clone());
+                }
                 // Non-subscriber peers on the same topic (publish/output)
                 // are left to other traversal paths; this block only
                 // handles peer-consumer mislabelling.
