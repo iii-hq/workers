@@ -56,17 +56,19 @@ Even with `--expose-all`, these namespaces are **always** filtered out:
 | `engine::*` | iii engine internals |
 | `state::*` | KV plumbing, not an agent tool |
 | `stream::*` | channel plumbing |
-| `iii.*` | SDK internals (callback functions) |
+| `iii.*` / `iii::*` | SDK internals — callback functions and namespaced SDK APIs |
 | `mcp::*` | this worker's own entry point |
+| `a2a::*` | sibling protocol worker's entry point |
 
 ### CLI flags
 
-```
+```text
 --engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
 --no-stdio           Skip stdio, run HTTP-only
 --expose-all         Ignore the mcp.expose gate (dev only). Hard floor still applies.
---no-builtins        Hide the 6 built-in management tools from tools/list.
-                     Default: on for HTTP, off for stdio.
+--no-builtins        Hide the 6 built-in management tools on stdio. Also hidden over HTTP by default.
+--http-builtins      Opt in to exposing built-ins on HTTP (default: hidden).
+                     --no-builtins always wins and hides them everywhere.
 --tier <name>        Show only functions whose mcp.tier metadata equals <name>.
                      E.g. `--tier user` for end-user Claude Desktop config,
                      `--tier agent` for an agent client, `--tier ops` for dashboards.
@@ -86,8 +88,11 @@ Even with `--expose-all`, these namespaces are **always** filtered out:
 
 **Stdio transport keeps these visible by default.** HTTP transport hides
 them by default because worker spawning requires the stdio-attached
-process — the tools would error on invocation anyway. Flip with
-`--no-builtins=false` if a specific deploy needs them over HTTP.
+process — the tools would error on invocation anyway. Opt in per-deploy
+with `--http-builtins` to advertise them over HTTP as well (they will
+still error on `iii_worker_*` and `iii_trigger_register*` because those
+paths need the attached process). `--no-builtins` always wins and hides
+them on both transports.
 
 ## Invocation path
 

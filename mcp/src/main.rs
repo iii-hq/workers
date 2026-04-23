@@ -36,9 +36,18 @@ struct Args {
     #[arg(
         long,
         help = "Hide the 6 built-in management tools (iii_worker_register, \
-                iii_worker_stop, iii_trigger_*). Default: on for HTTP, off for stdio."
+                iii_worker_stop, iii_trigger_*) from stdio. HTTP hides them \
+                by default — see --http-builtins to opt in."
     )]
     no_builtins: bool,
+
+    #[arg(
+        long,
+        help = "Opt in to exposing built-in management tools on the HTTP \
+                transport. Default: HTTP hides them (worker/trigger management \
+                requires stdio-attached process anyway)."
+    )]
+    http_builtins: bool,
 
     #[arg(
         long,
@@ -67,10 +76,13 @@ async fn main() -> anyhow::Result<()> {
 
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
-    // HTTP transport defaults to hiding builtins — worker/trigger management
-    // requires stdio, so listing those over HTTP is pure noise. stdio keeps
-    // the default of showing builtins (the common Claude Desktop path).
-    let http_no_builtins = args.no_builtins || args.no_stdio;
+    // HTTP transport hides builtins by default — worker/trigger management
+    // needs the stdio-attached process anyway, so exposing them over HTTP
+    // was pure noise that errored on invocation. Opt in with
+    // --http-builtins when a deploy genuinely needs it. --no-builtins
+    // still wins (forces hidden everywhere). stdio keeps the default of
+    // showing builtins (common Claude Desktop path).
+    let http_no_builtins = args.no_builtins || !args.http_builtins;
     let http_exposure = ExposureConfig::new(args.expose_all, http_no_builtins, args.tier.clone());
     handler::register_http(&iii, http_exposure);
 

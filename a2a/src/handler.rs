@@ -26,15 +26,15 @@ fn metadata_string(f: &iii_sdk::FunctionInfo, key: &str) -> Option<String> {
 // `state::*` / `engine::*` / the a2a worker's own jsonrpc entry as "skills"
 // is categorically not a cross-agent surface.
 pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
-    "engine::",
-    "state::",
-    "stream::",
-    "iii.",
+    "engine::", "state::", "stream::",
+    // SDK internals come in two notations — callback-style
+    // `iii.on_functions_available.<uuid>` and namespace-style
+    // `iii::durable::publish`, `iii::config`. Match both.
+    "iii.", "iii::",
     // Sibling protocol worker entry point. Calling `mcp::handler` via A2A
     // message/send double-envelopes an MCP request inside A2A — not a
     // meaningful skill. Hide symmetrically with mcp's a2a:: carve-out.
-    "mcp::",
-    "a2a::",
+    "mcp::", "a2a::",
 ];
 
 fn is_always_hidden(function_id: &str) -> bool {

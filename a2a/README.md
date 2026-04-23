@@ -57,12 +57,13 @@ skills and cannot be invoked via `message/send`:
 | `engine::*` | iii engine internals |
 | `state::*` | KV plumbing |
 | `stream::*` | channel plumbing |
-| `iii.*` | SDK callbacks |
+| `iii.*` / `iii::*` | SDK callbacks and namespaced SDK APIs |
+| `mcp::*` | sibling protocol worker's entry point |
 | `a2a::*` | this worker's own JSON-RPC entry |
 
 ### CLI flags
 
-```
+```text
 --engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
 --expose-all         Ignore the a2a.expose gate (dev only). Hard floor still applies.
 --tier <name>        Show only functions whose a2a.tier metadata equals <name>.
