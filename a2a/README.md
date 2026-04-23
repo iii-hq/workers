@@ -73,6 +73,135 @@ skills and cannot be invoked via `message/send`:
 --debug              Verbose logging
 ```
 
+## Local testing
+
+A2A has no standard client inspector like MCP does. Use curl. Full smoke
+path from a clean machine, assuming `iii-sdk` v0.11.3 engine installed:
+
+### 1. Start the engine
+
+Minimal `config.yaml`:
+
+```yaml
+workers:
+  - name: iii-worker-manager
+  - name: iii-http
+    config:
+      host: 127.0.0.1
+      port: 3111
+  - name: iii-state
+```
+
+```bash
+iii --no-update-check
+```
+
+### 2. Register a test function tagged `a2a.expose: true`
+
+```rust
+use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
+use serde_json::{json, Value};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    iii.register_function_with(
+        RegisterFunctionMessage {
+            id: "pricing::quote".into(),
+            description: Some("Quote a price".into()),
+            metadata: Some(json!({ "a2a.expose": true })),
+            ..Default::default()
+        },
+        |_input: Value| async move { Ok(json!({"price": 42})) },
+    );
+
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+```
+
+### 3. Start iii-a2a
+
+```bash
+cargo run --release -p iii-a2a
+# or: ./target/release/iii-a2a --base-url http://127.0.0.1:3111
+```
+
+Registers `GET /.well-known/agent-card.json` and `POST /a2a`.
+
+### 4. Smoke path
+
+```bash
+# Agent card — exposed skills only, hard floor filters engine::/state::/etc.
+curl -s http://127.0.0.1:3111/.well-known/agent-card.json \
+  | jq '{name, skills: [.skills[] | {id, description}]}'
+
+# message/send with data part (direct invocation)
+curl -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":"t1","method":"message/send",
+    "params":{"message":{
+      "messageId":"m1","role":"user",
+      "parts":[{"data":{"function_id":"pricing::quote","payload":{}}}]
+    }}
+  }' | jq '.result.task | {state: .status.state, artifact: .artifacts[0].parts[0].text}'
+
+# message/send with text shorthand ("function_id <json>")
+curl -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":"t2","method":"message/send",
+    "params":{"message":{
+      "messageId":"m2","role":"user",
+      "parts":[{"text":"pricing::quote {}"}]
+    }}
+  }' | jq '.result.task.status.state'
+
+# tasks/get — retrieve the stored task
+curl -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"t3","method":"tasks/get","params":{"id":"<paste task.id from t1>"}}' \
+  | jq '.result.task.status.state'
+```
+
+### 5. Verify each gate
+
+```bash
+# Hidden function (no a2a.expose) → state:"failed", distinct rejection
+curl -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":"g1","method":"message/send",
+    "params":{"message":{
+      "messageId":"x","role":"user",
+      "parts":[{"data":{"function_id":"demo::hidden","payload":{}}}]
+    }}
+  }' | jq '.result.task.status.message.parts[0].text'
+
+# Infra prefix → "in the iii-engine internal namespace" message
+curl -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":"g2","method":"message/send",
+    "params":{"message":{
+      "messageId":"x","role":"user",
+      "parts":[{"data":{"function_id":"state::set","payload":{}}}]
+    }}
+  }' | jq '.result.task.status.message.parts[0].text'
+
+# Tier filter: restart iii-a2a with --tier partner, function has a2a.tier="partner"
+./target/release/iii-a2a --tier partner &
+curl -s http://127.0.0.1:3111/.well-known/agent-card.json | jq '.skills[].id'
+```
+
+### 6. Validate with any A2A client
+
+Any AI agent runtime that speaks A2A JSON-RPC 0.3 works. Point it at
+`http://<your-host>:3111/.well-known/agent-card.json` (or the
+`--base-url` you configured) and exercise `message/send`.
+
 ## Function resolution inside `message/send`
 
 1. **Data part** with `{ "function_id": "foo::bar", "payload": {...} }` —
