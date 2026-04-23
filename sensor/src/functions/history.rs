@@ -7,16 +7,17 @@ use crate::analysis::hash_path;
 use crate::config::SensorConfig;
 use crate::state;
 
-pub async fn handle(iii: Arc<III>, _config: Arc<SensorConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: Arc<III>,
+    _config: Arc<SensorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let path = payload
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing required field: path".to_string()))?;
 
-    let limit = payload
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     let path_hash = hash_path(path);
     let scope = format!("sensor:history:{path_hash}");

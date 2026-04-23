@@ -167,7 +167,10 @@ pub fn count_duplicate_lines(content: &str) -> usize {
             *seen.entry(trimmed).or_insert(0) += 1;
         }
     }
-    seen.values().filter(|&&count| count > 1).map(|c| c - 1).sum()
+    seen.values()
+        .filter(|&&count| count > 1)
+        .map(|c| c - 1)
+        .sum()
 }
 
 pub fn analyze_file(path: &Path, ext: &str) -> Option<FileMetrics> {
@@ -281,7 +284,8 @@ pub fn compute_score(scan: &ScanResult, config: &SensorConfig) -> ScoreResult {
     } else {
         0.0
     };
-    let complexity_score = (100.0 - (avg_complexity_per_100 - 5.0).max(0.0) * 5.0).clamp(0.0, 100.0);
+    let complexity_score =
+        (100.0 - (avg_complexity_per_100 - 5.0).max(0.0) * 5.0).clamp(0.0, 100.0);
 
     let avg_imports = files.iter().map(|f| f.import_count as f64).sum::<f64>() / total;
     let coupling_score = (100.0 - (avg_imports - 5.0).max(0.0) * 3.0).clamp(0.0, 100.0);
@@ -317,7 +321,7 @@ pub fn compute_score(scan: &ScanResult, config: &SensorConfig) -> ScoreResult {
         / total;
     let duplication_score = (100.0 - avg_dup_ratio * 200.0).clamp(0.0, 100.0);
 
-    let weighted_scores = vec![
+    let weighted_scores = [
         complexity_score,
         coupling_score,
         cohesion_score,

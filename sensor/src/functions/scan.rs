@@ -7,7 +7,11 @@ use crate::analysis::scan_directory;
 use crate::config::SensorConfig;
 use crate::state;
 
-pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: Arc<III>,
+    config: Arc<SensorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let path = payload
         .get("path")
         .and_then(|v| v.as_str())

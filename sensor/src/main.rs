@@ -105,7 +105,11 @@ async fn main() -> Result<()> {
                 let cfg_c = cfg_c.clone();
                 Box::pin(async move { functions::scan::handle(iii_c, cfg_c, payload).await })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = Result<serde_json::Value, iii_sdk::IIIError>> + Send>,
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<serde_json::Value, iii_sdk::IIIError>,
+                                > + Send,
+                        >,
                     >
             },
         ));

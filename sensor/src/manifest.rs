@@ -55,7 +55,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed["default_config"]["scan_extensions"].is_array());
         assert_eq!(parsed["default_config"]["max_file_size_kb"], 512);
-        assert_eq!(parsed["default_config"]["score_weights"]["complexity"], 0.25);
+        assert_eq!(
+            parsed["default_config"]["score_weights"]["complexity"],
+            0.25
+        );
         assert_eq!(parsed["default_config"]["thresholds"]["min_score"], 60.0);
         assert!(!manifest.supported_targets.is_empty());
     }

@@ -7,7 +7,11 @@ use crate::analysis::{compute_score, hash_path, scan_directory, ScanResult};
 use crate::config::SensorConfig;
 use crate::state;
 
-pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: Arc<III>,
+    config: Arc<SensorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let scan_result: ScanResult = if let Some(sr) = payload.get("scan_result") {
         serde_json::from_value(sr.clone())
             .map_err(|e| IIIError::Handler(format!("invalid scan_result: {e}")))?

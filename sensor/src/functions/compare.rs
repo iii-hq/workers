@@ -7,7 +7,11 @@ use crate::analysis::{compute_score, hash_path, scan_directory, DimensionScores}
 use crate::config::SensorConfig;
 use crate::state;
 
-pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: Arc<III>,
+    config: Arc<SensorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let path = payload
         .get("path")
         .and_then(|v| v.as_str())
@@ -96,19 +100,35 @@ pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) ->
         }
     };
 
-    if check("complexity", current.dimensions.complexity, baseline_dims.complexity) {
+    if check(
+        "complexity",
+        current.dimensions.complexity,
+        baseline_dims.complexity,
+    ) {
         degraded_dimensions.push("complexity");
     }
-    if check("coupling", current.dimensions.coupling, baseline_dims.coupling) {
+    if check(
+        "coupling",
+        current.dimensions.coupling,
+        baseline_dims.coupling,
+    ) {
         degraded_dimensions.push("coupling");
     }
-    if check("cohesion", current.dimensions.cohesion, baseline_dims.cohesion) {
+    if check(
+        "cohesion",
+        current.dimensions.cohesion,
+        baseline_dims.cohesion,
+    ) {
         degraded_dimensions.push("cohesion");
     }
     if check("size", current.dimensions.size, baseline_dims.size) {
         degraded_dimensions.push("size");
     }
-    if check("duplication", current.dimensions.duplication, baseline_dims.duplication) {
+    if check(
+        "duplication",
+        current.dimensions.duplication,
+        baseline_dims.duplication,
+    ) {
         degraded_dimensions.push("duplication");
     }
 

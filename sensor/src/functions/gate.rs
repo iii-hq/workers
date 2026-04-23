@@ -7,7 +7,11 @@ use crate::analysis::{compute_score, hash_path, scan_directory};
 use crate::config::SensorConfig;
 use crate::state;
 
-pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: Arc<III>,
+    config: Arc<SensorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let path = payload
         .get("path")
         .and_then(|v| v.as_str())
@@ -52,8 +56,7 @@ pub async fn handle(iii: Arc<III>, config: Arc<SensorConfig>, payload: Value) ->
         if !baseline_val.is_null() {
             if let Some(baseline_score) = baseline_val.get("score").and_then(|v| v.as_f64()) {
                 if baseline_score > 0.0 {
-                    let degradation =
-                        ((baseline_score - current.score) / baseline_score) * 100.0;
+                    let degradation = ((baseline_score - current.score) / baseline_score) * 100.0;
                     if degradation > max_degradation_pct {
                         passed = false;
                         reasons.push(format!(

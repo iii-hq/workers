@@ -1,8 +1,6 @@
 use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::Value;
 
-
-
 pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Value, IIIError> {
     let payload = serde_json::json!({
         "scope": scope,
