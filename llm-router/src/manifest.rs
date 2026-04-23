@@ -9,9 +9,15 @@ pub const FUNCTIONS: &[(&str, &str)] = &[
     ("router::policy_update", "Patch a policy"),
     ("router::policy_delete", "Remove a policy"),
     ("router::policy_list", "List all policies"),
-    ("router::policy_test", "Dry-run router::decide without logging"),
+    (
+        "router::policy_test",
+        "Dry-run router::decide without logging",
+    ),
     ("router::classify", "Run prompt-complexity classifier only"),
-    ("router::classifier_config", "Configure the category→model mapping"),
+    (
+        "router::classifier_config",
+        "Configure the category→model mapping",
+    ),
     ("router::ab_create", "Create an A/B test"),
     ("router::ab_record", "Record a quality/latency/cost outcome"),
     ("router::ab_report", "Aggregate A/B samples"),

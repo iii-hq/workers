@@ -55,15 +55,9 @@ pub async fn handle(
         .unwrap_or("")
         .to_string();
 
-    let target_payload = payload
-        .get("target_payload")
-        .cloned()
-        .unwrap_or(json!({}));
+    let target_payload = payload.get("target_payload").cloned().unwrap_or(json!({}));
 
-    let metric_payload = payload
-        .get("metric_payload")
-        .cloned()
-        .unwrap_or(json!({}));
+    let metric_payload = payload.get("metric_payload").cloned().unwrap_or(json!({}));
 
     let functions = iii.list_functions().await?;
     let fn_ids: Vec<String> = functions.iter().map(|f| f.function_id.clone()).collect();
@@ -195,8 +189,10 @@ mod tests {
 
     #[test]
     fn test_extract_score_deep_nested() {
-        let result = json!({"a": {"b": {"c": 3.14}}});
-        assert!((extract_score(&result, "a.b.c").unwrap() - 3.14).abs() < f64::EPSILON);
+        // Arbitrary score value; not intended to be pi — clippy was
+        // flagging approximate_constants so we pick a nearby literal.
+        let result = json!({"a": {"b": {"c": 3.125_f64}}});
+        assert!((extract_score(&result, "a.b.c").unwrap() - 3.125).abs() < f64::EPSILON);
     }
 
     #[test]

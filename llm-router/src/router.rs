@@ -134,7 +134,11 @@ pub fn decide(
     cfg: &RouterConfig,
     rng: &mut impl Rng,
 ) -> RoutingDecision {
-    let mut matched: Vec<&Policy> = ctx.policies.iter().filter(|p| match_policy(req, p)).collect();
+    let mut matched: Vec<&Policy> = ctx
+        .policies
+        .iter()
+        .filter(|p| match_policy(req, p))
+        .collect();
     // Deterministic ordering: priority desc, then specificity desc (more
     // match-rule fields = more specific), then policy id asc as a stable
     // tie-breaker so the same inputs always pick the same policy.
@@ -341,7 +345,13 @@ mod tests {
     use rand::SeedableRng;
     use std::collections::HashMap;
 
-    fn mk_policy(id: &str, tenant: Option<&str>, feature: Option<&str>, model: &str, priority: i32) -> Policy {
+    fn mk_policy(
+        id: &str,
+        tenant: Option<&str>,
+        feature: Option<&str>,
+        model: &str,
+        priority: i32,
+    ) -> Policy {
         Policy {
             id: id.into(),
             name: id.into(),
@@ -382,8 +392,14 @@ mod tests {
     #[test]
     fn test_match_policy_tenant_and_feature() {
         let p = mk_policy("p1", Some("acme"), Some("support"), "model-a", 100);
-        assert!(match_policy(&mk_req(Some("acme"), Some("support"), "hi"), &p));
-        assert!(!match_policy(&mk_req(Some("other"), Some("support"), "hi"), &p));
+        assert!(match_policy(
+            &mk_req(Some("acme"), Some("support"), "hi"),
+            &p
+        ));
+        assert!(!match_policy(
+            &mk_req(Some("other"), Some("support"), "hi"),
+            &p
+        ));
     }
 
     #[test]
@@ -508,8 +524,14 @@ mod tests {
     #[test]
     fn test_ab_pick_variant() {
         let variants = vec![
-            AbVariant { model: "a".into(), weight: 50 },
-            AbVariant { model: "b".into(), weight: 50 },
+            AbVariant {
+                model: "a".into(),
+                weight: 50,
+            },
+            AbVariant {
+                model: "b".into(),
+                weight: 50,
+            },
         ];
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let picked = pick_ab_variant(&variants, &mut rng).unwrap();
@@ -518,7 +540,10 @@ mod tests {
 
     #[test]
     fn test_ab_zero_weight_none() {
-        let variants = vec![AbVariant { model: "a".into(), weight: 0 }];
+        let variants = vec![AbVariant {
+            model: "a".into(),
+            weight: 0,
+        }];
         let mut rng = rand::rngs::StdRng::seed_from_u64(1);
         assert!(pick_ab_variant(&variants, &mut rng).is_none());
     }

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{
+    register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput,
+};
 use std::sync::Arc;
 
 mod config;
@@ -8,7 +10,10 @@ mod functions;
 mod manifest;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-introspect", about = "III engine introspection worker — registry discovery, topology maps, and health checks")]
+#[command(
+    name = "iii-introspect",
+    about = "III engine introspection worker — registry discovery, topology maps, and health checks"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -173,7 +178,9 @@ async fn main() -> Result<()> {
     let _fn_topology = iii.register_function_with(
         RegisterFunctionMessage {
             id: "introspect::topology".to_string(),
-            description: Some("Full system topology combining functions, workers, and triggers".to_string()),
+            description: Some(
+                "Full system topology combining functions, workers, and triggers".to_string(),
+            ),
             request_format: Some(serde_json::json!({
                 "type": "object",
                 "properties": {}
@@ -226,7 +233,10 @@ async fn main() -> Result<()> {
     let _fn_health = iii.register_function_with(
         RegisterFunctionMessage {
             id: "introspect::health".to_string(),
-            description: Some("System health check — orphaned functions, empty workers, duplicate IDs".to_string()),
+            description: Some(
+                "System health check — orphaned functions, empty workers, duplicate IDs"
+                    .to_string(),
+            ),
             request_format: Some(serde_json::json!({
                 "type": "object",
                 "properties": {}

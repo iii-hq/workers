@@ -28,7 +28,11 @@ pub struct GeneratedFile {
     pub language: String,
 }
 
-pub fn rust_worker_template(name: &str, functions: &[FunctionDef], triggers: &[TriggerDef]) -> WorkerFiles {
+pub fn rust_worker_template(
+    name: &str,
+    functions: &[FunctionDef],
+    triggers: &[TriggerDef],
+) -> WorkerFiles {
     let snake_name = name.replace('-', "_");
     let bin_name = name.to_string();
 
@@ -68,10 +72,7 @@ clap = {{ version = "4", features = ["derive"] }}
 "#
     .to_string();
 
-    let config_yaml = format!(
-        "worker_name: \"{}\"\n",
-        bin_name
-    );
+    let config_yaml = format!("worker_name: \"{}\"\n", bin_name);
 
     let config_rs = format!(
         r#"use anyhow::Result;
@@ -155,13 +156,23 @@ pub fn build_manifest() -> ModuleManifest {{
         let req_json = func
             .request_format
             .as_ref()
-            .map(|v| format!("Some(serde_json::json!({}))", serde_json::to_string_pretty(v).unwrap_or_default()))
+            .map(|v| {
+                format!(
+                    "Some(serde_json::json!({}))",
+                    serde_json::to_string_pretty(v).unwrap_or_default()
+                )
+            })
             .unwrap_or_else(|| "None".to_string());
 
         let resp_json = func
             .response_format
             .as_ref()
-            .map(|v| format!("Some(serde_json::json!({}))", serde_json::to_string_pretty(v).unwrap_or_default()))
+            .map(|v| {
+                format!(
+                    "Some(serde_json::json!({}))",
+                    serde_json::to_string_pretty(v).unwrap_or_default()
+                )
+            })
             .unwrap_or_else(|| "None".to_string());
 
         fn_registrations.push_str(&format!(
@@ -225,7 +236,9 @@ pub async fn handle(_iii: &III, _payload: Value) -> Result<Value, IIIError> {{
 
     let mut trigger_registrations = String::new();
     for (i, trigger) in triggers.iter().enumerate() {
-        let trigger_config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+        let normalized = normalize_trigger_config(&trigger.config);
+        let trigger_config_str =
+            serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
     let _trigger_{i} = iii.register_trigger(RegisterTriggerInput {{
@@ -370,7 +383,11 @@ async fn main() -> Result<()> {{
     WorkerFiles { files }
 }
 
-pub fn typescript_worker_template(name: &str, functions: &[FunctionDef], triggers: &[TriggerDef]) -> WorkerFiles {
+pub fn typescript_worker_template(
+    name: &str,
+    functions: &[FunctionDef],
+    triggers: &[TriggerDef],
+) -> WorkerFiles {
     let mut files: Vec<GeneratedFile> = Vec::new();
 
     let package_json = format!(
@@ -429,12 +446,15 @@ pub fn typescript_worker_template(name: &str, functions: &[FunctionDef], trigger
 
         fn_registrations.push_str(&format!(
             r#"
-iii.registerFunction({{
-  id: '{fn_id}',
-  description: '{description}',
-  requestFormat: {req_str},
-  responseFormat: {resp_str},
-}}, handle_{fn_short});
+iii.registerFunction(
+  '{fn_id}',
+  handle_{fn_short},
+  {{
+    description: '{description}',
+    request_format: {req_str},
+    response_format: {resp_str},
+  }},
+);
 "#,
             fn_id = func.id,
             description = func.description.replace('\'', "\\'"),
@@ -462,7 +482,9 @@ iii.registerFunction({{
     }
 
     for trigger in triggers {
-        let config_str = serde_json::to_string_pretty(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+        let normalized = normalize_trigger_config(&trigger.config);
+        let config_str =
+            serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
 iii.registerTrigger({{
@@ -535,7 +557,11 @@ process.on('SIGINT', async () => {{
     WorkerFiles { files }
 }
 
-pub fn python_worker_template(name: &str, functions: &[FunctionDef], triggers: &[TriggerDef]) -> WorkerFiles {
+pub fn python_worker_template(
+    name: &str,
+    functions: &[FunctionDef],
+    triggers: &[TriggerDef],
+) -> WorkerFiles {
     let mut files: Vec<GeneratedFile> = Vec::new();
 
     let pyproject = format!(
@@ -620,7 +646,8 @@ iii.register_function(
     }
 
     for trigger in triggers {
-        let config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+        let normalized = normalize_trigger_config(&trigger.config);
+        let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
 iii.register_trigger(
@@ -691,6 +718,23 @@ if __name__ == "__main__":
     });
 
     WorkerFiles { files }
+}
+
+/// Normalize the `api_path` field of an HTTP trigger config.
+///
+/// The engine prepends `/` to every registered api_path, so a user-supplied
+/// `"api_path": "/myworker/greet"` becomes `//myworker/greet` on the wire and
+/// returns 404 at invoke time. Strip exactly one leading slash so generated
+/// workers behave correctly out of the box.
+fn normalize_trigger_config(config: &Value) -> Value {
+    let mut normalized = config.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        if let Some(api_path) = obj.get("api_path").and_then(|v| v.as_str()) {
+            let stripped = api_path.trim_start_matches('/').to_string();
+            obj.insert("api_path".to_string(), Value::String(stripped));
+        }
+    }
+    normalized
 }
 
 fn to_pascal_case(s: &str) -> String {
@@ -805,7 +849,8 @@ pub fn generate_single_function_python(func: &FunctionDef) -> GeneratedFile {
 }
 
 pub fn generate_trigger_code_rust(trigger: &TriggerDef) -> String {
-    let config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.register_trigger(RegisterTriggerInput {{
     trigger_type: "{trigger_type}".to_string(),
@@ -820,7 +865,8 @@ pub fn generate_trigger_code_rust(trigger: &TriggerDef) -> String {
 }
 
 pub fn generate_trigger_code_typescript(trigger: &TriggerDef) -> String {
-    let config_str = serde_json::to_string_pretty(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.registerTrigger({{
   triggerType: '{trigger_type}',
@@ -834,7 +880,8 @@ pub fn generate_trigger_code_typescript(trigger: &TriggerDef) -> String {
 }
 
 pub fn generate_trigger_code_python(trigger: &TriggerDef) -> String {
-    let config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.register_trigger(
     trigger_type="{trigger_type}",
@@ -925,7 +972,11 @@ mod tests {
     #[test]
     fn test_rust_template_main_has_register_worker() {
         let files = rust_worker_template("my-worker", &sample_functions(), &sample_triggers());
-        let main = files.files.iter().find(|f| f.path == "src/main.rs").unwrap();
+        let main = files
+            .files
+            .iter()
+            .find(|f| f.path == "src/main.rs")
+            .unwrap();
         assert!(main.content.contains("register_worker"));
         assert!(main.content.contains("register_function_with"));
         assert!(main.content.contains("register_trigger"));
@@ -936,15 +987,22 @@ mod tests {
     #[test]
     fn test_rust_template_handlers_have_pin_box_pattern() {
         let files = rust_worker_template("my-worker", &sample_functions(), &sample_triggers());
-        let greet = files.files.iter().find(|f| f.path == "src/functions/greet.rs").unwrap();
-        assert!(greet.content.contains("Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>"));
+        let greet = files
+            .files
+            .iter()
+            .find(|f| f.path == "src/functions/greet.rs")
+            .unwrap();
+        assert!(greet
+            .content
+            .contains("Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>"));
         assert!(greet.content.contains("build_handler"));
         assert!(greet.content.contains("Arc<III>"));
     }
 
     #[test]
     fn test_typescript_template_generates_all_files() {
-        let files = typescript_worker_template("my-worker", &sample_functions(), &sample_triggers());
+        let files =
+            typescript_worker_template("my-worker", &sample_functions(), &sample_triggers());
         let paths: Vec<&str> = files.files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"package.json"));
         assert!(paths.contains(&"tsconfig.json"));
@@ -955,8 +1013,13 @@ mod tests {
 
     #[test]
     fn test_typescript_template_index_has_register_worker() {
-        let files = typescript_worker_template("my-worker", &sample_functions(), &sample_triggers());
-        let index = files.files.iter().find(|f| f.path == "src/index.ts").unwrap();
+        let files =
+            typescript_worker_template("my-worker", &sample_functions(), &sample_triggers());
+        let index = files
+            .files
+            .iter()
+            .find(|f| f.path == "src/index.ts")
+            .unwrap();
         assert!(index.content.contains("registerWorker"));
         assert!(index.content.contains("registerFunction"));
         assert!(index.content.contains("registerTrigger"));
@@ -978,7 +1041,11 @@ mod tests {
     #[test]
     fn test_python_template_worker_has_register() {
         let files = python_worker_template("my-worker", &sample_functions(), &sample_triggers());
-        let worker = files.files.iter().find(|f| f.path == "src/worker.py").unwrap();
+        let worker = files
+            .files
+            .iter()
+            .find(|f| f.path == "src/worker.py")
+            .unwrap();
         assert!(worker.content.contains("register_worker"));
         assert!(worker.content.contains("register_function"));
         assert!(worker.content.contains("register_trigger"));
@@ -1076,7 +1143,11 @@ mod tests {
     #[test]
     fn test_empty_functions_produces_valid_template() {
         let files = rust_worker_template("empty-worker", &[], &[]);
-        let main = files.files.iter().find(|f| f.path == "src/main.rs").unwrap();
+        let main = files
+            .files
+            .iter()
+            .find(|f| f.path == "src/main.rs")
+            .unwrap();
         assert!(main.content.contains("register_worker"));
         assert!(main.content.contains("shutdown_async"));
     }

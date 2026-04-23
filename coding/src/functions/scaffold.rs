@@ -26,11 +26,7 @@ pub fn build_handler(
     }
 }
 
-pub async fn handle(
-    iii: &III,
-    config: &CodingConfig,
-    payload: Value,
-) -> Result<Value, IIIError> {
+pub async fn handle(iii: &III, config: &CodingConfig, payload: Value) -> Result<Value, IIIError> {
     let name = payload
         .get("name")
         .and_then(|v| v.as_str())
@@ -58,7 +54,15 @@ pub async fn handle(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
-    let worker_id = format!("{}_{}", name, uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000"));
+    let worker_id = format!(
+        "{}_{}",
+        name,
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("0000")
+    );
 
     let worker_files = match language {
         "rust" => rust_worker_template(name, &functions, &triggers),
@@ -73,7 +77,11 @@ pub async fn handle(
     };
 
     let workspace_path = format!("{}/{}", config.workspace_dir, worker_id);
-    write_files_to_disk(&workspace_path, &worker_files.files, config.max_file_size_kb)?;
+    write_files_to_disk(
+        &workspace_path,
+        &worker_files.files,
+        config.max_file_size_kb,
+    )?;
 
     let files_json: Vec<Value> = worker_files
         .files

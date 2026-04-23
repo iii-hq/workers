@@ -33,13 +33,17 @@ pub async fn handle(
     let target_function = definition
         .get("target_function")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| IIIError::Handler("malformed definition: missing target_function".to_string()))?
+        .ok_or_else(|| {
+            IIIError::Handler("malformed definition: missing target_function".to_string())
+        })?
         .to_string();
 
     let metric_function = definition
         .get("metric_function")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| IIIError::Handler("malformed definition: missing metric_function".to_string()))?
+        .ok_or_else(|| {
+            IIIError::Handler("malformed definition: missing metric_function".to_string())
+        })?
         .to_string();
 
     let metric_path = definition
@@ -55,35 +59,36 @@ pub async fn handle(
 
     let timeout = config.timeout_per_run_ms;
 
-    let modified_payload = if let Some(proposal_id) = payload.get("proposal_id").and_then(|v| v.as_str()) {
-        let proposal_key = format!("{}:{}", experiment_id, proposal_id);
-        let proposal = state::state_get(&iii, "experiment:proposals", &proposal_key)
-            .await
-            .map_err(|e| IIIError::Handler(format!("failed to load proposal: {e}")))?;
+    let modified_payload =
+        if let Some(proposal_id) = payload.get("proposal_id").and_then(|v| v.as_str()) {
+            let proposal_key = format!("{}:{}", experiment_id, proposal_id);
+            let proposal = state::state_get(&iii, "experiment:proposals", &proposal_key)
+                .await
+                .map_err(|e| IIIError::Handler(format!("failed to load proposal: {e}")))?;
 
-        if proposal.is_null() {
-            return Err(IIIError::Handler(format!(
-                "proposal '{}' not found",
-                proposal_id
-            )));
-        }
+            if proposal.is_null() {
+                return Err(IIIError::Handler(format!(
+                    "proposal '{}' not found",
+                    proposal_id
+                )));
+            }
 
-        proposal
-            .get("modified_payload")
-            .cloned()
-            .unwrap_or(json!({}))
-    } else {
-        let propose_result = crate::functions::propose::handle(
-            iii.clone(),
-            json!({ "experiment_id": experiment_id }),
-        )
-        .await?;
+            proposal
+                .get("modified_payload")
+                .cloned()
+                .unwrap_or(json!({}))
+        } else {
+            let propose_result = crate::functions::propose::handle(
+                iii.clone(),
+                json!({ "experiment_id": experiment_id }),
+            )
+            .await?;
 
-        propose_result
-            .get("modified_payload")
-            .cloned()
-            .unwrap_or(json!({}))
-    };
+            propose_result
+                .get("modified_payload")
+                .cloned()
+                .unwrap_or(json!({}))
+        };
 
     iii.trigger(TriggerRequest {
         function_id: target_function,

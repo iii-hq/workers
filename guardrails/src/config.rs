@@ -82,11 +82,7 @@ impl GuardrailsConfig {
     pub fn compile_pii_patterns(&self) -> Vec<(String, Regex)> {
         self.pii_patterns
             .iter()
-            .filter_map(|p| {
-                Regex::new(&p.pattern)
-                    .ok()
-                    .map(|re| (p.name.clone(), re))
-            })
+            .filter_map(|p| Regex::new(&p.pattern).ok().map(|re| (p.name.clone(), re)))
             .collect()
     }
 }

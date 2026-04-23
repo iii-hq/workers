@@ -56,9 +56,14 @@ pub async fn handle(iii: Arc<III>, payload: Value) -> Result<Value, IIIError> {
     });
 
     let proposal_key = format!("{}:{}", experiment_id, proposal_id);
-    state::state_set(&iii, "experiment:proposals", &proposal_key, proposal.clone())
-        .await
-        .map_err(|e| IIIError::Handler(format!("failed to save proposal: {e}")))?;
+    state::state_set(
+        &iii,
+        "experiment:proposals",
+        &proposal_key,
+        proposal.clone(),
+    )
+    .await
+    .map_err(|e| IIIError::Handler(format!("failed to save proposal: {e}")))?;
 
     Ok(json!({
         "proposal_id": proposal_id,
@@ -119,8 +124,8 @@ fn pseudo_random_variation() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    let raw = ((nanos % 1000) as f64 / 1000.0) - 0.5;
-    raw
+    
+    ((nanos % 1000) as f64 / 1000.0) - 0.5
 }
 
 fn describe_changes(base: &Value, modified: &Value) -> String {

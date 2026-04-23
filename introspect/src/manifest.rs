@@ -13,7 +13,9 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "III engine introspection worker — registry discovery, topology maps, and health checks".to_string(),
+        description:
+            "III engine introspection worker — registry discovery, topology maps, and health checks"
+                .to_string(),
         default_config: serde_json::json!({
             "class": "modules::introspect::IntrospectModule",
             "config": {

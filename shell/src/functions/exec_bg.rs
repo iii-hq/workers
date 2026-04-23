@@ -28,16 +28,38 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         .get("command")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing 'command'".to_string()))?;
-    let args: Option<Vec<String>> = payload
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
+    // Strict validation — see exec.rs for the reasoning. Silently dropping
+    // non-strings turned partial args into successful background spawns,
+    // which is the worst possible behaviour for a long-lived job.
+    let args: Option<Vec<String>> = match payload.get("args") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        return Err(IIIError::Handler(format!(
+                            "'args[{}]' must be a string (got {})",
+                            i, v
+                        )));
+                    }
+                }
+            }
+            Some(out)
+        }
+        Some(other) => {
+            return Err(IIIError::Handler(format!(
+                "'args' must be an array of strings (got {})",
+                other
+            )));
+        }
+    };
 
     let argv = parse_argv(command, args.as_ref())
         .map_err(|e| IIIError::Handler(format!("argv: {}", e)))?;
 
-    cfg.is_command_allowed(&argv)
-        .map_err(IIIError::Handler)?;
+    cfg.is_command_allowed(&argv).map_err(IIIError::Handler)?;
 
     let running = jobs::running_count().await;
     if running >= cfg.max_concurrent_jobs {

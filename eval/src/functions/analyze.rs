@@ -113,9 +113,7 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
             timeout_ms: Some(10_000),
         })
         .await
-        .map_err(|e| {
-            IIIError::Handler(format!("failed to fetch traces from engine: {e}"))
-        })?;
+        .map_err(|e| IIIError::Handler(format!("failed to fetch traces from engine: {e}")))?;
 
     let spans: Vec<&Value> = if let Some(arr) = traces_response.as_array() {
         arr.iter().collect()
@@ -174,10 +172,14 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
 
         if let Some(ts) = extract_timestamp_ms(span) {
             stats.min_timestamp_ms = Some(
-                stats.min_timestamp_ms.map_or(ts, |existing| existing.min(ts)),
+                stats
+                    .min_timestamp_ms
+                    .map_or(ts, |existing| existing.min(ts)),
             );
             stats.max_timestamp_ms = Some(
-                stats.max_timestamp_ms.map_or(ts, |existing| existing.max(ts)),
+                stats
+                    .max_timestamp_ms
+                    .map_or(ts, |existing| existing.max(ts)),
             );
             global_min_ts = Some(global_min_ts.map_or(ts, |existing| existing.min(ts)));
             global_max_ts = Some(global_max_ts.map_or(ts, |existing| existing.max(ts)));
@@ -218,7 +220,9 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         } else {
             0.0
         };
-        avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+        avg_b
+            .partial_cmp(&avg_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     let slowest_functions: Vec<Value> = function_entries
@@ -235,7 +239,7 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         })
         .collect();
 
-    function_entries.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations));
+    function_entries.sort_by_key(|e| std::cmp::Reverse(e.1.invocations));
 
     let most_active: Vec<Value> = function_entries
         .iter()
@@ -336,7 +340,10 @@ mod tests {
     #[test]
     fn test_extract_function_id_fallback() {
         let span = json!({ "name": "eval::metrics" });
-        assert_eq!(extract_function_id(&span), Some("eval::metrics".to_string()));
+        assert_eq!(
+            extract_function_id(&span),
+            Some("eval::metrics".to_string())
+        );
     }
 
     #[test]

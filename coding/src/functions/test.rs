@@ -23,11 +23,7 @@ pub fn build_handler(
     }
 }
 
-pub async fn handle(
-    iii: &III,
-    config: &CodingConfig,
-    payload: Value,
-) -> Result<Value, IIIError> {
+pub async fn handle(iii: &III, config: &CodingConfig, payload: Value) -> Result<Value, IIIError> {
     if let Some(worker_id) = payload.get("worker_id").and_then(|v| v.as_str()) {
         return test_worker(iii, config, worker_id).await;
     }
@@ -36,9 +32,7 @@ pub async fn handle(
         .get("code")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            IIIError::Handler(
-                "provide either worker_id or code + language + test_code".to_string(),
-            )
+            IIIError::Handler("provide either worker_id or code + language + test_code".to_string())
         })?;
 
     let language = payload
@@ -54,11 +48,7 @@ pub async fn handle(
     test_inline(config, language, code, test_code).await
 }
 
-async fn test_worker(
-    iii: &III,
-    config: &CodingConfig,
-    worker_id: &str,
-) -> Result<Value, IIIError> {
+async fn test_worker(iii: &III, config: &CodingConfig, worker_id: &str) -> Result<Value, IIIError> {
     let worker_state = state::state_get(iii, "coding:workers", worker_id).await?;
 
     let language = worker_state
@@ -69,7 +59,7 @@ async fn test_worker(
     let workspace_path = worker_state
         .get("workspace_path")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| "");
+        .unwrap_or("");
 
     let effective_path = if workspace_path.is_empty() {
         format!("{}/{}", config.workspace_dir, worker_id)
@@ -151,7 +141,10 @@ async fn test_inline_rust(
     test_code: &str,
     timeout: std::time::Duration,
 ) -> Result<Value, IIIError> {
-    let combined = format!("{}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n{}\n}}", code, test_code);
+    let combined = format!(
+        "{}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n{}\n}}",
+        code, test_code
+    );
     let src_path = format!("{}/main.rs", work_dir);
 
     std::fs::write(&src_path, &combined)
@@ -224,13 +217,10 @@ async fn test_inline_typescript(
         vec!["--experimental-strip-types", &src_path]
     };
 
-    let run = tokio::time::timeout(
-        timeout,
-        Command::new(runtime).args(&args).output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("test execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run test: {}", e)))?;
+    let run = tokio::time::timeout(timeout, Command::new(runtime).args(&args).output())
+        .await
+        .map_err(|_| IIIError::Handler("test execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run test: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&run.stdout).to_string();
     let stderr = String::from_utf8_lossy(&run.stderr).to_string();

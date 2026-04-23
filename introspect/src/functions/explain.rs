@@ -103,7 +103,12 @@ pub async fn handle(iii: &III, payload: Value) -> Result<Value, IIIError> {
             many => format!("{} (hosted on {} workers)", many.join(", "), many.len()),
         };
 
-        return Ok(build_function_explanation(func, &func_triggers, &worker, &triggers));
+        return Ok(build_function_explanation(
+            func,
+            &func_triggers,
+            &worker,
+            &triggers,
+        ));
     }
 
     if let Some(ref wname) = worker_name {
@@ -261,10 +266,7 @@ fn describe_schema_fields(schema: &Value) -> HashMap<String, String> {
             .unwrap_or_default();
 
         for (key, val) in props {
-            let type_str = val
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("any");
+            let type_str = val.get("type").and_then(|v| v.as_str()).unwrap_or("any");
             let suffix = if required.contains(&key.as_str()) {
                 " (required)"
             } else {
@@ -287,7 +289,8 @@ fn build_function_explanation(
         .as_deref()
         .unwrap_or("No description available");
 
-    let trigger_descriptions: Vec<String> = func_triggers.iter().map(|t| describe_trigger(t)).collect();
+    let trigger_descriptions: Vec<String> =
+        func_triggers.iter().map(|t| describe_trigger(t)).collect();
 
     let trigger_details: Vec<Value> = func_triggers
         .iter()
@@ -302,13 +305,13 @@ fn build_function_explanation(
     let inputs = func
         .request_format
         .as_ref()
-        .map(|s| describe_schema_fields(s))
+        .map(describe_schema_fields)
         .unwrap_or_default();
 
     let outputs = func
         .response_format
         .as_ref()
-        .map(|s| describe_schema_fields(s))
+        .map(describe_schema_fields)
         .unwrap_or_default();
 
     // `inbound` captures upstream links to this function. Peer consumers
@@ -346,7 +349,8 @@ fn build_function_explanation(
 
     explanation_parts.push(format!(
         "{} {}.",
-        func.function_id, description.to_lowercase()
+        func.function_id,
+        description.to_lowercase()
     ));
 
     if !trigger_descriptions.is_empty() {
@@ -375,10 +379,7 @@ fn build_function_explanation(
     }
 
     if !inbound.is_empty() {
-        explanation_parts.push(format!(
-            "Connected to: {}.",
-            inbound.join(", ")
-        ));
+        explanation_parts.push(format!("Connected to: {}.", inbound.join(", ")));
     }
 
     explanation_parts.push(format!("Hosted on worker '{}'.", worker));

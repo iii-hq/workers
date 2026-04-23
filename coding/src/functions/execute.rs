@@ -94,15 +94,22 @@ async fn execute_rust(
     std::fs::write(&src_path, code)
         .map_err(|e| IIIError::Handler(format!("failed to write source: {}", e)))?;
 
+    // kill_on_drop ensures the child rustc/binary is killed when the timeout
+    // future is dropped. Without it, a timed-out compile leaves rustc running
+    // in the background until it finishes on its own — exactly the kind of
+    // zombie-accumulation that chews through a workspace over time.
+    let mut compile_cmd = Command::new("rustc");
+    compile_cmd
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .arg("--edition")
+        .arg("2021")
+        .kill_on_drop(true);
+
     let compile = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
-        Command::new("rustc")
-            .arg(&src_path)
-            .arg("-o")
-            .arg(&bin_path)
-            .arg("--edition")
-            .arg("2021")
-            .output(),
+        compile_cmd.output(),
     )
     .await
     .map_err(|_| IIIError::Handler("compilation timed out".to_string()))?
@@ -114,17 +121,15 @@ async fn execute_rust(
     }
 
     let mut cmd = Command::new(&bin_path);
+    cmd.kill_on_drop(true);
     if !input_json.is_empty() {
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run binary: {}", e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run binary: {}", e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),
@@ -152,18 +157,15 @@ async fn execute_typescript(
     };
 
     let mut cmd = Command::new(runtime);
-    cmd.args(&args);
+    cmd.args(&args).kill_on_drop(true);
     if !input_json.is_empty() {
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run {}: {}", runtime, e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run {}: {}", runtime, e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),
@@ -184,18 +186,15 @@ async fn execute_python(
         .map_err(|e| IIIError::Handler(format!("failed to write source: {}", e)))?;
 
     let mut cmd = Command::new("python3");
-    cmd.arg(&src_path);
+    cmd.arg(&src_path).kill_on_drop(true);
     if !input_json.is_empty() {
         cmd.env("III_INPUT", input_json);
     }
 
-    let run = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
-    .map_err(|e| IIIError::Handler(format!("failed to run python3: {}", e)))?;
+    let run = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| IIIError::Handler("execution timed out".to_string()))?
+        .map_err(|e| IIIError::Handler(format!("failed to run python3: {}", e)))?;
 
     Ok((
         String::from_utf8_lossy(&run.stdout).to_string(),

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use iii_sdk::{IIIError, III};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::state;
@@ -92,30 +92,23 @@ pub fn build_cleanup_handler(
 
                     for key_val in keys {
                         if let Some(key) = key_val.as_str() {
-                            if let Ok(session) =
-                                state::state_get(&iii, "agent:sessions", key).await
+                            if let Ok(session) = state::state_get(&iii, "agent:sessions", key).await
                             {
                                 let should_delete = session
                                     .get("value")
                                     .and_then(|v| v.get("created_at"))
                                     .and_then(|v| v.as_str())
-                                    .and_then(|ts| {
-                                        chrono::DateTime::parse_from_rfc3339(ts).ok()
-                                    })
+                                    .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
                                     .map(|created| {
-                                        let age = now
-                                            .signed_duration_since(created.with_timezone(&chrono::Utc));
+                                        let age = now.signed_duration_since(
+                                            created.with_timezone(&chrono::Utc),
+                                        );
                                         age.num_hours() > ttl_hours
                                     })
                                     .unwrap_or(false);
 
                                 if should_delete {
-                                    let _ = state::state_delete(
-                                        &iii,
-                                        "agent:sessions",
-                                        key,
-                                    )
-                                    .await;
+                                    let _ = state::state_delete(&iii, "agent:sessions", key).await;
                                     cleaned += 1;
                                 }
                             }

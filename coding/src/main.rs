@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{
+    register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput,
+};
 use std::sync::Arc;
 
 mod config;
@@ -10,7 +12,10 @@ mod state;
 mod templates;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-coding", about = "III engine coding worker — scaffold workers, generate functions and triggers, execute code, test, and deploy")]
+#[command(
+    name = "iii-coding",
+    about = "III engine coding worker — scaffold workers, generate functions and triggers, execute code, test, and deploy"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -254,7 +259,9 @@ async fn main() -> Result<()> {
     let _fn_deploy = iii.register_function_with(
         RegisterFunctionMessage {
             id: "coding::deploy".to_string(),
-            description: Some("Deploy a scaffolded worker (returns files and instructions)".to_string()),
+            description: Some(
+                "Deploy a scaffolded worker (returns files and instructions)".to_string(),
+            ),
             request_format: Some(serde_json::json!({
                 "type": "object",
                 "properties": {

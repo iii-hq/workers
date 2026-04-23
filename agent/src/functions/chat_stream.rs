@@ -4,14 +4,12 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use iii_sdk::{IIIError, TriggerRequest, III};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::AgentConfig;
 use crate::discovery;
-use crate::llm::{
-    ContentBlock, LlmClient, LlmRequest, Message, MessageContent, StreamEvent,
-};
+use crate::llm::{ContentBlock, LlmClient, LlmRequest, Message, MessageContent, StreamEvent};
 use crate::state;
 
 pub fn build_handler(
@@ -93,10 +91,14 @@ async fn handle_chat_stream(
         let mut event_stream = match stream_result {
             Ok(s) => s,
             Err(e) => {
-                emit_event(&iii, &stream_group, &json!({
-                    "type": "error",
-                    "message": format!("LLM stream failed: {}", e)
-                }))
+                emit_event(
+                    &iii,
+                    &stream_group,
+                    &json!({
+                        "type": "error",
+                        "message": format!("LLM stream failed: {}", e)
+                    }),
+                )
                 .await;
                 return Err(IIIError::Handler(format!("LLM stream failed: {}", e)));
             }
@@ -131,13 +133,8 @@ async fn handle_chat_stream(
         }
 
         if !current_tool_id.is_empty() {
-            let input: Value =
-                serde_json::from_str(&current_tool_input_json).unwrap_or(json!({}));
-            collected_tool_uses.push((
-                current_tool_id.clone(),
-                current_tool_name.clone(),
-                input,
-            ));
+            let input: Value = serde_json::from_str(&current_tool_input_json).unwrap_or(json!({}));
+            collected_tool_uses.push((current_tool_id.clone(), current_tool_name.clone(), input));
         }
 
         if !has_tool_use {
@@ -181,11 +178,15 @@ async fn handle_chat_stream(
         for (tool_id, tool_name, tool_input) in &collected_tool_uses {
             let function_id = discovery::tool_name_to_function_id(tool_name);
 
-            emit_event(&iii, &stream_group, &json!({
-                "type": "tool_use",
-                "name": function_id,
-                "input": tool_input
-            }))
+            emit_event(
+                &iii,
+                &stream_group,
+                &json!({
+                    "type": "tool_use",
+                    "name": function_id,
+                    "input": tool_input
+                }),
+            )
             .await;
 
             let result = iii
@@ -202,14 +203,18 @@ async fn handle_chat_stream(
                 Err(e) => (format!("Error: {}", e), Some(true)),
             };
 
-            emit_event(&iii, &stream_group, &json!({
-                "type": "tool_result",
-                "name": function_id,
-                "result": match &result {
-                    Ok(v) => v.clone(),
-                    Err(e) => json!({"error": e.to_string()})
-                }
-            }))
+            emit_event(
+                &iii,
+                &stream_group,
+                &json!({
+                    "type": "tool_result",
+                    "name": function_id,
+                    "result": match &result {
+                        Ok(v) => v.clone(),
+                        Err(e) => json!({"error": e.to_string()})
+                    }
+                }),
+            )
             .await;
 
             tool_result_blocks.push(ContentBlock::ToolResult {
@@ -237,6 +242,7 @@ async fn handle_chat_stream(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_stream_event(
     iii: &III,
     stream_group: &str,
@@ -273,19 +279,12 @@ async fn process_stream_event(
                 }
             }
         }
-        "content_block_stop" => {
-            if !current_tool_id.is_empty() {
-                let input: Value =
-                    serde_json::from_str(current_tool_input_json).unwrap_or(json!({}));
-                collected_tool_uses.push((
-                    current_tool_id.clone(),
-                    current_tool_name.clone(),
-                    input,
-                ));
-                current_tool_id.clear();
-                current_tool_name.clear();
-                current_tool_input_json.clear();
-            }
+        "content_block_stop" if !current_tool_id.is_empty() => {
+            let input: Value = serde_json::from_str(current_tool_input_json).unwrap_or(json!({}));
+            collected_tool_uses.push((current_tool_id.clone(), current_tool_name.clone(), input));
+            current_tool_id.clear();
+            current_tool_name.clear();
+            current_tool_input_json.clear();
         }
         _ => {}
     }

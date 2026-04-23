@@ -141,10 +141,7 @@ mod tests {
     #[test]
     fn extract_value_unwraps_envelope() {
         let v = json!({"value": {"a": 1}});
-        assert_eq!(
-            extract_value(&v, "s", "k").unwrap(),
-            Some(json!({"a": 1}))
-        );
+        assert_eq!(extract_value(&v, "s", "k").unwrap(), Some(json!({"a": 1})));
     }
 
     #[test]
@@ -156,10 +153,7 @@ mod tests {
     #[test]
     fn extract_value_accepts_bare_object() {
         let v = json!({"a": 1});
-        assert_eq!(
-            extract_value(&v, "s", "k").unwrap(),
-            Some(json!({"a": 1}))
-        );
+        assert_eq!(extract_value(&v, "s", "k").unwrap(), Some(json!({"a": 1})));
     }
 
     #[test]

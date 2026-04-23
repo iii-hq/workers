@@ -45,7 +45,13 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         "created_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    state_set(iii, crate::functions::ingest::SCOPE_BASELINES, function_id, baseline.clone()).await?;
+    state_set(
+        iii,
+        crate::functions::ingest::SCOPE_BASELINES,
+        function_id,
+        baseline.clone(),
+    )
+    .await?;
 
     Ok(json!({
         "saved": true,

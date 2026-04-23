@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use iii_sdk::{IIIError, III};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::config::AgentConfig;
 use crate::discovery;

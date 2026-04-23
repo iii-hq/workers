@@ -16,12 +16,7 @@ pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Value, IIIEr
     .await
 }
 
-pub async fn state_set(
-    iii: &III,
-    scope: &str,
-    key: &str,
-    value: Value,
-) -> Result<Value, IIIError> {
+pub async fn state_set(iii: &III, scope: &str, key: &str, value: Value) -> Result<Value, IIIError> {
     let payload = serde_json::json!({
         "scope": scope,
         "key": key,

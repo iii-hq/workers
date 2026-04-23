@@ -1,5 +1,5 @@
 use iii_sdk::{IIIError, TriggerRequest, III};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Value, IIIError> {
     iii.trigger(TriggerRequest {
@@ -11,7 +11,12 @@ pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Value, IIIEr
     .await
 }
 
-pub async fn state_set(iii: &III, scope: &str, key: &str, value: &Value) -> Result<Value, IIIError> {
+pub async fn state_set(
+    iii: &III,
+    scope: &str,
+    key: &str,
+    value: &Value,
+) -> Result<Value, IIIError> {
     iii.trigger(TriggerRequest {
         function_id: "state::set".to_string(),
         payload: json!({ "scope": scope, "key": key, "value": value }),

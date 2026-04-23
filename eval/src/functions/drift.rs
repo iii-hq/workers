@@ -5,21 +5,30 @@ use std::sync::Arc;
 use crate::config::EvalConfig;
 use crate::functions::state::state_get;
 
-pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Result<Value, IIIError> {
-    let function_ids: Vec<String> = if let Some(fid) = payload.get("function_id").and_then(|v| v.as_str()) {
-        vec![fid.to_string()]
-    } else {
-        // Propagate read failures — "no current data" would otherwise hide
-        // a broken state backend behind a benign-looking "no drift" result.
-        let index_val = state_get(iii, crate::functions::ingest::SCOPE_INDEX, crate::functions::ingest::INDEX_KEY)
+pub async fn handle(
+    iii: &Arc<III>,
+    config: &EvalConfig,
+    payload: Value,
+) -> Result<Value, IIIError> {
+    let function_ids: Vec<String> =
+        if let Some(fid) = payload.get("function_id").and_then(|v| v.as_str()) {
+            vec![fid.to_string()]
+        } else {
+            // Propagate read failures — "no current data" would otherwise hide
+            // a broken state backend behind a benign-looking "no drift" result.
+            let index_val = state_get(
+                iii,
+                crate::functions::ingest::SCOPE_INDEX,
+                crate::functions::ingest::INDEX_KEY,
+            )
             .await
             .map_err(|e| IIIError::Handler(format!("failed to read function index: {e}")))?;
-        if index_val.is_array() {
-            serde_json::from_value(index_val).unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    };
+            if index_val.is_array() {
+                serde_json::from_value(index_val).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        };
 
     let threshold = config.drift_threshold;
     let mut results: Vec<Value> = Vec::new();
@@ -58,10 +67,19 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
 
         let current = crate::functions::metrics::compute_metrics(&spans, fid);
 
-        let dimensions = ["p50_ms", "p95_ms", "p99_ms", "success_rate", "avg_duration_ms"];
+        let dimensions = [
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "success_rate",
+            "avg_duration_ms",
+        ];
 
         for dim in &dimensions {
-            let baseline_v = baseline_val.get(dim).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let baseline_v = baseline_val
+                .get(dim)
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             let current_v = current.get(dim).and_then(|v| v.as_f64()).unwrap_or(0.0);
 
             if baseline_v == 0.0 && current_v == 0.0 {
@@ -69,7 +87,11 @@ pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Resu
             }
 
             let delta_pct = if baseline_v == 0.0 {
-                if current_v > 0.0 { 1.0 } else { 0.0 }
+                if current_v > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
                 (current_v - baseline_v).abs() / baseline_v
             };

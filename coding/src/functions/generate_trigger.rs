@@ -6,8 +6,8 @@ use iii_sdk::{IIIError, III};
 use serde_json::Value;
 
 use crate::templates::{
-    generate_trigger_code_python, generate_trigger_code_rust,
-    generate_trigger_code_typescript, TriggerDef,
+    generate_trigger_code_python, generate_trigger_code_rust, generate_trigger_code_typescript,
+    TriggerDef,
 };
 
 pub fn build_handler(
@@ -16,9 +16,7 @@ pub fn build_handler(
        + Send
        + Sync
        + 'static {
-    move |payload: Value| {
-        Box::pin(async move { handle(payload).await })
-    }
+    move |payload: Value| Box::pin(async move { handle(payload).await })
 }
 
 pub async fn handle(payload: Value) -> Result<Value, IIIError> {

@@ -34,13 +34,17 @@ pub async fn handle(
     let target_function = definition
         .get("target_function")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| IIIError::Handler("malformed definition: missing target_function".to_string()))?
+        .ok_or_else(|| {
+            IIIError::Handler("malformed definition: missing target_function".to_string())
+        })?
         .to_string();
 
     let metric_function = definition
         .get("metric_function")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| IIIError::Handler("malformed definition: missing metric_function".to_string()))?
+        .ok_or_else(|| {
+            IIIError::Handler("malformed definition: missing metric_function".to_string())
+        })?
         .to_string();
 
     let metric_path = definition
@@ -98,11 +102,8 @@ pub async fn handle(
             break;
         }
 
-        let propose_result = propose::handle(
-            iii.clone(),
-            json!({ "experiment_id": experiment_id }),
-        )
-        .await?;
+        let propose_result =
+            propose::handle(iii.clone(), json!({ "experiment_id": experiment_id })).await?;
 
         let modified_payload = propose_result
             .get("modified_payload")

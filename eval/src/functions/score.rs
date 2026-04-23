@@ -5,7 +5,13 @@ use std::sync::Arc;
 use crate::functions::state::state_get;
 
 pub async fn handle(iii: &Arc<III>, _payload: Value) -> Result<Value, IIIError> {
-    let index_val = state_get(iii, crate::functions::ingest::SCOPE_INDEX, crate::functions::ingest::INDEX_KEY).await.unwrap_or(json!(null));
+    let index_val = state_get(
+        iii,
+        crate::functions::ingest::SCOPE_INDEX,
+        crate::functions::ingest::INDEX_KEY,
+    )
+    .await
+    .unwrap_or(json!(null));
     let function_ids: Vec<String> = if index_val.is_array() {
         serde_json::from_value(index_val).unwrap_or_default()
     } else {
@@ -28,7 +34,9 @@ pub async fn handle(iii: &Arc<III>, _payload: Value) -> Result<Value, IIIError> 
     let mut evaluated = 0u64;
 
     for fid in &function_ids {
-        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid).await.unwrap_or(json!(null));
+        let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, fid)
+            .await
+            .unwrap_or(json!(null));
         let spans: Vec<Value> = if existing.is_array() {
             serde_json::from_value(existing).unwrap_or_default()
         } else {
@@ -46,10 +54,7 @@ pub async fn handle(iii: &Arc<III>, _payload: Value) -> Result<Value, IIIError> 
             .get("success_rate")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        let p99 = metrics
-            .get("p99_ms")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let p99 = metrics.get("p99_ms").and_then(|v| v.as_u64()).unwrap_or(0);
 
         // score and drift measure different things: score is an absolute
         // health snapshot (is this function good in isolation?), drift is
@@ -81,11 +86,18 @@ pub async fn handle(iii: &Arc<III>, _payload: Value) -> Result<Value, IIIError> 
         }
 
         if success_rate < 0.80 {
-            suggestions.push(format!("{}: success rate {:.1}% is critically low", fid, success_rate * 100.0));
+            suggestions.push(format!(
+                "{}: success rate {:.1}% is critically low",
+                fid,
+                success_rate * 100.0
+            ));
         }
 
         if p99 > 10000 {
-            suggestions.push(format!("{}: P99 latency {}ms exceeds 10s threshold", fid, p99));
+            suggestions.push(format!(
+                "{}: P99 latency {}ms exceeds 10s threshold",
+                fid, p99
+            ));
         }
 
         total_score += fn_score.max(0.0);

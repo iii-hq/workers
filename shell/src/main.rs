@@ -13,7 +13,10 @@ mod jobs;
 mod manifest;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-shell", about = "Unix shell execution worker for iii agents")]
+#[command(
+    name = "iii-shell",
+    about = "Unix shell execution worker for iii agents"
+)]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,

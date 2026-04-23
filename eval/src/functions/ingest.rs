@@ -32,7 +32,11 @@ fn require_bool(payload: &Value, field: &str) -> Result<bool, IIIError> {
         .ok_or_else(|| IIIError::Handler(format!("missing {field}")))
 }
 
-pub async fn handle(iii: &Arc<III>, config: &EvalConfig, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(
+    iii: &Arc<III>,
+    config: &EvalConfig,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let function_id = require_str(&payload, "function_id")?;
     let duration_ms = require_u64(&payload, "duration_ms")?;
     let success = require_bool(&payload, "success")?;

@@ -92,13 +92,9 @@ fn mermaid_label(s: &str) -> String {
     out
 }
 
-const ENGINE_INTERNAL_PREFIXES: &[&str] = &[
-    "state::", "stream::", "engine::", "iii::",
-];
+const ENGINE_INTERNAL_PREFIXES: &[&str] = &["state::", "stream::", "engine::", "iii::"];
 
-const ENGINE_INTERNAL_EXACT: &[&str] = &[
-    "publish", "iii::durable::publish",
-];
+const ENGINE_INTERNAL_EXACT: &[&str] = &["publish", "iii::durable::publish"];
 
 fn is_engine_internal(function_id: &str) -> bool {
     if ENGINE_INTERNAL_PREFIXES

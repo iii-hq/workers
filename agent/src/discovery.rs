@@ -9,13 +9,8 @@ use crate::llm::ToolDef;
 // auto-discovered without a code change. Override with
 // `discovery_excluded_prefixes` in config when a deployment needs a tighter
 // boundary.
-pub const DEFAULT_EXCLUDED_PREFIXES: &[&str] = &[
-    "agent::",
-    "engine::",
-    "state::",
-    "stream::",
-    "iii.",
-];
+pub const DEFAULT_EXCLUDED_PREFIXES: &[&str] =
+    &["agent::", "engine::", "state::", "stream::", "iii."];
 
 pub async fn discover_tools(iii: &III) -> Vec<ToolDef> {
     discover_tools_with(iii, DEFAULT_EXCLUDED_PREFIXES).await
@@ -34,7 +29,7 @@ pub async fn discover_tools_with(iii: &III, excluded: &[&str]) -> Vec<ToolDef> {
         .into_iter()
         .filter(|f| !f.function_id.is_empty())
         .filter(|f| !is_excluded(&f.function_id, excluded))
-        .filter(|f| has_valid_schema(f))
+        .filter(has_valid_schema)
         .map(|f| function_to_tool(&f))
         .filter(|t| !t.name.is_empty())
         .collect();
@@ -62,7 +57,13 @@ pub fn sanitize_tool_name(function_id: &str) -> String {
     let sanitized: String = function_id
         .replace("::", "__")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.len() > 128 {
         sanitized[..128].to_string()
@@ -75,7 +76,7 @@ pub fn functions_to_tools(functions: &[FunctionInfo]) -> Vec<ToolDef> {
     functions
         .iter()
         .filter(|f| !is_excluded(&f.function_id, DEFAULT_EXCLUDED_PREFIXES))
-        .map(|f| function_to_tool(f))
+        .map(function_to_tool)
         .collect()
 }
 
@@ -121,16 +122,36 @@ pub async fn build_planner_capabilities(iii: &III) -> String {
 }
 
 fn is_excluded(function_id: &str, excluded: &[&str]) -> bool {
-    excluded.iter().any(|prefix| function_id.starts_with(prefix))
+    excluded
+        .iter()
+        .any(|prefix| function_id.starts_with(prefix))
 }
 
 fn has_valid_schema(f: &FunctionInfo) -> bool {
     match &f.request_format {
-        Some(schema) => {
-            schema.get("type").and_then(|t| t.as_str()) == Some("object")
-        }
+        Some(schema) => schema.get("type").and_then(|t| t.as_str()) == Some("object"),
         None => true,
     }
+}
+
+pub fn build_system_prompt(tools: &[ToolDef]) -> String {
+    let capabilities = build_capabilities_summary(tools);
+
+    format!(
+        "You are the iii agent, an intelligent assistant for the iii engine.\n\
+         \n\
+         You have access to functions registered by connected workers. Use them to answer \
+         questions about the system, analyze performance, and manage the engine.\n\
+         \n\
+         Rules:\n\
+         - Call the available functions to gather real data before answering.\n\
+         - Respond with plain text. Use markdown for formatting (tables, lists, code blocks).\n\
+         - Be concise and data-driven.\n\
+         - When showing data, use markdown tables.\n\
+         - Do NOT wrap your response in JSON objects.\n\
+         \n\
+         {capabilities}"
+    )
 }
 
 #[cfg(test)]
@@ -144,13 +165,18 @@ mod tests {
 
     #[test]
     fn test_sanitize_dots() {
-        assert_eq!(sanitize_tool_name("iii.on_functions.abc"), "iii_on_functions_abc");
+        assert_eq!(
+            sanitize_tool_name("iii.on_functions.abc"),
+            "iii_on_functions_abc"
+        );
     }
 
     #[test]
     fn test_sanitize_uuid() {
         let result = sanitize_tool_name("iii.callback.a1b2c3d4-e5f6");
-        assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        assert!(result
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
     }
 
     #[test]
@@ -167,11 +193,20 @@ mod tests {
     #[test]
     fn test_worker_prefixes_not_excluded() {
         assert!(!is_excluded("eval::metrics", DEFAULT_EXCLUDED_PREFIXES));
-        assert!(!is_excluded("introspect::topology", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded(
+            "introspect::topology",
+            DEFAULT_EXCLUDED_PREFIXES
+        ));
         assert!(!is_excluded("sensor::scan", DEFAULT_EXCLUDED_PREFIXES));
-        assert!(!is_excluded("guardrails::check_input", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded(
+            "guardrails::check_input",
+            DEFAULT_EXCLUDED_PREFIXES
+        ));
         assert!(!is_excluded("coding::scaffold", DEFAULT_EXCLUDED_PREFIXES));
-        assert!(!is_excluded("experiment::create", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(!is_excluded(
+            "experiment::create",
+            DEFAULT_EXCLUDED_PREFIXES
+        ));
         assert!(!is_excluded("publish", DEFAULT_EXCLUDED_PREFIXES));
     }
 
@@ -181,7 +216,10 @@ mod tests {
         assert!(is_excluded("engine::health", DEFAULT_EXCLUDED_PREFIXES));
         assert!(is_excluded("stream::set", DEFAULT_EXCLUDED_PREFIXES));
         assert!(is_excluded("agent::chat", DEFAULT_EXCLUDED_PREFIXES));
-        assert!(is_excluded("iii.on_functions_available.abc", DEFAULT_EXCLUDED_PREFIXES));
+        assert!(is_excluded(
+            "iii.on_functions_available.abc",
+            DEFAULT_EXCLUDED_PREFIXES
+        ));
     }
 
     #[test]
@@ -252,7 +290,9 @@ mod tests {
         let f = FunctionInfo {
             function_id: "eval::metrics".into(),
             description: Some("Compute P50/P95/P99".into()),
-            request_format: Some(json!({"type": "object", "properties": {"function_id": {"type": "string"}}})),
+            request_format: Some(
+                json!({"type": "object", "properties": {"function_id": {"type": "string"}}}),
+            ),
             response_format: None,
             metadata: None,
         };
@@ -261,24 +301,4 @@ mod tests {
         assert_eq!(tool.description, "Compute P50/P95/P99");
         assert!(tool.input_schema.get("properties").is_some());
     }
-}
-
-pub fn build_system_prompt(tools: &[ToolDef]) -> String {
-    let capabilities = build_capabilities_summary(tools);
-
-    format!(
-        "You are the iii agent, an intelligent assistant for the iii engine.\n\
-         \n\
-         You have access to functions registered by connected workers. Use them to answer \
-         questions about the system, analyze performance, and manage the engine.\n\
-         \n\
-         Rules:\n\
-         - Call the available functions to gather real data before answering.\n\
-         - Respond with plain text. Use markdown for formatting (tables, lists, code blocks).\n\
-         - Be concise and data-driven.\n\
-         - When showing data, use markdown tables.\n\
-         - Do NOT wrap your response in JSON objects.\n\
-         \n\
-         {capabilities}"
-    )
 }

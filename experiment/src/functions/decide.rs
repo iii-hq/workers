@@ -48,9 +48,7 @@ pub fn evaluate(definition: &Value, score: f64, current_best: f64) -> Decision {
     }
 }
 
-pub async fn handle(
-    payload: Value,
-) -> Result<Value, iii_sdk::IIIError> {
+pub async fn handle(payload: Value) -> Result<Value, iii_sdk::IIIError> {
     let experiment_id = payload
         .get("experiment_id")
         .and_then(|v| v.as_str())

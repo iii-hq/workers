@@ -98,7 +98,9 @@ pub async fn handle(iii: &Arc<III>, payload: Value) -> Result<Value, IIIError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing function_id".to_string()))?;
 
-    let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, function_id).await.unwrap_or(json!(null));
+    let existing = state_get(iii, crate::functions::ingest::SCOPE_SPANS, function_id)
+        .await
+        .unwrap_or(json!(null));
 
     let spans: Vec<Value> = if existing.is_array() {
         serde_json::from_value(existing).unwrap_or_default()

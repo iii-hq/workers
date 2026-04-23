@@ -226,7 +226,9 @@ fn parse_policy(payload: Value) -> Result<Policy, IIIError> {
 
 fn validate_policy_semantics(p: &Policy) -> Result<(), IIIError> {
     if p.action.model.trim().is_empty() {
-        return Err(IIIError::Handler("policy.action.model must be non-empty".into()));
+        return Err(IIIError::Handler(
+            "policy.action.model must be non-empty".into(),
+        ));
     }
     if let Some(max) = p.action.max_cost_per_request_usd {
         if max < 0.0 || max.is_nan() {

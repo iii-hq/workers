@@ -3,13 +3,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use iii_sdk::{IIIError, TriggerRequest, III};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::config::AgentConfig;
 use crate::discovery;
-use crate::llm::{
-    ContentBlock, LlmClient, LlmRequest, Message, MessageContent,
-};
+use crate::llm::{ContentBlock, LlmClient, LlmRequest, Message, MessageContent};
 use crate::state;
 
 pub fn build_handler(
@@ -234,4 +232,3 @@ async fn save_history(iii: &III, session_id: &str, messages: &[Message]) {
     });
     let _ = state::state_set(iii, "agent:sessions", session_id, &value).await;
 }
-
