@@ -13,20 +13,67 @@ fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn is_function_exposed(iii: &III, function_id: &str, expose_all: bool) -> bool {
-    if expose_all {
-        return true;
+fn metadata_string(f: &iii_sdk::FunctionInfo, key: &str) -> Option<String> {
+    f.metadata
+        .as_ref()
+        .and_then(|m| m.get(key))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+// Infra namespaces that never appear in the agent card, even under
+// --expose-all. Mirrors the mcp worker's ALWAYS_HIDDEN_PREFIXES — surfacing
+// `state::*` / `engine::*` / the a2a worker's own jsonrpc entry as "skills"
+// is categorically not a cross-agent surface.
+pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &["engine::", "state::", "stream::", "iii.", "a2a::"];
+
+fn is_always_hidden(function_id: &str) -> bool {
+    ALWAYS_HIDDEN_PREFIXES
+        .iter()
+        .any(|p| function_id.starts_with(p))
+}
+
+#[derive(Debug, Clone)]
+pub struct ExposureConfig {
+    pub expose_all: bool,
+    pub tier: Option<String>,
+}
+
+impl ExposureConfig {
+    pub fn new(expose_all: bool, tier: Option<String>) -> Self {
+        Self { expose_all, tier }
+    }
+}
+
+fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
+    if is_always_hidden(&f.function_id) {
+        return false;
+    }
+    if !cfg.expose_all && !has_metadata_flag(f, "a2a.expose") {
+        return false;
+    }
+    if let Some(want_tier) = &cfg.tier {
+        match metadata_string(f, "a2a.tier") {
+            Some(got) if &got == want_tier => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig) -> bool {
+    if is_always_hidden(function_id) {
+        return false;
     }
     match iii.list_functions().await {
         Ok(fns) => fns
             .iter()
-            .any(|f| f.function_id == function_id && has_metadata_flag(f, "a2a.expose")),
+            .find(|f| f.function_id == function_id)
+            .map(|f| is_exposed(f, cfg))
+            .unwrap_or(false),
         Err(e) => {
-            // Log the registry error distinctly so an engine outage doesn't
-            // surface to callers as "not exposed" (a policy failure). Returning
-            // false here still denies access — fail closed is the right default
-            // for a security gate — but the log lets operators tell the two
-            // cases apart.
+            // Log registry errors distinctly so an engine outage doesn't
+            // look like a policy denial. Still fail closed.
             tracing::error!(
                 error = %e,
                 function_id = %function_id,
@@ -37,9 +84,9 @@ async fn is_function_exposed(iii: &III, function_id: &str, expose_all: bool) -> 
     }
 }
 
-pub fn register(iii: &III, expose_all: bool, base_url: String) {
+pub fn register(iii: &III, exposure: ExposureConfig, base_url: String) {
     let iii_card = iii.clone();
-    let card_expose_all = expose_all;
+    let card_cfg = exposure.clone();
     let card_base_url = base_url.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
@@ -52,9 +99,10 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
         },
         move |_input: Value| {
             let iii_inner = iii_card.clone();
+            let cfg = card_cfg.clone();
             let base = card_base_url.clone();
             async move {
-                let card = build_agent_card(&iii_inner, card_expose_all, &base).await;
+                let card = build_agent_card(&iii_inner, &cfg, &base).await;
                 Ok(json!({
                     "status_code": 200,
                     "headers": { "content-type": "application/json" },
@@ -65,7 +113,7 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
     );
 
     let iii_rpc = iii.clone();
-    let rpc_expose_all = expose_all;
+    let rpc_cfg = exposure;
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::jsonrpc".to_string(),
@@ -80,6 +128,7 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
         },
         move |input: Value| {
             let iii_inner = iii_rpc.clone();
+            let cfg = rpc_cfg.clone();
             async move {
                 let body = if let Some(b) = input.get("body") {
                     b.clone()
@@ -98,7 +147,7 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
                     }
                 };
 
-                let response = handle_a2a_request(&iii_inner, request, rpc_expose_all).await;
+                let response = handle_a2a_request(&iii_inner, request, &cfg).await;
 
                 Ok(json!({
                     "status_code": 200,
@@ -130,11 +179,11 @@ pub fn register(iii: &III, expose_all: bool, base_url: String) {
     tracing::info!("A2A registered: GET /.well-known/agent-card.json, POST /a2a");
 }
 
-async fn build_agent_card(iii: &III, expose_all: bool, base_url: &str) -> AgentCard {
+async fn build_agent_card(iii: &III, cfg: &ExposureConfig, base_url: &str) -> AgentCard {
     let skills = match iii.list_functions().await {
         Ok(fns) => fns
             .iter()
-            .filter(|f| expose_all || has_metadata_flag(f, "a2a.expose"))
+            .filter(|f| is_exposed(f, cfg))
             .map(|f| AgentSkill {
                 id: f.function_id.clone(),
                 name: f
@@ -177,10 +226,10 @@ async fn build_agent_card(iii: &III, expose_all: bool, base_url: &str) -> AgentC
     }
 }
 
-async fn handle_a2a_request(iii: &III, request: A2ARequest, expose_all: bool) -> A2AResponse {
+async fn handle_a2a_request(iii: &III, request: A2ARequest, cfg: &ExposureConfig) -> A2AResponse {
     let id = request.id.clone();
     match request.method.as_str() {
-        "message/send" | "SendMessage" => handle_send(iii, id, request.params, expose_all).await,
+        "message/send" | "SendMessage" => handle_send(iii, id, request.params, cfg).await,
         "tasks/get" | "GetTask" => handle_get(iii, id, request.params).await,
         "tasks/cancel" | "CancelTask" => handle_cancel(iii, id, request.params).await,
         "tasks/list" | "ListTasks" => handle_list(iii, id).await,
@@ -297,7 +346,7 @@ async fn handle_send(
     iii: &III,
     id: Option<Value>,
     params: Option<Value>,
-    expose_all: bool,
+    cfg: &ExposureConfig,
 ) -> A2AResponse {
     let params: SendMessageParams = match params {
         Some(p) => match serde_json::from_value(p) {
@@ -382,7 +431,7 @@ async fn handle_send(
     }
     let fn_name = function_id.clone();
 
-    if !is_function_exposed(iii, &function_id, expose_all).await {
+    if !is_function_exposed(iii, &function_id, cfg).await {
         task.status = TaskStatus {
             state: TaskState::Failed,
             message: Some(Message {
@@ -549,10 +598,7 @@ fn resolve_function(message: &Message) -> (String, Value) {
     // text like "please run orders::process" would resolve the function_id
     // to "please", then fail with a confusing not-exposed error.
     let text = text.trim();
-    let first_token = text
-        .split(char::is_whitespace)
-        .next()
-        .unwrap_or("");
+    let first_token = text.split(char::is_whitespace).next().unwrap_or("");
     if first_token.contains("::") {
         let rest = text[first_token.len()..].trim_start();
         if !rest.is_empty() {

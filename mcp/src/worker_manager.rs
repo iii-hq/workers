@@ -109,10 +109,7 @@ impl WorkerManager {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-                return Err(format!(
-                    "Worker exited immediately with status: {}",
-                    status
-                ));
+                return Err(format!("Worker exited immediately with status: {}", status));
             }
             Err(e) => {
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;

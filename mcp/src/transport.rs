@@ -61,10 +61,7 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn write_json(
-    writer: &mut BufWriter<tokio::io::Stdout>,
-    v: &Value,
-) -> anyhow::Result<()> {
+async fn write_json(writer: &mut BufWriter<tokio::io::Stdout>, v: &Value) -> anyhow::Result<()> {
     let json = serde_json::to_string(v)?;
     writer.write_all(json.as_bytes()).await?;
     writer.write_all(b"\n").await?;

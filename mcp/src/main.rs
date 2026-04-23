@@ -9,6 +9,8 @@ use clap::Parser;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+use handler::ExposureConfig;
+
 #[derive(Parser, Debug)]
 #[command(name = "iii-mcp")]
 #[command(version)]
@@ -25,9 +27,25 @@ struct Args {
 
     #[arg(
         long,
-        help = "Expose all functions as tools (ignore mcp.expose metadata)"
+        help = "Expose all functions as tools (ignore mcp.expose metadata). \
+                Infra namespaces (engine::*, state::*, stream::*, iii.*, mcp::*) \
+                stay hidden even with this flag."
     )]
     expose_all: bool,
+
+    #[arg(
+        long,
+        help = "Hide the 6 built-in management tools (iii_worker_register, \
+                iii_worker_stop, iii_trigger_*). Default: on for HTTP, off for stdio."
+    )]
+    no_builtins: bool,
+
+    #[arg(
+        long,
+        help = "Show only functions whose `mcp.tier` metadata equals this value \
+                (e.g. `user`, `agent`, `ops`). When unset, tier filtering is off."
+    )]
+    tier: Option<String>,
 }
 
 #[tokio::main]
@@ -49,16 +67,23 @@ async fn main() -> anyhow::Result<()> {
 
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
-    handler::register_http(&iii, args.expose_all);
+    // HTTP transport defaults to hiding builtins — worker/trigger management
+    // requires stdio, so listing those over HTTP is pure noise. stdio keeps
+    // the default of showing builtins (the common Claude Desktop path).
+    let http_no_builtins = args.no_builtins || args.no_stdio;
+    let http_exposure = ExposureConfig::new(args.expose_all, http_no_builtins, args.tier.clone());
+    handler::register_http(&iii, http_exposure);
 
     if args.no_stdio {
         tracing::info!("MCP HTTP-only mode. POST /mcp on engine port. Ctrl+C to stop.");
         tokio::signal::ctrl_c().await?;
     } else {
+        let stdio_exposure =
+            ExposureConfig::new(args.expose_all, args.no_builtins, args.tier.clone());
         let h = Arc::new(handler::McpHandler::new(
             iii,
             args.engine_url,
-            args.expose_all,
+            stdio_exposure,
         ));
         transport::run_stdio(h).await?;
     }
