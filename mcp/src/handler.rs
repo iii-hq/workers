@@ -394,66 +394,7 @@ impl McpHandler {
     }
 
     async fn resources_read(&self, params: Option<Value>) -> Result<Value, String> {
-        #[derive(Deserialize)]
-        struct P {
-            uri: String,
-        }
-        let p: P = parse(params)?;
-        let (text, mime) = match p.uri.as_str() {
-            "iii://functions" => {
-                // Apply the same exposure filter that tools/list uses.
-                // Without this, a client could skip tools/list and read
-                // the resource to enumerate hidden functions — bypassing
-                // the mcp.expose gate, the tier filter, and the hard
-                // floor. resource surface must match tool surface.
-                let v = self
-                    .iii
-                    .list_functions()
-                    .await
-                    .map_err(|e| format!("{}", e))?;
-                let filtered: Vec<_> = v
-                    .into_iter()
-                    .filter(|f| is_function_exposed(f, &self.exposure))
-                    .collect();
-                (
-                    serde_json::to_string_pretty(&filtered).unwrap_or_else(|_| "[]".into()),
-                    "application/json",
-                )
-            }
-            "iii://workers" => {
-                let v = self
-                    .iii
-                    .list_workers()
-                    .await
-                    .map_err(|e| format!("{}", e))?;
-                (
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
-                    "application/json",
-                )
-            }
-            "iii://triggers" => {
-                let v = self
-                    .iii
-                    .list_triggers(true)
-                    .await
-                    .map_err(|e| format!("{}", e))?;
-                (
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
-                    "application/json",
-                )
-            }
-            "iii://context" => (
-                serde_json::to_string_pretty(&json!({
-                    "sdk_version": "0.10.0",
-                    "function_id_delimiter": "::",
-                    "metadata_filtering": { "mcp.expose": true, "a2a.expose": true }
-                }))
-                .unwrap(),
-                "application/json",
-            ),
-            _ => return Err(format!("Resource not found: {}", p.uri)),
-        };
-        Ok(json!({ "contents": [{ "uri": p.uri, "mimeType": mime, "text": text }] }))
+        read_resource(&self.iii, &self.exposure, params).await
     }
 
     async fn trigger_register(&self, args: Value) -> Value {
@@ -703,7 +644,15 @@ async fn dispatch_http(iii: &III, body: &Value, cfg: &ExposureConfig) -> Value {
             { "uri": "iii://functions", "name": "Functions", "mimeType": "application/json" },
             { "uri": "iii://workers", "name": "Workers", "mimeType": "application/json" },
             { "uri": "iii://triggers", "name": "Triggers", "mimeType": "application/json" },
+            { "uri": "iii://context", "name": "Context", "mimeType": "application/json" },
         ]})),
+        // HTTP transport previously omitted these; MCP Inspector hit
+        // -32601 Unknown method on both. Parity with stdio McpHandler
+        // via the shared read_resource / templates paths.
+        "resources/read" => read_resource(iii, cfg, params)
+            .await
+            .map_err(|e| (INVALID_PARAMS, e)),
+        "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
         "prompts/list" => Ok(prompts::list()),
         "prompts/get" => Ok(prompts::get(params)),
         _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
@@ -720,6 +669,61 @@ fn parse<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, Str
         Some(p) => serde_json::from_value(p).map_err(|e| format!("Invalid params: {}", e)),
         None => Err("Missing params".to_string()),
     }
+}
+
+// Shared resource reader used by both stdio McpHandler::resources_read and
+// HTTP dispatch_http. Keeps the `iii://functions` exposure filter in exactly
+// one place so stdio and HTTP can't drift (stdio filtered, HTTP didn't →
+// MCP Inspector surfaced the gap when it called resources/read over HTTP
+// and got -32601 Unknown method, which is how this refactor landed).
+pub async fn read_resource(
+    iii: &III,
+    cfg: &ExposureConfig,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct P {
+        uri: String,
+    }
+    let p: P = parse(params)?;
+    let (text, mime) = match p.uri.as_str() {
+        "iii://functions" => {
+            let v = iii.list_functions().await.map_err(|e| format!("{}", e))?;
+            let filtered: Vec<_> = v
+                .into_iter()
+                .filter(|f| is_function_exposed(f, cfg))
+                .collect();
+            (
+                serde_json::to_string_pretty(&filtered).unwrap_or_else(|_| "[]".into()),
+                "application/json",
+            )
+        }
+        "iii://workers" => {
+            let v = iii.list_workers().await.map_err(|e| format!("{}", e))?;
+            (
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
+                "application/json",
+            )
+        }
+        "iii://triggers" => {
+            let v = iii.list_triggers(true).await.map_err(|e| format!("{}", e))?;
+            (
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
+                "application/json",
+            )
+        }
+        "iii://context" => (
+            serde_json::to_string_pretty(&json!({
+                "sdk_version": env!("CARGO_PKG_VERSION"),
+                "function_id_delimiter": "::",
+                "metadata_filtering": { "mcp.expose": true, "a2a.expose": true }
+            }))
+            .unwrap(),
+            "application/json",
+        ),
+        _ => return Err(format!("Resource not found: {}", p.uri)),
+    };
+    Ok(json!({ "contents": [{ "uri": p.uri, "mimeType": mime, "text": text }] }))
 }
 
 fn function_to_tool(f: &FunctionInfo) -> McpTool {
