@@ -39,9 +39,16 @@ fn metadata_string(f: &FunctionInfo, key: &str) -> Option<String> {
 // not an agent-facing surface. Matches the same carve-out the `agent`
 // worker enforces via DEFAULT_EXCLUDED_PREFIXES.
 pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
-    "engine::", "state::", "stream::", "iii.",
-    // The MCP worker's own JSON-RPC entry shouldn't recurse into itself.
+    "engine::",
+    "state::",
+    "stream::",
+    "iii.",
+    // Protocol-worker entry points are stateless RPC dispatchers. Routing
+    // an MCP tools/call through `mcp::handler` recurses into ourselves;
+    // through `a2a::jsonrpc` double-envelopes an A2A request inside MCP.
+    // Neither is a useful tool surface. Hide both even under --expose-all.
     "mcp::",
+    "a2a::",
 ];
 
 fn is_always_hidden(function_id: &str) -> bool {

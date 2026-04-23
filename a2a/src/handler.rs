@@ -25,7 +25,17 @@ fn metadata_string(f: &iii_sdk::FunctionInfo, key: &str) -> Option<String> {
 // --expose-all. Mirrors the mcp worker's ALWAYS_HIDDEN_PREFIXES — surfacing
 // `state::*` / `engine::*` / the a2a worker's own jsonrpc entry as "skills"
 // is categorically not a cross-agent surface.
-pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &["engine::", "state::", "stream::", "iii.", "a2a::"];
+pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
+    "engine::",
+    "state::",
+    "stream::",
+    "iii.",
+    // Sibling protocol worker entry point. Calling `mcp::handler` via A2A
+    // message/send double-envelopes an MCP request inside A2A — not a
+    // meaningful skill. Hide symmetrically with mcp's a2a:: carve-out.
+    "mcp::",
+    "a2a::",
+];
 
 fn is_always_hidden(function_id: &str) -> bool {
     ALWAYS_HIDDEN_PREFIXES
@@ -432,15 +442,23 @@ async fn handle_send(
     let fn_name = function_id.clone();
 
     if !is_function_exposed(iii, &function_id, cfg).await {
+        let reason = if is_always_hidden(&function_id) {
+            format!(
+                "Function '{}' is in the iii-engine internal namespace and is not exposed as an A2A skill",
+                function_id
+            )
+        } else {
+            format!(
+                "Function '{}' is not exposed via a2a.expose metadata (or does not match the active --tier filter)",
+                function_id
+            )
+        };
         task.status = TaskStatus {
             state: TaskState::Failed,
             message: Some(Message {
                 message_id: msg_id(),
                 role: MessageRole::Agent,
-                parts: vec![text_part(format!(
-                    "Function '{}' is not exposed via a2a.expose metadata",
-                    function_id
-                ))],
+                parts: vec![text_part(reason)],
                 task_id: None,
                 context_id: None,
                 metadata: None,
