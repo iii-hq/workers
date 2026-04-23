@@ -12,7 +12,13 @@ use tokio::sync::{Mutex, mpsc};
 use crate::prompts;
 use crate::worker_manager::{WorkerCreateParams, WorkerManager, WorkerStopParams};
 
-const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+// Current published MCP spec revision. Bump when moving to a newer one.
+// Real spec versions are date-stamps from
+// https://spec.modelcontextprotocol.io — not arbitrary dates. The earlier
+// "2025-11-25" value in this file was a future date that no real client
+// recognized; MCP Inspector rejected it with "protocol version is not
+// supported" until this was corrected.
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const INTERNAL_ERROR: i32 = -32603;
 const INVALID_PARAMS: i32 = -32602;
 const METHOD_NOT_FOUND: i32 = -32601;
