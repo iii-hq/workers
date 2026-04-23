@@ -279,19 +279,13 @@ async fn process_stream_event(
                 }
             }
         }
-        "content_block_stop"
-            if !current_tool_id.is_empty() => {
-                let input: Value =
-                    serde_json::from_str(current_tool_input_json).unwrap_or(json!({}));
-                collected_tool_uses.push((
-                    current_tool_id.clone(),
-                    current_tool_name.clone(),
-                    input,
-                ));
-                current_tool_id.clear();
-                current_tool_name.clear();
-                current_tool_input_json.clear();
-            }
+        "content_block_stop" if !current_tool_id.is_empty() => {
+            let input: Value = serde_json::from_str(current_tool_input_json).unwrap_or(json!({}));
+            collected_tool_uses.push((current_tool_id.clone(), current_tool_name.clone(), input));
+            current_tool_id.clear();
+            current_tool_name.clear();
+            current_tool_input_json.clear();
+        }
         _ => {}
     }
 }

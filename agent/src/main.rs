@@ -333,11 +333,20 @@ async fn main() -> Result<()> {
 
         let iii_inner = iii_for_refresh.clone();
         tokio::spawn(async move {
-            let _ = state::state_set(&iii_inner, "agent:tools", "cached", &tools_json).await;
-            tracing::info!(
-                count = tools_json.as_array().map(|a| a.len()).unwrap_or(0),
-                "tool cache refreshed"
-            );
+            // Log the outcome honestly — the earlier `let _ = ...` swallowed
+            // the Err and always emitted "tool cache refreshed", so an engine
+            // outage looked identical to a successful write in the logs.
+            match state::state_set(&iii_inner, "agent:tools", "cached", &tools_json).await {
+                Ok(_) => tracing::info!(
+                    count = tools_json.as_array().map(|a| a.len()).unwrap_or(0),
+                    "tool cache refreshed"
+                ),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    count = tools_json.as_array().map(|a| a.len()).unwrap_or(0),
+                    "tool cache refresh failed"
+                ),
+            }
         });
     });
 

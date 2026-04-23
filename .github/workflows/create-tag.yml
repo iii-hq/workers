@@ -8,9 +8,19 @@ on:
         required: true
         type: choice
         options:
+          - a2a
+          - agent
+          - coding
+          - eval
+          - experiment
+          - guardrails
           - image-resize
           - iii-lsp
           - iii-lsp-vscode
+          - introspect
+          - llm-router
+          - mcp
+          - shell
       bump:
         description: 'Version bump type'
         required: true

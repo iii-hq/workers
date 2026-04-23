@@ -236,8 +236,9 @@ pub async fn handle(_iii: &III, _payload: Value) -> Result<Value, IIIError> {{
 
     let mut trigger_registrations = String::new();
     for (i, trigger) in triggers.iter().enumerate() {
+        let normalized = normalize_trigger_config(&trigger.config);
         let trigger_config_str =
-            serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+            serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
     let _trigger_{i} = iii.register_trigger(RegisterTriggerInput {{
@@ -445,12 +446,15 @@ pub fn typescript_worker_template(
 
         fn_registrations.push_str(&format!(
             r#"
-iii.registerFunction({{
-  id: '{fn_id}',
-  description: '{description}',
-  requestFormat: {req_str},
-  responseFormat: {resp_str},
-}}, handle_{fn_short});
+iii.registerFunction(
+  '{fn_id}',
+  handle_{fn_short},
+  {{
+    description: '{description}',
+    request_format: {req_str},
+    response_format: {resp_str},
+  }},
+);
 "#,
             fn_id = func.id,
             description = func.description.replace('\'', "\\'"),
@@ -478,8 +482,9 @@ iii.registerFunction({{
     }
 
     for trigger in triggers {
+        let normalized = normalize_trigger_config(&trigger.config);
         let config_str =
-            serde_json::to_string_pretty(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+            serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
 iii.registerTrigger({{
@@ -641,8 +646,8 @@ iii.register_function(
     }
 
     for trigger in triggers {
-        let config_str =
-            serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+        let normalized = normalize_trigger_config(&trigger.config);
+        let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
         trigger_registrations.push_str(&format!(
             r#"
 iii.register_trigger(
@@ -713,6 +718,23 @@ if __name__ == "__main__":
     });
 
     WorkerFiles { files }
+}
+
+/// Normalize the `api_path` field of an HTTP trigger config.
+///
+/// The engine prepends `/` to every registered api_path, so a user-supplied
+/// `"api_path": "/myworker/greet"` becomes `//myworker/greet` on the wire and
+/// returns 404 at invoke time. Strip exactly one leading slash so generated
+/// workers behave correctly out of the box.
+fn normalize_trigger_config(config: &Value) -> Value {
+    let mut normalized = config.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        if let Some(api_path) = obj.get("api_path").and_then(|v| v.as_str()) {
+            let stripped = api_path.trim_start_matches('/').to_string();
+            obj.insert("api_path".to_string(), Value::String(stripped));
+        }
+    }
+    normalized
 }
 
 fn to_pascal_case(s: &str) -> String {
@@ -827,7 +849,8 @@ pub fn generate_single_function_python(func: &FunctionDef) -> GeneratedFile {
 }
 
 pub fn generate_trigger_code_rust(trigger: &TriggerDef) -> String {
-    let config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.register_trigger(RegisterTriggerInput {{
     trigger_type: "{trigger_type}".to_string(),
@@ -842,8 +865,8 @@ pub fn generate_trigger_code_rust(trigger: &TriggerDef) -> String {
 }
 
 pub fn generate_trigger_code_typescript(trigger: &TriggerDef) -> String {
-    let config_str =
-        serde_json::to_string_pretty(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.registerTrigger({{
   triggerType: '{trigger_type}',
@@ -857,7 +880,8 @@ pub fn generate_trigger_code_typescript(trigger: &TriggerDef) -> String {
 }
 
 pub fn generate_trigger_code_python(trigger: &TriggerDef) -> String {
-    let config_str = serde_json::to_string(&trigger.config).unwrap_or_else(|_| "{}".to_string());
+    let normalized = normalize_trigger_config(&trigger.config);
+    let config_str = serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"iii.register_trigger(
     trigger_type="{trigger_type}",

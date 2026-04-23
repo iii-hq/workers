@@ -18,9 +18,18 @@ struct Args {
 
     #[arg(
         long,
-        help = "Expose all functions as skills (ignore a2a.expose metadata)"
+        help = "Expose all functions as skills (ignore a2a.expose metadata). \
+                Infra namespaces (engine::*, state::*, stream::*, iii.*, a2a::*) \
+                stay hidden even with this flag."
     )]
     expose_all: bool,
+
+    #[arg(
+        long,
+        help = "Show only functions whose `a2a.tier` metadata equals this value \
+                (e.g. `user`, `agent`, `ops`). When unset, tier filtering is off."
+    )]
+    tier: Option<String>,
 
     #[arg(
         long,
@@ -49,7 +58,8 @@ async fn main() -> anyhow::Result<()> {
 
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
-    handler::register(&iii, args.expose_all, args.base_url);
+    let exposure = handler::ExposureConfig::new(args.expose_all, args.tier.clone());
+    handler::register(&iii, exposure, args.base_url);
 
     tracing::info!("A2A endpoints registered on engine port. Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;

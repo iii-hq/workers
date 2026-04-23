@@ -25,18 +25,41 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         .get("command")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing 'command'".to_string()))?;
-    let args: Option<Vec<String>> = payload.get("args").and_then(|v| v.as_array()).map(|a| {
-        a.iter()
-            .filter_map(|x| x.as_str().map(String::from))
-            .collect()
-    });
+    // Validate strictly: if `args` is present, it must be an array of strings.
+    // Silently dropping non-strings with filter_map meant a caller sending
+    // `{"args": ["--count", 5]}` would have `5` quietly removed and the shell
+    // would then run with partial arguments — a subtle, dangerous-to-debug
+    // deviation from what the caller asked for.
+    let args: Option<Vec<String>> = match payload.get("args") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        return Err(IIIError::Handler(format!(
+                            "'args[{}]' must be a string (got {})",
+                            i, v
+                        )));
+                    }
+                }
+            }
+            Some(out)
+        }
+        Some(other) => {
+            return Err(IIIError::Handler(format!(
+                "'args' must be an array of strings (got {})",
+                other
+            )));
+        }
+    };
     let timeout_ms = payload.get("timeout_ms").and_then(|v| v.as_u64());
 
     let argv = parse_argv(command, args.as_ref())
         .map_err(|e| IIIError::Handler(format!("argv: {}", e)))?;
 
-    cfg.is_command_allowed(&argv)
-        .map_err(IIIError::Handler)?;
+    cfg.is_command_allowed(&argv).map_err(IIIError::Handler)?;
 
     let timeout = cfg.resolve_timeout(timeout_ms);
 

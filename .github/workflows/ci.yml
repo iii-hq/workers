@@ -16,30 +16,86 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
+      a2a: ${{ steps.filter.outputs.a2a }}
+      agent: ${{ steps.filter.outputs.agent }}
+      coding: ${{ steps.filter.outputs.coding }}
+      eval: ${{ steps.filter.outputs.eval }}
+      experiment: ${{ steps.filter.outputs.experiment }}
+      guardrails: ${{ steps.filter.outputs.guardrails }}
       image-resize: ${{ steps.filter.outputs.image-resize }}
       iii-lsp: ${{ steps.filter.outputs.iii-lsp }}
       iii-lsp-vscode: ${{ steps.filter.outputs.iii-lsp-vscode }}
+      introspect: ${{ steps.filter.outputs.introspect }}
+      llm-router: ${{ steps.filter.outputs.llm-router }}
+      mcp: ${{ steps.filter.outputs.mcp }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
+            a2a:
+              - 'a2a/**'
+            agent:
+              - 'agent/**'
+            coding:
+              - 'coding/**'
+            eval:
+              - 'eval/**'
+            experiment:
+              - 'experiment/**'
+            guardrails:
+              - 'guardrails/**'
             image-resize:
               - 'image-resize/**'
             iii-lsp:
               - 'iii-lsp/**'
             iii-lsp-vscode:
               - 'iii-lsp-vscode/**'
+            introspect:
+              - 'introspect/**'
+            llm-router:
+              - 'llm-router/**'
+            mcp:
+              - 'mcp/**'
+            shell:
+              - 'shell/**'
 
-  image-resize:
-    name: "image-resize: Test, Format, Lint"
+  rust-worker:
+    name: "${{ matrix.worker }}: Test, Format, Lint"
     needs: changes
-    if: needs.changes.outputs.image-resize == 'true'
+    if: |
+      (matrix.worker == 'a2a' && needs.changes.outputs.a2a == 'true') ||
+      (matrix.worker == 'agent' && needs.changes.outputs.agent == 'true') ||
+      (matrix.worker == 'coding' && needs.changes.outputs.coding == 'true') ||
+      (matrix.worker == 'eval' && needs.changes.outputs.eval == 'true') ||
+      (matrix.worker == 'experiment' && needs.changes.outputs.experiment == 'true') ||
+      (matrix.worker == 'guardrails' && needs.changes.outputs.guardrails == 'true') ||
+      (matrix.worker == 'image-resize' && needs.changes.outputs.image-resize == 'true') ||
+      (matrix.worker == 'introspect' && needs.changes.outputs.introspect == 'true') ||
+      (matrix.worker == 'llm-router' && needs.changes.outputs.llm-router == 'true') ||
+      (matrix.worker == 'mcp' && needs.changes.outputs.mcp == 'true') ||
+      (matrix.worker == 'shell' && needs.changes.outputs.shell == 'true')
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - a2a
+          - agent
+          - coding
+          - eval
+          - experiment
+          - guardrails
+          - image-resize
+          - introspect
+          - llm-router
+          - mcp
+          - shell
     defaults:
       run:
-        working-directory: image-resize
+        working-directory: ${{ matrix.worker }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +105,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: image-resize -> target
+          workspaces: ${{ matrix.worker }} -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check

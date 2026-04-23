@@ -12,7 +12,13 @@ use tokio::sync::{Mutex, mpsc};
 use crate::prompts;
 use crate::worker_manager::{WorkerCreateParams, WorkerManager, WorkerStopParams};
 
-const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+// Current published MCP spec revision. Bump when moving to a newer one.
+// Real spec versions are date-stamps from
+// https://spec.modelcontextprotocol.io — not arbitrary dates. The earlier
+// "2025-11-25" value in this file was a future date that no real client
+// recognized; MCP Inspector rejected it with "protocol version is not
+// supported" until this was corrected.
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const INTERNAL_ERROR: i32 = -32603;
 const INVALID_PARAMS: i32 = -32602;
 const METHOD_NOT_FOUND: i32 = -32601;
@@ -23,6 +29,77 @@ fn has_metadata_flag(f: &FunctionInfo, key: &str) -> bool {
         .and_then(|m| m.get(key))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+fn metadata_string(f: &FunctionInfo, key: &str) -> Option<String> {
+    f.metadata
+        .as_ref()
+        .and_then(|m| m.get(key))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+// Prefixes that are NEVER surfaced as MCP tools, even under --expose-all.
+// These are iii-engine internals — surfacing `state::set` or `engine::*` as
+// an MCP tool lets an agent poke at engine plumbing, which is categorically
+// not an agent-facing surface. Matches the same carve-out the `agent`
+// worker enforces via DEFAULT_EXCLUDED_PREFIXES.
+pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
+    "engine::", "state::", "stream::",
+    // SDK internals come in two notations — callback-style
+    // `iii.on_functions_available.<uuid>` and namespace-style
+    // `iii::durable::publish`, `iii::config`. Match both.
+    "iii.", "iii::",
+    // Protocol-worker entry points are stateless RPC dispatchers. Routing
+    // an MCP tools/call through `mcp::handler` recurses into ourselves;
+    // through `a2a::jsonrpc` double-envelopes an A2A request inside MCP.
+    // Neither is a useful tool surface. Hide both even under --expose-all.
+    "mcp::", "a2a::",
+];
+
+fn is_always_hidden(function_id: &str) -> bool {
+    ALWAYS_HIDDEN_PREFIXES
+        .iter()
+        .any(|p| function_id.starts_with(p))
+}
+
+#[derive(Debug, Clone)]
+pub struct ExposureConfig {
+    /// Ignore the `mcp.expose` metadata gate (dev only).
+    pub expose_all: bool,
+    /// Skip the 6 built-in management tools in tools/list. Default true for
+    /// HTTP transport where worker-management isn't applicable anyway.
+    pub no_builtins: bool,
+    /// Optional tier filter. When set, only functions whose `mcp.tier`
+    /// metadata string equals this value survive the filter.
+    pub tier: Option<String>,
+}
+
+impl ExposureConfig {
+    pub fn new(expose_all: bool, no_builtins: bool, tier: Option<String>) -> Self {
+        Self {
+            expose_all,
+            no_builtins,
+            tier,
+        }
+    }
+}
+
+fn is_function_exposed(f: &FunctionInfo, cfg: &ExposureConfig) -> bool {
+    // Hard floor: infra prefixes never surface, even with --expose-all.
+    if is_always_hidden(&f.function_id) {
+        return false;
+    }
+    if !cfg.expose_all && !has_metadata_flag(f, "mcp.expose") {
+        return false;
+    }
+    if let Some(want_tier) = &cfg.tier {
+        match metadata_string(f, "mcp.tier") {
+            Some(got) if &got == want_tier => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +145,7 @@ impl JsonRpcResponse {
 pub struct McpHandler {
     initialized: AtomicBool,
     iii: III,
-    expose_all: bool,
+    exposure: ExposureConfig,
     worker_manager: WorkerManager,
     triggers: Mutex<HashMap<String, Trigger>>,
     notification_rx: tokio::sync::Mutex<mpsc::Receiver<String>>,
@@ -76,7 +153,7 @@ pub struct McpHandler {
 }
 
 impl McpHandler {
-    pub fn new(iii: III, engine_url: String, expose_all: bool) -> Self {
+    pub fn new(iii: III, engine_url: String, exposure: ExposureConfig) -> Self {
         let (tx, notification_rx) = mpsc::channel(16);
 
         let guard = iii.on_functions_available(move |_| {
@@ -91,7 +168,7 @@ impl McpHandler {
         Self {
             initialized: AtomicBool::new(false),
             iii,
-            expose_all,
+            exposure,
             worker_manager: WorkerManager::new(engine_url),
             triggers: Mutex::new(HashMap::new()),
             notification_rx: tokio::sync::Mutex::new(notification_rx),
@@ -158,12 +235,16 @@ impl McpHandler {
     }
 
     async fn tools_list(&self) -> Result<Value, String> {
-        let mut tools = builtin_tools();
+        let mut tools = if self.exposure.no_builtins {
+            Vec::new()
+        } else {
+            builtin_tools()
+        };
         if let Ok(functions) = self.iii.list_functions().await {
             tools.extend(
                 functions
                     .iter()
-                    .filter(|f| self.expose_all || has_metadata_flag(f, "mcp.expose"))
+                    .filter(|f| is_function_exposed(f, &self.exposure))
                     .map(function_to_tool),
             );
         }
@@ -172,6 +253,16 @@ impl McpHandler {
 
     async fn tools_call(&self, params: Option<Value>) -> Result<Value, String> {
         let params: CallParams = parse(params)?;
+
+        // When builtins are hidden from tools/list, also refuse to dispatch
+        // them by name. Otherwise a client could invoke `iii_worker_register`
+        // on a server that claimed it had no such tool — bypassing the policy.
+        if self.exposure.no_builtins && is_builtin_tool(&params.name) {
+            return Ok(tool_error(&format!(
+                "Tool '{}' is disabled on this server (--no-builtins is set)",
+                params.name
+            )));
+        }
 
         match params.name.as_str() {
             "iii_worker_register" => {
@@ -243,18 +334,37 @@ impl McpHandler {
         }
 
         let function_id = params.name.replace("__", "::");
-        if !self.expose_all {
-            if let Ok(fns) = self.iii.list_functions().await {
-                let exposed = fns
-                    .iter()
-                    .any(|f| f.function_id == function_id && has_metadata_flag(f, "mcp.expose"));
-                if !exposed {
-                    return Ok(tool_error(&format!(
-                        "Function '{}' is not exposed via mcp.expose metadata",
-                        function_id
-                    )));
-                }
+        // Hard floor applies before the metadata gate — a hidden infra
+        // function stays unreachable even when --expose-all is set.
+        if is_always_hidden(&function_id) {
+            return Ok(tool_error(&format!(
+                "Function '{}' is in the iii-engine internal namespace and is not exposed as an MCP tool",
+                function_id
+            )));
+        }
+        // Fail closed: if we can't verify exposure (engine unreachable,
+        // list_functions errored), refuse the call. The earlier code
+        // silently dropped the check on Err and handed through to
+        // iii.trigger — that meant an engine outage masked the policy gate.
+        let fns = match self.iii.list_functions().await {
+            Ok(fns) => fns,
+            Err(e) => {
+                tracing::error!(error = %e, function_id = %function_id, "list_functions failed; denying call");
+                return Ok(tool_error(&format!(
+                    "Function '{}' exposure could not be verified (engine list_functions error); denying call",
+                    function_id
+                )));
             }
+        };
+        let matched = fns.iter().find(|f| f.function_id == function_id);
+        let exposed = matched
+            .map(|f| is_function_exposed(f, &self.exposure))
+            .unwrap_or(false);
+        if !exposed {
+            return Ok(tool_error(&format!(
+                "Function '{}' is not exposed via mcp.expose metadata (or does not match the active --tier filter)",
+                function_id
+            )));
         }
         match self
             .iii
@@ -291,13 +401,22 @@ impl McpHandler {
         let p: P = parse(params)?;
         let (text, mime) = match p.uri.as_str() {
             "iii://functions" => {
+                // Apply the same exposure filter that tools/list uses.
+                // Without this, a client could skip tools/list and read
+                // the resource to enumerate hidden functions — bypassing
+                // the mcp.expose gate, the tier filter, and the hard
+                // floor. resource surface must match tool surface.
                 let v = self
                     .iii
                     .list_functions()
                     .await
                     .map_err(|e| format!("{}", e))?;
+                let filtered: Vec<_> = v
+                    .into_iter()
+                    .filter(|f| is_function_exposed(f, &self.exposure))
+                    .collect();
                 (
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "[]".into()),
+                    serde_json::to_string_pretty(&filtered).unwrap_or_else(|_| "[]".into()),
                     "application/json",
                 )
             }
@@ -384,8 +503,9 @@ impl McpHandler {
     }
 }
 
-pub fn register_http(iii: &III, expose_all: bool) {
+pub fn register_http(iii: &III, exposure: ExposureConfig) {
     let iii_fn = iii.clone();
+    let cfg = exposure;
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "mcp::handler".to_string(),
@@ -395,9 +515,10 @@ pub fn register_http(iii: &III, expose_all: bool) {
         },
         move |input: Value| {
             let iii_inner = iii_fn.clone();
+            let cfg_inner = cfg.clone();
             async move {
                 let body = input.get("body").cloned().unwrap_or(input);
-                let response = dispatch_http(&iii_inner, &body, expose_all).await;
+                let response = dispatch_http(&iii_inner, &body, &cfg_inner).await;
                 Ok(json!({ "status_code": 200, "headers": { "content-type": "application/json" }, "body": response }))
             }
         },
@@ -420,11 +541,11 @@ fn initialize_result() -> Value {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": true }, "resources": { "subscribe": false, "listChanged": true }, "prompts": { "listChanged": false } },
         "serverInfo": { "name": "iii-mcp", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "iii-engine MCP server (SDK v0.10). Functions with metadata mcp.expose: true are exposed as tools."
+        "instructions": "iii-engine MCP server. Only functions with metadata `mcp.expose: true` are exposed as tools. Infra namespaces (engine::*, state::*, stream::*, iii.*, mcp::*) are always hidden. Optional `mcp.tier` metadata is filtered by the server's --tier flag."
     })
 }
 
-async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
+async fn dispatch_http(iii: &III, body: &Value, cfg: &ExposureConfig) -> Value {
     let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = body.get("id").cloned();
     let params = body.get("params").cloned();
@@ -437,11 +558,18 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(json!({})),
         "tools/list" => {
-            let mut tools = builtin_tools();
+            // HTTP transport hides builtins by default — worker/trigger
+            // management requires stdio, so listing them over HTTP is pure
+            // noise that errors on invocation anyway.
+            let mut tools = if cfg.no_builtins {
+                Vec::new()
+            } else {
+                builtin_tools()
+            };
             if let Ok(fns) = iii.list_functions().await {
                 tools.extend(
                     fns.iter()
-                        .filter(|f| expose_all || has_metadata_flag(f, "mcp.expose"))
+                        .filter(|f| is_function_exposed(f, cfg))
                         .map(function_to_tool),
                 );
             }
@@ -457,6 +585,18 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                 },
                 None => return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params")),
             };
+            // When --no-builtins is active, the six management tools are
+            // also not invocable by name. tools/list hides them; this
+            // matches the listing shape at call time.
+            if cfg.no_builtins && is_builtin_tool(&p.name) {
+                return json!(JsonRpcResponse::success(
+                    id,
+                    tool_error(&format!(
+                        "Tool '{}' is disabled on this server (--no-builtins is set)",
+                        p.name
+                    ))
+                ));
+            }
             match p.name.as_str() {
                 "iii_worker_register"
                 | "iii_worker_stop"
@@ -507,21 +647,42 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
                 }
                 _ => {
                     let function_id = p.name.replace("__", "::");
-                    if !expose_all {
-                        if let Ok(fns) = iii.list_functions().await {
-                            let exposed = fns.iter().any(|f| {
-                                f.function_id == function_id && has_metadata_flag(f, "mcp.expose")
-                            });
-                            if !exposed {
-                                return json!(JsonRpcResponse::success(
-                                    id,
-                                    tool_error(&format!(
-                                        "Function '{}' is not exposed via mcp.expose metadata",
-                                        function_id
-                                    ))
-                                ));
-                            }
+                    if is_always_hidden(&function_id) {
+                        return json!(JsonRpcResponse::success(
+                            id,
+                            tool_error(&format!(
+                                "Function '{}' is in the iii-engine internal namespace and is not exposed as an MCP tool",
+                                function_id
+                            ))
+                        ));
+                    }
+                    // Fail closed on list_functions error — see stdio
+                    // tools_call for the reasoning.
+                    let fns = match iii.list_functions().await {
+                        Ok(fns) => fns,
+                        Err(e) => {
+                            tracing::error!(error = %e, function_id = %function_id, "list_functions failed; denying call");
+                            return json!(JsonRpcResponse::success(
+                                id,
+                                tool_error(&format!(
+                                    "Function '{}' exposure could not be verified (engine list_functions error); denying call",
+                                    function_id
+                                ))
+                            ));
                         }
+                    };
+                    let matched = fns.iter().find(|f| f.function_id == function_id);
+                    let exposed = matched
+                        .map(|f| is_function_exposed(f, cfg))
+                        .unwrap_or(false);
+                    if !exposed {
+                        return json!(JsonRpcResponse::success(
+                            id,
+                            tool_error(&format!(
+                                "Function '{}' is not exposed via mcp.expose metadata (or does not match the active --tier filter)",
+                                function_id
+                            ))
+                        ));
                     }
                     match iii
                         .trigger(TriggerRequest {
@@ -570,6 +731,22 @@ fn function_to_tool(f: &FunctionInfo) -> McpTool {
             .clone()
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
     }
+}
+
+// Single source of truth for the built-in tool name list. Both the
+// listing path (builtin_tools()) and the invocation gate
+// (tools_call --no-builtins check) consult this.
+const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "iii_worker_register",
+    "iii_worker_stop",
+    "iii_trigger_register",
+    "iii_trigger_unregister",
+    "iii_trigger_void",
+    "iii_trigger_enqueue",
+];
+
+fn is_builtin_tool(name: &str) -> bool {
+    BUILTIN_TOOL_NAMES.contains(&name)
 }
 
 fn builtin_tools() -> Vec<McpTool> {
