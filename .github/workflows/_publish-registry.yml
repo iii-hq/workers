@@ -117,7 +117,9 @@ jobs:
                   ext = "zip" if "windows" in t else "tar.gz"
                   asset = f"{bin_name}-{t}.{ext}"
                   asset_url = f"{base}/{asset}"
-                  sha_url = f"{asset_url}.sha256"
+                  # taiki-e/upload-rust-binary-action publishes the checksum
+                  # as `<bin>-<target>.sha256` (without the archive extension).
+                  sha_url = f"{base}/{bin_name}-{t}.sha256"
                   try:
                       with urllib.request.urlopen(sha_url, timeout=20) as r:
                           sha_text = r.read().decode("utf-8").strip()
