@@ -1,0 +1,11 @@
+scan_extensions: ["rs", "ts", "py", "js", "go"]
+max_file_size_kb: 512
+score_weights:
+  complexity: 0.25
+  coupling: 0.25
+  cohesion: 0.20
+  size: 0.15
+  duplication: 0.15
+thresholds:
+  degradation_pct: 10.0
+  min_score: 60.0
