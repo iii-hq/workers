@@ -1,2 +1,2 @@
 iii-headquarters is the team github account for this extension on https://open-vsx.org/extension/iii-hq/iii-lsp
-Making an edit to show iii-headquarters can commit to this repository
+Making an edit to show iii-headquarters can commit to this repository.
