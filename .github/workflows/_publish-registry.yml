@@ -79,6 +79,25 @@ jobs:
           root = pathlib.Path(worker)
           meta = yaml.safe_load((root / "iii.worker.yaml").read_text()) or {}
 
+          # Normalize `dependencies` into the array-of-objects wire shape the
+          # registry's /publish endpoint expects. Authors may write either:
+          #   dependencies:
+          #     math-worker: "^0.1.0"       # map form (recommended)
+          # or:
+          #   dependencies:
+          #     - name: math-worker
+          #       version: "^0.1.0"         # explicit wire form
+          raw_deps = meta.get("dependencies") or []
+          if isinstance(raw_deps, dict):
+              deps = [{"name": k, "version": v} for k, v in raw_deps.items()]
+          elif isinstance(raw_deps, list):
+              deps = raw_deps
+          else:
+              print(
+                  f"::error::`dependencies` must be a map or list, got {type(raw_deps).__name__}"
+              )
+              sys.exit(1)
+
           readme_path = root / "README.md"
           readme = readme_path.read_text() if readme_path.exists() else ""
 
@@ -95,7 +114,7 @@ jobs:
               "readme": readme,
               "repo": repo_url,
               "description": meta.get("description", ""),
-              "dependencies": meta.get("dependencies", []),
+              "dependencies": deps,
               "config": config,
           }
 
