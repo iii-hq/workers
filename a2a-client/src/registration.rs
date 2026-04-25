@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use iii_sdk::{FunctionRef, RegisterFunctionMessage, III};
 use iii_sdk::IIIError;
+use iii_sdk::{FunctionRef, RegisterFunctionMessage, III};
 use serde_json::{json, Value};
 use tokio::time::interval;
 
@@ -216,5 +216,8 @@ fn extract_failure_text(task: &Task) -> String {
         }
     }
     let timestamp = task.status.timestamp.as_deref().unwrap_or("unknown");
-    format!("no failure message; task_id={} timestamp={}", task.id, timestamp)
+    format!(
+        "no failure message; task_id={} timestamp={}",
+        task.id, timestamp
+    )
 }

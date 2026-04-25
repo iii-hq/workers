@@ -91,21 +91,20 @@ async fn handle_a2a(
         }
         // Honour the SSE accept hint (debugging aid only).
         let _ = headers.get("accept");
-        let stream = futures_util::stream::iter(vec![
-            Ok::<_, std::convert::Infallible>(
-                Event::default().data(
-                    serde_json::to_string(&json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": {
-                            "taskId": "stream-task-1",
-                            "status": { "state": "completed" },
-                            "final": true
-                        }
-                    })).unwrap(),
-                ),
+        let stream = futures_util::stream::iter(vec![Ok::<_, std::convert::Infallible>(
+            Event::default().data(
+                serde_json::to_string(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "taskId": "stream-task-1",
+                        "status": { "state": "completed" },
+                        "final": true
+                    }
+                }))
+                .unwrap(),
             ),
-        ]);
+        )]);
         return Sse::new(stream).into_response();
     }
 
@@ -120,11 +119,12 @@ async fn handle_a2a(
         .cloned()
         .unwrap_or(json!({}));
 
-    let result_obj = if echo_payload.is_object() && echo_payload.as_object().is_some_and(|m| !m.is_empty()) {
-        echo_payload
-    } else {
-        json!({ "hello": "world" })
-    };
+    let result_obj =
+        if echo_payload.is_object() && echo_payload.as_object().is_some_and(|m| !m.is_empty()) {
+            echo_payload
+        } else {
+            json!({ "hello": "world" })
+        };
     let result_text = serde_json::to_string(&result_obj).unwrap();
 
     let body = json!({

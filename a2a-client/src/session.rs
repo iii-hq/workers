@@ -113,13 +113,8 @@ impl Session {
             .result
             .ok_or_else(|| anyhow!("remote A2A response missing both result and error"))?;
         // some servers return Task directly, others wrap in {task: ...}
-        let task: Task = serde_json::from_value(
-            result
-                .get("task")
-                .cloned()
-                .unwrap_or(result),
-        )
-        .context("parse Task from /a2a result")?;
+        let task: Task = serde_json::from_value(result.get("task").cloned().unwrap_or(result))
+            .context("parse Task from /a2a result")?;
         Ok(task)
     }
 
@@ -145,8 +140,8 @@ impl Session {
             .header("accept", "text/event-stream")
             .json(&req);
 
-        let es = EventSource::new(request_builder)
-            .context("create EventSource for message/stream")?;
+        let es =
+            EventSource::new(request_builder).context("create EventSource for message/stream")?;
 
         let stream = es.filter_map(|ev| async move {
             match ev {
@@ -179,9 +174,10 @@ impl Session {
         if let Some(err) = resp.error {
             return Err(anyhow!("remote tasks/get failed: {}", err.message));
         }
-        let result = resp.result.ok_or_else(|| anyhow!("tasks/get missing result"))?;
-        let task: Task =
-            serde_json::from_value(result.get("task").cloned().unwrap_or(result))?;
+        let result = resp
+            .result
+            .ok_or_else(|| anyhow!("tasks/get missing result"))?;
+        let task: Task = serde_json::from_value(result.get("task").cloned().unwrap_or(result))?;
         Ok(task)
     }
 
@@ -204,9 +200,10 @@ impl Session {
         if let Some(err) = resp.error {
             return Err(anyhow!("remote tasks/cancel failed: {}", err.message));
         }
-        let result = resp.result.ok_or_else(|| anyhow!("tasks/cancel missing result"))?;
-        let task: Task =
-            serde_json::from_value(result.get("task").cloned().unwrap_or(result))?;
+        let result = resp
+            .result
+            .ok_or_else(|| anyhow!("tasks/cancel missing result"))?;
+        let task: Task = serde_json::from_value(result.get("task").cloned().unwrap_or(result))?;
         Ok(task)
     }
 }
@@ -255,7 +252,11 @@ fn parse_sse_event(data: &str) -> Result<StreamEvent> {
 // slug to the same name and collide on registration. Disambiguate via base_url
 // hash or per-connect index when this ships beyond local dev.
 fn derive_name(card: &AgentCard) -> String {
-    let provider = card.provider.as_ref().map(|p| p.organization.as_str()).unwrap_or("");
+    let provider = card
+        .provider
+        .as_ref()
+        .map(|p| p.organization.as_str())
+        .unwrap_or("");
     let raw = if provider.is_empty() {
         card.name.clone()
     } else {
