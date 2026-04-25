@@ -48,16 +48,14 @@ async fn main() -> Result<()> {
     }
 
     for raw in &cli.connect {
-        let spec = SessionSpec::parse(raw)
-            .with_context(|| format!("invalid --connect spec: {raw}"))?;
+        let spec =
+            SessionSpec::parse(raw).with_context(|| format!("invalid --connect spec: {raw}"))?;
         let name = spec.name().to_string();
 
         tracing::info!(server = %name, raw = %raw, "establishing MCP session");
         match Session::connect(spec).await {
             Ok(session) => {
-                if let Err(e) =
-                    register_all(&iii, session.clone(), &cli.namespace_prefix).await
-                {
+                if let Err(e) = register_all(&iii, session.clone(), &cli.namespace_prefix).await {
                     tracing::warn!(server = %name, error = %e, "register_all failed");
                 }
             }

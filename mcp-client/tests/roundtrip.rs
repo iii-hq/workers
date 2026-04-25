@@ -55,10 +55,7 @@ async fn run_mock_server(read: DuplexStream, write: DuplexStream) {
             }
             "tools/call" => {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
-                let tool_name = params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let result = if tool_name == "ping" {
                     json!({ "pong": true })
                 } else {

@@ -17,7 +17,12 @@ pub fn slugify(uri: &str) -> String {
 }
 
 pub async fn register_all(iii: &III, session: Arc<Session>, namespace: &str) -> Result<()> {
-    let caps = session.capabilities.read().await.clone().unwrap_or_default();
+    let caps = session
+        .capabilities
+        .read()
+        .await
+        .clone()
+        .unwrap_or_default();
 
     if caps.tools.is_some() {
         register_tools(iii, session.clone(), namespace).await?;
@@ -174,7 +179,12 @@ pub async fn reconcile(iii: &III, session: Arc<Session>, namespace: &str) -> Res
     // re-register window.
     let lock = session.reconcile_lock.clone();
     let _guard = lock.lock().await;
-    let caps = session.capabilities.read().await.clone().unwrap_or_default();
+    let caps = session
+        .capabilities
+        .read()
+        .await
+        .clone()
+        .unwrap_or_default();
 
     let mut desired: HashSet<String> = HashSet::new();
 
@@ -196,8 +206,7 @@ pub async fn reconcile(iii: &III, session: Arc<Session>, namespace: &str) -> Res
         for prompt in session.list_prompts().await? {
             desired.insert(format!(
                 "{namespace}.{}.prompts::{}",
-                session.name,
-                prompt.name
+                session.name, prompt.name
             ));
         }
     }

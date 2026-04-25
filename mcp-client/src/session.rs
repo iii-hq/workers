@@ -253,11 +253,7 @@ impl Session {
         };
 
         if let Some(err) = resp.error {
-            return Err(anyhow!(
-                "JSON-RPC error {}: {}",
-                err.code,
-                err.message
-            ));
+            return Err(anyhow!("JSON-RPC error {}: {}", err.code, err.message));
         }
         Ok(resp.result.unwrap_or(Value::Null))
     }
@@ -268,8 +264,7 @@ impl Session {
         params: Option<Value>,
     ) -> Result<T> {
         let value = self.call(method, params).await?;
-        serde_json::from_value(value)
-            .map_err(|e| anyhow!("decode {}: {}", method, e))
+        serde_json::from_value(value).map_err(|e| anyhow!("decode {}: {}", method, e))
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
@@ -296,7 +291,8 @@ impl Session {
     }
 
     pub async fn resources_read(&self, uri: &str) -> Result<Value> {
-        self.call("resources/read", Some(json!({ "uri": uri }))).await
+        self.call("resources/read", Some(json!({ "uri": uri })))
+            .await
     }
 
     pub async fn prompts_get(&self, name: &str, arguments: Value) -> Result<Value> {
