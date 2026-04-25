@@ -11,6 +11,10 @@ rust-version = "1.85"
 keywords = ["a2a", "agent-to-agent", "ai", "iii-engine"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "iii_a2a"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-a2a"
 path = "src/main.rs"

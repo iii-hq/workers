@@ -1,7 +1,5 @@
-mod handler;
-mod types;
-
 use clap::Parser;
+use iii_a2a::handler;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -37,6 +35,41 @@ struct Args {
         help = "Public base URL advertised in the agent card"
     )]
     base_url: String,
+
+    #[arg(
+        long,
+        default_value = "iii-engine",
+        help = "Agent name advertised in the agent card"
+    )]
+    agent_name: String,
+
+    #[arg(
+        long,
+        default_value = "iii-engine agent — invoke any registered function via A2A",
+        help = "Agent description advertised in the agent card"
+    )]
+    agent_description: String,
+
+    #[arg(
+        long,
+        default_value = "iii",
+        help = "Provider organization advertised in the agent card"
+    )]
+    provider_org: String,
+
+    #[arg(
+        long,
+        default_value = "https://github.com/iii-hq/iii",
+        help = "Provider URL advertised in the agent card"
+    )]
+    provider_url: String,
+
+    #[arg(
+        long,
+        default_value = "https://github.com/iii-hq/workers/tree/main/a2a",
+        help = "Documentation URL advertised in the agent card"
+    )]
+    docs_url: String,
 }
 
 #[tokio::main]
@@ -59,7 +92,14 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
     let exposure = handler::ExposureConfig::new(args.expose_all, args.tier.clone());
-    handler::register(&iii, exposure, args.base_url);
+    let identity = handler::AgentIdentity {
+        name: args.agent_name,
+        description: args.agent_description,
+        provider_org: args.provider_org,
+        provider_url: args.provider_url,
+        docs_url: args.docs_url,
+    };
+    handler::register(&iii, exposure, args.base_url, identity);
 
     tracing::info!("A2A endpoints registered on engine port. Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;

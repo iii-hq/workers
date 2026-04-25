@@ -55,6 +55,28 @@ impl ExposureConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentIdentity {
+    pub name: String,
+    pub description: String,
+    pub provider_org: String,
+    pub provider_url: String,
+    pub docs_url: String,
+}
+
+impl Default for AgentIdentity {
+    fn default() -> Self {
+        Self {
+            name: "iii-engine".to_string(),
+            description: "iii-engine agent — invoke any registered function via A2A"
+                .to_string(),
+            provider_org: "iii".to_string(),
+            provider_url: "https://github.com/iii-hq/iii".to_string(),
+            docs_url: "https://github.com/iii-hq/workers/tree/main/a2a".to_string(),
+        }
+    }
+}
+
 fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
     if is_always_hidden(&f.function_id) {
         return false;
@@ -94,10 +116,16 @@ async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig)
     }
 }
 
-pub fn register(iii: &III, exposure: ExposureConfig, base_url: String) {
+pub fn register(
+    iii: &III,
+    exposure: ExposureConfig,
+    base_url: String,
+    identity: AgentIdentity,
+) {
     let iii_card = iii.clone();
     let card_cfg = exposure.clone();
     let card_base_url = base_url.clone();
+    let card_identity = identity.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::agent_card".to_string(),
@@ -111,8 +139,9 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String) {
             let iii_inner = iii_card.clone();
             let cfg = card_cfg.clone();
             let base = card_base_url.clone();
+            let ident = card_identity.clone();
             async move {
-                let card = build_agent_card(&iii_inner, &cfg, &base).await;
+                let card = build_agent_card(&iii_inner, &cfg, &base, &ident).await;
                 Ok(json!({
                     "status_code": 200,
                     "headers": { "content-type": "application/json" },
@@ -189,7 +218,12 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String) {
     tracing::info!("A2A registered: GET /.well-known/agent-card.json, POST /a2a");
 }
 
-async fn build_agent_card(iii: &III, cfg: &ExposureConfig, base_url: &str) -> AgentCard {
+pub async fn build_agent_card(
+    iii: &III,
+    cfg: &ExposureConfig,
+    base_url: &str,
+    identity: &AgentIdentity,
+) -> AgentCard {
     let skills = match iii.list_functions().await {
         Ok(fns) => fns
             .iter()
@@ -212,19 +246,19 @@ async fn build_agent_card(iii: &III, cfg: &ExposureConfig, base_url: &str) -> Ag
     };
 
     AgentCard {
-        name: "iii-engine".to_string(),
-        description: "iii-engine agent — invoke any registered function via A2A".to_string(),
+        name: identity.name.clone(),
+        description: identity.description.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         supported_interfaces: vec![AgentInterface {
-            url: base_url.to_string(),
+            url: format!("{}/a2a", base_url.trim_end_matches('/')),
             protocol_binding: "JSONRPC".to_string(),
             protocol_version: "0.3".to_string(),
         }],
         provider: Some(AgentProvider {
-            organization: "iii".to_string(),
-            url: "https://github.com/iii-hq/iii".to_string(),
+            organization: identity.provider_org.clone(),
+            url: identity.provider_url.clone(),
         }),
-        documentation_url: Some("https://github.com/iii-hq/iii-connect".to_string()),
+        documentation_url: Some(identity.docs_url.clone()),
         capabilities: AgentCapabilities {
             streaming: false,
             push_notifications: false,
