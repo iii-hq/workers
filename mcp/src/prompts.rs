@@ -1,5 +1,25 @@
 use serde_json::{Value, json};
 
+// Candidate values for completion/complete on prompt arguments.
+// Returns the full unfiltered candidate set; the completion handler does the
+// prefix match. Empty vec for arguments with no enumerable values (e.g. free
+// text like `function_id`, `path`, `schedule`).
+pub fn list_prompt_candidates(name: &str, arg: &str) -> Vec<String> {
+    match (name, arg) {
+        ("register-function", "language") => {
+            vec!["node".to_string(), "python".to_string()]
+        }
+        ("build-api", "method") => vec![
+            "GET".to_string(),
+            "POST".to_string(),
+            "PUT".to_string(),
+            "DELETE".to_string(),
+            "PATCH".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 pub fn list() -> Value {
     json!({
         "prompts": [

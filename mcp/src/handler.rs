@@ -1,15 +1,22 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use dashmap::DashMap;
 use iii_sdk::{
     FunctionInfo, FunctionsAvailableGuard, III, RegisterFunctionMessage, RegisterTriggerInput,
     Trigger, TriggerAction, TriggerRequest, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::prompts;
+use crate::spec::{
+    self, LOG_INFO, PAGE_SIZE, ToolAnnotations, level_from_str, log_message_notification,
+    make_tool_annotations, paginate, progress_notification, resource_updated_notification,
+    resolve_templated_uri,
+};
 use crate::worker_manager::{WorkerCreateParams, WorkerManager, WorkerStopParams};
 
 // Current published MCP spec revision. Bump when moving to a newer one.
@@ -142,6 +149,58 @@ impl JsonRpcResponse {
     }
 }
 
+// Per-session MCP spec state (subscriptions, log level, progress tokens,
+// in-flight cancellation senders). Lives in an Arc so the HTTP `dispatch_http`
+// path can share an instance keyed by session and the stdio handler can hold
+// a single instance for its single attached client.
+pub struct SessionState {
+    pub subscriptions: std::sync::Mutex<HashSet<String>>,
+    pub log_level: AtomicU8,
+    // request_id (from tools/call) → progress token. Unused for routing today
+    // (we simply emit notifications/progress with the token the user provided
+    // via `mcp::progress`), but tracked so cancellation/progress can correlate
+    // when richer routing is needed.
+    pub progress_tokens: DashMap<Value, Value>,
+    // request_id → cancel sender. When `notifications/cancelled` arrives,
+    // we fire the matching sender to abort an in-flight tools/call.
+    pub cancellation_tokens: DashMap<String, oneshot::Sender<()>>,
+    pub notifier: mpsc::Sender<String>,
+}
+
+impl SessionState {
+    pub fn new(notifier: mpsc::Sender<String>) -> Self {
+        Self {
+            subscriptions: std::sync::Mutex::new(HashSet::new()),
+            log_level: AtomicU8::new(LOG_INFO),
+            progress_tokens: DashMap::new(),
+            cancellation_tokens: DashMap::new(),
+            notifier,
+        }
+    }
+
+    pub fn try_send(&self, msg: String) {
+        if self.notifier.try_send(msg).is_err() {
+            tracing::warn!("Notification channel full; dropping message");
+        }
+    }
+
+    pub fn is_subscribed(&self, uri: &str) -> bool {
+        self.subscriptions
+            .lock()
+            .map(|g| g.contains(uri))
+            .unwrap_or(false)
+    }
+
+    fn request_id_key(id: &Value) -> String {
+        // request ids in JSON-RPC can be string or number. Normalize to a
+        // single string key so DashMap keys are uniform.
+        match id {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 pub struct McpHandler {
     initialized: AtomicBool,
     iii: III,
@@ -149,21 +208,52 @@ pub struct McpHandler {
     worker_manager: WorkerManager,
     triggers: Mutex<HashMap<String, Trigger>>,
     notification_rx: tokio::sync::Mutex<mpsc::Receiver<String>>,
+    state: Arc<SessionState>,
     _functions_guard: FunctionsAvailableGuard,
+    _bg_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl McpHandler {
     pub fn new(iii: III, engine_url: String, exposure: ExposureConfig) -> Self {
-        let (tx, notification_rx) = mpsc::channel(16);
+        let (tx, notification_rx) = mpsc::channel(64);
+        let state = Arc::new(SessionState::new(tx.clone()));
 
+        // tools/list_changed: piggyback on the SDK's on_functions_available
+        // callback. resources/list_changed shares the same trigger because
+        // listing functions is what `iii://functions` resolves to.
+        let state_for_fn_cb = state.clone();
         let guard = iii.on_functions_available(move |_| {
-            let n = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
-            if let Ok(json) = serde_json::to_string(&n) {
-                if tx.try_send(json).is_err() {
-                    tracing::warn!("Notification channel full, tools/list_changed dropped");
+            let n =
+                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
+            if let Ok(s) = serde_json::to_string(&n) {
+                state_for_fn_cb.try_send(s);
+            }
+            // Also fire resources/updated for iii://functions if subscribed.
+            if state_for_fn_cb.is_subscribed("iii://functions") {
+                if let Ok(s) =
+                    serde_json::to_string(&resource_updated_notification("iii://functions"))
+                {
+                    state_for_fn_cb.try_send(s);
                 }
             }
         });
+
+        // Background poll: workers + triggers don't have an SDK callback, so
+        // poll every 5s and emit resources/updated on diff. Cheap (two engine
+        // round-trips) and only runs while the handler is alive.
+        let mut bg = Vec::new();
+        let iii_poll = iii.clone();
+        let state_poll = state.clone();
+        let poll_handle = tokio::spawn(async move {
+            poll_resource_updates(iii_poll, state_poll).await;
+        });
+        bg.push(poll_handle);
+
+        // Register `mcp::log_message` and `mcp::progress` so user functions
+        // can drive notifications. Both are plain iii functions, kept inside
+        // the always-hidden `mcp::` namespace per ALWAYS_HIDDEN_PREFIXES so
+        // they never appear in tools/list.
+        register_notification_helpers(&iii, state.clone());
 
         Self {
             initialized: AtomicBool::new(false),
@@ -172,8 +262,14 @@ impl McpHandler {
             worker_manager: WorkerManager::new(engine_url),
             triggers: Mutex::new(HashMap::new()),
             notification_rx: tokio::sync::Mutex::new(notification_rx),
+            state,
             _functions_guard: guard,
+            _bg_tasks: bg,
         }
+    }
+
+    pub fn state(&self) -> &Arc<SessionState> {
+        &self.state
     }
 
     pub async fn take_notification(&self) -> Option<String> {
@@ -187,6 +283,18 @@ impl McpHandler {
         if method.starts_with("notifications/") {
             if method == "notifications/initialized" {
                 self.initialized.store(true, Ordering::SeqCst);
+            }
+            if method == "notifications/cancelled" {
+                if let Some(req_id) = body
+                    .get("params")
+                    .and_then(|p| p.get("requestId"))
+                    .cloned()
+                {
+                    let key = SessionState::request_id_key(&req_id);
+                    if let Some((_, sender)) = self.state.cancellation_tokens.remove(&key) {
+                        let _ = sender.send(());
+                    }
+                }
             }
             return None;
         }
@@ -208,23 +316,48 @@ impl McpHandler {
         let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let id = body.get("id").cloned();
         let params = body.get("params").cloned();
+        let cursor = params
+            .as_ref()
+            .and_then(|p| p.get("cursor"))
+            .and_then(|c| c.as_str())
+            .map(String::from);
 
         let result = match method {
             "initialize" => Ok(initialize_result()),
             "ping" => Ok(json!({})),
-            "tools/list" => self.tools_list().await.map_err(|e| (INTERNAL_ERROR, e)),
+            "tools/list" => self
+                .tools_list(cursor.as_deref())
+                .await
+                .map_err(|e| (INTERNAL_ERROR, e)),
             "tools/call" => self
-                .tools_call(params)
+                .tools_call(id.clone(), body)
                 .await
                 .map_err(|e| (INVALID_PARAMS, e)),
-            "resources/list" => Ok(self.resources_list()),
+            "resources/list" => Ok(self.resources_list(cursor.as_deref())),
             "resources/read" => self
                 .resources_read(params)
                 .await
                 .map_err(|e| (INVALID_PARAMS, e)),
-            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
-            "prompts/list" => Ok(prompts::list()),
+            "resources/templates/list" => Ok(json!({
+                "resourceTemplates": spec::make_resource_templates()
+            })),
+            "resources/subscribe" => spec::handle_resources_subscribe(
+                &self.state.subscriptions,
+                params,
+            )
+            .map_err(|e| (INVALID_PARAMS, e)),
+            "resources/unsubscribe" => spec::handle_resources_unsubscribe(
+                &self.state.subscriptions,
+                params,
+            )
+            .map_err(|e| (INVALID_PARAMS, e)),
+            "prompts/list" => Ok(prompts_list_paginated(cursor.as_deref())),
             "prompts/get" => Ok(prompts::get(params)),
+            "completion/complete" => spec::handle_completion_complete(&self.iii, params)
+                .await
+                .map_err(|e| (INVALID_PARAMS, e)),
+            "logging/setLevel" => spec::handle_logging_set_level(&self.state.log_level, params)
+                .map_err(|e| (INVALID_PARAMS, e)),
             _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
         };
 
@@ -234,7 +367,7 @@ impl McpHandler {
         })
     }
 
-    async fn tools_list(&self) -> Result<Value, String> {
+    async fn tools_list(&self, cursor: Option<&str>) -> Result<Value, String> {
         let mut tools = if self.exposure.no_builtins {
             Vec::new()
         } else {
@@ -248,11 +381,59 @@ impl McpHandler {
                     .map(function_to_tool),
             );
         }
-        Ok(json!({ "tools": tools }))
+        let (page, next) = paginate(&tools, cursor, PAGE_SIZE);
+        let page_owned: Vec<McpTool> = page.into_iter().cloned().collect();
+        let mut out = json!({ "tools": page_owned });
+        if let Some(c) = next {
+            out["nextCursor"] = json!(c);
+        }
+        Ok(out)
     }
 
-    async fn tools_call(&self, params: Option<Value>) -> Result<Value, String> {
-        let params: CallParams = parse(params)?;
+    async fn tools_call(&self, id: Option<Value>, body: &Value) -> Result<Value, String> {
+        let raw_params = body.get("params").cloned();
+        let params: CallParams = parse(raw_params.clone())?;
+
+        // _meta.progressToken: bind it to the request id so a tool implementation
+        // calling `mcp::progress` with this token gets routed through.
+        let progress_token = raw_params
+            .as_ref()
+            .and_then(|p| p.get("_meta"))
+            .and_then(|m| m.get("progressToken"))
+            .cloned();
+        if let (Some(req_id), Some(token)) = (id.clone(), progress_token.clone()) {
+            self.state.progress_tokens.insert(req_id, token);
+        }
+
+        // Register cancellation receiver. Even if tools_call short-circuits
+        // before reaching iii.trigger, the slot is removed at end via the
+        // RAII-ish scope guard pattern below.
+        let req_key = id.as_ref().map(SessionState::request_id_key);
+        let cancel_rx = if let Some(ref key) = req_key {
+            let (tx, rx) = oneshot::channel();
+            self.state.cancellation_tokens.insert(key.clone(), tx);
+            Some(rx)
+        } else {
+            None
+        };
+
+        let result = self.tools_call_inner(params, cancel_rx).await;
+
+        // Cleanup keyed state regardless of outcome.
+        if let Some(key) = req_key {
+            self.state.cancellation_tokens.remove(&key);
+        }
+        if let Some(req_id) = id {
+            self.state.progress_tokens.remove(&req_id);
+        }
+        result
+    }
+
+    async fn tools_call_inner(
+        &self,
+        params: CallParams,
+        cancel_rx: Option<oneshot::Receiver<()>>,
+    ) -> Result<Value, String> {
 
         // When builtins are hidden from tools/list, also refuse to dispatch
         // them by name. Otherwise a client could invoke `iii_worker_register`
@@ -366,16 +547,27 @@ impl McpHandler {
                 function_id
             )));
         }
-        match self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.clone(),
-                payload: params.arguments,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-        {
+        let trigger_fut = self.iii.trigger(TriggerRequest {
+            function_id: function_id.clone(),
+            payload: params.arguments,
+            action: None,
+            timeout_ms: None,
+        });
+
+        // notifications/cancelled tracking. If the receiver fires before the
+        // trigger resolves, return a cancelled tool_error rather than an
+        // ordinary failure — clients distinguish via the message text.
+        let outcome = if let Some(rx) = cancel_rx {
+            tokio::select! {
+                biased;
+                _ = rx => return Ok(tool_error("Request cancelled")),
+                r = trigger_fut => r,
+            }
+        } else {
+            trigger_fut.await
+        };
+
+        match outcome {
             Ok(result) => Ok(tool_json(&result)),
             Err(err) => {
                 tracing::error!(function_id = %function_id, error = %err, "Trigger failed");
@@ -384,13 +576,8 @@ impl McpHandler {
         }
     }
 
-    fn resources_list(&self) -> Value {
-        json!({ "resources": [
-            { "uri": "iii://functions", "name": "Functions", "mimeType": "application/json" },
-            { "uri": "iii://workers", "name": "Workers", "mimeType": "application/json" },
-            { "uri": "iii://triggers", "name": "Triggers", "mimeType": "application/json" },
-            { "uri": "iii://context", "name": "Context", "mimeType": "application/json" },
-        ]})
+    fn resources_list(&self, cursor: Option<&str>) -> Value {
+        resources_list_paginated(cursor)
     }
 
     async fn resources_read(&self, params: Option<Value>) -> Result<Value, String> {
@@ -447,6 +634,17 @@ impl McpHandler {
 pub fn register_http(iii: &III, exposure: ExposureConfig) {
     let iii_fn = iii.clone();
     let cfg = exposure;
+    // Shared session state for the HTTP transport. Single-tenant: every POST
+    // /mcp request reuses the same subscriptions/log_level/progress state
+    // until the worker is restarted. Sufficient for the current Phase 2a
+    // surface; per-session multiplexing (Streamable HTTP SSE) is explicitly
+    // out of scope. The notifier mpsc receiver is dropped on the spot — HTTP
+    // has no return channel for notifications, so emitting them is a no-op.
+    let (notifier_tx, notifier_rx) = mpsc::channel(64);
+    drop(notifier_rx);
+    let state = Arc::new(SessionState::new(notifier_tx));
+    register_notification_helpers(iii, state.clone());
+
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "mcp::handler".to_string(),
@@ -457,9 +655,10 @@ pub fn register_http(iii: &III, exposure: ExposureConfig) {
         move |input: Value| {
             let iii_inner = iii_fn.clone();
             let cfg_inner = cfg.clone();
+            let state_inner = state.clone();
             async move {
                 let body = input.get("body").cloned().unwrap_or(input);
-                let response = dispatch_http(&iii_inner, &body, &cfg_inner).await;
+                let response = dispatch_http(&iii_inner, &body, &cfg_inner, &state_inner).await;
                 Ok(json!({ "status_code": 200, "headers": { "content-type": "application/json" }, "body": response }))
             }
         },
@@ -480,18 +679,223 @@ pub fn register_http(iii: &III, exposure: ExposureConfig) {
 fn initialize_result() -> Value {
     json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
-        "capabilities": { "tools": { "listChanged": true }, "resources": { "subscribe": false, "listChanged": true }, "prompts": { "listChanged": false } },
+        "capabilities": {
+            "tools": { "listChanged": true },
+            "resources": { "subscribe": true, "listChanged": true },
+            "prompts": { "listChanged": false },
+            "logging": {},
+            "completions": {}
+        },
         "serverInfo": { "name": "iii-mcp", "version": env!("CARGO_PKG_VERSION") },
         "instructions": "iii-engine MCP server. Only functions with metadata `mcp.expose: true` are exposed as tools. Infra namespaces (engine::*, state::*, stream::*, iii.*, mcp::*) are always hidden. Optional `mcp.tier` metadata is filtered by the server's --tier flag."
     })
 }
 
-async fn dispatch_http(iii: &III, body: &Value, cfg: &ExposureConfig) -> Value {
+// Static resource list shared by stdio + HTTP. Pagination on this short list
+// is mostly future-proofing — the four built-in URIs always fit in one page.
+fn static_resources() -> Vec<Value> {
+    vec![
+        json!({ "uri": "iii://functions", "name": "Functions", "mimeType": "application/json" }),
+        json!({ "uri": "iii://workers", "name": "Workers", "mimeType": "application/json" }),
+        json!({ "uri": "iii://triggers", "name": "Triggers", "mimeType": "application/json" }),
+        json!({ "uri": "iii://context", "name": "Context", "mimeType": "application/json" }),
+    ]
+}
+
+fn resources_list_paginated(cursor: Option<&str>) -> Value {
+    let items = static_resources();
+    let (page, next) = paginate(&items, cursor, PAGE_SIZE);
+    let page_owned: Vec<Value> = page.into_iter().cloned().collect();
+    let mut out = json!({ "resources": page_owned });
+    if let Some(c) = next {
+        out["nextCursor"] = json!(c);
+    }
+    out
+}
+
+fn prompts_list_paginated(cursor: Option<&str>) -> Value {
+    // prompts::list() returns `{prompts: [...]}`. Pull the array, paginate,
+    // re-wrap. Keeping the wire shape stable — clients call prompts/list
+    // identically with or without cursor support.
+    let full = prompts::list();
+    let arr = full
+        .get("prompts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let (page, next) = paginate(&arr, cursor, PAGE_SIZE);
+    let page_owned: Vec<Value> = page.into_iter().cloned().collect();
+    let mut out = json!({ "prompts": page_owned });
+    if let Some(c) = next {
+        out["nextCursor"] = json!(c);
+    }
+    out
+}
+
+// Drives `notifications/resources/updated` for `iii://workers` and
+// `iii://triggers` — neither has an SDK callback. 5s poll, content-hash
+// diff so we don't fire on every tick. Stops when the channel closes
+// (handler dropped).
+async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
+    let mut last_workers: Option<String> = None;
+    let mut last_triggers: Option<String> = None;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Skip the immediate first tick; we want diffs against a known baseline.
+    interval.tick().await;
+    loop {
+        if state.notifier.is_closed() {
+            return;
+        }
+        interval.tick().await;
+        if let Ok(ws) = iii.list_workers().await {
+            let h = serde_json::to_string(&ws).unwrap_or_default();
+            if last_workers.as_ref() != Some(&h) {
+                last_workers = Some(h);
+                if state.is_subscribed("iii://workers") {
+                    if let Ok(s) = serde_json::to_string(&resource_updated_notification(
+                        "iii://workers",
+                    )) {
+                        state.try_send(s);
+                    }
+                }
+            }
+        }
+        if let Ok(ts) = iii.list_triggers(true).await {
+            let h = serde_json::to_string(&ts).unwrap_or_default();
+            if last_triggers.as_ref() != Some(&h) {
+                last_triggers = Some(h);
+                if state.is_subscribed("iii://triggers") {
+                    if let Ok(s) = serde_json::to_string(&resource_updated_notification(
+                        "iii://triggers",
+                    )) {
+                        state.try_send(s);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Register `mcp::log_message` and `mcp::progress` as iii functions. User
+// code triggers them to emit MCP notifications. Both gated by the current
+// session state — the log level filter is enforced here so no notification
+// leaks past the threshold.
+fn register_notification_helpers(iii: &III, state: Arc<SessionState>) {
+    let state_log = state.clone();
+    iii.register_function_with(
+        RegisterFunctionMessage {
+            id: "mcp::log_message".to_string(),
+            description: Some("Emit an MCP notifications/message".to_string()),
+            request_format: Some(json!({
+                "type": "object",
+                "properties": {
+                    "level": { "type": "string" },
+                    "data": {},
+                    "logger": { "type": "string" }
+                },
+                "required": ["level", "data"]
+            })),
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |input: Value| {
+            let state_inner = state_log.clone();
+            async move {
+                let level_str = input
+                    .get("level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info");
+                let data = input.get("data").cloned().unwrap_or(Value::Null);
+                let logger = input.get("logger").and_then(|v| v.as_str());
+                let msg_lvl = match level_from_str(level_str) {
+                    Some(l) => l,
+                    None => return Ok(json!({ "ok": false, "error": "unknown level" })),
+                };
+                let cur = state_inner.log_level.load(Ordering::SeqCst);
+                if msg_lvl < cur {
+                    return Ok(json!({ "ok": true, "filtered": true }));
+                }
+                let n = log_message_notification(level_str, &data, logger);
+                if let Ok(s) = serde_json::to_string(&n) {
+                    state_inner.try_send(s);
+                }
+                Ok(json!({ "ok": true }))
+            }
+        },
+    );
+
+    let state_prog = state.clone();
+    iii.register_function_with(
+        RegisterFunctionMessage {
+            id: "mcp::progress".to_string(),
+            description: Some("Emit an MCP notifications/progress".to_string()),
+            request_format: Some(json!({
+                "type": "object",
+                "properties": {
+                    "token": {},
+                    "progress": { "type": "number" },
+                    "total": { "type": "number" },
+                    "message": { "type": "string" }
+                },
+                "required": ["token", "progress"]
+            })),
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |input: Value| {
+            let state_inner = state_prog.clone();
+            async move {
+                let token = match input.get("token").cloned() {
+                    Some(t) => t,
+                    None => return Ok(json!({ "ok": false, "error": "missing token" })),
+                };
+                let progress = input
+                    .get("progress")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let total = input.get("total").and_then(|v| v.as_f64());
+                let message = input.get("message").and_then(|v| v.as_str());
+                let n = progress_notification(&token, progress, total, message);
+                if let Ok(s) = serde_json::to_string(&n) {
+                    state_inner.try_send(s);
+                }
+                Ok(json!({ "ok": true }))
+            }
+        },
+    );
+}
+
+async fn dispatch_http(
+    iii: &III,
+    body: &Value,
+    cfg: &ExposureConfig,
+    state: &Arc<SessionState>,
+) -> Value {
     let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = body.get("id").cloned();
     let params = body.get("params").cloned();
+    let cursor = params
+        .as_ref()
+        .and_then(|p| p.get("cursor"))
+        .and_then(|c| c.as_str())
+        .map(String::from);
 
     if method.starts_with("notifications/") {
+        if method == "notifications/cancelled" {
+            if let Some(req_id) = body
+                .get("params")
+                .and_then(|p| p.get("requestId"))
+                .cloned()
+            {
+                let key = SessionState::request_id_key(&req_id);
+                if let Some((_, sender)) = state.cancellation_tokens.remove(&key) {
+                    let _ = sender.send(());
+                }
+            }
+        }
         return json!(null);
     }
 
@@ -514,7 +918,13 @@ async fn dispatch_http(iii: &III, body: &Value, cfg: &ExposureConfig) -> Value {
                         .map(function_to_tool),
                 );
             }
-            Ok(json!({ "tools": tools }))
+            let (page, next) = paginate(&tools, cursor.as_deref(), PAGE_SIZE);
+            let page_owned: Vec<McpTool> = page.into_iter().cloned().collect();
+            let mut out = json!({ "tools": page_owned });
+            if let Some(c) = next {
+                out["nextCursor"] = json!(c);
+            }
+            Ok(out)
         }
         "tools/call" => {
             let p: CallParams = match params {
@@ -640,21 +1050,31 @@ async fn dispatch_http(iii: &III, body: &Value, cfg: &ExposureConfig) -> Value {
                 }
             }
         }
-        "resources/list" => Ok(json!({ "resources": [
-            { "uri": "iii://functions", "name": "Functions", "mimeType": "application/json" },
-            { "uri": "iii://workers", "name": "Workers", "mimeType": "application/json" },
-            { "uri": "iii://triggers", "name": "Triggers", "mimeType": "application/json" },
-            { "uri": "iii://context", "name": "Context", "mimeType": "application/json" },
-        ]})),
+        "resources/list" => Ok(resources_list_paginated(cursor.as_deref())),
         // HTTP transport previously omitted these; MCP Inspector hit
         // -32601 Unknown method on both. Parity with stdio McpHandler
         // via the shared read_resource / templates paths.
         "resources/read" => read_resource(iii, cfg, params)
             .await
             .map_err(|e| (INVALID_PARAMS, e)),
-        "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
-        "prompts/list" => Ok(prompts::list()),
+        "resources/templates/list" => Ok(json!({
+            "resourceTemplates": spec::make_resource_templates()
+        })),
+        "resources/subscribe" => {
+            spec::handle_resources_subscribe(&state.subscriptions, params)
+                .map_err(|e| (INVALID_PARAMS, e))
+        }
+        "resources/unsubscribe" => {
+            spec::handle_resources_unsubscribe(&state.subscriptions, params)
+                .map_err(|e| (INVALID_PARAMS, e))
+        }
+        "prompts/list" => Ok(prompts_list_paginated(cursor.as_deref())),
         "prompts/get" => Ok(prompts::get(params)),
+        "completion/complete" => spec::handle_completion_complete(iii, params)
+            .await
+            .map_err(|e| (INVALID_PARAMS, e)),
+        "logging/setLevel" => spec::handle_logging_set_level(&state.log_level, params)
+            .map_err(|e| (INVALID_PARAMS, e)),
         _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
     };
 
@@ -724,19 +1144,57 @@ pub async fn read_resource(
             .unwrap(),
             "application/json",
         ),
-        _ => return Err(format!("Resource not found: {}", p.uri)),
+        // Templated URIs: iii://function/{id}, iii://worker/{id}, iii://trigger/{id}.
+        // Resolved through spec::resolve_templated_uri which filters by id only;
+        // exposure metadata is enforced for `iii://function/{id}` here so a
+        // `mcp.expose: false` function can't leak via direct templated read.
+        other => match resolve_templated_uri(other, iii).await {
+            Some((body, mime)) => {
+                if let Some(id) = other.strip_prefix("iii://function/") {
+                    if let Ok(fns) = iii.list_functions().await {
+                        let allowed = fns
+                            .iter()
+                            .find(|f| f.function_id == id)
+                            .map(|f| is_function_exposed(f, cfg))
+                            .unwrap_or(false);
+                        if !allowed {
+                            return Err(format!(
+                                "Function '{}' is not exposed via mcp.expose metadata",
+                                id
+                            ));
+                        }
+                    }
+                }
+                (body, mime)
+            }
+            None => return Err(format!("Resource not found: {}", p.uri)),
+        },
     };
     Ok(json!({ "contents": [{ "uri": p.uri, "mimeType": mime, "text": text }] }))
 }
 
 fn function_to_tool(f: &FunctionInfo) -> McpTool {
+    let (title, annotations) = match f.metadata.as_ref() {
+        Some(meta) => {
+            let ann = make_tool_annotations(meta);
+            // Title goes both at top level (per 2025-06-18 spec) and inside
+            // `annotations` if the metadata supplied it; the spec is permissive
+            // about either location, but tools/list clients prefer top-level.
+            let t = ann.as_ref().and_then(|a| a.title.clone());
+            (t, ann)
+        }
+        None => (None, None),
+    };
     McpTool {
         name: f.function_id.replace("::", "__"),
+        title,
         description: f.description.clone(),
         input_schema: f
             .request_format
             .clone()
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+        output_schema: f.response_format.clone(),
+        annotations,
     }
 }
 
@@ -758,36 +1216,36 @@ fn is_builtin_tool(name: &str) -> bool {
 
 fn builtin_tools() -> Vec<McpTool> {
     vec![
-        McpTool {
-            name: "iii_worker_register".into(),
-            description: Some("Register a new worker (Node.js or Python)".into()),
-            input_schema: json!({ "type": "object", "properties": { "language": { "type": "string", "enum": ["node", "python"] }, "code": { "type": "string" }, "function_name": { "type": "string" }, "description": { "type": "string" } }, "required": ["language", "code", "function_name"] }),
-        },
-        McpTool {
-            name: "iii_worker_stop".into(),
-            description: Some("Stop a worker".into()),
-            input_schema: json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
-        },
-        McpTool {
-            name: "iii_trigger_register".into(),
-            description: Some("Attach an http/cron/queue trigger to a function".into()),
-            input_schema: json!({ "type": "object", "properties": { "trigger_type": { "type": "string" }, "function_id": { "type": "string" }, "config": { "type": "object" } }, "required": ["trigger_type", "function_id", "config"] }),
-        },
-        McpTool {
-            name: "iii_trigger_unregister".into(),
-            description: Some("Unregister a trigger".into()),
-            input_schema: json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
-        },
-        McpTool {
-            name: "iii_trigger_void".into(),
-            description: Some("Fire-and-forget function invocation".into()),
-            input_schema: json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" } }, "required": ["function_id", "payload"] }),
-        },
-        McpTool {
-            name: "iii_trigger_enqueue".into(),
-            description: Some("Enqueue to named queue".into()),
-            input_schema: json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" }, "queue": { "type": "string" } }, "required": ["function_id", "payload"] }),
-        },
+        McpTool::new(
+            "iii_worker_register",
+            Some("Register a new worker (Node.js or Python)".into()),
+            json!({ "type": "object", "properties": { "language": { "type": "string", "enum": ["node", "python"] }, "code": { "type": "string" }, "function_name": { "type": "string" }, "description": { "type": "string" } }, "required": ["language", "code", "function_name"] }),
+        ),
+        McpTool::new(
+            "iii_worker_stop",
+            Some("Stop a worker".into()),
+            json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
+        ),
+        McpTool::new(
+            "iii_trigger_register",
+            Some("Attach an http/cron/queue trigger to a function".into()),
+            json!({ "type": "object", "properties": { "trigger_type": { "type": "string" }, "function_id": { "type": "string" }, "config": { "type": "object" } }, "required": ["trigger_type", "function_id", "config"] }),
+        ),
+        McpTool::new(
+            "iii_trigger_unregister",
+            Some("Unregister a trigger".into()),
+            json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
+        ),
+        McpTool::new(
+            "iii_trigger_void",
+            Some("Fire-and-forget function invocation".into()),
+            json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" } }, "required": ["function_id", "payload"] }),
+        ),
+        McpTool::new(
+            "iii_trigger_enqueue",
+            Some("Enqueue to named queue".into()),
+            json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" }, "queue": { "type": "string" } }, "required": ["function_id", "payload"] }),
+        ),
     ]
 }
 
@@ -796,8 +1254,27 @@ fn builtin_tools() -> Vec<McpTool> {
 struct McpTool {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<ToolAnnotations>,
+}
+
+impl McpTool {
+    fn new(name: &str, description: Option<String>, input_schema: Value) -> Self {
+        Self {
+            name: name.to_string(),
+            title: None,
+            description,
+            input_schema,
+            output_schema: None,
+            annotations: None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
