@@ -1,0 +1,36 @@
+[workspace]
+
+[package]
+name = "iii-a2a-client"
+version = "0.1.0"
+edition = "2021"
+description = "Consume external A2A agents; register their skills as iii functions."
+license = "Apache-2.0"
+authors = ["Rohit Ghumare <ghumare64@gmail.com>"]
+repository = "https://github.com/iii-hq/workers"
+homepage = "https://github.com/iii-hq/workers"
+publish = false
+
+[[bin]]
+name = "iii-a2a-client"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.11.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+anyhow = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
+dashmap = "6"
+
+[dev-dependencies]
+axum = "0.8"
+wiremock = "0.6"
+tower = "0.5"
