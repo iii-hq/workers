@@ -66,8 +66,8 @@ async fn main() -> Result<()> {
     let iii = register_worker(&cli.engine_url, InitOptions::default());
     let poll = Duration::from_secs(cli.poll_interval.max(1));
 
-    for base_url in cli.connect.iter().cloned() {
-        let session = match session::Session::connect(&base_url).await {
+    for base_url in &cli.connect {
+        let session = match session::Session::connect(base_url).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, base_url = %base_url, "skip agent: connect failed");

@@ -270,9 +270,7 @@ fn sanitize_slug(s: &str) -> String {
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
-        } else if ch == '_' || ch == '-' {
-            out.push('_');
-        } else if ch.is_whitespace() || ch == '.' || ch == '/' {
+        } else if ch == '_' || ch == '-' || ch.is_whitespace() || ch == '.' || ch == '/' {
             out.push('_');
         }
     }
