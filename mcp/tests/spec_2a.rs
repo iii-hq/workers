@@ -128,8 +128,7 @@ fn log_level_string_round_trip() {
 
 #[test]
 fn log_message_notification_includes_logger_when_set() {
-    let n =
-        spec::log_message_notification("warning", &json!({"msg": "x"}), Some("svc"));
+    let n = spec::log_message_notification("warning", &json!({"msg": "x"}), Some("svc"));
     assert_eq!(n["method"], "notifications/message");
     assert_eq!(n["params"]["level"], "warning");
     assert_eq!(n["params"]["logger"], "svc");
@@ -162,8 +161,7 @@ fn resource_updated_notification_shape() {
 fn logging_set_level_updates_atomic() {
     use std::sync::atomic::{AtomicU8, Ordering};
     let level = AtomicU8::new(spec::LOG_INFO);
-    spec::handle_logging_set_level(&level, Some(json!({"level": "warning"})))
-        .expect("set warning");
+    spec::handle_logging_set_level(&level, Some(json!({"level": "warning"}))).expect("set warning");
     assert_eq!(level.load(Ordering::SeqCst), spec::LOG_WARNING);
 
     let err = spec::handle_logging_set_level(&level, Some(json!({"level": "garbage"})));
@@ -214,7 +212,9 @@ async fn live_logging_set_level_then_log_message() {
 
     // setLevel info, then a `warning` log_message — should fire.
     handler
-        .handle(json!({"jsonrpc":"2.0","id":2,"method":"logging/setLevel","params":{"level":"info"}}))
+        .handle(
+            json!({"jsonrpc":"2.0","id":2,"method":"logging/setLevel","params":{"level":"info"}}),
+        )
         .await;
     let _ = iii
         .trigger(TriggerRequest {
@@ -238,11 +238,16 @@ async fn live_logging_set_level_then_log_message() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(got_warning, "expected notifications/message at warning level");
+    assert!(
+        got_warning,
+        "expected notifications/message at warning level"
+    );
 
     // Bump level to error, fire warning → should be filtered.
     handler
-        .handle(json!({"jsonrpc":"2.0","id":3,"method":"logging/setLevel","params":{"level":"error"}}))
+        .handle(
+            json!({"jsonrpc":"2.0","id":3,"method":"logging/setLevel","params":{"level":"error"}}),
+        )
         .await;
     let _ = iii
         .trigger(TriggerRequest {
@@ -365,7 +370,10 @@ async fn live_subscribe_function_added_emits_updated() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(got, "expected notifications/resources/updated for iii://functions");
+    assert!(
+        got,
+        "expected notifications/resources/updated for iii://functions"
+    );
 }
 
 #[tokio::test]

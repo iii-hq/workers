@@ -14,8 +14,8 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use crate::prompts;
 use crate::spec::{
     self, LOG_INFO, PAGE_SIZE, ToolAnnotations, level_from_str, log_message_notification,
-    make_tool_annotations, paginate, progress_notification, resource_updated_notification,
-    resolve_templated_uri,
+    make_tool_annotations, paginate, progress_notification, resolve_templated_uri,
+    resource_updated_notification,
 };
 use crate::worker_manager::{WorkerCreateParams, WorkerManager, WorkerStopParams};
 
@@ -223,8 +223,7 @@ impl McpHandler {
         // listing functions is what `iii://functions` resolves to.
         let state_for_fn_cb = state.clone();
         let guard = iii.on_functions_available(move |_| {
-            let n =
-                json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
+            let n = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
             if let Ok(s) = serde_json::to_string(&n) {
                 state_for_fn_cb.try_send(s);
             }
@@ -285,11 +284,7 @@ impl McpHandler {
                 self.initialized.store(true, Ordering::SeqCst);
             }
             if method == "notifications/cancelled" {
-                if let Some(req_id) = body
-                    .get("params")
-                    .and_then(|p| p.get("requestId"))
-                    .cloned()
-                {
+                if let Some(req_id) = body.get("params").and_then(|p| p.get("requestId")).cloned() {
                     let key = SessionState::request_id_key(&req_id);
                     if let Some((_, sender)) = self.state.cancellation_tokens.remove(&key) {
                         let _ = sender.send(());
@@ -341,16 +336,14 @@ impl McpHandler {
             "resources/templates/list" => Ok(json!({
                 "resourceTemplates": spec::make_resource_templates()
             })),
-            "resources/subscribe" => spec::handle_resources_subscribe(
-                &self.state.subscriptions,
-                params,
-            )
-            .map_err(|e| (INVALID_PARAMS, e)),
-            "resources/unsubscribe" => spec::handle_resources_unsubscribe(
-                &self.state.subscriptions,
-                params,
-            )
-            .map_err(|e| (INVALID_PARAMS, e)),
+            "resources/subscribe" => {
+                spec::handle_resources_subscribe(&self.state.subscriptions, params)
+                    .map_err(|e| (INVALID_PARAMS, e))
+            }
+            "resources/unsubscribe" => {
+                spec::handle_resources_unsubscribe(&self.state.subscriptions, params)
+                    .map_err(|e| (INVALID_PARAMS, e))
+            }
             "prompts/list" => Ok(prompts_list_paginated(cursor.as_deref())),
             "prompts/get" => Ok(prompts::get(params)),
             "completion/complete" => spec::handle_completion_complete(&self.iii, params)
@@ -434,7 +427,6 @@ impl McpHandler {
         params: CallParams,
         cancel_rx: Option<oneshot::Receiver<()>>,
     ) -> Result<Value, String> {
-
         // When builtins are hidden from tools/list, also refuse to dispatch
         // them by name. Otherwise a client could invoke `iii_worker_register`
         // on a server that claimed it had no such tool — bypassing the policy.
@@ -765,9 +757,9 @@ async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
             if last_workers.as_ref() != Some(&h) {
                 last_workers = Some(h);
                 if state.is_subscribed("iii://workers") {
-                    if let Ok(s) = serde_json::to_string(&resource_updated_notification(
-                        "iii://workers",
-                    )) {
+                    if let Ok(s) =
+                        serde_json::to_string(&resource_updated_notification("iii://workers"))
+                    {
                         state.try_send(s);
                     }
                 }
@@ -778,9 +770,9 @@ async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
             if last_triggers.as_ref() != Some(&h) {
                 last_triggers = Some(h);
                 if state.is_subscribed("iii://triggers") {
-                    if let Ok(s) = serde_json::to_string(&resource_updated_notification(
-                        "iii://triggers",
-                    )) {
+                    if let Ok(s) =
+                        serde_json::to_string(&resource_updated_notification("iii://triggers"))
+                    {
                         state.try_send(s);
                     }
                 }
@@ -906,11 +898,7 @@ async fn dispatch_http(
 
     if method.starts_with("notifications/") {
         if method == "notifications/cancelled" {
-            if let Some(req_id) = body
-                .get("params")
-                .and_then(|p| p.get("requestId"))
-                .cloned()
-            {
+            if let Some(req_id) = body.get("params").and_then(|p| p.get("requestId")).cloned() {
                 let key = SessionState::request_id_key(&req_id);
                 if let Some((_, sender)) = state.cancellation_tokens.remove(&key) {
                     let _ = sender.send(());
@@ -1107,14 +1095,10 @@ async fn dispatch_http(
         "resources/templates/list" => Ok(json!({
             "resourceTemplates": spec::make_resource_templates()
         })),
-        "resources/subscribe" => {
-            spec::handle_resources_subscribe(&state.subscriptions, params)
-                .map_err(|e| (INVALID_PARAMS, e))
-        }
-        "resources/unsubscribe" => {
-            spec::handle_resources_unsubscribe(&state.subscriptions, params)
-                .map_err(|e| (INVALID_PARAMS, e))
-        }
+        "resources/subscribe" => spec::handle_resources_subscribe(&state.subscriptions, params)
+            .map_err(|e| (INVALID_PARAMS, e)),
+        "resources/unsubscribe" => spec::handle_resources_unsubscribe(&state.subscriptions, params)
+            .map_err(|e| (INVALID_PARAMS, e)),
         "prompts/list" => Ok(prompts_list_paginated(cursor.as_deref())),
         "prompts/get" => Ok(prompts::get(params)),
         "completion/complete" => spec::handle_completion_complete(iii, params)

@@ -130,10 +130,7 @@ pub fn paginate<'a, T>(
 // The spec permits `total` larger than `values.len()`, but we always return
 // the full match list (capped at 100), so total == values.len() and
 // hasMore == false. Keeping it simple matches what MCP Inspector expects.
-pub async fn handle_completion_complete(
-    iii: &III,
-    params: Option<Value>,
-) -> Result<Value, String> {
+pub async fn handle_completion_complete(iii: &III, params: Option<Value>) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Argument {
         name: String,
@@ -189,7 +186,10 @@ pub async fn handle_completion_complete(
     }))
 }
 
-pub fn handle_logging_set_level(level_atom: &AtomicU8, params: Option<Value>) -> Result<Value, String> {
+pub fn handle_logging_set_level(
+    level_atom: &AtomicU8,
+    params: Option<Value>,
+) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct P {
         level: String,
@@ -198,8 +198,7 @@ pub fn handle_logging_set_level(level_atom: &AtomicU8, params: Option<Value>) ->
         Some(p) => serde_json::from_value(p).map_err(|e| format!("Invalid params: {}", e))?,
         None => return Err("Missing params".into()),
     };
-    let lvl = level_from_str(&p.level)
-        .ok_or_else(|| format!("Unknown log level: {}", p.level))?;
+    let lvl = level_from_str(&p.level).ok_or_else(|| format!("Unknown log level: {}", p.level))?;
     level_atom.store(lvl, Ordering::SeqCst);
     Ok(json!({}))
 }
@@ -311,7 +310,12 @@ pub fn log_message_notification(level: &str, data: &Value, logger: Option<&str>)
     })
 }
 
-pub fn progress_notification(token: &Value, progress: f64, total: Option<f64>, message: Option<&str>) -> Value {
+pub fn progress_notification(
+    token: &Value,
+    progress: f64,
+    total: Option<f64>,
+    message: Option<&str>,
+) -> Value {
     let mut params = json!({ "progressToken": token, "progress": progress });
     if let Some(t) = total {
         params["total"] = json!(t);
@@ -325,4 +329,3 @@ pub fn progress_notification(token: &Value, progress: f64, total: Option<f64>, m
         "params": params
     })
 }
-
