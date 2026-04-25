@@ -79,10 +79,12 @@ additions (auth headers, per-agent overrides) will land here.
 ## Limitations
 
 - **Streaming requires the remote to advertise `capabilities.streaming`.**
-  When unset, calling `Session::stream_message` is allowed but the remote
-  will return JSON-RPC error `-32004` ("Streaming not supported"). The
-  registered handler always uses sync `message/send` — streaming is exposed
-  only on the `Session` API for callers that want to drive it themselves.
+  When unset, `Session::stream_message` returns a typed
+  `"Remote agent does not advertise streaming capability"` error before
+  opening the SSE stream — avoiding the opaque `EventSource::InvalidContentType`
+  wrapper a JSON-only endpoint would otherwise produce. The registered
+  handler always uses sync `message/send`; streaming is exposed only on
+  the `Session` API for callers that want to drive it themselves.
 - **Push-notifications receiver is deferred** to the Phase 3 push landing.
   No webhook endpoint is registered today.
 - **Cancellation forwarding is deferred.** iii-sdk 0.11.3 does not expose

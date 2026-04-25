@@ -172,6 +172,9 @@ async fn invoke_remote(
     }
 }
 
+/// Returns the first part of the first artifact. Multi-part artifacts and
+/// multi-artifact tasks are truncated; sufficient for v0.1.0 since most
+/// remote skills return a single data/text part.
 fn extract_result(task: &Task) -> Value {
     let part = task
         .artifacts
@@ -201,10 +204,17 @@ fn part_to_value(p: &Part) -> Value {
 }
 
 fn extract_failure_text(task: &Task) -> String {
-    task.status
+    let from_message = task
+        .status
         .message
         .as_ref()
         .and_then(|m| m.parts.first())
-        .and_then(|p| p.text.clone())
-        .unwrap_or_default()
+        .and_then(|p| p.text.clone());
+    if let Some(text) = from_message {
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    let timestamp = task.status.timestamp.as_deref().unwrap_or("unknown");
+    format!("no failure message; task_id={} timestamp={}", task.id, timestamp)
 }

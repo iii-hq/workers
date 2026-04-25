@@ -11,6 +11,10 @@ repository = "https://github.com/iii-hq/workers"
 homepage = "https://github.com/iii-hq/workers"
 publish = false
 
+[lib]
+name = "iii_a2a_client"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-a2a-client"
 path = "src/main.rs"
@@ -32,5 +36,3 @@ dashmap = "6"
 
 [dev-dependencies]
 axum = "0.8"
-wiremock = "0.6"
-tower = "0.5"

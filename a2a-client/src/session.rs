@@ -112,6 +112,7 @@ impl Session {
         let result = resp
             .result
             .ok_or_else(|| anyhow!("remote A2A response missing both result and error"))?;
+        // some servers return Task directly, others wrap in {task: ...}
         let task: Task = serde_json::from_value(
             result
                 .get("task")
@@ -123,13 +124,20 @@ impl Session {
     }
 
     /// Send a `message/stream` JSON-RPC call and yield each event the remote
-    /// agent emits. Caller is responsible for checking
-    /// `card.capabilities.streaming` first.
+    /// agent emits. Returns a typed error early if the remote agent's card
+    /// does not advertise `capabilities.streaming` — opening the SSE stream
+    /// against a JSON-only endpoint would otherwise surface as an opaque
+    /// `EventSource::InvalidContentType` wrapper error.
     pub async fn stream_message(
         &self,
         skill_id: &str,
         payload: Value,
     ) -> Result<impl Stream<Item = Result<StreamEvent>> + Send + 'static> {
+        if !self.card.read().await.capabilities.streaming {
+            return Err(anyhow!(
+                "Remote agent does not advertise streaming capability"
+            ));
+        }
         let req = build_send_request(skill_id, payload, "message/stream");
         let request_builder = self
             .http
@@ -242,6 +250,10 @@ fn parse_sse_event(data: &str) -> Result<StreamEvent> {
 
 /// Sanitise `<provider.org>__<agent.name>` into an iii-namespace-safe slug.
 /// Falls back to just the agent name if no provider org is present.
+//
+// TODO: two distinct agents with identical (provider_org, agent.name) tuples
+// slug to the same name and collide on registration. Disambiguate via base_url
+// hash or per-connect index when this ships beyond local dev.
 fn derive_name(card: &AgentCard) -> String {
     let provider = card.provider.as_ref().map(|p| p.organization.as_str()).unwrap_or("");
     let raw = if provider.is_empty() {
