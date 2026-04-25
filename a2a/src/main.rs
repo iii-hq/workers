@@ -38,35 +38,35 @@ struct Args {
 
     #[arg(
         long,
-        default_value = "iii-engine",
+        default_value = iii_a2a::handler::DEFAULT_AGENT_NAME,
         help = "Agent name advertised in the agent card"
     )]
     agent_name: String,
 
     #[arg(
         long,
-        default_value = "iii-engine agent — invoke any registered function via A2A",
+        default_value = iii_a2a::handler::DEFAULT_AGENT_DESCRIPTION,
         help = "Agent description advertised in the agent card"
     )]
     agent_description: String,
 
     #[arg(
         long,
-        default_value = "iii",
+        default_value = iii_a2a::handler::DEFAULT_PROVIDER_ORG,
         help = "Provider organization advertised in the agent card"
     )]
     provider_org: String,
 
     #[arg(
         long,
-        default_value = "https://github.com/iii-hq/iii",
+        default_value = iii_a2a::handler::DEFAULT_PROVIDER_URL,
         help = "Provider URL advertised in the agent card"
     )]
     provider_url: String,
 
     #[arg(
         long,
-        default_value = "https://github.com/iii-hq/workers/tree/main/a2a",
+        default_value = iii_a2a::handler::DEFAULT_DOCS_URL,
         help = "Documentation URL advertised in the agent card"
     )]
     docs_url: String,

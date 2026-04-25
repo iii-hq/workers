@@ -64,15 +64,23 @@ pub struct AgentIdentity {
     pub docs_url: String,
 }
 
+// Single source of truth for AgentIdentity defaults — also referenced by
+// clap's #[arg(default_value = ...)] in main.rs so the two stay in sync.
+pub const DEFAULT_AGENT_NAME: &str = "iii-engine";
+pub const DEFAULT_AGENT_DESCRIPTION: &str =
+    "iii-engine agent — invoke any registered function via A2A";
+pub const DEFAULT_PROVIDER_ORG: &str = "iii";
+pub const DEFAULT_PROVIDER_URL: &str = "https://github.com/iii-hq/iii";
+pub const DEFAULT_DOCS_URL: &str = "https://github.com/iii-hq/workers/tree/main/a2a";
+
 impl Default for AgentIdentity {
     fn default() -> Self {
         Self {
-            name: "iii-engine".to_string(),
-            description: "iii-engine agent — invoke any registered function via A2A"
-                .to_string(),
-            provider_org: "iii".to_string(),
-            provider_url: "https://github.com/iii-hq/iii".to_string(),
-            docs_url: "https://github.com/iii-hq/workers/tree/main/a2a".to_string(),
+            name: DEFAULT_AGENT_NAME.to_string(),
+            description: DEFAULT_AGENT_DESCRIPTION.to_string(),
+            provider_org: DEFAULT_PROVIDER_ORG.to_string(),
+            provider_url: DEFAULT_PROVIDER_URL.to_string(),
+            docs_url: DEFAULT_DOCS_URL.to_string(),
         }
     }
 }
