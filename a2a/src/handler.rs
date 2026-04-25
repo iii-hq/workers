@@ -124,12 +124,7 @@ async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig)
     }
 }
 
-pub fn register(
-    iii: &III,
-    exposure: ExposureConfig,
-    base_url: String,
-    identity: AgentIdentity,
-) {
+pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity: AgentIdentity) {
     let iii_card = iii.clone();
     let card_cfg = exposure.clone();
     let card_base_url = base_url.clone();

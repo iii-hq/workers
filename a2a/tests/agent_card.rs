@@ -29,8 +29,7 @@ async fn default_identity_advertises_a2a_suffix_and_docs_url() {
 
     assert_eq!(card.supported_interfaces.len(), 1);
     assert_eq!(
-        card.supported_interfaces[0].url,
-        "http://localhost:3111/a2a",
+        card.supported_interfaces[0].url, "http://localhost:3111/a2a",
         "supported_interfaces[].url must point at the JSON-RPC mount, not the bare base URL"
     );
     assert_eq!(card.supported_interfaces[0].protocol_binding, "JSONRPC");
@@ -43,7 +42,9 @@ async fn default_identity_advertises_a2a_suffix_and_docs_url() {
     );
 
     assert_eq!(card.name, "iii-engine");
-    let provider = card.provider.expect("default identity always has a provider");
+    let provider = card
+        .provider
+        .expect("default identity always has a provider");
     assert_eq!(provider.organization, "iii");
     assert_eq!(provider.url, "https://github.com/iii-hq/iii");
 }
@@ -82,7 +83,9 @@ async fn custom_identity_flows_through() {
         card.documentation_url.as_deref(),
         Some("https://docs.acme.example/agents/orchestrator")
     );
-    let provider = card.provider.expect("custom identity always has a provider");
+    let provider = card
+        .provider
+        .expect("custom identity always has a provider");
     assert_eq!(provider.organization, "Acme Corp");
     assert_eq!(provider.url, "https://acme.example/agents");
 
