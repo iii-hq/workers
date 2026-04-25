@@ -169,6 +169,11 @@ async fn register_prompts(iii: &III, session: Arc<Session>, namespace: &str) -> 
 }
 
 pub async fn reconcile(iii: &III, session: Arc<Session>, namespace: &str) -> Result<()> {
+    // Serialise concurrent reconcile passes — two simultaneous
+    // tools/list_changed listeners must not interleave the unregister/
+    // re-register window.
+    let lock = session.reconcile_lock.clone();
+    let _guard = lock.lock().await;
     let caps = session.capabilities.read().await.clone().unwrap_or_default();
 
     let mut desired: HashSet<String> = HashSet::new();
@@ -219,4 +224,27 @@ pub async fn reconcile(iii: &III, session: Arc<Session>, namespace: &str) -> Res
 
     register_all(iii, session, namespace).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_lowers_and_replaces_separators() {
+        assert_eq!(slugify("file:///tmp/x.log"), "file____tmp_x_log");
+    }
+
+    #[test]
+    fn slugify_handles_url_query_punct() {
+        assert_eq!(
+            slugify("https://example.com/api?key=x#frag&y=z"),
+            "https___example_com_api_key_x_frag_y_z"
+        );
+    }
+
+    #[test]
+    fn slugify_lowercases_mixed_case() {
+        assert_eq!(slugify("MixedCase://Foo.BAR"), "mixedcase___foo_bar");
+    }
 }

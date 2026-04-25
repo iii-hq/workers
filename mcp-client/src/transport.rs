@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
+use tokio::io::{AsyncRead, DuplexStream};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
@@ -45,6 +45,7 @@ impl Transport {
         }
     }
 
+    #[doc(hidden)]
     pub fn from_duplex(read: DuplexStream, write: DuplexStream) -> Transport {
         Transport::Duplex(DuplexTransport::new(read, write))
     }
@@ -65,9 +66,10 @@ impl StdioTransport {
         cmd.args(args);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
 
+        let bin_label = bin.to_string();
         let mut child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn MCP stdio process: {}", bin))?;
@@ -80,6 +82,15 @@ impl StdioTransport {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("child stdout missing"))?;
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::warn!(target: "mcp_client::stderr", child = %bin_label, "{}", line);
+                }
+            });
+        }
 
         let writer: FramedWriteAny<ChildStdin> = FramedWrite::new(stdin, LinesCodec::new());
         let reader: FramedReadAny<ChildStdout> = FramedRead::new(stdout, LinesCodec::new());
@@ -278,6 +289,3 @@ where
     });
 }
 
-// silence unused-import warnings on AsyncWrite when only FramedWrite uses it
-#[allow(dead_code)]
-fn _async_write_marker<W: AsyncWrite + Unpin>(_w: W) {}

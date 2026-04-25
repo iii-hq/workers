@@ -79,6 +79,10 @@ pub struct Session {
     pub capabilities: RwLock<Option<ServerCapabilities>>,
     pub registered: Mutex<HashMap<String, FunctionRef>>,
     pub notifications: Mutex<Option<mpsc::Receiver<JsonRpcNotification>>>,
+    /// Serialises concurrent `reconcile()` passes against the same session
+    /// so two simultaneous `tools/list_changed` listeners can't interleave
+    /// the unregister/re-register window and corrupt `registered`.
+    pub reconcile_lock: Arc<Mutex<()>>,
     notif_tx: mpsc::Sender<JsonRpcNotification>,
 }
 
@@ -97,6 +101,7 @@ impl Session {
             capabilities: RwLock::new(None),
             registered: Mutex::new(HashMap::new()),
             notifications: Mutex::new(Some(notif_rx)),
+            reconcile_lock: Arc::new(Mutex::new(())),
             notif_tx,
         });
         (session, reader)
@@ -117,6 +122,7 @@ impl Session {
         Session::start(name, transport).await
     }
 
+    #[doc(hidden)]
     pub async fn connect_with_transport(
         name: impl Into<String>,
         transport: Arc<Transport>,
@@ -191,6 +197,16 @@ impl Session {
                 }
             }
             tracing::info!(session = %session.name, "transport reader closed");
+            // Drain pending callers so they fail fast rather than wait the
+            // full call timeout. Senders dropped here cause Session::call's
+            // oneshot::Receiver to error with `RecvError`, which we map to
+            // a clear "transport closed" message.
+            let drained: Vec<u64> = session.pending.iter().map(|e| *e.key()).collect();
+            for id in drained {
+                if let Some((_, sender)) = session.pending.remove(&id) {
+                    drop(sender);
+                }
+            }
         });
     }
 
@@ -225,7 +241,10 @@ impl Session {
         let resp = match tokio::time::timeout(CALL_TIMEOUT, rx).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => {
-                return Err(anyhow!("call channel dropped for method {}", method));
+                return Err(anyhow!(
+                    "transport closed while awaiting response to {}",
+                    method
+                ));
             }
             Err(_) => {
                 self.pending.remove(&id);
