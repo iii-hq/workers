@@ -737,8 +737,20 @@ fn prompts_list_paginated(cursor: Option<&str>) -> Value {
 // diff so we don't fire on every tick. Stops when the channel closes
 // (handler dropped).
 async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
-    let mut last_workers: Option<String> = None;
-    let mut last_triggers: Option<String> = None;
+    // Prime baselines from one initial fetch BEFORE the loop so the first
+    // diff has something to compare against. Without this, the first
+    // successful list_workers() always produced Some(_) != None and emitted
+    // a phantom resources/updated to every fresh subscriber.
+    let mut last_workers: Option<String> = iii
+        .list_workers()
+        .await
+        .ok()
+        .and_then(|ws| serde_json::to_string(&ws).ok());
+    let mut last_triggers: Option<String> = iii
+        .list_triggers(true)
+        .await
+        .ok()
+        .and_then(|ts| serde_json::to_string(&ts).ok());
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Skip the immediate first tick; we want diffs against a known baseline.
@@ -782,6 +794,15 @@ async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
 // session state — the log level filter is enforced here so no notification
 // leaks past the threshold.
 fn register_notification_helpers(iii: &III, state: Arc<SessionState>) {
+    // Idempotent: the same process may construct an HTTP register_http() AND
+    // a stdio McpHandler::new(); both call this. Engine register_function_with
+    // on a duplicate id silently overwrites the prior closure, so the second
+    // call would orphan the first SessionState. Skip after the first call.
+    static REGISTERED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if REGISTERED.set(()).is_err() {
+        tracing::debug!("mcp::log_message and mcp::progress already registered; skipping");
+        return;
+    }
     let state_log = state.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
@@ -927,19 +948,45 @@ async fn dispatch_http(
             Ok(out)
         }
         "tools/call" => {
+            // _meta.progressToken parity with stdio: bind it to the request
+            // id so a future Streamable HTTP SSE transport (Phase 2c) can
+            // route notifications/progress correlated to the right request.
+            // Today the HTTP `register_http` drops its notifier_rx, so the
+            // notification itself is a no-op — the binding is bookkeeping.
+            let progress_token = params
+                .as_ref()
+                .and_then(|p| p.get("_meta"))
+                .and_then(|m| m.get("progressToken"))
+                .cloned();
+            if let (Some(req_id), Some(token)) = (id.clone(), progress_token) {
+                state.progress_tokens.insert(req_id, token);
+            }
             let p: CallParams = match params {
                 Some(p) => match serde_json::from_value(p) {
                     Ok(p) => p,
                     Err(e) => {
+                        if let Some(req_id) = id.clone() {
+                            state.progress_tokens.remove(&req_id);
+                        }
                         return json!(JsonRpcResponse::error(id, INVALID_PARAMS, format!("{}", e)));
                     }
                 },
-                None => return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params")),
+                None => {
+                    if let Some(req_id) = id.clone() {
+                        state.progress_tokens.remove(&req_id);
+                    }
+                    return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params"));
+                }
             };
+            // HTTP path: each POST is single-shot, no notifications/cancelled
+            // correlation. Streamable HTTP SSE (Phase 2c) will add it.
             // When --no-builtins is active, the six management tools are
             // also not invocable by name. tools/list hides them; this
             // matches the listing shape at call time.
             if cfg.no_builtins && is_builtin_tool(&p.name) {
+                if let Some(req_id) = id.clone() {
+                    state.progress_tokens.remove(&req_id);
+                }
                 return json!(JsonRpcResponse::success(
                     id,
                     tool_error(&format!(
