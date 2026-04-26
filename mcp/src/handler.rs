@@ -152,6 +152,24 @@ impl JsonRpcResponse {
 // Per-session MCP spec state (subscriptions, log level, progress tokens,
 // in-flight cancellation senders). Lives in an Arc so the HTTP `dispatch_http`
 // path can share an instance keyed by session and the stdio handler can hold
+// RAII guard ensuring the HTTP tools/call path removes its progress_tokens
+// entry on every return path — including early errors before the trigger
+// runs. Stdio's tools_call has its own remove() at function exit; HTTP has
+// many early-return arms inside one big match, so a Drop guard is cheaper
+// than threading cleanup through each branch.
+pub struct ProgressTokenGuard {
+    pub state: Arc<SessionState>,
+    pub req_id: Option<Value>,
+}
+
+impl Drop for ProgressTokenGuard {
+    fn drop(&mut self) {
+        if let Some(rid) = &self.req_id {
+            self.state.progress_tokens.remove(rid);
+        }
+    }
+}
+
 // a single instance for its single attached client.
 pub struct SessionState {
     pub subscriptions: std::sync::Mutex<HashSet<String>>,
@@ -635,7 +653,11 @@ pub fn register_http(iii: &III, exposure: ExposureConfig) {
     let (notifier_tx, notifier_rx) = mpsc::channel(64);
     drop(notifier_rx);
     let state = Arc::new(SessionState::new(notifier_tx));
-    register_notification_helpers(iii, state.clone());
+    // Skip register_notification_helpers on the HTTP path: HTTP has no return
+    // channel for notifications (notifier_rx is dropped above), so the helper
+    // closures captured here would silently swallow every emit. The stdio
+    // McpHandler::new owns the registration; if no stdio session exists, the
+    // helpers simply aren't registered — better than orphaning notifications.
 
     iii.register_function_with(
         RegisterFunctionMessage {
@@ -786,15 +808,10 @@ async fn poll_resource_updates(iii: III, state: Arc<SessionState>) {
 // session state — the log level filter is enforced here so no notification
 // leaks past the threshold.
 fn register_notification_helpers(iii: &III, state: Arc<SessionState>) {
-    // Idempotent: the same process may construct an HTTP register_http() AND
-    // a stdio McpHandler::new(); both call this. Engine register_function_with
-    // on a duplicate id silently overwrites the prior closure, so the second
-    // call would orphan the first SessionState. Skip after the first call.
-    static REGISTERED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if REGISTERED.set(()).is_err() {
-        tracing::debug!("mcp::log_message and mcp::progress already registered; skipping");
-        return;
-    }
+    // Called from McpHandler::new (stdio) only. register_http intentionally
+    // does NOT call this — HTTP drops its notifier_rx and has no return
+    // channel for notifications. Stdio owns the helpers so notifications
+    // route to a live session.
     let state_log = state.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
@@ -949,20 +966,19 @@ async fn dispatch_http(
             if let (Some(req_id), Some(token)) = (id.clone(), progress_token) {
                 state.progress_tokens.insert(req_id, token);
             }
+            // Drop guard cleans up progress_tokens on every return path below.
+            let _progress_guard = ProgressTokenGuard {
+                state: state.clone(),
+                req_id: id.clone(),
+            };
             let p: CallParams = match params {
                 Some(p) => match serde_json::from_value(p) {
                     Ok(p) => p,
                     Err(e) => {
-                        if let Some(req_id) = id.clone() {
-                            state.progress_tokens.remove(&req_id);
-                        }
                         return json!(JsonRpcResponse::error(id, INVALID_PARAMS, format!("{}", e)));
                     }
                 },
                 None => {
-                    if let Some(req_id) = id.clone() {
-                        state.progress_tokens.remove(&req_id);
-                    }
                     return json!(JsonRpcResponse::error(id, INVALID_PARAMS, "Missing params"));
                 }
             };
@@ -972,9 +988,6 @@ async fn dispatch_http(
             // also not invocable by name. tools/list hides them; this
             // matches the listing shape at call time.
             if cfg.no_builtins && is_builtin_tool(&p.name) {
-                if let Some(req_id) = id.clone() {
-                    state.progress_tokens.remove(&req_id);
-                }
                 return json!(JsonRpcResponse::success(
                     id,
                     tool_error(&format!(
