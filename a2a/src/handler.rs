@@ -249,7 +249,10 @@ pub async fn build_agent_card(
     };
 
     let base = base_url.trim().trim_end_matches('/');
-    let provider = if identity.provider_org.is_empty() && identity.provider_url.is_empty() {
+    // A2A v0.3 AgentProvider requires BOTH organization and url. Omit the
+    // provider object if either is empty rather than emit a half-populated
+    // record that violates the spec.
+    let provider = if identity.provider_org.is_empty() || identity.provider_url.is_empty() {
         None
     } else {
         Some(AgentProvider {
