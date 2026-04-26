@@ -107,7 +107,8 @@ fn make_tool_annotations_reads_all_hints() {
 
 #[test]
 fn make_tool_annotations_returns_none_when_no_keys() {
-    let meta = json!({ "mcp": { "expose": true } });
+    // Sentinel: metadata that has no annotation keys returns None.
+    let meta = json!({ "mcp": { "unrelated": true } });
     assert!(spec::make_tool_annotations(&meta).is_none());
 }
 
@@ -379,7 +380,7 @@ async fn live_tools_call_cancelled() {
             description: Some("slow handler".into()),
             request_format: None,
             response_format: None,
-            metadata: Some(json!({"mcp": {"expose": true}})),
+            metadata: None,
             invocation: None,
         },
         |_input: Value| async move {

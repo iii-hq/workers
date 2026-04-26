@@ -313,13 +313,21 @@ impl McpHandler {
         } else {
             builtin_tools()
         };
-        if let Ok(functions) = self.iii.list_functions().await {
-            tools.extend(
-                functions
-                    .iter()
-                    .filter(|f| !is_protocol_loop(&f.function_id))
-                    .map(function_to_tool),
-            );
+        match self.iii.list_functions().await {
+            Ok(functions) => {
+                tools.extend(
+                    functions
+                        .iter()
+                        .filter(|f| !is_protocol_loop(&f.function_id))
+                        .map(function_to_tool),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "list_functions failed in tools/list — returning builtins only"
+                );
+            }
         }
         let (page, next) = paginate(&tools, cursor, PAGE_SIZE);
         let page_owned: Vec<McpTool> = page.into_iter().cloned().collect();
@@ -854,12 +862,20 @@ async fn dispatch_http(
             } else {
                 builtin_tools()
             };
-            if let Ok(fns) = iii.list_functions().await {
-                tools.extend(
-                    fns.iter()
-                        .filter(|f| !is_protocol_loop(&f.function_id))
-                        .map(function_to_tool),
-                );
+            match iii.list_functions().await {
+                Ok(fns) => {
+                    tools.extend(
+                        fns.iter()
+                            .filter(|f| !is_protocol_loop(&f.function_id))
+                            .map(function_to_tool),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "list_functions failed in tools/list — returning builtins only"
+                    );
+                }
             }
             let (page, next) = paginate(&tools, cursor.as_deref(), PAGE_SIZE);
             let page_owned: Vec<McpTool> = page.into_iter().cloned().collect();
@@ -1082,20 +1098,23 @@ pub async fn read_resource(iii: &III, params: Option<Value>) -> Result<Value, St
         // `iii://function/{id}` rejects protocol entry points so an agent
         // can't read MCP/A2A handler internals; everything else falls
         // through to RBAC at iii-worker-manager.
-        other => match resolve_templated_uri(other, iii).await {
-            Some((body, mime)) => {
-                if let Some(id) = other.strip_prefix("iii://function/") {
-                    if is_protocol_loop(id) {
-                        return Err(format!(
-                            "Function '{}' is a protocol entry point, not a callable tool",
-                            id
-                        ));
-                    }
+        other => {
+            // Reject protocol entry points BEFORE resolving — avoids leaking
+            // their metadata via the engine round-trip and short-circuits
+            // before any list_functions traffic.
+            if let Some(id) = other.strip_prefix("iii://function/") {
+                if is_protocol_loop(id) {
+                    return Err(format!(
+                        "Function '{}' is a protocol entry point, not a callable tool",
+                        id
+                    ));
                 }
-                (body, mime)
             }
-            None => return Err(format!("Resource not found: {}", p.uri)),
-        },
+            match resolve_templated_uri(other, iii).await {
+                Some((body, mime)) => (body, mime),
+                None => return Err(format!("Resource not found: {}", p.uri)),
+            }
+        }
     };
     Ok(json!({ "contents": [{ "uri": p.uri, "mimeType": mime, "text": text }] }))
 }

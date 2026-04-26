@@ -14,17 +14,19 @@ Function exposure is governed by **iii-sdk RBAC** at `iii-worker-manager`. This 
 
 Configure in `config.yaml`:
 
-    workers:
-      - name: iii-worker-manager
-        config:
-          rbac:
-            auth_function_id: myproject::auth
-            expose_functions:
-              - match("api::*")
-              - match("*::public")
-              - metadata:
-                  public: true
-      - name: iii-mcp    # or iii-a2a
+```yaml
+workers:
+  - name: iii-worker-manager
+    config:
+      rbac:
+        auth_function_id: myproject::auth
+        expose_functions:
+          - match("api::*")
+          - match("*::public")
+          - metadata:
+              public: true
+  - name: iii-mcp    # or iii-a2a
+```
 
 See https://iii.dev/docs/how-to/worker-rbac.md for the RBAC surface.
 
