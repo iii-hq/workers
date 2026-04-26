@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use clap::Parser;
 use iii_a2a::handler;
 use iii_sdk::{InitOptions, register_worker};
@@ -13,21 +15,6 @@ struct Args {
 
     #[arg(long, short = 'd')]
     debug: bool,
-
-    #[arg(
-        long,
-        help = "Expose all functions as skills (ignore a2a.expose metadata). \
-                Infra namespaces (engine::*, state::*, stream::*, iii.*, a2a::*) \
-                stay hidden even with this flag."
-    )]
-    expose_all: bool,
-
-    #[arg(
-        long,
-        help = "Show only functions whose `a2a.tier` metadata equals this value \
-                (e.g. `user`, `agent`, `ops`). When unset, tier filtering is off."
-    )]
-    tier: Option<String>,
 
     #[arg(
         long,
@@ -70,6 +57,15 @@ struct Args {
         help = "Documentation URL advertised in the agent card"
     )]
     docs_url: String,
+
+    #[arg(
+        long,
+        value_name = "TAG",
+        help = "Forward an `x-iii-rbac-tag` header on the worker WebSocket \
+                upgrade. iii-worker-manager's `auth_function_id` reads this \
+                tag to apply policy. RBAC itself lives at iii-worker-manager."
+    )]
+    rbac_tag: Option<String>,
 }
 
 #[tokio::main]
@@ -89,9 +85,19 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting iii-a2a");
 
-    let iii = register_worker(&args.engine_url, InitOptions::default());
+    let mut init_opts = InitOptions::default();
+    if let Some(tag) = args.rbac_tag.as_ref() {
+        let mut headers = HashMap::new();
+        headers.insert("x-iii-rbac-tag".to_string(), tag.clone());
+        init_opts.headers = Some(headers);
+        tracing::info!(
+            rbac_tag = %tag,
+            "Forwarding rbac-tag in worker headers; configure your auth_function_id to read x-iii-rbac-tag"
+        );
+    }
 
-    let exposure = handler::ExposureConfig::new(args.expose_all, args.tier.clone());
+    let iii = register_worker(&args.engine_url, init_opts);
+
     let identity = handler::AgentIdentity {
         name: args.agent_name,
         description: args.agent_description,
@@ -99,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         provider_url: args.provider_url,
         docs_url: args.docs_url,
     };
-    handler::register(&iii, exposure, args.base_url, identity);
+    handler::register(&iii, args.base_url, identity);
 
     tracing::info!("A2A endpoints registered on engine port. Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;

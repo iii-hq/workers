@@ -207,7 +207,7 @@ const logger = new Logger()
 
 const handler = {code}
 
-iii.registerFunction({{ id: {function_name}, description: {description}, metadata: {{ "mcp.expose": true }} }}, handler)
+iii.registerFunction({{ id: {function_name}, description: {description} }}, handler)
 
 logger.info('Function registered: ' + {function_name})
 
@@ -247,7 +247,7 @@ logger = Logger()
 
 {code}
 
-iii.register_function({function_name}, handler, description={description}, metadata={{"mcp.expose": True}})
+iii.register_function({function_name}, handler, description={description})
 
 def shutdown(sig, frame):
     logger.info('Worker shutting down')

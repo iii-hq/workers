@@ -52,10 +52,9 @@ fn help_flag_advertises_known_transport_flags() {
     for flag in [
         "--engine-url",
         "--no-stdio",
-        "--expose-all",
         "--no-builtins",
         "--http-builtins",
-        "--tier",
+        "--rbac-tag",
     ] {
         assert!(help.contains(flag), "--help should mention {flag}: {help}");
     }

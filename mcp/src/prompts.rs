@@ -81,8 +81,7 @@ pub fn get(params: Option<Value>) -> Value {
                      3. Wire trigger via `iii_trigger_register`\n\n\
                      ```python\nfrom iii_sdk import register_worker, Logger\n\
                      iii = register_worker('ws://localhost:49134')\n\
-                     # metadata={{'mcp.expose': True}} so the function appears in tools/list\n\
-                     iii.register_function('{fid}', handler, metadata={{'mcp.expose': True}})\n\
+                     iii.register_function('{fid}', handler)\n\
                      ```"
                 ),
                 "node" => format!(
@@ -92,8 +91,7 @@ pub fn get(params: Option<Value>) -> Value {
                      3. Wire trigger via `iii_trigger_register`\n\n\
                      ```js\nimport {{ registerWorker, Logger }} from 'iii-sdk'\n\
                      const iii = registerWorker('ws://localhost:49134')\n\
-                     // metadata: {{ 'mcp.expose': true }} so the function appears in tools/list\n\
-                     iii.registerFunction('{fid}', handler, {{ metadata: {{ 'mcp.expose': true }} }})\n\
+                     iii.registerFunction('{fid}', handler)\n\
                      ```"
                 ),
                 _ => format!(

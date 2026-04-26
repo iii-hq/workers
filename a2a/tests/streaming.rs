@@ -281,8 +281,7 @@ async fn dispatch_signatures_compile() {
     if false {
         let iii = iii_sdk::III::new("ws://127.0.0.1:1");
         let registry = Arc::new(StreamRegistry::new());
-        let cfg = iii_a2a::handler::ExposureConfig::new(false, None);
-        dispatch_stream(&iii, None, dummy_writer_ref(), registry.clone(), cfg).await;
+        dispatch_stream(&iii, None, dummy_writer_ref(), registry.clone()).await;
         dispatch_resubscribe(&iii, None, dummy_writer_ref(), registry).await;
     }
 }

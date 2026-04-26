@@ -107,7 +107,8 @@ fn make_tool_annotations_reads_all_hints() {
 
 #[test]
 fn make_tool_annotations_returns_none_when_no_keys() {
-    let meta = json!({ "mcp": { "expose": true } });
+    // Sentinel: metadata that has no annotation keys returns None.
+    let meta = json!({ "mcp": { "unrelated": true } });
     assert!(spec::make_tool_annotations(&meta).is_none());
 }
 
@@ -191,16 +192,12 @@ fn subscribe_unsubscribe_round_trip() {
 #[tokio::test]
 #[ignore = "requires live iii-engine on ws://localhost:49134"]
 async fn live_logging_set_level_then_log_message() {
-    use iii_mcp::handler::{ExposureConfig, McpHandler};
+    use iii_mcp::handler::McpHandler;
     use iii_sdk::{InitOptions, TriggerRequest, register_worker};
 
     let url = "ws://localhost:49134";
     let iii = register_worker(url, InitOptions::default());
-    let handler = std::sync::Arc::new(McpHandler::new(
-        iii.clone(),
-        url.to_string(),
-        ExposureConfig::new(false, false, None),
-    ));
+    let handler = std::sync::Arc::new(McpHandler::new(iii.clone(), url.to_string(), false));
 
     // Bring handler to initialized state.
     handler
@@ -275,16 +272,12 @@ async fn live_logging_set_level_then_log_message() {
 #[tokio::test]
 #[ignore = "requires live iii-engine on ws://localhost:49134"]
 async fn live_progress_token_round_trip() {
-    use iii_mcp::handler::{ExposureConfig, McpHandler};
+    use iii_mcp::handler::McpHandler;
     use iii_sdk::{InitOptions, TriggerRequest, register_worker};
 
     let url = "ws://localhost:49134";
     let iii = register_worker(url, InitOptions::default());
-    let handler = std::sync::Arc::new(McpHandler::new(
-        iii.clone(),
-        url.to_string(),
-        ExposureConfig::new(false, false, None),
-    ));
+    let handler = std::sync::Arc::new(McpHandler::new(iii.clone(), url.to_string(), false));
     handler
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
         .await;
@@ -322,16 +315,12 @@ async fn live_progress_token_round_trip() {
 #[tokio::test]
 #[ignore = "requires live iii-engine on ws://localhost:49134"]
 async fn live_subscribe_function_added_emits_updated() {
-    use iii_mcp::handler::{ExposureConfig, McpHandler};
+    use iii_mcp::handler::McpHandler;
     use iii_sdk::{InitOptions, RegisterFunctionMessage, register_worker};
 
     let url = "ws://localhost:49134";
     let iii = register_worker(url, InitOptions::default());
-    let handler = std::sync::Arc::new(McpHandler::new(
-        iii.clone(),
-        url.to_string(),
-        ExposureConfig::new(false, false, None),
-    ));
+    let handler = std::sync::Arc::new(McpHandler::new(iii.clone(), url.to_string(), false));
     handler
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
         .await;
@@ -379,7 +368,7 @@ async fn live_subscribe_function_added_emits_updated() {
 #[tokio::test]
 #[ignore = "requires live iii-engine on ws://localhost:49134"]
 async fn live_tools_call_cancelled() {
-    use iii_mcp::handler::{ExposureConfig, McpHandler};
+    use iii_mcp::handler::McpHandler;
     use iii_sdk::{InitOptions, RegisterFunctionMessage, register_worker};
 
     let url = "ws://localhost:49134";
@@ -391,7 +380,7 @@ async fn live_tools_call_cancelled() {
             description: Some("slow handler".into()),
             request_format: None,
             response_format: None,
-            metadata: Some(json!({"mcp": {"expose": true}})),
+            metadata: None,
             invocation: None,
         },
         |_input: Value| async move {
@@ -400,11 +389,7 @@ async fn live_tools_call_cancelled() {
         },
     );
 
-    let handler = std::sync::Arc::new(McpHandler::new(
-        iii.clone(),
-        url.to_string(),
-        ExposureConfig::new(false, true, None),
-    ));
+    let handler = std::sync::Arc::new(McpHandler::new(iii.clone(), url.to_string(), true));
     handler
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
         .await;

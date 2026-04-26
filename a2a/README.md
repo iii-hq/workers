@@ -7,69 +7,47 @@ HTTP triggers on the engine:
 - `POST /a2a` — JSON-RPC dispatch (`message/send`, `tasks/get`,
   `tasks/cancel`, `tasks/list`, `message/stream`, `tasks/resubscribe`)
 
-## Exposure model
+## Access control
 
-Functions are **invisible to remote agents by default**. Authors opt in
-per-function. Mirrors the iii-mcp design — same metadata keys, same hard
-floor, same optional tier filter.
+Function exposure is governed by **iii-sdk RBAC** at `iii-worker-manager`. This worker is a protocol transport — the engine decides who can see and call what.
 
-### Opt-in metadata
+Configure in `config.yaml`:
 
-```rust
-// Rust worker
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "pricing::quote".into(),
-        description: Some("Quote a price for SKU + quantity".into()),
-        metadata: Some(json!({
-            "a2a.expose": true,
-            "a2a.tier": "partner",  // optional — free-form string
-        })),
-        ..Default::default()
-    },
-    handler,
-);
+```yaml
+workers:
+  - name: iii-worker-manager
+    config:
+      rbac:
+        auth_function_id: myproject::auth
+        expose_functions:
+          - match("api::*")
+          - match("*::public")
+          - metadata:
+              public: true
+  - name: iii-mcp    # or iii-a2a
 ```
 
-```ts
-// Node worker
-iii.registerFunction("pricing::quote", handler, {
-  metadata: { "a2a.expose": true, "a2a.tier": "partner" },
-})
-```
+See https://iii.dev/docs/how-to/worker-rbac.md for the RBAC surface.
 
-```python
-# Python worker
-iii.register_function(
-    "pricing::quote",
-    handler,
-    metadata={"a2a.expose": True, "a2a.tier": "partner"},
-)
-```
+### Breaking change (v0.4)
 
-### Hard floor (never exposed)
+- `--expose-all` and `--tier` removed. Port policy to `auth_function_id`.
+- `mcp.expose` / `a2a.expose` metadata flags no longer consulted.
+- See `examples/default-secure-auth.rs` for a drop-in replacement.
 
-Even with `--expose-all`, these namespaces never appear as agent-card
-skills and cannot be invoked via `message/send`:
+### Engine introspection
 
-| Prefix | Why |
-|---|---|
-| `engine::*` | iii engine internals |
-| `state::*` | KV plumbing |
-| `stream::*` | channel plumbing |
-| `iii.*` / `iii::*` | SDK callbacks and namespaced SDK APIs |
-| `mcp::*` | sibling protocol worker's entry point |
-| `a2a::*` | this worker's own JSON-RPC entry |
+For the use case the old `engine::*` hard floor hid, use the `introspect` worker (`iii worker add introspect`). It exposes `introspect::functions`, `introspect::topology`, `introspect::health`, etc. — agents call those through MCP/A2A without leaking raw engine internals.
 
 ### CLI flags
 
 ```text
 --engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
---expose-all         Ignore the a2a.expose gate (dev only). Hard floor still applies.
---tier <name>        Show only functions whose a2a.tier metadata equals <name>.
-                     E.g. `--tier partner` for B2B surfaces, `--tier public` for open.
 --base-url <URL>     Public origin advertised in the agent card. The card is served
                      at <base-url>/a2a. Default: http://localhost:3111
+--rbac-tag <TAG>     Forward an `x-iii-rbac-tag` header on the worker WebSocket
+                     upgrade. iii-worker-manager's `auth_function_id` reads
+                     this tag to apply policy.
 --debug              Verbose logging
 ```
 
@@ -96,7 +74,7 @@ workers:
 iii --no-update-check
 ```
 
-### 2. Register a test function tagged `a2a.expose: true`
+### 2. Register a test function
 
 ```rust
 use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
@@ -110,7 +88,6 @@ async fn main() -> anyhow::Result<()> {
         RegisterFunctionMessage {
             id: "pricing::quote".into(),
             description: Some("Quote a price".into()),
-            metadata: Some(json!({ "a2a.expose": true })),
             ..Default::default()
         },
         |_input: Value| async move { Ok(json!({"price": 42})) },
@@ -133,7 +110,7 @@ Registers `GET /.well-known/agent-card.json` and `POST /a2a`.
 ### 4. Smoke path
 
 ```bash
-# Agent card — exposed skills only, hard floor filters engine::/state::/etc.
+# Agent card — skills are governed by iii-worker-manager RBAC.
 curl -s http://127.0.0.1:3111/.well-known/agent-card.json \
   | jq '{name, skills: [.skills[] | {id, description}]}'
 
@@ -166,37 +143,7 @@ curl -sX POST http://127.0.0.1:3111/a2a \
   | jq '.result.task.status.state'
 ```
 
-### 5. Verify each gate
-
-```bash
-# Hidden function (no a2a.expose) → state:"failed", distinct rejection
-curl -sX POST http://127.0.0.1:3111/a2a \
-  -H 'content-type: application/json' \
-  -d '{
-    "jsonrpc":"2.0","id":"g1","method":"message/send",
-    "params":{"message":{
-      "messageId":"x","role":"user",
-      "parts":[{"data":{"function_id":"demo::hidden","payload":{}}}]
-    }}
-  }' | jq '.result.task.status.message.parts[0].text'
-
-# Infra prefix → "in the iii-engine internal namespace" message
-curl -sX POST http://127.0.0.1:3111/a2a \
-  -H 'content-type: application/json' \
-  -d '{
-    "jsonrpc":"2.0","id":"g2","method":"message/send",
-    "params":{"message":{
-      "messageId":"x","role":"user",
-      "parts":[{"data":{"function_id":"state::set","payload":{}}}]
-    }}
-  }' | jq '.result.task.status.message.parts[0].text'
-
-# Tier filter: restart iii-a2a with --tier partner, function has a2a.tier="partner"
-./target/release/iii-a2a --tier partner &
-curl -s http://127.0.0.1:3111/.well-known/agent-card.json | jq '.skills[].id'
-```
-
-### 6. Validate with any A2A client
+### 5. Validate with any A2A client
 
 Any AI agent runtime that speaks A2A JSON-RPC 0.3 works. Point it at
 `http://<your-host>:3111/.well-known/agent-card.json` (or the
@@ -210,9 +157,9 @@ Any AI agent runtime that speaks A2A JSON-RPC 0.3 works. Point it at
    function id; rest is parsed as the payload.
 3. Anything else — task fails with "No function_id found".
 
-Before dispatch, the resolved `function_id` is re-checked against the
-same exposure gate as `tools/list`. Hard-floor namespaces reject
-unconditionally.
+Before dispatch, the resolved `function_id` is rejected if it is a
+protocol entry point (`mcp::*` / `a2a::*`). Everything else is delegated
+to iii-worker-manager RBAC.
 
 ## Task model
 
@@ -273,39 +220,3 @@ no `connect()` step, the WebSocket opens lazily on first send/write).
 - Push notifications
 
 Returns JSON-RPC error `-32003`.
-
-## Example: multi-tier partner API
-
-One worker, three audiences.
-
-```rust
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "pricing::public_quote".into(),
-        metadata: Some(json!({ "a2a.expose": true, "a2a.tier": "public" })),
-        ..Default::default()
-    },
-    public_quote_handler,
-);
-
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "pricing::partner_quote".into(),
-        metadata: Some(json!({ "a2a.expose": true, "a2a.tier": "partner" })),
-        ..Default::default()
-    },
-    partner_quote_handler,
-);
-
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "pricing::internal_cost".into(),
-        metadata: Some(json!({ "a2a.expose": true, "a2a.tier": "ops" })),
-        ..Default::default()
-    },
-    internal_cost_handler,
-);
-```
-
-Three a2a workers behind three different auth proxies, each with a
-different `--tier`, advertise three different agent cards.
