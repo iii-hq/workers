@@ -83,6 +83,10 @@ pub struct Session {
     /// so two simultaneous `tools/list_changed` listeners can't interleave
     /// the unregister/re-register window and corrupt `registered`.
     pub reconcile_lock: Arc<Mutex<()>>,
+    /// Set true once the reader task has decided to drain. Callers entering
+    /// `call()` after this flips bail out immediately instead of inserting a
+    /// pending entry that will never resolve.
+    pub closed: std::sync::atomic::AtomicBool,
     notif_tx: mpsc::Sender<JsonRpcNotification>,
 }
 
@@ -102,6 +106,7 @@ impl Session {
             registered: Mutex::new(HashMap::new()),
             notifications: Mutex::new(Some(notif_rx)),
             reconcile_lock: Arc::new(Mutex::new(())),
+            closed: std::sync::atomic::AtomicBool::new(false),
             notif_tx,
         });
         (session, reader)
@@ -197,10 +202,15 @@ impl Session {
                 }
             }
             tracing::info!(session = %session.name, "transport reader closed");
-            // Drain pending callers so they fail fast rather than wait the
-            // full call timeout. Senders dropped here cause Session::call's
-            // oneshot::Receiver to error with `RecvError`, which we map to
-            // a clear "transport closed" message.
+            // Flag closed BEFORE draining so any concurrent `call()` racing
+            // its insert against this drain can detect the flag, remove its
+            // own entry, and fail fast rather than hang on a never-resolving
+            // oneshot. After the flag flips, drain pending callers; senders
+            // dropped here cause Session::call's oneshot::Receiver to error
+            // with `RecvError`, mapped to a "transport closed" message.
+            session
+                .closed
+                .store(true, std::sync::atomic::Ordering::Release);
             let drained: Vec<u64> = session.pending.iter().map(|e| *e.key()).collect();
             for id in drained {
                 if let Some((_, sender)) = session.pending.remove(&id) {
@@ -232,6 +242,14 @@ impl Session {
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id, tx);
 
+        // Race guard: if the reader task flipped `closed` between our
+        // insert and now, drain may already have run without picking up
+        // this entry. Remove it ourselves and bail fast.
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            self.pending.remove(&id);
+            return Err(anyhow!("transport closed before send: {}", method));
+        }
+
         let line = serde_json::to_string(&req)?;
         if let Err(e) = self.transport.send_raw(&line).await {
             self.pending.remove(&id);
@@ -241,6 +259,7 @@ impl Session {
         let resp = match tokio::time::timeout(CALL_TIMEOUT, rx).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => {
+                self.pending.remove(&id);
                 return Err(anyhow!(
                     "transport closed while awaiting response to {}",
                     method

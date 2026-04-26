@@ -183,26 +183,33 @@ impl HttpTransport {
             .unwrap_or("")
             .to_string();
 
-        // TODO: Streamable HTTP SSE events not consumed in this PR — only the
-        // first JSON message is read. SSE multiplexing belongs to a follow-up.
         if ct.starts_with("application/json") {
             let body = resp.text().await.unwrap_or_default();
             if !body.is_empty() {
                 let _ = self.reader_tx.send(body).await;
             }
         } else if ct.starts_with("text/event-stream") {
+            // Drain ALL SSE events into the reader channel. The Session reader
+            // task dispatches by id (responses) vs method (notifications), so
+            // notifications/log/progress arriving before the JSON-RPC reply
+            // route correctly. Previously we broke after the first event,
+            // which dropped trailing notifications and could hang the call
+            // when the response arrived second.
             let mut stream = resp.bytes_stream();
             let mut buf = String::new();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.with_context(|| "SSE stream chunk error")?;
                 buf.push_str(&String::from_utf8_lossy(&bytes));
-                if let Some((event, _rest)) = split_first_sse_event(&buf) {
+                while let Some((event, rest)) = split_first_sse_event(&buf) {
                     if let Some(json) = extract_data_payload(&event) {
                         let _ = self.reader_tx.send(json).await;
                     }
-                    break;
+                    buf = rest;
                 }
             }
+            // Final unterminated event (no trailing \n\n) is dropped — SSE
+            // spec mandates frame terminator, so this only fires on
+            // malformed servers.
         }
 
         Ok(())
