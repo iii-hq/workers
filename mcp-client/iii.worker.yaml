@@ -1,0 +1,7 @@
+iii: v1
+name: mcp-client
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-mcp-client
+description: Consume external MCP servers; register their tools, resources, and prompts as iii functions.
