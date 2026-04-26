@@ -1,11 +1,8 @@
-mod handler;
-mod prompts;
-mod transport;
-mod worker_manager;
-
 use std::sync::Arc;
 
 use clap::Parser;
+use iii_mcp::handler;
+use iii_mcp::transport;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
