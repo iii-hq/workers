@@ -204,15 +204,23 @@ fn part_to_value(p: &Part) -> Value {
 }
 
 fn extract_failure_text(task: &Task) -> String {
-    let from_message = task
-        .status
-        .message
-        .as_ref()
-        .and_then(|m| m.parts.first())
-        .and_then(|p| p.text.clone());
-    if let Some(text) = from_message {
-        if !text.is_empty() {
-            return text;
+    // Surface text first, then raw, then data — so non-text failure parts
+    // still produce useful diagnostics instead of falling through to the
+    // "no failure message" placeholder.
+    let from_message = task.status.message.as_ref().and_then(|m| m.parts.first());
+    if let Some(p) = from_message {
+        if let Some(text) = p.text.as_deref() {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+        if let Some(raw) = p.raw.as_deref() {
+            if !raw.is_empty() {
+                return raw.to_string();
+            }
+        }
+        if let Some(data) = &p.data {
+            return data.to_string();
         }
     }
     let timestamp = task.status.timestamp.as_deref().unwrap_or("unknown");

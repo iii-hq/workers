@@ -46,7 +46,7 @@ impl Session {
             .await
             .with_context(|| format!("parsing agent card from {card_url}"))?;
 
-        let name = derive_name(&card);
+        let name = derive_name(&card, &base_url);
 
         tracing::info!(
             name = %name,
@@ -144,10 +144,19 @@ impl Session {
             EventSource::new(request_builder).context("create EventSource for message/stream")?;
 
         let stream = es.filter_map(|ev| async move {
+            use reqwest_eventsource::Error as SseError;
             match ev {
                 Ok(Event::Open) => None,
                 Ok(Event::Message(msg)) => Some(parse_sse_event(&msg.data)),
-                Err(reqwest_eventsource::Error::StreamEnded) => None,
+                Err(SseError::StreamEnded) => None,
+                Err(SseError::InvalidContentType(value, _)) => Some(Err(anyhow!(
+                    "Remote SSE returned wrong content-type ({:?}); agent card may have advertised streaming incorrectly",
+                    value.to_str().unwrap_or("?")
+                ))),
+                Err(SseError::InvalidStatusCode(code, _)) => {
+                    Some(Err(anyhow!("Remote SSE returned HTTP {code}")))
+                }
+                Err(SseError::Transport(e)) => Some(Err(anyhow!("SSE transport error: {e}"))),
                 Err(e) => Some(Err(anyhow!("SSE error: {e}"))),
             }
         });
@@ -249,9 +258,12 @@ fn parse_sse_event(data: &str) -> Result<StreamEvent> {
 /// Falls back to just the agent name if no provider org is present.
 //
 // TODO: two distinct agents with identical (provider_org, agent.name) tuples
-// slug to the same name and collide on registration. Disambiguate via base_url
-// hash or per-connect index when this ships beyond local dev.
-fn derive_name(card: &AgentCard) -> String {
+// Two distinct agents at different base_urls can share `(provider.organization,
+// agent.name)` and would otherwise slug to the same name, silently overwriting
+// each other's registrations. Append a 6-hex-char DefaultHasher digest of the
+// base_url so the resulting slug is collision-resistant across O(100) agents
+// without requiring any external crypto dep.
+fn derive_name(card: &AgentCard, base_url: &str) -> String {
     let provider = card
         .provider
         .as_ref()
@@ -262,7 +274,15 @@ fn derive_name(card: &AgentCard) -> String {
     } else {
         format!("{}_{}", provider, card.name)
     };
-    sanitize_slug(&raw)
+    let slug = sanitize_slug(&raw);
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        base_url.hash(&mut h);
+        format!("{:06x}", h.finish() & 0x00ff_ffff)
+    };
+    format!("{slug}_{hash}")
 }
 
 fn sanitize_slug(s: &str) -> String {
@@ -311,8 +331,16 @@ mod tests {
             default_output_modes: vec![],
             skills: vec![],
         };
-        assert_eq!(derive_name(&card), "acme_pricing");
+        // Hash suffix depends on base_url so identical (provider, name) at
+        // distinct URLs no longer collide. Pin one URL and assert the slug
+        // prefix; the hash itself is deterministic but not exposed.
+        let name = derive_name(&card, "http://a.example/a");
+        assert!(name.starts_with("acme_pricing_"), "got {name}");
+        let other = derive_name(&card, "http://b.example/a");
+        assert_ne!(name, other, "different base_url must yield different slug");
+
         card.provider = None;
-        assert_eq!(derive_name(&card), "pricing");
+        let name = derive_name(&card, "http://a.example/a");
+        assert!(name.starts_with("pricing_"), "got {name}");
     }
 }

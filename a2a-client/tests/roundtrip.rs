@@ -181,7 +181,12 @@ async fn session_connect_parses_card() {
         .await
         .expect("connect to mock");
 
-    assert_eq!(session.name, "test_mock");
+    // derive_name now appends a 6-hex base_url hash for collision resistance.
+    assert!(
+        session.name.starts_with("test_mock_"),
+        "name should start with 'test_mock_', got: {}",
+        session.name
+    );
     assert_eq!(session.base_url, base);
     let card = session.card.read().await;
     assert_eq!(card.skills.len(), 2);
