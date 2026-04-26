@@ -8,7 +8,7 @@
 //! that's the documented behaviour, and it lets us cover the static fields
 //! without spinning up the engine.
 
-use iii_a2a::handler::{AgentIdentity, ExposureConfig, build_agent_card};
+use iii_a2a::handler::{AgentIdentity, build_agent_card};
 use iii_sdk::III;
 
 fn unreachable_iii() -> III {
@@ -22,10 +22,9 @@ fn unreachable_iii() -> III {
 #[tokio::test]
 async fn default_identity_advertises_a2a_suffix_and_docs_url() {
     let iii = unreachable_iii();
-    let cfg = ExposureConfig::new(false, None);
     let identity = AgentIdentity::default();
 
-    let card = build_agent_card(&iii, &cfg, "http://localhost:3111", &identity).await;
+    let card = build_agent_card(&iii, "http://localhost:3111", &identity).await;
 
     assert_eq!(card.supported_interfaces.len(), 1);
     assert_eq!(
@@ -52,10 +51,9 @@ async fn default_identity_advertises_a2a_suffix_and_docs_url() {
 #[tokio::test]
 async fn trailing_slash_in_base_url_is_normalised() {
     let iii = unreachable_iii();
-    let cfg = ExposureConfig::new(false, None);
     let identity = AgentIdentity::default();
 
-    let card = build_agent_card(&iii, &cfg, "http://localhost:3111/", &identity).await;
+    let card = build_agent_card(&iii, "http://localhost:3111/", &identity).await;
 
     assert_eq!(
         card.supported_interfaces[0].url, "http://localhost:3111/a2a",
@@ -66,7 +64,6 @@ async fn trailing_slash_in_base_url_is_normalised() {
 #[tokio::test]
 async fn custom_identity_flows_through() {
     let iii = unreachable_iii();
-    let cfg = ExposureConfig::new(false, None);
     let identity = AgentIdentity {
         name: "acme-orchestrator".to_string(),
         description: "Acme order pipeline agent".to_string(),
@@ -75,7 +72,7 @@ async fn custom_identity_flows_through() {
         docs_url: "https://docs.acme.example/agents/orchestrator".to_string(),
     };
 
-    let card = build_agent_card(&iii, &cfg, "https://agent.acme.example", &identity).await;
+    let card = build_agent_card(&iii, "https://agent.acme.example", &identity).await;
 
     assert_eq!(card.name, "acme-orchestrator");
     assert_eq!(card.description, "Acme order pipeline agent");

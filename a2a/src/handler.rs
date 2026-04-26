@@ -11,54 +11,11 @@ use crate::streaming::{
 };
 use crate::types::*;
 
-fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
-    f.metadata
-        .as_ref()
-        .and_then(|m| m.get(key))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
-fn metadata_string(f: &iii_sdk::FunctionInfo, key: &str) -> Option<String> {
-    f.metadata
-        .as_ref()
-        .and_then(|m| m.get(key))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-// Infra namespaces that never appear in the agent card, even under
-// --expose-all. Mirrors the mcp worker's ALWAYS_HIDDEN_PREFIXES — surfacing
-// `state::*` / `engine::*` / the a2a worker's own jsonrpc entry as "skills"
-// is categorically not a cross-agent surface.
-pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
-    "engine::", "state::", "stream::",
-    // SDK internals come in two notations — callback-style
-    // `iii.on_functions_available.<uuid>` and namespace-style
-    // `iii::durable::publish`, `iii::config`. Match both.
-    "iii.", "iii::",
-    // Sibling protocol worker entry point. Calling `mcp::handler` via A2A
-    // message/send double-envelopes an MCP request inside A2A — not a
-    // meaningful skill. Hide symmetrically with mcp's a2a:: carve-out.
-    "mcp::", "a2a::",
-];
-
-pub fn is_always_hidden(function_id: &str) -> bool {
-    ALWAYS_HIDDEN_PREFIXES
-        .iter()
-        .any(|p| function_id.starts_with(p))
-}
-
-#[derive(Debug, Clone)]
-pub struct ExposureConfig {
-    pub expose_all: bool,
-    pub tier: Option<String>,
-}
-
-impl ExposureConfig {
-    pub fn new(expose_all: bool, tier: Option<String>) -> Self {
-        Self { expose_all, tier }
-    }
+// Blocks self-invocation of the A2A handler and cross-protocol bridging
+// through the sibling MCP entry point. Pure structural guard — not access
+// control. RBAC lives at iii-worker-manager.
+pub fn is_protocol_loop(function_id: &str) -> bool {
+    function_id.starts_with("mcp::") || function_id.starts_with("a2a::")
 }
 
 #[derive(Debug, Clone)]
@@ -91,48 +48,8 @@ impl Default for AgentIdentity {
     }
 }
 
-pub fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
-    if is_always_hidden(&f.function_id) {
-        return false;
-    }
-    if !cfg.expose_all && !has_metadata_flag(f, "a2a.expose") {
-        return false;
-    }
-    if let Some(want_tier) = &cfg.tier {
-        match metadata_string(f, "a2a.tier") {
-            Some(got) if &got == want_tier => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
-pub async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig) -> bool {
-    if is_always_hidden(function_id) {
-        return false;
-    }
-    match iii.list_functions().await {
-        Ok(fns) => fns
-            .iter()
-            .find(|f| f.function_id == function_id)
-            .map(|f| is_exposed(f, cfg))
-            .unwrap_or(false),
-        Err(e) => {
-            // Log registry errors distinctly so an engine outage doesn't
-            // look like a policy denial. Still fail closed.
-            tracing::error!(
-                error = %e,
-                function_id = %function_id,
-                "a2a.expose check failed: could not list functions, denying access"
-            );
-            false
-        }
-    }
-}
-
-pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity: AgentIdentity) {
+pub fn register(iii: &III, base_url: String, identity: AgentIdentity) {
     let iii_card = iii.clone();
-    let card_cfg = exposure.clone();
     let card_base_url = base_url.clone();
     let card_identity = identity.clone();
     iii.register_function_with(
@@ -146,11 +63,10 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
         },
         move |_input: Value| {
             let iii_inner = iii_card.clone();
-            let cfg = card_cfg.clone();
             let base = card_base_url.clone();
             let ident = card_identity.clone();
             async move {
-                let card = build_agent_card(&iii_inner, &cfg, &base, &ident).await;
+                let card = build_agent_card(&iii_inner, &base, &ident).await;
                 Ok(json!({
                     "status_code": 200,
                     "headers": { "content-type": "application/json" },
@@ -161,7 +77,6 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
     );
 
     let iii_rpc = iii.clone();
-    let rpc_cfg = exposure;
     let registry = Arc::new(StreamRegistry::new());
     let registry_rpc = registry.clone();
     iii.register_function_with(
@@ -178,7 +93,6 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
         },
         move |input: Value| {
             let iii_inner = iii_rpc.clone();
-            let cfg = rpc_cfg.clone();
             let registry = registry_rpc.clone();
             async move {
                 // Snapshot the writer ref BEFORE stripping the body — once
@@ -218,8 +132,7 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
                                 )
                             }));
                         };
-                        dispatch_stream(&iii_inner, request.params, writer_ref, registry, cfg)
-                            .await;
+                        dispatch_stream(&iii_inner, request.params, writer_ref, registry).await;
                         // The SSE response was written directly to the
                         // channel; return an empty value so the engine
                         // doesn't try to write a second response body.
@@ -244,7 +157,7 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
                     _ => {}
                 }
 
-                let response = handle_a2a_request(&iii_inner, request, &cfg, &registry).await;
+                let response = handle_a2a_request(&iii_inner, request, &registry).await;
 
                 Ok(json!({
                     "status_code": 200,
@@ -276,16 +189,11 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
     tracing::info!("A2A registered: GET /.well-known/agent-card.json, POST /a2a");
 }
 
-pub async fn build_agent_card(
-    iii: &III,
-    cfg: &ExposureConfig,
-    base_url: &str,
-    identity: &AgentIdentity,
-) -> AgentCard {
+pub async fn build_agent_card(iii: &III, base_url: &str, identity: &AgentIdentity) -> AgentCard {
     let skills = match iii.list_functions().await {
         Ok(fns) => fns
             .iter()
-            .filter(|f| is_exposed(f, cfg))
+            .filter(|f| !is_protocol_loop(&f.function_id))
             .map(|f| AgentSkill {
                 id: f.function_id.clone(),
                 name: f
@@ -342,15 +250,14 @@ pub async fn build_agent_card(
     }
 }
 
-async fn handle_a2a_request(
+pub async fn handle_a2a_request(
     iii: &III,
     request: A2ARequest,
-    cfg: &ExposureConfig,
     registry: &Arc<StreamRegistry>,
 ) -> A2AResponse {
     let id = request.id.clone();
     match request.method.as_str() {
-        "message/send" | "SendMessage" => handle_send(iii, id, request.params, cfg, registry).await,
+        "message/send" | "SendMessage" => handle_send(iii, id, request.params, registry).await,
         "tasks/get" | "GetTask" => handle_get(iii, id, request.params).await,
         "tasks/cancel" | "CancelTask" => handle_cancel(iii, id, request.params, registry).await,
         "tasks/list" | "ListTasks" => handle_list(iii, id).await,
@@ -464,7 +371,6 @@ async fn handle_send(
     iii: &III,
     id: Option<Value>,
     params: Option<Value>,
-    cfg: &ExposureConfig,
     registry: &Arc<StreamRegistry>,
 ) -> A2AResponse {
     let params: SendMessageParams = match params {
@@ -481,6 +387,45 @@ async fn handle_send(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let context_id = params.message.context_id.clone();
+
+    // Resolve and structurally validate the function id BEFORE building or
+    // storing the task. RBAC is enforced at iii-worker-manager — we only
+    // reject the empty case and the protocol-loop case here. This avoids
+    // the spurious Working→Failed double-write the older code did.
+    let (function_id, payload) = resolve_function(&params.message);
+    let validation_failure = if function_id.is_empty() {
+        Some(
+            "No function_id found. Send a data part with {\"function_id\": \"...\", \"payload\": {...}} or use :: notation in text."
+                .to_string(),
+        )
+    } else if is_protocol_loop(&function_id) {
+        Some(format!(
+            "Function '{}' is a protocol entry point, not a callable tool",
+            function_id
+        ))
+    } else {
+        None
+    };
+
+    if let Some(reason) = validation_failure {
+        // Terminal-task idempotency: if the same task_id was already
+        // resolved (good or bad), return the stored copy rather than
+        // overwriting with a fresh failure record.
+        if let Some(existing) = load_task(iii, &task_id).await
+            && matches!(
+                existing.status.state,
+                TaskState::Completed
+                    | TaskState::Canceled
+                    | TaskState::Failed
+                    | TaskState::Rejected
+            )
+        {
+            return A2AResponse::success(id, json!({ "task": existing }));
+        }
+        let task = build_failed_task(task_id, context_id, &params, &reason);
+        store_task(iii, &task).await;
+        return A2AResponse::success(id, json!({ "task": task }));
+    }
 
     let mut task = if let Some(existing) = load_task(iii, &task_id).await {
         if matches!(
@@ -524,7 +469,7 @@ async fn handle_send(
             },
             artifacts: None,
             history: Some(vec![params.message.clone()]),
-            metadata: params.metadata,
+            metadata: params.metadata.clone(),
         }
     };
     store_task(iii, &task).await;
@@ -532,58 +477,7 @@ async fn handle_send(
     // the live update instead of needing to poll.
     broadcast_status(registry, &task, false).await;
 
-    let (function_id, payload) = resolve_function(&params.message);
-    if function_id.is_empty() {
-        task.status = TaskStatus {
-            state: TaskState::Failed,
-            message: Some(Message {
-                message_id: msg_id(),
-                role: MessageRole::Agent,
-                parts: vec![text_part(
-                    "No function_id found. Send a data part with {\"function_id\": \"...\", \"payload\": {...}} or use :: notation in text.",
-                )],
-                task_id: None,
-                context_id: None,
-                metadata: None,
-            }),
-            timestamp: Some(iso_now()),
-        };
-        store_task(iii, &task).await;
-        broadcast_status(registry, &task, true).await;
-        registry.close_task(&task.id).await;
-        return A2AResponse::success(id, json!({ "task": task }));
-    }
     let fn_name = function_id.clone();
-
-    if !is_function_exposed(iii, &function_id, cfg).await {
-        let reason = if is_always_hidden(&function_id) {
-            format!(
-                "Function '{}' is in the iii-engine internal namespace and is not exposed as an A2A skill",
-                function_id
-            )
-        } else {
-            format!(
-                "Function '{}' is not exposed via a2a.expose metadata (or does not match the active --tier filter)",
-                function_id
-            )
-        };
-        task.status = TaskStatus {
-            state: TaskState::Failed,
-            message: Some(Message {
-                message_id: msg_id(),
-                role: MessageRole::Agent,
-                parts: vec![text_part(reason)],
-                task_id: None,
-                context_id: None,
-                metadata: None,
-            }),
-            timestamp: Some(iso_now()),
-        };
-        store_task(iii, &task).await;
-        broadcast_status(registry, &task, true).await;
-        registry.close_task(&task.id).await;
-        return A2AResponse::success(id, json!({ "task": task }));
-    }
 
     match iii
         .trigger(TriggerRequest {
@@ -596,11 +490,11 @@ async fn handle_send(
     {
         Ok(result) => {
             let fresh = load_task(iii, &task_id).await;
-            if let Some(ref t) = fresh {
-                if matches!(t.status.state, TaskState::Canceled) {
-                    // Cancel path already broadcast its own final frame.
-                    return A2AResponse::success(id, json!({ "task": t }));
-                }
+            if let Some(ref t) = fresh
+                && matches!(t.status.state, TaskState::Canceled)
+            {
+                // Cancel path already broadcast its own final frame.
+                return A2AResponse::success(id, json!({ "task": t }));
             }
             let result_text =
                 serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
@@ -644,6 +538,36 @@ async fn handle_send(
     broadcast_status(registry, &task, true).await;
     registry.close_task(&task.id).await;
     A2AResponse::success(id, json!({ "task": task }))
+}
+
+// Build a Failed task in one shot for early validation rejections. Avoids
+// the older Working→Failed double-write when the function id can't be
+// dispatched (empty / protocol-loop).
+fn build_failed_task(
+    task_id: String,
+    context_id: Option<String>,
+    params: &SendMessageParams,
+    reason: &str,
+) -> Task {
+    Task {
+        id: task_id,
+        context_id,
+        status: TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: msg_id(),
+                role: MessageRole::Agent,
+                parts: vec![text_part(reason)],
+                task_id: None,
+                context_id: None,
+                metadata: None,
+            }),
+            timestamp: Some(iso_now()),
+        },
+        artifacts: None,
+        history: Some(vec![params.message.clone()]),
+        metadata: params.metadata.clone(),
+    }
 }
 
 async fn handle_get(iii: &III, id: Option<Value>, params: Option<Value>) -> A2AResponse {
@@ -734,11 +658,11 @@ pub fn resolve_function(message: &Message) -> (String, Value) {
         .unwrap_or_default();
     let data_payload = message.parts.iter().find_map(|p| p.data.as_ref());
 
-    if let Some(payload) = data_payload {
-        if let Some(fid) = payload.get("function_id").and_then(|v| v.as_str()) {
-            let args = payload.get("payload").cloned().unwrap_or(json!({}));
-            return (fid.to_string(), args);
-        }
+    if let Some(payload) = data_payload
+        && let Some(fid) = payload.get("function_id").and_then(|v| v.as_str())
+    {
+        let args = payload.get("payload").cloned().unwrap_or(json!({}));
+        return (fid.to_string(), args);
     }
 
     // Only treat the message as a direct function invocation when the very

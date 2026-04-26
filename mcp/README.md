@@ -8,70 +8,47 @@ two transports:
 - **Streamable HTTP**: `POST /mcp` on the engine's HTTP trigger port.
   Enable with `--no-stdio`.
 
-## Exposure model
+## Access control
 
-Functions registered on the engine are **invisible to MCP clients by
-default**. Authors opt in per-function.
+Function exposure is governed by **iii-sdk RBAC** at `iii-worker-manager`. This worker is a protocol transport — the engine decides who can see and call what.
 
-### Opt-in metadata
+Configure in `config.yaml`:
 
-```rust
-// Rust worker
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "eval::metrics".into(),
-        description: Some("P50/P95/P99 latency + error rate".into()),
-        metadata: Some(json!({
-            "mcp.expose": true,
-            "mcp.tier": "agent",  // optional — free-form string
-        })),
-        ..Default::default()
-    },
-    handler,
-);
-```
+    workers:
+      - name: iii-worker-manager
+        config:
+          rbac:
+            auth_function_id: myproject::auth
+            expose_functions:
+              - match("api::*")
+              - match("*::public")
+              - metadata:
+                  public: true
+      - name: iii-mcp    # or iii-a2a
 
-```ts
-// Node worker (iii-sdk 0.11.3+)
-iii.registerFunction("eval::metrics", handler, {
-  metadata: { "mcp.expose": true, "mcp.tier": "agent" },
-})
-```
+See https://iii.dev/docs/how-to/worker-rbac.md for the RBAC surface.
 
-```python
-# Python worker
-iii.register_function(
-    "eval::metrics",
-    handler,
-    metadata={"mcp.expose": True, "mcp.tier": "agent"},
-)
-```
+### Breaking change (v0.4)
 
-### Hard floor (never exposed)
+- `--expose-all` and `--tier` removed. Port policy to `auth_function_id`.
+- `mcp.expose` / `a2a.expose` metadata flags no longer consulted.
+- See `examples/default-secure-auth.rs` for a drop-in replacement.
 
-Even with `--expose-all`, these namespaces are **always** filtered out:
+### Engine introspection
 
-| Prefix | Why |
-|---|---|
-| `engine::*` | iii engine internals |
-| `state::*` | KV plumbing, not an agent tool |
-| `stream::*` | channel plumbing |
-| `iii.*` / `iii::*` | SDK internals — callback functions and namespaced SDK APIs |
-| `mcp::*` | this worker's own entry point |
-| `a2a::*` | sibling protocol worker's entry point |
+For the use case the old `engine::*` hard floor hid, use the `introspect` worker (`iii worker add introspect`). It exposes `introspect::functions`, `introspect::topology`, `introspect::health`, etc. — agents call those through MCP/A2A without leaking raw engine internals.
 
 ### CLI flags
 
 ```text
 --engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
 --no-stdio           Skip stdio, run HTTP-only
---expose-all         Ignore the mcp.expose gate (dev only). Hard floor still applies.
 --no-builtins        Hide the 6 built-in management tools on stdio. Also hidden over HTTP by default.
 --http-builtins      Opt in to exposing built-ins on HTTP (default: hidden).
                      --no-builtins always wins and hides them everywhere.
---tier <name>        Show only functions whose mcp.tier metadata equals <name>.
-                     E.g. `--tier user` for end-user Claude Desktop config,
-                     `--tier agent` for an agent client, `--tier ops` for dashboards.
+--rbac-tag <TAG>     Forward an `x-iii-rbac-tag` header on the worker WebSocket
+                     upgrade. iii-worker-manager's `auth_function_id` reads
+                     this tag to apply policy.
 --debug              Verbose logging
 ```
 
@@ -124,7 +101,7 @@ Engine now listening on `ws://127.0.0.1:49134` (worker bus) and
 
 ### 2. Register test functions
 
-Any worker that tags functions with `mcp.expose: true` works. Quick
+Any worker registering functions through the engine works. Quick
 standalone Rust worker — save as `testworker/src/main.rs` and
 `cargo run --release`:
 
@@ -140,7 +117,6 @@ async fn main() -> anyhow::Result<()> {
         RegisterFunctionMessage {
             id: "demo::hello".into(),
             description: Some("Say hello".into()),
-            metadata: Some(json!({ "mcp.expose": true })),
             ..Default::default()
         },
         |_input: Value| async move { Ok(json!({"greeting": "hi"})) },
@@ -163,8 +139,7 @@ Registers `POST /mcp` on the engine's HTTP port.
 ### 3b. Sanity check with curl
 
 ```bash
-# tools/list — should show demo__hello, NO builtins (HTTP default hides them),
-# NO state::*/engine::*/iii.*/iii::* (hard floor), NO demo__hidden (no mcp.expose).
+# tools/list — visible functions are governed by iii-worker-manager RBAC.
 curl -sX POST http://127.0.0.1:3111/mcp \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
@@ -194,14 +169,10 @@ In the browser UI:
 
 Click **Connect** → green dot. Then try each tab:
 
-- **Tools** → List Tools → should show the functions tagged
-  `mcp.expose: true`. Click one → fill the args form (text input, not a
-  dropdown — Inspector decorates it with a chevron but the MCP spec's
-  `PromptArgument`/tool input schema doesn't carry enum constraints,
-  so type the value) → Run.
+- **Tools** → List Tools → shows the functions iii-worker-manager RBAC
+  exposes for this connection.
 - **Resources** → 4 URIs (`iii://functions`, `iii://workers`,
-  `iii://triggers`, `iii://context`). Click `iii://functions` → filtered
-  list (only exposed functions, no infra).
+  `iii://triggers`, `iii://context`).
 - **Prompts** → 4 canned prompts. Pick `register-function`, fill
   `language=python`, `function_id=orders::place`, Get Prompt.
 - **Ping** → `{}` response.
@@ -238,85 +209,17 @@ Claude Desktop config that talks to a running engine:
 }
 ```
 
-Add `"--tier", "user"` and `"--no-builtins"` for a clean user-facing
-surface. Add `"--expose-all"` for dev exploration (hard floor still
-applies).
-
-### 4. Verify each gate
-
-From the curl / inspector shell above:
-
-```bash
-# Hidden function (no mcp.expose) → isError, "not exposed via mcp.expose metadata"
-curl -sX POST http://127.0.0.1:3111/mcp -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo__hidden","arguments":{}}}' \
-  | jq '.result.content[0].text'
-
-# Infra prefix → isError, "in the iii-engine internal namespace"
-curl -sX POST http://127.0.0.1:3111/mcp -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"state__set","arguments":{}}}' \
-  | jq '.result.content[0].text'
-
-# Builtin with --no-builtins → "disabled on this server"
-# (restart iii-mcp with --no-builtins first)
-curl -sX POST http://127.0.0.1:3111/mcp -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"iii_trigger_void","arguments":{"function_id":"demo::hello","payload":{}}}}' \
-  | jq '.result.content[0].text'
-```
+Add `"--rbac-tag", "claude-desktop"` and `"--no-builtins"` for a clean
+user-facing surface — the rbac-tag is forwarded as `x-iii-rbac-tag` and
+your `auth_function_id` can scope policy on it.
 
 ## Invocation path
 
 `tools/call` with name `foo__bar` →
 1. Reverse-mangle to `foo::bar`.
-2. Hard-floor check: reject if prefix matches `ALWAYS_HIDDEN_PREFIXES`.
-3. Re-check the function actually has `mcp.expose: true` (and optional
-   tier match) — `tools/list` snapshots can go stale.
-4. `iii.trigger(function_id, payload)` with the arguments object.
+2. Structural guard: reject `mcp::*` / `a2a::*` (protocol entry points).
+3. `iii.trigger(function_id, payload)` with the arguments object.
+   iii-worker-manager applies its RBAC policy on the way through.
 
 Result is wrapped as `{ content: [{ type: "text", text: ... }] }` per MCP
 spec. Errors surface as `isError: true`.
-
-## Example: minimal agent-facing config
-
-One worker that exposes two agent-facing functions and one ops-only function:
-
-```rust
-// user-facing
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "reports::weekly".into(),
-        metadata: Some(json!({ "mcp.expose": true, "mcp.tier": "user" })),
-        ..Default::default()
-    },
-    weekly_handler,
-);
-
-// agent-only planning tool
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "reports::plan".into(),
-        metadata: Some(json!({ "mcp.expose": true, "mcp.tier": "agent" })),
-        ..Default::default()
-    },
-    plan_handler,
-);
-
-// ops dashboards — not exposed to user/agent tiers
-iii.register_function_with(
-    RegisterFunctionMessage {
-        id: "reports::rebuild_cache".into(),
-        metadata: Some(json!({ "mcp.expose": true, "mcp.tier": "ops" })),
-        ..Default::default()
-    },
-    rebuild_handler,
-);
-```
-
-Claude Desktop user config:
-
-```json
-{ "mcpServers": { "iii": { "command": "iii-mcp", "args": ["--tier", "user", "--no-builtins"] } } }
-```
-
-Agent client hits the engine over HTTP with `--tier agent`. Ops dashboard
-uses `--tier ops`. Same worker, three audiences.

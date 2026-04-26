@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -5,8 +6,6 @@ use iii_mcp::handler;
 use iii_mcp::transport;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
-
-use handler::ExposureConfig;
 
 #[derive(Parser, Debug)]
 #[command(name = "iii-mcp")]
@@ -21,14 +20,6 @@ struct Args {
 
     #[arg(long, help = "Skip stdio, run as HTTP-only (POST /mcp on engine port)")]
     no_stdio: bool,
-
-    #[arg(
-        long,
-        help = "Expose all functions as tools (ignore mcp.expose metadata). \
-                Infra namespaces (engine::*, state::*, stream::*, iii.*, mcp::*) \
-                stay hidden even with this flag."
-    )]
-    expose_all: bool,
 
     #[arg(
         long,
@@ -48,10 +39,12 @@ struct Args {
 
     #[arg(
         long,
-        help = "Show only functions whose `mcp.tier` metadata equals this value \
-                (e.g. `user`, `agent`, `ops`). When unset, tier filtering is off."
+        value_name = "TAG",
+        help = "Forward an `x-iii-rbac-tag` header on the worker WebSocket \
+                upgrade. iii-worker-manager's `auth_function_id` reads this \
+                tag to apply policy. RBAC itself lives at iii-worker-manager."
     )]
-    tier: Option<String>,
+    rbac_tag: Option<String>,
 }
 
 #[tokio::main]
@@ -71,7 +64,18 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting iii-mcp");
 
-    let iii = register_worker(&args.engine_url, InitOptions::default());
+    let mut init_opts = InitOptions::default();
+    if let Some(tag) = args.rbac_tag.as_ref() {
+        let mut headers = HashMap::new();
+        headers.insert("x-iii-rbac-tag".to_string(), tag.clone());
+        init_opts.headers = Some(headers);
+        tracing::info!(
+            rbac_tag = %tag,
+            "Forwarding rbac-tag in worker headers; configure your auth_function_id to read x-iii-rbac-tag"
+        );
+    }
+
+    let iii = register_worker(&args.engine_url, init_opts);
 
     // HTTP transport hides builtins by default — worker/trigger management
     // needs the stdio-attached process anyway, so exposing them over HTTP
@@ -80,19 +84,16 @@ async fn main() -> anyhow::Result<()> {
     // still wins (forces hidden everywhere). stdio keeps the default of
     // showing builtins (common Claude Desktop path).
     let http_no_builtins = args.no_builtins || !args.http_builtins;
-    let http_exposure = ExposureConfig::new(args.expose_all, http_no_builtins, args.tier.clone());
-    handler::register_http(&iii, http_exposure);
+    handler::register_http(&iii, http_no_builtins);
 
     if args.no_stdio {
         tracing::info!("MCP HTTP-only mode. POST /mcp on engine port. Ctrl+C to stop.");
         tokio::signal::ctrl_c().await?;
     } else {
-        let stdio_exposure =
-            ExposureConfig::new(args.expose_all, args.no_builtins, args.tier.clone());
         let h = Arc::new(handler::McpHandler::new(
             iii,
             args.engine_url,
-            stdio_exposure,
+            args.no_builtins,
         ));
         transport::run_stdio(h).await?;
     }

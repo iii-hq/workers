@@ -39,8 +39,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinSet;
 
 use crate::handler::{
-    ExposureConfig, is_always_hidden, is_function_exposed, iso_now, load_task, msg_id,
-    resolve_function, store_task, text_part,
+    is_protocol_loop, iso_now, load_task, msg_id, resolve_function, store_task, text_part,
 };
 use crate::types::*;
 
@@ -305,7 +304,6 @@ pub async fn handle_stream(
     params: Option<Value>,
     writer_ref: StreamChannelRef,
     registry: Arc<StreamRegistry>,
-    cfg: ExposureConfig,
 ) {
     let writer = Arc::new(ChannelWriter::new(iii.address(), &writer_ref));
 
@@ -442,18 +440,11 @@ pub async fn handle_stream(
     }
     let fn_name = function_id.clone();
 
-    if !is_function_exposed(iii, &function_id, &cfg).await {
-        let reason = if is_always_hidden(&function_id) {
-            format!(
-                "Function '{}' is in the iii-engine internal namespace and is not exposed as an A2A skill",
-                function_id
-            )
-        } else {
-            format!(
-                "Function '{}' is not exposed via a2a.expose metadata (or does not match the active --tier filter)",
-                function_id
-            )
-        };
+    if is_protocol_loop(&function_id) {
+        let reason = format!(
+            "Function '{}' is a protocol entry point, not a callable tool",
+            function_id
+        );
         task.status = TaskStatus {
             state: TaskState::Failed,
             message: Some(Message {
@@ -724,9 +715,8 @@ pub async fn dispatch_stream(
     params: Option<Value>,
     writer_ref: StreamChannelRef,
     registry: Arc<StreamRegistry>,
-    cfg: ExposureConfig,
 ) {
-    handle_stream(iii, params, writer_ref, registry, cfg).await;
+    handle_stream(iii, params, writer_ref, registry).await;
 }
 
 /// Public entry called by the JSON-RPC dispatch closure when it sees
