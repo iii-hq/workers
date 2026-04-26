@@ -212,3 +212,38 @@ pub struct GetTaskParams {
 pub struct CancelTaskParams {
     pub id: String,
 }
+
+// A2A v0.3 streaming event payloads. Wire field is `final` (Rust keyword,
+// renamed from `final_event`); `kind` is a string discriminator
+// ("status-update" / "artifact-update") rather than a tagged enum so the
+// JSON shape matches the spec verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatusUpdateEvent {
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub kind: String,
+    pub status: TaskStatus,
+    #[serde(rename = "final")]
+    pub final_event: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArtifactUpdateEvent {
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub kind: String,
+    pub artifact: Artifact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub append: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_chunk: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResubscribeParams {
+    pub id: String,
+}

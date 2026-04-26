@@ -1,8 +1,14 @@
+use std::sync::Arc;
+
 use iii_sdk::{
     III, RegisterFunctionMessage, RegisterTriggerInput, TriggerAction, TriggerRequest, Value,
 };
 use serde_json::json;
 
+use crate::streaming::{
+    StreamRegistry, broadcast_artifact, broadcast_status, dispatch_resubscribe, dispatch_stream,
+    writer_ref_from_input,
+};
 use crate::types::*;
 
 fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
@@ -37,7 +43,7 @@ pub const ALWAYS_HIDDEN_PREFIXES: &[&str] = &[
     "mcp::", "a2a::",
 ];
 
-fn is_always_hidden(function_id: &str) -> bool {
+pub fn is_always_hidden(function_id: &str) -> bool {
     ALWAYS_HIDDEN_PREFIXES
         .iter()
         .any(|p| function_id.starts_with(p))
@@ -85,7 +91,7 @@ impl Default for AgentIdentity {
     }
 }
 
-fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
+pub fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
     if is_always_hidden(&f.function_id) {
         return false;
     }
@@ -101,7 +107,7 @@ fn is_exposed(f: &iii_sdk::FunctionInfo, cfg: &ExposureConfig) -> bool {
     true
 }
 
-async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig) -> bool {
+pub async fn is_function_exposed(iii: &III, function_id: &str, cfg: &ExposureConfig) -> bool {
     if is_always_hidden(function_id) {
         return false;
     }
@@ -156,6 +162,8 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
 
     let iii_rpc = iii.clone();
     let rpc_cfg = exposure;
+    let registry = Arc::new(StreamRegistry::new());
+    let registry_rpc = registry.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::jsonrpc".to_string(),
@@ -171,7 +179,13 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
         move |input: Value| {
             let iii_inner = iii_rpc.clone();
             let cfg = rpc_cfg.clone();
+            let registry = registry_rpc.clone();
             async move {
+                // Snapshot the writer ref BEFORE stripping the body — once
+                // we narrow `input` down to the JSON-RPC body the channel
+                // ref disappears.
+                let writer_ref = writer_ref_from_input(&input);
+
                 let body = if let Some(b) = input.get("body") {
                     b.clone()
                 } else {
@@ -189,7 +203,48 @@ pub fn register(iii: &III, exposure: ExposureConfig, base_url: String, identity:
                     }
                 };
 
-                let response = handle_a2a_request(&iii_inner, request, &cfg).await;
+                // Streaming methods take the writer ref directly and emit
+                // SSE; the JSON-RPC envelope is unused for the response.
+                match request.method.as_str() {
+                    "message/stream" | "SendStreamingMessage" => {
+                        let Some(writer_ref) = writer_ref else {
+                            return Ok(json!({
+                                "status_code": 200,
+                                "headers": { "content-type": "application/json" },
+                                "body": A2AResponse::error(
+                                    request.id,
+                                    -32004,
+                                    "Streaming not supported on this transport (no writable channel)"
+                                )
+                            }));
+                        };
+                        dispatch_stream(&iii_inner, request.params, writer_ref, registry, cfg)
+                            .await;
+                        // The SSE response was written directly to the
+                        // channel; return an empty value so the engine
+                        // doesn't try to write a second response body.
+                        return Ok(Value::Null);
+                    }
+                    "tasks/resubscribe" | "SubscribeToTask" => {
+                        let Some(writer_ref) = writer_ref else {
+                            return Ok(json!({
+                                "status_code": 200,
+                                "headers": { "content-type": "application/json" },
+                                "body": A2AResponse::error(
+                                    request.id,
+                                    -32004,
+                                    "Streaming not supported on this transport (no writable channel)"
+                                )
+                            }));
+                        };
+                        dispatch_resubscribe(&iii_inner, request.params, writer_ref, registry)
+                            .await;
+                        return Ok(Value::Null);
+                    }
+                    _ => {}
+                }
+
+                let response = handle_a2a_request(&iii_inner, request, &cfg, &registry).await;
 
                 Ok(json!({
                     "status_code": 200,
@@ -277,7 +332,7 @@ pub async fn build_agent_card(
         provider,
         documentation_url,
         capabilities: AgentCapabilities {
-            streaming: false,
+            streaming: true,
             push_notifications: false,
             state_transition_history: true,
         },
@@ -287,16 +342,18 @@ pub async fn build_agent_card(
     }
 }
 
-async fn handle_a2a_request(iii: &III, request: A2ARequest, cfg: &ExposureConfig) -> A2AResponse {
+async fn handle_a2a_request(
+    iii: &III,
+    request: A2ARequest,
+    cfg: &ExposureConfig,
+    registry: &Arc<StreamRegistry>,
+) -> A2AResponse {
     let id = request.id.clone();
     match request.method.as_str() {
-        "message/send" | "SendMessage" => handle_send(iii, id, request.params, cfg).await,
+        "message/send" | "SendMessage" => handle_send(iii, id, request.params, cfg, registry).await,
         "tasks/get" | "GetTask" => handle_get(iii, id, request.params).await,
-        "tasks/cancel" | "CancelTask" => handle_cancel(iii, id, request.params).await,
+        "tasks/cancel" | "CancelTask" => handle_cancel(iii, id, request.params, registry).await,
         "tasks/list" | "ListTasks" => handle_list(iii, id).await,
-        "message/stream" | "SendStreamingMessage" | "tasks/resubscribe" | "SubscribeToTask" => {
-            A2AResponse::error(id, -32004, "Streaming not supported")
-        }
         m if m.contains("pushNotification") || m.contains("PushNotification") => {
             A2AResponse::error(id, -32003, "Push notifications not supported")
         }
@@ -306,7 +363,7 @@ async fn handle_a2a_request(iii: &III, request: A2ARequest, cfg: &ExposureConfig
 
 const TASK_SCOPE: &str = "a2a:tasks";
 
-async fn store_task(iii: &III, task: &Task) {
+pub async fn store_task(iii: &III, task: &Task) {
     if let Err(e) = iii
         .trigger(TriggerRequest {
             function_id: "state::set".to_string(),
@@ -320,7 +377,7 @@ async fn store_task(iii: &III, task: &Task) {
     }
 }
 
-async fn load_task(iii: &III, task_id: &str) -> Option<Task> {
+pub async fn load_task(iii: &III, task_id: &str) -> Option<Task> {
     iii.trigger(TriggerRequest {
         function_id: "state::get".to_string(),
         payload: json!({ "scope": TASK_SCOPE, "key": task_id }),
@@ -332,11 +389,11 @@ async fn load_task(iii: &III, task_id: &str) -> Option<Task> {
     .and_then(|v| serde_json::from_value(v).ok())
 }
 
-fn msg_id() -> String {
+pub fn msg_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn text_part(s: impl Into<String>) -> Part {
+pub fn text_part(s: impl Into<String>) -> Part {
     Part {
         text: Some(s.into()),
         data: None,
@@ -346,7 +403,7 @@ fn text_part(s: impl Into<String>) -> Part {
     }
 }
 
-fn iso_now() -> String {
+pub fn iso_now() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -408,6 +465,7 @@ async fn handle_send(
     id: Option<Value>,
     params: Option<Value>,
     cfg: &ExposureConfig,
+    registry: &Arc<StreamRegistry>,
 ) -> A2AResponse {
     let params: SendMessageParams = match params {
         Some(p) => match serde_json::from_value(p) {
@@ -470,6 +528,9 @@ async fn handle_send(
         }
     };
     store_task(iii, &task).await;
+    // Broadcast Working transition so concurrent stream subscribers see
+    // the live update instead of needing to poll.
+    broadcast_status(registry, &task, false).await;
 
     let (function_id, payload) = resolve_function(&params.message);
     if function_id.is_empty() {
@@ -488,6 +549,8 @@ async fn handle_send(
             timestamp: Some(iso_now()),
         };
         store_task(iii, &task).await;
+        broadcast_status(registry, &task, true).await;
+        registry.close_task(&task.id).await;
         return A2AResponse::success(id, json!({ "task": task }));
     }
     let fn_name = function_id.clone();
@@ -517,6 +580,8 @@ async fn handle_send(
             timestamp: Some(iso_now()),
         };
         store_task(iii, &task).await;
+        broadcast_status(registry, &task, true).await;
+        registry.close_task(&task.id).await;
         return A2AResponse::success(id, json!({ "task": task }));
     }
 
@@ -533,17 +598,13 @@ async fn handle_send(
             let fresh = load_task(iii, &task_id).await;
             if let Some(ref t) = fresh {
                 if matches!(t.status.state, TaskState::Canceled) {
+                    // Cancel path already broadcast its own final frame.
                     return A2AResponse::success(id, json!({ "task": t }));
                 }
             }
             let result_text =
                 serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-            task.status = TaskStatus {
-                state: TaskState::Completed,
-                message: None,
-                timestamp: Some(iso_now()),
-            };
-            task.artifacts = Some(vec![Artifact {
+            let artifact = Artifact {
                 artifact_id: uuid::Uuid::new_v4().to_string(),
                 parts: vec![Part {
                     text: Some(result_text),
@@ -554,7 +615,14 @@ async fn handle_send(
                 }],
                 name: Some(fn_name),
                 metadata: None,
-            }]);
+            };
+            task.status = TaskStatus {
+                state: TaskState::Completed,
+                message: None,
+                timestamp: Some(iso_now()),
+            };
+            task.artifacts = Some(vec![artifact.clone()]);
+            broadcast_artifact(registry, &task, &artifact).await;
         }
         Err(err) => {
             task.status = TaskStatus {
@@ -573,6 +641,8 @@ async fn handle_send(
     }
 
     store_task(iii, &task).await;
+    broadcast_status(registry, &task, true).await;
+    registry.close_task(&task.id).await;
     A2AResponse::success(id, json!({ "task": task }))
 }
 
@@ -615,7 +685,12 @@ async fn handle_list(iii: &III, id: Option<Value>) -> A2AResponse {
     }
 }
 
-async fn handle_cancel(iii: &III, id: Option<Value>, params: Option<Value>) -> A2AResponse {
+async fn handle_cancel(
+    iii: &III,
+    id: Option<Value>,
+    params: Option<Value>,
+    registry: &Arc<StreamRegistry>,
+) -> A2AResponse {
     let params: CancelTaskParams = match params {
         Some(p) => match serde_json::from_value(p) {
             Ok(p) => p,
@@ -640,13 +715,17 @@ async fn handle_cancel(iii: &III, id: Option<Value>, params: Option<Value>) -> A
                 timestamp: Some(iso_now()),
             };
             store_task(iii, &task).await;
+            // Broadcast the canceled final frame so any concurrent stream
+            // subscribers wake up and tear down their writer.
+            broadcast_status(registry, &task, true).await;
+            registry.close_task(&task.id).await;
             A2AResponse::success(id, json!({ "task": task }))
         }
         None => A2AResponse::error(id, -32001, format!("Task not found: {}", params.id)),
     }
 }
 
-fn resolve_function(message: &Message) -> (String, Value) {
+pub fn resolve_function(message: &Message) -> (String, Value) {
     let text = message
         .parts
         .iter()

@@ -5,7 +5,7 @@ HTTP triggers on the engine:
 
 - `GET /.well-known/agent-card.json` — discovery / capability card
 - `POST /a2a` — JSON-RPC dispatch (`message/send`, `tasks/get`,
-  `tasks/cancel`, `tasks/list`)
+  `tasks/cancel`, `tasks/list`, `message/stream`, `tasks/resubscribe`)
 
 ## Exposure model
 
@@ -223,12 +223,56 @@ than re-invoking the function. Mid-flight cancel is honoured: if a
 `tasks/cancel` lands while a function call is in progress, the result is
 discarded and the task keeps its `Canceled` state.
 
+## Streaming
+
+`message/stream` and `tasks/resubscribe` emit Server-Sent Events
+(`text/event-stream`) on the same `POST /a2a` endpoint. Each event is a
+[`TaskStatusUpdateEvent`](https://a2aproject.dev/spec/v0.3) or
+`TaskArtifactUpdateEvent` framed as
+`id: <n>\nevent: <kind>\ndata: <json>\n\n`.
+
+`message/stream` walks the task through `submitted → working → artifact
+→ completed` (or `→ failed`). The `submitted` frame is wire-only — it
+matches the A2A spec sequence, but the persisted task transitions
+straight to `working`.
+
+`tasks/resubscribe` latches onto an in-flight task, replays one frame
+with the current state, and forwards subsequent broadcasts until the
+task reaches a terminal state. Resubscribing to a terminal task emits a
+single `final: true` frame and closes.
+
+Cross-method propagation: a sync `message/send` or `tasks/cancel`
+broadcasts through the same registry, so concurrent stream subscribers
+see live transitions instead of needing to poll `tasks/get`.
+
+```bash
+# message/stream — start a task and watch SSE frames
+curl --no-buffer -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":"s1","method":"message/stream",
+    "params":{"message":{
+      "messageId":"m1","role":"user",
+      "parts":[{"data":{"function_id":"pricing::quote","payload":{}}}]
+    }}
+  }'
+
+# tasks/resubscribe — latch onto an existing in-flight task
+curl --no-buffer -sX POST http://127.0.0.1:3111/a2a \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"r1","method":"tasks/resubscribe",
+       "params":{"id":"<task-id>"}}'
+```
+
+Internally the worker constructs a `ChannelWriter` via
+`ChannelWriter::new(iii.address(), &channel_ref)` (iii-sdk 0.11.3 API —
+no `connect()` step, the WebSocket opens lazily on first send/write).
+
 ## Not implemented
 
-- `message/stream`, `tasks/resubscribe` (streaming)
 - Push notifications
 
-Returns JSON-RPC errors `-32004` and `-32003` respectively.
+Returns JSON-RPC error `-32003`.
 
 ## Example: multi-tier partner API
 
