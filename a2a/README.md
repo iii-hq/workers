@@ -42,14 +42,24 @@ For the use case the old `engine::*` hard floor hid, use the `introspect` worker
 ### CLI flags
 
 ```text
---engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
---base-url <URL>     Public origin advertised in the agent card. The card is served
-                     at <base-url>/a2a. Default: http://localhost:3111
---rbac-tag <TAG>     Forward an `x-iii-rbac-tag` header on the worker WebSocket
-                     upgrade. iii-worker-manager's `auth_function_id` reads
-                     this tag to apply policy.
---debug              Verbose logging
+--engine-url <URL>           WebSocket URL of the iii engine (default ws://localhost:49134)
+--base-url <URL>             Public origin advertised in the agent card. The card is served
+                             at <base-url>/a2a. Default: http://localhost:3111
+--agent-name <NAME>          Agent card `name` (default: iii-engine)
+--agent-description <TEXT>   Agent card `description`
+--provider-org <ORG>         AgentProvider.organization (default: iii)
+--provider-url <URL>         AgentProvider.url (default: https://github.com/iii-hq/iii)
+--docs-url <URL>             AgentCard.documentationUrl
+                             (default: https://github.com/iii-hq/workers/tree/main/a2a)
+--rbac-tag <TAG>             Forward an `x-iii-rbac-tag` header on the worker WebSocket
+                             upgrade. iii-worker-manager's `auth_function_id` reads
+                             this tag to apply policy.
+--debug                      Verbose logging
 ```
+
+Empty `--provider-org` or `--provider-url` omits the `provider` object
+from the card (A2A v0.3 requires both fields when the object is present).
+Empty `--docs-url` omits `documentationUrl`.
 
 ## Local testing
 

@@ -225,3 +225,31 @@ your `auth_function_id` can scope policy on it.
 
 Result is wrapped as `{ content: [{ type: "text", text: ... }] }` per MCP
 spec. Errors surface as `isError: true`.
+
+## MCP 2025-06-18 spec coverage
+
+Beyond the core `tools/list` + `tools/call` path, this worker speaks:
+
+- **Pagination** on `tools/list`, `resources/list`, `prompts/list` —
+  opaque `cursor` round-trip per spec.
+- **`completion/complete`** — argument autocomplete for prompt args
+  (e.g. language enum on `register-function`).
+- **`logging/setLevel`** + **`notifications/message`** — per-session
+  level bridged into `tracing`.
+- **`resources/subscribe`** + **`resources/unsubscribe`** +
+  **`notifications/resources/updated`** — change notifications when
+  `iii.list_functions()` / `list_workers()` / `list_triggers()` shift
+  for a subscribed URI.
+- **`resources/templates/list`** — templates for `iii://functions/{id}`,
+  `iii://workers/{id}`, `iii://triggers/{id}`.
+- **Tool annotations + outputSchema + structured content** — tools
+  surface `title`, `annotations` (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`), and `outputSchema` from
+  `FunctionInfo.metadata.mcp.*`.
+- **Progress + cancellation** — `_meta.progressToken` on `tools/call`
+  emits `notifications/progress`; `notifications/cancelled` flips a
+  per-request cancel channel and short-circuits the in-flight trigger.
+
+Server-to-client requests (`sampling/createMessage`,
+`elicitation/create`) and Streamable HTTP SSE remain on the Phase 2b/2c
+roadmap.
