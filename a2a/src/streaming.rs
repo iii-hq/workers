@@ -473,7 +473,41 @@ pub async fn handle_stream(
     let context_id_run = task.context_id.clone();
     let metadata_run = task.metadata.clone();
     let history_run = task.history.clone();
+    // Drop-guard so a panic anywhere inside the spawned future still
+    // unwinds through close_task. Without this, a panic leaves the bus
+    // alive in `buses` with `terminal_tx` un-fired, and the parent loop
+    // below blocks indefinitely on `rx.changed()` — SSE socket stays open
+    // forever. Same coverage as a `defer`/RAII pattern: explicit early
+    // returns (e.g. the cancel branch below) also fire it on the way out.
+    struct CloseGuard {
+        registry: Arc<StreamRegistry>,
+        task_id: String,
+        armed: bool,
+    }
+    impl CloseGuard {
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+    impl Drop for CloseGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                let registry = self.registry.clone();
+                let task_id = self.task_id.clone();
+                tokio::spawn(async move {
+                    registry.close_task(&task_id).await;
+                });
+            }
+        }
+    }
+
     tokio::spawn(async move {
+        let mut guard = CloseGuard {
+            registry: registry_run.clone(),
+            task_id: task_id_run.clone(),
+            armed: true,
+        };
+
         let result = iii_run
             .trigger(TriggerRequest {
                 function_id,
@@ -485,11 +519,18 @@ pub async fn handle_stream(
 
         // Cancel-while-running: if the task is now Canceled, don't
         // overwrite that with Completed. The cancel path has already
-        // broadcast its own final frame.
+        // broadcast its own final frame and called close_task; nothing more
+        // to do here. NOTE: this is a best-effort TOCTOU check — iii engine
+        // state has no atomic CAS, so a cancel landing AFTER this load but
+        // BEFORE the store_task below would still get clobbered. Accepted
+        // race per repo convention; consider it eventual consistency.
         let fresh = load_task(&iii_run, &task_id_run).await;
         if let Some(ref t) = fresh
             && matches!(t.status.state, TaskState::Canceled)
         {
+            // Cancel path already called close_task — disarm so we don't
+            // double-close.
+            guard.disarm();
             return;
         }
 
@@ -565,6 +606,10 @@ pub async fn handle_stream(
             }
         }
 
+        // Happy path completed normally — disarm the guard before letting
+        // it drop, otherwise we'd close twice. Drop fires the guard's
+        // `close_task` only when `armed == true`.
+        guard.disarm();
         registry_run.close_task(&task_id_run).await;
     });
 
