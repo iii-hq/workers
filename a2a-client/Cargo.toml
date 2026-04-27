@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-a2a-client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Consume external A2A agents; register their skills as iii functions."
 license = "Apache-2.0"
