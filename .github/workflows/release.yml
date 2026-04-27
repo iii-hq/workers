@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'a2a/v*'
+      - 'a2a-client/v*'
       - 'agent/v*'
       - 'coding/v*'
       - 'eval/v*'
@@ -14,6 +15,7 @@ on:
       - 'introspect/v*'
       - 'llm-router/v*'
       - 'mcp/v*'
+      - 'mcp-client/v*'
       - 'proof/v*'
       - 'shell/v*'
       - 'todo-worker/v*'

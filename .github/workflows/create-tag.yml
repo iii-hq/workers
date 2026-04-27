@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - a2a
+          - a2a-client
           - agent
           - coding
           - eval
@@ -20,6 +21,7 @@ on:
           - introspect
           - llm-router
           - mcp
+          - mcp-client
           - proof
           - shell
           - todo-worker
