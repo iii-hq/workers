@@ -174,6 +174,7 @@ pub fn decide(
                         ab_test_id: None,
                         fallback: None,
                         confidence: 0.3,
+                        provider: None,
                     };
                 }
             }
@@ -198,6 +199,7 @@ pub fn decide(
                         ab_test_id: None,
                         fallback: None,
                         confidence: confidence * 0.8,
+                        provider: None,
                     };
                 }
             }
@@ -225,6 +227,7 @@ pub fn decide(
                             ab_test_id: None,
                             fallback: policy.action.fallback.clone(),
                             confidence: dconf,
+                            provider: None,
                         };
                     }
                     reason = format!(
@@ -242,6 +245,7 @@ pub fn decide(
             ab_test_id: None,
             fallback: policy.action.fallback.clone(),
             confidence,
+            provider: None,
         };
     }
 
@@ -262,6 +266,7 @@ pub fn decide(
                 ab_test_id: None,
                 fallback: None,
                 confidence,
+                provider: None,
             };
         }
     }
@@ -283,6 +288,7 @@ pub fn decide(
                 ab_test_id: Some(ab.id.clone()),
                 fallback: None,
                 confidence,
+                provider: None,
             };
         }
     }
@@ -294,6 +300,7 @@ pub fn decide(
         ab_test_id: None,
         fallback: None,
         confidence: 0.0,
+        provider: None,
     }
 }
 
@@ -616,5 +623,41 @@ mod tests {
         }];
         assert!(skip_unavailable("m", &h, 0.3));
         assert!(!skip_unavailable("m", &h, 0.8));
+    }
+
+    #[test]
+    fn test_routing_decision_serializes_provider_when_set() {
+        let d = RoutingDecision {
+            model: "claude-sonnet-4".into(),
+            reason: "test".into(),
+            policy_id: None,
+            ab_test_id: None,
+            fallback: None,
+            confidence: 1.0,
+            provider: Some("anthropic".into()),
+        };
+        let v = serde_json::to_value(&d).expect("serialize");
+        assert_eq!(
+            v.get("provider").and_then(|x| x.as_str()),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn test_routing_decision_omits_provider_when_unset() {
+        let d = RoutingDecision {
+            model: "x".into(),
+            reason: "test".into(),
+            policy_id: None,
+            ab_test_id: None,
+            fallback: None,
+            confidence: 1.0,
+            provider: None,
+        };
+        let v = serde_json::to_value(&d).expect("serialize");
+        assert!(
+            v.get("provider").is_none(),
+            "provider field must be skipped when None"
+        );
     }
 }

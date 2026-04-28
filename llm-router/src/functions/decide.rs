@@ -70,7 +70,19 @@ async fn handle(iii: III, cfg: Arc<RouterConfig>, payload: Value) -> Result<Valu
         classifier: classifier.as_ref(),
         models: &models,
     };
-    let decision = decide(&req, ctx, &cfg, &mut rng);
+    let mut decision = decide(&req, ctx, &cfg, &mut rng);
+
+    // Enrich the decision with the provider attached to the chosen model's
+    // registration, when one exists. This saves consumers from a separate
+    // lookup against `router::model_list` or a parallel models-catalog call
+    // when they need to dispatch by provider (e.g. agent harnesses calling
+    // `provider::<name>::stream_assistant`).
+    if !decision.model.is_empty() && decision.provider.is_none() {
+        decision.provider = models
+            .iter()
+            .find(|mr| mr.model == decision.model)
+            .and_then(|mr| mr.provider.clone());
+    }
 
     let request_id = format!("req-{}", Uuid::new_v4());
     let log = RoutingLogEntry {
