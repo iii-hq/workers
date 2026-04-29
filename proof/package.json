@@ -1,6 +1,6 @@
 {
   "name": "proof",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "AI-powered browser testing worker for iii — scans code changes, generates test plans, runs them in a real browser",
   "scripts": {
