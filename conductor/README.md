@@ -31,9 +31,12 @@ subject to the RBAC policy on `iii-worker-manager`.
 }
 ```
 
-For `kind: "remote"`, the conductor calls `iii.trigger(function_id, { task, cwd })`.
-This is how external A2A agents (registered via `iii-a2a-client`) and remote MCP tool
-servers (via `iii-mcp-client`) participate in a fan-out.
+For `kind: "remote"`, the conductor still creates a worktree and passes
+that worktree path as `cwd` in the trigger payload. Remote handlers that
+write to `cwd` produce a real diff and can win the merge. This is how
+external A2A agents (registered via `iii-a2a-client`) and remote MCP tool
+servers (via `iii-mcp-client`) participate in a fan-out on equal footing
+with local CLI agents.
 
 ### `GateSpec`
 
@@ -47,19 +50,29 @@ gates: `verify::tests`, `verify::lint`, `verify::types`, `verify::build`,
 `verify::diff_clean`. The `eval`, `guardrails`, and `proof` workers in this
 repo register suitable gate functions.
 
+Gate results are stored as an ordered `Vec<GateRunResult>`, not a map. The
+same `function_id` can appear more than once with different descriptions
+(e.g. `verify::tests` for unit and again for integration), and the original
+order is preserved for `conductor::status`.
+
 ## How a run flows
 
-1. `dispatch` records a `RunState` under `state::set` scope `conductor`,
-   key `runs::<run_id>`.
-2. For each agent, conductor creates a git worktree
-   (`conductor/<run_id>/<i>-<kind>`) off the current branch.
-3. Local agents are spawned via `tokio::process::Command` inside the
-   worktree. Remote agents are reached via `iii.trigger(spec.function_id, …)`.
-4. After every agent completes, the configured gates run in series against
-   each agent's worktree.
-5. `merge` picks the first agent whose status is `Finished`, whose diff is
-   non-empty, and whose every gate passed. Losers' worktrees are removed;
-   the winner's worktree and branch survive for review.
+1. `dispatch` records a seed `RunState` under `state::set` scope
+   `conductor`, key `runs::<run_id>`.
+2. For each agent (local or remote), conductor creates a git worktree
+   (`conductor/<run_id>/<i>-<kind>`) off the current branch under
+   `~/.iii/conductor/worktrees/`.
+3. Local agents are spawned via `tokio::process::Command` inside their
+   worktree. Remote agents are reached via
+   `iii.trigger(spec.function_id, { task, cwd: <worktree path> })`.
+4. As each agent completes, gates run in series against its worktree and
+   the run is written back to `state::set`. Mid-run crashes preserve the
+   transitions of every agent that already finished.
+5. `merge` picks the eligible agent with the **smallest `finished_at`**
+   (true "first finished agent wins" semantics). An agent is eligible
+   when `status == Finished`, `diff` is non-empty, and every gate passed.
+   Losers' worktrees are removed; the winner's worktree and branch survive
+   for review.
 
 ## Example
 
