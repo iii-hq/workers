@@ -79,6 +79,15 @@ pub struct RoutingDecision {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
     pub confidence: f64,
+    /// Provider for the chosen `model`, derived from `ModelRegistration`.
+    /// Populated by `router::decide` after the routing decision is made.
+    /// Optional because models can be referenced before they're registered
+    /// (e.g. policy `model: "auto"` resolved by classifier to an
+    /// unregistered model). Consumers who care about provider routing can
+    /// rely on this when set; when absent they may parse a namespaced model
+    /// id (e.g. `anthropic/claude-...`) themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
