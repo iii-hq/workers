@@ -12,6 +12,7 @@ on:
           - a2a-client
           - agent
           - coding
+          - conductor
           - eval
           - experiment
           - guardrails

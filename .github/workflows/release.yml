@@ -7,6 +7,7 @@ on:
       - 'a2a-client/v*'
       - 'agent/v*'
       - 'coding/v*'
+      - 'conductor/v*'
       - 'eval/v*'
       - 'experiment/v*'
       - 'guardrails/v*'
