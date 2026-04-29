@@ -1,6 +1,6 @@
 [package]
 name = "iii-conductor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Multi-agent fan-out + verifier-gated merge worker for iii-engine"
 license = "Apache-2.0"
