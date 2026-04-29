@@ -660,4 +660,22 @@ mod tests {
             "provider field must be skipped when None"
         );
     }
+
+    #[test]
+    fn test_routing_request_tolerates_iii_sdk_caller_metadata() {
+        // iii-sdk injects `_caller_worker_id` into every trigger payload.
+        // RoutingRequest must accept (and ignore) that field; otherwise
+        // every `iii.trigger("router::decide", ...)` call gets rejected
+        // before any router logic runs. Regression test for the prior
+        // `deny_unknown_fields` posture.
+        let raw = serde_json::json!({
+            "_caller_worker_id": "worker-uuid-123",
+            "prompt": "hello",
+            "tenant": "acme",
+        });
+        let parsed: RoutingRequest =
+            serde_json::from_value(raw).expect("RoutingRequest must accept caller metadata");
+        assert_eq!(parsed.prompt, "hello");
+        assert_eq!(parsed.tenant.as_deref(), Some("acme"));
+    }
 }
