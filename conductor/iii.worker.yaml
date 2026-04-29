@@ -1,0 +1,22 @@
+iii: v1
+name: conductor
+version: 0.1.0
+language: node
+deploy: image
+manifest: package.json
+description: Multi-agent fan-out + verifier-gated merge orchestrator. Dispatches a task across N agent CLIs in parallel, runs verifier gates per result, picks a winning diff.
+
+env:
+  III_URL: "ws://localhost:49134"
+
+runtime:
+  language: typescript
+  entry: src/index.ts
+
+resources:
+  memory: 512
+  cpus: 1
+
+scripts:
+  install: "npm install"
+  start: "npm run dev"
