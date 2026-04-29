@@ -102,7 +102,8 @@ pub async fn remove_worktree(repo_cwd: &Path, path: &Path) -> Result<(), String>
 }
 
 pub async fn diff_against(cwd: &Path, base_ref: &str) -> String {
-    let r = run_cmd(cwd, "git", &["diff", base_ref, "--", "."], None).await;
+    let _ = run_cmd(cwd, "git", &["add", "-A", "--", "."], None).await;
+    let r = run_cmd(cwd, "git", &["diff", "--cached", base_ref, "--", "."], None).await;
     r.stdout
 }
 
