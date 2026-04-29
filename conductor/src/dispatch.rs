@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::json;
 use uuid::Uuid;
@@ -37,62 +37,6 @@ async fn run_agent_in_worktree(
     let kind_label = format!("{:?}", spec.kind).to_lowercase();
     let branch = format!("conductor/{run_id}/{index}-{kind_label}");
 
-    if spec.kind == AgentKind::Remote {
-        let Some(function_id) = spec.function_id.clone() else {
-            return AgentRunState {
-                agent: spec.clone(),
-                status: AgentStatus::Failed,
-                started_at: Some(started_at),
-                finished_at: Some(now_ms()),
-                exit_code: None,
-                output: None,
-                error: Some("remote agent requires function_id".to_string()),
-                diff: None,
-                worktree_path: None,
-                branch: None,
-                gate_results: Default::default(),
-            };
-        };
-        let prompt = spec.prompt.clone().unwrap_or_default();
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id,
-                payload: json!({ "task": prompt, "cwd": cwd.to_string_lossy() }),
-                action: None,
-                timeout_ms: Some(timeout_ms.unwrap_or(600_000)),
-            })
-            .await;
-        let finished_at = Some(now_ms());
-        return match result {
-            Ok(val) => AgentRunState {
-                agent: spec.clone(),
-                status: AgentStatus::Finished,
-                started_at: Some(started_at),
-                finished_at,
-                exit_code: Some(0),
-                output: Some(val.to_string()),
-                error: None,
-                diff: None,
-                worktree_path: None,
-                branch: None,
-                gate_results: Default::default(),
-            },
-            Err(e) => AgentRunState {
-                agent: spec.clone(),
-                status: AgentStatus::Failed,
-                started_at: Some(started_at),
-                finished_at,
-                exit_code: None,
-                output: None,
-                error: Some(e.to_string()),
-                diff: None,
-                worktree_path: None,
-                branch: None,
-                gate_results: Default::default(),
-            },
-        };
-    }
-
     let wt_path = match create_worktree(cwd, &branch, &worktree_root()).await {
         Ok(p) => p,
         Err(reason) => {
@@ -107,35 +51,70 @@ async fn run_agent_in_worktree(
                 diff: None,
                 worktree_path: None,
                 branch: Some(branch),
-                gate_results: Default::default(),
+                gate_results: Vec::new(),
             };
         }
     };
 
-    let r = run_local_agent(spec, &wt_path, timeout_ms).await;
-    let finished_at = Some(now_ms());
+    let (ok, code, output, error) = if spec.kind == AgentKind::Remote {
+        let Some(function_id) = spec.function_id.clone() else {
+            return AgentRunState {
+                agent: spec.clone(),
+                status: AgentStatus::Failed,
+                started_at: Some(started_at),
+                finished_at: Some(now_ms()),
+                exit_code: None,
+                output: None,
+                error: Some("remote agent requires function_id".to_string()),
+                diff: None,
+                worktree_path: Some(wt_path.to_string_lossy().into_owned()),
+                branch: Some(branch),
+                gate_results: Vec::new(),
+            };
+        };
+        let prompt = spec.prompt.clone().unwrap_or_default();
+        let payload = json!({ "task": prompt, "cwd": wt_path.to_string_lossy() });
+        let result = iii
+            .trigger(TriggerRequest {
+                function_id,
+                payload,
+                action: None,
+                timeout_ms: Some(timeout_ms.unwrap_or(600_000)),
+            })
+            .await;
+        match result {
+            Ok(val) => (true, Some(0), Some(val.to_string()), None),
+            Err(e) => (false, None, None, Some(e.to_string())),
+        }
+    } else {
+        let r = run_local_agent(spec, &wt_path, timeout_ms).await;
+        let err = if r.ok {
+            None
+        } else {
+            Some(r.stderr.trim().to_string())
+        };
+        (r.ok, r.code, Some(r.stdout), err)
+    };
+
     let diff = diff_against(&wt_path, base_ref).await;
+    let finished_at = Some(now_ms());
 
     AgentRunState {
         agent: spec.clone(),
-        status: if r.ok {
+        status: if ok {
             AgentStatus::Finished
         } else {
             AgentStatus::Failed
         },
         started_at: Some(started_at),
         finished_at,
-        exit_code: r.code,
-        output: Some(r.stdout),
-        error: if r.ok {
-            None
-        } else {
-            Some(r.stderr.trim().to_string())
-        },
+        exit_code: code,
+        output,
+        error,
         diff: Some(diff),
         worktree_path: Some(wt_path.to_string_lossy().into_owned()),
         branch: Some(branch),
-        gate_results: Default::default(),
+        gate_results: Vec::new(),
     }
 }
 
@@ -185,7 +164,7 @@ pub async fn dispatch(iii: Arc<III>, input: DispatchInput) -> Result<(DispatchSu
                 diff: None,
                 worktree_path: None,
                 branch: None,
-                gate_results: Default::default(),
+                gate_results: Vec::new(),
             })
             .collect(),
         winner_index: None,
@@ -195,14 +174,15 @@ pub async fn dispatch(iii: Arc<III>, input: DispatchInput) -> Result<(DispatchSu
         .await
         .map_err(|e: IIIError| anyhow!("state::set seed: {e}"))?;
 
-    let futures = agents.iter().enumerate().map(|(i, spec)| {
+    let mut futures = FuturesUnordered::new();
+    for (i, spec) in agents.iter().enumerate() {
         let iii = iii.clone();
-        let run_id = run_id.clone();
+        let spec = spec.clone();
         let cwd = cwd.clone();
         let base_ref = base_ref.clone();
-        let spec = spec.clone();
-        async move {
-            run_agent_in_worktree(
+        let run_id = run_id.clone();
+        futures.push(async move {
+            let state = run_agent_in_worktree(
                 iii.as_ref(),
                 i,
                 &spec,
@@ -211,22 +191,23 @@ pub async fn dispatch(iii: Arc<III>, input: DispatchInput) -> Result<(DispatchSu
                 &base_ref,
                 input.timeout_ms,
             )
-            .await
-        }
-    });
-    let mut settled: Vec<AgentRunState> = join_all(futures).await;
+            .await;
+            (i, state)
+        });
+    }
 
-    if !input.gates.is_empty() {
-        for state in settled.iter_mut() {
-            if state.status == AgentStatus::Finished {
-                if let Some(path) = state.worktree_path.as_ref().map(PathBuf::from) {
-                    state.gate_results = run_all_gates(iii.as_ref(), &input.gates, &path).await;
-                }
+    while let Some((i, mut state)) = futures.next().await {
+        if state.status == AgentStatus::Finished && !input.gates.is_empty() {
+            if let Some(path) = state.worktree_path.as_ref().map(PathBuf::from) {
+                state.gate_results = run_all_gates(iii.as_ref(), &input.gates, &path).await;
             }
+        }
+        run.agents[i] = state;
+        if let Err(e) = write_run(&iii, &run).await {
+            tracing::warn!(error = %e, run_id = %run.id, "mid-run state::set failed");
         }
     }
 
-    run.agents = settled;
     run.finished_at = Some(now_ms());
     write_run(&iii, &run)
         .await
@@ -241,33 +222,32 @@ pub async fn dispatch(iii: Arc<III>, input: DispatchInput) -> Result<(DispatchSu
     Ok((summary, run))
 }
 
-pub async fn merge_run(iii: Arc<III>, mut run: RunState) -> MergeResult {
-    let mut losers: Vec<usize> = Vec::new();
-    let mut winner: Option<MergeWinner> = None;
+fn agent_eligible(a: &AgentRunState) -> bool {
+    if a.status != AgentStatus::Finished {
+        return false;
+    }
+    let gates_ok = a.gate_results.is_empty() || all_passed(&a.gate_results);
+    if !gates_ok {
+        return false;
+    }
+    a.diff
+        .as_deref()
+        .map(|d| !d.trim().is_empty())
+        .unwrap_or(false)
+}
 
-    for (i, a) in run.agents.iter().enumerate() {
-        if a.status != AgentStatus::Finished {
-            losers.push(i);
-            continue;
-        }
-        let gates_ok = a.gate_results.is_empty() || all_passed(&a.gate_results);
-        let diff_non_empty = a
-            .diff
-            .as_deref()
-            .map(|d| !d.trim().is_empty())
-            .unwrap_or(false);
-        if !gates_ok || !diff_non_empty {
-            losers.push(i);
-            continue;
-        }
-        if winner.is_none() {
-            winner = Some(MergeWinner {
-                index: i,
-                agent: a.agent.clone(),
-                diff: a.diff.clone().unwrap_or_default(),
-                branch: a.branch.clone(),
-            });
-        } else {
+pub async fn merge_run(iii: Arc<III>, mut run: RunState) -> MergeResult {
+    let winner_index: Option<usize> = run
+        .agents
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| agent_eligible(a))
+        .min_by_key(|(_, a)| a.finished_at.unwrap_or(u64::MAX))
+        .map(|(i, _)| i);
+
+    let mut losers: Vec<usize> = Vec::new();
+    for (i, _) in run.agents.iter().enumerate() {
+        if Some(i) != winner_index {
             losers.push(i);
         }
     }
@@ -279,15 +259,21 @@ pub async fn merge_run(iii: Arc<III>, mut run: RunState) -> MergeResult {
         }
     }
 
-    run.winner_index = winner.as_ref().map(|w| w.index);
+    run.winner_index = winner_index;
     let _ = write_run(&iii, &run).await;
 
-    if let Some(w) = winner {
+    if let Some(idx) = winner_index {
+        let a = &run.agents[idx];
         MergeResult {
             ok: true,
             reason: None,
             run_id: run.id,
-            winner: Some(w),
+            winner: Some(MergeWinner {
+                index: idx,
+                agent: a.agent.clone(),
+                diff: a.diff.clone().unwrap_or_default(),
+                branch: a.branch.clone(),
+            }),
             losers,
         }
     } else {

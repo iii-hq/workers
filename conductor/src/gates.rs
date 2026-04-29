@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use iii_sdk::{TriggerRequest, III};
 use serde_json::json;
 
-use crate::types::{GateOutcome, GateSpec};
+use crate::types::{GateOutcome, GateRunResult, GateSpec};
 
 pub async fn run_gate(iii: &III, gate: &GateSpec, cwd: &Path) -> GateOutcome {
     let cwd_str = cwd.to_string_lossy().into_owned();
@@ -37,19 +36,20 @@ pub async fn run_gate(iii: &III, gate: &GateSpec, cwd: &Path) -> GateOutcome {
     }
 }
 
-pub async fn run_all_gates(
-    iii: &III,
-    gates: &[GateSpec],
-    cwd: &Path,
-) -> HashMap<String, GateOutcome> {
-    let mut out = HashMap::new();
+pub async fn run_all_gates(iii: &III, gates: &[GateSpec], cwd: &Path) -> Vec<GateRunResult> {
+    let mut out = Vec::with_capacity(gates.len());
     for gate in gates {
         let outcome = run_gate(iii, gate, cwd).await;
-        out.insert(gate.function_id.clone(), outcome);
+        out.push(GateRunResult {
+            function_id: gate.function_id.clone(),
+            description: gate.description.clone(),
+            ok: outcome.ok,
+            reason: outcome.reason,
+        });
     }
     out
 }
 
-pub fn all_passed(results: &HashMap<String, GateOutcome>) -> bool {
-    results.values().all(|r| r.ok)
+pub fn all_passed(results: &[GateRunResult]) -> bool {
+    results.iter().all(|r| r.ok)
 }

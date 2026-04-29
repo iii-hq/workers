@@ -64,6 +64,16 @@ pub struct GateOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateRunResult {
+    pub function_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunState {
     pub agent: AgentSpec,
     pub status: AgentStatus,
@@ -83,8 +93,8 @@ pub struct AgentRunState {
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    #[serde(default, skip_serializing_if = "::std::collections::HashMap::is_empty")]
-    pub gate_results: std::collections::HashMap<String, GateOutcome>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_results: Vec<GateRunResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
