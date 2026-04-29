@@ -46,8 +46,19 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Request payload to `router::decide`.
+///
+/// We intentionally **do not** carry `#[serde(deny_unknown_fields)]` here:
+/// when callers reach this function via `iii.trigger(...)`, iii-sdk injects
+/// caller-metadata fields (today: `_caller_worker_id`) into the payload
+/// alongside the user-controlled body. A strict deserializer rejects every
+/// such call with `unknown field _caller_worker_id`, which silently breaks
+/// every consumer (harness, agent runtimes, custom clients) that doesn't
+/// pre-strip metadata. State-stored objects (`Policy`, `AbTest`, etc.) keep
+/// `deny_unknown_fields` because they're hand-written by operators and
+/// schema drift there is a real bug. Function-input shapes are different:
+/// they MUST tolerate engine-injected metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RoutingRequest {
     #[serde(default)]
     pub tenant: Option<String>,
