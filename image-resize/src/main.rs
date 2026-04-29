@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 mod config;
 mod handler;
-mod manifest;
 mod processing;
 
 #[derive(Parser, Debug)]
@@ -18,10 +17,6 @@ struct Cli {
     /// WebSocket URL of the III engine (port 49134 = engine main WS, not StreamModule 3112)
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
-
-    /// Output module manifest as JSON and exit
-    #[arg(long)]
-    manifest: bool,
 }
 
 #[tokio::main]
@@ -34,12 +29,6 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-
-    if cli.manifest {
-        let manifest = manifest::build_manifest();
-        println!("{}", serde_json::to_string_pretty(&manifest).unwrap());
-        return Ok(());
-    }
 
     let resize_config = match config::load_config(&cli.config) {
         Ok(c) => {

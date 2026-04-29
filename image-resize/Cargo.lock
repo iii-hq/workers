@@ -754,9 +754,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.11.3"
+version = "0.12.0-next.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0226f7ce0d9071f9cb75ea7b7ac1241b15282915ccd41d9bbd2ee0db94f90c6"
+checksum = "60ce447ddd571bfa8fc40270a9de6e7655a91d2b949f0d5c12842cde14e107bd"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "image-resize"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
