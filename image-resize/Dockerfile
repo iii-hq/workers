@@ -17,9 +17,6 @@ RUN rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
-COPY build.rs ./
-
-RUN cargo run --release -- --manifest > /build/worker.yaml
 
 RUN case "${TARGETARCH}" in \
       amd64) \
@@ -43,7 +40,6 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /worker /worker
-COPY --from=builder /build/worker.yaml /iii/worker.yaml
 
 ENV III_ENGINE_URL=ws://host.containers.internal:49134
 
