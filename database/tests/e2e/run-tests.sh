@@ -21,20 +21,26 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 
 KEEP=0
 NO_BUILD=0
+WITH_CARGO_TEST=0
 FILTER=""
 
 for arg in "$@"; do
   case "$arg" in
-    --keep)      KEEP=1 ;;
-    --no-build)  NO_BUILD=1 ;;
-    --filter=*)  FILTER="${arg#--filter=}" ;;
+    --keep)             KEEP=1 ;;
+    --no-build)         NO_BUILD=1 ;;
+    --with-cargo-test)  WITH_CARGO_TEST=1 ;;
+    --filter=*)         FILTER="${arg#--filter=}" ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--keep] [--no-build] [--filter=<sqlite_db|pg_db|mysql_db>]
+Usage: $0 [--keep] [--no-build] [--with-cargo-test] [--filter=<sqlite_db|pg_db|mysql_db>]
 
-  --keep        Leave docker compose stack running after the run.
-  --no-build    Skip cargo build of the iii-database worker.
-  --filter=KEY  Run only one driver (default: all 3).
+  --keep              Leave docker compose stack running after the run.
+  --no-build          Skip cargo build of the iii-database worker.
+  --with-cargo-test   Run \`cargo test --all-features\` after compose is healthy
+                      with TEST_POSTGRES_URL and TEST_MYSQL_URL pointing at the
+                      docker stack — exercises gated driver/pool tests with
+                      real DBs. CI uses this; local dev usually doesn't need it.
+  --filter=KEY        Run only one driver (default: all 3).
 
 Env overrides:
   WORKER_SRC          Path to the database worker crate (default: ../..).
@@ -104,6 +110,22 @@ if ! (cd "$ROOT_DIR" && docker compose up -d --wait --wait-timeout "$HEALTH_TIME
   exit 1
 fi
 echo "[run-tests] both services healthy"
+
+# 5. (Optional) Run cargo unit + integration tests against the live DBs.
+# The 5 gated tests in src/{driver,pool}/{postgres,mysql}.rs and
+# src/triggers/row_change.rs early-return when TEST_*_URL is unset; we set
+# both here so they exercise real connections, binary param encoding,
+# replication-slot creation, etc — finer-grained than the e2e harness
+# alone. CI passes --with-cargo-test; local runs skip this by default.
+if [[ "$WITH_CARGO_TEST" -eq 1 ]]; then
+  echo "[run-tests] cargo test --all-features (with TEST_POSTGRES_URL + TEST_MYSQL_URL)"
+  (
+    cd "$WORKER_SRC" && \
+    TEST_POSTGRES_URL="postgres://iii:iii@127.0.0.1:55432/iii_test" \
+    TEST_MYSQL_URL="mysql://iii:iii@127.0.0.1:53306/iii_test" \
+    cargo test --all-features
+  )
+fi
 
 # 6. Reset SQLite file
 rm -f "$ROOT_DIR/data/test.sqlite"

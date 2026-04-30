@@ -307,10 +307,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(
-            &r.rows[0].0[0],
-            RowValue::Int(42) | RowValue::BigInt(42)
-        ));
+        // MySQL types `?+?` as MYSQL_TYPE_DOUBLE (parameter placeholders carry no
+        // declared type, so the optimizer picks DOUBLE for the result column).
+        // Accept any numeric variant equal to 42 — the test asserts "positional
+        // params bind correctly", not "integer arithmetic preserves type".
+        let v = &r.rows[0].0[0];
+        let ok = match v {
+            RowValue::Int(42) | RowValue::BigInt(42) => true,
+            RowValue::Float(f) => (f - 42.0).abs() < 1e-9,
+            _ => false,
+        };
+        assert!(ok, "expected ~42, got {v:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -424,9 +431,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(
-            &result.rows[0].0[0],
-            RowValue::Int(42) | RowValue::BigInt(42)
-        ));
+        // See note in `my_query_with_positional_params`: `?+?` returns DOUBLE.
+        let v = &result.rows[0].0[0];
+        let ok = match v {
+            RowValue::Int(42) | RowValue::BigInt(42) => true,
+            RowValue::Float(f) => (f - 42.0).abs() < 1e-9,
+            _ => false,
+        };
+        assert!(ok, "expected ~42, got {v:?}");
     }
 }

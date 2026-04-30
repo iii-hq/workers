@@ -54,7 +54,10 @@ jobs:
 
       - name: Run harness
         working-directory: database/tests/e2e
-        run: ./run-tests.sh
+        # --with-cargo-test runs `cargo test --all-features` against the
+        # already-running postgres + mysql so the gated driver/pool tests
+        # actually exercise their target DBs (otherwise they early-return).
+        run: ./run-tests.sh --with-cargo-test
 
       - name: Upload report on failure
         if: failure()
