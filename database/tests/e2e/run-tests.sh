@@ -94,27 +94,16 @@ if [[ ! -x "$III_BIN" ]]; then
   exit 1
 fi
 
-# 4. Bring up postgres + mysql
-echo "[run-tests] docker compose up -d"
-(cd "$ROOT_DIR" && docker compose up -d)
-
-# 5. Wait for healthchecks
-echo "[run-tests] waiting up to ${HEALTH_TIMEOUT}s for postgres + mysql to be healthy"
-deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
-while :; do
-  pg=$(cd "$ROOT_DIR" && docker compose ps --format json postgres 2>/dev/null | grep -o '"Health":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-  my=$(cd "$ROOT_DIR" && docker compose ps --format json mysql    2>/dev/null | grep -o '"Health":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-  if [[ "$pg" == "healthy" && "$my" == "healthy" ]]; then
-    echo "[run-tests] both services healthy"
-    break
-  fi
-  if (( $(date +%s) > deadline )); then
-    echo "[run-tests] FATAL: services did not become healthy within ${HEALTH_TIMEOUT}s (pg=$pg mysql=$my)" >&2
-    (cd "$ROOT_DIR" && docker compose logs --tail 40) >&2
-    exit 1
-  fi
-  sleep 1
-done
+# 4. Bring up postgres + mysql and wait for healthchecks via compose's --wait
+# (compose v2 native; exits non-zero if any service fails to become healthy
+# within HEALTH_TIMEOUT). Beats parsing `compose ps --format json` with regex.
+echo "[run-tests] docker compose up -d --wait (timeout=${HEALTH_TIMEOUT}s)"
+if ! (cd "$ROOT_DIR" && docker compose up -d --wait --wait-timeout "$HEALTH_TIMEOUT"); then
+  echo "[run-tests] FATAL: services did not become healthy within ${HEALTH_TIMEOUT}s" >&2
+  (cd "$ROOT_DIR" && docker compose logs --tail 40) >&2
+  exit 1
+fi
+echo "[run-tests] both services healthy"
 
 # 6. Reset SQLite file
 rm -f "$ROOT_DIR/data/test.sqlite"
@@ -134,10 +123,13 @@ echo "[run-tests] starting iii engine"
 ENGINE_PID=$!
 echo "[run-tests] engine pid=$ENGINE_PID"
 
-# 9. Wait for the engine to bind its WebSocket port (49134)
+# 9. Wait for the engine to accept TCP on its WebSocket port (49134).
+# Probing the port directly instead of grepping for an engine log line
+# decouples this script from the engine's logging format — a quiet log
+# refactor upstream used to silently break us as a 30s timeout.
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if grep -m1 "Engine listening on address: 0.0.0.0:49134" "$ENGINE_LOG" >/dev/null 2>&1; then
+  if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
     break
   fi
   if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
@@ -146,7 +138,7 @@ while :; do
     exit 1
   fi
   if (( $(date +%s) > deadline )); then
-    echo "[run-tests] FATAL: engine did not bind port within 30s" >&2
+    echo "[run-tests] FATAL: engine did not bind port 49134 within 30s; tail of engine log:" >&2
     tail -40 "$ENGINE_LOG" >&2
     exit 1
   fi

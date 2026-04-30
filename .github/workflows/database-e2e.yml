@@ -45,7 +45,8 @@ jobs:
       # stack the harness uses locally for dev/CI parity.
       - name: Install iii engine (latest from main)
         run: |
-          curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Verify engine
