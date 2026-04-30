@@ -5,6 +5,7 @@ on:
     tags:
       - 'a2a/v*'
       - 'a2a-client/v*'
+      - 'acp/v*'
       - 'agent/v*'
       - 'coding/v*'
       - 'conductor/v*'
