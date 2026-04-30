@@ -10,6 +10,7 @@ on:
         options:
           - a2a
           - a2a-client
+          - acp
           - agent
           - coding
           - conductor
