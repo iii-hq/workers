@@ -161,11 +161,9 @@ pub fn build_root_store(ca_cert: Option<&str>) -> Result<RootCertStore, DbError>
             let cert = item.map_err(|e| DbError::ConfigError {
                 message: format!("ca_cert parse `{path}`: {e}"),
             })?;
-            store
-                .add(cert)
-                .map_err(|e| DbError::ConfigError {
-                    message: format!("ca_cert add `{path}`: {e}"),
-                })?;
+            store.add(cert).map_err(|e| DbError::ConfigError {
+                message: format!("ca_cert add `{path}`: {e}"),
+            })?;
             added += 1;
         }
         if added == 0 {

@@ -124,13 +124,7 @@ fn compute_cursor_max(rows: &[crate::driver::Row], col_idx: usize) -> Option<Str
         };
         let cur: Cow<'_, str> = match v {
             RowValue::Text(s) | RowValue::Decimal(s) => Cow::Borrowed(s.as_str()),
-            other => Cow::Owned(
-                other
-                    .to_json()
-                    .to_string()
-                    .trim_matches('"')
-                    .to_string(),
-            ),
+            other => Cow::Owned(other.to_json().to_string().trim_matches('"').to_string()),
         };
         best = Some(match best {
             Some(prev) if prev.as_ref() >= cur.as_ref() => prev,

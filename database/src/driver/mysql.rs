@@ -157,9 +157,7 @@ pub async fn execute(
 /// `last_insert_id: None`, which is safer than reporting a stale id from a
 /// pool-reused connection.
 fn is_insert(sql: &str) -> bool {
-    sql.trim_start()
-        .to_ascii_uppercase()
-        .starts_with("INSERT")
+    sql.trim_start().to_ascii_uppercase().starts_with("INSERT")
 }
 
 pub async fn transaction(

@@ -61,9 +61,7 @@ pub async fn ensure_table(pool: &Pool, table: &str) -> Result<(), DbError> {
             .await
             .map(|_| ()),
         Pool::Mysql(p) => driver::mysql::execute(p, &sql, &[], &[]).await.map(|_| ()),
-        Pool::Sqlite(p) => driver::sqlite::execute(p, &sql, &[], &[])
-            .await
-            .map(|_| ()),
+        Pool::Sqlite(p) => driver::sqlite::execute(p, &sql, &[], &[]).await.map(|_| ()),
     }
 }
 

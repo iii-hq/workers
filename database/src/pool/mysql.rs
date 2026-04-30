@@ -17,11 +17,7 @@ pub struct MysqlPool {
 pub type MysqlConn = mysql_async::Conn;
 
 impl MysqlPool {
-    pub fn new(
-        url: &str,
-        pool_cfg: &PoolConfig,
-        tls_cfg: &TlsConfig,
-    ) -> Result<Self, DbError> {
+    pub fn new(url: &str, pool_cfg: &PoolConfig, tls_cfg: &TlsConfig) -> Result<Self, DbError> {
         let constraints =
             PoolConstraints::new(0, pool_cfg.max as usize).ok_or_else(|| DbError::ConfigError {
                 message: "mysql pool constraints invalid".into(),

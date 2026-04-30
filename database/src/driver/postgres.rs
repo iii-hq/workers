@@ -109,14 +109,10 @@ impl ToSql for PgBind {
                 // it to the column; that's silent data corruption with no
                 // server-side error since the wire bytes are technically valid.
                 Type::INT2 => i16::try_from(*i)
-                    .map_err(|_| {
-                        format!("value {i} out of range for INT2 (i16)").into()
-                    })
+                    .map_err(|_| format!("value {i} out of range for INT2 (i16)").into())
                     .and_then(|v: i16| v.to_sql(ty, out)),
                 Type::INT4 => i32::try_from(*i)
-                    .map_err(|_| {
-                        format!("value {i} out of range for INT4 (i32)").into()
-                    })
+                    .map_err(|_| format!("value {i} out of range for INT4 (i32)").into())
                     .and_then(|v: i32| v.to_sql(ty, out)),
                 Type::INT8 => i.to_sql(ty, out),
                 Type::FLOAT4 => (*i as f32).to_sql(ty, out),

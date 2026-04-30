@@ -316,7 +316,13 @@ mod tests {
             slot_name: None,
             publication_name: None,
         };
-        let ids = ["Orders.v1", "orders-v1", "orders_v1", "orders v1", "ORDERS_V1"];
+        let ids = [
+            "Orders.v1",
+            "orders-v1",
+            "orders_v1",
+            "orders v1",
+            "ORDERS_V1",
+        ];
         let mut slots = std::collections::HashSet::new();
         let mut pubs = std::collections::HashSet::new();
         for id in ids {
@@ -341,7 +347,11 @@ mod tests {
         };
         let (slot, pubname) = derive_names(&cfg);
         assert!(slot.len() <= 63, "slot too long: {}", slot.len());
-        assert!(pubname.len() <= 63, "publication too long: {}", pubname.len());
+        assert!(
+            pubname.len() <= 63,
+            "publication too long: {}",
+            pubname.len()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -255,10 +255,7 @@ mod tests {
     #[test]
     fn row_value_into_json_text_moves_string() {
         // Smoke: same value as to_json but the consuming variant.
-        assert_eq!(
-            RowValue::Text("hello".into()).into_json(),
-            json!("hello")
-        );
+        assert_eq!(RowValue::Text("hello".into()).into_json(), json!("hello"));
     }
 
     #[test]

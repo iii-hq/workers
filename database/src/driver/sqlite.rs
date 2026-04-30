@@ -115,9 +115,7 @@ fn looks_like_multi_statement(sql: &str) -> bool {
 /// is safe — the alternative is leaking a stale rowid from a prior pool
 /// caller's INSERT, which is what we're guarding against.
 fn is_insert(sql: &str) -> bool {
-    sql.trim_start()
-        .to_ascii_uppercase()
-        .starts_with("INSERT")
+    sql.trim_start().to_ascii_uppercase().starts_with("INSERT")
 }
 
 pub async fn execute(
