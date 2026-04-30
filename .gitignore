@@ -9,5 +9,5 @@ node_modules
 package-lock.json
 pnpm-lock.yaml
 yarn.lock
-!database/tests/e2e/workers/harness/package-lock.json
+!iii-database/tests/e2e/workers/harness/package-lock.json
 iii_workers/

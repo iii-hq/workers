@@ -1,14 +1,14 @@
-name: Database E2E
+name: iii-database E2E
 
 on:
   pull_request:
     paths:
-      - 'database/**'
-      - '.github/workflows/database-e2e.yml'
+      - 'iii-database/**'
+      - '.github/workflows/iii-database-e2e.yml'
   workflow_dispatch:
 
 concurrency:
-  group: database-e2e-${{ github.ref }}
+  group: iii-database-e2e-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -31,14 +31,14 @@ jobs:
       - name: Cache cargo registry & build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: database
+          workspaces: iii-database
 
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: database/tests/e2e/workers/harness/package-lock.json
+          cache-dependency-path: iii-database/tests/e2e/workers/harness/package-lock.json
 
       # GHA `services:` blocks can't pass `-c wal_level=logical` to postgres,
       # which the row-change tests require. Reuse the same docker-compose
@@ -53,7 +53,7 @@ jobs:
         run: iii --version
 
       - name: Run harness
-        working-directory: database/tests/e2e
+        working-directory: iii-database/tests/e2e
         # --with-cargo-test runs `cargo test --all-features` against the
         # already-running postgres + mysql so the gated driver/pool tests
         # actually exercise their target DBs (otherwise they early-return).
@@ -63,7 +63,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: database-e2e-report
+          name: iii-database-e2e-report
           path: |
-            database/tests/e2e/reports/
+            iii-database/tests/e2e/reports/
           retention-days: 7

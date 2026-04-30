@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Path overrides (set in CI; defaults assume the harness lives at
-# database/tests/e2e/ inside the workers repo and the iii engine is on
+# iii-database/tests/e2e/ inside the workers repo and the iii engine is on
 # $PATH or at $HOME/.local/bin/iii — which is where the install script
 # `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh` puts it).
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"

@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         options:
-          - database
+          - iii-database
           - iii-lsp
           - iii-lsp-vscode
           - image-resize

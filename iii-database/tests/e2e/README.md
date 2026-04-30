@@ -5,7 +5,7 @@ core RPC functions, the `query-poll` trigger, and the `row-change` slot/
 publication derivation contract against real **SQLite**, **PostgreSQL 16**,
 and **MySQL 8.4** with one command.
 
-Runs locally and in CI (`.github/workflows/database-e2e.yml`).
+Runs locally and in CI (`.github/workflows/iii-database-e2e.yml`).
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ overridden:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `WORKER_SRC` | `../..` (the `database/` crate) | Where to `cargo build` |
+| `WORKER_SRC` | `../..` (the `iii-database/` crate) | Where to `cargo build` |
 | `III_BIN` | `$(command -v iii)` then `$HOME/.local/bin/iii` | Engine binary |
 | `WORKER_BIN_TARGET` | `$WORKER_SRC/target/release/iii-database` | Built worker |
 | `WORKER_BIN_LINK` | `$HOME/.iii/workers/iii-database` | Symlink the engine reads |
@@ -63,8 +63,8 @@ overridden:
 
 ## CI
 
-The harness runs in `.github/workflows/database-e2e.yml` on any PR that
-touches `database/**`. The workflow installs the engine via the install
+The harness runs in `.github/workflows/iii-database-e2e.yml` on any PR
+that touches `iii-database/**`. The workflow installs the engine via the install
 script (always tracks `main`, no version pin), builds the worker, brings up
 the same docker compose stack used locally, and shells out to
 `./run-tests.sh`.
