@@ -1,0 +1,60 @@
+# iii engine configuration — passed via `iii -c config.yaml`.
+#
+# The harness TS worker is NOT registered here. It runs as a plain host
+# node process launched from run-tests.sh and connects to the engine via
+# WebSocket like any external client — sidesteps the libkrun-VM-based
+# managed-worker setup, which is overkill for a test harness.
+#
+# The iii-database worker config is inlined under its worker entry. The
+# engine serializes this `config:` value to /tmp/iii-database-config.yaml
+# and threads `--config <path>` through `iii-worker start` to the spawned
+# binary (see engine/src/workers/registry_worker.rs::spawn and
+# crates/iii-worker/src/cli/managed.rs::start_binary_worker on branch
+# feat/registry-worker-config-delivery).
+
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii-database-tests
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: iii-database
+    config:
+      databases:
+        sqlite_db:
+          url: sqlite:./data/iii.db
+          pool:
+            max: 10
+            idle_timeout_ms: 30000
+            acquire_timeout_ms: 5000
+        pg_db:
+          url: postgres://iii:iii@127.0.0.1:55432/iii_test
+          pool:
+            max: 10
+            idle_timeout_ms: 30000
+            acquire_timeout_ms: 5000
+          # Local docker postgres uses a self-signed cert that doesn't
+          # chain to any system CA. The worker's `tls.mode` defaults to
+          # `require` (chain-validated) — opt out for the test harness.
+          tls:
+            mode: disable
+        mysql_db:
+          url: mysql://iii:iii@127.0.0.1:53306/iii_test
+          pool:
+            max: 10
+            idle_timeout_ms: 30000
+            acquire_timeout_ms: 5000
+          # Local docker mysql:8.4 ships an auto-generated self-signed cert
+          # that doesn't chain to any system CA. Without `tls.mode: disable`
+          # the worker's require-mode rustls verifier rejects it and every
+          # mysql RPC fails with DRIVER_ERROR.
+          tls:
+            mode: disable

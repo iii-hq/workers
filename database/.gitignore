@@ -2,4 +2,4 @@ target/
 *.db
 *.sqlite
 *.sqlite-journal
-data/
+/data/

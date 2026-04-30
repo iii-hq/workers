@@ -1,0 +1,65 @@
+name: Database E2E
+
+on:
+  pull_request:
+    paths:
+      - 'database/**'
+      - '.github/workflows/database-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: database-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Harness (sqlite + postgres + mysql)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: database
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: database/tests/e2e/workers/harness/package-lock.json
+
+      # GHA `services:` blocks can't pass `-c wal_level=logical` to postgres,
+      # which the row-change tests require. Reuse the same docker-compose
+      # stack the harness uses locally for dev/CI parity.
+      - name: Install iii engine (latest from main)
+        run: |
+          curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine
+        run: iii --version
+
+      - name: Run harness
+        working-directory: database/tests/e2e
+        run: ./run-tests.sh
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-e2e-report
+          path: |
+            database/tests/e2e/reports/
+          retention-days: 7
