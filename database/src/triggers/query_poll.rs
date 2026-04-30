@@ -166,7 +166,6 @@ pub async fn run_one_tick(
         return Ok(());
     }
 
-    // Find cursor_column index.
     let col_idx = result
         .columns
         .iter()
@@ -178,17 +177,6 @@ pub async fn run_one_tick(
             ),
         })?;
 
-    // Compute max cursor value.
-    //
-    // Cursors are commonly integer IDs. Lexicographic max on the stringified
-    // form gets the wrong answer at every digit boundary: "9" > "10" is true,
-    // so a batch containing 9 and 10 would write "9" as the cursor and replay
-    // 10 forever. Try numeric comparison first; fall back to string max only
-    // when at least one value isn't parseable as i64 (e.g. UUIDs, ISO-8601
-    // timestamps where lex order is already correct).
-    //
-    // Branch on `RowValue` directly so the integer hot path is alloc-free
-    // (Int/BigInt → i64::max, no string round-trip per row).
     let max_cursor: Option<String> = compute_cursor_max(&result.rows, col_idx);
 
     let json_rows = crate::handlers::query_rows_to_objects(&result.columns, result.rows);

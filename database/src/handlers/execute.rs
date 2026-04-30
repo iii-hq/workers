@@ -53,9 +53,6 @@ pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
         crate::handlers::query_rows_to_objects(&result.returned_columns, result.returned_rows);
     Ok(json!({
         "affected_rows": result.affected_rows,
-        // serde renders Option<String>::None as JSON null; previously this
-        // was unwrap_or_default() which produced the empty string "" and
-        // forced callers to do "if last_insert_id" string truthiness checks.
         "last_insert_id": result.last_insert_id,
         "returned_rows": returned_rows,
     }))

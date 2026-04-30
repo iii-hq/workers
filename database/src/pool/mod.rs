@@ -2,11 +2,6 @@
 //! pool types; method-level dispatch lives in driver-specific modules and
 //! is wired in by `handlers::*` via `match pool { ... }`.
 
-// Sub-modules are crate-internal. The per-driver pool types are re-exported
-// `pub(crate)` so the rest of the crate can use the short paths
-// (`crate::pool::SqlitePool` etc.) without leaking those types into the
-// crate's public API — the only surface external consumers should bind to
-// is `Pool` and `build`.
 pub(crate) mod mysql;
 pub(crate) mod postgres;
 pub(crate) mod sqlite;

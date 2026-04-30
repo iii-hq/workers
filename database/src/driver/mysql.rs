@@ -356,7 +356,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // RETURNING is silently dropped on MySQL; query succeeds via affected_rows only.
         let r = execute(
             &p,
             "INSERT INTO db_w_t2 (n) VALUES (?)",

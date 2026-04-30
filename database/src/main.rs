@@ -104,12 +104,6 @@ async fn main() -> Result<()> {
         |st, p| Box::pin(transaction::handle(st, p)),
     );
 
-    // Register the worker as a provider of the two trigger types it implements.
-    // The engine routes `iii.registerTrigger({type: "iii-database::query-poll", ...})`
-    // calls from any client back to us; QueryPollTrigger spawns the per-instance
-    // polling loop and dispatches batches via iii.trigger to the configured
-    // function_id. RowChangeTrigger is a stub that returns Unsupported until
-    // the upstream tokio-postgres replication API ships.
     let _query_poll = iii.register_trigger_type(RegisterTriggerType::new(
         "iii-database::query-poll",
         "Polls a SQL query at a fixed interval and dispatches new rows since the last cursor.",

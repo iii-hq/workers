@@ -544,7 +544,6 @@ mod tests {
         .unwrap();
         assert_eq!(r.returned_rows.len(), 1);
         assert_eq!(r.returned_columns.len(), 2);
-        // first returned column is `id` — surface as last_insert_id.
         assert!(r.last_insert_id.is_some());
     }
 

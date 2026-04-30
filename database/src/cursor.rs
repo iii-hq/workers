@@ -208,7 +208,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v.as_deref(), Some("42"));
-        // overwrite
         write_cursor(&p, DEFAULT_CURSOR_TABLE, "trig-1", "100")
             .await
             .unwrap();

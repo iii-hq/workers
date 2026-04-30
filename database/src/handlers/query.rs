@@ -118,7 +118,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn query_returns_rows_envelope() {
         let st = state();
-        // setup
         if let Pool::Sqlite(p) = st.pool("primary").unwrap() {
             let c = p.acquire().await.unwrap();
             tokio::task::spawn_blocking(move || {

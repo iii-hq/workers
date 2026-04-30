@@ -69,18 +69,12 @@ pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
             })).collect::<Vec<_>>(),
         })),
         Err(e) => {
-            // Read the structured `failed_index` directly off the error.
-            // Drivers populate `failed_index: Some(idx)` in their `step_err`
-            // helpers; non-tx errors leave it `None` and we fall through to 0.
             let failed_index = match &e {
                 crate::error::DbError::DriverError { failed_index, .. } => {
                     failed_index.unwrap_or(0)
                 }
                 _ => 0,
             };
-            // Serialize the full error so callers can match on `code`,
-            // `inner_code`, `driver`, etc. Fall back to a minimal envelope
-            // if serialization fails (should be unreachable).
             let error_value = serde_json::to_value(&e)
                 .unwrap_or_else(|_| json!({"code": "DRIVER_ERROR", "message": e.to_string()}));
             Ok(json!({

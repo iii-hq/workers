@@ -100,7 +100,6 @@ mod tests {
         assert_eq!(v["code"], "DRIVER_ERROR");
         assert_eq!(v["driver"], "postgres");
         assert_eq!(v["inner_code"], "42P01");
-        // None should not appear in JSON.
         assert!(v.get("failed_index").is_none());
     }
 

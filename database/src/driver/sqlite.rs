@@ -196,9 +196,6 @@ pub async fn execute(
                 // statement via `prepare + query` instead of failing.
                 match c.execute(&sql, bound_refs.as_slice()) {
                     Ok(affected) => {
-                        // Same sticky-rowid story as the RETURNING branch
-                        // above: only propagate last_insert_rowid when this
-                        // statement was actually an INSERT.
                         let last_insert_id = if is_insert(&sql) {
                             let r = c.last_insert_rowid();
                             if r != 0 {
