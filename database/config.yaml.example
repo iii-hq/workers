@@ -1,0 +1,10 @@
+workers:
+  - name: database
+    config:
+      databases:
+        primary:
+          url: sqlite:./data/iii.db
+          pool:
+            max: 10
+            idle_timeout_ms: 30000
+            acquire_timeout_ms: 5000
