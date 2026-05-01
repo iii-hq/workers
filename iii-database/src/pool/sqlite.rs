@@ -73,10 +73,39 @@ impl SqlitePool {
             })?;
         match res {
             Ok(conn) => Ok(SqliteConn { conn }),
-            Err(_) => Err(DbError::PoolTimeout {
-                db: db_name,
-                waited_ms: timeout.as_millis() as u64,
-            }),
+            Err(e) => Err(classify_acquire_error(&e.to_string(), db_name, timeout)),
+        }
+    }
+}
+
+/// `r2d2::get_timeout` returns one error type (`r2d2::Error`) for both
+/// "no connection became free in time" and "the underlying connection
+/// manager kept failing to open a connection until we hit the timeout".
+/// Collapsing both to `PoolTimeout` masks misconfiguration (bad SQLite
+/// path, missing parent dir, locked db) as pool exhaustion. r2d2's
+/// `Display` writes `"timed out waiting for connection"` for the pure
+/// timeout case and `"timed out waiting for connection: <inner>"` when
+/// the most recent connection attempt left a failure on the pool's
+/// internal `last_error` slot — the `: ` separator is the discriminator.
+/// `r2d2::Error::source()` is the default `None` so the reviewer's
+/// suggested `source().is_none()` check is a no-op against this crate
+/// version (verified against r2d2-0.8.10/src/lib.rs:567-571).
+///
+/// Takes the formatted message rather than the `r2d2::Error` directly so
+/// the classification logic can be unit-tested without constructing real
+/// r2d2 errors (the inner field is private).
+fn classify_acquire_error(display_msg: &str, db: String, timeout: Duration) -> DbError {
+    if let Some((_, inner)) = display_msg.split_once(": ") {
+        DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: format!("pool acquire failed: {inner}"),
+            failed_index: None,
+        }
+    } else {
+        DbError::PoolTimeout {
+            db,
+            waited_ms: timeout.as_millis() as u64,
         }
     }
 }
@@ -97,6 +126,54 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, 1);
+    }
+
+    /// Regression: previously `Err(_) => DbError::PoolTimeout { .. }`
+    /// collapsed every r2d2 acquire failure into a "pool saturated" error,
+    /// even when the actual cause was the connection manager failing to
+    /// open the database (e.g., parent directory missing, permissions,
+    /// locked file). Operators staring at PoolTimeout would scale the pool
+    /// up forever while the real fix was a path/perms issue. The classifier
+    /// now inspects r2d2's Display string to distinguish the two cases.
+    /// Tested at the helper boundary because r2d2_sqlite opens connections
+    /// at pool-init (build) time — bad paths fail in `SqlitePool::new`
+    /// before reaching `acquire()`, so we can't drive the live path with
+    /// a dummy file. The helper is what carries the bug-fix logic.
+    #[test]
+    fn classify_acquire_error_with_inner_reason_returns_driver_error() {
+        let err = classify_acquire_error(
+            "timed out waiting for connection: unable to open database file",
+            "primary".into(),
+            Duration::from_millis(100),
+        );
+        match err {
+            DbError::DriverError {
+                driver, message, ..
+            } => {
+                assert_eq!(driver, "sqlite");
+                assert!(
+                    message.contains("unable to open database file"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_acquire_error_pure_timeout_returns_pool_timeout() {
+        let err = classify_acquire_error(
+            "timed out waiting for connection",
+            "primary".into(),
+            Duration::from_millis(150),
+        );
+        match err {
+            DbError::PoolTimeout { db, waited_ms } => {
+                assert_eq!(db, "primary");
+                assert_eq!(waited_ms, 150);
+            }
+            other => panic!("expected PoolTimeout, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

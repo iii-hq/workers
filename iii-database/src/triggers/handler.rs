@@ -143,28 +143,25 @@ impl TriggerHandler for QueryPollTrigger {
 
         let trigger_id = cfg.trigger_id.clone();
 
-        // Spawn the task before acquiring the registry locks. The task body
-        // (`run_loop` → `run_one_tick`) never touches `self.tasks` or
-        // `self.by_trigger_id`, so starting it before the locks is safe and
-        // keeps the lock window small.
-        let task = tokio::spawn(async move {
-            query_poll::run_loop(pool, cfg, dispatch).await;
-        });
-
-        // Atomically: evict stale instance, register new instance.
+        // Acquire the registry locks *before* spawning. Previously the spawn
+        // ran first (outside any lock) and the JoinHandle was inserted into
+        // `tasks` afterward — a concurrent `unregister_trigger(config.id)`
+        // could fire in between, find `tasks` empty, return Ok, and the
+        // newly-spawned poller would leak running forever (orphaned task
+        // with no abort handle and no entry in either index).
         //
-        // Both locks are acquired in canonical order `by_trigger_id` → `tasks`,
-        // matching `unregister_trigger` below. A prior bug took them in
-        // reverse order in unregister, which made concurrent register +
-        // unregister deadlock-prone.
+        // `tokio::spawn` returns synchronously (it just schedules the future
+        // on the runtime), so holding the lock across it grows the critical
+        // section by microseconds — well worth closing the TOCTOU race.
         //
-        // Holding both across the eviction also closes a double-registration
-        // window where another register call for the same trigger_id could
-        // observe the new by_trigger_id entry without yet seeing the new
-        // tasks entry, and skip eviction of what it thought was a fresh slot.
+        // Lock order `by_trigger_id` → `tasks` is canonical and matches
+        // `unregister_trigger` below; reversing would deadlock on concurrent
+        // calls.
         {
             let mut by_id = self.by_trigger_id.lock().await;
             let mut tasks = self.tasks.lock().await;
+
+            // Evict stale instance for the same user-supplied trigger_id.
             let stale = by_id.insert(trigger_id.clone(), config.id.clone());
             if let Some(s) = stale {
                 if let Some(old_task) = tasks.remove(&s) {
@@ -176,6 +173,12 @@ impl TriggerHandler for QueryPollTrigger {
                     );
                 }
             }
+
+            // Spawn under the lock so unregister_trigger(config.id) cannot
+            // interleave between "task spawned" and "task in registry".
+            let task = tokio::spawn(async move {
+                query_poll::run_loop(pool, cfg, dispatch).await;
+            });
             tasks.insert(config.id.clone(), task);
         }
 

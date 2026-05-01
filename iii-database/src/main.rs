@@ -41,7 +41,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    tracing::info!(name = iii_database::worker_name(), config = %cli.config, url = %cli.url, "starting");
+    tracing::info!(
+        name = iii_database::worker_name(),
+        config = %cli.config,
+        url = %redact_url(&cli.url),
+        "starting"
+    );
 
     let cfg = WorkerConfig::from_file(&cli.config)
         .map_err(|e| anyhow::anyhow!(e))
@@ -141,8 +146,72 @@ async fn main() -> Result<()> {
     tracing::info!(
         "iii-database worker registered 5 functions and 2 trigger types, waiting for invocations"
     );
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await?;
     tracing::info!("iii-database worker shutting down");
     iii.shutdown_async().await;
     Ok(())
+}
+
+/// Strip userinfo (username:password) from a URL before logging it. The
+/// engine websocket URL is operator-controlled and can carry credentials in
+/// `wss://user:secret@host` form; `tracing::info!(url = %cli.url, ...)`
+/// would otherwise emit them. Falls back to the original string on parse
+/// failure (no logging-time panics).
+fn redact_url(s: &str) -> String {
+    match url::Url::parse(s) {
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.to_string()
+        }
+        Err(_) => s.to_string(),
+    }
+}
+
+/// Wait for SIGINT or, on Unix, SIGTERM. `tokio::signal::ctrl_c()` alone
+/// only catches SIGINT, leaving Docker `docker stop` / k8s `kubectl delete`
+/// (which send SIGTERM) to bypass `iii.shutdown_async()` entirely — the
+/// engine connection would dangle until the process was killed.
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r,
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_url;
+
+    /// Regression: operator-controlled engine URLs may carry credentials in
+    /// `wss://user:secret@host` form. `tracing::info!(url = %cli.url, ...)`
+    /// previously emitted them verbatim. The redactor strips userinfo and
+    /// preserves the rest so logs remain useful for diagnostics.
+    #[test]
+    fn redact_url_strips_userinfo_only() {
+        // Plain URL without credentials → unchanged (modulo url crate's
+        // canonicalization, which adds a trailing `/` for empty paths).
+        assert_eq!(redact_url("ws://127.0.0.1:49134"), "ws://127.0.0.1:49134/");
+        // Username + password fully stripped.
+        assert_eq!(
+            redact_url("wss://user:secret@iii.example.com:1234/path"),
+            "wss://iii.example.com:1234/path"
+        );
+        // Username only.
+        assert_eq!(
+            redact_url("wss://user@iii.example.com/"),
+            "wss://iii.example.com/"
+        );
+        // Garbage strings fall through unchanged — no logging-time panics.
+        assert_eq!(redact_url("not a url"), "not a url");
+    }
 }

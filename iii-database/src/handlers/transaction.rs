@@ -41,6 +41,18 @@ pub struct TxResp {
     pub error: Option<Value>,
 }
 
+/// Extract the per-statement index from a driver error if and only if it is
+/// a `DriverError` carrying one. Non-step failures (pool acquire timeout,
+/// connection-level errors, multi-statement guard hits *without* an index,
+/// `UnknownDb`, `ConfigError`, etc.) yield `None` so the wire envelope's
+/// `failed_index` stays absent rather than falsely pointing at step 0.
+fn failed_index_of(e: &crate::error::DbError) -> Option<usize> {
+    match e {
+        crate::error::DbError::DriverError { failed_index, .. } => *failed_index,
+        _ => None,
+    }
+}
+
 pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
     let pool = state.pool(&req.db).map_err(err_to_str)?;
 
@@ -89,18 +101,16 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
             error: None,
         }),
         Err(e) => {
-            let failed_index = match &e {
-                crate::error::DbError::DriverError { failed_index, .. } => {
-                    failed_index.unwrap_or(0)
-                }
-                _ => 0,
-            };
+            // Preserve None for non-step failures (pool acquire, BEGIN, etc.)
+            // — those errors don't have a specific statement index, and
+            // unwrap_or(0) would falsely attribute them to step 0.
+            let failed_index = failed_index_of(&e);
             let error_value = serde_json::to_value(&e)
                 .unwrap_or_else(|_| json!({"code": "DRIVER_ERROR", "message": e.to_string()}));
             Ok(TxResp {
                 committed: false,
                 results: None,
-                failed_index: Some(failed_index),
+                failed_index,
                 error: Some(error_value),
             })
         }
@@ -130,6 +140,51 @@ mod tests {
 
     fn tx_req(v: Value) -> TxReq {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// Regression: `failed_index` must stay None for non-step failures
+    /// (PoolTimeout, UnknownDb, ConfigError, DriverError without an index).
+    /// The previous `unwrap_or(0)` falsely attributed every connection-level
+    /// failure to "statement 0", confusing wire callers about where things
+    /// went wrong.
+    #[test]
+    fn failed_index_extraction_preserves_none_for_non_step_errors() {
+        // DriverError carrying a step index → preserved
+        let driver_with_idx = crate::error::DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: "x".into(),
+            failed_index: Some(2),
+        };
+        assert_eq!(failed_index_of(&driver_with_idx), Some(2));
+
+        // DriverError without an index → None (was: Some(0))
+        let driver_no_idx = crate::error::DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: "x".into(),
+            failed_index: None,
+        };
+        assert_eq!(failed_index_of(&driver_no_idx), None);
+
+        // Non-DriverError variants → None
+        assert_eq!(
+            failed_index_of(&crate::error::DbError::UnknownDb { db: "x".into() }),
+            None
+        );
+        assert_eq!(
+            failed_index_of(&crate::error::DbError::PoolTimeout {
+                db: "x".into(),
+                waited_ms: 100,
+            }),
+            None
+        );
+        assert_eq!(
+            failed_index_of(&crate::error::DbError::ConfigError {
+                message: "x".into(),
+            }),
+            None
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

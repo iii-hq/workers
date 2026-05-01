@@ -302,6 +302,21 @@ fn run_tx_steps(
     let mut results: Vec<TxStepResult> = Vec::with_capacity(statements.len());
 
     for (idx, stmt) in statements.iter().enumerate() {
+        // Symmetric with execute()'s single-statement guard: rusqlite's
+        // prepare_v2 only parses the first statement and silently ignores
+        // the rest, so `INSERT ...; DELETE ...` in a TxStatement.sql would
+        // run only the INSERT. Reject up-front and attribute to this step.
+        if looks_like_multi_statement(&stmt.sql) {
+            return Err(DbError::DriverError {
+                driver: "sqlite".into(),
+                code: Some("MULTI_STATEMENT".into()),
+                message: "rusqlite transaction step supports only a single statement; \
+                          split into multiple TxStatement entries"
+                    .into(),
+                failed_index: Some(idx),
+            });
+        }
+
         let bound: Vec<SqlValue> = stmt.params.iter().map(json_param_to_sql).collect();
         let bound_refs: Vec<&dyn rusqlite::ToSql> =
             bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -574,6 +589,56 @@ mod tests {
             }
             other => panic!("expected DriverError, got {other:?}"),
         }
+    }
+
+    /// Regression: `transaction()` must reject multi-statement SQL inside a
+    /// single TxStatement, mirroring `execute()`'s guard. SQLite's prepare_v2
+    /// silently parses only the first statement, so without the guard a
+    /// caller writing `INSERT ...; DELETE ...` would commit a partial
+    /// transaction (just the INSERT) without diagnostic.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transaction_rejects_multi_statement_in_step() {
+        let p = pool().await;
+        let s = p.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || s.with(|c| c.execute_batch("CREATE TABLE t (n INT)")))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let stmts = vec![
+            TxStatement {
+                sql: "INSERT INTO t VALUES (1)".into(),
+                params: vec![],
+            },
+            // step idx 1 contains two statements separated by ';'
+            TxStatement {
+                sql: "INSERT INTO t VALUES (2); DELETE FROM t".into(),
+                params: vec![],
+            },
+        ];
+        let err = transaction(&p, stmts, None).await.unwrap_err();
+        match err {
+            DbError::DriverError {
+                code,
+                failed_index,
+                driver,
+                ..
+            } => {
+                assert_eq!(driver, "sqlite");
+                assert_eq!(code.as_deref(), Some("MULTI_STATEMENT"));
+                assert_eq!(failed_index, Some(1));
+            }
+            other => panic!("expected MULTI_STATEMENT, got {other:?}"),
+        }
+
+        // Verify rollback: step 0's INSERT must have been undone — no rows.
+        let r = query(&p, "SELECT COUNT(*) AS c FROM t", &[], 30_000)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &r.rows[0].0[0],
+            RowValue::Int(0) | RowValue::BigInt(0)
+        ));
     }
 
     /// Regression: `is_select || is_returning` text matching missed
