@@ -1,0 +1,7 @@
+iii: v1
+name: auth-rbac
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-auth-rbac
+description: HMAC API keys and workspace roles (owner/admin/member/viewer) under auth::rbac::*.

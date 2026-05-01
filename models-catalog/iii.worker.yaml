@@ -1,0 +1,7 @@
+iii: v1
+name: models-catalog
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-models-catalog
+description: Model capabilities knowledge base under models::* (list/get/supports/register).

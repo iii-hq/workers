@@ -1,0 +1,7 @@
+iii: v1
+name: guardrails
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-guardrails
+description: Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under guardrails::*.

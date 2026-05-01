@@ -1,0 +1,7 @@
+iii: v1
+name: document-extract
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-document-extract
+description: PDF/Word text extraction under document::extract for agent context ingestion.
