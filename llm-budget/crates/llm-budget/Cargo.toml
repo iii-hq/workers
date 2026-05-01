@@ -1,0 +1,23 @@
+[package]
+name = "llm-budget"
+description = "Per-workspace and per-agent LLM spend caps with alerts, forecast, and period rollover. Graduated from roster/workers/llm-budget."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+iii-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

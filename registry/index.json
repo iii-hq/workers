@@ -1,6 +1,46 @@
 {
   "version": 1,
   "workers": {
+    "auth-credentials": {
+      "type": "binary",
+      "description": "Provider credential vault under auth::* — API keys and OAuth tokens",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "auth-credentials",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "auth-rbac": {
+      "type": "binary",
+      "description": "HMAC API keys and workspace roles (owner/admin/member/viewer) under auth::rbac::*",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "auth-rbac",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "document-extract": {
+      "type": "binary",
+      "description": "PDF/Word text extraction under document::extract for agent context ingestion",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "document-extract",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "guardrails": {
+      "type": "binary",
+      "description": "Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under guardrails::*",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "guardrails",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "image-resize": {
       "type": "binary",
       "description": "III engine image resize worker",
@@ -32,6 +72,16 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "llm-budget": {
+      "type": "binary",
+      "description": "Workspace and agent LLM spend caps with alerts, forecast, and period rollover under budget::*",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "llm-budget",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "mcp": {
       "type": "binary",
       "description": "Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions as MCP tools",
@@ -43,6 +93,26 @@
         "expose_all": false
       },
       "version": "0.3.0"
+    },
+    "models-catalog": {
+      "type": "binary",
+      "description": "Model capabilities knowledge base under models::* (list/get/supports/register)",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "models-catalog",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "session-tree": {
+      "type": "binary",
+      "description": "Session storage as a parent-id tree of typed entries under session::*",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "session-tree",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
     },
     "todo-worker": {
       "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
