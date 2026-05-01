@@ -459,15 +459,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness-types"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -752,7 +743,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "env_logger",
- "harness-types",
  "iii-sdk",
  "log",
  "serde",
