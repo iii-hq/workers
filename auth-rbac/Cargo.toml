@@ -1,7 +1,3 @@
-[workspace]
-resolver = "2"
-members = ["crates/auth-rbac"]
-
 [package]
 name = "iii-auth-rbac"
 version = "0.1.0"
@@ -11,48 +7,37 @@ repository = "https://github.com/iii-hq/workers"
 authors = ["iii contributors"]
 publish = false
 
+[lib]
+name = "auth_rbac"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-auth-rbac"
 path = "src/main.rs"
 
 [dependencies]
-auth-rbac = { path = "crates/auth-rbac" }
-iii-sdk = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-log = "0.4"
-env_logger = "0.11"
-
-[workspace.package]
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
-repository = "https://github.com/iii-hq/workers"
-authors = ["iii contributors"]
-
-[workspace.dependencies]
 iii-sdk = "=0.11.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 thiserror = "2"
-async-trait = "0.1"
 tracing = "0.1"
-reqwest = { version = "0.12", features = ["stream", "json"] }
-futures = "0.3"
-bytes = "1"
-url = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-regex = "1"
-once_cell = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+log = "0.4"
+env_logger = "0.11"
 
-[workspace.lints.rust]
+[lints.rust]
 unsafe_code = "forbid"
 
-[workspace.lints.clippy]
+[lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }

@@ -417,19 +417,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "guardrails"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "iii-sdk",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,11 +694,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "guardrails",
  "iii-sdk",
  "log",
+ "once_cell",
+ "regex",
+ "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

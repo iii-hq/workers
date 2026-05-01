@@ -775,12 +775,17 @@ name = "iii-session-tree"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chrono",
  "env_logger",
+ "harness-types",
  "iii-sdk",
  "log",
+ "serde",
  "serde_json",
- "session-tree",
+ "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1586,21 +1591,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "session-tree"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "harness-types",
- "iii-sdk",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "uuid",
 ]
 
 [[package]]
