@@ -199,15 +199,44 @@ fn pg_cell_to_row_value(
             None => RowValue::Null,
         },
         T::NUMERIC => {
-            // `String: FromSql::accepts` is gated to TEXT/VARCHAR/BPCHAR/NAME/
-            // UNKNOWN (see postgres-types-0.2/src/lib.rs:702→729) — it rejects
-            // NUMERIC at runtime with WrongType. Decode via rust_decimal which
-            // declares `accepts!(NUMERIC)` under the `db-tokio-postgres`
-            // feature; stringify so RowValue::Decimal stays a precision-
-            // preserving wire representation.
-            match get!(rust_decimal::Decimal) {
-                Some(d) => RowValue::Decimal(d.to_string()),
-                None => RowValue::Null,
+            // Layered decode:
+            //   1. rust_decimal::Decimal — fast, well-tested, handles 99% of
+            //      real-world NUMERIC values (96-bit / ~28 sig digits).
+            //   2. Custom binary parser fallback — for values rust_decimal
+            //      rejects: NaN, ±Infinity, and arbitrary-precision NUMERIC
+            //      beyond 96 bits (rust_decimal-1.41/src/postgres/driver.rs:91
+            //      returns `Err(ConversionTo)` for special signs and line 109
+            //      returns `Err(ExceedsMaximumPossibleValue)` for overflow).
+            //   3. Null on parse failure.
+            //
+            // The reviewer originally suggested `get!(String)` as the
+            // fallback, but `String: FromSql::accepts` is gated to TEXT-
+            // family OIDs (postgres-types-0.2/src/lib.rs:729) and rejects
+            // NUMERIC at runtime — confirmed earlier in this branch. The
+            // custom parser sidesteps that by accepting NUMERIC directly
+            // and stringifying the binary digits.
+            match row.try_get::<_, Option<rust_decimal::Decimal>>(idx) {
+                Ok(Some(d)) => RowValue::Decimal(d.to_string()),
+                Ok(None) => RowValue::Null,
+                Err(e) => {
+                    tracing::debug!(
+                        column = idx,
+                        error = %e,
+                        "NUMERIC outside rust_decimal range; falling back to binary parser"
+                    );
+                    match row.try_get::<_, Option<PgNumericText>>(idx) {
+                        Ok(Some(t)) => RowValue::Decimal(t.0),
+                        Ok(None) => RowValue::Null,
+                        Err(e) => {
+                            tracing::warn!(
+                                column = idx,
+                                error = %e,
+                                "NUMERIC binary parser also failed; surfacing Null"
+                            );
+                            RowValue::Null
+                        }
+                    }
+                }
             }
         }
         _ => {
@@ -427,6 +456,127 @@ pub async fn run_prepared(
     })
 }
 
+/// Fallback NUMERIC decoder used when `rust_decimal` rejects a value
+/// (NaN, ±Infinity, or precision beyond 96 bits). Captures the raw
+/// Postgres binary numeric format and stringifies it directly so the
+/// caller sees a precision-preserving decimal/special-value string.
+struct PgNumericText(String);
+
+impl<'a> postgres_types::FromSql<'a> for PgNumericText {
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        stringify_pg_numeric_binary(raw)
+            .map(PgNumericText)
+            .map_err(|e| -> Box<dyn std::error::Error + Sync + Send> { e.into() })
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::NUMERIC
+    }
+}
+
+/// Postgres binary NUMERIC layout (network byte order, all 16-bit fields):
+///
+///   u16 ndigits     — number of base-10000 digit groups
+///   i16 weight      — weight of first group (signed)
+///   u16 sign        — 0x0000=+, 0x4000=−, 0xC000=NaN, 0xD000=+Inf, 0xF000=−Inf
+///   u16 dscale      — display scale (decimal fractional digits)
+///   u16 digits[]    — base-10000 digits, MSB first
+///
+/// References: rust_decimal-1.41/src/postgres/driver.rs (the impl we fall
+/// back from, which uses the same layout) and the Postgres source at
+/// `src/backend/utils/adt/numeric.c`. The custom stringifier handles every
+/// shape rust_decimal rejects so callers see a value rather than an error.
+fn stringify_pg_numeric_binary(raw: &[u8]) -> Result<String, &'static str> {
+    if raw.len() < 8 {
+        return Err("numeric: header too short");
+    }
+    let ndigits = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+    let weight = i16::from_be_bytes([raw[2], raw[3]]) as i32;
+    let sign = u16::from_be_bytes([raw[4], raw[5]]);
+    let dscale = u16::from_be_bytes([raw[6], raw[7]]) as usize;
+
+    match sign {
+        0xC000 => return Ok("NaN".to_string()),
+        0xD000 => return Ok("Infinity".to_string()),
+        0xF000 => return Ok("-Infinity".to_string()),
+        0x0000 | 0x4000 => {} // positive / negative — fall through
+        _ => return Err("numeric: unknown sign"),
+    }
+
+    if raw.len() < 8 + ndigits * 2 {
+        return Err("numeric: digit buffer truncated");
+    }
+
+    let mut digits: Vec<u16> = Vec::with_capacity(ndigits);
+    for i in 0..ndigits {
+        let off = 8 + i * 2;
+        let d = u16::from_be_bytes([raw[off], raw[off + 1]]);
+        if d >= 10000 {
+            return Err("numeric: digit out of range");
+        }
+        digits.push(d);
+    }
+
+    // Integer part. Empty digits or weight < 0 → "0".
+    let mut int_part = String::new();
+    if ndigits == 0 || weight < 0 {
+        int_part.push('0');
+    } else {
+        let weight_u = weight as usize;
+        let stored_int_count = std::cmp::min(ndigits, weight_u + 1);
+        for (i, &d) in digits.iter().take(stored_int_count).enumerate() {
+            if i == 0 {
+                int_part.push_str(&d.to_string());
+            } else {
+                int_part.push_str(&format!("{d:04}"));
+            }
+        }
+        // Append zero groups for integer positions beyond stored digits.
+        let trailing_zero_groups = (weight_u + 1).saturating_sub(stored_int_count);
+        for _ in 0..trailing_zero_groups {
+            int_part.push_str("0000");
+        }
+    }
+
+    // Fractional part. Only emit if dscale > 0.
+    let mut frac_part = String::new();
+    if dscale > 0 {
+        // Leading zero groups when weight < -1 (the value is < 0.0001).
+        if weight < -1 {
+            let leading = ((-weight) - 1) as usize;
+            for _ in 0..leading {
+                frac_part.push_str("0000");
+            }
+        }
+        // Stored fractional digits start where integer digits ended.
+        let frac_start_idx = if weight < 0 { 0 } else { (weight as usize) + 1 };
+        for &d in digits.iter().skip(frac_start_idx) {
+            frac_part.push_str(&format!("{d:04}"));
+        }
+        // Trim or right-pad to exactly dscale chars.
+        if frac_part.len() > dscale {
+            frac_part.truncate(dscale);
+        }
+        while frac_part.len() < dscale {
+            frac_part.push('0');
+        }
+    }
+
+    let mut out = String::new();
+    if sign == 0x4000 {
+        out.push('-');
+    }
+    out.push_str(&int_part);
+    if !frac_part.is_empty() {
+        out.push('.');
+        out.push_str(&frac_part);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +693,105 @@ mod tests {
             RowValue::Decimal(s) => assert_eq!(s, "0"),
             other => panic!("zero: expected Decimal, got {other:?}"),
         }
+    }
+
+    /// Unit tests for the binary NUMERIC fallback parser. Drive it with
+    /// crafted byte sequences in the documented Postgres format so we don't
+    /// need a live postgres connection — the parser is the part of the fix
+    /// that handles values rust_decimal rejects (NaN, ±Infinity, large
+    /// magnitudes), and the production code path `try_get → from_sql` only
+    /// exercises it when the primary decode errors.
+    #[test]
+    fn stringify_pg_numeric_handles_zero() {
+        // ndigits=0, weight=0, sign=+, dscale=0 → "0"
+        let raw = [0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(stringify_pg_numeric_binary(&raw).unwrap(), "0");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_zero_with_scale() {
+        // ndigits=0, weight=0, sign=+, dscale=5 → "0.00000"
+        let raw = [0, 0, 0, 0, 0, 0, 0, 5];
+        assert_eq!(stringify_pg_numeric_binary(&raw).unwrap(), "0.00000");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_simple_fraction() {
+        // 1234.5 → ndigits=2, weight=0, sign=+, dscale=1, digits=[1234, 5000]
+        let raw = [
+            0, 2, // ndigits
+            0, 0, // weight
+            0, 0, // sign +
+            0, 1, // dscale
+            0x04, 0xD2, // 1234
+            0x13, 0x88, // 5000
+        ];
+        assert_eq!(stringify_pg_numeric_binary(&raw).unwrap(), "1234.5");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_small_fraction() {
+        // 0.001 → ndigits=1, weight=-1, sign=+, dscale=3, digits=[10]
+        let raw = [
+            0, 1, // ndigits
+            0xFF, 0xFF, // weight = -1
+            0, 0, // sign +
+            0, 3, // dscale
+            0, 10, // digit
+        ];
+        assert_eq!(stringify_pg_numeric_binary(&raw).unwrap(), "0.001");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_negative() {
+        // -42 → ndigits=1, weight=0, sign=0x4000, dscale=0, digits=[42]
+        let raw = [
+            0, 1, // ndigits
+            0, 0, // weight
+            0x40, 0x00, // sign -
+            0, 0, // dscale
+            0, 42, // digit
+        ];
+        assert_eq!(stringify_pg_numeric_binary(&raw).unwrap(), "-42");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_large_value_beyond_rust_decimal() {
+        // 10^30 = 100 * 10000^7. ndigits=1, weight=7, sign=+, dscale=0,
+        // digits=[100]. This value overflows rust_decimal (96-bit cap ~10^28),
+        // so before the fallback parser it failed query calls outright.
+        let raw = [
+            0, 1, // ndigits
+            0, 7, // weight
+            0, 0, // sign +
+            0, 0, // dscale
+            0, 100, // digit
+        ];
+        assert_eq!(
+            stringify_pg_numeric_binary(&raw).unwrap(),
+            "1000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn stringify_pg_numeric_handles_special_signs() {
+        let nan = [0, 0, 0, 0, 0xC0, 0x00, 0, 0];
+        assert_eq!(stringify_pg_numeric_binary(&nan).unwrap(), "NaN");
+
+        let pinf = [0, 0, 0, 0, 0xD0, 0x00, 0, 0];
+        assert_eq!(stringify_pg_numeric_binary(&pinf).unwrap(), "Infinity");
+
+        let ninf = [0, 0, 0, 0, 0xF0, 0x00, 0, 0];
+        assert_eq!(stringify_pg_numeric_binary(&ninf).unwrap(), "-Infinity");
+    }
+
+    #[test]
+    fn stringify_pg_numeric_rejects_truncated_buffers() {
+        // Header too short
+        assert!(stringify_pg_numeric_binary(&[0, 0]).is_err());
+        // Header claims 3 digits but buffer is too small
+        let raw = [0, 3, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert!(stringify_pg_numeric_binary(&raw).is_err());
     }
 
     /// Regression: `DateTime<Utc>: FromSql` declares `accepts!(TIMESTAMPTZ)`

@@ -95,6 +95,28 @@ pub(crate) fn map_err(e: rusqlite::Error) -> DbError {
     }
 }
 
+/// Stamp a transaction-step index onto an existing `DbError`. Used inside
+/// `run_tx_steps` to preserve the failed-step index when an error bubbles up
+/// from a helper (e.g. `row_value_at`) that has no notion of "which step is
+/// running". Existing `failed_index` values are preserved (an inner step may
+/// have already attributed itself); only the `None` case is filled in.
+fn with_failed_index(e: DbError, idx: usize) -> DbError {
+    match e {
+        DbError::DriverError {
+            driver,
+            code,
+            message,
+            failed_index,
+        } => DbError::DriverError {
+            driver,
+            code,
+            message,
+            failed_index: failed_index.or(Some(idx)),
+        },
+        other => other,
+    }
+}
+
 /// Pessimistic multi-statement detector. After stripping trailing
 /// whitespace and semicolons, any remaining `;` is treated as a separator.
 /// String-literal edge cases (e.g. a `;` inside a quoted string) are not
@@ -339,7 +361,11 @@ fn run_tx_steps(
             while let Some(row) = rows.next().map_err(|e| step_err(idx, e))? {
                 let mut vals = Vec::with_capacity(n);
                 for i in 0..n {
-                    vals.push(row_value_at(row, i)?);
+                    // row_value_at returns DbError::DriverError with
+                    // failed_index: None (it has no step context). Stamp the
+                    // current step idx so the wire envelope's failed_index
+                    // points at the right TxStatement instead of None.
+                    vals.push(row_value_at(row, i).map_err(|e| with_failed_index(e, idx))?);
                 }
                 rows_out.push(Row(vals));
             }
@@ -589,6 +615,55 @@ mod tests {
             }
             other => panic!("expected DriverError, got {other:?}"),
         }
+    }
+
+    /// Regression: `row_value_at` returns `DriverError { failed_index: None }`
+    /// because it has no step context. Inside `run_tx_steps`, the previous
+    /// `vals.push(row_value_at(row, i)?)` propagated that error verbatim, so
+    /// any cell-decode failure during a transaction lost its step attribution
+    /// — the wire envelope said "tx failed" but not "at step N". The
+    /// `with_failed_index` helper stamps the current step idx onto a
+    /// failed_index-less error while preserving any pre-existing index.
+    #[test]
+    fn with_failed_index_stamps_idx_when_missing() {
+        let e = DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: "x".into(),
+            failed_index: None,
+        };
+        match with_failed_index(e, 3) {
+            DbError::DriverError { failed_index, .. } => assert_eq!(failed_index, Some(3)),
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_failed_index_preserves_existing_idx() {
+        // If an inner helper already attributed itself to step 7, the outer
+        // `with_failed_index(_, 3)` must not clobber that — `Option::or`
+        // semantics keep the inner.
+        let e = DbError::DriverError {
+            driver: "sqlite".into(),
+            code: None,
+            message: "x".into(),
+            failed_index: Some(7),
+        };
+        match with_failed_index(e, 3) {
+            DbError::DriverError { failed_index, .. } => assert_eq!(failed_index, Some(7)),
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_failed_index_passes_through_non_driver_errors() {
+        // Non-DriverError variants (PoolTimeout, UnknownDb, …) carry no
+        // failed_index field; the helper must not synthesize one onto a
+        // different variant.
+        let e = DbError::UnknownDb {
+            db: "primary".into(),
+        };
+        assert!(matches!(with_failed_index(e, 3), DbError::UnknownDb { .. }));
     }
 
     /// Regression: `transaction()` must reject multi-statement SQL inside a
