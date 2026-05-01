@@ -18,25 +18,32 @@ pub async fn query(
 ) -> Result<QueryResult, DbError> {
     let mut conn = pool.acquire().await?;
     let bound = bind_params(params);
-    let fut = conn.exec_iter(sql, bound);
-    let mut result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut)
+
+    // mysql_async's `exec_iter` resolves once the server returns column
+    // metadata; row payloads are streamed lazily by `collect()`. Wrapping
+    // only `exec_iter` would leave row collection unbounded — a slow-row
+    // query (e.g., per-row SLEEP, or a slow scan) would silently bypass
+    // `timeout_ms`. Wrap the whole prepare→stream pipeline.
+    let work = async {
+        let mut result = conn.exec_iter(sql, bound).await.map_err(map_err)?;
+        let cols: Vec<ColumnMeta> = result
+            .columns_ref()
+            .iter()
+            .map(|c| ColumnMeta {
+                name: c.name_str().to_string(),
+                ty: format!("{:?}", c.column_type()),
+            })
+            .collect();
+        let raw_rows: Vec<mysql_async::Row> = result.collect().await.map_err(map_err)?;
+        Ok::<_, DbError>((cols, raw_rows))
+    };
+    let (cols, raw_rows) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(mysql)".into(),
             timeout_ms,
-        })?
-        .map_err(map_err)?;
+        })??;
 
-    let cols: Vec<ColumnMeta> = result
-        .columns_ref()
-        .iter()
-        .map(|c| ColumnMeta {
-            name: c.name_str().to_string(),
-            ty: format!("{:?}", c.column_type()),
-        })
-        .collect();
-
-    let raw_rows: Vec<mysql_async::Row> = result.collect().await.map_err(map_err)?;
     let mut out_rows: Vec<Row> = Vec::with_capacity(raw_rows.len());
     for row in raw_rows {
         let cells = row_cells(&row);
@@ -415,6 +422,38 @@ mod tests {
             &r.rows[0].0[0],
             RowValue::Int(0) | RowValue::BigInt(0)
         ));
+    }
+
+    /// Regression: `tokio::time::timeout` must wrap both the `exec_iter`
+    /// dispatch *and* the `result.collect()` row stream. mysql_async's
+    /// `exec_iter` resolves once the server returns column metadata, so a
+    /// query whose planner is fast but whose row stream is slow (here:
+    /// `SELECT SLEEP(N)` per-row) would silently bypass the timeout if only
+    /// `exec_iter` were wrapped. The fix wraps the whole pipeline; this test
+    /// asserts the timeout fires.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn my_query_timeout_applies_to_row_streaming() {
+        let Some(p) = pool().await else { return };
+        let start = std::time::Instant::now();
+        // 3 rows × SLEEP(2) = ~6s of server-side row generation. With
+        // timeout_ms = 500, the fix's whole-pipeline wrap fires within ~1s.
+        // The buggy code would wait the full ~6s and return rows.
+        let res = query(
+            &p,
+            "SELECT SLEEP(2), n FROM (SELECT 1 AS n UNION SELECT 2 UNION SELECT 3) AS t",
+            &[],
+            500,
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(res, Err(DbError::QueryTimeout { .. })),
+            "expected QueryTimeout, got {res:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "timeout should fire well before the ~6s row stream completes; elapsed={elapsed:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

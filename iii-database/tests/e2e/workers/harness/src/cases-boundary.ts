@@ -302,4 +302,38 @@ export const BOUNDARY_CASES: TestCase[] = [
       await call('iii-database::execute', { db: driver, sql: 'DROP TABLE bx_special' });
     },
   },
+  {
+    // Regression for a real bug in driver/mysql.rs::query: previously
+    // `tokio::time::timeout` wrapped only `conn.exec_iter(...)`, which in
+    // mysql_async resolves once the server returns column metadata. The
+    // subsequent `result.collect().await` that streams rows ran unbounded,
+    // so a query whose planner is fast but whose row stream is slow
+    // (per-row SLEEP, full scan) silently bypassed `timeout_ms`.
+    //
+    // Gated to mysql_db: postgres' `client.query` materializes Vec<Row>
+    // before resolving (entire read is inside the timeout) and SQLite runs
+    // synchronously on a blocking task, so neither has this failure mode.
+    name: 'query timeout fires during row streaming (mysql)',
+    applies: ['mysql_db'],
+    async run({ driver, call, expectError }) {
+      // 3 rows × SLEEP(2) = ~6s of server-side row generation. With
+      // timeout_ms=500 the wrapped pipeline must surface QUERY_TIMEOUT well
+      // before the stream completes.
+      const start = Date.now();
+      await expectError(
+        () =>
+          call('iii-database::query', {
+            db: driver,
+            sql: 'SELECT SLEEP(2), n FROM (SELECT 1 AS n UNION SELECT 2 UNION SELECT 3) AS t',
+            timeout_ms: 500,
+          }),
+        'QUERY_TIMEOUT',
+      );
+      const elapsed = Date.now() - start;
+      expect(
+        elapsed < 3_000,
+        `timeout should fire well before the ~6s row stream completes; elapsed=${elapsed}ms`,
+      );
+    },
+  },
 ];
