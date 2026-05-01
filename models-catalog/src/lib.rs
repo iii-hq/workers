@@ -17,11 +17,58 @@
 //! callers that can't await a bus round-trip (e.g. `context-compaction`'s
 //! `CompactionConfig::new`); they're documented as best-effort fallbacks.
 
-use harness_types::{CacheRetention, ThinkingBudgets, ThinkingLevel, Transport};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 const EMBEDDED_MODELS: &str = include_str!("../data/models.json");
+
+/// Tiered thinking effort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    #[default]
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    /// Highest tier; only supported by selected model families.
+    Xhigh,
+}
+
+/// Per-tier token budgets for `ThinkingLevel`. Absent fields fall back to
+/// provider defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ThinkingBudgets {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimal: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub medium: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high: Option<u32>,
+}
+
+/// Streaming transport selection for a model adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Sse,
+    Websocket,
+    #[default]
+    Auto,
+}
+
+/// Cache-control hint for prompt-cache-aware providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheRetention {
+    None,
+    #[default]
+    Short,
+    Long,
+}
 
 /// Scope under which model registrations live in iii state.
 pub const MODELS_SCOPE: &str = "models";
