@@ -303,6 +303,37 @@ export const BOUNDARY_CASES: TestCase[] = [
     },
   },
   {
+    // Regression: postgres-types' chrono FromSql impls bind by exact OID —
+    // `DateTime<Utc>: accepts!(TIMESTAMPTZ)`, `NaiveDateTime: accepts!(TIMESTAMP)`.
+    // Decoding `TIMESTAMP WITHOUT TIME ZONE` as `DateTime<Utc>` failed at
+    // runtime with WrongType. The driver now decodes TIMESTAMP via
+    // NaiveDateTime and folds it into RowValue::Timestamp by interpreting
+    // the naive value as UTC. The wire shape is unchanged: an RFC 3339 UTC
+    // string for both column types.
+    name: 'TIMESTAMP without time zone decodes (postgres)',
+    applies: ['pg_db'],
+    async run({ driver, call }) {
+      await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS bx_ts' });
+      await call('iii-database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE bx_ts (naive TIMESTAMP NOT NULL, with_tz TIMESTAMPTZ NOT NULL)',
+      });
+      await call('iii-database::execute', {
+        db: driver,
+        sql: `INSERT INTO bx_ts (naive, with_tz) VALUES ('2026-04-29 12:00:00', '2026-04-29 12:00:00+00')`,
+      });
+      const q = await call('iii-database::query', {
+        db: driver,
+        sql: 'SELECT naive, with_tz FROM bx_ts',
+      });
+      // Pre-fix, querying the `naive` column raised `WrongType` and the entire
+      // call rejected. Now both columns surface as RFC 3339 UTC strings.
+      expectEqual(q.rows[0].naive, '2026-04-29T12:00:00Z', 'TIMESTAMP without tz round-trips');
+      expectEqual(q.rows[0].with_tz, '2026-04-29T12:00:00Z', 'TIMESTAMPTZ round-trips');
+      await call('iii-database::execute', { db: driver, sql: 'DROP TABLE bx_ts' });
+    },
+  },
+  {
     // Regression for a real bug in driver/mysql.rs::query: previously
     // `tokio::time::timeout` wrapped only `conn.exec_iter(...)`, which in
     // mysql_async resolves once the server returns column metadata. The

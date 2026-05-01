@@ -6,7 +6,7 @@ use crate::driver::{
 use crate::error::DbError;
 use crate::pool::PostgresPool;
 use crate::value::{JsonParam, RowValue};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use postgres_types::{ToSql, Type};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -180,8 +180,18 @@ fn pg_cell_to_row_value(
             Some(b) => RowValue::Bytes(b),
             None => RowValue::Null,
         },
-        T::TIMESTAMP | T::TIMESTAMPTZ => match get!(DateTime<Utc>) {
+        // postgres-types' chrono FromSql impls bind by exact OID:
+        // `DateTime<Utc>` declares `accepts!(TIMESTAMPTZ)` and `NaiveDateTime`
+        // declares `accepts!(TIMESTAMP)`. Decoding TIMESTAMP (no tz) as
+        // `DateTime<Utc>` fails at runtime with WrongType. Split the arms:
+        // TIMESTAMP → NaiveDateTime, then assume UTC for the wire envelope
+        // so RowValue::Timestamp keeps its DateTime<Utc> shape.
+        T::TIMESTAMPTZ => match get!(DateTime<Utc>) {
             Some(t) => RowValue::Timestamp(t),
+            None => RowValue::Null,
+        },
+        T::TIMESTAMP => match get!(NaiveDateTime) {
+            Some(n) => RowValue::Timestamp(Utc.from_utc_datetime(&n)),
             None => RowValue::Null,
         },
         T::JSON | T::JSONB => match get!(JsonValue) {
@@ -492,6 +502,43 @@ mod tests {
             &r.rows[0].0[0],
             RowValue::BigInt(9_007_199_254_740_993)
         ));
+    }
+
+    /// Regression: `DateTime<Utc>: FromSql` declares `accepts!(TIMESTAMPTZ)`
+    /// (postgres-types-0.2/src/chrono_04.rs:48), so decoding a TIMESTAMP (no
+    /// tz) column as `DateTime<Utc>` fails at runtime with WrongType. The
+    /// driver now decodes TIMESTAMP via `NaiveDateTime` and folds it into
+    /// `RowValue::Timestamp(DateTime<Utc>)` by treating the naive value as
+    /// UTC. This test pins both the failing-before path (TIMESTAMP) and the
+    /// working path (TIMESTAMPTZ) so a regression on either side fails fast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_query_decodes_timestamp_without_tz_and_with_tz() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT \
+                '2026-04-29 12:00:00'::timestamp        AS naive, \
+                '2026-04-29 12:00:00+00'::timestamptz   AS with_tz",
+            &[],
+            30_000,
+        )
+        .await
+        .unwrap();
+        // Both columns surface as RowValue::Timestamp; both round-trip through
+        // RFC 3339 UTC at the wire. The buggy code panicked on the `naive`
+        // column with a WrongType error before reaching this assertion.
+        match &r.rows[0].0[0] {
+            RowValue::Timestamp(t) => {
+                assert_eq!(t.to_rfc3339(), "2026-04-29T12:00:00+00:00");
+            }
+            other => panic!("expected Timestamp for TIMESTAMP column, got {other:?}"),
+        }
+        match &r.rows[0].0[1] {
+            RowValue::Timestamp(t) => {
+                assert_eq!(t.to_rfc3339(), "2026-04-29T12:00:00+00:00");
+            }
+            other => panic!("expected Timestamp for TIMESTAMPTZ column, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
