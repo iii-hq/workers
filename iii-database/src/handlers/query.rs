@@ -1,21 +1,29 @@
 //! `iii-database::query` — read-only SQL.
 
 use super::AppState;
-use crate::driver;
+use crate::driver::{self, ColumnMeta};
 use crate::error::DbError;
 use crate::pool::Pool;
 use crate::value::JsonParam;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Deserialize)]
-struct QueryReq {
-    db: String,
-    sql: String,
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QueryReq {
+    pub db: String,
+    pub sql: String,
     #[serde(default)]
-    params: Vec<Value>,
+    pub params: Vec<Value>,
     #[serde(default = "default_timeout")]
-    timeout_ms: u64,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct QueryResp {
+    pub rows: Vec<serde_json::Map<String, Value>>,
+    pub row_count: usize,
+    pub columns: Vec<ColumnMeta>,
 }
 
 fn default_timeout() -> u64 {
@@ -23,15 +31,7 @@ fn default_timeout() -> u64 {
 }
 
 /// Returns a JSON string body suitable to wrap in IIIError on failure.
-pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
-    let req: QueryReq = serde_json::from_value(payload).map_err(|e| {
-        serde_json::to_string(&DbError::InvalidParam {
-            index: 0,
-            reason: e.to_string(),
-        })
-        .unwrap_or_default()
-    })?;
-
+pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String> {
     let pool = state.pool(&req.db).map_err(err_to_str)?;
     // Reject empty SQL uniformly. Postgres' tokio-postgres treats `client.query("")`
     // as a valid no-op and returns Ok([]), but sqlite (rusqlite) and mysql
@@ -55,12 +55,12 @@ pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
     .map_err(err_to_str)?;
 
     let row_count = result.rows.len();
-    let rows_json = rows_to_objects(&result.columns, result.rows);
-    Ok(json!({
-        "rows": rows_json,
-        "row_count": row_count,
-        "columns": result.columns,
-    }))
+    let rows = rows_to_objects(&result.columns, result.rows);
+    Ok(QueryResp {
+        rows,
+        row_count,
+        columns: result.columns,
+    })
 }
 
 /// Project a result set into row-of-objects JSON. Consumes `rows` so each
@@ -115,6 +115,10 @@ mod tests {
         }
     }
 
+    fn req(v: Value) -> QueryReq {
+        serde_json::from_value(v).unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn query_returns_rows_envelope() {
         let st = state();
@@ -129,19 +133,19 @@ mod tests {
         }
         let resp = handle(
             &st,
-            json!({"db":"primary","sql":"SELECT n FROM t ORDER BY n"}),
+            req(json!({"db":"primary","sql":"SELECT n FROM t ORDER BY n"})),
         )
         .await
         .unwrap();
-        assert_eq!(resp["row_count"], 2);
-        assert_eq!(resp["rows"][0]["n"], 1);
-        assert_eq!(resp["columns"][0]["name"], "n");
+        assert_eq!(resp.row_count, 2);
+        assert_eq!(resp.rows[0]["n"], 1);
+        assert_eq!(resp.columns[0].name, "n");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn query_unknown_db_errors() {
         let st = state();
-        let err = handle(&st, json!({"db":"missing","sql":"SELECT 1"}))
+        let err = handle(&st, req(json!({"db":"missing","sql":"SELECT 1"})))
             .await
             .unwrap_err();
         assert!(err.contains("UNKNOWN_DB"), "got: {err}");
@@ -149,11 +153,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn query_missing_db_field_errors() {
-        let st = state();
-        let err = handle(&st, json!({"sql":"SELECT 1"})).await.unwrap_err();
-        assert!(
-            err.contains("INVALID_PARAM") || err.contains("missing"),
-            "got: {err}"
-        );
+        // Deserialization moved into the SDK once we switched to typed
+        // RegisterFunction::new_async — at the handler boundary the input is
+        // already a QueryReq. This test keeps the missing-field contract by
+        // exercising the deserialization step explicitly.
+        let err = serde_json::from_value::<QueryReq>(json!({"sql":"SELECT 1"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing field"), "got: {err}");
     }
 }

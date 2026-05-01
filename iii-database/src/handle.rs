@@ -5,6 +5,7 @@
 
 use crate::error::DbError;
 use chrono::{DateTime, Duration as CDuration, Utc};
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HandleResponse {
     pub id: String,
     pub expires_at: DateTime<Utc>,

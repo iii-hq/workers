@@ -2,12 +2,17 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_database::config::WorkerConfig;
 use iii_database::handle::HandleRegistry;
-use iii_database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
+use iii_database::handlers::{
+    execute::{self, ExecuteReq},
+    prepare::{self, PrepareReq},
+    query::{self, QueryReq},
+    run_statement::{self, RunReq},
+    transaction::{self, TxReq},
+    AppState,
+};
 use iii_database::pool;
 use iii_database::triggers::handler::{QueryPollTrigger, RowChangeTrigger};
-use iii_sdk::{
-    register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerType,
-};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction, RegisterTriggerType};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,41 +73,59 @@ async fn main() -> Result<()> {
         },
     );
 
-    register_function(
-        &iii,
-        &state,
-        "query",
-        "Run a read-only SQL query and return the result rows.",
-        |st, p| Box::pin(query::handle(st, p)),
-    );
-    register_function(
-        &iii,
-        &state,
-        "execute",
-        "Run a write statement (INSERT/UPDATE/DELETE/DDL).",
-        |st, p| Box::pin(execute::handle(st, p)),
-    );
-    register_function(
-        &iii,
-        &state,
-        "prepareStatement",
-        "Prepare a parameterized statement once.",
-        |st, p| Box::pin(prepare::handle(st, p)),
-    );
-    register_function(
-        &iii,
-        &state,
-        "runStatement",
-        "Run a previously-prepared handle.",
-        |st, p| Box::pin(run_statement::handle(st, p)),
-    );
-    register_function(
-        &iii,
-        &state,
-        "transaction",
-        "Run a sequence of statements atomically.",
-        |st, p| Box::pin(transaction::handle(st, p)),
-    );
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async("iii-database::query", move |req: QueryReq| {
+                let st = st.clone();
+                async move { query::handle(&st, req).await }
+            })
+            .description("Run a read-only SQL query and return the result rows."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async("iii-database::execute", move |req: ExecuteReq| {
+                let st = st.clone();
+                async move { execute::handle(&st, req).await }
+            })
+            .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::prepareStatement",
+                move |req: PrepareReq| {
+                    let st = st.clone();
+                    async move { prepare::handle(&st, req).await }
+                },
+            )
+            .description("Prepare a parameterized statement once."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async("iii-database::runStatement", move |req: RunReq| {
+                let st = st.clone();
+                async move { run_statement::handle(&st, req).await }
+            })
+            .description("Run a previously-prepared handle."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async("iii-database::transaction", move |req: TxReq| {
+                let st = st.clone();
+                async move { transaction::handle(&st, req).await }
+            })
+            .description("Run a sequence of statements atomically."),
+        );
+    }
 
     let _query_poll = iii.register_trigger_type(RegisterTriggerType::new(
         "iii-database::query-poll",
@@ -122,46 +145,4 @@ async fn main() -> Result<()> {
     tracing::info!("iii-database worker shutting down");
     iii.shutdown_async().await;
     Ok(())
-}
-
-type HandlerFuture<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
->;
-
-fn register_function<F>(
-    iii: &iii_sdk::III,
-    state: &AppState,
-    name: &str,
-    description: &str,
-    handler: F,
-) where
-    F: for<'a> Fn(&'a AppState, serde_json::Value) -> HandlerFuture<'a>
-        + Send
-        + Sync
-        + Copy
-        + 'static,
-{
-    let id = format!("iii-database::{name}");
-    let state = state.clone();
-    let id_for_msg = id.clone();
-    let _ = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: id.clone(),
-            description: Some(description.to_string()),
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        move |payload: serde_json::Value| {
-            let state = state.clone();
-            let id_for_msg = id_for_msg.clone();
-            Box::pin(async move {
-                handler(&state, payload).await.map_err(|s| {
-                    tracing::warn!(function = %id_for_msg, body = %s, "handler returned error");
-                    iii_sdk::IIIError::Handler(s)
-                })
-            })
-        },
-    );
 }

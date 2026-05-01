@@ -1,18 +1,24 @@
 //! `iii-database::prepareStatement` — pin a connection and return a UUID handle.
 
 use super::AppState;
+use crate::handle::HandleResponse;
 use crate::handlers::query::err_to_str;
 use crate::pool::Pool;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Deserialize)]
-struct PrepareReq {
-    db: String,
-    sql: String,
+#[derive(Deserialize, JsonSchema)]
+pub struct PrepareReq {
+    pub db: String,
+    pub sql: String,
     #[serde(default = "default_ttl")]
-    ttl_seconds: u64,
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PrepareResp {
+    pub handle: HandleResponse,
 }
 
 fn default_ttl() -> u64 {
@@ -21,15 +27,7 @@ fn default_ttl() -> u64 {
 
 const MAX_TTL_SECONDS: u64 = 86_400;
 
-pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
-    let req: PrepareReq = serde_json::from_value(payload).map_err(|e| {
-        serde_json::to_string(&crate::error::DbError::InvalidParam {
-            index: 0,
-            reason: e.to_string(),
-        })
-        .unwrap_or_default()
-    })?;
-
+pub async fn handle(state: &AppState, req: PrepareReq) -> Result<PrepareResp, String> {
     let ttl = Duration::from_secs(req.ttl_seconds.min(MAX_TTL_SECONDS));
     let pool = state.pool(&req.db).map_err(err_to_str)?;
     // Reject empty SQL at the handler boundary, mirroring query.rs / execute.rs.
@@ -66,7 +64,7 @@ pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
         }
     };
 
-    Ok(json!({ "handle": { "id": h.id, "expires_at": h.expires_at } }))
+    Ok(PrepareResp { handle: h })
 }
 
 #[cfg(test)]
@@ -76,7 +74,7 @@ mod tests {
     use crate::handle::HandleRegistry;
     use crate::handlers::AppState;
     use crate::pool::{Pool, SqlitePool};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -90,21 +88,24 @@ mod tests {
         }
     }
 
+    fn req(v: Value) -> PrepareReq {
+        serde_json::from_value(v).unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn prepare_returns_handle_with_uuid_and_expiry() {
         let st = state();
         let resp = handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "SELECT 1"
-            }),
+            })),
         )
         .await
         .unwrap();
-        let id = resp["handle"]["id"].as_str().unwrap();
+        let id = &resp.handle.id;
         assert_eq!(id.len(), 36); // UUID
-        assert!(resp["handle"]["expires_at"].is_string());
         assert!(st.handles.contains(id).await);
     }
 
@@ -113,16 +114,16 @@ mod tests {
         let st = state();
         let resp = handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "SELECT 1",
                 "ttl_seconds": 999_999  // exceeds max 86400
-            }),
+            })),
         )
         .await
         .unwrap();
         // Should not error; expires_at should be ~24h out, not 11 days.
-        assert!(resp["handle"]["id"].is_string());
+        assert!(!resp.handle.id.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -131,7 +132,7 @@ mod tests {
         // connection until TTL expiry: prepareStatement acquires a connection
         // and pins it under a UUID handle that can never run successfully.
         let st = state();
-        let err = handle(&st, json!({"db": "primary", "sql": ""}))
+        let err = handle(&st, req(json!({"db": "primary", "sql": ""})))
             .await
             .unwrap_err();
         assert!(
@@ -139,7 +140,7 @@ mod tests {
             "expected DRIVER_ERROR/empty SQL, got: {err}"
         );
         // Whitespace-only is the same case.
-        let err2 = handle(&st, json!({"db": "primary", "sql": "   \n\t"}))
+        let err2 = handle(&st, req(json!({"db": "primary", "sql": "   \n\t"})))
             .await
             .unwrap_err();
         assert!(err2.contains("empty SQL"), "got: {err2}");

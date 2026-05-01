@@ -3,13 +3,14 @@
 //! `pool::Pool` is uniform.
 
 use crate::value::{JsonParam, RowValue};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ColumnMeta {
     pub name: String,
     #[serde(rename = "type")]

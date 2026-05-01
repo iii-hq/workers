@@ -5,28 +5,28 @@ use crate::driver;
 use crate::handlers::query::err_to_str;
 use crate::pool::Pool;
 use crate::value::JsonParam;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Deserialize)]
-struct ExecuteReq {
-    db: String,
-    sql: String,
+#[derive(Deserialize, JsonSchema)]
+pub struct ExecuteReq {
+    pub db: String,
+    pub sql: String,
     #[serde(default)]
-    params: Vec<Value>,
+    pub params: Vec<Value>,
     #[serde(default)]
-    returning: Vec<String>,
+    pub returning: Vec<String>,
 }
 
-pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
-    let req: ExecuteReq = serde_json::from_value(payload).map_err(|e| {
-        serde_json::to_string(&crate::error::DbError::InvalidParam {
-            index: 0,
-            reason: e.to_string(),
-        })
-        .unwrap_or_default()
-    })?;
+#[derive(Serialize, JsonSchema)]
+pub struct ExecuteResp {
+    pub affected_rows: u64,
+    pub last_insert_id: Option<String>,
+    pub returned_rows: Vec<serde_json::Map<String, Value>>,
+}
 
+pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
     let pool = state.pool(&req.db).map_err(err_to_str)?;
     // Reject empty SQL uniformly. See the matching guard in query.rs for why
     // this is at the handler boundary rather than per-driver: postgres' driver
@@ -51,11 +51,11 @@ pub async fn handle(state: &AppState, payload: Value) -> Result<Value, String> {
 
     let returned_rows =
         crate::handlers::query_rows_to_objects(&result.returned_columns, result.returned_rows);
-    Ok(json!({
-        "affected_rows": result.affected_rows,
-        "last_insert_id": result.last_insert_id,
-        "returned_rows": returned_rows,
-    }))
+    Ok(ExecuteResp {
+        affected_rows: result.affected_rows,
+        last_insert_id: result.last_insert_id,
+        returned_rows,
+    })
 }
 
 #[cfg(test)]
@@ -79,31 +79,35 @@ mod tests {
         }
     }
 
+    fn req(v: Value) -> ExecuteReq {
+        serde_json::from_value(v).unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn execute_insert_returns_envelope() {
         let st = state();
         handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)"
-            }),
+            })),
         )
         .await
         .unwrap();
 
         let resp = handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "INSERT INTO t (n) VALUES (?)",
                 "params": [42]
-            }),
+            })),
         )
         .await
         .unwrap();
-        assert_eq!(resp["affected_rows"], 1);
-        assert_eq!(resp["last_insert_id"], "1");
+        assert_eq!(resp.affected_rows, 1);
+        assert_eq!(resp.last_insert_id.as_deref(), Some("1"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -115,30 +119,30 @@ mod tests {
         let st = state();
         handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "CREATE TABLE t (n INT)"
-            }),
+            })),
         )
         .await
         .unwrap();
         let resp = handle(
             &st,
-            json!({
+            req(json!({
                 "db": "primary",
                 "sql": "UPDATE t SET n = ? WHERE n = ?",
                 "params": [99, 1]
-            }),
+            })),
         )
         .await
         .unwrap();
-        assert_eq!(resp["affected_rows"], 0);
+        assert_eq!(resp.affected_rows, 0);
         // No INSERT has ever run on this connection, so last_insert_rowid()
         // is 0 → driver returns None → JSON null (NOT the empty string "").
         assert!(
-            resp["last_insert_id"].is_null(),
-            "expected null, got {:?}",
-            resp["last_insert_id"]
+            resp.last_insert_id.is_none(),
+            "expected None, got {:?}",
+            resp.last_insert_id
         );
     }
 
@@ -152,30 +156,30 @@ mod tests {
         let st = state();
         handle(
             &st,
-            json!({"db":"primary","sql":"CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)"}),
+            req(json!({"db":"primary","sql":"CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)"})),
         )
         .await
         .unwrap();
         let ins = handle(
             &st,
-            json!({"db":"primary","sql":"INSERT INTO t (n) VALUES (?)","params":[1]}),
+            req(json!({"db":"primary","sql":"INSERT INTO t (n) VALUES (?)","params":[1]})),
         )
         .await
         .unwrap();
-        assert_eq!(ins["last_insert_id"], "1");
+        assert_eq!(ins.last_insert_id.as_deref(), Some("1"));
         // Same pool, same connection (default max). The UPDATE must NOT
         // surface the rowid the INSERT just set.
         let upd = handle(
             &st,
-            json!({"db":"primary","sql":"UPDATE t SET n = ? WHERE id = ?","params":[2, 1]}),
+            req(json!({"db":"primary","sql":"UPDATE t SET n = ? WHERE id = ?","params":[2, 1]})),
         )
         .await
         .unwrap();
-        assert_eq!(upd["affected_rows"], 1);
+        assert_eq!(upd.affected_rows, 1);
         assert!(
-            upd["last_insert_id"].is_null(),
+            upd.last_insert_id.is_none(),
             "UPDATE response leaked stale rowid: {:?}",
-            upd["last_insert_id"]
+            upd.last_insert_id
         );
     }
 }
