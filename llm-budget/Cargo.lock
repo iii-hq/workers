@@ -740,14 +740,12 @@ name = "iii-llm-budget"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "env_logger",
  "iii-sdk",
  "log",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tracing",
  "uuid",
