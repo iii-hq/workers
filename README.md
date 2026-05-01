@@ -12,20 +12,11 @@ matching GitHub Release asset for the host's target triple.
 
 | Worker | Kind | Summary |
 |---|---|---|
-| [`a2a`](a2a/) | Rust | A2A (Agent-to-Agent) JSON-RPC protocol worker. Publishes an agent card, routes `message/send` to exposed functions gated by `a2a.expose` metadata. |
-| [`agent`](agent/) | Rust | Chat + planning agent that discovers other workers' functions at runtime and drives them via `iii.trigger()`. |
-| [`coding`](coding/) | Rust | Code-generation / refactor assistant. |
-| [`eval`](eval/) | Rust | OTel span ingestion, latency percentiles, baseline + drift detection, system health score. |
-| [`experiment`](experiment/) | Rust | A/B experiment tracking with weighted variant sampling and outcome aggregation. |
-| [`guardrails`](guardrails/) | Rust | Input/output guardrails — PII detection, prompt-injection filters, length enforcement. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O. JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
-| [`introspect`](introspect/) | Rust | Live topology, trace walks, Mermaid diagrams, and per-function explain output. |
-| [`llm-router`](llm-router/) | Rust | Unopinionated LLM routing brain — policies, classifiers, A/B tests, health + budget aware. Sits in front of any gateway. |
 | [`mcp`](mcp/) | Rust | Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions tagged `mcp.expose` as MCP tools. |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
-| [`shell`](shell/) | Rust | Sandboxed-ish Unix shell execution. Allowlist + denylist, timeout + output caps, background jobs. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
 | [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |
 
@@ -48,9 +39,8 @@ flow — see each module's README for specifics.
 
 ## Binary releases
 
-Rust workers that ship as standalone binaries (`a2a`, `agent`, `coding`,
-`eval`, `experiment`, `guardrails`, `iii-lsp`, `image-resize`, `introspect`,
-`llm-router`, `mcp`, `shell`) are released via GitHub Actions:
+Rust workers that ship as standalone binaries (`iii-lsp`, `image-resize`,
+`mcp`) are released via GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
    type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).

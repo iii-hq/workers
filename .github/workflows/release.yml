@@ -3,22 +3,10 @@ name: Release
 on:
   push:
     tags:
-      - 'a2a/v*'
-      - 'a2a-client/v*'
-      - 'agent/v*'
-      - 'coding/v*'
-      - 'conductor/v*'
-      - 'eval/v*'
-      - 'experiment/v*'
-      - 'guardrails/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
-      - 'introspect/v*'
-      - 'llm-router/v*'
       - 'mcp/v*'
-      - 'mcp-client/v*'
       - 'proof/v*'
-      - 'shell/v*'
       - 'todo-worker/v*'
       - 'todo-worker-python/v*'
   workflow_dispatch:

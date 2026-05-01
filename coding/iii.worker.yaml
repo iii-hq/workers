@@ -1,7 +1,0 @@
-iii: v1
-name: coding
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-coding
-description: Code-generation / refactor assistant
