@@ -750,9 +750,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
+ "harness-types",
  "iii-sdk",
  "log",
- "models-catalog",
+ "once_cell",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -922,18 +924,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "models-catalog"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "harness-types",
- "iii-sdk",
- "once_cell",
- "serde",
- "serde_json",
 ]
 
 [[package]]

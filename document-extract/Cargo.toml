@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/document-extract", "crates/harness-types"]
+members = ["crates/harness-types"]
 
 [package]
 name = "iii-document-extract"
@@ -11,16 +11,26 @@ repository = "https://github.com/iii-hq/workers"
 authors = ["iii contributors"]
 publish = false
 
+[lib]
+name = "document_extract"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-document-extract"
 path = "src/main.rs"
 
 [dependencies]
-document-extract = { path = "crates/document-extract" }
+harness-types = { path = "crates/harness-types" }
 iii-sdk = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+pdf-extract = "0.7"
+docx-rs = "0.4"
+infer = "0.16"
 log = "0.4"
 env_logger = "0.11"
 
@@ -40,18 +50,11 @@ anyhow = "1"
 thiserror = "2"
 async-trait = "0.1"
 tracing = "0.1"
-reqwest = { version = "0.12", features = ["stream", "json"] }
-futures = "0.3"
-bytes = "1"
-url = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-regex = "1"
-once_cell = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
@@ -123,3 +126,6 @@ format_push_string = "allow"
 uninlined_format_args = "allow"
 too_long_first_doc_paragraph = "allow"
 map_unwrap_or = "allow"
+
+[lints]
+workspace = true
