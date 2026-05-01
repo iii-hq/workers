@@ -8,23 +8,11 @@ on:
         required: true
         type: choice
         options:
-          - a2a
-          - a2a-client
-          - agent
-          - coding
-          - conductor
-          - eval
-          - experiment
-          - guardrails
           - iii-lsp
           - iii-lsp-vscode
           - image-resize
-          - introspect
-          - llm-router
           - mcp
-          - mcp-client
           - proof
-          - shell
           - todo-worker
           - todo-worker-python
       bump:

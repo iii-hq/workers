@@ -1,7 +1,0 @@
-iii: v1
-name: a2a-client
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-a2a-client
-description: Consume external A2A agents; register their skills as iii functions.

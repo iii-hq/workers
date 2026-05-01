@@ -1,7 +1,0 @@
-iii: v1
-name: eval
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-eval
-description: OTel span ingestion, percentiles, baseline + drift detection, health score
