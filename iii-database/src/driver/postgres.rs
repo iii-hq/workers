@@ -695,6 +695,53 @@ mod tests {
         }
     }
 
+    /// Regression: integration test for the layered NUMERIC decode path
+    /// against a live postgres. Exercises three values that previously
+    /// failed the entire query because rust_decimal returned Err for them:
+    ///   - 'NaN'::numeric            → rust_decimal Err(ConversionTo)
+    ///   - very large numeric        → rust_decimal Err(ExceedsMaximumPossibleValue)
+    ///   - 'Infinity'::numeric       → rust_decimal Err(ConversionTo)
+    /// The fix routes these through PgNumericText, which decodes the
+    /// Postgres binary format directly and surfaces a precision-preserving
+    /// string. This test asserts the wiring: `try_get<rust_decimal>` errors,
+    /// `try_get<PgNumericText>` succeeds, and the final RowValue carries
+    /// the right string. Gated on TEST_POSTGRES_URL like the other pg tests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_query_falls_back_to_binary_parser_for_numeric_edge_cases() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT 'NaN'::numeric                                AS nan, \
+                    'Infinity'::numeric                            AS pinf, \
+                    '-Infinity'::numeric                           AS ninf, \
+                    100000000000000000000000000000::numeric        AS big",
+            &[],
+            30_000,
+        )
+        .await
+        .unwrap();
+        match &r.rows[0].0[0] {
+            RowValue::Decimal(s) => assert_eq!(s, "NaN"),
+            other => panic!("nan: expected Decimal(\"NaN\"), got {other:?}"),
+        }
+        match &r.rows[0].0[1] {
+            RowValue::Decimal(s) => assert_eq!(s, "Infinity"),
+            other => panic!("pinf: expected Decimal(\"Infinity\"), got {other:?}"),
+        }
+        match &r.rows[0].0[2] {
+            RowValue::Decimal(s) => assert_eq!(s, "-Infinity"),
+            other => panic!("ninf: expected Decimal(\"-Infinity\"), got {other:?}"),
+        }
+        // 10^29 — beyond rust_decimal's ~10^28 cap. Pre-fix this exploded the
+        // entire query; now the binary parser stringifies it exactly.
+        match &r.rows[0].0[3] {
+            RowValue::Decimal(s) => {
+                assert_eq!(s, "100000000000000000000000000000");
+            }
+            other => panic!("big: expected Decimal, got {other:?}"),
+        }
+    }
+
     /// Unit tests for the binary NUMERIC fallback parser. Drive it with
     /// crafted byte sequences in the documented Postgres format so we don't
     /// need a live postgres connection — the parser is the part of the fix

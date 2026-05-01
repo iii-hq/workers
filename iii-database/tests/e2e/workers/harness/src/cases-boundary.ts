@@ -303,6 +303,31 @@ export const BOUNDARY_CASES: TestCase[] = [
     },
   },
   {
+    // Regression: rust_decimal::Decimal::from_sql returns Err for NaN,
+    // ±Infinity, and values exceeding its 96-bit range
+    // (rust_decimal-1.41/src/postgres/driver.rs:91, 109). The previous
+    // NUMERIC arm let those errors propagate, failing the entire query.
+    // The driver now layers a custom binary parser (PgNumericText) as
+    // fallback; this case exercises the fallback end-to-end against a
+    // real postgres so we know the `try_get → from_sql → fall-through`
+    // wiring holds beyond the unit tests on the parser itself.
+    name: 'NUMERIC edge cases route through binary fallback (postgres)',
+    applies: ['pg_db'],
+    async run({ driver, call }) {
+      const q = await call('iii-database::query', {
+        db: driver,
+        sql: `SELECT 'NaN'::numeric                          AS nan,
+                     'Infinity'::numeric                     AS pinf,
+                     '-Infinity'::numeric                    AS ninf,
+                     100000000000000000000000000000::numeric AS big`,
+      });
+      expectEqual(q.rows[0].nan,  'NaN',                              'NaN survives via binary fallback');
+      expectEqual(q.rows[0].pinf, 'Infinity',                         '+Infinity survives via binary fallback');
+      expectEqual(q.rows[0].ninf, '-Infinity',                        '-Infinity survives via binary fallback');
+      expectEqual(q.rows[0].big,  '100000000000000000000000000000',   '10^29 (beyond rust_decimal) survives via binary fallback');
+    },
+  },
+  {
     // Regression: `String: FromSql::accepts` (postgres-types-0.2/src/lib.rs:729)
     // is gated to TEXT/VARCHAR/BPCHAR/NAME/UNKNOWN — it rejects NUMERIC at
     // runtime with WrongType. Pre-fix, every SELECT touching a NUMERIC column
