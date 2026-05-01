@@ -852,7 +852,6 @@ name = "iii-document-extract"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "docx-rs",
  "env_logger",
  "iii-sdk",
