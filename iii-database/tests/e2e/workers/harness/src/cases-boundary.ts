@@ -303,6 +303,43 @@ export const BOUNDARY_CASES: TestCase[] = [
     },
   },
   {
+    // Regression: `String: FromSql::accepts` (postgres-types-0.2/src/lib.rs:729)
+    // is gated to TEXT/VARCHAR/BPCHAR/NAME/UNKNOWN — it rejects NUMERIC at
+    // runtime with WrongType. Pre-fix, every SELECT touching a NUMERIC column
+    // failed; the driver now decodes via rust_decimal::Decimal and stringifies
+    // for the wire. We exercise positive, negative, fractional, and zero
+    // values to make sure the conversion path holds end-to-end.
+    name: 'NUMERIC columns decode to string (postgres)',
+    applies: ['pg_db'],
+    async run({ driver, call }) {
+      await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS bx_numeric' });
+      await call('iii-database::execute', {
+        db: driver,
+        sql: 'CREATE TABLE bx_numeric (label TEXT NOT NULL, n NUMERIC NOT NULL)',
+      });
+      await call('iii-database::execute', {
+        db: driver,
+        sql: `INSERT INTO bx_numeric (label, n) VALUES
+                ('exact',  12345.6789),
+                ('negf',   -0.001),
+                ('zero',   0),
+                ('big',    999999999999.99)`,
+      });
+      const q = await call('iii-database::query', {
+        db: driver,
+        sql: 'SELECT label, n FROM bx_numeric ORDER BY label',
+      });
+      const byLabel = Object.fromEntries(q.rows.map((r: Record<string, unknown>) => [r.label, r.n]));
+      // rust_decimal canonical stringification — no trailing zeros beyond what
+      // the Decimal carries.
+      expectEqual(byLabel.exact, '12345.6789', 'NUMERIC positive fractional');
+      expectEqual(byLabel.negf,  '-0.001',     'NUMERIC negative fractional');
+      expectEqual(byLabel.zero,  '0',          'NUMERIC zero');
+      expectEqual(byLabel.big,   '999999999999.99', 'NUMERIC large value');
+      await call('iii-database::execute', { db: driver, sql: 'DROP TABLE bx_numeric' });
+    },
+  },
+  {
     // Regression: postgres-types' chrono FromSql impls bind by exact OID —
     // `DateTime<Utc>: accepts!(TIMESTAMPTZ)`, `NaiveDateTime: accepts!(TIMESTAMP)`.
     // Decoding `TIMESTAMP WITHOUT TIME ZONE` as `DateTime<Utc>` failed at

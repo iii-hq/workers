@@ -199,11 +199,14 @@ fn pg_cell_to_row_value(
             None => RowValue::Null,
         },
         T::NUMERIC => {
-            // postgres-types does not implement FromSql for `Decimal` natively.
-            // Coerce via text representation: SELECT n::text — but we receive
-            // bytes. Use rust_decimal-free shortcut: read as String.
-            match row.try_get::<_, Option<String>>(idx).map_err(map_err)? {
-                Some(s) => RowValue::Decimal(s),
+            // `String: FromSql::accepts` is gated to TEXT/VARCHAR/BPCHAR/NAME/
+            // UNKNOWN (see postgres-types-0.2/src/lib.rs:702→729) — it rejects
+            // NUMERIC at runtime with WrongType. Decode via rust_decimal which
+            // declares `accepts!(NUMERIC)` under the `db-tokio-postgres`
+            // feature; stringify so RowValue::Decimal stays a precision-
+            // preserving wire representation.
+            match get!(rust_decimal::Decimal) {
+                Some(d) => RowValue::Decimal(d.to_string()),
                 None => RowValue::Null,
             }
         }
@@ -502,6 +505,44 @@ mod tests {
             &r.rows[0].0[0],
             RowValue::BigInt(9_007_199_254_740_993)
         ));
+    }
+
+    /// Regression: `String: FromSql::accepts` is gated to TEXT-family OIDs
+    /// (postgres-types-0.2/src/lib.rs:729), so the previous
+    /// `try_get::<_, Option<String>>` on a NUMERIC column failed at runtime
+    /// with WrongType and the entire RPC call rejected. The driver now
+    /// decodes via `rust_decimal::Decimal` (which declares
+    /// `accepts!(NUMERIC)` under the `db-tokio-postgres` feature) and
+    /// stringifies to keep RowValue::Decimal precision-preserving on the
+    /// wire. This test pins both that the decode succeeds and that the
+    /// stringified form matches the source literal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_query_decodes_numeric_to_string() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT 12345.6789::numeric AS exact, \
+                    -0.001::numeric          AS negf, \
+                    0::numeric               AS zero",
+            &[],
+            30_000,
+        )
+        .await
+        .unwrap();
+        match &r.rows[0].0[0] {
+            RowValue::Decimal(s) => assert_eq!(s, "12345.6789"),
+            other => panic!("exact: expected Decimal, got {other:?}"),
+        }
+        match &r.rows[0].0[1] {
+            RowValue::Decimal(s) => assert_eq!(s, "-0.001"),
+            other => panic!("negf: expected Decimal, got {other:?}"),
+        }
+        // rust_decimal stringifies zero as "0" (no trailing decimals when
+        // dscale=0); we just assert it's a Decimal variant carrying "0".
+        match &r.rows[0].0[2] {
+            RowValue::Decimal(s) => assert_eq!(s, "0"),
+            other => panic!("zero: expected Decimal, got {other:?}"),
+        }
     }
 
     /// Regression: `DateTime<Utc>: FromSql` declares `accepts!(TIMESTAMPTZ)`
