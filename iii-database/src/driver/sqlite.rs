@@ -118,6 +118,18 @@ fn is_insert(sql: &str) -> bool {
     sql.trim_start().to_ascii_uppercase().starts_with("INSERT")
 }
 
+/// Returns true if the prepared statement will surface result rows, or the
+/// caller explicitly requested row capture via `returning`. SQLite's
+/// `Statement::column_count` is the planner's source-of-truth: it returns
+/// `> 0` for any statement shape that produces rows — `SELECT`,
+/// `WITH cte AS (...) SELECT ...`, `VALUES (...)`, `PRAGMA foreign_keys`,
+/// `EXPLAIN QUERY PLAN`, and any DML with a `RETURNING` clause regardless
+/// of casing or whitespace. Replaces brittle text-prefix matches that
+/// false-negatived CTE-prefixed SELECTs and aborted transactions for them.
+fn statement_returns_rows(stmt: &rusqlite::Statement<'_>, returning: &[String]) -> bool {
+    !returning.is_empty() || stmt.column_count() > 0
+}
+
 pub async fn execute(
     pool: &SqlitePool,
     sql: &str,
@@ -137,7 +149,7 @@ pub async fn execute(
     let conn = pool.acquire().await?;
     let sql = sql.to_string();
     let params = params.to_vec();
-    let has_returning = !returning.is_empty() || sql.to_ascii_uppercase().contains(" RETURNING ");
+    let returning = returning.to_vec();
 
     tokio::task::spawn_blocking(move || -> Result<ExecuteResult, DbError> {
         conn.with(|c| {
@@ -145,90 +157,63 @@ pub async fn execute(
             let bound_refs: Vec<&dyn rusqlite::ToSql> =
                 bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
-            if has_returning {
+            // Always prepare first: `Statement::column_count` is the planner's
+            // source of truth for whether the statement produces rows, and it
+            // works uniformly for SELECT, CTE-prefixed SELECT, VALUES, PRAGMA,
+            // EXPLAIN, and DML-with-RETURNING regardless of casing/whitespace.
+            // The previous text-prefix heuristic missed CTE-prefixed SELECTs
+            // and DML-with-RETURNING split across lines, falling through to
+            // `c.execute(...)` which errored with ExecuteReturnedResults.
+            let (affected_rows, returned_rows, returned_columns) = {
                 let mut stmt = c.prepare(&sql).map_err(map_err)?;
-                let columns: Vec<ColumnMeta> = stmt
-                    .columns()
-                    .into_iter()
-                    .map(|col| ColumnMeta {
-                        name: col.name().to_string(),
-                        ty: col.decl_type().unwrap_or("").to_string(),
-                    })
-                    .collect();
-                let n = columns.len();
-                let mut returned: Vec<Row> = Vec::new();
-                let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
-                while let Some(row) = rows.next().map_err(map_err)? {
-                    let mut vals = Vec::with_capacity(n);
-                    for i in 0..n {
-                        vals.push(row_value_at(row, i)?);
+                if statement_returns_rows(&stmt, &returning) {
+                    let columns: Vec<ColumnMeta> = stmt
+                        .columns()
+                        .into_iter()
+                        .map(|col| ColumnMeta {
+                            name: col.name().to_string(),
+                            ty: col.decl_type().unwrap_or("").to_string(),
+                        })
+                        .collect();
+                    let n = columns.len();
+                    let mut returned: Vec<Row> = Vec::new();
+                    let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
+                    while let Some(row) = rows.next().map_err(map_err)? {
+                        let mut vals = Vec::with_capacity(n);
+                        for i in 0..n {
+                            vals.push(row_value_at(row, i)?);
+                        }
+                        returned.push(Row(vals));
                     }
-                    returned.push(Row(vals));
+                    (returned.len() as u64, returned, columns)
+                } else {
+                    let affected = stmt.execute(bound_refs.as_slice()).map_err(map_err)?;
+                    (affected as u64, vec![], vec![])
                 }
-                // last_insert_rowid() is sticky per-connection: it retains
-                // the rowid from any prior INSERT on this physical connection
-                // and survives intervening UPDATE/DELETE. The pool reuses
-                // connections, so a non-INSERT statement here would otherwise
-                // report a stale rowid from someone else's earlier INSERT.
-                let last_insert_id = if is_insert(&sql) {
-                    let r = c.last_insert_rowid();
-                    if r != 0 {
-                        Some(r.to_string())
-                    } else {
-                        None
-                    }
+            };
+
+            // last_insert_rowid() is sticky per-connection: it retains the
+            // rowid from any prior INSERT on this physical connection and
+            // survives intervening UPDATE/DELETE. The pool reuses connections,
+            // so a non-INSERT statement here would otherwise report a stale
+            // rowid from someone else's earlier INSERT. Read it after the
+            // prepared statement is dropped so we hold no stale borrow.
+            let last_insert_id = if is_insert(&sql) {
+                let r = c.last_insert_rowid();
+                if r != 0 {
+                    Some(r.to_string())
                 } else {
                     None
-                };
-                Ok(ExecuteResult {
-                    affected_rows: returned.len() as u64,
-                    last_insert_id,
-                    returned_rows: returned,
-                    returned_columns: columns,
-                })
-            } else {
-                // rusqlite's `Connection::execute` returns `ExecuteReturnedResults`
-                // when the SQL produces rows (e.g. a SELECT). Postgres' tokio-postgres
-                // and mysql_async accept SELECT-via-execute and report 0 affected
-                // rows; we normalize sqlite to the same contract by draining the
-                // statement via `prepare + query` instead of failing.
-                match c.execute(&sql, bound_refs.as_slice()) {
-                    Ok(affected) => {
-                        let last_insert_id = if is_insert(&sql) {
-                            let r = c.last_insert_rowid();
-                            if r != 0 {
-                                Some(r.to_string())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        Ok(ExecuteResult {
-                            affected_rows: affected as u64,
-                            last_insert_id,
-                            returned_rows: vec![],
-                            returned_columns: vec![],
-                        })
-                    }
-                    Err(rusqlite::Error::ExecuteReturnedResults) => {
-                        // Drain the rows so the statement actually runs (and any
-                        // side effects in the user SQL fire) but discard them —
-                        // execute()'s response shape doesn't carry result rows
-                        // unless `returning` was set.
-                        let mut stmt = c.prepare(&sql).map_err(map_err)?;
-                        let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
-                        while rows.next().map_err(map_err)?.is_some() {}
-                        Ok(ExecuteResult {
-                            affected_rows: 0,
-                            last_insert_id: None,
-                            returned_rows: vec![],
-                            returned_columns: vec![],
-                        })
-                    }
-                    Err(e) => Err(map_err(e)),
                 }
-            }
+            } else {
+                None
+            };
+            Ok(ExecuteResult {
+                affected_rows,
+                last_insert_id,
+                returned_rows,
+                returned_columns,
+            })
         })
     })
     .await
@@ -321,12 +306,16 @@ fn run_tx_steps(
         let bound_refs: Vec<&dyn rusqlite::ToSql> =
             bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
-        let upper = stmt.sql.to_ascii_uppercase();
-        let is_returning = upper.contains(" RETURNING ");
-        let is_select = upper.trim_start().starts_with("SELECT");
-
-        if is_select || is_returning {
-            let mut prepared = c.prepare(&stmt.sql).map_err(|e| step_err(idx, e))?;
+        // Route via SQLite's planner (Statement::column_count) instead of
+        // text matching on the SQL prefix. Previously, statements like
+        // `WITH cte AS (...) SELECT ...`, `VALUES (1),(2)`, `PRAGMA ...`,
+        // `EXPLAIN QUERY PLAN ...`, or `INSERT ... RETURNING` with the
+        // RETURNING keyword on a new line slipped past the
+        // `is_select || is_returning` heuristic and fell through to
+        // `c.execute(...)`, which errors with ExecuteReturnedResults and
+        // aborts the entire transaction.
+        let mut prepared = c.prepare(&stmt.sql).map_err(|e| step_err(idx, e))?;
+        if statement_returns_rows(&prepared, &[]) {
             let n = prepared.columns().len();
             let mut rows_out: Vec<Row> = Vec::new();
             let mut rows = prepared
@@ -344,8 +333,8 @@ fn run_tx_steps(
                 rows: rows_out,
             });
         } else {
-            let affected = c
-                .execute(&stmt.sql, bound_refs.as_slice())
+            let affected = prepared
+                .execute(bound_refs.as_slice())
                 .map_err(|e| step_err(idx, e))?;
             results.push(TxStepResult {
                 affected_rows: affected as u64,
@@ -587,18 +576,77 @@ mod tests {
         }
     }
 
+    /// Regression: `is_select || is_returning` text matching missed
+    /// CTE-prefixed SELECTs (start with `WITH`, not `SELECT`) and aborted
+    /// the entire transaction by routing them to `c.execute(...)` which
+    /// errors with `ExecuteReturnedResults`. After switching to
+    /// `Statement::column_count` routing, all row-producing statement
+    /// shapes flow through the row-capture path correctly.
     #[tokio::test(flavor = "multi_thread")]
-    async fn execute_with_select_returns_zero_affected_rows() {
-        // Symmetry with postgres + mysql drivers: execute(SELECT) must not throw.
-        // Postgres' tokio-postgres and mysql's mysql_async accept SELECT through
-        // their execute paths and report 0 affected rows; rusqlite's
-        // Connection::execute returns ExecuteReturnedResults instead, which the
-        // worker now intercepts and normalizes.
+    async fn transaction_handles_cte_select_values_and_multiline_returning() {
+        let p = pool().await;
+        let s = p.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || {
+            s.with(|c| c.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, n INT)"))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let stmts = vec![
+            // CTE-prefixed SELECT — does not start with "SELECT"
+            TxStatement {
+                sql: "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte".into(),
+                params: vec![],
+            },
+            // VALUES — produces rows with no SELECT or RETURNING keyword
+            TxStatement {
+                sql: "VALUES (10), (20), (30)".into(),
+                params: vec![],
+            },
+            // INSERT...RETURNING with the keyword on a new line — fails the
+            // `contains(" RETURNING ")` text check (no surrounding space on
+            // the right side).
+            TxStatement {
+                sql: "INSERT INTO t (n) VALUES (?)\nRETURNING\nid, n".into(),
+                params: vec![JsonParam::Int(42)],
+            },
+            // Plain DML — doesn't produce rows.
+            TxStatement {
+                sql: "UPDATE t SET n = n + 1 WHERE id = ?".into(),
+                params: vec![JsonParam::Int(1)],
+            },
+        ];
+
+        let results = transaction(&p, stmts, None).await.unwrap();
+        assert_eq!(results.len(), 4);
+        // CTE SELECT → 1 row
+        assert_eq!(results[0].rows.len(), 1);
+        assert_eq!(results[0].affected_rows, 1);
+        // VALUES → 3 rows
+        assert_eq!(results[1].rows.len(), 3);
+        // INSERT...RETURNING → 1 returned row, columns id+n
+        assert_eq!(results[2].rows.len(), 1);
+        // UPDATE → no rows, affected_rows reflects the actual update count
+        assert!(results[3].rows.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_with_select_does_not_throw_and_surfaces_rows() {
+        // Cross-driver invariant: execute(SELECT) must not throw — rusqlite's
+        // Connection::execute returns ExecuteReturnedResults for row-producing
+        // statements, which previously the driver caught with a fallback that
+        // drained rows and reported 0 affected. After switching to
+        // `statement_returns_rows` routing (planner-driven via column_count),
+        // SELECT-via-execute now goes through the row-capture path and
+        // surfaces the result rows on `returned_rows`. Strictly more useful
+        // than silently dropping the rows the caller's SQL produced.
         let p = pool().await;
         let r = execute(&p, "SELECT 1 AS v", &[], &[]).await.unwrap();
-        assert_eq!(r.affected_rows, 0);
-        assert!(r.returned_rows.is_empty());
-        assert!(r.returned_columns.is_empty());
+        assert_eq!(r.affected_rows, 1);
+        assert_eq!(r.returned_columns.len(), 1);
+        assert_eq!(r.returned_columns[0].name, "v");
+        assert_eq!(r.returned_rows.len(), 1);
         assert!(r.last_insert_id.is_none());
     }
 

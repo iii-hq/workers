@@ -103,4 +103,33 @@ export const TRANSACTION_EDGE_CASES: TestCase[] = [
       await call('iii-database::execute', { db: driver, sql: 'DROP TABLE tx_fail0' });
     },
   },
+  {
+    // Regression: the sqlite driver previously routed transaction steps via
+    // brittle text matching (`starts_with("SELECT") || contains(" RETURNING ")`),
+    // which mis-classified row-producing statements that begin with `WITH ...`
+    // (CTE-prefixed SELECT) and `VALUES (...)`. Both were sent through
+    // `c.execute()` which errors with ExecuteReturnedResults and aborted the
+    // entire transaction. The driver now routes via the planner's
+    // column_count(), which handles every statement shape correctly.
+    //
+    // Gated to sqlite_db: postgres/mysql tx paths use their own routing and
+    // accept these statement shapes already. The bug was sqlite-specific.
+    name: 'transaction handles CTE SELECT and VALUES (sqlite)',
+    applies: ['sqlite_db'],
+    async run({ driver, call }) {
+      const r = await call('iii-database::transaction', {
+        db: driver,
+        statements: [
+          { sql: 'WITH cte AS (SELECT 1 AS n) SELECT n FROM cte' },
+          { sql: 'VALUES (10), (20), (30)' },
+        ],
+      });
+      expectEqual(r.committed, true, 'CTE+VALUES tx committed');
+      expect(Array.isArray(r.results) && r.results.length === 2, 'two step results');
+      // CTE SELECT → 1 row
+      expectEqual(r.results[0].rows.length, 1, 'CTE step row count');
+      // VALUES → 3 rows
+      expectEqual(r.results[1].rows.length, 3, 'VALUES step row count');
+    },
+  },
 ];
