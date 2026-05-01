@@ -1,0 +1,7 @@
+iii: v1
+name: turn-orchestrator
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-turn-orchestrator
+description: Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down.

@@ -1,0 +1,9 @@
+iii: v1
+name: shell-subagent
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-shell-subagent
+description: Spawn child agent sessions under shell::subagent::* via run::start_and_wait.
+dependencies:
+  turn-orchestrator: "^0.1.0"

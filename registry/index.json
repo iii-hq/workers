@@ -114,6 +114,46 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "shell-bash": {
+      "type": "binary",
+      "description": "Sandboxed shell execution under shell::bash::* — wraps the engine sandbox::exec primitive",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "shell-bash",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "shell-filesystem": {
+      "type": "binary",
+      "description": "Sandboxed filesystem operations under shell::fs::* — read, write, list, stat, glob",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "shell-filesystem",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "shell-subagent": {
+      "type": "binary",
+      "description": "Spawn child agent sessions under shell::subagent::* via run::start_and_wait",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "shell-subagent",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "turn-orchestrator": {
+      "type": "binary",
+      "description": "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "turn-orchestrator",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "todo-worker": {
       "description": "Quickstart CRUD todo worker using the Node.js iii SDK",
       "image": "docker.io/andersonofl/todo-worker",

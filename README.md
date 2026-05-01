@@ -24,6 +24,10 @@ matching GitHub Release asset for the host's target triple.
 | [`models-catalog`](models-catalog/) | Rust | Model capabilities knowledge base under `models::*` (list/get/supports/register). |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
+| [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
+| [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
+| [`shell-subagent`](shell-subagent/) | Rust | Spawn child agent sessions under `shell::subagent::*` via `run::start_and_wait`. |
+| [`turn-orchestrator`](turn-orchestrator/) | Rust | Durable `run::start` state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
 | [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |
 
@@ -48,7 +52,8 @@ flow — see each module's README for specifics.
 
 Rust workers that ship as standalone binaries (`auth-credentials`,
 `auth-rbac`, `document-extract`, `guardrails`, `iii-lsp`, `image-resize`,
-`llm-budget`, `mcp`, `models-catalog`, `session-tree`) are released via
+`llm-budget`, `mcp`, `models-catalog`, `session-tree`, `shell-bash`,
+`shell-filesystem`, `shell-subagent`, `turn-orchestrator`) are released via
 GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump

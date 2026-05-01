@@ -1,0 +1,7 @@
+iii: v1
+name: shell-filesystem
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-shell-filesystem
+description: Sandboxed filesystem operations under shell::fs::* — read, write, list, stat, glob.
