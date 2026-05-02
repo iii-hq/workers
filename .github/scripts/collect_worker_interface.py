@@ -49,26 +49,27 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
     return workers_json
 
 
+def collect_triggers() -> dict[str, object] | None:
+    try:
+        return run_iii("engine::triggers::list", {"include_internal": True})
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        print(
+            f"::warning::could not collect triggers; publishing triggers=[]: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True)
     parser.add_argument("--out", default="worker-interface.json")
-    parser.add_argument("--allow-missing-triggers", action="store_true")
     parser.add_argument("--wait-seconds", type=int, default=0)
     args = parser.parse_args()
 
     workers_json = wait_for_worker(args.worker, args.wait_seconds)
     functions_json = run_iii("engine::functions::list", {"include_internal": True})
-
-    triggers_json = None
-    try:
-        triggers_json = run_iii("engine::triggers::list", {"include_internal": True})
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        if not args.allow_missing_triggers:
-            raise RuntimeError(
-                "could not collect triggers; confirm the engine exposes "
-                "`engine::triggers::list` or pass --allow-missing-triggers"
-            ) from exc
+    triggers_json = collect_triggers()
 
     interface = normalize_worker_interface(
         worker_name=args.worker,

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import contextlib
+import io
+import subprocess
 import unittest
 
 import collect_worker_interface
@@ -37,6 +40,20 @@ class CollectWorkerInterfaceTests(unittest.TestCase):
                 collect_worker_interface.wait_for_worker("mcp", 0),
                 snapshot,
             )
+        finally:
+            collect_worker_interface.run_iii = original_run_iii
+
+    def test_collect_triggers_returns_none_when_engine_listing_fails(self):
+        original_run_iii = collect_worker_interface.run_iii
+        try:
+            collect_worker_interface.run_iii = lambda _function_id, _payload: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, ["iii"])
+            )
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertIsNone(collect_worker_interface.collect_triggers())
+            self.assertIn("publishing triggers=[]", stderr.getvalue())
         finally:
             collect_worker_interface.run_iii = original_run_iii
 

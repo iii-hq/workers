@@ -39,11 +39,6 @@ on:
         required: false
         type: boolean
         default: false
-      allow_missing_triggers:
-        description: 'Publish triggers=[] if engine trigger listing is unavailable'
-        required: false
-        type: boolean
-        default: true
       api_url:
         description: 'Workers registry base URL'
         required: false
@@ -115,12 +110,8 @@ jobs:
         if: inputs.collect_interface == true
         env:
           WORKER: ${{ inputs.worker }}
-          ALLOW_MISSING_TRIGGERS: ${{ inputs.allow_missing_triggers }}
         run: |
           args=("--worker" "$WORKER" "--out" "worker-interface.json" "--wait-seconds" "120")
-          if [[ "$ALLOW_MISSING_TRIGGERS" == "true" ]]; then
-            args+=("--allow-missing-triggers")
-          fi
           python3 .github/scripts/collect_worker_interface.py "${args[@]}"
 
       - name: Assert worker interface was collected
