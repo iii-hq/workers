@@ -112,7 +112,7 @@ fn aborted_message() -> AssistantMessage {
 
 async fn abort_set(iii: &III, session_id: &str) -> bool {
     iii.trigger(TriggerRequest {
-        function_id: state_flag::IS_SET_ID.into(),
+        function_id: "flag::is_set".into(),
         payload: json!({ "name": "abort", "session_id": session_id }),
         action: None,
         timeout_ms: None,
@@ -126,7 +126,7 @@ async fn abort_set(iii: &III, session_id: &str) -> bool {
 async fn drain_queue(iii: &III, name: &str, session_id: &str) -> Vec<AgentMessage> {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: durable_queue::DRAIN_ID.into(),
+            function_id: "queue::drain".into(),
             payload: json!({ "name": name, "session_id": session_id }),
             action: None,
             timeout_ms: None,

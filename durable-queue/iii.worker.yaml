@@ -1,0 +1,7 @@
+iii: v1
+name: durable-queue
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-durable-queue
+description: Per-session durable queues under queue::* — push, drain, peek backed by iii state.

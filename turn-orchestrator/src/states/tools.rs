@@ -235,7 +235,7 @@ async fn publish_collect(
         "timeout_ms": timeout_ms,
     });
     iii.trigger(TriggerRequest {
-        function_id: hook_fanout::FUNCTION_ID.into(),
+        function_id: "hooks::publish_collect".into(),
         payload,
         action: None,
         timeout_ms: None,
