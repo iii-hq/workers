@@ -1,6 +1,16 @@
 {
   "version": 1,
   "workers": {
+    "audit-log": {
+      "type": "binary",
+      "description": "Append-only JSON-lines audit log of every tool call + result on agent::after_tool_call",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "audit-log",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "auth-credentials": {
       "type": "binary",
       "description": "Provider credential vault under auth::* — API keys and OAuth tokens",
@@ -16,6 +26,26 @@
       "description": "HMAC API keys and workspace roles (owner/admin/member/viewer) under auth::rbac::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "auth-rbac",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "context-compaction": {
+      "type": "binary",
+      "description": "Subscriber that triggers session compaction once context-window thresholds are reached",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "context-compaction",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "dlp-scrubber": {
+      "type": "binary",
+      "description": "Hook subscriber on agent::after_tool_call that redacts common secret shapes (AWS/OpenAI/GitHub/Stripe/Google) in tool result text",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "dlp-scrubber",
       "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "has_checksum": true,
       "default_config": {},
@@ -46,6 +76,16 @@
       "description": "Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under guardrails::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "guardrails",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "harness-runtime": {
+      "type": "binary",
+      "description": "agent::stream_assistant provider router plus agent::abort and agent::push_steering / push_followup helpers",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "harness-runtime",
       "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "has_checksum": true,
       "default_config": {},
@@ -119,6 +159,26 @@
       "description": "Model capabilities knowledge base under models::* (list/get/supports/register)",
       "repo": "iii-hq/workers",
       "tag_prefix": "models-catalog",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "policy-denylist": {
+      "type": "binary",
+      "description": "Hook subscriber on agent::before_tool_call that blocks calls whose name is on a configured denylist",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "policy-denylist",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "session-corpus": {
+      "type": "binary",
+      "description": "Dataset publishing pipeline for completed sessions under corpus::* — secret scan, redact, review, publish",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "session-corpus",
       "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "has_checksum": true,
       "default_config": {},

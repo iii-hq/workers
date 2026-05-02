@@ -1,0 +1,7 @@
+iii: v1
+name: session-corpus
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-session-corpus
+description: Dataset publishing pipeline for completed sessions — secret scanning, redaction, review, and publish under corpus::*.

@@ -1,0 +1,7 @@
+iii: v1
+name: policy-denylist
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-policy-denylist
+description: Hook subscriber on agent::before_tool_call that blocks calls whose name matches a configured denylist.
