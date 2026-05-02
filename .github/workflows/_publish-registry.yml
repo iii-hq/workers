@@ -62,13 +62,62 @@ jobs:
       - name: Install pyyaml
         run: pip install --quiet pyyaml
 
+      - name: Install iii CLI
+        if: inputs.collect_interface == true
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
+      - name: Start III engine
+        if: inputs.collect_interface == true
+        run: |
+          set -euo pipefail
+          printf 'workers: []\n' > config.yaml
+          iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
+          echo "$!" > iii-engine.pid
+
+          for _ in {1..60}; do
+            if ! kill -0 "$(cat iii-engine.pid)" 2>/dev/null; then
+              echo "::error::iii engine exited before becoming ready"
+              cat iii-engine.log
+              exit 1
+            fi
+
+            if iii trigger --function-id='engine::workers::list' --payload='{}' >/tmp/iii-workers.json 2>/tmp/iii-trigger.err; then
+              cat /tmp/iii-workers.json
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          echo "::error::iii engine did not become ready"
+          cat /tmp/iii-trigger.err || true
+          cat iii-engine.log || true
+          exit 1
+
+      - name: Add local worker to III
+        if: inputs.collect_interface == true
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          iii worker add "./$WORKER" --force --reset-config --wait
+
       - name: Collect worker interface
         if: inputs.collect_interface == true
         env:
           WORKER: ${{ inputs.worker }}
           ALLOW_MISSING_TRIGGERS: ${{ inputs.allow_missing_triggers }}
         run: |
-          args=("--worker" "$WORKER" "--out" "worker-interface.json")
+          args=("--worker" "$WORKER" "--out" "worker-interface.json" "--wait-seconds" "120")
           if [[ "$ALLOW_MISSING_TRIGGERS" == "true" ]]; then
             args+=("--allow-missing-triggers")
           fi
@@ -147,4 +196,18 @@ jobs:
           if [[ "$http" != "200" ]]; then
             echo "::error::publish failed with HTTP $http"
             exit 1
+          fi
+
+      - name: Dump III logs
+        if: failure() && inputs.collect_interface == true
+        run: |
+          echo "::group::iii engine log"
+          tail -n 200 iii-engine.log || true
+          echo "::endgroup::"
+
+      - name: Stop III engine
+        if: always() && inputs.collect_interface == true
+        run: |
+          if [[ -f iii-engine.pid ]]; then
+            kill "$(cat iii-engine.pid)" 2>/dev/null || true
           fi
