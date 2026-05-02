@@ -1,0 +1,9 @@
+iii: v1
+name: provider-cli
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-cli
+description: Wrap installed coding CLIs (claude, codex, opencode, openclaw, hermes, pi, gemini, cursor-agent) as iii provider functions under provider::cli::*.
+dependencies:
+  shell-bash: "^0.1.0"

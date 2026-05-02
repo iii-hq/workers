@@ -1,0 +1,9 @@
+iii: v1
+name: provider-vercel-ai-gateway
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-vercel-ai-gateway
+description: OpenAI-compatible provider under provider::vercel-ai-gateway::*.
+dependencies:
+  auth-credentials: "^0.1.0"

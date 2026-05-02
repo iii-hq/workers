@@ -1,0 +1,16 @@
+[package]
+name = "overflow-classify"
+description = "Detect provider context-overflow errors and classify HTTP error kinds. Pure regex catalog re-derived from each provider's public API documentation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+harness-types = { path = "../harness-types" }
+regex = { workspace = true }
+once_cell = { workspace = true }
