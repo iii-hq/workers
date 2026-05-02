@@ -34,11 +34,6 @@ on:
         required: false
         type: string
         default: ''
-      collect_interface:
-        description: 'Collect functions/triggers from a running iii engine'
-        required: false
-        type: boolean
-        default: false
       api_url:
         description: 'Workers registry base URL'
         required: false
@@ -58,7 +53,6 @@ jobs:
         run: pip install --quiet pyyaml
 
       - name: Install iii CLI
-        if: inputs.collect_interface == true
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -71,7 +65,6 @@ jobs:
           iii --version
 
       - name: Start III engine
-        if: inputs.collect_interface == true
         run: |
           set -euo pipefail
           printf 'workers: []\n' > config.yaml
@@ -99,7 +92,6 @@ jobs:
           exit 1
 
       - name: Add local worker to III
-        if: inputs.collect_interface == true
         env:
           WORKER: ${{ inputs.worker }}
         run: |
@@ -107,7 +99,6 @@ jobs:
           iii worker add "./$WORKER" --force --reset-config --wait
 
       - name: Collect worker interface
-        if: inputs.collect_interface == true
         env:
           WORKER: ${{ inputs.worker }}
         run: |
@@ -115,19 +106,13 @@ jobs:
           python3 .github/scripts/collect_worker_interface.py "${args[@]}"
 
       - name: Assert worker interface was collected
-        if: inputs.collect_interface == true
         run: |
           python3 - <<'PY'
           import json
           data = json.load(open("worker-interface.json"))
           if not data.get("functions"):
-              raise SystemExit("collect_interface=true but no functions were collected")
+              raise SystemExit("no worker functions were collected")
           PY
-
-      - name: Create empty worker interface
-        if: inputs.collect_interface != true
-        run: |
-          printf '{ "functions": [], "triggers": [] }\n' > worker-interface.json
 
       - name: Resolve binary artifacts
         if: inputs.deploy == 'binary'
@@ -190,14 +175,14 @@ jobs:
           fi
 
       - name: Dump III logs
-        if: failure() && inputs.collect_interface == true
+        if: failure()
         run: |
           echo "::group::iii engine log"
           tail -n 200 iii-engine.log || true
           echo "::endgroup::"
 
       - name: Stop III engine
-        if: always() && inputs.collect_interface == true
+        if: always()
         run: |
           if [[ -f iii-engine.pid ]]; then
             kill "$(cat iii-engine.pid)" 2>/dev/null || true
