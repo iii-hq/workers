@@ -129,6 +129,42 @@ class PublishPayloadTests(unittest.TestCase):
             ],
         )
 
+    def test_normalize_worker_interface_rejects_missing_worker(self):
+        with self.assertRaisesRegex(ValueError, "expected exactly one worker"):
+            normalize_worker_interface(
+                worker_name="missing",
+                workers_json={"workers": []},
+                functions_json={"functions": []},
+                triggers_json={"triggers": []},
+            )
+
+    def test_normalize_worker_interface_accepts_no_triggers_source(self):
+        interface = normalize_worker_interface(
+            worker_name="image-resize",
+            workers_json={
+                "workers": [
+                    {
+                        "id": "worker-1",
+                        "name": "image-resize",
+                        "functions": ["image_resize::resize"],
+                    }
+                ]
+            },
+            functions_json={
+                "functions": [
+                    {
+                        "function_id": "image_resize::resize",
+                        "description": "Resize",
+                        "request_format": None,
+                        "response_format": None,
+                        "metadata": None,
+                    }
+                ]
+            },
+            triggers_json=None,
+        )
+        self.assertEqual(interface["triggers"], [])
+
     def test_build_binary_payload_has_registry_shape_and_binaries(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "image-resize"
