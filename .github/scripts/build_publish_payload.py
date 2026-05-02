@@ -5,8 +5,6 @@ import pathlib
 import sys
 from typing import Any
 
-import yaml
-
 
 def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if raw_deps in (None, ""):
@@ -36,6 +34,12 @@ def _extract_array(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ValueError(f"`{key}` must be an array")
     return value
+
+
+def _read_yaml(path: pathlib.Path) -> Any:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def normalize_worker_interface(
@@ -107,13 +111,13 @@ def build_payload(
     image_tag: str,
 ) -> dict[str, Any]:
     root = repo_root / worker
-    meta = yaml.safe_load((root / "iii.worker.yaml").read_text(encoding="utf-8")) or {}
+    meta = _read_yaml(root / "iii.worker.yaml") or {}
 
     readme_path = root / "README.md"
     readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
 
     config_path = root / "config.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    config = _read_yaml(config_path) if config_path.exists() else {}
     if config is None:
         config = {}
 
