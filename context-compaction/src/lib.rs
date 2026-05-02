@@ -3,8 +3,8 @@
 //! Subscribes to harness `agent::events/<session_id>` streams, accumulates
 //! token usage from `AgentEvent::TurnEnd` and `AssistantMessageEvent::Usage`,
 //! and triggers compaction when usage / context_window crosses the configured
-//! threshold (default 0.85). Persists the resulting summary via
-//! [`session_tree::compact`].
+//! threshold (default 0.85). Persists the resulting summary by calling
+//! `session::compact` on the iii bus (provided by the `session-tree` worker).
 
 use std::sync::Arc;
 
@@ -13,15 +13,24 @@ use harness_types::{
     AgentEvent, AgentMessage, AssistantMessageEvent, ContentBlock, ToolResultMessage, Usage,
 };
 use iii_sdk::{TriggerRequest, III};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use session_tree::{
-    compact as session_tree_compact, load_messages, CompactionDetails, SessionError, SessionStore,
-};
 use tokio::sync::Mutex;
 
 const DEFAULT_THRESHOLD_PCT: f32 = 0.85;
 const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 const FILE_OP_TOOLS: &[&str] = &["read", "write", "edit"];
+
+/// Set of file operations a compaction summarises. Inlined from the
+/// `session-tree` worker's wire shape; matches the JSON `details` field
+/// passed to `session::compact`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionDetails {
+    #[serde(default)]
+    pub read_files: Vec<String>,
+    #[serde(default)]
+    pub modified_files: Vec<String>,
+}
 
 /// Configuration for a single-session [`Compactor`].
 #[derive(Debug, Clone)]
@@ -102,10 +111,90 @@ pub trait SummariseFn: Send + Sync {
 /// Errors produced by the compactor.
 #[derive(Debug, thiserror::Error)]
 pub enum CompactionError {
-    #[error("storage error: {0}")]
-    Storage(#[from] SessionError),
+    #[error("session-tree error: {0}")]
+    Storage(String),
     #[error("summarise error: {0}")]
     Summarise(String),
+}
+
+/// Bus surface needed by the compactor — the two `session::*` operations.
+///
+/// Production callers wrap an `iii_sdk::III` via [`IiiSdkBus`]; tests inject
+/// an in-memory implementation. The trait is small on purpose: keep the
+/// abstraction scoped to exactly what the compactor needs from `session-tree`.
+#[async_trait]
+pub trait IiiBus: Send + Sync {
+    /// Load the active session's messages. Mirrors `session::messages`.
+    async fn load_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CompactionError>;
+
+    /// Append a compaction entry. Mirrors `session::compact`. Returns the new
+    /// entry's id.
+    async fn compact(
+        &self,
+        session_id: &str,
+        summary: &str,
+        details: &CompactionDetails,
+        tokens_before: u64,
+    ) -> Result<String, CompactionError>;
+}
+
+/// Production [`IiiBus`] backed by the iii bus. Calls `session::messages`
+/// and `session::compact` on whichever worker registered them
+/// (`session-tree` in the standard topology).
+pub struct IiiSdkBus {
+    pub iii: III,
+}
+
+impl IiiSdkBus {
+    pub fn new(iii: III) -> Self {
+        Self { iii }
+    }
+}
+
+#[async_trait]
+impl IiiBus for IiiSdkBus {
+    async fn load_messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, CompactionError> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "session::messages".to_string(),
+                payload: json!({ "session_id": session_id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+            .map_err(|e| CompactionError::Storage(e.to_string()))?;
+        let messages = resp.get("messages").cloned().unwrap_or_else(|| json!([]));
+        serde_json::from_value(messages).map_err(|e| CompactionError::Storage(e.to_string()))
+    }
+
+    async fn compact(
+        &self,
+        session_id: &str,
+        summary: &str,
+        details: &CompactionDetails,
+        tokens_before: u64,
+    ) -> Result<String, CompactionError> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "session::compact".to_string(),
+                payload: json!({
+                    "session_id": session_id,
+                    "summary": summary,
+                    "details": details,
+                    "tokens_before": tokens_before,
+                }),
+                action: None,
+                timeout_ms: Some(10_000),
+            })
+            .await
+            .map_err(|e| CompactionError::Storage(e.to_string()))?;
+        resp.get("entry_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| CompactionError::Storage("session::compact returned no entry_id".into()))
+    }
 }
 
 /// Internal state of an active compactor.
@@ -125,21 +214,20 @@ struct CompactionState {
 
 /// Watches `AgentEvent`s and triggers compaction when token usage exceeds
 /// `config.threshold_pct * config.context_window`.
-pub struct Compactor<S: SessionStore + Send + Sync + 'static, F: SummariseFn + 'static> {
-    pub store: Arc<S>,
+pub struct Compactor<F: SummariseFn + 'static> {
+    pub bus: Arc<dyn IiiBus>,
     pub summariser: Arc<F>,
     pub config: CompactionConfig,
     state: Mutex<CompactionState>,
 }
 
-impl<S, F> Compactor<S, F>
+impl<F> Compactor<F>
 where
-    S: SessionStore + Send + Sync + 'static,
     F: SummariseFn + 'static,
 {
-    pub fn new(store: Arc<S>, summariser: Arc<F>, config: CompactionConfig) -> Self {
+    pub fn new(bus: Arc<dyn IiiBus>, summariser: Arc<F>, config: CompactionConfig) -> Self {
         Self {
-            store,
+            bus,
             summariser,
             config,
             state: Mutex::new(CompactionState::default()),
@@ -208,14 +296,15 @@ where
         }
     }
 
-    /// Run compaction synchronously. Loads the active path, summarises it,
-    /// extracts file ops, and appends a `Compaction` entry.
+    /// Run compaction synchronously. Loads the active path via the bus,
+    /// summarises it, extracts file ops, and appends a `Compaction` entry
+    /// via `session::compact`.
     pub async fn compact_now(
         &self,
         custom_instructions: Option<String>,
     ) -> Result<String, CompactionError> {
         let session_id = self.config.session_id.clone();
-        let messages = load_messages(self.store.as_ref(), &session_id, None).await?;
+        let messages = self.bus.load_messages(&session_id).await?;
         let file_ops = extract_file_ops(&messages);
 
         let tokens_before = {
@@ -228,15 +317,10 @@ where
             .summarise(messages, custom_instructions)
             .await?;
 
-        let entry_id = session_tree_compact(
-            self.store.as_ref(),
-            &session_id,
-            summary,
-            file_ops,
-            None,
-            tokens_before,
-        )
-        .await?;
+        let entry_id = self
+            .bus
+            .compact(&session_id, &summary, &file_ops, tokens_before)
+            .await?;
 
         let mut state = self.state.lock().await;
         state.in_flight = false;
@@ -362,11 +446,6 @@ pub mod topics {
 /// Decide whether an `AgentEvent` payload (the wire form of [`AgentEvent`])
 /// signals a context-overflow condition that warrants a `transform_context`
 /// publication.
-///
-/// Returns `true` when the message in `MessageEnd`, `TurnEnd`, or
-/// `MessageUpdate` carries `error_kind == "context_overflow"`. Other shapes
-/// (including unrelated event types) return `false` so the subscriber stays a
-/// pure pass-through except on the trigger condition.
 pub fn payload_signals_overflow(payload: &serde_json::Value) -> bool {
     let kind = payload.get("type").and_then(serde_json::Value::as_str);
     let Some(kind) = kind else { return false };
@@ -376,7 +455,6 @@ pub fn payload_signals_overflow(payload: &serde_json::Value) -> bool {
         _ => None,
     };
     let Some(message) = message else { return false };
-    // AgentMessage is tagged: {"role": "assistant", "error_kind": "context_overflow", ...}
     let error_kind = message
         .get("error_kind")
         .and_then(serde_json::Value::as_str);
@@ -385,19 +463,9 @@ pub fn payload_signals_overflow(payload: &serde_json::Value) -> bool {
 
 /// Register the context-compaction subscriber on `iii`.
 ///
-/// On startup this:
-/// 1. Registers the function [`topics::SUBSCRIBER_FN`].
-/// 2. Binds it to the [`topics::AGENT_EVENTS`] pubsub topic via a
-///    `subscribe` trigger.
-///
-/// When an event with `error_kind == "context_overflow"` arrives the handler
-/// publishes a payload to [`topics::TRANSFORM_CONTEXT`] so downstream
-/// `transform_context` subscribers can produce a compacted message tail.
-///
 /// Returns a handle that can deregister both refs in one shot.
 pub fn register_with_iii(iii: &iii_sdk::III) -> Result<CompactionSubscriber, iii_sdk::IIIError> {
     use iii_sdk::{IIIError, RegisterFunctionMessage, RegisterTriggerInput, TriggerAction};
-    use serde_json::json;
 
     let iii_for_handler = iii.clone();
     let function_ref = iii.register_function((
@@ -470,7 +538,86 @@ mod tests {
         AssistantMessage, ContentBlock, ErrorKind, StopReason, TextContent, ToolResultMessage,
         UserMessage,
     };
-    use session_tree::{append_message, create_session, InMemoryStore};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// One compaction recorded by [`InMemoryBus::compact`]. `details` and
+    /// `tokens_before` are kept for richer assertions even when current
+    /// tests only check `entry_id` / `session_id` / `summary`.
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct CompactionRecord {
+        entry_id: String,
+        session_id: String,
+        summary: String,
+        details: CompactionDetails,
+        tokens_before: u64,
+    }
+
+    /// Fully in-process [`IiiBus`] for tests. Records every compaction so
+    /// assertions can read them back as typed records (cleaner than
+    /// matching JSON tags).
+    struct InMemoryBus {
+        messages: Mutex<HashMap<String, Vec<AgentMessage>>>,
+        compactions: Mutex<Vec<CompactionRecord>>,
+        seq: AtomicU64,
+    }
+
+    impl InMemoryBus {
+        fn new() -> Self {
+            Self {
+                messages: Mutex::new(HashMap::new()),
+                compactions: Mutex::new(Vec::new()),
+                seq: AtomicU64::new(0),
+            }
+        }
+
+        async fn seed_messages(&self, session_id: &str, msgs: Vec<AgentMessage>) {
+            self.messages
+                .lock()
+                .await
+                .insert(session_id.to_string(), msgs);
+        }
+
+        async fn recorded_compactions(&self) -> Vec<CompactionRecord> {
+            self.compactions.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl IiiBus for InMemoryBus {
+        async fn load_messages(
+            &self,
+            session_id: &str,
+        ) -> Result<Vec<AgentMessage>, CompactionError> {
+            Ok(self
+                .messages
+                .lock()
+                .await
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        async fn compact(
+            &self,
+            session_id: &str,
+            summary: &str,
+            details: &CompactionDetails,
+            tokens_before: u64,
+        ) -> Result<String, CompactionError> {
+            let n = self.seq.fetch_add(1, Ordering::SeqCst);
+            let entry_id = format!("compact-{n}");
+            self.compactions.lock().await.push(CompactionRecord {
+                entry_id: entry_id.clone(),
+                session_id: session_id.to_string(),
+                summary: summary.to_string(),
+                details: details.clone(),
+                tokens_before,
+            });
+            Ok(entry_id)
+        }
+    }
 
     struct MockSummariser {
         canned: String,
@@ -513,12 +660,12 @@ mod tests {
         }
     }
 
-    async fn compactor_for(
-        store: Arc<InMemoryStore>,
+    fn compactor_for(
+        bus: Arc<InMemoryBus>,
         session_id: String,
         threshold: f32,
         ctx_window: u64,
-    ) -> Arc<Compactor<InMemoryStore, MockSummariser>> {
+    ) -> Arc<Compactor<MockSummariser>> {
         let summariser = Arc::new(MockSummariser {
             canned: "summary".into(),
         });
@@ -526,7 +673,7 @@ mod tests {
             CompactionConfig::new(session_id, "anthropic".into(), "claude-opus-4-7".into());
         config.threshold_pct = threshold;
         config.context_window = ctx_window;
-        Arc::new(Compactor::new(store, summariser, config))
+        Arc::new(Compactor::new(bus, summariser, config))
     }
 
     #[tokio::test]
@@ -538,9 +685,8 @@ mod tests {
 
     #[tokio::test]
     async fn observe_folds_usage_into_rolling_total() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id, 0.99, 100_000).await;
+        let bus = Arc::new(InMemoryBus::new());
+        let comp = compactor_for(Arc::clone(&bus), "s1".into(), 0.99, 100_000);
 
         comp.observe(&turn_end_with_usage(100, 50)).await;
         comp.observe(&turn_end_with_usage(200, 25)).await;
@@ -551,9 +697,8 @@ mod tests {
 
     #[tokio::test]
     async fn current_usage_pct_math() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id, 0.99, 1_000).await;
+        let bus = Arc::new(InMemoryBus::new());
+        let comp = compactor_for(Arc::clone(&bus), "s1".into(), 0.99, 1_000);
         comp.observe(&turn_end_with_usage(300, 200)).await;
         let pct = comp.current_usage_pct().await;
         assert!((pct - 0.5).abs() < 1e-6);
@@ -561,18 +706,16 @@ mod tests {
 
     #[tokio::test]
     async fn current_usage_pct_zero_window_safe() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id, 0.5, 0).await;
+        let bus = Arc::new(InMemoryBus::new());
+        let comp = compactor_for(Arc::clone(&bus), "s1".into(), 0.5, 0);
         comp.observe(&turn_end_with_usage(10, 10)).await;
         assert!((comp.current_usage_pct().await - 0.0).abs() < f32::EPSILON);
     }
 
     #[tokio::test]
     async fn observe_streamed_usage_event_updates_state() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id, 0.99, 100_000).await;
+        let bus = Arc::new(InMemoryBus::new());
+        let comp = compactor_for(Arc::clone(&bus), "s1".into(), 0.99, 100_000);
 
         comp.observe(&AgentEvent::MessageUpdate {
             message: assistant_with_usage(0, 0),
@@ -606,20 +749,17 @@ mod tests {
 
     #[tokio::test]
     async fn threshold_trigger_spawns_compaction_only_once() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        append_message(
-            store.as_ref(),
+        let bus = Arc::new(InMemoryBus::new());
+        let session_id = "s1".to_string();
+        bus.seed_messages(
             &session_id,
-            None,
-            AgentMessage::User(UserMessage {
+            vec![AgentMessage::User(UserMessage {
                 content: vec![ContentBlock::Text(TextContent { text: "hi".into() })],
                 timestamp: 0,
-            }),
+            })],
         )
-        .await
-        .unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id.clone(), 0.5, 1_000).await;
+        .await;
+        let comp = compactor_for(Arc::clone(&bus), session_id.clone(), 0.5, 1_000);
 
         for _ in 0..5 {
             comp.observe(&turn_end_with_usage(200, 100)).await;
@@ -633,43 +773,36 @@ mod tests {
             }
         }
 
-        let entries = store.load_entries(&session_id).await.unwrap();
-        let compactions: Vec<_> = entries
-            .iter()
-            .filter(|e| matches!(e, session_tree::SessionEntry::Compaction { .. }))
-            .collect();
+        let recorded = bus.recorded_compactions().await;
         assert_eq!(
-            compactions.len(),
+            recorded.len(),
             1,
-            "exactly one compaction should be appended"
+            "exactly one compaction should be recorded"
         );
+        assert_eq!(recorded[0].session_id, session_id);
     }
 
     #[tokio::test]
     async fn compact_now_appends_compaction_entry_and_resets_state() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
-        append_message(
-            store.as_ref(),
+        let bus = Arc::new(InMemoryBus::new());
+        let session_id = "s1".to_string();
+        bus.seed_messages(
             &session_id,
-            None,
-            AgentMessage::User(UserMessage {
+            vec![AgentMessage::User(UserMessage {
                 content: vec![ContentBlock::Text(TextContent { text: "x".into() })],
                 timestamp: 0,
-            }),
+            })],
         )
-        .await
-        .unwrap();
-        let comp = compactor_for(Arc::clone(&store), session_id.clone(), 0.99, 1_000).await;
+        .await;
+        let comp = compactor_for(Arc::clone(&bus), session_id.clone(), 0.99, 1_000);
         comp.observe(&turn_end_with_usage(100, 50)).await;
         let id = comp.compact_now(None).await.unwrap();
-        let entries = store.load_entries(&session_id).await.unwrap();
-        let last = entries.last().unwrap();
-        assert_eq!(last.id(), id);
-        assert!(matches!(
-            last,
-            session_tree::SessionEntry::Compaction { .. }
-        ));
+
+        let recorded = bus.recorded_compactions().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].entry_id, id);
+        assert_eq!(recorded[0].summary, "summary");
+
         let pct = comp.current_usage_pct().await;
         assert!((pct - 0.0).abs() < f32::EPSILON);
     }
@@ -755,13 +888,12 @@ mod tests {
 
     #[tokio::test]
     async fn config_set_threshold_clamps() {
-        let store = Arc::new(InMemoryStore::new());
-        let session_id = create_session(store.as_ref(), None, None).await.unwrap();
+        let bus: Arc<dyn IiiBus> = Arc::new(InMemoryBus::new());
         let mut config =
-            CompactionConfig::new(session_id, "anthropic".into(), "claude-opus-4-7".into());
+            CompactionConfig::new("s1".into(), "anthropic".into(), "claude-opus-4-7".into());
         config.threshold_pct = 0.5;
         let summariser = Arc::new(MockSummariser { canned: "s".into() });
-        let mut comp = Compactor::new(store, summariser, config);
+        let mut comp = Compactor::new(bus, summariser, config);
         comp.config_set_threshold(2.0);
         assert!((comp.config.threshold_pct - 1.0).abs() < f32::EPSILON);
         comp.config_set_threshold(-1.0);
