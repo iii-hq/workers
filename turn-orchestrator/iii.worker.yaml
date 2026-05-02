@@ -9,3 +9,4 @@ dependencies:
   durable-queue: "^0.1.0"
   hook-fanout: "^0.1.0"
   state-flag: "^0.1.0"
+  harness-runtime: "^0.1.0"

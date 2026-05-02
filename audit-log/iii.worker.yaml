@@ -1,0 +1,7 @@
+iii: v1
+name: audit-log
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-audit-log
+description: Append-only JSON-lines audit log of every tool call + result on agent::after_tool_call.

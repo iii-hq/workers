@@ -1,0 +1,7 @@
+iii: v1
+name: context-compaction
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-context-compaction
+description: Subscriber to agent::events that triggers session compaction once context-window thresholds are reached.

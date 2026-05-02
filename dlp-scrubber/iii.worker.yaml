@@ -1,0 +1,7 @@
+iii: v1
+name: dlp-scrubber
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-dlp-scrubber
+description: Hook subscriber on agent::after_tool_call that redacts common secret shapes (AWS/OpenAI/GitHub/Stripe/Google) in tool result text.

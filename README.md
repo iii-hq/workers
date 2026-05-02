@@ -12,11 +12,15 @@ matching GitHub Release asset for the host's target triple.
 
 | Worker | Kind | Summary |
 |---|---|---|
+| [`audit-log`](audit-log/) | Rust | Append-only JSON-lines audit log of every tool call + result on `agent::after_tool_call`. |
 | [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
 | [`auth-rbac`](auth-rbac/) | Rust | HMAC API keys and workspace roles (owner/admin/member/viewer) under `auth::rbac::*`. |
+| [`context-compaction`](context-compaction/) | Rust | Subscriber that triggers session compaction once context-window thresholds are reached. |
+| [`dlp-scrubber`](dlp-scrubber/) | Rust | Hook subscriber on `agent::after_tool_call` that redacts common secret shapes in tool result text. |
 | [`document-extract`](document-extract/) | Rust | PDF/Word text extraction under `document::extract` for agent context ingestion. |
 | [`durable-queue`](durable-queue/) | Rust | Per-session durable queues under `queue::*` (push, drain, peek). |
 | [`guardrails`](guardrails/) | Rust | Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under `guardrails::*`. |
+| [`harness-runtime`](harness-runtime/) | Rust | `agent::stream_assistant` provider router plus `agent::abort` and `agent::push_steering` / `push_followup` helpers. |
 | [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hooks::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
@@ -24,7 +28,9 @@ matching GitHub Release asset for the host's target triple.
 | [`llm-budget`](llm-budget/) | Rust | Workspace + agent LLM spend caps with alerts, forecast, and period rollover under `budget::*`. |
 | [`mcp`](mcp/) | Rust | Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions tagged `mcp.expose` as MCP tools. |
 | [`models-catalog`](models-catalog/) | Rust | Model capabilities knowledge base under `models::*` (list/get/supports/register). |
+| [`policy-denylist`](policy-denylist/) | Rust | Hook subscriber on `agent::before_tool_call` that blocks calls whose name is on a configured denylist. |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
+| [`session-corpus`](session-corpus/) | Rust | Dataset publishing pipeline for completed sessions under `corpus::*` — secret scan, redact, review, publish. |
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
 | [`state-flag`](state-flag/) | Rust | Per-session boolean flags under `flag::set`, `flag::clear`, `flag::is_set`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
@@ -53,12 +59,13 @@ flow — see each module's README for specifics.
 
 ## Binary releases
 
-Rust workers that ship as standalone binaries (`auth-credentials`,
-`auth-rbac`, `document-extract`, `durable-queue`, `guardrails`,
+Rust workers that ship as standalone binaries (`audit-log`,
+`auth-credentials`, `auth-rbac`, `context-compaction`, `dlp-scrubber`,
+`document-extract`, `durable-queue`, `guardrails`, `harness-runtime`,
 `hook-fanout`, `iii-lsp`, `image-resize`, `llm-budget`, `mcp`,
-`models-catalog`, `session-tree`, `shell-bash`, `shell-filesystem`,
-`shell-subagent`, `state-flag`, `turn-orchestrator`) are released via
-GitHub Actions:
+`models-catalog`, `policy-denylist`, `session-corpus`, `session-tree`,
+`shell-bash`, `shell-filesystem`, `shell-subagent`, `state-flag`,
+`turn-orchestrator`) are released via GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
    type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
