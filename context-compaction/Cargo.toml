@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-types", "crates/session-tree", "crates/models-catalog"]
+members = ["crates/harness-types", "crates/session-tree"]
 
 [package]
 name = "iii-context-compaction"
@@ -22,7 +22,6 @@ path = "src/main.rs"
 [dependencies]
 harness-types = { path = "crates/harness-types" }
 session-tree = { path = "crates/session-tree" }
-models-catalog = { path = "crates/models-catalog" }
 iii-sdk = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

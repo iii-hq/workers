@@ -753,7 +753,6 @@ dependencies = [
  "harness-types",
  "iii-sdk",
  "log",
- "models-catalog",
  "serde_json",
  "session-tree",
  "thiserror",
@@ -926,18 +925,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "models-catalog"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "harness-types",
- "iii-sdk",
- "once_cell",
- "serde",
- "serde_json",
 ]
 
 [[package]]
