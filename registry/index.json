@@ -31,11 +31,31 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "durable-queue": {
+      "type": "binary",
+      "description": "Per-session durable queues under queue::* (push, drain, peek) backed by iii state",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "durable-queue",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "guardrails": {
       "type": "binary",
       "description": "Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under guardrails::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "guardrails",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "hook-fanout": {
+      "type": "binary",
+      "description": "Reusable publish-collect primitive under hooks::publish_collect with subscriber reply merging",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "hook-fanout",
       "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "has_checksum": true,
       "default_config": {},
@@ -139,6 +159,16 @@
       "description": "Spawn child agent sessions under shell::subagent::* via run::start_and_wait",
       "repo": "iii-hq/workers",
       "tag_prefix": "shell-subagent",
+      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "state-flag": {
+      "type": "binary",
+      "description": "Per-session boolean flags under flag::set, flag::clear, flag::is_set backed by iii state",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "state-flag",
       "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "has_checksum": true,
       "default_config": {},

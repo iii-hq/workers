@@ -1,0 +1,7 @@
+iii: v1
+name: state-flag
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-state-flag
+description: Per-session boolean flags under flag::set, flag::clear, flag::is_set backed by iii state.

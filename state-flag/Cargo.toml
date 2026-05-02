@@ -1,9 +1,5 @@
-[workspace]
-resolver = "2"
-members = ["crates/harness-types"]
-
 [package]
-name = "iii-turn-orchestrator"
+name = "iii-state-flag"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -12,54 +8,27 @@ authors = ["iii contributors"]
 publish = false
 
 [lib]
-name = "turn_orchestrator"
+name = "state_flag"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-turn-orchestrator"
+name = "iii-state-flag"
 path = "src/main.rs"
 
 [dependencies]
-harness-types = { path = "crates/harness-types" }
-iii-sdk = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-chrono = { workspace = true }
-tracing = { workspace = true }
-log = "0.4"
-env_logger = "0.11"
-
-[dev-dependencies]
-tokio = { workspace = true }
-serde_json = { workspace = true }
-
-[workspace.package]
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
-repository = "https://github.com/iii-hq/workers"
-authors = ["iii contributors"]
-
-[workspace.dependencies]
 iii-sdk = "=0.11.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-thiserror = "2"
-async-trait = "0.1"
 tracing = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+log = "0.4"
+env_logger = "0.11"
 
-[workspace.lints.rust]
+[lints.rust]
 unsafe_code = "forbid"
 
-[lints]
-workspace = true
-[workspace.lints.clippy]
+[lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
