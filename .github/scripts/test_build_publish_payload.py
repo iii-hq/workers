@@ -109,9 +109,9 @@ class PublishPayloadTests(unittest.TestCase):
                 },
                 {
                     "name": "ping",
-                    "description": None,
-                    "request_schema": None,
-                    "response_schema": None,
+                    "description": "",
+                    "request_schema": {},
+                    "response_schema": {},
                     "metadata": {},
                 },
             ],
@@ -120,11 +120,17 @@ class PublishPayloadTests(unittest.TestCase):
             interface["triggers"],
             [
                 {
-                    "id": "t1",
-                    "trigger_type": "http",
-                    "function_id": "image_resize::resize",
-                    "config": {"api_path": "/resize"},
-                    "metadata": {"public": True},
+                    "name": "resize",
+                    "description": "",
+                    "invocation_schema": {},
+                    "return_schema": {},
+                    "metadata": {
+                        "public": True,
+                        "engine_id": "t1",
+                        "trigger_type": "http",
+                        "function_id": "image_resize::resize",
+                        "config": {"api_path": "/resize"},
+                    },
                 }
             ],
         )
@@ -221,6 +227,7 @@ class PublishPayloadTests(unittest.TestCase):
         self.assertEqual(payload["functions"][0]["name"], "resize")
         self.assertIn("request_schema", payload["functions"][0])
         self.assertIn("response_schema", payload["functions"][0])
+        self.assertEqual(payload["functions"][0]["response_schema"], {})
         self.assertEqual(payload["triggers"], [])
         self.assertIn("binaries", payload)
         self.assertNotIn("image_tag", payload)

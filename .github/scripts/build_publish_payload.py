@@ -2,6 +2,7 @@
 import argparse
 import json
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -42,6 +43,79 @@ def _read_yaml(path: pathlib.Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _schema_or_empty(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise ValueError("function schema fields must be objects or null")
+
+
+def _metadata_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _string_or_empty(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _slug(value: Any, fallback: str) -> str:
+    raw = value if isinstance(value, str) else fallback
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    return slug or fallback
+
+
+def _normalize_registry_function(function: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": function.get("name"),
+        "description": _string_or_empty(function.get("description")),
+        "request_schema": _schema_or_empty(function.get("request_schema")),
+        "response_schema": _schema_or_empty(function.get("response_schema")),
+        "metadata": _metadata_or_empty(function.get("metadata")),
+    }
+
+
+def _derive_trigger_name(trigger: dict[str, Any]) -> str:
+    metadata = _metadata_or_empty(trigger.get("metadata"))
+    for key in ("registry_name", "name"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return _slug(value, "trigger")
+
+    config = trigger.get("config") if isinstance(trigger.get("config"), dict) else {}
+    api_path = config.get("api_path")
+    if isinstance(api_path, str) and api_path.strip():
+        return _slug(api_path, "trigger")
+
+    function_id = trigger.get("function_id")
+    if isinstance(function_id, str) and function_id.strip():
+        return _slug(function_id.rsplit("::", 1)[-1], "trigger")
+
+    return _slug(trigger.get("trigger_type") or trigger.get("name"), "trigger")
+
+
+def _normalize_registry_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
+    config = trigger.get("config") if isinstance(trigger.get("config"), dict) else {}
+    metadata = _metadata_or_empty(trigger.get("metadata")).copy()
+    for source_key, metadata_key in (
+        ("id", "engine_id"),
+        ("trigger_type", "trigger_type"),
+        ("function_id", "function_id"),
+    ):
+        if trigger.get(source_key) is not None:
+            metadata.setdefault(metadata_key, trigger.get(source_key))
+    if config:
+        metadata.setdefault("config", config)
+
+    return {
+        "name": _derive_trigger_name(trigger),
+        "description": _string_or_empty(trigger.get("description")),
+        "invocation_schema": _schema_or_empty(trigger.get("invocation_schema")),
+        "return_schema": _schema_or_empty(trigger.get("return_schema")),
+        "metadata": metadata,
+    }
+
+
 def normalize_worker_interface(
     *,
     worker_name: str,
@@ -71,10 +145,10 @@ def normalize_worker_interface(
         functions.append(
             {
                 "name": derive_registry_function_name(function_id, metadata),
-                "description": details.get("description"),
-                "request_schema": details.get("request_format"),
-                "response_schema": details.get("response_format"),
-                "metadata": metadata if isinstance(metadata, dict) else {},
+                "description": _string_or_empty(details.get("description")),
+                "request_schema": _schema_or_empty(details.get("request_format")),
+                "response_schema": _schema_or_empty(details.get("response_format")),
+                "metadata": _metadata_or_empty(metadata),
             }
         )
 
@@ -84,16 +158,7 @@ def normalize_worker_interface(
         for trigger in _extract_array(triggers_json, "triggers"):
             if trigger.get("function_id") not in worker_ids:
                 continue
-            metadata = trigger.get("metadata") or {}
-            triggers.append(
-                {
-                    "id": trigger.get("id"),
-                    "trigger_type": trigger.get("trigger_type"),
-                    "function_id": trigger.get("function_id"),
-                    "config": trigger.get("config") or {},
-                    "metadata": metadata if isinstance(metadata, dict) else {},
-                }
-            )
+            triggers.append(_normalize_registry_trigger(trigger))
 
     return {"functions": functions, "triggers": triggers}
 
@@ -131,8 +196,14 @@ def build_payload(
         "description": meta.get("description", ""),
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": config,
-        "functions": interface.get("functions") or [],
-        "triggers": interface.get("triggers") or [],
+        "functions": [
+            _normalize_registry_function(function)
+            for function in interface.get("functions") or []
+        ],
+        "triggers": [
+            _normalize_registry_trigger(trigger)
+            for trigger in interface.get("triggers") or []
+        ],
     }
 
     if deploy == "binary":
