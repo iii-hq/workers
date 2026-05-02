@@ -1,0 +1,25 @@
+[package]
+name = "provider-base"
+description = "Shared infrastructure for harness provider crates: HTTP client construction, surrogate sanitisation, SSE event parsing, error classification, and a generic OpenAI-compatible Chat Completions streaming impl reused by every provider that speaks that wire shape."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+auth-credentials = { path = "../auth-credentials" }
+harness-types = { path = "../harness-types" }
+overflow-classify = { path = "../overflow-classify" }
+iii-sdk = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+tokio-stream = "0.1"

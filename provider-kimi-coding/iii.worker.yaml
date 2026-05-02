@@ -1,0 +1,9 @@
+iii: v1
+name: provider-kimi-coding
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-kimi-coding
+description: OpenAI-compatible provider under provider::kimi-coding::*.
+dependencies:
+  auth-credentials: "^0.1.0"

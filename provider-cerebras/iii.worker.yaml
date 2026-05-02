@@ -1,0 +1,9 @@
+iii: v1
+name: provider-cerebras
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-cerebras
+description: OpenAI-compatible provider under provider::cerebras::*.
+dependencies:
+  auth-credentials: "^0.1.0"

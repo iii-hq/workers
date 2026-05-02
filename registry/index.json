@@ -6,17 +6,23 @@
       "description": "Append-only JSON-lines audit log of every tool call + result on agent::after_tool_call",
       "repo": "iii-hq/workers",
       "tag_prefix": "audit-log",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
     },
     "auth-credentials": {
       "type": "binary",
-      "description": "Provider credential vault under auth::* — API keys and OAuth tokens",
+      "description": "Provider credential vault under auth::* \u2014 API keys and OAuth tokens",
       "repo": "iii-hq/workers",
       "tag_prefix": "auth-credentials",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -26,7 +32,10 @@
       "description": "HMAC API keys and workspace roles (owner/admin/member/viewer) under auth::rbac::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "auth-rbac",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -36,7 +45,10 @@
       "description": "Subscriber that triggers session compaction once context-window thresholds are reached",
       "repo": "iii-hq/workers",
       "tag_prefix": "context-compaction",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -46,7 +58,10 @@
       "description": "Hook subscriber on agent::after_tool_call that redacts common secret shapes (AWS/OpenAI/GitHub/Stripe/Google) in tool result text",
       "repo": "iii-hq/workers",
       "tag_prefix": "dlp-scrubber",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -56,7 +71,10 @@
       "description": "PDF/Word text extraction under document::extract for agent context ingestion",
       "repo": "iii-hq/workers",
       "tag_prefix": "document-extract",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -66,7 +84,10 @@
       "description": "Per-session durable queues under queue::* (push, drain, peek) backed by iii state",
       "repo": "iii-hq/workers",
       "tag_prefix": "durable-queue",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -76,7 +97,10 @@
       "description": "Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under guardrails::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "guardrails",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -86,7 +110,10 @@
       "description": "agent::stream_assistant provider router plus agent::abort and agent::push_steering / push_followup helpers",
       "repo": "iii-hq/workers",
       "tag_prefix": "harness-runtime",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -96,7 +123,23 @@
       "description": "Reusable publish-collect primitive under hooks::publish_collect with subscriber reply merging",
       "repo": "iii-hq/workers",
       "tag_prefix": "hook-fanout",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "iii-lsp": {
+      "type": "binary",
+      "description": "III Language Server \u2014 autocompletion and hover for III engine functions and triggers",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "iii-lsp",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -106,7 +149,10 @@
       "description": "III engine image resize worker",
       "repo": "iii-hq/workers",
       "tag_prefix": "image-resize",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {
         "name": "image-resize",
@@ -122,32 +168,28 @@
       },
       "version": "0.1.2"
     },
-    "iii-lsp": {
-      "type": "binary",
-      "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "iii-lsp",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
-      "has_checksum": true,
-      "default_config": {},
-      "version": "0.1.0"
-    },
     "llm-budget": {
       "type": "binary",
       "description": "Workspace and agent LLM spend caps with alerts, forecast, and period rollover under budget::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "llm-budget",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
     },
     "mcp": {
       "type": "binary",
-      "description": "Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions as MCP tools",
+      "description": "Model Context Protocol surface \u2014 stdio + HTTP JSON-RPC, exposes iii functions as MCP tools",
       "repo": "iii-hq/workers",
       "tag_prefix": "mcp",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {
         "expose_all": false
@@ -159,7 +201,10 @@
       "description": "Model capabilities knowledge base under models::* (list/get/supports/register)",
       "repo": "iii-hq/workers",
       "tag_prefix": "models-catalog",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -169,17 +214,309 @@
       "description": "Hook subscriber on agent::before_tool_call that blocks calls whose name is on a configured denylist",
       "repo": "iii-hq/workers",
       "tag_prefix": "policy-denylist",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-anthropic": {
+      "type": "binary",
+      "description": "Native Anthropic Messages API streaming provider under provider::anthropic::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-anthropic",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-azure-openai": {
+      "type": "binary",
+      "description": "Azure OpenAI Responses provider under provider::azure-openai::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-azure-openai",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-bedrock": {
+      "type": "binary",
+      "description": "AWS Bedrock provider under provider::bedrock::*. (stub today; emits a not-implemented error.)",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-bedrock",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-cerebras": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::cerebras::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-cerebras",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-cli": {
+      "type": "binary",
+      "description": "Wrap installed coding CLIs (claude, codex, opencode, openclaw, hermes, pi, gemini, cursor-agent) as iii provider functions under provider::cli::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-cli",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-deepseek": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::deepseek::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-deepseek",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-fireworks": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::fireworks::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-fireworks",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-google": {
+      "type": "binary",
+      "description": "Google Gemini provider under provider::google::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-google",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-google-vertex": {
+      "type": "binary",
+      "description": "Vertex AI Gemini provider under provider::google-vertex::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-google-vertex",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-groq": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::groq::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-groq",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-huggingface": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::huggingface::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-huggingface",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-kimi-coding": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::kimi-coding::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-kimi-coding",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-minimax": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::minimax::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-minimax",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-mistral": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::mistral::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-mistral",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-openai": {
+      "type": "binary",
+      "description": "OpenAI Chat Completions provider under provider::openai::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-openai",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-openai-responses": {
+      "type": "binary",
+      "description": "OpenAI Responses API provider under provider::openai-responses::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-openai-responses",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-opencode-go": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::opencode-go::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-opencode-go",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-opencode-zen": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::opencode-zen::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-opencode-zen",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-openrouter": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::openrouter::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-openrouter",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-vercel-ai-gateway": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::vercel-ai-gateway::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-vercel-ai-gateway",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-xai": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::xai::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-xai",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "provider-zai": {
+      "type": "binary",
+      "description": "OpenAI-compatible provider under provider::zai::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-zai",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
     },
     "session-corpus": {
       "type": "binary",
-      "description": "Dataset publishing pipeline for completed sessions under corpus::* — secret scan, redact, review, publish",
+      "description": "Dataset publishing pipeline for completed sessions under corpus::* \u2014 secret scan, redact, review, publish",
       "repo": "iii-hq/workers",
       "tag_prefix": "session-corpus",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -189,27 +526,36 @@
       "description": "Session storage as a parent-id tree of typed entries under session::*",
       "repo": "iii-hq/workers",
       "tag_prefix": "session-tree",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
     },
     "shell-bash": {
       "type": "binary",
-      "description": "Sandboxed shell execution under shell::bash::* — wraps the engine sandbox::exec primitive",
+      "description": "Sandboxed shell execution under shell::bash::* \u2014 wraps the engine sandbox::exec primitive",
       "repo": "iii-hq/workers",
       "tag_prefix": "shell-bash",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
     },
     "shell-filesystem": {
       "type": "binary",
-      "description": "Sandboxed filesystem operations under shell::fs::* — read, write, list, stat, glob",
+      "description": "Sandboxed filesystem operations under shell::fs::* \u2014 read, write, list, stat, glob",
       "repo": "iii-hq/workers",
       "tag_prefix": "shell-filesystem",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -219,7 +565,10 @@
       "description": "Spawn child agent sessions under shell::subagent::* via run::start_and_wait",
       "repo": "iii-hq/workers",
       "tag_prefix": "shell-subagent",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -229,17 +578,10 @@
       "description": "Per-session boolean flags under flag::set, flag::clear, flag::is_set backed by iii state",
       "repo": "iii-hq/workers",
       "tag_prefix": "state-flag",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
-      "has_checksum": true,
-      "default_config": {},
-      "version": "0.1.0"
-    },
-    "turn-orchestrator": {
-      "type": "binary",
-      "description": "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "turn-orchestrator",
-      "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
       "has_checksum": true,
       "default_config": {},
       "version": "0.1.0"
@@ -257,6 +599,19 @@
       "repo": "iii-hq/workers",
       "version": "0.1.0",
       "latest": "latest"
+    },
+    "turn-orchestrator": {
+      "type": "binary",
+      "description": "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "turn-orchestrator",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
     }
   }
 }

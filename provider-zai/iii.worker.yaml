@@ -1,0 +1,9 @@
+iii: v1
+name: provider-zai
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-zai
+description: OpenAI-compatible provider under provider::zai::*.
+dependencies:
+  auth-credentials: "^0.1.0"
