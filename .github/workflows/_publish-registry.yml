@@ -34,6 +34,16 @@ on:
         required: false
         type: string
         default: ''
+      collect_interface:
+        description: 'Collect functions/triggers from a running iii engine'
+        required: false
+        type: boolean
+        default: false
+      allow_missing_triggers:
+        description: 'Publish triggers=[] if engine trigger listing is unavailable'
+        required: false
+        type: boolean
+        default: true
       api_url:
         description: 'Workers registry base URL'
         required: false
@@ -52,117 +62,71 @@ jobs:
       - name: Install pyyaml
         run: pip install --quiet pyyaml
 
+      - name: Collect worker interface
+        if: inputs.collect_interface == true
+        env:
+          WORKER: ${{ inputs.worker }}
+          ALLOW_MISSING_TRIGGERS: ${{ inputs.allow_missing_triggers }}
+        run: |
+          args=("--worker" "$WORKER" "--out" "worker-interface.json")
+          if [[ "$ALLOW_MISSING_TRIGGERS" == "true" ]]; then
+            args+=("--allow-missing-triggers")
+          fi
+          python3 .github/scripts/collect_worker_interface.py "${args[@]}"
+
+      - name: Assert worker interface was collected
+        if: inputs.collect_interface == true
+        run: |
+          python3 - <<'PY'
+          import json
+          data = json.load(open("worker-interface.json"))
+          if not data.get("functions"):
+              raise SystemExit("collect_interface=true but no functions were collected")
+          PY
+
+      - name: Create empty worker interface
+        if: inputs.collect_interface != true
+        run: |
+          printf '{ "functions": [], "triggers": [] }\n' > worker-interface.json
+
+      - name: Resolve binary artifacts
+        if: inputs.deploy == 'binary'
+        env:
+          TAG: ${{ inputs.tag }}
+          BIN: ${{ inputs.bin }}
+          WORKER: ${{ inputs.worker }}
+          REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+        run: |
+          python3 .github/scripts/resolve_binary_artifacts.py \
+            --repo-url "$REPO_URL" \
+            --tag "$TAG" \
+            --bin "${BIN:-$WORKER}" \
+            --out binaries.json
+
+      - name: Create empty binary artifacts
+        if: inputs.deploy != 'binary'
+        run: |
+          printf '{}\n' > binaries.json
+
       - name: Build payload
-        id: payload
         env:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
           DEPLOY: ${{ inputs.deploy }}
           REGISTRY_TAG: ${{ inputs.registry_tag }}
-          TAG: ${{ inputs.tag }}
-          BIN: ${{ inputs.bin }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib, sys, urllib.request, yaml
-
-          worker = os.environ["WORKER"]
-          version = os.environ["VERSION"]
-          deploy = os.environ["DEPLOY"]
-          reg_tag = os.environ["REGISTRY_TAG"] or "latest"
-          tag = os.environ["TAG"]
-          repo_url = os.environ["REPO_URL"]
-          bin_name = os.environ.get("BIN") or worker
-          image_tag = os.environ.get("IMAGE_TAG", "")
-
-          root = pathlib.Path(worker)
-          meta = yaml.safe_load((root / "iii.worker.yaml").read_text()) or {}
-
-          # Normalize `dependencies` into the array-of-objects wire shape the
-          # registry's /publish endpoint expects. Authors may write either:
-          #   dependencies:
-          #     math-worker: "^0.1.0"       # map form (recommended)
-          # or:
-          #   dependencies:
-          #     - name: math-worker
-          #       version: "^0.1.0"         # explicit wire form
-          raw_deps = meta.get("dependencies") or []
-          if isinstance(raw_deps, dict):
-              deps = [{"name": k, "version": v} for k, v in raw_deps.items()]
-          elif isinstance(raw_deps, list):
-              deps = raw_deps
-          else:
-              print(
-                  f"::error::`dependencies` must be a map or list, got {type(raw_deps).__name__}"
-              )
-              sys.exit(1)
-
-          readme_path = root / "README.md"
-          readme = readme_path.read_text() if readme_path.exists() else ""
-
-          config_path = root / "config.yaml"
-          config = {}
-          if config_path.exists():
-              config = yaml.safe_load(config_path.read_text()) or {}
-
-          payload = {
-              "worker_name": worker,
-              "version": version,
-              "tag": reg_tag,
-              "type": deploy,
-              "readme": readme,
-              "repo": repo_url,
-              "description": meta.get("description", ""),
-              "dependencies": deps,
-              "config": config,
-          }
-
-          if deploy == "binary":
-              targets = [
-                  "x86_64-apple-darwin",
-                  "aarch64-apple-darwin",
-                  "x86_64-pc-windows-msvc",
-                  "i686-pc-windows-msvc",
-                  "aarch64-pc-windows-msvc",
-                  "x86_64-unknown-linux-gnu",
-                  "x86_64-unknown-linux-musl",
-                  "aarch64-unknown-linux-gnu",
-                  "armv7-unknown-linux-gnueabihf",
-              ]
-              base = f"{repo_url}/releases/download/{tag}"
-              binaries = {}
-              for t in targets:
-                  ext = "zip" if "windows" in t else "tar.gz"
-                  asset = f"{bin_name}-{t}.{ext}"
-                  asset_url = f"{base}/{asset}"
-                  # taiki-e/upload-rust-binary-action publishes the checksum
-                  # as `<bin>-<target>.sha256` (without the archive extension).
-                  sha_url = f"{base}/{bin_name}-{t}.sha256"
-                  try:
-                      with urllib.request.urlopen(sha_url, timeout=20) as r:
-                          sha_text = r.read().decode("utf-8").strip()
-                      sha = sha_text.split()[0]
-                      binaries[t] = {"url": asset_url, "sha256": sha}
-                  except Exception as e:
-                      print(f"::warning::missing checksum for {t}: {e}")
-              if not binaries:
-                  print("::error::no binary artefacts could be resolved")
-                  sys.exit(1)
-              payload["binaries"] = binaries
-          elif deploy == "image":
-              if not image_tag:
-                  print("::error::deploy=image but no image_tag provided")
-                  sys.exit(1)
-              payload["image_tag"] = image_tag
-          else:
-              print(f"::error::unsupported deploy={deploy}")
-              sys.exit(1)
-
-          out = pathlib.Path("payload.json")
-          out.write_text(json.dumps(payload, indent=2))
-          print(json.dumps({k: payload[k] for k in payload if k != "readme"}, indent=2))
-          PY
+          python3 .github/scripts/build_publish_payload.py \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --registry-tag "$REGISTRY_TAG" \
+            --deploy "$DEPLOY" \
+            --repo-url "$REPO_URL" \
+            --interface-json worker-interface.json \
+            --binaries-json binaries.json \
+            --image-tag "$IMAGE_TAG" \
+            --out payload.json
 
       - name: POST /publish
         env:
