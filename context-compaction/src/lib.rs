@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use harness_types::{
     AgentEvent, AgentMessage, AssistantMessageEvent, ContentBlock, ToolResultMessage, Usage,
 };
-use models_catalog::get as get_model;
+use iii_sdk::{TriggerRequest, III};
+use serde_json::json;
 use session_tree::{
     compact as session_tree_compact, load_messages, CompactionDetails, SessionError, SessionStore,
 };
@@ -33,12 +34,26 @@ pub struct CompactionConfig {
 }
 
 impl CompactionConfig {
-    /// Build a config, resolving `context_window` from the embedded
-    /// `models-catalog`. Falls back to [`DEFAULT_CONTEXT_WINDOW`] for unknown
-    /// model+provider pairs so callers always get a usable threshold.
+    /// Build a config with [`DEFAULT_CONTEXT_WINDOW`]. Callers that want a
+    /// model-aware window should use [`Self::resolve`] (async, hits the
+    /// `models-catalog` worker on the bus) or set `context_window` directly.
     pub fn new(session_id: String, provider: String, model: String) -> Self {
-        let context_window =
-            get_model(&provider, &model).map_or(DEFAULT_CONTEXT_WINDOW, |m| m.context_window);
+        Self {
+            session_id,
+            threshold_pct: DEFAULT_THRESHOLD_PCT,
+            model,
+            provider,
+            context_window: DEFAULT_CONTEXT_WINDOW,
+        }
+    }
+
+    /// Build a config, resolving `context_window` via `models::get` on the
+    /// iii bus. Falls back to [`DEFAULT_CONTEXT_WINDOW`] when the lookup
+    /// fails (no `models-catalog` worker on the bus, unknown model, etc.).
+    pub async fn resolve(iii: &III, session_id: String, provider: String, model: String) -> Self {
+        let context_window = lookup_context_window(iii, &provider, &model)
+            .await
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
         Self {
             session_id,
             threshold_pct: DEFAULT_THRESHOLD_PCT,
@@ -47,6 +62,19 @@ impl CompactionConfig {
             context_window,
         }
     }
+}
+
+async fn lookup_context_window(iii: &III, provider: &str, model_id: &str) -> Option<u64> {
+    let resp = iii
+        .trigger(TriggerRequest {
+            function_id: "models::get".to_string(),
+            payload: json!({ "provider": provider, "id": model_id }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await
+        .ok()?;
+    resp.get("context_window").and_then(|v| v.as_u64())
 }
 
 impl Default for CompactionConfig {
@@ -505,12 +533,6 @@ mod tests {
     async fn default_config_uses_85_percent_threshold() {
         let cfg = CompactionConfig::new("s".into(), "anthropic".into(), "claude-opus-4-7".into());
         assert!((cfg.threshold_pct - 0.85).abs() < f32::EPSILON);
-        assert_eq!(cfg.context_window, 1_000_000);
-    }
-
-    #[tokio::test]
-    async fn config_unknown_model_falls_back_to_default_window() {
-        let cfg = CompactionConfig::new("s".into(), "made-up".into(), "made-up-model".into());
         assert_eq!(cfg.context_window, DEFAULT_CONTEXT_WINDOW);
     }
 
