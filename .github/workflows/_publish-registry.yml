@@ -91,12 +91,72 @@ jobs:
           cat iii-engine.log || true
           exit 1
 
-      - name: Add local worker to III
+      - name: Start local worker for interface collection
         env:
           WORKER: ${{ inputs.worker }}
+          BIN: ${{ inputs.bin }}
         run: |
           set -euo pipefail
-          iii worker add "./$WORKER" --force --reset-config --wait
+          mode=$(python3 - <<'PY'
+          import os
+          import yaml
+
+          worker = os.environ["WORKER"]
+          manifest_path = f"{worker}/iii.worker.yaml"
+          manifest = yaml.safe_load(open(manifest_path, encoding="utf-8").read()) or {}
+          scripts = manifest.get("scripts") or {}
+          runtime = manifest.get("runtime") or {}
+          has_scripts_start = bool(str(scripts.get("start") or "").strip())
+          has_runtime = bool(runtime.get("kind") or runtime.get("language"))
+          language = str(manifest.get("language") or "").strip().lower()
+
+          if has_scripts_start or has_runtime:
+              print("iii-add")
+          elif language == "rust":
+              print("cargo-run")
+          else:
+              print("unsupported")
+          PY
+          )
+
+          case "$mode" in
+            iii-add)
+              iii worker add "./$WORKER" --force --reset-config --wait
+              ;;
+            cargo-run)
+              if [[ ! -f "$WORKER/Cargo.toml" ]]; then
+                echo "::error::$WORKER is a Rust worker but $WORKER/Cargo.toml was not found"
+                exit 1
+              fi
+
+              worker_log="worker-$WORKER.log"
+              pushd "$WORKER" >/dev/null
+              cargo_args=(run)
+              if [[ -n "${BIN:-}" ]]; then
+                cargo_args+=(--bin "$BIN")
+              fi
+              cargo_args+=(--)
+              if [[ "$WORKER" == "mcp" ]]; then
+                cargo_args+=(--no-stdio)
+              fi
+
+              echo "Starting local worker with: (cd $WORKER && ${cargo_args[*]})"
+              "${cargo_args[@]}" > "../$worker_log" 2>&1 &
+              echo "$!" > ../worker.pid
+              popd >/dev/null
+
+              sleep 2
+              if ! kill -0 "$(cat worker.pid)" 2>/dev/null; then
+                echo "::error::$WORKER exited before interface collection"
+                cat "$worker_log" || true
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::$WORKER iii.worker.yaml has no local runtime/scripts.start and is not a Rust worker; cannot collect interface"
+              exit 1
+              ;;
+          esac
 
       - name: Collect worker interface
         env:
@@ -180,6 +240,18 @@ jobs:
           echo "::group::iii engine log"
           tail -n 200 iii-engine.log || true
           echo "::endgroup::"
+          if [[ -f worker-${{ inputs.worker }}.log ]]; then
+            echo "::group::worker log"
+            tail -n 200 worker-${{ inputs.worker }}.log || true
+            echo "::endgroup::"
+          fi
+
+      - name: Stop local worker
+        if: always()
+        run: |
+          if [[ -f worker.pid ]]; then
+            kill "$(cat worker.pid)" 2>/dev/null || true
+          fi
 
       - name: Stop III engine
         if: always()
