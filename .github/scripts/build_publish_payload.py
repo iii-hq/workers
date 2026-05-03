@@ -13,7 +13,17 @@ def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if isinstance(raw_deps, dict):
         return [{"name": name, "version": version} for name, version in raw_deps.items()]
     if isinstance(raw_deps, list):
-        return raw_deps
+        normalized: list[dict[str, Any]] = []
+        for dep in raw_deps:
+            if isinstance(dep, str):
+                normalized.append({"name": dep, "version": ""})
+            elif isinstance(dep, dict) and isinstance(dep.get("name"), str):
+                normalized.append({"name": dep["name"], "version": dep.get("version") or ""})
+            else:
+                raise ValueError(
+                    "dependency list entries must be strings or {name, version} objects"
+                )
+        return normalized
     raise ValueError(f"`dependencies` must be a map or list, got {type(raw_deps).__name__}")
 
 
@@ -138,9 +148,16 @@ def normalize_worker_interface(
         if f.get("function_id")
     }
 
+    missing_function_ids = [fid for fid in worker_function_ids if fid not in functions_by_id]
+    if missing_function_ids:
+        raise ValueError(
+            "missing function details for worker functions: "
+            + ", ".join(str(fid) for fid in missing_function_ids)
+        )
+
     functions = []
     for function_id in worker_function_ids:
-        details = functions_by_id.get(function_id, {})
+        details = functions_by_id[function_id]
         metadata = details.get("metadata") or {}
         functions.append(
             {

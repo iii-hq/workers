@@ -53,6 +53,8 @@ jobs:
         run: pip install --quiet pyyaml
 
       - name: Install iii CLI
+        env:
+          VERSION: '0.11.5'
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh

@@ -34,6 +34,7 @@ def run_iii(function_id: str, payload: dict[str, object]) -> dict[str, object]:
         check=True,
         text=True,
         capture_output=True,
+        timeout=30,
     )
     return json.loads(completed.stdout)
 
@@ -52,7 +53,11 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
 def collect_triggers() -> dict[str, object] | None:
     try:
         return run_iii("engine::triggers::list", {"include_internal": True})
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+    ) as exc:
         print(
             f"::warning::could not collect triggers; publishing triggers=[]: {exc}",
             file=sys.stderr,
