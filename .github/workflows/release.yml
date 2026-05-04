@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags:
+      - 'iii-database/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
       - 'mcp/v*'

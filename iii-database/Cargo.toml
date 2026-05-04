@@ -1,0 +1,67 @@
+[workspace]
+
+[package]
+name = "iii-database"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "iii-database"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.12.0-next.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+schemars = { version = "0.8", features = ["chrono"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+
+# Postgres
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+deadpool-postgres = "0.14"
+postgres-types = { version = "0.2", features = ["with-chrono-0_4", "with-serde_json-1"] }
+postgres-protocol = "0.6"
+tokio-postgres-rustls = "0.13"
+# `db-tokio-postgres` registers FromSql/ToSql for NUMERIC. postgres-types
+# itself ships no NUMERIC FromSql impl — String accepts only TEXT-family OIDs,
+# so without this dep `try_get::<_, String>` on a NUMERIC column fails with
+# WrongType. rust_decimal is 96-bit (~28 sig digits); values exceeding that
+# error out at decode rather than silently truncating.
+rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
+
+# MySQL — `rustls-tls` adds rustls-backed TLS without pulling in OpenSSL.
+mysql_async = { version = "0.34", default-features = false, features = ["minimal-rust", "rustls-tls"] }
+
+# TLS (shared between postgres and mysql)
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
+
+# SQLite (sync; wrapped in spawn_blocking)
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
