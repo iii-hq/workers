@@ -59,7 +59,20 @@ impl Default for McpConfig {
 
 pub fn load_config(path: &str) -> Result<McpConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: McpConfig = serde_yaml::from_str(&contents)?;
+    let mut cfg: McpConfig = serde_yaml::from_str(&contents)?;
+    // The iii engine prepends its own '/' to api_path during route
+    // matching. A YAML value like "/mcp" would register as "//mcp" and
+    // 404, so normalize at load time and warn the operator.
+    if cfg.api_path.starts_with('/') {
+        let normalized = cfg.api_path.trim_start_matches('/').to_string();
+        tracing::warn!(
+            original = %cfg.api_path,
+            normalized = %normalized,
+            path = %path,
+            "config: stripped leading '/' from api_path"
+        );
+        cfg.api_path = normalized;
+    }
     Ok(cfg)
 }
 
@@ -111,5 +124,27 @@ hidden_prefixes:
     fn malformed_yaml_errors() {
         let err = load_config("/no/such/path/for/mcp.yaml");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn yaml_strips_leading_slash_in_api_path() {
+        // Round-trip through a tempfile so we exercise the full
+        // load_config path (including the normalization warn).
+        let dir = std::env::temp_dir();
+        let path = dir.join("mcp_test_leading_slash.yaml");
+        std::fs::write(&path, "api_path: /mcp\n").unwrap();
+        let cfg = load_config(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.api_path, "mcp", "leading '/' must be stripped");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn yaml_strips_multiple_leading_slashes_in_api_path() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("mcp_test_double_slash.yaml");
+        std::fs::write(&path, "api_path: //mcp\n").unwrap();
+        let cfg = load_config(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.api_path, "mcp");
+        let _ = std::fs::remove_file(path);
     }
 }

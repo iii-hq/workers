@@ -23,7 +23,8 @@ use serde_json::{json, Value};
 
 use crate::config::McpConfig;
 use crate::protocol::{
-    self, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR,
+    self, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+    PARSE_ERROR,
 };
 
 /// Shared dispatcher state. `iii` is the engine connection; `cfg` is the
@@ -106,23 +107,83 @@ fn http_envelope(body: Value) -> Value {
     })
 }
 
+/// Outcome of validating a JSON-RPC request frame.
+///
+/// Kept as an enum (rather than `Result`) so the notification fast-path is
+/// distinguishable from the well-formed-request path without overloading
+/// `Ok`/`Err` semantics.
+enum FrameValidation {
+    /// Well-formed request that should be dispatched.
+    Request {
+        method: String,
+        id: Value,
+        params: Option<Value>,
+    },
+    /// Well-formed JSON-RPC notification (no `id`). Per spec, no response
+    /// is ever sent. We swallow these in v0.1 since there's no
+    /// per-session state to update.
+    Notification { method: String },
+    /// Malformed frame. The dispatcher returns this body verbatim with
+    /// the JSON-RPC `id` echoed back when present.
+    InvalidRequest(Value),
+}
+
+/// JSON-RPC 2.0 §4: a request MUST be a JSON object with a string
+/// `method`. Pure helper so we can unit-test it without an engine handle.
+/// Returns the parsed (method, id, params) for well-formed frames, the
+/// notification path for spec-compliant notifications, or a fully formed
+/// JSON-RPC error frame for malformed input. Reject `{}`, `[]`, and
+/// scalar payloads instead of falling through to the notification
+/// fast-path (which would swallow them as a silent 204).
+fn validate_frame(body: &Value) -> FrameValidation {
+    let id = body.get("id").cloned();
+    let obj = match body.as_object() {
+        Some(o) => o,
+        None => {
+            return FrameValidation::InvalidRequest(json!(JsonRpcResponse::error(
+                id,
+                INVALID_REQUEST,
+                "Invalid Request: body must be a JSON object",
+            )));
+        }
+    };
+    let method = match obj.get("method").and_then(|v| v.as_str()) {
+        Some(m) => m.to_string(),
+        None => {
+            return FrameValidation::InvalidRequest(json!(JsonRpcResponse::error(
+                id,
+                INVALID_REQUEST,
+                "Invalid Request: missing or non-string `method`",
+            )));
+        }
+    };
+    let params = obj.get("params").cloned();
+
+    if method.starts_with("notifications/") || id.is_none() {
+        return FrameValidation::Notification { method };
+    }
+
+    FrameValidation::Request {
+        method,
+        id: id.unwrap_or(Value::Null),
+        params,
+    }
+}
+
 /// Dispatch a single JSON-RPC frame. Returns `None` for notifications
 /// (no response per JSON-RPC 2.0).
 pub async fn dispatch(ctx: &Ctx, body: Value) -> Option<Value> {
-    let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
-    let id = body.get("id").cloned();
-    let params = body.get("params").cloned();
-
-    // Notifications are MCP/JSON-RPC messages with no `id`. Per spec we
-    // never respond. We don't need to track per-session state in v0.1
-    // (no `notifications/cancelled`, no `notifications/initialized` gating)
-    // so the easiest correct behaviour is to swallow them.
-    if method.starts_with("notifications/") || id.is_none() {
-        if method.starts_with("notifications/") {
-            tracing::debug!(method, "notification received (no response)");
+    let (method, id, params) = match validate_frame(&body) {
+        FrameValidation::Request { method, id, params } => (method, Some(id), params),
+        FrameValidation::Notification { method } => {
+            if method.starts_with("notifications/") {
+                tracing::debug!(method = %method, "notification received (no response)");
+            }
+            return None;
         }
-        return None;
-    }
+        FrameValidation::InvalidRequest(err) => return Some(err),
+    };
+    let method = method.as_str();
 
     let result = match method {
         "initialize" => Ok(protocol::initialize_result()),
@@ -178,6 +239,20 @@ async fn tools_list(ctx: &Ctx) -> DispatchResult {
         .iter()
         .filter(|f| !protocol::is_hidden(&f.function_id, &ctx.cfg.hidden_prefixes))
         .filter(|f| !ctx.cfg.require_expose || protocol::is_mcp_exposed(f))
+        .filter(|f| {
+            // Hide function ids that would round-trip through the
+            // `::` ↔ `__` mapping ambiguously — clients must never see
+            // a tool name they can't reliably call back.
+            if protocol::is_tool_name_ambiguous(&f.function_id) {
+                tracing::warn!(
+                    function_id = %f.function_id,
+                    "skipping function: id contains '__' and would collide with the MCP tool-name encoding"
+                );
+                false
+            } else {
+                true
+            }
+        })
         .map(protocol::function_to_tool)
         .collect();
     Ok(json!({ "tools": tools }))
@@ -194,11 +269,41 @@ async fn tools_call(ctx: &Ctx, params: Option<Value>) -> DispatchResult {
     let p: ToolsCallParams = parse_params(params)?;
 
     let function_id = protocol::tool_name_to_function_id(&p.name);
+
+    // Verify the ::↔__ mapping round-trips. Catches ambiguous tool
+    // names (e.g. `worker_v2__util__action` would decode to
+    // `worker_v2::util::action` AND a different `worker_v2__util::action`).
+    // Without this, a client could silently call the wrong function.
+    let re_encoded = protocol::function_id_to_tool_name(&function_id);
+    if re_encoded != p.name {
+        return Ok(protocol::tool_error(&format!(
+            "Tool '{}' is ambiguous (function id '{}' would re-encode to '{}'); refusing to dispatch",
+            p.name, function_id, re_encoded
+        )));
+    }
+
     if protocol::is_hidden(&function_id, &ctx.cfg.hidden_prefixes) {
         return Ok(protocol::tool_error(&format!(
             "Tool '{}' is in an internal namespace and cannot be called",
             p.name
         )));
+    }
+
+    // require_expose is an *execution* guard, not just a listing filter.
+    // When enabled, clients can only invoke functions explicitly tagged
+    // `metadata.mcp.expose == true`. We resolve the function info from
+    // the engine here so a guessed/synthesised tool name can't bypass
+    // the expose flag just because it isn't under a hidden prefix.
+    if ctx.cfg.require_expose {
+        match lookup_function_info(ctx, &function_id).await? {
+            Some(info) if protocol::is_mcp_exposed(&info) => {}
+            _ => {
+                return Ok(protocol::tool_error(&format!(
+                    "Tool '{}' is not exposed for MCP (require_expose=true)",
+                    p.name
+                )));
+            }
+        }
     }
 
     let payload = if p.arguments.is_null() {
@@ -227,6 +332,42 @@ async fn tools_call(ctx: &Ctx, params: Option<Value>) -> DispatchResult {
             Ok(protocol::tool_error(&format!("Error: {e}")))
         }
     }
+}
+
+/// Look up a single function's metadata via `engine::functions::list`.
+/// Returns `Ok(None)` if no function with that id is registered.
+///
+/// Called from `tools/call` only when `require_expose` is enabled, so
+/// the extra round trip is opt-in for security-conscious deployments.
+async fn lookup_function_info(
+    ctx: &Ctx,
+    function_id: &str,
+) -> Result<Option<FunctionInfo>, (i32, String)> {
+    let result = ctx
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(ctx.cfg.state_timeout_ms),
+        })
+        .await
+        .map_err(|e| (INTERNAL_ERROR, format!("engine::functions::list: {e}")))?;
+
+    let fns: Vec<FunctionInfo> = serde_json::from_value(
+        result
+            .get("functions")
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    INTERNAL_ERROR,
+                    "engine::functions::list: missing functions field".into(),
+                )
+            })?,
+    )
+    .map_err(|e| (INTERNAL_ERROR, format!("deserialize functions: {e}")))?;
+
+    Ok(fns.into_iter().find(|f| f.function_id == function_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,5 +498,94 @@ mod tests {
         let parsed: ToolsCallParams = parse_params(p).unwrap();
         assert_eq!(parsed.name, "demo__echo");
         assert!(parsed.arguments.is_null());
+    }
+
+    fn invalid_request_code(v: &Value) -> i64 {
+        v["error"]["code"].as_i64().unwrap_or(0)
+    }
+
+    #[test]
+    fn validate_frame_accepts_well_formed_request() {
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"ping"});
+        match validate_frame(&body) {
+            FrameValidation::Request { method, id, .. } => {
+                assert_eq!(method, "ping");
+                assert_eq!(id, json!(1));
+            }
+            other => panic!("expected Request, got {:?}", as_dbg(other)),
+        }
+    }
+
+    #[test]
+    fn validate_frame_classifies_notification_when_id_missing() {
+        let body = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+        match validate_frame(&body) {
+            FrameValidation::Notification { method } => {
+                assert_eq!(method, "notifications/initialized");
+            }
+            other => panic!("expected Notification, got {:?}", as_dbg(other)),
+        }
+    }
+
+    #[test]
+    fn validate_frame_rejects_empty_object() {
+        // Prior bug: `{}` was treated as a notification and returned
+        // HTTP 204 instead of -32600 INVALID_REQUEST.
+        let body = json!({});
+        match validate_frame(&body) {
+            FrameValidation::InvalidRequest(err) => {
+                assert_eq!(invalid_request_code(&err), INVALID_REQUEST as i64);
+            }
+            other => panic!("expected InvalidRequest, got {:?}", as_dbg(other)),
+        }
+    }
+
+    #[test]
+    fn validate_frame_rejects_array_body() {
+        let body = json!([{"jsonrpc":"2.0","id":1,"method":"ping"}]);
+        match validate_frame(&body) {
+            FrameValidation::InvalidRequest(err) => {
+                assert_eq!(invalid_request_code(&err), INVALID_REQUEST as i64);
+            }
+            other => panic!("expected InvalidRequest, got {:?}", as_dbg(other)),
+        }
+    }
+
+    #[test]
+    fn validate_frame_rejects_id_only_with_no_method() {
+        // Prior bug: `{"id":1}` would fall through to METHOD_NOT_FOUND
+        // with an empty method string. Now -32600 INVALID_REQUEST.
+        let body = json!({"id":1});
+        match validate_frame(&body) {
+            FrameValidation::InvalidRequest(err) => {
+                assert_eq!(invalid_request_code(&err), INVALID_REQUEST as i64);
+                assert_eq!(err["id"], json!(1), "id must be echoed back");
+            }
+            other => panic!("expected InvalidRequest, got {:?}", as_dbg(other)),
+        }
+    }
+
+    #[test]
+    fn validate_frame_rejects_non_string_method() {
+        let body = json!({"jsonrpc":"2.0","id":1,"method":42});
+        match validate_frame(&body) {
+            FrameValidation::InvalidRequest(err) => {
+                assert_eq!(invalid_request_code(&err), INVALID_REQUEST as i64);
+            }
+            other => panic!("expected InvalidRequest, got {:?}", as_dbg(other)),
+        }
+    }
+
+    /// Just for nicer panic output in the validate_frame tests.
+    fn as_dbg(v: FrameValidation) -> String {
+        match v {
+            FrameValidation::Request { method, id, .. } => {
+                format!("Request {{ method: {method}, id: {id} }}")
+            }
+            FrameValidation::Notification { method } => {
+                format!("Notification {{ method: {method} }}")
+            }
+            FrameValidation::InvalidRequest(err) => format!("InvalidRequest({err})"),
+        }
     }
 }

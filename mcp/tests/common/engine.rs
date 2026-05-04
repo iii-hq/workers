@@ -52,11 +52,18 @@ pub async fn try_connect_raw() -> Option<Arc<III>> {
 /// `mcp::handler` plus the skills::* / prompts::* stubs the dispatcher
 /// delegates into, so BDD scenarios drive the same code paths the
 /// production binary would.
+///
+/// Connection failures intentionally degrade to `None` so `--tags @pure`
+/// runs work on hosts without an iii engine. Worker registration failures
+/// once we *are* connected are *not* swallowed: those would mean broken
+/// test setup and we want them loud.
 pub async fn get_or_init() -> Option<Arc<III>> {
     ENGINE
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;
-            crate::common::workers::register_all(&iii).await.ok()?;
+            crate::common::workers::register_all(&iii)
+                .await
+                .expect("failed to register MCP test workers");
             Some(iii)
         })
         .await

@@ -181,6 +181,11 @@ cargo test
 #   @pure  @core
 #   @engine  @tools  @resources  @prompts
 cargo test --test bdd -- --tags @tools
+
+# In CI: make a missing iii engine a hard failure (default behaviour
+# is soft-skip so `--tags @pure` works on dev machines without an
+# engine running).
+III_ENGINE_REQUIRED=1 cargo test --test bdd
 ```
 
 The BDD harness lives under [tests/](tests/). Feature files mirror the

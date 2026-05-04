@@ -76,9 +76,26 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    functions::register_all(&iii, &cfg);
-
-    tracing::info!(api_path = %cfg.api_path, "mcp ready: POST /{} bound", cfg.api_path);
+    match functions::register_all(&iii, &cfg) {
+        Ok(()) => {
+            tracing::info!(
+                api_path = %cfg.api_path,
+                "mcp ready: POST /{} bound",
+                cfg.api_path
+            );
+        }
+        Err(e) => {
+            // mcp::handler is still registered, so direct
+            // `iii.trigger("mcp::handler", body)` calls keep working.
+            // But the HTTP surface — the only public entrypoint — is
+            // not bound. Be loud about it instead of advertising ready.
+            tracing::error!(
+                error = %e,
+                api_path = %cfg.api_path,
+                "mcp HTTP trigger registration failed; bridge is not reachable over HTTP"
+            );
+        }
+    }
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("mcp shutting down");

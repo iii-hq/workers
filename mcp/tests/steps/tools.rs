@@ -55,7 +55,13 @@ fn includes_echo(world: &mut IiiMcpWorld) {
         .iter()
         .find(|t| t["name"].as_str() == Some("bdd__echo"))
         .unwrap_or_else(|| panic!("bdd__echo not in list: {tools:?}"));
-    assert_eq!(echo["inputSchema"]["required"][0], "msg", "{echo}");
+    let required = echo["inputSchema"]["required"]
+        .as_array()
+        .unwrap_or_else(|| panic!("missing inputSchema.required: {echo}"));
+    assert!(
+        required.iter().any(|v| v.as_str() == Some("msg")),
+        "msg not in required: {echo}"
+    );
 }
 
 #[then("the tool listing excludes hidden namespaces")]

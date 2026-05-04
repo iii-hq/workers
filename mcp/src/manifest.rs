@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::config::McpConfig;
+
 #[derive(Serialize)]
 pub struct ModuleManifest {
     pub name: String,
@@ -12,27 +14,19 @@ pub struct ModuleManifest {
 }
 
 pub fn build_manifest() -> ModuleManifest {
+    // Serialize `McpConfig::default()` rather than hand-rolling the JSON
+    // here so adding a field to the config can never silently drift the
+    // manifest's advertised defaults.
+    let default_config = serde_json::to_value(McpConfig::default())
+        .expect("McpConfig is always serializable");
+
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
             "Model Context Protocol bridge. Exposes iii functions as MCP tools and the skills worker as MCP resources/prompts over POST /mcp."
                 .to_string(),
-        default_config: serde_json::json!({
-            "api_path": "mcp",
-            "state_timeout_ms": 30_000,
-            "hidden_prefixes": [
-                "engine::",
-                "state::",
-                "stream::",
-                "iii.",
-                "iii::",
-                "mcp::",
-                "a2a::",
-                "skills::",
-                "prompts::"
-            ]
-        }),
+        default_config,
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -58,5 +52,18 @@ mod tests {
             .as_array()
             .is_some_and(|a| !a.is_empty()));
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn default_config_includes_every_mcpconfig_field() {
+        // Regression: prior hand-rolled JSON drifted off McpConfig and
+        // omitted `require_expose`. Using McpConfig::default() ensures
+        // every field is present going forward.
+        let m = build_manifest();
+        let cfg = &m.default_config;
+        assert!(cfg.get("api_path").is_some());
+        assert!(cfg.get("state_timeout_ms").is_some());
+        assert!(cfg.get("hidden_prefixes").is_some());
+        assert_eq!(cfg.get("require_expose"), Some(&serde_json::Value::Bool(false)));
     }
 }

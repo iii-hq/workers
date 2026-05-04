@@ -12,14 +12,17 @@ use serde_json::{json, Value};
 use crate::config::McpConfig;
 
 /// Register `mcp::handler` and bind the HTTP trigger. Called once from
-/// `main.rs` after the engine handle is established. Errors registering
-/// the trigger are logged and swallowed — the function itself stays
-/// registered, so direct `iii.trigger("mcp::handler", body)` calls (used
-/// by the BDD harness) keep working even if another worker has already
-/// claimed the same `api_path`.
-pub fn register_all(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
+/// `main.rs` after the engine handle is established.
+///
+/// `mcp::handler` registration is infallible (the function stays
+/// registered regardless), so direct `iii.trigger("mcp::handler", body)`
+/// callers (e.g. the BDD harness) always work. The HTTP trigger
+/// registration *is* fallible — if it fails, the bridge is unreachable
+/// over HTTP and the caller should *not* advertise readiness. Returns
+/// `Err` in that case so the caller can decide what to log.
+pub fn register_all(iii: &Arc<III>, cfg: &Arc<McpConfig>) -> Result<(), IIIError> {
     register_handler(iii, cfg);
-    register_http_trigger(iii, cfg);
+    register_http_trigger(iii, cfg)
 }
 
 fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
@@ -59,8 +62,23 @@ fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
     tracing::info!("registered mcp::handler");
 }
 
-fn register_http_trigger(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
-    let api_path = cfg.api_path.clone();
+fn register_http_trigger(iii: &Arc<III>, cfg: &Arc<McpConfig>) -> Result<(), IIIError> {
+    // The iii engine prepends its own `/` to api_path during route
+    // matching, so an operator-supplied "/mcp" would register as
+    // "//mcp" and 404. Strip leading slashes defensively here so the
+    // same McpConfig instance is safe to register from anywhere.
+    let api_path = cfg
+        .api_path
+        .trim_start_matches('/')
+        .to_string();
+    if api_path != cfg.api_path {
+        tracing::warn!(
+            original = %cfg.api_path,
+            normalized = %api_path,
+            "stripped leading '/' from api_path; engine prepends its own"
+        );
+    }
+
     match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
         function_id: "mcp::handler".to_string(),
@@ -71,10 +89,12 @@ fn register_http_trigger(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
         metadata: None,
     }) {
         Ok(_) => {
-            tracing::info!(api_path = %cfg.api_path, "MCP HTTP trigger registered: POST /{}", cfg.api_path)
+            tracing::info!(api_path = %api_path, "MCP HTTP trigger registered: POST /{}", api_path);
+            Ok(())
         }
         Err(e) => {
-            tracing::warn!(error = %e, api_path = %cfg.api_path, "failed to register MCP HTTP trigger")
+            tracing::warn!(error = %e, api_path = %api_path, "failed to register MCP HTTP trigger");
+            Err(e)
         }
     }
 }

@@ -103,12 +103,34 @@ pub fn is_mcp_exposed(f: &FunctionInfo) -> bool {
 /// MCP requires tool names to match `^[a-zA-Z0-9_-]+$`. iii function ids
 /// use `::` as the namespace delimiter, so we map `::` → `__` on the way
 /// out and `__` → `::` on the way back in.
+///
+/// **Caveat**: this encoding is not bijective when a function id already
+/// contains `__` (e.g. `worker_v2__util::action` would round-trip to
+/// `worker_v2::util::action`, a different id). iii naming conventions
+/// don't currently use `__`, so we treat any such id as ambiguous:
+///
+/// - `tools/list` filters out ambiguous ids via [`is_tool_name_ambiguous`].
+/// - `tools/call` re-encodes the resolved id and verifies the round-trip
+///   matches the requested tool name; mismatches are rejected with a
+///   tool error rather than dispatched to the wrong function.
 pub fn function_id_to_tool_name(function_id: &str) -> String {
+    debug_assert!(
+        !function_id.contains("__"),
+        "function id contains '__' which collides with the MCP tool-name encoding: {function_id}"
+    );
     function_id.replace("::", "__")
 }
 
 pub fn tool_name_to_function_id(tool_name: &str) -> String {
     tool_name.replace("__", "::")
+}
+
+/// True when `function_id` would lose information through the `::` ↔ `__`
+/// mapping — i.e. when the id itself already contains `__`. Such ids
+/// must be hidden from `tools/list` and rejected at `tools/call` to
+/// avoid silently dispatching to a different function.
+pub fn is_tool_name_ambiguous(function_id: &str) -> bool {
+    function_id.contains("__")
 }
 
 /// Build the MCP tool object for a single iii function. The `metadata`
@@ -229,6 +251,28 @@ mod tests {
         );
         let id = "my-worker::deep::nested";
         assert_eq!(tool_name_to_function_id(&function_id_to_tool_name(id)), id);
+    }
+
+    #[test]
+    fn ambiguity_flag_detects_double_underscore_in_function_id() {
+        assert!(is_tool_name_ambiguous("worker_v2__util::action"));
+        assert!(is_tool_name_ambiguous("__leading"));
+        assert!(is_tool_name_ambiguous("trailing__"));
+        assert!(!is_tool_name_ambiguous("plain::id"));
+        assert!(!is_tool_name_ambiguous("with-hyphen::ok"));
+        assert!(!is_tool_name_ambiguous("single_underscore::x"));
+    }
+
+    #[test]
+    fn ambiguous_tool_name_round_trip_diverges() {
+        // Documents the underlying soundness issue: encoding an
+        // already-`__`-bearing id loses information. Callers must
+        // either filter (tools/list) or round-trip-validate (tools/call)
+        // — they can't trust the round trip blindly.
+        let bad = "worker_v2__util::action";
+        let encoded = bad.replace("::", "__");
+        let decoded = tool_name_to_function_id(&encoded);
+        assert_ne!(decoded, bad, "ambiguous ids must not round-trip cleanly");
     }
 
     #[test]

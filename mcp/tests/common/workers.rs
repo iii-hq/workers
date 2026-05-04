@@ -32,7 +32,17 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
 
     let cfg = Arc::new(McpConfig::default());
     let iii_arc = iii.clone();
-    functions::register_all(&iii_arc, &cfg);
+    // The HTTP trigger may already be claimed by another test process or
+    // a real `iii start` running locally. The mcp::handler function
+    // itself is still registered either way — and that's all the BDD
+    // suite drives directly — so log and continue rather than aborting
+    // the whole run.
+    if let Err(e) = functions::register_all(&iii_arc, &cfg) {
+        tracing::warn!(
+            error = %e,
+            "BDD: mcp HTTP trigger registration failed; continuing with direct mcp::handler invocation only"
+        );
+    }
 
     register_skills_stubs(iii);
     register_prompts_stubs(iii);
