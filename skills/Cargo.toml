@@ -1,0 +1,53 @@
+[workspace]
+
+[package]
+name = "skills"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "skills"
+path = "src/main.rs"
+
+[lib]
+name = "iii_skills"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.11.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+schemars = { version = "0.8", features = ["chrono", "uuid1"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+# BDD test runner. Drives Gherkin .feature files under tests/features/.
+cucumber = "0.22"
+# Used by step defs that need to drive multiple awaits in fixed order.
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+
+# Single BDD entry point. cucumber needs full control of the runner, so
+# `harness = false` is required. All .feature files under
+# `tests/features/**` are discovered at runtime; tags (`@pure`, `@engine`,
+# `@skills_register`, ...) let you filter to a subset:
+#
+#   cargo test --test bdd                          # everything
+#   cargo test --test bdd -- --tags @pure          # no engine required
+#   cargo test --test bdd -- --tags @skills_register
+[[test]]
+name = "bdd"
+harness = false

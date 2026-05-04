@@ -1,0 +1,7 @@
+iii: v1
+name: skills
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: skills
+description: Agentic content registry worker. Hosts skills + prompts + the iii:// resource resolver that the mcp worker serves to harnesses.
