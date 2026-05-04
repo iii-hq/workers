@@ -312,7 +312,7 @@ pub fn redact(
     deny_patterns: &[DenyPattern],
 ) -> Result<String, CorpusError> {
     let mut sorted: Vec<&SecretMatch> = secrets.iter().collect();
-    sorted.sort_by(|a, b| b.raw.len().cmp(&a.raw.len()));
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.raw.len()));
 
     let mut text = session_jsonl.to_string();
     for s in sorted {

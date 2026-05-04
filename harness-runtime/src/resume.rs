@@ -260,7 +260,7 @@ pub async fn list_sessions(iii: &III) -> Result<Vec<SessionInfo>, ResumeError> {
             last_assistant_snippet: snippet_from_messages(&messages, 80),
         });
     }
-    sessions.sort_by(|a, b| b.last_state_change_ms.cmp(&a.last_state_change_ms));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_state_change_ms));
     Ok(sessions)
 }
 
