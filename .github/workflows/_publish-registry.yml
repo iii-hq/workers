@@ -142,8 +142,8 @@ jobs:
                 cargo_args+=(--no-stdio)
               fi
 
-              echo "Starting local worker with: (cd $WORKER && ${cargo_args[*]})"
-              "${cargo_args[@]}" > "../$worker_log" 2>&1 &
+              echo "Starting local worker with: (cd $WORKER && cargo ${cargo_args[*]})"
+              cargo "${cargo_args[@]}" > "../$worker_log" 2>&1 &
               echo "$!" > ../worker.pid
               popd >/dev/null
 
