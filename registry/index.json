@@ -209,6 +209,71 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "oauth-anthropic": {
+      "type": "binary",
+      "description": "Anthropic Claude Pro/Max OAuth (PKCE localhost flow) under oauth::anthropic::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "oauth-anthropic",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "oauth-github-copilot": {
+      "type": "binary",
+      "description": "GitHub Copilot OAuth (device-code flow) under oauth::github_copilot::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "oauth-github-copilot",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "oauth-google-antigravity": {
+      "type": "binary",
+      "description": "Google Antigravity OAuth (PKCE localhost flow) under oauth::google_antigravity::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "oauth-google-antigravity",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "oauth-google-gemini-cli": {
+      "type": "binary",
+      "description": "Google Gemini CLI OAuth (PKCE localhost flow) under oauth::google_gemini_cli::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "oauth-google-gemini-cli",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "oauth-openai-codex": {
+      "type": "binary",
+      "description": "OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "oauth-openai-codex",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
     "policy-denylist": {
       "type": "binary",
       "description": "Hook subscriber on agent::before_tool_call that blocks calls whose name is on a configured denylist",

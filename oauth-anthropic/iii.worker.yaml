@@ -1,0 +1,7 @@
+iii: v1
+name: oauth-anthropic
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-oauth-anthropic
+description: Anthropic Claude Pro/Max OAuth (PKCE localhost flow) under oauth::anthropic::*.
