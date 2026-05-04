@@ -77,6 +77,10 @@ reads this file to locate the right asset for the host.
 See [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md) for the full checklist
 covering folder layout, `iii.worker.yaml`, lint, tests, deploy type
 (`binary` vs. `image`), and the release flow.
+[`binary-worker.md`](binary-worker.md) goes deeper for the Rust binary
+scaffold; [`worker-readme.md`](worker-readme.md) covers the README
+contract every worker shares (install via `iii worker add`, run via
+`iii start`, how-to over reference).
 
 ## CI
 
