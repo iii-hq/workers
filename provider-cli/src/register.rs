@@ -121,8 +121,7 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<ProviderCliFunctionR
                     let installed = resp
                         .ok()
                         .and_then(|v| v.get("path").and_then(Value::as_str).map(str::to_string))
-                        .filter(|s| !s.is_empty())
-                        .is_some();
+                        .is_some_and(|s| !s.is_empty());
                     models.push(json!({
                         "id": format!("{}/default", shape.tag),
                         "bin": shape.bin,
