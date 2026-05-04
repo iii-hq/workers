@@ -1,8 +1,56 @@
 //! Map `sandbox::*` error responses into `ToolResult`-friendly text.
+//!
+//! `ContentBlock`, `TextContent`, and `ToolResult` are inlined locally
+//! (rather than vendoring `harness-types`) since the shell workers only
+//! ever construct the `Text` variant. Wire format matches the canonical
+//! `harness_types` shapes byte-for-byte — downstream consumers
+//! (turn-orchestrator, agents) deserialize these results back as
+//! `harness_types::ToolResult` without any conversion.
 
-use harness_types::{ContentBlock, TextContent, ToolResult};
 use iii_sdk::IIIError;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+/// Wire-compatible mirror of `harness_types::ContentBlock`. Only the
+/// variants the shell workers actually produce are inlined here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ContentBlock {
+    Text(TextContent),
+    Image(ImageContent),
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        tool_call_id: String,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextContent {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageContent {
+    /// MIME type, for example `image/png` or `image/jpeg`.
+    pub mime: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
+/// Wire-compatible mirror of `harness_types::ToolResult`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolResult {
+    pub content: Vec<ContentBlock>,
+    pub details: serde_json::Value,
+    #[serde(default)]
+    pub terminate: bool,
+}
 
 #[derive(Debug)]
 pub struct ShellError {
@@ -57,5 +105,27 @@ mod tests {
         };
         assert!(text.contains("MissingSandbox"));
         assert!(text.contains("sandbox::create"));
+    }
+
+    #[test]
+    fn text_block_serializes_with_canonical_tag() {
+        let block = ContentBlock::Text(TextContent {
+            text: "hello".into(),
+        });
+        let v = serde_json::to_value(&block).unwrap();
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["text"], "hello");
+    }
+
+    #[test]
+    fn tool_result_round_trips_through_json() {
+        let r = ToolResult {
+            content: vec![ContentBlock::Text(TextContent { text: "x".into() })],
+            details: json!({}),
+            terminate: false,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let back: ToolResult = serde_json::from_value(v).unwrap();
+        assert_eq!(r, back);
     }
 }
