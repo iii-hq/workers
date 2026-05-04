@@ -33,8 +33,6 @@ def derive_registry_function_name(function_id: str, metadata: dict[str, Any] | N
         value = metadata.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    if "::" in function_id:
-        return function_id.rsplit("::", 1)[1]
     return function_id
 
 
