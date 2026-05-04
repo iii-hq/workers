@@ -1,0 +1,7 @@
+iii: v1
+name: oauth-google-antigravity
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-oauth-google-antigravity
+description: Google Antigravity OAuth (PKCE localhost flow) under oauth::google_antigravity::*.

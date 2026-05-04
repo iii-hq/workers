@@ -1,0 +1,7 @@
+iii: v1
+name: oauth-github-copilot
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-oauth-github-copilot
+description: GitHub Copilot OAuth (device-code flow) under oauth::github_copilot::*.

@@ -1,0 +1,11 @@
+iii: v1
+name: harness-runtime
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-harness-runtime
+description: agent::stream_assistant provider router plus agent::abort and agent::push_steering / push_followup helpers.
+dependencies:
+  durable-queue: "^0.1.0"
+  state-flag: "^0.1.0"
+  llm-budget: "^0.1.0"

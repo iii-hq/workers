@@ -1,0 +1,9 @@
+iii: v1
+name: provider-minimax
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-minimax
+description: OpenAI-compatible provider under provider::minimax::*.
+dependencies:
+  auth-credentials: "^0.1.0"

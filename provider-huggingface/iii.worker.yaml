@@ -1,0 +1,9 @@
+iii: v1
+name: provider-huggingface
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-huggingface
+description: OpenAI-compatible provider under provider::huggingface::*.
+dependencies:
+  auth-credentials: "^0.1.0"

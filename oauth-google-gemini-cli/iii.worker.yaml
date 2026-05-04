@@ -1,0 +1,7 @@
+iii: v1
+name: oauth-google-gemini-cli
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-oauth-google-gemini-cli
+description: Google Gemini CLI OAuth (PKCE localhost flow) under oauth::google_gemini_cli::*.

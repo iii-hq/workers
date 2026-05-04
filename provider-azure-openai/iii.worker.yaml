@@ -1,0 +1,9 @@
+iii: v1
+name: provider-azure-openai
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-azure-openai
+description: Azure OpenAI Responses provider under provider::azure-openai::*.
+dependencies:
+  auth-credentials: "^0.1.0"

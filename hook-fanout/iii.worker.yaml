@@ -1,0 +1,7 @@
+iii: v1
+name: hook-fanout
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-hook-fanout
+description: Reusable publish-collect primitive under hooks::publish_collect — fans an event to subscribers and collects merged replies.

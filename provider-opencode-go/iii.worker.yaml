@@ -1,0 +1,9 @@
+iii: v1
+name: provider-opencode-go
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-opencode-go
+description: OpenAI-compatible provider under provider::opencode-go::*.
+dependencies:
+  auth-credentials: "^0.1.0"
