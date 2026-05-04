@@ -11,6 +11,7 @@
 //! token in this flow; to renew credentials, re-run [`login`]. The [`refresh`]
 //! function therefore returns [`OAuthError::NoRefreshToken`].
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use auth_credentials::Credential;
@@ -134,7 +135,13 @@ fn build_client() -> Result<reqwest::Client, OAuthError> {
         .map_err(|e| OAuthError::Http(e.to_string()))
 }
 
-fn copilot_headers() -> reqwest::header::HeaderMap {
+/// Build the canonical request headers GitHub Copilot's CLI sends with every
+/// device-code request: `Editor-Version`, `Editor-Plugin-Version`, the
+/// `Copilot-Integration-Id`, and `Accept: application/json`.
+///
+/// Exposed under `#[doc(hidden)]` for integration tests; treat as private.
+#[doc(hidden)]
+pub fn copilot_headers() -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::ACCEPT,
@@ -298,6 +305,55 @@ fn parse_scopes(scope: &str) -> Vec<String> {
         .collect()
 }
 
+/// Internal bus surface for the oauth-github-copilot register handlers.
+#[allow(dead_code)]
+// set_token + record_trigger are reserved for future handlers; today only record_function is wired.
+#[doc(hidden)]
+pub trait CredentialBus: Send + Sync {
+    fn set_token<'a>(
+        &'a self,
+        provider: &'a str,
+        cred: &'a auth_credentials::Credential,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), iii_sdk::IIIError>> + Send + 'a>,
+    >;
+    fn record_function(&self, msg: &iii_sdk::RegisterFunctionMessage);
+    fn record_trigger(&self, input: &iii_sdk::RegisterTriggerInput);
+}
+
+/// Production [`CredentialBus`] backed by an `iii_sdk::III`.
+#[allow(dead_code)] // The wrapped III is only read when set_token is invoked, which today happens via tests.
+#[doc(hidden)]
+pub struct IiiSdkBus(pub iii_sdk::III);
+
+impl CredentialBus for IiiSdkBus {
+    fn set_token<'a>(
+        &'a self,
+        provider: &'a str,
+        cred: &'a auth_credentials::Credential,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), iii_sdk::IIIError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let payload = serde_json::json!({
+                "provider": provider,
+                "credential": cred,
+            });
+            self.0
+                .trigger(iii_sdk::TriggerRequest {
+                    function_id: "auth::set_token".to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await
+                .map(|_| ())
+        })
+    }
+    fn record_function(&self, _msg: &iii_sdk::RegisterFunctionMessage) {}
+    fn record_trigger(&self, _input: &iii_sdk::RegisterTriggerInput) {}
+}
+
 /// Register `oauth::github-copilot::*` iii functions on the bus.
 ///
 /// Functions registered:
@@ -310,56 +366,65 @@ fn parse_scopes(scope: &str) -> Vec<String> {
 /// - `oauth::github-copilot::status` — payload is empty; returns `{ ready: bool }`
 ///   reflecting reachability of the upstream identity provider.
 pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<OAuthFunctionRefs> {
+    let bus: Arc<dyn CredentialBus> = Arc::new(IiiSdkBus(iii.clone()));
+    register_with_iii_with_bus(iii, bus).await
+}
+
+/// Bus-aware variant of [`register_with_iii`]. Exposed under `#[doc(hidden)]`
+/// for integration tests.
+#[doc(hidden)]
+pub async fn register_with_iii_with_bus(
+    iii: &iii_sdk::III,
+    bus: Arc<dyn CredentialBus>,
+) -> anyhow::Result<OAuthFunctionRefs> {
     use iii_sdk::{IIIError, RegisterFunctionMessage};
     use serde_json::{json, Value};
 
-    let login_fn = iii.register_function((
-        RegisterFunctionMessage::with_id("oauth::github-copilot::login".to_string())
-            .with_description("Run the PKCE flow and return a fresh credential.".into()),
-        |_payload: Value| async move {
-            let callbacks = OAuthLoginCallbacks {
-                on_open_url: Box::new(|url| {
-                    log::info!("oauth::github-copilot::login open URL: {url}");
-                }),
-                on_user_code: Some(Box::new(|uc| {
-                    log::info!("oauth::github-copilot::login user code: {uc:?}");
-                })),
-                on_progress: Box::new(|msg| {
-                    log::info!("oauth::github-copilot::login progress: {msg}");
-                }),
-            };
-            let cred = login(callbacks)
-                .await
-                .map_err(|e| IIIError::Handler(format!("login failed: {e}")))?;
-            serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
-        },
-    ));
+    let login_msg = RegisterFunctionMessage::with_id("oauth::github-copilot::login".to_string())
+        .with_description("Run the PKCE flow and return a fresh credential.".into());
+    bus.record_function(&login_msg);
+    let login_fn = iii.register_function((login_msg, |_payload: Value| async move {
+        let callbacks = OAuthLoginCallbacks {
+            on_open_url: Box::new(|url| {
+                log::info!("oauth::github-copilot::login open URL: {url}");
+            }),
+            on_user_code: Some(Box::new(|uc| {
+                log::info!("oauth::github-copilot::login user code: {uc:?}");
+            })),
+            on_progress: Box::new(|msg| {
+                log::info!("oauth::github-copilot::login progress: {msg}");
+            }),
+        };
+        let cred = login(callbacks)
+            .await
+            .map_err(|e| IIIError::Handler(format!("login failed: {e}")))?;
+        serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
+    }));
 
-    let refresh_fn = iii.register_function((
+    let refresh_msg =
         RegisterFunctionMessage::with_id("oauth::github-copilot::refresh".to_string())
-            .with_description("Refresh an OAuth credential.".into()),
-        |payload: Value| async move {
-            let cred_value = payload
-                .get("credential")
-                .cloned()
-                .ok_or_else(|| IIIError::Handler("missing required field: credential".into()))?;
-            let cred: Credential = serde_json::from_value(cred_value)
-                .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
-            let rotated = refresh(cred)
-                .await
-                .map_err(|e| IIIError::Handler(format!("refresh failed: {e}")))?;
-            serde_json::to_value(rotated).map_err(|e| IIIError::Handler(e.to_string()))
-        },
-    ));
+            .with_description("Refresh an OAuth credential.".into());
+    bus.record_function(&refresh_msg);
+    let refresh_fn = iii.register_function((refresh_msg, |payload: Value| async move {
+        let cred_value = payload
+            .get("credential")
+            .cloned()
+            .ok_or_else(|| IIIError::Handler("missing required field: credential".into()))?;
+        let cred: Credential = serde_json::from_value(cred_value)
+            .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
+        let rotated = refresh(cred)
+            .await
+            .map_err(|e| IIIError::Handler(format!("refresh failed: {e}")))?;
+        serde_json::to_value(rotated).map_err(|e| IIIError::Handler(e.to_string()))
+    }));
 
-    let status_fn = iii.register_function((
-        RegisterFunctionMessage::with_id("oauth::github-copilot::status".to_string())
-            .with_description("Probe identity-provider reachability.".into()),
-        |_payload: Value| async move {
-            let ready = status().await;
-            Ok(json!({ "ready": ready }))
-        },
-    ));
+    let status_msg = RegisterFunctionMessage::with_id("oauth::github-copilot::status".to_string())
+        .with_description("Probe identity-provider reachability.".into());
+    bus.record_function(&status_msg);
+    let status_fn = iii.register_function((status_msg, |_payload: Value| async move {
+        let ready = status().await;
+        Ok(json!({ "ready": ready }))
+    }));
 
     Ok(OAuthFunctionRefs {
         login: login_fn,
@@ -381,6 +446,14 @@ impl OAuthFunctionRefs {
             r.unregister();
         }
     }
+}
+
+/// Test-only re-exports of the lib's `pub(crate)` surface.
+#[doc(hidden)]
+pub mod testing {
+    pub use super::copilot_headers;
+    pub use super::register_with_iii_with_bus;
+    pub use super::CredentialBus;
 }
 
 #[cfg(test)]
@@ -439,5 +512,32 @@ mod tests {
     #[tokio::test]
     async fn status_is_true_when_client_builds() {
         assert!(status().await);
+    }
+
+    #[test]
+    fn copilot_headers_match_cli_wire_format() {
+        let headers = copilot_headers();
+        assert_eq!(
+            headers
+                .get(reqwest::header::ACCEPT)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(
+            headers.get("editor-version").and_then(|v| v.to_str().ok()),
+            Some(EDITOR_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get("editor-plugin-version")
+                .and_then(|v| v.to_str().ok()),
+            Some(EDITOR_PLUGIN_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get("copilot-integration-id")
+                .and_then(|v| v.to_str().ok()),
+            Some(COPILOT_INTEGRATION_ID)
+        );
     }
 }

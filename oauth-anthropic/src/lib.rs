@@ -12,6 +12,7 @@
 //! [`status`] as a placeholder reachability check.
 
 use std::env;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -101,7 +102,10 @@ fn random_state() -> String {
 }
 
 /// Build the full authorize URL for the OAuth flow.
-fn build_authorize_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
+///
+/// Exposed under `#[doc(hidden)]` for integration tests; treat as private.
+#[doc(hidden)]
+pub fn build_authorize_url(challenge: &str, state: &str, redirect_uri: &str) -> String {
     let mut u = url::Url::parse(AUTHORIZE_URL).expect("static url parses");
     u.query_pairs_mut()
         .append_pair("client_id", CLIENT_ID)
@@ -307,6 +311,67 @@ pub async fn status() -> bool {
     true
 }
 
+/// Internal bus surface for the oauth-anthropic register handlers.
+///
+/// Production wraps an `iii_sdk::III` via [`IiiSdkBus`]. Tests inject an
+/// in-memory recorder. The two `record_*` methods let tests assert which
+/// function ids and trigger configs were registered without standing up a
+/// real engine; `set_token` is wired for the future where the handler
+/// stores the credential through the bus rather than returning it.
+///
+/// `set_token` returns a boxed future to keep this trait object-safe without
+/// pulling `async-trait` into the lib's runtime dependencies.
+///
+/// This trait is `pub` only so the integration test crate can implement it via
+/// the `#[doc(hidden)]` `testing` module re-export. Treat it as private API.
+#[allow(dead_code)]
+// set_token + record_trigger are reserved for future handlers; today only record_function is wired.
+#[doc(hidden)]
+pub trait CredentialBus: Send + Sync {
+    fn set_token<'a>(
+        &'a self,
+        provider: &'a str,
+        cred: &'a auth_credentials::Credential,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), iii_sdk::IIIError>> + Send + 'a>,
+    >;
+    fn record_function(&self, msg: &iii_sdk::RegisterFunctionMessage);
+    fn record_trigger(&self, input: &iii_sdk::RegisterTriggerInput);
+}
+
+/// Production [`CredentialBus`] backed by an `iii_sdk::III`.
+#[allow(dead_code)] // The wrapped III is only read when set_token is invoked, which today happens via tests.
+#[doc(hidden)]
+pub struct IiiSdkBus(pub iii_sdk::III);
+
+impl CredentialBus for IiiSdkBus {
+    fn set_token<'a>(
+        &'a self,
+        provider: &'a str,
+        cred: &'a auth_credentials::Credential,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), iii_sdk::IIIError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let payload = serde_json::json!({
+                "provider": provider,
+                "credential": cred,
+            });
+            self.0
+                .trigger(iii_sdk::TriggerRequest {
+                    function_id: "auth::set_token".to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await
+                .map(|_| ())
+        })
+    }
+    fn record_function(&self, _msg: &iii_sdk::RegisterFunctionMessage) {}
+    fn record_trigger(&self, _input: &iii_sdk::RegisterTriggerInput) {}
+}
+
 /// Register `oauth::anthropic::*` iii functions on the bus.
 ///
 /// Functions registered:
@@ -319,53 +384,62 @@ pub async fn status() -> bool {
 /// - `oauth::anthropic::status` — payload is empty; returns `{ ready: bool }`
 ///   reflecting reachability of the upstream identity provider.
 pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<OAuthFunctionRefs> {
+    let bus: Arc<dyn CredentialBus> = Arc::new(IiiSdkBus(iii.clone()));
+    register_with_iii_with_bus(iii, bus).await
+}
+
+/// Bus-aware variant of [`register_with_iii`]. Production callers go through
+/// [`register_with_iii`]; tests inject an in-memory `bus` to capture the
+/// registered function ids and trigger configs.
+#[doc(hidden)]
+pub async fn register_with_iii_with_bus(
+    iii: &iii_sdk::III,
+    bus: Arc<dyn CredentialBus>,
+) -> anyhow::Result<OAuthFunctionRefs> {
     use iii_sdk::{IIIError, RegisterFunctionMessage};
     use serde_json::{json, Value};
 
-    let login_fn = iii.register_function((
-        RegisterFunctionMessage::with_id("oauth::anthropic::login".to_string())
-            .with_description("Run the PKCE flow and return a fresh credential.".into()),
-        |_payload: Value| async move {
-            let callbacks = OAuthLoginCallbacks {
-                on_open_url: Box::new(|url| {
-                    log::info!("oauth::anthropic::login open URL: {url}");
-                }),
-                on_progress: Box::new(|msg| {
-                    log::info!("oauth::anthropic::login progress: {msg}");
-                }),
-            };
-            let cred = login(callbacks)
-                .await
-                .map_err(|e| IIIError::Handler(format!("login failed: {e}")))?;
-            serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
-        },
-    ));
+    let login_msg = RegisterFunctionMessage::with_id("oauth::anthropic::login".to_string())
+        .with_description("Run the PKCE flow and return a fresh credential.".into());
+    bus.record_function(&login_msg);
+    let login_fn = iii.register_function((login_msg, |_payload: Value| async move {
+        let callbacks = OAuthLoginCallbacks {
+            on_open_url: Box::new(|url| {
+                log::info!("oauth::anthropic::login open URL: {url}");
+            }),
+            on_progress: Box::new(|msg| {
+                log::info!("oauth::anthropic::login progress: {msg}");
+            }),
+        };
+        let cred = login(callbacks)
+            .await
+            .map_err(|e| IIIError::Handler(format!("login failed: {e}")))?;
+        serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
+    }));
 
-    let refresh_fn = iii.register_function((
-        RegisterFunctionMessage::with_id("oauth::anthropic::refresh".to_string())
-            .with_description("Refresh an OAuth credential.".into()),
-        |payload: Value| async move {
-            let cred_value = payload
-                .get("credential")
-                .cloned()
-                .ok_or_else(|| IIIError::Handler("missing required field: credential".into()))?;
-            let cred: Credential = serde_json::from_value(cred_value)
-                .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
-            let rotated = refresh(cred)
-                .await
-                .map_err(|e| IIIError::Handler(format!("refresh failed: {e}")))?;
-            serde_json::to_value(rotated).map_err(|e| IIIError::Handler(e.to_string()))
-        },
-    ));
+    let refresh_msg = RegisterFunctionMessage::with_id("oauth::anthropic::refresh".to_string())
+        .with_description("Refresh an OAuth credential.".into());
+    bus.record_function(&refresh_msg);
+    let refresh_fn = iii.register_function((refresh_msg, |payload: Value| async move {
+        let cred_value = payload
+            .get("credential")
+            .cloned()
+            .ok_or_else(|| IIIError::Handler("missing required field: credential".into()))?;
+        let cred: Credential = serde_json::from_value(cred_value)
+            .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
+        let rotated = refresh(cred)
+            .await
+            .map_err(|e| IIIError::Handler(format!("refresh failed: {e}")))?;
+        serde_json::to_value(rotated).map_err(|e| IIIError::Handler(e.to_string()))
+    }));
 
-    let status_fn = iii.register_function((
-        RegisterFunctionMessage::with_id("oauth::anthropic::status".to_string())
-            .with_description("Probe identity-provider reachability.".into()),
-        |_payload: Value| async move {
-            let ready = status().await;
-            Ok(json!({ "ready": ready }))
-        },
-    ));
+    let status_msg = RegisterFunctionMessage::with_id("oauth::anthropic::status".to_string())
+        .with_description("Probe identity-provider reachability.".into());
+    bus.record_function(&status_msg);
+    let status_fn = iii.register_function((status_msg, |_payload: Value| async move {
+        let ready = status().await;
+        Ok(json!({ "ready": ready }))
+    }));
 
     Ok(OAuthFunctionRefs {
         login: login_fn,
@@ -387,6 +461,18 @@ impl OAuthFunctionRefs {
             r.unregister();
         }
     }
+}
+
+/// Test-only re-exports of the lib's `pub(crate)` surface.
+///
+/// Integration tests live in their own crate, so they cannot reach `pub(crate)`
+/// items directly. This module re-exports them under `#[doc(hidden)]` so the
+/// public API remains the documented `register_with_iii` + data types.
+#[doc(hidden)]
+pub mod testing {
+    pub use super::build_authorize_url;
+    pub use super::register_with_iii_with_bus;
+    pub use super::CredentialBus;
 }
 
 #[cfg(test)]
