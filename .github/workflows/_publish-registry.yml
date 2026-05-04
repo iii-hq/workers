@@ -54,11 +54,11 @@ jobs:
 
       - name: Install iii CLI
         env:
-          VERSION: '0.11.5'
+          VERSION: '0.11.6-next.1'
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh
+          sh /tmp/install-iii.sh --next
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
