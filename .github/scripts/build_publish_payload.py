@@ -126,6 +126,31 @@ def _normalize_registry_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, Any]:
+    by_name = [w for w in workers if w.get("name") == worker_name or w.get("id") == worker_name]
+    if len(by_name) == 1:
+        return by_name[0]
+
+    namespace = worker_name.replace("-", "_")
+    by_namespace = [
+        w
+        for w in workers
+        if any(
+            isinstance(fid, str) and fid.startswith(f"{namespace}::")
+            for fid in (w.get("functions") or [])
+        )
+    ]
+    if len(by_namespace) == 1:
+        return by_namespace[0]
+
+    summary = [{"id": w.get("id"), "name": w.get("name")} for w in workers]
+    raise ValueError(
+        f"could not match worker {worker_name!r}: "
+        f"{len(by_name)} by name/id, {len(by_namespace)} by namespace {namespace!r}, "
+        f"workers={summary}"
+    )
+
+
 def normalize_worker_interface(
     *,
     worker_name: str,
@@ -134,11 +159,9 @@ def normalize_worker_interface(
     triggers_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
-    matches = [w for w in workers if w.get("name") == worker_name or w.get("id") == worker_name]
-    if len(matches) != 1:
-        raise ValueError(f"expected exactly one worker matching {worker_name!r}, found {len(matches)}")
+    worker = _match_worker(workers, worker_name)
 
-    worker_function_ids = matches[0].get("functions") or []
+    worker_function_ids = worker.get("functions") or []
     if not isinstance(worker_function_ids, list):
         raise ValueError("worker `functions` must be an array")
 
