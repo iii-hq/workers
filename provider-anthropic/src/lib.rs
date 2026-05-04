@@ -246,7 +246,7 @@ async fn stream_inner(
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_mins(2))
         .build()?;
 
     let (header_name, header_value) = auth_header_for(&cfg);
