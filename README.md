@@ -28,6 +28,11 @@ matching GitHub Release asset for the host's target triple.
 | [`llm-budget`](llm-budget/) | Rust | Workspace + agent LLM spend caps with alerts, forecast, and period rollover under `budget::*`. |
 | [`mcp`](mcp/) | Rust | Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions tagged `mcp.expose` as MCP tools. |
 | [`models-catalog`](models-catalog/) | Rust | Model capabilities knowledge base under `models::*` (list/get/supports/register). |
+| [`oauth-anthropic`](oauth-anthropic/) | Rust | Anthropic Claude Pro/Max OAuth (PKCE localhost flow) under `oauth::anthropic::*`. |
+| [`oauth-github-copilot`](oauth-github-copilot/) | Rust | GitHub Copilot OAuth (device-code flow) under `oauth::github_copilot::*`. |
+| [`oauth-google-antigravity`](oauth-google-antigravity/) | Rust | Google Antigravity OAuth (PKCE localhost flow) under `oauth::google_antigravity::*`. |
+| [`oauth-google-gemini-cli`](oauth-google-gemini-cli/) | Rust | Google Gemini CLI OAuth (PKCE localhost flow) under `oauth::google_gemini_cli::*`. |
+| [`oauth-openai-codex`](oauth-openai-codex/) | Rust | OpenAI Codex OAuth (PKCE localhost flow) under `oauth::openai_codex::*`. |
 | [`policy-denylist`](policy-denylist/) | Rust | Hook subscriber on `agent::before_tool_call` that blocks calls whose name is on a configured denylist. |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Native Anthropic Messages API streaming provider under `provider::anthropic::*`. |
