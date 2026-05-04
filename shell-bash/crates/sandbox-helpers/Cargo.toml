@@ -11,7 +11,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-harness-types = { path = "../harness-types" }
+serde = { workspace = true }
 iii-sdk = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

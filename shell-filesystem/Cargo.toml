@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-types", "crates/sandbox-helpers"]
+members = ["crates/sandbox-helpers"]
 
 [package]
 name = "iii-shell-filesystem"
