@@ -9,6 +9,7 @@ on:
       - 'mcp/v*'
       - 'proof/v*'
       - 'todo-worker/v*'
+      - 'skills/v*'
       - 'todo-worker-python/v*'
   workflow_dispatch:
     inputs:
