@@ -693,6 +693,7 @@ name = "iii-dlp-scrubber"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "env_logger",
  "iii-sdk",
  "log",
