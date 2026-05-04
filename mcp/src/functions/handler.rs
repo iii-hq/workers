@@ -228,13 +228,14 @@ async fn tools_list(ctx: &Ctx) -> DispatchResult {
         .await
         .map_err(|e| (INTERNAL_ERROR, format!("engine::functions::list: {e}")))?;
 
-    let fns: Vec<FunctionInfo> = serde_json::from_value(
-        result
-            .get("functions")
-            .cloned()
-            .ok_or_else(|| (INTERNAL_ERROR, "engine::functions::list: missing functions field".into()))?,
-    )
-    .map_err(|e| (INTERNAL_ERROR, format!("deserialize functions: {e}")))?;
+    let fns: Vec<FunctionInfo> =
+        serde_json::from_value(result.get("functions").cloned().ok_or_else(|| {
+            (
+                INTERNAL_ERROR,
+                "engine::functions::list: missing functions field".into(),
+            )
+        })?)
+        .map_err(|e| (INTERNAL_ERROR, format!("deserialize functions: {e}")))?;
     let tools: Vec<Value> = fns
         .iter()
         .filter(|f| !protocol::is_hidden(&f.function_id, &ctx.cfg.hidden_prefixes))
@@ -354,18 +355,14 @@ async fn lookup_function_info(
         .await
         .map_err(|e| (INTERNAL_ERROR, format!("engine::functions::list: {e}")))?;
 
-    let fns: Vec<FunctionInfo> = serde_json::from_value(
-        result
-            .get("functions")
-            .cloned()
-            .ok_or_else(|| {
-                (
-                    INTERNAL_ERROR,
-                    "engine::functions::list: missing functions field".into(),
-                )
-            })?,
-    )
-    .map_err(|e| (INTERNAL_ERROR, format!("deserialize functions: {e}")))?;
+    let fns: Vec<FunctionInfo> =
+        serde_json::from_value(result.get("functions").cloned().ok_or_else(|| {
+            (
+                INTERNAL_ERROR,
+                "engine::functions::list: missing functions field".into(),
+            )
+        })?)
+        .map_err(|e| (INTERNAL_ERROR, format!("deserialize functions: {e}")))?;
 
     Ok(fns.into_iter().find(|f| f.function_id == function_id))
 }

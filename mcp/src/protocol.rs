@@ -323,7 +323,10 @@ mod tests {
 
     #[test]
     fn is_mcp_exposed_false_when_flag_missing() {
-        let f = fn_info("api::post::agentmemory/observe", Some(json!({ "a2a.expose": true })));
+        let f = fn_info(
+            "api::post::agentmemory/observe",
+            Some(json!({ "a2a.expose": true })),
+        );
         assert!(!is_mcp_exposed(&f));
     }
 

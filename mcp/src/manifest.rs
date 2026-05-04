@@ -17,8 +17,8 @@ pub fn build_manifest() -> ModuleManifest {
     // Serialize `McpConfig::default()` rather than hand-rolling the JSON
     // here so adding a field to the config can never silently drift the
     // manifest's advertised defaults.
-    let default_config = serde_json::to_value(McpConfig::default())
-        .expect("McpConfig is always serializable");
+    let default_config =
+        serde_json::to_value(McpConfig::default()).expect("McpConfig is always serializable");
 
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
@@ -64,6 +64,9 @@ mod tests {
         assert!(cfg.get("api_path").is_some());
         assert!(cfg.get("state_timeout_ms").is_some());
         assert!(cfg.get("hidden_prefixes").is_some());
-        assert_eq!(cfg.get("require_expose"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            cfg.get("require_expose"),
+            Some(&serde_json::Value::Bool(false))
+        );
     }
 }

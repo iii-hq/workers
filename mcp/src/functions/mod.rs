@@ -67,10 +67,7 @@ fn register_http_trigger(iii: &Arc<III>, cfg: &Arc<McpConfig>) -> Result<(), III
     // matching, so an operator-supplied "/mcp" would register as
     // "//mcp" and 404. Strip leading slashes defensively here so the
     // same McpConfig instance is safe to register from anywhere.
-    let api_path = cfg
-        .api_path
-        .trim_start_matches('/')
-        .to_string();
+    let api_path = cfg.api_path.trim_start_matches('/').to_string();
     if api_path != cfg.api_path {
         tracing::warn!(
             original = %cfg.api_path,

@@ -26,4 +26,4 @@ Feature: MCP tools/list and tools/call
 
   Scenario: tools/call without params returns -32602
     When I call tools/call with no params
-    Then the response is a JSON-RPC error with code -32602
+    Then the response is a JSON-RPC error with code -32602 for tools

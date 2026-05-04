@@ -159,3 +159,12 @@ fn tool_not_error(world: &mut IiiMcpWorld) {
     let v = world.stash.get(LAST).expect("no response recorded");
     assert_eq!(v["result"]["isError"].as_bool(), Some(false), "{v}");
 }
+
+#[then(regex = r#"^the response is a JSON-RPC error with code (-?\d+) for tools$"#)]
+fn assert_tools_error(world: &mut IiiMcpWorld, code: i64) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST).expect("no response recorded");
+    assert_eq!(v["error"]["code"].as_i64(), Some(code), "{v}");
+}
