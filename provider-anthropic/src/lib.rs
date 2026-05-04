@@ -150,7 +150,7 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
     out
 }
 
-fn content_block_to_wire(b: &ContentBlock) -> Option<serde_json::Value> {
+pub fn content_block_to_wire(b: &ContentBlock) -> Option<serde_json::Value> {
     match b {
         ContentBlock::Text(t) => Some(serde_json::json!({ "type": "text", "text": t.text })),
         ContentBlock::ToolCall {
@@ -523,7 +523,7 @@ fn build_final(state: &PartialState, model: &str) -> AssistantMessage {
     msg
 }
 
-fn build_content(state: &PartialState) -> Vec<ContentBlock> {
+pub(crate) fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     let mut content = Vec::new();
     for t in &state.text_blocks {
         if !t.is_empty() {
@@ -706,6 +706,67 @@ mod tests {
         let (name, value) = auth_header_for(&cfg);
         assert_eq!(name, "x-api-key");
         assert_eq!(value, "sk-ant-xyz");
+    }
+
+    #[test]
+    fn build_content_mixed_text_and_tool_partial_state() {
+        let state = PartialState {
+            text_blocks: vec!["hello".into(), String::new(), "world".into()],
+            tool_calls: vec![PartialToolCall {
+                id: "tc1".into(),
+                name: "read".into(),
+                args_json: "{\"path\":\"/tmp/x\"}".into(),
+            }],
+            usage: Usage::default(),
+            stop_reason: Some(StopReason::End),
+            error_message: None,
+        };
+        let content = build_content(&state);
+        // Empty text block is skipped; two text + one tool call remain.
+        assert_eq!(content.len(), 3);
+        match &content[0] {
+            ContentBlock::Text(t) => assert_eq!(t.text, "hello"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        match &content[1] {
+            ContentBlock::Text(t) => assert_eq!(t.text, "world"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        match &content[2] {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "tc1");
+                assert_eq!(name, "read");
+                assert_eq!(arguments["path"], "/tmp/x");
+            }
+            other => panic!("expected tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_content_invalid_args_json_falls_back_to_null() {
+        let state = PartialState {
+            text_blocks: vec![],
+            tool_calls: vec![PartialToolCall {
+                id: "tc1".into(),
+                name: "read".into(),
+                args_json: "not-json".into(),
+            }],
+            usage: Usage::default(),
+            stop_reason: None,
+            error_message: None,
+        };
+        let content = build_content(&state);
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::ToolCall { arguments, .. } => {
+                assert!(arguments.is_null());
+            }
+            other => panic!("expected tool call, got {other:?}"),
+        }
     }
 
     #[test]
