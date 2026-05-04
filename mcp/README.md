@@ -1,255 +1,189 @@
-# iii-mcp
+# mcp
 
-Model Context Protocol surface for the iii engine. Speaks MCP JSON-RPC on
-two transports:
+Model Context Protocol (MCP) bridge for the [iii engine](https://github.com/iii-hq/iii).
+Registers a single HTTP endpoint at `POST /mcp` that speaks MCP 2025-06-18
+JSON-RPC and maps each method onto an `iii.trigger` call:
 
-- **stdio** (default): for Claude Desktop, Cursor, MCP Inspector launching
-  the binary directly.
-- **Streamable HTTP**: `POST /mcp` on the engine's HTTP trigger port.
-  Enable with `--no-stdio`.
+| MCP method | Backed by |
+|---|---|
+| `tools/list`, `tools/call` | `iii.list_functions` + `iii.trigger(<id>, ...)` |
+| `resources/list`, `resources/read`, `resources/templates/list` | the [`skills`](../skills) worker |
+| `prompts/list`, `prompts/get` | the [`skills`](../skills) worker |
 
-## Access control
+Install `skills` alongside `mcp` so MCP clients see registered skills as
+`iii://{id}` resources and slash-commands as MCP prompts.
 
-Function exposure is governed by **iii-sdk RBAC** at `iii-worker-manager`. This worker is a protocol transport — the engine decides who can see and call what.
+## Install
 
-Configure in `config.yaml`:
-
-```yaml
-workers:
-  - name: iii-worker-manager
-    config:
-      rbac:
-        auth_function_id: myproject::auth
-        expose_functions:
-          - match("api::*")
-          - match("*::public")
-          - metadata:
-              public: true
-  - name: iii-mcp    # or iii-a2a
+```bash
+iii worker add mcp
 ```
 
-See https://iii.dev/docs/how-to/worker-rbac.md for the RBAC surface.
+To populate the resources and prompts surfaces, also install
+[`skills`](../skills):
 
-### Breaking change (v0.4)
+```bash
+iii worker add skills
+```
 
-- `--expose-all` and `--tier` removed. Port policy to `auth_function_id`.
-- `mcp.expose` / `a2a.expose` metadata flags no longer consulted.
-- See `examples/default-secure-auth.rs` for a drop-in replacement.
+`iii worker add` fetches the binary, writes a config block into
+`~/.iii/config.yaml`, and the engine starts the worker on the next
+`iii start`.
 
-### Engine introspection
+## Run
 
-For the use case the old `engine::*` hard floor hid, use the `introspect` worker (`iii worker add introspect`). It exposes `introspect::functions`, `introspect::topology`, `introspect::health`, etc. — agents call those through MCP/A2A without leaking raw engine internals.
+```bash
+iii start
+```
 
-### CLI flags
+Once both `mcp` and the engine's `iii-http` worker are running, the MCP
+endpoint is reachable at `http://<engine_http>/mcp`.
+
+## Quickstart
+
+Sanity-check the bridge with `curl` against MCP Inspector or any MCP
+client. Substitute your engine's HTTP port (default `3000`).
+
+```bash
+# 1. initialize — handshake, returns the negotiated protocol version
+curl -sX POST http://127.0.0.1:3000/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  | jq '.result.protocolVersion'
+
+# 2. tools/list — every iii function except hidden namespaces
+curl -sX POST http://127.0.0.1:3000/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | jq '.result.tools[].name'
+
+# 3. tools/call — invoke one of those tools
+curl -sX POST http://127.0.0.1:3000/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo__hello","arguments":{}}}' \
+  | jq '.result.content[0].text'
+
+# 4. resources/list — index of skills (requires `skills` worker)
+curl -sX POST http://127.0.0.1:3000/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"resources/list"}' \
+  | jq '.result.resources'
+```
+
+### Tool naming
+
+iii function ids contain `::`, which MCP tool names disallow. The
+bridge transparently maps `myworker::echo` ↔ `myworker__echo` on the
+way out and back. Pass tool names with `__` in `tools/call`; the
+bridge translates them back to the iii function id.
+
+### Hidden namespaces
+
+Function ids starting with any of the following prefixes are excluded
+from `tools/list` and rejected at `tools/call`:
+
+`engine::`, `state::`, `stream::`, `iii.`, `iii::`, `mcp::`, `a2a::`,
+`skills::`, `prompts::`
+
+The list mirrors the hard floor enforced by the [`skills`](../skills)
+worker. Add deploy-specific overrides through `hidden_prefixes` in the
+config below.
+
+## Configuration
+
+```yaml
+api_path: mcp                # POST /<api_path> on the engine HTTP port
+state_timeout_ms: 30000      # per-trigger upper bound (ms)
+
+# Optional. Defaults to the always-hidden list. Add custom prefixes to
+# hide additional namespaces from MCP clients.
+hidden_prefixes:
+  - "engine::"
+  - "state::"
+  - "stream::"
+  - "iii."
+  - "iii::"
+  - "mcp::"
+  - "a2a::"
+  - "skills::"
+  - "prompts::"
+
+# When true, only functions whose `metadata.mcp.expose == true` are
+# advertised in `tools/list`. Workers like `agentmemory` tag every
+# agent-callable handler with this flag and intentionally omit it from
+# HTTP wrappers, sub-skill handlers, and prompt handlers. Recommended
+# for agent-facing deployments. Default false for backwards
+# compatibility with workers that haven't adopted the flag.
+require_expose: false
+```
+
+CLI flags:
 
 ```text
---engine-url <URL>   WebSocket URL of the iii engine (default ws://localhost:49134)
---no-stdio           Skip stdio, run HTTP-only
---no-builtins        Hide the 6 built-in management tools on stdio. Also hidden over HTTP by default.
---http-builtins      Opt in to exposing built-ins on HTTP (default: hidden).
-                     --no-builtins always wins and hides them everywhere.
---rbac-tag <TAG>     Forward an `x-iii-rbac-tag` header on the worker WebSocket
-                     upgrade. iii-worker-manager's `auth_function_id` reads
-                     this tag to apply policy.
---debug              Verbose logging
+--config <PATH>    Path to config.yaml [default: ./config.yaml]
+--url <URL>        WebSocket URL of the iii engine [default: ws://127.0.0.1:49134]
+--manifest         Output the module manifest as JSON and exit
+-h, --help         Print help
 ```
 
-## Built-in management tools
+If the config file is missing or malformed the worker logs a warning
+and falls back to the defaults — boot is never blocked by a bad config
+path.
 
-`iii-mcp` emits 6 built-in tools that let an MCP client drive an iii engine:
+## MCP method coverage
 
-- `iii_worker_register` — spawn a Node/Python worker from source
-- `iii_worker_stop` — kill a spawned worker
-- `iii_trigger_register` / `iii_trigger_unregister` — attach or detach
-  HTTP/cron/queue triggers
-- `iii_trigger_void` — fire-and-forget invocation
-- `iii_trigger_enqueue` — enqueue to a named queue
+The v0.1 surface implements the core methods needed for tool/resource/
+prompt discovery and invocation:
 
-**Stdio transport keeps these visible by default.** HTTP transport hides
-them by default because worker spawning requires the stdio-attached
-process — the tools would error on invocation anyway. Opt in per-deploy
-with `--http-builtins` to advertise them over HTTP as well (they will
-still error on `iii_worker_*` and `iii_trigger_register*` because those
-paths need the attached process). `--no-builtins` always wins and hides
-them on both transports.
-
-## Local testing
-
-Full smoke path from a clean machine. Assumes `iii-sdk` v0.11.3 engine
-installed (`which iii`).
-
-### 1. Start the engine
-
-Minimal `config.yaml`:
-
-```yaml
-workers:
-  - name: iii-worker-manager
-  - name: iii-http
-    config:
-      host: 127.0.0.1
-      port: 3111
-  - name: iii-state
-```
-
-Run it:
-
-```bash
-iii --no-update-check
-```
-
-Engine now listening on `ws://127.0.0.1:49134` (worker bus) and
-`http://127.0.0.1:3111` (HTTP triggers).
-
-### 2. Register test functions
-
-Any worker registering functions through the engine works. Quick
-standalone Rust worker — save as `testworker/src/main.rs` and
-`cargo run --release`:
-
-```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
-use serde_json::{json, Value};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
-
-    iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "demo::hello".into(),
-            description: Some("Say hello".into()),
-            ..Default::default()
-        },
-        |_input: Value| async move { Ok(json!({"greeting": "hi"})) },
-    );
-
-    tokio::signal::ctrl_c().await?;
-    Ok(())
-}
-```
-
-### 3a. Start iii-mcp over Streamable HTTP
-
-```bash
-cargo run --release -p iii-mcp -- --no-stdio
-# or (release binary): ./target/release/iii-mcp --no-stdio
-```
-
-Registers `POST /mcp` on the engine's HTTP port.
-
-### 3b. Sanity check with curl
-
-```bash
-# tools/list — visible functions are governed by iii-worker-manager RBAC.
-curl -sX POST http://127.0.0.1:3111/mcp \
-  -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
-
-# tools/call
-curl -sX POST http://127.0.0.1:3111/mcp \
-  -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"demo__hello","arguments":{}}}' \
-  | jq '.result.content[0].text'
-```
-
-### 3c. MCP Inspector (GUI)
-
-Launch the inspector UI:
-
-```bash
-DANGEROUSLY_OMIT_AUTH=true npx -y @modelcontextprotocol/inspector
-# → MCP Inspector is up at http://127.0.0.1:6274
-```
-
-In the browser UI:
-
-| Field | Value |
+| Method | Behaviour |
 |---|---|
-| Transport Type | Streamable HTTP |
-| URL | `http://127.0.0.1:3111/mcp` |
+| `initialize` | Returns `{ protocolVersion: "2025-06-18", capabilities: { tools, resources, prompts }, serverInfo }` |
+| `ping` | Returns `{}` |
+| `notifications/initialized` | Acknowledged with no response |
+| `tools/list` | Enumerates non-hidden iii functions |
+| `tools/call` | Invokes the named iii function via `iii.trigger` |
+| `resources/list` | Delegates to `skills::resources-list` |
+| `resources/read` | Delegates to `skills::resources-read` |
+| `resources/templates/list` | Delegates to `skills::resources-templates` |
+| `prompts/list` | Delegates to `prompts::mcp-list` |
+| `prompts/get` | Delegates to `prompts::mcp-get` |
 
-Click **Connect** → green dot. Then try each tab:
+Out of scope in v0.1: `resources/subscribe`, `resources/unsubscribe`,
+`completion/complete`, `logging/setLevel`, MCP notification fan-out
+(`tools/list_changed`, `resources/updated`, `notifications/message`,
+`notifications/progress`), and the stdio transport. The skills worker
+still emits its `skills::on-change` / `prompts::on-change` triggers,
+so a future revision can plumb them through to MCP notifications
+without changing the on-the-wire shape of the methods above.
 
-- **Tools** → List Tools → shows the functions iii-worker-manager RBAC
-  exposes for this connection.
-- **Resources** → 4 URIs (`iii://functions`, `iii://workers`,
-  `iii://triggers`, `iii://context`).
-- **Prompts** → 4 canned prompts. Pick `register-function`, fill
-  `language=python`, `function_id=orders::place`, Get Prompt.
-- **Ping** → `{}` response.
+## Local development & testing
 
-### 3d. Inspector CLI (non-interactive smoke)
-
-```bash
-DANGEROUSLY_OMIT_AUTH=true npx -y @modelcontextprotocol/inspector --cli \
-  --transport http http://127.0.0.1:3111/mcp --method tools/list
-
-DANGEROUSLY_OMIT_AUTH=true npx -y @modelcontextprotocol/inspector --cli \
-  --transport http http://127.0.0.1:3111/mcp \
-  --method tools/call --tool-name demo__hello
-```
-
-### 3e. Stdio transport (Claude Desktop / Cursor path)
+### Run from source
 
 ```bash
-DANGEROUSLY_OMIT_AUTH=true npx -y @modelcontextprotocol/inspector --cli \
-  ./target/release/iii-mcp \
-  --method tools/list
+cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
-Claude Desktop config that talks to a running engine:
+### Tests
 
-```json
-{
-  "mcpServers": {
-    "iii": {
-      "command": "/absolute/path/to/iii-mcp",
-      "args": ["--engine-url", "ws://127.0.0.1:49134"]
-    }
-  }
-}
+```bash
+# Fast, offline — pure helpers (protocol types, name mapping, hidden-prefix
+# matcher, parse_body) without an iii engine.
+cargo test --lib
+cargo test --test bdd -- --tags @pure
+
+# Full suite — requires an iii engine on ws://127.0.0.1:49134
+# (or III_ENGINE_WS_URL). Boots `skills` in-process so resources/prompts
+# scenarios also pass.
+cargo test
+
+# One feature group at a time. Available tags:
+#   @pure  @core
+#   @engine  @tools  @resources  @prompts
+cargo test --test bdd -- --tags @tools
 ```
 
-Add `"--rbac-tag", "claude-desktop"` and `"--no-builtins"` for a clean
-user-facing surface — the rbac-tag is forwarded as `x-iii-rbac-tag` and
-your `auth_function_id` can scope policy on it.
-
-## Invocation path
-
-`tools/call` with name `foo__bar` →
-1. Reverse-mangle to `foo::bar`.
-2. Structural guard: reject `mcp::*` / `a2a::*` (protocol entry points).
-3. `iii.trigger(function_id, payload)` with the arguments object.
-   iii-worker-manager applies its RBAC policy on the way through.
-
-Result is wrapped as `{ content: [{ type: "text", text: ... }] }` per MCP
-spec. Errors surface as `isError: true`.
-
-## MCP 2025-06-18 spec coverage
-
-Beyond the core `tools/list` + `tools/call` path, this worker speaks:
-
-- **Pagination** on `tools/list`, `resources/list`, `prompts/list` —
-  opaque `cursor` round-trip per spec.
-- **`completion/complete`** — argument autocomplete for prompt args
-  (e.g. language enum on `register-function`).
-- **`logging/setLevel`** + **`notifications/message`** — per-session
-  level bridged into `tracing`.
-- **`resources/subscribe`** + **`resources/unsubscribe`** +
-  **`notifications/resources/updated`** — change notifications when
-  `iii.list_functions()` / `list_workers()` / `list_triggers()` shift
-  for a subscribed URI.
-- **`resources/templates/list`** — templates for `iii://functions/{id}`,
-  `iii://workers/{id}`, `iii://triggers/{id}`.
-- **Tool annotations + outputSchema + structured content** — tools
-  surface `title`, `annotations` (`readOnlyHint`, `destructiveHint`,
-  `idempotentHint`, `openWorldHint`), and `outputSchema` from
-  `FunctionInfo.metadata.mcp.*`.
-- **Progress + cancellation** — `_meta.progressToken` on `tools/call`
-  emits `notifications/progress`; `notifications/cancelled` flips a
-  per-request cancel channel and short-circuits the in-flight trigger.
-
-Server-to-client requests (`sampling/createMessage`,
-`elicitation/create`) and Streamable HTTP SSE remain on the Phase 2b/2c
-roadmap.
+The BDD harness lives under [tests/](tests/). Feature files mirror the
+MCP method groups; step definitions under [tests/steps/](tests/steps/)
+drive each method through the same `handler::handle` path the production
+binary uses.
