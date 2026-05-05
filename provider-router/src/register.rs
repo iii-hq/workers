@@ -1,13 +1,13 @@
-//! Harness-runtime registers four agent::* function ids on the iii bus:
+//! provider-router registers four router::* function ids on the iii bus:
 //!
 //! | Function                | Purpose                                      |
 //! |-------------------------|----------------------------------------------|
-//! | `agent::stream_assistant`| Provider router. Calls `provider::<name>::complete` (with optional `router::decide` indirection when llm-router is on the bus). |
-//! | `agent::abort`           | Set the abort flag for a session via `flag::set`. |
-//! | `agent::push_steering`   | Push messages onto the session's steering queue via `queue::push`. |
-//! | `agent::push_followup`   | Push messages onto the session's follow-up queue via `queue::push`. |
+//! | `router::stream_assistant`| Provider router. Calls `provider::<name>::complete` (with optional `router::decide` indirection when llm-router is on the bus). |
+//! | `router::abort`           | Set the abort flag for a session via `state::set` on `session/<id>/abort_signal`. |
+//! | `router::push_steering`   | Push messages onto the session's steering queue via `inbox::push`. |
+//! | `router::push_followup`   | Push messages onto the session's follow-up queue via `inbox::push`. |
 //!
-//! Plus the `hook-fanout`, `durable-queue`, `state-flag` primitives and the
+//! Plus the `hook-fanout`, `session-inbox` primitives and the
 //! `shell-filesystem`, `shell-bash`, `shell-subagent` shell crates.
 //!
 //! `agent::run_loop` and the seven helper ids that backed the in-process
@@ -31,11 +31,6 @@ pub const STATE_SCOPE: &str = "agent";
 /// Hook topic ids.
 pub const TOPIC_BEFORE: &str = "agent::before_tool_call";
 pub const TOPIC_AFTER: &str = "agent::after_tool_call";
-
-/// Build the payload accepted by `flag::is_set` / `flag::set`.
-fn build_flag_payload(name: &str, session_id: &str) -> Value {
-    json!({ "name": name, "session_id": session_id })
-}
 
 async fn list_function_infos(iii: &III) -> Result<Vec<iii_sdk::FunctionInfo>, String> {
     let value = iii
@@ -69,7 +64,7 @@ async fn list_function_infos(iii: &III) -> Result<Vec<iii_sdk::FunctionInfo>, St
 ///
 /// Provider crates register `provider::<name>::complete` (canonical;
 /// `provider::<name>::stream_assistant` remains as a deprecated alias
-/// for one release) separately so `agent::stream_assistant` can route
+/// for one release) separately so `router::stream_assistant` can route
 /// to them via `iii.trigger`.
 pub async fn register_with_iii(iii: &III) -> anyhow::Result<()> {
     register_stream_assistant(iii);
@@ -77,9 +72,9 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<()> {
     register_push_steering(iii);
     register_push_followup(iii);
 
-    register_http(iii, "agent/{session_id}/steer", "agent::push_steering")?;
-    register_http(iii, "agent/{session_id}/abort", "agent::abort")?;
-    register_http(iii, "agent/{session_id}/follow_up", "agent::push_followup")?;
+    register_http(iii, "agent/{session_id}/steer", "router::push_steering")?;
+    register_http(iii, "agent/{session_id}/abort", "router::abort")?;
+    register_http(iii, "agent/{session_id}/follow_up", "router::push_followup")?;
 
     Ok(())
 }
@@ -97,8 +92,8 @@ fn error_assistant(reason: &str) -> AssistantMessage {
         error_message: Some(reason.to_string()),
         error_kind: Some(ErrorKind::Transient),
         usage: None,
-        model: "harness-runtime".into(),
-        provider: "harness-runtime".into(),
+        model: "provider-router".into(),
+        provider: "provider-router".into(),
         timestamp: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -106,14 +101,14 @@ fn error_assistant(reason: &str) -> AssistantMessage {
 fn register_stream_assistant(iii: &III) {
     let iii_for_handler = iii.clone();
     // One-shot cache for `router::decide` presence. Resolved on the first
-    // `agent::stream_assistant` invocation — after that, every turn skips the
+    // `router::stream_assistant` invocation — after that, every turn skips the
     // bus list_functions call and reads an atomic. Topology is assumed fixed
     // for the lifetime of the registered handler. If a user adds llm-router
     // mid-session (rare; harnessd / CLI register-then-invoke patterns set
     // topology before the loop runs), restart to pick it up.
     let router_cache: Arc<RouterPresenceCache> = Arc::new(RouterPresenceCache::default());
     iii.register_function((
-        RegisterFunctionMessage::with_id("agent::stream_assistant".to_string())
+        RegisterFunctionMessage::with_id("router::stream_assistant".to_string())
             .with_description("Route a stream call to the configured provider worker, optionally going through router::decide (llm-router) when present.".to_string()),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
@@ -390,22 +385,29 @@ fn build_routing_request(payload: &Value) -> Option<Value> {
 fn register_abort(iii: &III) {
     let iii_for_handler = iii.clone();
     iii.register_function((
-        RegisterFunctionMessage::with_id("agent::abort".to_string())
+        RegisterFunctionMessage::with_id("router::abort".to_string())
             .with_description("Set abort signal in iii state.".to_string()),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
             async move {
                 let session_id = required_str(&payload, "session_id")?;
+                // Direct state::set (was flag::set via the deleted state-flag
+                // worker). Convention: name "abort" maps to key
+                // session/<id>/abort_signal under scope "agent".
                 if let Err(e) = iii
                     .trigger(TriggerRequest {
-                        function_id: "flag::set".to_string(),
-                        payload: build_flag_payload("abort", &session_id),
+                        function_id: "state::set".to_string(),
+                        payload: json!({
+                            "scope": STATE_SCOPE,
+                            "key": format!("session/{session_id}/abort_signal"),
+                            "value": true,
+                        }),
                         action: None,
                         timeout_ms: None,
                     })
                     .await
                 {
-                    tracing::warn!(error = %e, %session_id, "agent::abort: flag::set failed");
+                    tracing::warn!(error = %e, %session_id, "router::abort: state::set failed");
                 }
                 Ok(json!({ "ok": true }))
             }
@@ -416,7 +418,7 @@ fn register_abort(iii: &III) {
 fn register_push_steering(iii: &III) {
     let iii_for_handler = iii.clone();
     iii.register_function((
-        RegisterFunctionMessage::with_id("agent::push_steering".to_string())
+        RegisterFunctionMessage::with_id("router::push_steering".to_string())
             .with_description("Append messages to a session's steering queue.".to_string()),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
@@ -428,7 +430,7 @@ fn register_push_steering(iii: &III) {
 fn register_push_followup(iii: &III) {
     let iii_for_handler = iii.clone();
     iii.register_function((
-        RegisterFunctionMessage::with_id("agent::push_followup".to_string())
+        RegisterFunctionMessage::with_id("router::push_followup".to_string())
             .with_description("Append messages to a session's follow-up queue.".to_string()),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
@@ -445,7 +447,7 @@ async fn push_queue(iii: III, payload: Value, name: &'static str) -> Result<Valu
         let item = serde_json::to_value(&m).map_err(|e| IIIError::Handler(e.to_string()))?;
         if let Err(e) = iii
             .trigger(TriggerRequest {
-                function_id: "queue::push".to_string(),
+                function_id: "inbox::push".to_string(),
                 payload: json!({
                     "name": name,
                     "session_id": session_id,
@@ -456,7 +458,7 @@ async fn push_queue(iii: III, payload: Value, name: &'static str) -> Result<Valu
             })
             .await
         {
-            tracing::warn!(error = %e, %name, %session_id, "queue::push failed during push_queue");
+            tracing::warn!(error = %e, %name, %session_id, "inbox::push failed during push_queue");
         }
     }
     Ok(json!({ "ok": true, "queued": count }))
@@ -524,10 +526,4 @@ mod tests {
         assert_eq!("free-form-id".matches("::sub-").count(), 0);
     }
 
-    #[test]
-    fn flag_payload_uses_name_and_session_id() {
-        let payload = build_flag_payload("abort", "s1");
-        assert_eq!(payload["name"], "abort");
-        assert_eq!(payload["session_id"], "s1");
-    }
 }

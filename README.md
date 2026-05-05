@@ -18,9 +18,9 @@ matching GitHub Release asset for the host's target triple.
 | [`context-compaction`](context-compaction/) | Rust | Subscriber that triggers session compaction once context-window thresholds are reached. |
 | [`dlp-scrubber`](dlp-scrubber/) | Rust | Hook subscriber on `agent::after_tool_call` that redacts common secret shapes in tool result text. |
 | [`document-extract`](document-extract/) | Rust | PDF/Word text extraction under `document::extract` for agent context ingestion. |
-| [`durable-queue`](durable-queue/) | Rust | Per-session durable queues under `queue::*` (push, drain, peek). |
+| [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `inbox::*` (push, drain, peek). |
 | [`guardrails`](guardrails/) | Rust | Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under `guardrails::*`. |
-| [`harness-runtime`](harness-runtime/) | Rust | `agent::stream_assistant` provider router plus `agent::abort` and `agent::push_steering` / `push_followup` helpers. |
+| [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
 | [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hooks::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
@@ -59,7 +59,6 @@ matching GitHub Release asset for the host's target triple.
 | [`provider-zai`](provider-zai/) | Rust | OpenAI-compatible Z.ai provider under `provider::zai::*`. |
 | [`session-corpus`](session-corpus/) | Rust | Dataset publishing pipeline for completed sessions under `corpus::*` — secret scan, redact, review, publish. |
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
-| [`state-flag`](state-flag/) | Rust | Per-session boolean flags under `flag::set`, `flag::clear`, `flag::is_set`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
 | [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
 | [`shell-subagent`](shell-subagent/) | Rust | Spawn child agent sessions under `shell::subagent::*` via `run::start_and_wait`. |

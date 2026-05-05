@@ -1,0 +1,30 @@
+iii: v1
+name: harness
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-harness
+description: All-in-one harness orchestrator for the demo. Declares every modular worker it needs as a runtime dependency; the iii engine starts each as its own process.
+dependencies:
+  turn-orchestrator: "^0.1.0"
+  provider-router: "^0.1.0"
+  context-compaction: "^0.1.0"
+  session-tree: "^0.1.0"
+  session-corpus: "^0.1.0"
+  document-extract: "^0.1.0"
+  models-catalog: "^0.1.0"
+  auth-credentials: "^0.1.0"
+  auth-rbac: "^0.1.0"
+  audit-log: "^0.1.0"
+  policy-denylist: "^0.1.0"
+  dlp-scrubber: "^0.1.0"
+  guardrails: "^0.1.0"
+  llm-budget: "^0.1.0"
+  session-inbox: "^0.1.0"
+  hook-fanout: "^0.1.0"
+  shell-bash: "^0.1.0"
+  shell-filesystem: "^0.1.0"
+  shell-subagent: "^0.1.0"
+  provider-cli: "^0.1.0"
+  provider-anthropic: "^0.1.0"
+  provider-openai: "^0.1.0"

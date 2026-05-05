@@ -79,11 +79,11 @@
       "default_config": {},
       "version": "0.1.0"
     },
-    "durable-queue": {
+    "session-inbox": {
       "type": "binary",
-      "description": "Per-session durable queues under queue::* (push, drain, peek) backed by iii state",
+      "description": "Per-session inbox under inbox::* (push, drain, peek) backed by iii state",
       "repo": "iii-hq/workers",
-      "tag_prefix": "durable-queue",
+      "tag_prefix": "session-inbox",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
@@ -105,11 +105,11 @@
       "default_config": {},
       "version": "0.1.0"
     },
-    "harness-runtime": {
+    "provider-router": {
       "type": "binary",
-      "description": "agent::stream_assistant provider router plus agent::abort and agent::push_steering / push_followup helpers",
+      "description": "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers",
       "repo": "iii-hq/workers",
-      "tag_prefix": "harness-runtime",
+      "tag_prefix": "provider-router",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
@@ -630,19 +630,6 @@
       "description": "Spawn child agent sessions under shell::subagent::* via run::start_and_wait",
       "repo": "iii-hq/workers",
       "tag_prefix": "shell-subagent",
-      "supported_targets": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
-      ],
-      "has_checksum": true,
-      "default_config": {},
-      "version": "0.1.0"
-    },
-    "state-flag": {
-      "type": "binary",
-      "description": "Per-session boolean flags under flag::set, flag::clear, flag::is_set backed by iii state",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "state-flag",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"

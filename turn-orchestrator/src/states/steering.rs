@@ -1,7 +1,7 @@
 //! `steering_check` handler: drain steering queue, follow-up queue, abort flag.
 
 use harness_types::{AgentEvent, AgentMessage, AssistantMessage, ErrorKind, StopReason};
-use iii_sdk::{TriggerRequest, Value, III};
+use iii_sdk::{TriggerRequest, III};
 use serde_json::json;
 
 use crate::events;
@@ -12,7 +12,7 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
     if abort_set(iii, &record.session_id).await {
         // Abort: build a legacy-shaped aborted message, persist it onto
         // the transcript, then emit TurnEnd carrying it. Mirror of
-        // `harness-runtime/src/loop_state.rs:139-148` and
+        // `provider-router/src/loop_state.rs:139-148` and
         // `loop_state.rs:321-332`.
         let aborted = aborted_message();
         let mut messages = persistence::load_messages(iii, &record.session_id).await;
@@ -94,7 +94,7 @@ async fn emit_turn_end_once(iii: &III, record: &mut TurnStateRecord) {
 }
 
 /// Legacy-shaped aborted assistant message — mirror of
-/// `harness-runtime/src/loop_state.rs:321-332`. Kept private to the
+/// `provider-router/src/loop_state.rs:321-332`. Kept private to the
 /// steering handler since this is the only place an abort produces a
 /// synthetic message in the durable path.
 fn aborted_message() -> AssistantMessage {
@@ -111,22 +111,28 @@ fn aborted_message() -> AssistantMessage {
 }
 
 async fn abort_set(iii: &III, session_id: &str) -> bool {
+    // Direct state::get (was flag::is_set via the deleted state-flag worker).
+    // Convention: name "abort" maps to key session/<id>/abort_signal under
+    // scope "agent". Mirrors provider-router's state::set on abort.
     iii.trigger(TriggerRequest {
-        function_id: "flag::is_set".into(),
-        payload: json!({ "name": "abort", "session_id": session_id }),
+        function_id: "state::get".into(),
+        payload: json!({
+            "scope": "agent",
+            "key": format!("session/{session_id}/abort_signal"),
+        }),
         action: None,
         timeout_ms: None,
     })
     .await
     .ok()
-    .and_then(|v| v.get("value").and_then(Value::as_bool))
+    .and_then(|v| v.as_bool())
     .unwrap_or(false)
 }
 
 async fn drain_queue(iii: &III, name: &str, session_id: &str) -> Vec<AgentMessage> {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "queue::drain".into(),
+            function_id: "inbox::drain".into(),
             payload: json!({ "name": name, "session_id": session_id }),
             action: None,
             timeout_ms: None,

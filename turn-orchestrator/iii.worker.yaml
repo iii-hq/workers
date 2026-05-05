@@ -6,7 +6,6 @@ manifest: Cargo.toml
 bin: iii-turn-orchestrator
 description: Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down.
 dependencies:
-  durable-queue: "^0.1.0"
+  session-inbox: "^0.1.0"
   hook-fanout: "^0.1.0"
-  state-flag: "^0.1.0"
-  harness-runtime: "^0.1.0"
+  provider-router: "^0.1.0"
