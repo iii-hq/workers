@@ -30,7 +30,7 @@ PR.
 |---|---|---|
 | `<worker>/README.md` | all | Non-empty. Body becomes the `readme` field on `POST /publish`. |
 | `<worker>/iii.worker.yaml` | all | Declares `name`, `language`, `deploy`, `manifest` (and `bin` for Rust binaries). |
-| `<worker>/skill.md` | all | Top-level skill registered at `iii://<worker>` so MCP clients can orient to the worker. See §10. |
+| `<worker>/skill.md` | all | Top-level skill registered at `iii://<worker>` so MCP clients can orient to the worker. Convention only — not yet a CI gate. See §10. |
 | Language manifest | all | `Cargo.toml` (Rust), `package.json` (Node), `pyproject.toml` (Python). The `version` field is the source of truth. |
 | `<worker>/tests/` | all | Non-empty. Holds at least one test file the standard runner picks up. |
 | `<worker>/Dockerfile` | `deploy: image` only | Listens on `III_URL`, exits cleanly on `SIGTERM`. |
@@ -173,11 +173,17 @@ expected `config.yaml` shape.
 
 ## Functions
 
-- `<worker>.<function>(input)` → `output`
+- `<worker>::<function>(input)` → `output`
 ```
 
 `<worker>/tests/<smoke>.{rs,ts,py}`: at least one assertion against an
 exported handler.
+
+`<worker>/skill.md`: top-level skill markdown for the registry; see §10.2
+for the content template.
+
+`<worker>/tests/skill.rs` (Rust workers): one assertion that `skill.md` is
+well-formed and the SKILL_ID is valid; see §10.6 for the test code.
 
 For `deploy: image`: `<worker>/Dockerfile` that respects `III_URL` and traps
 `SIGTERM`.
@@ -355,6 +361,11 @@ Add `<worker>/tests/skill.rs` with two assertions. They run as part of
 `cargo test` — no iii engine needed.
 
 ```rust
+//! Single-segment skill id checks. Workers in this repo all use a flat,
+//! folder-name-equals-skill-id convention (see §10.1). If a future worker
+//! adopts nested sub-skills, replace these tests with multi-segment-aware
+//! variants.
+
 #[test]
 fn skill_md_well_formed() {
     let skill = <crate>::SKILL_MD;
