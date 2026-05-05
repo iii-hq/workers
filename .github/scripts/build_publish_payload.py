@@ -91,23 +91,30 @@ def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, 
     if len(by_name) == 1:
         return by_name[0]
 
-    namespace = worker_name.replace("-", "_")
+    namespaces = {worker_name, worker_name.replace("-", "_"), worker_name.replace("_", "-")}
     by_namespace = [
         w
         for w in workers
         if any(
-            isinstance(fid, str) and fid.startswith(f"{namespace}::")
+            isinstance(fid, str) and any(fid.startswith(f"{ns}::") for ns in namespaces)
             for fid in (w.get("functions") or [])
         )
     ]
     if len(by_namespace) == 1:
         return by_namespace[0]
 
-    summary = [{"id": w.get("id"), "name": w.get("name")} for w in workers]
+    external = [w for w in workers if w.get("internal") is not True]
+    if len(external) == 1:
+        return external[0]
+
+    summary = [
+        {"id": w.get("id"), "name": w.get("name"), "internal": w.get("internal")}
+        for w in workers
+    ]
     raise ValueError(
         f"could not match worker {worker_name!r}: "
-        f"{len(by_name)} by name/id, {len(by_namespace)} by namespace {namespace!r}, "
-        f"workers={summary}"
+        f"{len(by_name)} by name/id, {len(by_namespace)} by namespaces {sorted(namespaces)!r}, "
+        f"{len(external)} non-internal workers, workers={summary}"
     )
 
 
