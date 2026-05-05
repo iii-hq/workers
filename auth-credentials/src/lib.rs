@@ -73,10 +73,10 @@ pub struct EnvKeyMatch {
 /// in-memory impl is provided here for tests.
 #[async_trait]
 pub trait CredentialStore: Send + Sync {
-    async fn get(&self, provider: &str) -> Option<Credential>;
-    async fn set(&self, provider: &str, credential: Credential);
-    async fn clear(&self, provider: &str);
-    async fn list(&self) -> Vec<(String, Credential)>;
+    async fn get(&self, provider: &str) -> anyhow::Result<Option<Credential>>;
+    async fn set(&self, provider: &str, credential: Credential) -> anyhow::Result<()>;
+    async fn clear(&self, provider: &str) -> anyhow::Result<()>;
+    async fn list(&self) -> anyhow::Result<Vec<(String, Credential)>>;
 }
 
 /// In-memory credential store. Used for tests and local-only sessions.
@@ -93,27 +93,38 @@ impl InMemoryStore {
 
 #[async_trait]
 impl CredentialStore for InMemoryStore {
-    async fn get(&self, provider: &str) -> Option<Credential> {
-        self.inner.read().ok()?.get(provider).cloned()
-    }
-
-    async fn set(&self, provider: &str, credential: Credential) {
-        if let Ok(mut g) = self.inner.write() {
-            g.insert(provider.to_string(), credential);
-        }
-    }
-
-    async fn clear(&self, provider: &str) {
-        if let Ok(mut g) = self.inner.write() {
-            g.remove(provider);
-        }
-    }
-
-    async fn list(&self) -> Vec<(String, Credential)> {
-        self.inner
+    async fn get(&self, provider: &str) -> anyhow::Result<Option<Credential>> {
+        let g = self
+            .inner
             .read()
-            .map(|g| g.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default()
+            .map_err(|e| anyhow::anyhow!("InMemoryStore read lock poisoned: {e}"))?;
+        Ok(g.get(provider).cloned())
+    }
+
+    async fn set(&self, provider: &str, credential: Credential) -> anyhow::Result<()> {
+        let mut g = self
+            .inner
+            .write()
+            .map_err(|e| anyhow::anyhow!("InMemoryStore write lock poisoned: {e}"))?;
+        g.insert(provider.to_string(), credential);
+        Ok(())
+    }
+
+    async fn clear(&self, provider: &str) -> anyhow::Result<()> {
+        let mut g = self
+            .inner
+            .write()
+            .map_err(|e| anyhow::anyhow!("InMemoryStore write lock poisoned: {e}"))?;
+        g.remove(provider);
+        Ok(())
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<(String, Credential)>> {
+        let g = self
+            .inner
+            .read()
+            .map_err(|e| anyhow::anyhow!("InMemoryStore read lock poisoned: {e}"))?;
+        Ok(g.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 }
 
@@ -172,22 +183,26 @@ pub async fn resolve_credential<F>(
     store: &dyn CredentialStore,
     provider: &str,
     getter: F,
-) -> Option<(Credential, AuthSource)>
+) -> anyhow::Result<Option<(Credential, AuthSource)>>
 where
     F: Fn(&str) -> Option<String>,
 {
-    if let Some(c) = store.get(provider).await {
-        return Some((c, AuthSource::Stored));
+    if let Some(c) = store.get(provider).await? {
+        return Ok(Some((c, AuthSource::Stored)));
     }
-    let env_var = env_var_map()
+    let env_var = match env_var_map()
         .iter()
         .find(|(p, _)| *p == provider)
-        .map(|(_, v)| *v)?;
-    let key = getter(env_var)?;
-    if key.is_empty() {
-        return None;
-    }
-    Some((Credential::ApiKey { key }, AuthSource::Environment))
+        .map(|(_, v)| *v)
+    {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let key = match getter(env_var) {
+        Some(k) if !k.is_empty() => k,
+        _ => return Ok(None),
+    };
+    Ok(Some((Credential::ApiKey { key }, AuthSource::Environment)))
 }
 
 /// Compute auth status for a provider from a resolved credential.
@@ -252,8 +267,11 @@ pub async fn register_with_iii(
                 // credential entry point. Resolve stored-then-env so callers
                 // never re-read env directly. Returning `null` means the
                 // provider has neither a stored credential nor an env match.
-                let resolved =
-                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok()).await;
+                let resolved = resolve_credential(&*store, &provider, |var| {
+                    std::env::var(var).ok()
+                })
+                .await
+                .map_err(|e| IIIError::Handler(format!("resolve_credential failed: {e}")))?;
                 let cred = resolved.map(|(c, _source)| c);
                 serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
             }
@@ -277,7 +295,10 @@ pub async fn register_with_iii(
                 })?;
                 let cred: Credential = serde_json::from_value(cred_value)
                     .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
-                store.set(&provider, cred).await;
+                store
+                    .set(&provider, cred)
+                    .await
+                    .map_err(|e| IIIError::Handler(format!("store.set failed: {e}")))?;
                 Ok(json!({ "ok": true }))
             }
         },
@@ -295,7 +316,10 @@ pub async fn register_with_iii(
                     .and_then(Value::as_str)
                     .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
                     .to_string();
-                store.clear(&provider).await;
+                store
+                    .clear(&provider)
+                    .await
+                    .map_err(|e| IIIError::Handler(format!("store.clear failed: {e}")))?;
                 Ok(json!({ "ok": true }))
             }
         },
@@ -308,7 +332,10 @@ pub async fn register_with_iii(
         move |_payload: Value| {
             let store = store_list.clone();
             async move {
-                let entries = store.list().await;
+                let entries = store
+                    .list()
+                    .await
+                    .map_err(|e| IIIError::Handler(format!("store.list failed: {e}")))?;
                 let providers: Vec<String> = entries.into_iter().map(|(p, _)| p).collect();
                 Ok(json!({ "providers": providers }))
             }
@@ -327,8 +354,11 @@ pub async fn register_with_iii(
                     .and_then(Value::as_str)
                     .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
                     .to_string();
-                let resolved =
-                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok()).await;
+                let resolved = resolve_credential(&*store, &provider, |var| {
+                    std::env::var(var).ok()
+                })
+                .await
+                .map_err(|e| IIIError::Handler(format!("resolve_credential failed: {e}")))?;
                 let st = status_for(resolved.as_ref());
                 serde_json::to_value(st).map_err(|e| IIIError::Handler(e.to_string()))
             }
@@ -373,7 +403,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn in_memory_roundtrip() {
+    async fn in_memory_roundtrip() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
         s.set(
             "anthropic",
@@ -381,39 +411,42 @@ mod tests {
                 key: "sk-ant-xxx".into(),
             },
         )
-        .await;
-        let got = s.get("anthropic").await.unwrap();
+        .await?;
+        let got = s.get("anthropic").await?.unwrap();
         assert_eq!(
             got,
             Credential::ApiKey {
                 key: "sk-ant-xxx".into()
             }
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn clear_removes() {
+    async fn clear_removes() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
         s.set("openai", Credential::ApiKey { key: "x".into() })
-            .await;
-        assert!(s.get("openai").await.is_some());
-        s.clear("openai").await;
-        assert!(s.get("openai").await.is_none());
+            .await?;
+        assert!(s.get("openai").await?.is_some());
+        s.clear("openai").await?;
+        assert!(s.get("openai").await?.is_none());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn list_returns_all() {
+    async fn list_returns_all() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
         s.set("anthropic", Credential::ApiKey { key: "a".into() })
-            .await;
+            .await?;
         s.set("openai", Credential::ApiKey { key: "b".into() })
-            .await;
-        let listed = s.list().await;
+            .await?;
+        let listed = s.list().await?;
         assert_eq!(listed.len(), 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn resolve_prefers_stored_over_env() {
+    async fn resolve_prefers_stored_over_env() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
         s.set(
             "anthropic",
@@ -421,9 +454,9 @@ mod tests {
                 key: "stored".into(),
             },
         )
-        .await;
+        .await?;
         let result =
-            resolve_credential(&s, "anthropic", |_| Some("env-fallback".to_string())).await;
+            resolve_credential(&s, "anthropic", |_| Some("env-fallback".to_string())).await?;
         let (cred, source) = result.unwrap();
         assert!(matches!(source, AuthSource::Stored));
         assert_eq!(
@@ -432,10 +465,11 @@ mod tests {
                 key: "stored".into()
             }
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn resolve_falls_back_to_env() {
+    async fn resolve_falls_back_to_env() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
         let result = resolve_credential(&s, "openai", |var| {
             if var == "OPENAI_API_KEY" {
@@ -444,7 +478,7 @@ mod tests {
                 None
             }
         })
-        .await;
+        .await?;
         let (cred, source) = result.unwrap();
         assert!(matches!(source, AuthSource::Environment));
         assert_eq!(
@@ -453,13 +487,15 @@ mod tests {
                 key: "from-env".into()
             }
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn resolve_returns_none_when_unknown() {
+    async fn resolve_returns_none_when_unknown() -> anyhow::Result<()> {
         let s = InMemoryStore::new();
-        let result = resolve_credential(&s, "nope", |_| None).await;
+        let result = resolve_credential(&s, "nope", |_| None).await?;
         assert!(result.is_none());
+        Ok(())
     }
 
     #[test]
