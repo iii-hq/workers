@@ -89,13 +89,13 @@ pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow
     });
     let response = iii
         .trigger(TriggerRequest {
-            function_id: "agent::stream_assistant".into(),
+            function_id: "router::stream_assistant".into(),
             payload,
             action: None,
             timeout_ms: Some(300_000),
         })
         .await
-        .map_err(|e| anyhow::anyhow!("agent::stream_assistant failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("router::stream_assistant failed: {e}"))?;
     let assistant: AssistantMessage =
         serde_json::from_value(response).map_err(|e| anyhow::anyhow!("decode assistant: {e}"))?;
     record.last_assistant = Some(assistant);

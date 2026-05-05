@@ -3,7 +3,7 @@
 //! Every state transition that produces a user-visible lifecycle event
 //! writes one [`AgentEvent`] frame to the `agent::events/<session_id>`
 //! stream via `stream::set`. The shape is byte-compatible with the
-//! `IiiSink` impl in `harness-runtime/src/register.rs:425-472`, so any
+//! `IiiSink` impl in `provider-router/src/register.rs:425-472`, so any
 //! consumer that worked against `agent::run_loop` works against
 //! `run::start_and_wait` without changes.
 //!
@@ -17,7 +17,7 @@ use harness_types::AgentEvent;
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
-/// Stream name for agent events. Matches `harness_runtime::EVENTS_STREAM`.
+/// Stream name for agent events. Matches `provider_router::EVENTS_STREAM`.
 pub const EVENTS_STREAM: &str = "agent::events";
 
 /// State scope for the per-session event counter.

@@ -1,9 +1,9 @@
-//! `shell::subagent::start` — spawn a child durable session via `run::start`.
+//! `subagent::start` — spawn a child durable session via `run::start`.
 
 use iii_sdk::{IIIError, TriggerRequest, Value, III};
 use serde_json::json;
 
-pub const ID: &str = "shell::subagent::start";
+pub const ID: &str = "subagent::start";
 pub const DESCRIPTION: &str =
     "Spawn a sub-agent for a focused subtask. Args: prompt, provider, model, system_prompt?, max_turns?, parent_session_id?, max_subagent_depth?.";
 
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn id_is_namespaced() {
-        assert_eq!(ID, "shell::subagent::start");
+        assert_eq!(ID, "subagent::start");
     }
 
     #[test]

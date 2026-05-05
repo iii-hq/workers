@@ -38,7 +38,7 @@ this repository as standalone, publishable workers.
 |---|---|---|---|
 | `shell-filesystem` | `iii-shell-filesystem` | Give agents read/write access to a workspace filesystem inside a sandbox boundary, never the host. | Sandboxed filesystem operations exposing `sandbox::fs::*`. |
 | `shell-bash` | `iii-shell-bash` | Let agents run shell commands inside a sandbox without ever falling back to the host shell. | Sandboxed shell execution exposing `sandbox::exec` (no host fallback). |
-| `shell-subagent` | `iii-shell-subagent` | Let an agent delegate work by spawning a child agent session with its own scope and budget. | Spawns child agent sessions via `run::start`. |
+| `subagent` | `iii-subagent` | Let an agent delegate work by spawning a child agent session with its own scope and budget. | Spawns child agent sessions via `run::start`. |
 
 ## Provider Adapters
 

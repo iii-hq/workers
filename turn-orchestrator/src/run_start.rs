@@ -39,7 +39,7 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
 
     // Emit AgentStart and initial-message events BEFORE publishing the
     // first step. This ordering matches the legacy `run_loop` in
-    // `harness-runtime/src/loop_state.rs:73-80` so consumers see the same
+    // `provider-router/src/loop_state.rs:73-80` so consumers see the same
     // prefix on the stream regardless of which entrypoint they triggered.
     for evt in build_initial_event_plan(&initial_messages) {
         events::emit(&iii, &session_id, &evt).await;

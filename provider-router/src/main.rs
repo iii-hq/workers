@@ -12,11 +12,11 @@ async fn main() -> Result<()> {
     let engine_url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
 
-    harness_runtime::register_with_iii(&iii)
+    provider_router::register_with_iii(&iii)
         .await
-        .context("harness-runtime register failed")?;
+        .context("provider-router register failed")?;
     log::info!(
-        "harness-runtime registered (agent::stream_assistant, agent::abort, agent::push_steering, agent::push_followup)"
+        "provider-router registered (router::stream_assistant, router::abort, router::push_steering, router::push_followup)"
     );
 
     tokio::signal::ctrl_c().await.ok();

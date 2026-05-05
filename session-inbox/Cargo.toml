@@ -1,5 +1,5 @@
 [package]
-name = "iii-durable-queue"
+name = "iii-session-inbox"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -8,11 +8,11 @@ authors = ["iii contributors"]
 publish = false
 
 [lib]
-name = "durable_queue"
+name = "session_inbox"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-durable-queue"
+name = "iii-session-inbox"
 path = "src/main.rs"
 
 [dependencies]

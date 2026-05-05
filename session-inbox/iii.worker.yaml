@@ -1,7 +1,7 @@
 iii: v1
-name: durable-queue
+name: session-inbox
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-durable-queue
-description: Per-session durable queues under queue::* — push, drain, peek backed by iii state.
+bin: iii-session-inbox
+description: Per-session inbox under inbox::* — push, drain, peek backed by iii state.

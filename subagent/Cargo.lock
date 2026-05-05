@@ -762,7 +762,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-shell-subagent"
+name = "iii-subagent"
 version = "0.1.0"
 dependencies = [
  "anyhow",

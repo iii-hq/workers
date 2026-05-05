@@ -27,8 +27,8 @@ Without `POLICY_DENIED_TOOLS`, the worker uses a small built-in default
 ## Runtime expectations
 
 The worker subscribes to `agent::before_tool_call`. That topic is
-published by `harness-runtime` while the agent loop is executing — for
-the denylist to fire, `harness-runtime` (or any worker emitting the same
+published by `provider-router` while the agent loop is executing — for
+the denylist to fire, `provider-router` (or any worker emitting the same
 topic) must be running on the bus.
 
 ## Build

@@ -66,7 +66,7 @@ and the tmux). Or attach to view dev logs: `tmux attach -t harness-web`.
 - **Orchestration**: `turn-orchestrator`, `provider-router`, `context-compaction`, `session-tree`, `session-corpus`, `document-extract`, `models-catalog`
 - **Auth + policy**: `auth-credentials`, `auth-rbac`, `audit-log`, `policy-denylist`, `dlp-scrubber`, `guardrails`, `llm-budget`
 - **Primitives**: `session-inbox`, `hook-fanout`
-- **Shells**: `shell-bash`, `shell-filesystem`, `shell-subagent`
+- **Shells**: `shell-bash`, `shell-filesystem`, `subagent`
 - **Providers**: `provider-cli`, `provider-anthropic`, `provider-openai`
 
 OAuth flows are excluded by default (each requires browser interaction). Add

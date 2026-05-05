@@ -34,7 +34,7 @@ Use two packaging lanes.
 
 2. Modular workers after the all-in-one worker is released.
    - Source examples: `turn-orchestrator`, `shell-filesystem`, `shell-bash`,
-     `shell-subagent`, providers, OAuth workers, `llm-budget`, `auth-rbac`.
+     `subagent`, providers, OAuth workers, `llm-budget`, `auth-rbac`.
    - Target folder: one folder per registry worker.
    - Binary name: `iii-<worker>`.
    - Rationale: lets users install a smaller graph once the shared crate
@@ -64,7 +64,7 @@ harness/
     sandbox-helpers/
     shell-filesystem/
     shell-bash/
-    shell-subagent/
+    subagent/
     provider-base/
     provider-*/
     oauth-*/
@@ -95,7 +95,7 @@ These harness crate names already exist as root workers in this repository:
 | Harness crate | Existing target folder | Action |
 |---|---|---|
 | `guardrails` | `guardrails/` | Do not overwrite blindly. Diff behavior and either replace in a dedicated PR or publish under a new name such as `harness-guardrails`. |
-| shell family | `shell/` exists | Keep harness sandbox shell workers under explicit names: `shell-filesystem`, `shell-bash`, `shell-subagent`. |
+| shell family | `shell/` exists | Keep harness sandbox shell workers under explicit names: `shell-filesystem`, `shell-bash`, `subagent`. |
 | provider router concepts | `llm-router/` exists | Provider crates are provider adapters, not the same as `llm-router`; publish as `provider-*` if modularized. |
 
 ## Worker Classification
@@ -128,7 +128,7 @@ These harness crate names already exist as root workers in this repository:
 |---|---|---|---|
 | `shell-filesystem` | `workers/shells/shell-filesystem` | binary | Wraps `sandbox::fs::*`; needs `main.rs` wrapper and README. |
 | `shell-bash` | `workers/shells/shell-bash` | binary | Wraps `sandbox::exec`; no host fallback. |
-| `shell-subagent` | `workers/shells/shell-subagent` | binary | Wraps `run::start` for child sessions. |
+| `subagent` | `workers/shells/subagent` | binary | Wraps `run::start` for child sessions. |
 | `sandbox-helpers` | `workers/shells/sandbox-helpers` | internal | Shared library for shell workers; vendor under each shell or publish as a crate later. |
 
 ### Provider adapters

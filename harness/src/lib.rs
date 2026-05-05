@@ -28,7 +28,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "hook-fanout",
     "shell-bash",
     "shell-filesystem",
-    "shell-subagent",
+    "subagent",
     "provider-cli",
     "provider-anthropic",
     "provider-openai",

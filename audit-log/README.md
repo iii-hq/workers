@@ -30,7 +30,7 @@ large tool outputs don't interleave bytes.
 ## Runtime expectations
 
 Same as `policy-denylist` — needs a publisher of `agent::after_tool_call`
-on the bus (typically `harness-runtime`).
+on the bus (typically `provider-router`).
 
 ## Build
 

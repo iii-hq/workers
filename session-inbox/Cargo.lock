@@ -689,20 +689,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-durable-queue"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "iii-sdk",
- "log",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "iii-sdk"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -726,6 +712,20 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "iii-session-inbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "iii-sdk",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

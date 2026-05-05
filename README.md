@@ -61,7 +61,7 @@ matching GitHub Release asset for the host's target triple.
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
 | [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
-| [`shell-subagent`](shell-subagent/) | Rust | Spawn child agent sessions under `shell::subagent::*` via `run::start_and_wait`. |
+| [`subagent`](subagent/) | Rust | Spawn child agent sessions under `subagent::*` via `run::start_and_wait`. |
 | [`turn-orchestrator`](turn-orchestrator/) | Rust | Durable `run::start` state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
 | [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |

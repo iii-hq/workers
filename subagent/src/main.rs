@@ -12,10 +12,10 @@ async fn main() -> Result<()> {
     let engine_url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
 
-    shell_subagent::register_with_iii(&iii)
+    subagent::register_with_iii(&iii)
         .await
-        .context("shell-subagent register failed")?;
-    log::info!("shell-subagent registered (shell::subagent::*)");
+        .context("subagent register failed")?;
+    log::info!("subagent registered (subagent::start)");
 
     tokio::signal::ctrl_c().await.ok();
     Ok(())

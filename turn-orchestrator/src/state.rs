@@ -51,7 +51,7 @@ pub struct TurnStateRecord {
     /// Set true at any point a `TurnEnd` is emitted; reset false at the
     /// next `TurnStart`. Coordinates emission across handlers so the
     /// stream mirrors legacy `run_loop` (one TurnEnd per turn). See
-    /// `harness-runtime/src/loop_state.rs:194-200`.
+    /// `provider-router/src/loop_state.rs:194-200`.
     #[serde(default)]
     pub turn_end_emitted: bool,
     pub started_at_ms: i64,

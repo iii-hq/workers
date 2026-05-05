@@ -1,5 +1,10 @@
-//! Harness runtime: iii-bus surface for harness primitives, shells, and
-//! the agent::stream_assistant provider router.
+//! Provider router: iii-bus surface for `router::stream_assistant`
+//! (provider routing with optional `router::decide` indirection from
+//! llm-router) plus `router::abort` and the `router::push_steering` /
+//! `push_followup` inbox helpers.
+//!
+//! Renamed from `harness-runtime` to reflect actual responsibility: the
+//! turn-execution loop lives in `turn-orchestrator`, not here.
 
 pub mod register;
 pub mod resume;

@@ -8,7 +8,7 @@
 //! | `router::push_followup`   | Push messages onto the session's follow-up queue via `inbox::push`. |
 //!
 //! Plus the `hook-fanout`, `session-inbox` primitives and the
-//! `shell-filesystem`, `shell-bash`, `shell-subagent` shell crates.
+//! `shell-filesystem`, `shell-bash` shell crates.
 //!
 //! `agent::run_loop` and the seven helper ids that backed the in-process
 //! state machine were removed in P7. Migrate callers to `run::start` /
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn subagent_depth_count_matches_chain() {
         // Depth = number of "::sub-" segments in the parent session id.
-        // Mirrors the recursion-bound logic inside shell_subagent::start.
+        // Mirrors the recursion-bound logic inside subagent::start.
         assert_eq!("root".matches("::sub-").count(), 0);
         assert_eq!("root::sub-1".matches("::sub-").count(), 1);
         assert_eq!("root::sub-1::sub-2".matches("::sub-").count(), 2);

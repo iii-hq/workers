@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/harness-types"]
 
 [package]
-name = "iii-harness-runtime"
+name = "iii-provider-router"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -12,11 +12,11 @@ authors = ["iii contributors"]
 publish = false
 
 [lib]
-name = "harness_runtime"
+name = "provider_router"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-harness-runtime"
+name = "iii-provider-router"
 path = "src/main.rs"
 
 [dependencies]

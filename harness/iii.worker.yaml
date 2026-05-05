@@ -24,7 +24,7 @@ dependencies:
   hook-fanout: "^0.1.0"
   shell-bash: "^0.1.0"
   shell-filesystem: "^0.1.0"
-  shell-subagent: "^0.1.0"
+  subagent: "^0.1.0"
   provider-cli: "^0.1.0"
   provider-anthropic: "^0.1.0"
   provider-openai: "^0.1.0"

@@ -37,7 +37,7 @@ Each match becomes `[REDACTED:<kind>]`.
 ## Runtime expectations
 
 Same as `policy-denylist` and `audit-log` — needs a publisher of
-`agent::after_tool_call` on the bus (typically `harness-runtime`).
+`agent::after_tool_call` on the bus (typically `provider-router`).
 
 ## Build
 

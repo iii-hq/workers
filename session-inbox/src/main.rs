@@ -12,8 +12,8 @@ async fn main() -> Result<()> {
     let engine_url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
 
-    durable_queue::register_with_iii(&iii);
-    log::info!("durable-queue registered (queue::push, queue::drain, queue::peek)");
+    session_inbox::register_with_iii(&iii);
+    log::info!("session-inbox registered (inbox::push, inbox::drain, inbox::peek)");
 
     tokio::signal::ctrl_c().await.ok();
     Ok(())
