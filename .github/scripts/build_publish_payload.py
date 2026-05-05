@@ -127,6 +127,7 @@ def normalize_worker_interface(
     workers_json: dict[str, Any],
     functions_json: dict[str, Any],
     trigger_types_json: dict[str, Any] | None = None,
+    baseline_trigger_types_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
     worker = _match_worker(workers, worker_name)
@@ -162,11 +163,19 @@ def normalize_worker_interface(
             }
         )
 
+    baseline_ids = {
+        tt["id"]
+        for tt in _extract_array(baseline_trigger_types_json or {}, "trigger_types")
+        if isinstance(tt.get("id"), str)
+    }
+
     triggers = []
     if trigger_types_json:
         for trigger_type in _extract_array(trigger_types_json, "trigger_types"):
             tt_id = trigger_type.get("id")
             if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
+                continue
+            if tt_id in baseline_ids:
                 continue
             triggers.append(_normalize_registry_trigger_type(trigger_type))
 
