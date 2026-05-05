@@ -13,7 +13,21 @@ async fn main() -> Result<()> {
     let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
 
     let store: Arc<dyn auth_credentials::CredentialStore> =
-        Arc::new(auth_credentials::InMemoryStore::new());
+        match std::env::var("AUTH_CREDENTIALS_STORE").as_deref() {
+            Ok("memory") => {
+                log::info!(
+                    "auth-credentials: using in-memory store (AUTH_CREDENTIALS_STORE=memory)"
+                );
+                Arc::new(auth_credentials::InMemoryStore::new())
+            }
+            _ => {
+                log::info!("auth-credentials: using iii-state store");
+                let iii_for_store: Arc<dyn auth_credentials::io::IIITrigger> = iii.clone();
+                Arc::new(auth_credentials::store_iii_state::IiiStateCredentialStore::new(
+                    iii_for_store,
+                ))
+            }
+        };
     let _refs = auth_credentials::register_with_iii(&iii, store)
         .await
         .context("auth-credentials register failed")?;
