@@ -20,8 +20,18 @@ async fn main() -> Result<()> {
                 );
                 Arc::new(auth_credentials::InMemoryStore::new())
             }
-            _ => {
+            Ok("iii_state") | Err(_) => {
                 log::info!("auth-credentials: using iii-state store");
+                let iii_for_store: Arc<dyn auth_credentials::io::IIITrigger> = iii.clone();
+                Arc::new(auth_credentials::store_iii_state::IiiStateCredentialStore::new(
+                    iii_for_store,
+                ))
+            }
+            Ok(other) => {
+                log::warn!(
+                    "auth-credentials: unknown AUTH_CREDENTIALS_STORE={other:?}; falling back to iii-state. \
+                     Valid values: memory, iii_state."
+                );
                 let iii_for_store: Arc<dyn auth_credentials::io::IIITrigger> = iii.clone();
                 Arc::new(auth_credentials::store_iii_state::IiiStateCredentialStore::new(
                     iii_for_store,

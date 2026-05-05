@@ -18,8 +18,18 @@ async fn main() -> Result<()> {
                 log::info!("session-tree: using in-memory store (SESSION_TREE_STORE=memory)");
                 Arc::new(session_tree::InMemoryStore::default())
             }
-            _ => {
+            Ok("iii_state") | Err(_) => {
                 log::info!("session-tree: using iii-state store");
+                let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
+                Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
+                    iii_for_store,
+                ))
+            }
+            Ok(other) => {
+                log::warn!(
+                    "session-tree: unknown SESSION_TREE_STORE={other:?}; falling back to iii-state. \
+                     Valid values: memory, iii_state."
+                );
                 let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
                 Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
                     iii_for_store,
