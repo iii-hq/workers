@@ -292,8 +292,7 @@ mod tests {
     fn shipped_config_blocks_env_exec_escape() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = fs::read_to_string(path).expect("read config.yaml");
-        let mut c: ShellConfig =
-            serde_yaml::from_str(&content).expect("config.yaml parses");
+        let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
         assert!(c.is_command_allowed(&["printenv".into()]).is_ok());
         let err = c
