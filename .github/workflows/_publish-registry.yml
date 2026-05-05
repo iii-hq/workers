@@ -93,6 +93,15 @@ jobs:
           cat iii-engine.log || true
           exit 1
 
+      - name: Snapshot engine trigger types baseline
+        run: |
+          set -euo pipefail
+          iii trigger \
+            --function-id='engine::trigger-types::list' \
+            --payload='{"include_internal": false}' \
+            > trigger-types-baseline.json
+          cat trigger-types-baseline.json
+
       - name: Start local worker for interface collection
         env:
           WORKER: ${{ inputs.worker }}
@@ -190,7 +199,12 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
         run: |
-          args=("--worker" "$WORKER" "--out" "worker-interface.json" "--wait-seconds" "120")
+          args=(
+            "--worker" "$WORKER"
+            "--out" "worker-interface.json"
+            "--wait-seconds" "120"
+            "--trigger-types-baseline" "trigger-types-baseline.json"
+          )
           python3 .github/scripts/collect_worker_interface.py "${args[@]}"
 
       - name: Assert worker interface was collected
