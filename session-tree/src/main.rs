@@ -27,9 +27,9 @@ async fn main() -> Result<()> {
             }
             Ok(other) => {
                 log::warn!(
-                    "session-tree: unknown SESSION_TREE_STORE={other:?}; falling back to iii-state. \
+                "session-tree: unknown SESSION_TREE_STORE={other:?}; falling back to iii-state. \
                      Valid values: memory, iii_state."
-                );
+            );
                 let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
                 Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
                     iii_for_store,

@@ -13,9 +13,7 @@ use std::sync::Arc;
 use iii_sdk::TriggerRequest;
 use serde_json::json;
 
-use crate::{
-    io::IIITrigger, SessionEntry, SessionError, SessionMeta, SessionStore,
-};
+use crate::{io::IIITrigger, SessionEntry, SessionError, SessionMeta, SessionStore};
 
 const META_SCOPE: &str = "session_tree_meta";
 
@@ -195,10 +193,10 @@ impl IiiStateSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use async_trait::async_trait;
     use iii_sdk::IIIError;
     use serde_json::Value;
+    use std::sync::Mutex;
 
     struct MockTrigger {
         responses: Mutex<Vec<Result<Value, IIIError>>>,
@@ -238,7 +236,10 @@ mod tests {
         let mock = Arc::new(MockTrigger::new(vec![Ok(Value::Null)]));
         let store = IiiStateSessionStore::new(mock.clone());
 
-        store.create(sample_meta("s1")).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        store
+            .create(sample_meta("s1"))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let calls = mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
@@ -251,7 +252,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_returns_storage_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.create(sample_meta("s1")).await;
         assert!(matches!(result, Err(SessionError::Storage(_))));
@@ -277,9 +280,9 @@ mod tests {
     #[tokio::test]
     async fn append_writes_entry_then_refreshes_meta() -> anyhow::Result<()> {
         let mock = Arc::new(MockTrigger::new(vec![
-            Ok(Value::Null),                                                  // 1. entry write
-            Ok(serde_json::to_value(sample_meta("s1"))?),                    // 2. load meta
-            Ok(Value::Null),                                                  // 3. write refreshed meta
+            Ok(Value::Null),                              // 1. entry write
+            Ok(serde_json::to_value(sample_meta("s1"))?), // 2. load meta
+            Ok(Value::Null),                              // 3. write refreshed meta
         ]));
         let store = IiiStateSessionStore::new(mock.clone());
         store
@@ -305,7 +308,10 @@ mod tests {
         assert_eq!(calls[2].payload["scope"], META_SCOPE);
         assert_eq!(calls[2].payload["key"], "s1");
         let new_updated_at = calls[2].payload["value"]["updated_at"].as_i64().unwrap();
-        assert!(new_updated_at >= 1_000, "updated_at should be at least the original 1_000");
+        assert!(
+            new_updated_at >= 1_000,
+            "updated_at should be at least the original 1_000"
+        );
         Ok(())
     }
 
@@ -315,8 +321,8 @@ mod tests {
         // and only the entry write call should have been issued before the
         // graceful early-return.
         let mock = Arc::new(MockTrigger::new(vec![
-            Ok(Value::Null),                                              // entry write
-            Err(IIIError::Handler("meta load boom".into())),              // meta load
+            Ok(Value::Null),                                 // entry write
+            Err(IIIError::Handler("meta load boom".into())), // meta load
         ]));
         let store = IiiStateSessionStore::new(mock.clone());
         let result = store.append("s1", sample_entry("e1")).await;
@@ -362,10 +368,7 @@ mod tests {
         let e1 = sample_entry("01");
         let e2 = sample_entry("02");
         // Mock returns entries in REVERSE order; load_entries must sort by id.
-        let response = serde_json::json!([
-            serde_json::to_value(&e2)?,
-            serde_json::to_value(&e1)?,
-        ]);
+        let response = serde_json::json!([serde_json::to_value(&e2)?, serde_json::to_value(&e1)?,]);
         let mock = Arc::new(MockTrigger::new(vec![Ok(response)]));
         let store = IiiStateSessionStore::new(mock.clone());
 
@@ -398,7 +401,9 @@ mod tests {
 
     #[tokio::test]
     async fn load_entries_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.load_entries("s1").await;
         assert!(matches!(result, Err(SessionError::Storage(_))));
@@ -437,7 +442,9 @@ mod tests {
 
     #[tokio::test]
     async fn load_meta_returns_storage_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.load_meta("s1").await;
         assert!(matches!(result, Err(SessionError::Storage(_))));
@@ -447,10 +454,7 @@ mod tests {
     async fn list_returns_all_meta_in_scope() -> anyhow::Result<()> {
         let m1 = sample_meta("s1");
         let m2 = sample_meta("s2");
-        let response = serde_json::json!([
-            serde_json::to_value(&m1)?,
-            serde_json::to_value(&m2)?,
-        ]);
+        let response = serde_json::json!([serde_json::to_value(&m1)?, serde_json::to_value(&m2)?,]);
         let mock = Arc::new(MockTrigger::new(vec![Ok(response)]));
         let store = IiiStateSessionStore::new(mock.clone());
         let listed = store.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -476,7 +480,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.list().await;
         assert!(matches!(result, Err(SessionError::Storage(_))));

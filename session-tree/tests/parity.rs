@@ -7,9 +7,8 @@
 use std::sync::Arc;
 
 use session_tree::{
-    io::IIITrigger,
-    store_iii_state::IiiStateSessionStore,
-    InMemoryStore, SessionEntry, SessionError, SessionMeta, SessionStore,
+    io::IIITrigger, store_iii_state::IiiStateSessionStore, InMemoryStore, SessionEntry,
+    SessionError, SessionMeta, SessionStore,
 };
 
 fn unique_session_id(prefix: &str) -> String {
@@ -146,31 +145,42 @@ async fn in_memory_list_includes_created_sessions() -> anyhow::Result<()> {
 
 fn live_store() -> Option<IiiStateSessionStore> {
     let url = std::env::var("IIITEST_ENGINE_URL").ok()?;
-    let iii = Arc::new(iii_sdk::register_worker(&url, iii_sdk::InitOptions::default()));
+    let iii = Arc::new(iii_sdk::register_worker(
+        &url,
+        iii_sdk::InitOptions::default(),
+    ));
     let iii_for_store: Arc<dyn IIITrigger> = iii;
     Some(IiiStateSessionStore::new(iii_for_store))
 }
 
 #[tokio::test]
 async fn iii_state_create_then_load_meta() -> anyhow::Result<()> {
-    let Some(store) = live_store() else { return Ok(()); };
+    let Some(store) = live_store() else {
+        return Ok(());
+    };
     parity_create_then_load_meta(&store).await
 }
 
 #[tokio::test]
 async fn iii_state_append_then_load_entries() -> anyhow::Result<()> {
-    let Some(store) = live_store() else { return Ok(()); };
+    let Some(store) = live_store() else {
+        return Ok(());
+    };
     parity_append_then_load_entries(&store).await
 }
 
 #[tokio::test]
 async fn iii_state_load_meta_returns_not_found() -> anyhow::Result<()> {
-    let Some(store) = live_store() else { return Ok(()); };
+    let Some(store) = live_store() else {
+        return Ok(());
+    };
     parity_load_meta_returns_not_found(&store).await
 }
 
 #[tokio::test]
 async fn iii_state_list_includes_created_sessions() -> anyhow::Result<()> {
-    let Some(store) = live_store() else { return Ok(()); };
+    let Some(store) = live_store() else {
+        return Ok(());
+    };
     parity_list_includes_created_sessions(&store).await
 }

@@ -6,9 +6,7 @@
 use std::sync::Arc;
 
 use session_tree::{
-    io::IIITrigger,
-    store_iii_state::IiiStateSessionStore,
-    SessionEntry, SessionMeta, SessionStore,
+    io::IIITrigger, store_iii_state::IiiStateSessionStore, SessionEntry, SessionMeta, SessionStore,
 };
 
 fn unique_session_id(prefix: &str) -> String {
@@ -52,7 +50,10 @@ async fn round_trip_create_append_load_against_live_engine() -> anyhow::Result<(
         return Ok(());
     };
 
-    let iii = Arc::new(iii_sdk::register_worker(&url, iii_sdk::InitOptions::default()));
+    let iii = Arc::new(iii_sdk::register_worker(
+        &url,
+        iii_sdk::InitOptions::default(),
+    ));
     let iii_for_store: Arc<dyn IIITrigger> = iii.clone();
     let store = IiiStateSessionStore::new(iii_for_store);
 

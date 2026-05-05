@@ -525,5 +525,4 @@ mod tests {
         // A session id without our chain prefix counts as depth 0.
         assert_eq!("free-form-id".matches("::sub-").count(), 0);
     }
-
 }

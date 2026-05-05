@@ -270,11 +270,12 @@ pub async fn register_with_iii(
                 // credential entry point. Resolve stored-then-env so callers
                 // never re-read env directly. Returning `null` means the
                 // provider has neither a stored credential nor an env match.
-                let resolved = resolve_credential(&*store, &provider, |var| {
-                    std::env::var(var).ok()
-                })
-                .await
-                .map_err(|e| IIIError::Handler(format!("resolve_credential failed: {e}")))?;
+                let resolved =
+                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok())
+                        .await
+                        .map_err(|e| {
+                            IIIError::Handler(format!("resolve_credential failed: {e}"))
+                        })?;
                 let cred = resolved.map(|(c, _source)| c);
                 serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
             }
@@ -357,11 +358,12 @@ pub async fn register_with_iii(
                     .and_then(Value::as_str)
                     .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
                     .to_string();
-                let resolved = resolve_credential(&*store, &provider, |var| {
-                    std::env::var(var).ok()
-                })
-                .await
-                .map_err(|e| IIIError::Handler(format!("resolve_credential failed: {e}")))?;
+                let resolved =
+                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok())
+                        .await
+                        .map_err(|e| {
+                            IIIError::Handler(format!("resolve_credential failed: {e}"))
+                        })?;
                 let st = status_for(resolved.as_ref());
                 serde_json::to_value(st).map_err(|e| IIIError::Handler(e.to_string()))
             }

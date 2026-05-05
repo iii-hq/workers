@@ -132,10 +132,10 @@ impl CredentialStore for IiiStateCredentialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use async_trait::async_trait;
     use iii_sdk::IIIError;
     use serde_json::Value;
+    use std::sync::Mutex;
 
     /// Records `trigger` calls and returns canned responses in FIFO order.
     struct MockTrigger {
@@ -162,7 +162,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_returns_credential_on_hit() -> anyhow::Result<()> {
-        let cred = Credential::ApiKey { key: "sk-test".into() };
+        let cred = Credential::ApiKey {
+            key: "sk-test".into(),
+        };
         let stored = json!({ "provider": "anthropic", "credential": cred });
         let mock = Arc::new(MockTrigger::new(vec![Ok(stored)]));
         let store = IiiStateCredentialStore::new(mock.clone());
@@ -188,7 +190,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateCredentialStore::new(mock);
         assert!(store.get("anthropic").await.is_err());
     }
@@ -202,7 +206,9 @@ mod tests {
     async fn set_writes_state_set_with_correct_payload() -> anyhow::Result<()> {
         let mock = Arc::new(MockTrigger::new(vec![Ok(Value::Null)]));
         let store = IiiStateCredentialStore::new(mock.clone());
-        let cred = Credential::ApiKey { key: "sk-test".into() };
+        let cred = Credential::ApiKey {
+            key: "sk-test".into(),
+        };
 
         store.set("anthropic", cred.clone()).await?;
 
@@ -212,13 +218,18 @@ mod tests {
         assert_eq!(calls[0].payload["scope"], SCOPE);
         assert_eq!(calls[0].payload["key"], "credential:anthropic");
         assert_eq!(calls[0].payload["value"]["provider"], "anthropic");
-        assert_eq!(calls[0].payload["value"]["credential"], serde_json::to_value(&cred)?);
+        assert_eq!(
+            calls[0].payload["value"]["credential"],
+            serde_json::to_value(&cred)?
+        );
         Ok(())
     }
 
     #[tokio::test]
     async fn set_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateCredentialStore::new(mock);
         let cred = Credential::ApiKey { key: "k".into() };
         assert!(store.set("anthropic", cred).await.is_err());
@@ -241,7 +252,9 @@ mod tests {
 
     #[tokio::test]
     async fn clear_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateCredentialStore::new(mock);
         assert!(store.clear("anthropic").await.is_err());
     }
@@ -261,7 +274,10 @@ mod tests {
         listed.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             listed,
-            vec![("anthropic".to_string(), cred_a), ("openai".to_string(), cred_b)],
+            vec![
+                ("anthropic".to_string(), cred_a),
+                ("openai".to_string(), cred_b)
+            ],
         );
 
         let calls = mock.calls.lock().unwrap();
@@ -280,7 +296,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_err_on_trigger_failure() {
-        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
+            "boom".into(),
+        ))]));
         let store = IiiStateCredentialStore::new(mock);
         assert!(store.list().await.is_err());
     }
