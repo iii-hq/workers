@@ -4,6 +4,8 @@
 //! pure resolution helpers. The production backend writes to iii state via CAS;
 //! the in-memory backend is provided for tests.
 
+pub mod io;
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
