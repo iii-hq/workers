@@ -223,7 +223,7 @@ async fn stream_inner(
 ) -> Result<(), reqwest::Error> {
     let mut body = serde_json::json!({
         "model": cfg.model,
-        "max_tokens": cfg.max_tokens,
+        "max_completion_tokens": cfg.max_tokens,
         "messages": to_openai_messages(&request.messages, &request.system_prompt),
         "stream": true,
         "stream_options": { "include_usage": true },
