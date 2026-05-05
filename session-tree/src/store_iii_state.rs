@@ -115,12 +115,44 @@ impl SessionStore for IiiStateSessionStore {
         Ok(entries)
     }
 
-    async fn load_meta(&self, _session_id: &str) -> Result<SessionMeta, SessionError> {
-        unimplemented!("Task E13 implements load_meta")
+    async fn load_meta(&self, session_id: &str) -> Result<SessionMeta, SessionError> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "scope": META_SCOPE, "key": session_id }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| SessionError::Storage(format!("state::get meta: {e}")))?;
+        if resp.is_null() {
+            return Err(SessionError::NotFound(session_id.to_string()));
+        }
+        serde_json::from_value(resp)
+            .map_err(|e| SessionError::Storage(format!("deserialize SessionMeta: {e}")))
     }
 
     async fn list(&self) -> Result<Vec<SessionMeta>, SessionError> {
-        unimplemented!("Task E13 implements list")
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "state::list".into(),
+                payload: json!({ "scope": META_SCOPE }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| SessionError::Storage(format!("state::list meta: {e}")))?;
+        let arr = resp
+            .as_array()
+            .ok_or_else(|| SessionError::Storage("state::list returned non-array".into()))?;
+        arr.iter()
+            .map(|v| {
+                serde_json::from_value(v.clone())
+                    .map_err(|e| SessionError::Storage(format!("deserialize SessionMeta: {e}")))
+            })
+            .collect()
     }
 }
 
@@ -369,6 +401,84 @@ mod tests {
         let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.load_entries("s1").await;
+        assert!(matches!(result, Err(SessionError::Storage(_))));
+    }
+
+    #[tokio::test]
+    async fn load_meta_returns_meta_on_hit() -> anyhow::Result<()> {
+        let meta = sample_meta("s1");
+        let mock = Arc::new(MockTrigger::new(vec![Ok(serde_json::to_value(&meta)?)]));
+        let store = IiiStateSessionStore::new(mock.clone());
+        let got = store
+            .load_meta("s1")
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert_eq!(got, meta);
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "state::get");
+        assert_eq!(calls[0].payload["scope"], META_SCOPE);
+        assert_eq!(calls[0].payload["key"], "s1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_meta_returns_not_found_on_null() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(Value::Null)]));
+        let store = IiiStateSessionStore::new(mock);
+        let result = store.load_meta("missing").await;
+        assert!(
+            matches!(&result, Err(SessionError::NotFound(id)) if id == "missing"),
+            "expected NotFound(\"missing\"); got {:?}",
+            result,
+        );
+    }
+
+    #[tokio::test]
+    async fn load_meta_returns_storage_err_on_trigger_failure() {
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let store = IiiStateSessionStore::new(mock);
+        let result = store.load_meta("s1").await;
+        assert!(matches!(result, Err(SessionError::Storage(_))));
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_meta_in_scope() -> anyhow::Result<()> {
+        let m1 = sample_meta("s1");
+        let m2 = sample_meta("s2");
+        let response = serde_json::json!([
+            serde_json::to_value(&m1)?,
+            serde_json::to_value(&m2)?,
+        ]);
+        let mock = Arc::new(MockTrigger::new(vec![Ok(response)]));
+        let store = IiiStateSessionStore::new(mock.clone());
+        let listed = store.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert_eq!(listed.len(), 2);
+        // Order is whatever state::list returns; assert presence not ordering.
+        assert!(listed.iter().any(|m| m.session_id == "s1"));
+        assert!(listed.iter().any(|m| m.session_id == "s2"));
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls[0].function_id, "state::list");
+        assert_eq!(calls[0].payload["scope"], META_SCOPE);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_on_empty_scope() -> anyhow::Result<()> {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(serde_json::json!([]))]));
+        let store = IiiStateSessionStore::new(mock);
+        let listed = store.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert!(listed.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_returns_err_on_trigger_failure() {
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let store = IiiStateSessionStore::new(mock);
+        let result = store.list().await;
         assert!(matches!(result, Err(SessionError::Storage(_))));
     }
 }
