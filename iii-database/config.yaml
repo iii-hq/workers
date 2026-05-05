@@ -1,6 +1,6 @@
 databases:
   primary:
-    url: sqlite:./data/iii.db
+    url: sqlite:./iii.db
     pool:
       max: 10
       idle_timeout_ms: 30000
