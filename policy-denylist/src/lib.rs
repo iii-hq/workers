@@ -11,7 +11,28 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 const FN_DENYLIST: &str = "policy::denylist";
-const TOPIC_BEFORE: &str = "agent::before_tool_call";
+pub const DEFAULT_TOPIC: &str = "agent::before_tool_call";
+pub const DEFAULT_DENIED_TOOLS: &[&str] = &["bash:rm -rf", "sudo", "curl-pipe-bash"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyDenylistConfig {
+    pub topic: String,
+}
+
+impl Default for PolicyDenylistConfig {
+    fn default() -> Self {
+        Self {
+            topic: DEFAULT_TOPIC.to_string(),
+        }
+    }
+}
+
+pub fn default_denied_tools() -> Vec<String> {
+    DEFAULT_DENIED_TOOLS
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
 
 pub struct Subscriber {
     function: FunctionRef,
@@ -71,11 +92,11 @@ pub(crate) fn denylist_function_message() -> RegisterFunctionMessage {
 }
 
 /// Build the canonical [`RegisterTriggerInput`] for the denylist subscriber.
-pub(crate) fn denylist_trigger_input() -> RegisterTriggerInput {
+pub(crate) fn denylist_trigger_input(config: &PolicyDenylistConfig) -> RegisterTriggerInput {
     RegisterTriggerInput {
         trigger_type: "subscribe".into(),
         function_id: FN_DENYLIST.into(),
-        config: json!({ "topic": TOPIC_BEFORE }),
+        config: json!({ "topic": config.topic }),
         metadata: None,
     }
 }
@@ -128,6 +149,14 @@ pub(crate) async fn handle_event(bus: &dyn ReplyBus, denied: &[String], payload:
 }
 
 pub fn subscribe_denylist(iii: &III, denied_tools: Vec<String>) -> Result<Subscriber, IIIError> {
+    subscribe_denylist_with_config(iii, denied_tools, PolicyDenylistConfig::default())
+}
+
+pub fn subscribe_denylist_with_config(
+    iii: &III,
+    denied_tools: Vec<String>,
+    config: PolicyDenylistConfig,
+) -> Result<Subscriber, IIIError> {
     let bus: Arc<dyn ReplyBus> = Arc::new(IiiSdkBus(iii.clone()));
     let denied: Arc<Vec<String>> = Arc::new(denied_tools);
 
@@ -143,7 +172,7 @@ pub fn subscribe_denylist(iii: &III, denied_tools: Vec<String>) -> Result<Subscr
         }
     }));
 
-    let trig_input = denylist_trigger_input();
+    let trig_input = denylist_trigger_input(&config);
     bus.record_trigger(&trig_input);
     let trigger = iii.register_trigger(trig_input)?;
     Ok(Subscriber { function, trigger })
@@ -237,9 +266,13 @@ mod tests {
         }
     }
 
-    fn record_wiring(bus: &dyn ReplyBus) {
+    fn record_wiring_with_config(bus: &dyn ReplyBus, config: &PolicyDenylistConfig) {
         bus.record_function(&denylist_function_message());
-        bus.record_trigger(&denylist_trigger_input());
+        bus.record_trigger(&denylist_trigger_input(config));
+    }
+
+    fn record_wiring(bus: &dyn ReplyBus) {
+        record_wiring_with_config(bus, &PolicyDenylistConfig::default());
     }
 
     fn envelope(event_id: &str, reply_stream: &str, inner: Value) -> Value {
@@ -267,7 +300,23 @@ mod tests {
         assert_eq!(trigs[0].function_id, FN_DENYLIST);
         assert_eq!(
             trigs[0].config.get("topic").and_then(Value::as_str),
-            Some(TOPIC_BEFORE)
+            Some(DEFAULT_TOPIC)
+        );
+    }
+
+    #[tokio::test]
+    async fn wiring_uses_configured_trigger_topic() {
+        let bus = InMemoryBus::new();
+        let config = PolicyDenylistConfig {
+            topic: "agent::custom_before_tool_call".into(),
+        };
+        record_wiring_with_config(&bus, &config);
+
+        let trigs = bus.recorded_triggers();
+        assert_eq!(trigs.len(), 1);
+        assert_eq!(
+            trigs[0].config.get("topic").and_then(Value::as_str),
+            Some("agent::custom_before_tool_call")
         );
     }
 

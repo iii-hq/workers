@@ -16,6 +16,15 @@ iii worker add dlp-scrubber
 iii-dlp-scrubber
 ```
 
+When started by the engine, the worker reads its `config:` block from
+`--config <path>`. Defaults:
+
+```yaml
+topic: agent::after_tool_call
+```
+
+`DLP_SCRUBBER_TOPIC` overrides the config file for direct runtime overrides.
+
 ## Patterns matched
 
 | Provider | Regex |
@@ -32,11 +41,11 @@ Each match becomes `[REDACTED:<kind>]`.
 
 | Function | Description |
 |---|---|
-| `policy::dlp_scrubber` | Subscriber bound to `agent::after_tool_call`. Replies `{ content: [...] }` when scrubbing changed anything. |
+| `policy::dlp_scrubber` | Subscriber bound to the configured topic. Replies `{ content: [...] }` when scrubbing changed anything. |
 
 ## Runtime expectations
 
-Same as `policy-denylist` and `audit-log` — needs a publisher of
+Same as `policy-denylist` and `audit-log` — by default needs a publisher of
 `agent::after_tool_call` on the bus (typically `provider-router`).
 
 ## Build

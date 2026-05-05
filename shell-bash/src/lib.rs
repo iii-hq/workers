@@ -7,4 +7,5 @@ pub mod exec;
 pub mod register;
 pub mod which;
 
+pub use register::register_with_config;
 pub use register::register_with_iii;

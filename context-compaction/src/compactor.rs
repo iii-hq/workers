@@ -28,9 +28,24 @@ use tokio::sync::Mutex;
 const FN_ID: &str = "context_compaction::compactor";
 const STREAM: &str = "agent::events";
 
-const DEFAULT_THRESHOLD_PCT: f32 = 0.85;
-const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+pub const DEFAULT_THRESHOLD_PCT: f32 = 0.85;
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 const FILE_OP_TOOLS: &[&str] = &["read", "write", "edit"];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompactionDefaults {
+    pub threshold_pct: f32,
+    pub fallback_context_window: u64,
+}
+
+impl Default for CompactionDefaults {
+    fn default() -> Self {
+        Self {
+            threshold_pct: DEFAULT_THRESHOLD_PCT,
+            fallback_context_window: DEFAULT_CONTEXT_WINDOW,
+        }
+    }
+}
 
 /// Set of file operations a compaction summarises. Inlined from the
 /// `session-tree` worker's wire shape; matches the JSON `details` field
@@ -58,12 +73,21 @@ impl CompactionConfig {
     /// model-aware window should use [`Self::resolve`] (async, hits the
     /// `models-catalog` worker on the bus) or set `context_window` directly.
     pub fn new(session_id: String, provider: String, model: String) -> Self {
+        Self::new_with_defaults(session_id, provider, model, CompactionDefaults::default())
+    }
+
+    pub fn new_with_defaults(
+        session_id: String,
+        provider: String,
+        model: String,
+        defaults: CompactionDefaults,
+    ) -> Self {
         Self {
             session_id,
-            threshold_pct: DEFAULT_THRESHOLD_PCT,
+            threshold_pct: defaults.threshold_pct,
             model,
             provider,
-            context_window: DEFAULT_CONTEXT_WINDOW,
+            context_window: defaults.fallback_context_window,
         }
     }
 
@@ -71,12 +95,29 @@ impl CompactionConfig {
     /// iii bus. Falls back to [`DEFAULT_CONTEXT_WINDOW`] when the lookup
     /// fails (no `models-catalog` worker on the bus, unknown model, etc.).
     pub async fn resolve(iii: &III, session_id: String, provider: String, model: String) -> Self {
+        Self::resolve_with_defaults(
+            iii,
+            session_id,
+            provider,
+            model,
+            CompactionDefaults::default(),
+        )
+        .await
+    }
+
+    pub async fn resolve_with_defaults(
+        iii: &III,
+        session_id: String,
+        provider: String,
+        model: String,
+        defaults: CompactionDefaults,
+    ) -> Self {
         let context_window = lookup_context_window(iii, &provider, &model)
             .await
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+            .unwrap_or(defaults.fallback_context_window);
         Self {
             session_id,
-            threshold_pct: DEFAULT_THRESHOLD_PCT,
+            threshold_pct: defaults.threshold_pct,
             model,
             provider,
             context_window,
@@ -433,6 +474,7 @@ fn push_unique_for_tool(
 pub struct CompactorRegistry<F: SummariseFn + 'static> {
     bus: Arc<dyn IiiBus>,
     summariser: Arc<F>,
+    defaults: CompactionDefaults,
     /// `Some` in production (used to call `models::get` for context_window
     /// resolution). `None` in tests, in which case new sessions get a
     /// default config without any bus call.
@@ -442,9 +484,19 @@ pub struct CompactorRegistry<F: SummariseFn + 'static> {
 
 impl<F: SummariseFn + 'static> CompactorRegistry<F> {
     pub fn new(bus: Arc<dyn IiiBus>, summariser: Arc<F>, iii: III) -> Self {
+        Self::new_with_defaults(bus, summariser, iii, CompactionDefaults::default())
+    }
+
+    pub fn new_with_defaults(
+        bus: Arc<dyn IiiBus>,
+        summariser: Arc<F>,
+        iii: III,
+        defaults: CompactionDefaults,
+    ) -> Self {
         Self {
             bus,
             summariser,
+            defaults,
             iii: Some(iii),
             compactors: Mutex::new(HashMap::new()),
         }
@@ -483,9 +535,21 @@ impl<F: SummariseFn + 'static> CompactorRegistry<F> {
             .unwrap_or_else(|| ("unknown".into(), "unknown".into()));
         let config = match &self.iii {
             Some(iii) => {
-                CompactionConfig::resolve(iii, session_id.to_string(), provider, model).await
+                CompactionConfig::resolve_with_defaults(
+                    iii,
+                    session_id.to_string(),
+                    provider,
+                    model,
+                    self.defaults,
+                )
+                .await
             }
-            None => CompactionConfig::new(session_id.to_string(), provider, model),
+            None => CompactionConfig::new_with_defaults(
+                session_id.to_string(),
+                provider,
+                model,
+                self.defaults,
+            ),
         };
         let compactor = Arc::new(Compactor::new(
             Arc::clone(&self.bus),
@@ -501,6 +565,7 @@ impl<F: SummariseFn + 'static> CompactorRegistry<F> {
         Self {
             bus,
             summariser,
+            defaults: CompactionDefaults::default(),
             iii: None,
             compactors: Mutex::new(HashMap::new()),
         }
@@ -551,8 +616,21 @@ pub fn register<F: SummariseFn + 'static>(
     iii: &III,
     summariser: Arc<F>,
 ) -> Result<CompactorHandle, IIIError> {
+    register_with_defaults(iii, summariser, CompactionDefaults::default())
+}
+
+pub fn register_with_defaults<F: SummariseFn + 'static>(
+    iii: &III,
+    summariser: Arc<F>,
+    defaults: CompactionDefaults,
+) -> Result<CompactorHandle, IIIError> {
     let bus: Arc<dyn IiiBus> = Arc::new(IiiSdkBus::new(iii.clone()));
-    let registry = Arc::new(CompactorRegistry::new(bus, summariser, iii.clone()));
+    let registry = Arc::new(CompactorRegistry::new_with_defaults(
+        bus,
+        summariser,
+        iii.clone(),
+        defaults,
+    ));
 
     let registry_for_handler = Arc::clone(&registry);
     let function = iii.register_function((

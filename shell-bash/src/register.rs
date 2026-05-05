@@ -3,13 +3,17 @@ use iii_sdk::{RegisterFunctionMessage, Value, III};
 use crate::{detect_clis, exec, which};
 
 pub async fn register_with_iii(iii: &III) -> anyhow::Result<()> {
+    register_with_config(iii, exec::ExecConfig::default()).await
+}
+
+pub async fn register_with_config(iii: &III, exec_config: exec::ExecConfig) -> anyhow::Result<()> {
     let iii_for_exec = iii.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(exec::ID.into())
             .with_description(exec::DESCRIPTION.into()),
         move |payload: Value| {
             let iii = iii_for_exec.clone();
-            async move { exec::execute(&iii, &payload).await }
+            async move { exec::execute_with_config(&iii, &payload, exec_config).await }
         },
     ));
     let iii_for_which = iii.clone();

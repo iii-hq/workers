@@ -11,7 +11,10 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "topic": "agent::after_tool_call",
+        "log_path": "~/.harness/audit.jsonl"
+      },
       "version": "0.1.0"
     },
     "auth-credentials": {
@@ -24,7 +27,10 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "threshold_pct": 0.85,
+        "fallback_context_window": 200000
+      },
       "version": "0.1.0"
     },
     "auth-rbac": {
@@ -37,7 +43,9 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "topic": "agent::after_tool_call"
+      },
       "version": "0.1.0"
     },
     "context-compaction": {
@@ -50,7 +58,9 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "max_bytes": 26214400
+      },
       "version": "0.1.0"
     },
     "dlp-scrubber": {
@@ -63,7 +73,14 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "topic": "agent::before_tool_call",
+        "denied_tools": [
+          "bash:rm -rf",
+          "sudo",
+          "curl-pipe-bash"
+        ]
+      },
       "version": "0.1.0"
     },
     "document-extract": {
@@ -76,7 +93,11 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "default_timeout_ms": 30000,
+        "trigger_timeout_ms": 35000,
+        "max_output_bytes": 30000
+      },
       "version": "0.1.0"
     },
     "session-inbox": {
@@ -89,7 +110,9 @@
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
-      "default_config": {},
+      "default_config": {
+        "max_inline_bytes": 262144
+      },
       "version": "0.1.0"
     },
     "guardrails": {

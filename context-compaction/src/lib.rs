@@ -18,8 +18,10 @@ pub mod compactor;
 pub mod watcher;
 
 pub use compactor::{
-    extract_file_ops, register as register_compactor, CompactionConfig, CompactionDetails,
-    CompactionError, Compactor, CompactorHandle, CompactorRegistry, IiiBus, IiiSdkBus, SummariseFn,
+    extract_file_ops, register as register_compactor,
+    register_with_defaults as register_compactor_with_defaults, CompactionConfig,
+    CompactionDefaults, CompactionDetails, CompactionError, Compactor, CompactorHandle,
+    CompactorRegistry, IiiBus, IiiSdkBus, SummariseFn,
 };
 pub use watcher::{payload_signals_overflow, register as register_watcher, WatcherHandle};
 
@@ -33,9 +35,17 @@ pub fn register_with_iii<F: SummariseFn + 'static>(
     iii: &III,
     summariser: Arc<F>,
 ) -> Result<Handles, IIIError> {
+    register_with_iii_config(iii, summariser, CompactionDefaults::default())
+}
+
+pub fn register_with_iii_config<F: SummariseFn + 'static>(
+    iii: &III,
+    summariser: Arc<F>,
+    defaults: CompactionDefaults,
+) -> Result<Handles, IIIError> {
     Ok(Handles {
         watcher: register_watcher(iii)?,
-        compactor: register_compactor(iii, summariser)?,
+        compactor: register_compactor_with_defaults(iii, summariser, defaults)?,
     })
 }
 

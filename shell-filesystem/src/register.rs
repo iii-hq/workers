@@ -3,6 +3,13 @@ use iii_sdk::{RegisterFunctionMessage, Value, III};
 use crate::ops;
 
 pub async fn register_with_iii(iii: &III) -> anyhow::Result<()> {
+    register_with_config(iii, ops::read::ReadConfig::default()).await
+}
+
+pub async fn register_with_config(
+    iii: &III,
+    read_config: ops::read::ReadConfig,
+) -> anyhow::Result<()> {
     let iii_for_ls = iii.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(ops::ls::ID.into())
@@ -36,7 +43,7 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<()> {
             .with_description(ops::read::DESCRIPTION.into()),
         move |payload: Value| {
             let iii = iii_for_read.clone();
-            async move { ops::read::execute(&iii, &payload).await }
+            async move { ops::read::execute_with_config(&iii, &payload, read_config).await }
         },
     ));
     let iii_for_write = iii.clone();

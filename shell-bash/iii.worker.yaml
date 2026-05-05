@@ -5,3 +5,7 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-shell-bash
 description: Sandboxed shell execution under shell::bash::* — wraps the engine sandbox::exec primitive with no host fallback.
+config:
+  default_timeout_ms: 30000
+  trigger_timeout_ms: 35000
+  max_output_bytes: 30000

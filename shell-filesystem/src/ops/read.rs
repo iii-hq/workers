@@ -11,7 +11,28 @@ pub const DESCRIPTION: &str =
     "Read a file inside the sandbox and return its UTF-8 contents (or base64 fallback).";
 pub const MAX_INLINE_BYTES: usize = 256 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadConfig {
+    pub max_inline_bytes: usize,
+}
+
+impl Default for ReadConfig {
+    fn default() -> Self {
+        Self {
+            max_inline_bytes: MAX_INLINE_BYTES,
+        }
+    }
+}
+
 pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
+    execute_with_config(iii, args, ReadConfig::default()).await
+}
+
+pub async fn execute_with_config(
+    iii: &III,
+    args: &Value,
+    config: ReadConfig,
+) -> Result<Value, IIIError> {
     let sandbox_id = match resolve_sandbox_id(iii, args).await {
         Ok(id) => id,
         Err(e) => {
@@ -77,9 +98,9 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
         }
     };
 
-    let truncated = bytes.len() > MAX_INLINE_BYTES;
+    let truncated = bytes.len() > config.max_inline_bytes;
     let body = if truncated {
-        bytes[..MAX_INLINE_BYTES].to_vec()
+        bytes[..config.max_inline_bytes].to_vec()
     } else {
         bytes.clone()
     };

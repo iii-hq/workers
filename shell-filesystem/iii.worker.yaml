@@ -5,3 +5,5 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-shell-filesystem
 description: Sandboxed filesystem operations under shell::fs::* — read, write, list, stat, glob.
+config:
+  max_inline_bytes: 262144

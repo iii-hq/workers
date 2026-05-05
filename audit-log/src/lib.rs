@@ -1,4 +1,5 @@
-//! Append-only audit-log subscriber on `agent::after_tool_call`. Writes one
+//! Append-only audit-log subscriber. By default it listens on
+//! `agent::after_tool_call` and writes one
 //! JSON object per line to a configurable path with the shape
 //! `{ ts_ms, tool_call, result }`.
 
@@ -13,7 +14,20 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 const FN_AUDIT: &str = "policy::audit_log";
-const TOPIC_AFTER: &str = "agent::after_tool_call";
+pub const DEFAULT_TOPIC: &str = "agent::after_tool_call";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditLogConfig {
+    pub topic: String,
+}
+
+impl Default for AuditLogConfig {
+    fn default() -> Self {
+        Self {
+            topic: DEFAULT_TOPIC.to_string(),
+        }
+    }
+}
 
 pub struct Subscriber {
     function: FunctionRef,
@@ -73,11 +87,11 @@ pub(crate) fn audit_function_message() -> RegisterFunctionMessage {
 }
 
 /// Build the canonical [`RegisterTriggerInput`] for the audit-log subscriber.
-pub(crate) fn audit_trigger_input() -> RegisterTriggerInput {
+pub(crate) fn audit_trigger_input(config: &AuditLogConfig) -> RegisterTriggerInput {
     RegisterTriggerInput {
         trigger_type: "subscribe".into(),
         function_id: FN_AUDIT.into(),
-        config: json!({ "topic": TOPIC_AFTER }),
+        config: json!({ "topic": config.topic }),
         metadata: None,
     }
 }
@@ -118,6 +132,14 @@ pub(crate) async fn handle_event(bus: &dyn ReplyBus, log_path: &PathBuf, payload
 }
 
 pub fn subscribe_audit_log(iii: &III, log_path: PathBuf) -> Result<Subscriber, IIIError> {
+    subscribe_audit_log_with_config(iii, log_path, AuditLogConfig::default())
+}
+
+pub fn subscribe_audit_log_with_config(
+    iii: &III,
+    log_path: PathBuf,
+    config: AuditLogConfig,
+) -> Result<Subscriber, IIIError> {
     let bus: Arc<dyn ReplyBus> = Arc::new(IiiSdkBus(iii.clone()));
     let log_path = Arc::new(log_path);
 
@@ -133,7 +155,7 @@ pub fn subscribe_audit_log(iii: &III, log_path: PathBuf) -> Result<Subscriber, I
         }
     }));
 
-    let trig_input = audit_trigger_input();
+    let trig_input = audit_trigger_input(&config);
     bus.record_trigger(&trig_input);
     let trigger = iii.register_trigger(trig_input)?;
     Ok(Subscriber { function, trigger })
@@ -268,9 +290,13 @@ mod tests {
     /// Drive the wiring side-effects (record_function + record_trigger) against
     /// `bus`. Mirrors what `subscribe_audit_log` does at register-time but
     /// without touching a live `iii` engine.
-    pub(crate) fn record_wiring(bus: &dyn ReplyBus) {
+    pub(crate) fn record_wiring_with_config(bus: &dyn ReplyBus, config: &AuditLogConfig) {
         bus.record_function(&audit_function_message());
-        bus.record_trigger(&audit_trigger_input());
+        bus.record_trigger(&audit_trigger_input(config));
+    }
+
+    pub(crate) fn record_wiring(bus: &dyn ReplyBus) {
+        record_wiring_with_config(bus, &AuditLogConfig::default());
     }
 
     fn envelope(event_id: &str, reply_stream: &str, inner: Value) -> Value {
@@ -298,7 +324,23 @@ mod tests {
         assert_eq!(trigs[0].function_id, FN_AUDIT);
         assert_eq!(
             trigs[0].config.get("topic").and_then(Value::as_str),
-            Some(TOPIC_AFTER)
+            Some(DEFAULT_TOPIC)
+        );
+    }
+
+    #[tokio::test]
+    async fn wiring_uses_configured_trigger_topic() {
+        let bus = InMemoryBus::new();
+        let config = AuditLogConfig {
+            topic: "agent::custom_after_tool_call".into(),
+        };
+        record_wiring_with_config(&bus, &config);
+
+        let trigs = bus.recorded_triggers();
+        assert_eq!(trigs.len(), 1);
+        assert_eq!(
+            trigs[0].config.get("topic").and_then(Value::as_str),
+            Some("agent::custom_after_tool_call")
         );
     }
 

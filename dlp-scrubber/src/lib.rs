@@ -13,7 +13,20 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 const FN_DLP: &str = "policy::dlp_scrubber";
-const TOPIC_AFTER: &str = "agent::after_tool_call";
+pub const DEFAULT_TOPIC: &str = "agent::after_tool_call";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DlpScrubberConfig {
+    pub topic: String,
+}
+
+impl Default for DlpScrubberConfig {
+    fn default() -> Self {
+        Self {
+            topic: DEFAULT_TOPIC.to_string(),
+        }
+    }
+}
 
 pub struct Subscriber {
     function: FunctionRef,
@@ -73,11 +86,11 @@ pub(crate) fn dlp_function_message() -> RegisterFunctionMessage {
 }
 
 /// Build the canonical [`RegisterTriggerInput`] for the DLP-scrubber subscriber.
-pub(crate) fn dlp_trigger_input() -> RegisterTriggerInput {
+pub(crate) fn dlp_trigger_input(config: &DlpScrubberConfig) -> RegisterTriggerInput {
     RegisterTriggerInput {
         trigger_type: "subscribe".into(),
         function_id: FN_DLP.into(),
-        config: json!({ "topic": TOPIC_AFTER }),
+        config: json!({ "topic": config.topic }),
         metadata: None,
     }
 }
@@ -119,6 +132,13 @@ pub(crate) async fn handle_event(bus: &dyn ReplyBus, payload: Value) -> Value {
 }
 
 pub fn subscribe_dlp_scrubber(iii: &III) -> Result<Subscriber, IIIError> {
+    subscribe_dlp_scrubber_with_config(iii, DlpScrubberConfig::default())
+}
+
+pub fn subscribe_dlp_scrubber_with_config(
+    iii: &III,
+    config: DlpScrubberConfig,
+) -> Result<Subscriber, IIIError> {
     let bus: Arc<dyn ReplyBus> = Arc::new(IiiSdkBus(iii.clone()));
 
     let fn_msg = dlp_function_message();
@@ -132,7 +152,7 @@ pub fn subscribe_dlp_scrubber(iii: &III) -> Result<Subscriber, IIIError> {
         }
     }));
 
-    let trig_input = dlp_trigger_input();
+    let trig_input = dlp_trigger_input(&config);
     bus.record_trigger(&trig_input);
     let trigger = iii.register_trigger(trig_input)?;
     Ok(Subscriber { function, trigger })
@@ -272,9 +292,13 @@ mod tests {
         }
     }
 
-    fn record_wiring(bus: &dyn ReplyBus) {
+    fn record_wiring_with_config(bus: &dyn ReplyBus, config: &DlpScrubberConfig) {
         bus.record_function(&dlp_function_message());
-        bus.record_trigger(&dlp_trigger_input());
+        bus.record_trigger(&dlp_trigger_input(config));
+    }
+
+    fn record_wiring(bus: &dyn ReplyBus) {
+        record_wiring_with_config(bus, &DlpScrubberConfig::default());
     }
 
     #[tokio::test]
@@ -294,7 +318,23 @@ mod tests {
         assert_eq!(trigs[0].function_id, FN_DLP);
         assert_eq!(
             trigs[0].config.get("topic").and_then(Value::as_str),
-            Some(TOPIC_AFTER)
+            Some(DEFAULT_TOPIC)
+        );
+    }
+
+    #[tokio::test]
+    async fn wiring_uses_configured_trigger_topic() {
+        let bus = InMemoryBus::new();
+        let config = DlpScrubberConfig {
+            topic: "agent::custom_after_tool_call".into(),
+        };
+        record_wiring_with_config(&bus, &config);
+
+        let trigs = bus.recorded_triggers();
+        assert_eq!(trigs.len(), 1);
+        assert_eq!(
+            trigs[0].config.get("topic").and_then(Value::as_str),
+            Some("agent::custom_after_tool_call")
         );
     }
 

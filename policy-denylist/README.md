@@ -15,18 +15,29 @@ iii worker add policy-denylist
 POLICY_DENIED_TOOLS="bash:rm -rf,sudo" iii-policy-denylist
 ```
 
-Without `POLICY_DENIED_TOOLS`, the worker uses a small built-in default
-(`bash:rm -rf,sudo,curl-pipe-bash`).
+When started by the engine, the worker reads its `config:` block from
+`--config <path>`. Defaults:
+
+```yaml
+topic: agent::before_tool_call
+denied_tools:
+  - "bash:rm -rf"
+  - sudo
+  - curl-pipe-bash
+```
+
+`POLICY_DENYLIST_TOPIC` and `POLICY_DENIED_TOOLS` override the config file for
+direct runtime overrides.
 
 ## Registered functions
 
 | Function | Description |
 |---|---|
-| `policy::denylist` | Subscriber bound to `agent::before_tool_call`. Replies `{ block: true, reason }` for matches; `{ block: false }` otherwise. |
+| `policy::denylist` | Subscriber bound to the configured topic. Replies `{ block: true, reason }` for matches; `{ block: false }` otherwise. |
 
 ## Runtime expectations
 
-The worker subscribes to `agent::before_tool_call`. That topic is
+By default, the worker subscribes to `agent::before_tool_call`. That topic is
 published by `provider-router` while the agent loop is executing — for
 the denylist to fire, `provider-router` (or any worker emitting the same
 topic) must be running on the bus.

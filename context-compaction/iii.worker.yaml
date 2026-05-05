@@ -8,3 +8,6 @@ description: Subscriber to agent::events that triggers session compaction once c
 dependencies:
   models-catalog: "^0.1.0"
   session-tree: "^0.1.0"
+config:
+  threshold_pct: 0.85
+  fallback_context_window: 200000

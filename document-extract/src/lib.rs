@@ -213,6 +213,19 @@ pub mod function_ids {
 /// Callers can override with the `max_bytes` payload field.
 pub const DEFAULT_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentExtractConfig {
+    pub max_bytes: u64,
+}
+
+impl Default for DocumentExtractConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
 /// Register the `document::extract` iii function on `iii`.
 ///
 /// # Payload
@@ -223,8 +236,16 @@ pub const DEFAULT_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Returns `{ "text": str, "page_count": u32?, "metadata": Value,
 /// "detected_format": "pdf" | "docx" | "auto" }`.
 pub fn register_with_iii(iii: &iii_sdk::III) -> DocumentFunctionRefs {
+    register_with_iii_with_config(iii, DocumentExtractConfig::default())
+}
+
+pub fn register_with_iii_with_config(
+    iii: &iii_sdk::III,
+    config: DocumentExtractConfig,
+) -> DocumentFunctionRefs {
     use iii_sdk::{IIIError, RegisterFunctionMessage};
 
+    let default_max_bytes = config.max_bytes;
     let f = iii.register_function((
         RegisterFunctionMessage::with_id(function_ids::EXTRACT.into())
             .with_description("Extract UTF-8 text from a PDF or DOCX file on disk".into()),
@@ -236,7 +257,7 @@ pub fn register_with_iii(iii: &iii_sdk::III) -> DocumentFunctionRefs {
             let max_bytes = payload
                 .get("max_bytes")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_MAX_BYTES);
+                .unwrap_or(default_max_bytes);
 
             let path = std::path::Path::new(path);
             let metadata = tokio::fs::metadata(path)
