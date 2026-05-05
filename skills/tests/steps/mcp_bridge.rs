@@ -230,3 +230,58 @@ fn bridge_mcp_get_shape(world: &mut IiiSkillsWorld) {
     assert_eq!(messages.len(), 1, "{v}");
     assert_eq!(messages[0]["role"].as_str(), Some("user"));
 }
+
+// ── engine::functions::list visibility checks (fetch tool) ─────────────
+
+#[when("I list registered functions through engine::functions::list")]
+async fn bridge_engine_list(world: &mut IiiSkillsWorld) {
+    call(world, "engine::functions::list", json!({})).await;
+}
+
+fn function_entry<'a>(v: &'a Value, function_id: &str) -> Option<&'a Value> {
+    v["functions"]
+        .as_array()?
+        .iter()
+        .find(|f| f["function_id"].as_str() == Some(function_id))
+}
+
+#[then(regex = r#"^the listing includes a function "([^"]+)"$"#)]
+fn bridge_listing_has(world: &mut IiiSkillsWorld, id: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST).expect("no response recorded");
+    assert!(
+        function_entry(v, &id).is_some(),
+        "missing function {id:?}: {:?}",
+        v["functions"]
+    );
+}
+
+#[then(regex = r#"^the function "([^"]+)" has a non-empty description$"#)]
+fn bridge_function_description(world: &mut IiiSkillsWorld, id: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST).expect("no response recorded");
+    let entry = function_entry(v, &id)
+        .unwrap_or_else(|| panic!("function {id:?} not in listing: {:?}", v["functions"]));
+    let desc = entry["description"].as_str().unwrap_or("");
+    assert!(!desc.is_empty(), "{id:?} has empty description: {entry}");
+}
+
+#[then(regex = r#"^the function "([^"]+)" is in a non-hidden namespace$"#)]
+fn bridge_function_visible(_world: &mut IiiSkillsWorld, id: String) {
+    assert!(
+        !iii_skills::functions::skills::is_always_hidden(&id),
+        "{id:?} is in the hard-floor namespace list (would be hidden from MCP tools/list)"
+    );
+}
+
+#[then(regex = r#"^the function "([^"]+)" is in the always-hidden namespace floor$"#)]
+fn bridge_function_hidden(_world: &mut IiiSkillsWorld, id: String) {
+    assert!(
+        iii_skills::functions::skills::is_always_hidden(&id),
+        "{id:?} should be in the hard-floor namespace list (internal-only ids must stay hidden)"
+    );
+}

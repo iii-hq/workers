@@ -1,8 +1,9 @@
 @engine @skills_resources
 Feature: iii:// resource resolver (skills::resources-list / read / templates)
   The `skills::resources-*` internal RPC serves the `iii://skills`
-  index, registered `iii://{id}` bodies, and `iii://{id}/{fn}` sections
-  that delegate to a sub-skill function. Normalization turns strings,
+  index, registered `iii://{id}` bodies (any depth), and
+  `iii://fn/{...}` sections that delegate to an iii function with the
+  segments after `fn/` joined by `::`. Normalization turns strings,
   `{content}` objects, and JSON into the contents envelope shape the
   `mcp` worker forwards to MCP `resources/read`.
 
@@ -54,54 +55,42 @@ Feature: iii:// resource resolver (skills::resources-list / read / templates)
     Then the contents mime type is "text/markdown"
     And  the contents text contains "The full body goes here."
 
-  # ── section shapes ────────────────────────────────────────────────────
+  # ── section shapes (iii://fn/{...}) ───────────────────────────────────
 
-  Scenario: iii://{skill}/{fn} returning a markdown string is served as text/markdown
-    Given a skill with id "sec-str" and body:
-      """
-      # sec-str
-      """
-    And   a sub-skill function that returns a markdown string
-    When I read the section URI with skill id "sec-str"
+  Scenario: iii://fn/{...} returning a markdown string is served as text/markdown
+    Given a sub-skill function that returns a markdown string
+    When I read the section URI for the seeded function
     Then the contents mime type is "text/markdown"
     And  the contents text contains "str-section"
 
-  Scenario: iii://{skill}/{fn} returning {content} is served as text/markdown
-    Given a skill with id "sec-obj" and body:
-      """
-      # sec-obj
-      """
-    And   a sub-skill function that returns a {content} object
-    When I read the section URI with skill id "sec-obj"
+  Scenario: iii://fn/{...} returning {content} is served as text/markdown
+    Given a sub-skill function that returns a {content} object
+    When I read the section URI for the seeded function
     Then the contents mime type is "text/markdown"
     And  the contents text contains "wrapped"
 
-  Scenario: iii://{skill}/{fn} returning arbitrary JSON falls back to application/json
-    Given a skill with id "sec-json" and body:
-      """
-      # sec-json
-      """
-    And   a sub-skill function that returns an arbitrary JSON object
-    When I read the section URI with skill id "sec-json"
+  Scenario: iii://fn/{...} returning arbitrary JSON falls back to application/json
+    Given a sub-skill function that returns an arbitrary JSON object
+    When I read the section URI for the seeded function
     Then the contents mime type is "application/json"
     And  the contents text contains "count"
 
   # ── recursion guard ──────────────────────────────────────────────────
 
   Scenario: the section resolver refuses state:: as a function id
-    When I read the URI "iii://anything/state::set"
+    When I read the URI "iii://fn/state/set"
     Then the read fails with a message mentioning "internal namespace"
 
   Scenario: the section resolver refuses mcp:: as a function id
-    When I read the URI "iii://x/mcp::handler"
+    When I read the URI "iii://fn/mcp/handler"
     Then the read fails with a message mentioning "internal namespace"
 
   Scenario: the section resolver refuses skills:: to block tunnelling into the admin API
-    When I read the URI "iii://x/skills::register"
+    When I read the URI "iii://fn/skills/register"
     Then the read fails with a message mentioning "internal namespace"
 
   Scenario: the section resolver refuses prompts:: as a function id
-    When I read the URI "iii://x/prompts::register"
+    When I read the URI "iii://fn/prompts/register"
     Then the read fails with a message mentioning "internal namespace"
 
   # ── URI validation ───────────────────────────────────────────────────
@@ -110,10 +99,18 @@ Feature: iii:// resource resolver (skills::resources-list / read / templates)
     When I read the URI "https://example.com"
     Then the read fails with a message mentioning "iii://"
 
-  Scenario: a URI with more than two path segments is rejected
-    When I read the URI "iii://a/b/c"
-    Then the read fails with a message mentioning "more than one path segment"
+  Scenario: iii://fn alone (no function path after the prefix) is rejected
+    When I read the URI "iii://fn"
+    Then the read fails with a message mentioning "missing a function path"
+
+  Scenario: iii://fn/ (trailing slash) is rejected
+    When I read the URI "iii://fn/"
+    Then the read fails with a message mentioning "empty segment"
 
   Scenario: reading an unknown skill returns a not-found error
     When I read the URI "iii://no-such-skill-does-not-exist"
+    Then the read fails with a message mentioning "not found"
+
+  Scenario: reading an unknown deep skill returns a not-found error
+    When I read the URI "iii://no-parent/no-child"
     Then the read fails with a message mentioning "not found"

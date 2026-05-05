@@ -116,13 +116,10 @@ fn when_parse_uri(world: &mut IiiSkillsWorld, uri: String) {
                 .stash
                 .insert(BUF_OUTPUT.into(), json!({ "kind": "skill", "id": id }));
         }
-        Ok(ParsedUri::Section {
-            skill_id,
-            function_id,
-        }) => {
+        Ok(ParsedUri::Section { function_id }) => {
             world.stash.insert(
                 BUF_OUTPUT.into(),
-                json!({ "kind": "section", "skill_id": skill_id, "function_id": function_id }),
+                json!({ "kind": "section", "function_id": function_id }),
             );
         }
         Err(e) => {
@@ -144,11 +141,10 @@ fn then_parse_skill(world: &mut IiiSkillsWorld, id: String) {
     assert_eq!(v["id"].as_str(), Some(id.as_str()));
 }
 
-#[then(regex = r#"^parse_uri returns a section with skill "([^"]+)" and function "([^"]+)"$"#)]
-fn then_parse_section(world: &mut IiiSkillsWorld, skill: String, function: String) {
+#[then(regex = r#"^parse_uri returns a section with function "([^"]+)"$"#)]
+fn then_parse_section(world: &mut IiiSkillsWorld, function: String) {
     let v = world.stash.get(BUF_OUTPUT).unwrap();
     assert_eq!(v["kind"].as_str(), Some("section"));
-    assert_eq!(v["skill_id"].as_str(), Some(skill.as_str()));
     assert_eq!(v["function_id"].as_str(), Some(function.as_str()));
 }
 
