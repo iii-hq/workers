@@ -118,10 +118,7 @@ impl HostFsBackend {
     /// once at startup. Errors here are operator config bugs (path doesn't
     /// exist, can't be canonicalized, etc.) and the worker should refuse to
     /// start instead of degrading to lexical fallback per-call.
-    pub fn try_new(
-        cfg: Arc<HostFsConfig>,
-        chan: Arc<dyn ChannelMaker>,
-    ) -> Result<Self, FsError> {
+    pub fn try_new(cfg: Arc<HostFsConfig>, chan: Arc<dyn ChannelMaker>) -> Result<Self, FsError> {
         let host_root_canon = match &cfg.host_root {
             Some(root) => Some(std::fs::canonicalize(root).map_err(|e| {
                 FsError::new(
@@ -226,10 +223,7 @@ fn canonicalize_with_fallback(p: &Path) -> std::io::Result<PathBuf> {
                     if md.file_type().is_symlink() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidInput,
-                            format!(
-                                "dangling symlink in path: {}",
-                                walk.display()
-                            ),
+                            format!("dangling symlink in path: {}", walk.display()),
                         ));
                     }
                 }
@@ -655,8 +649,8 @@ impl FsBackend for HostFsBackend {
             // root, and skipping the root entry silently (which is what
             // the per-entry skip below would do) is a quiet no-op that
             // looks like success to the caller. S212 = wrong file type.
-            let root_md = std::fs::symlink_metadata(&p)
-                .map_err(|e| FsError::from_io(&req.path, e))?;
+            let root_md =
+                std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
             if root_md.file_type().is_symlink() {
                 return Err(FsError::new(
                     "S212",
