@@ -138,9 +138,6 @@ jobs:
                 cargo_args+=(--bin "$BIN")
               fi
               cargo_args+=(--)
-              if [[ "$WORKER" == "mcp" ]]; then
-                cargo_args+=(--no-stdio)
-              fi
 
               echo "Starting local worker with: (cd $WORKER && cargo ${cargo_args[*]})"
               cargo "${cargo_args[@]}" > "../$worker_log" 2>&1 &
