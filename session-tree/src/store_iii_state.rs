@@ -90,8 +90,29 @@ impl SessionStore for IiiStateSessionStore {
         Ok(())
     }
 
-    async fn load_entries(&self, _session_id: &str) -> Result<Vec<SessionEntry>, SessionError> {
-        unimplemented!("Task E12 implements load_entries")
+    async fn load_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, SessionError> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "state::list".into(),
+                payload: json!({ "scope": entries_scope(session_id) }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| SessionError::Storage(format!("state::list entries: {e}")))?;
+        let arr = resp
+            .as_array()
+            .ok_or_else(|| SessionError::Storage("state::list returned non-array".into()))?;
+        let mut entries: Vec<SessionEntry> = arr
+            .iter()
+            .map(|v| {
+                serde_json::from_value(v.clone())
+                    .map_err(|e| SessionError::Storage(format!("deserialize SessionEntry: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by(|a, b| a.id().cmp(b.id()));
+        Ok(entries)
     }
 
     async fn load_meta(&self, _session_id: &str) -> Result<SessionMeta, SessionError> {
@@ -301,6 +322,53 @@ mod tests {
         ))]));
         let store = IiiStateSessionStore::new(mock);
         let result = store.append("s1", sample_entry("e1")).await;
+        assert!(matches!(result, Err(SessionError::Storage(_))));
+    }
+
+    #[tokio::test]
+    async fn load_entries_lists_session_scope_and_sorts() -> anyhow::Result<()> {
+        let e1 = sample_entry("01");
+        let e2 = sample_entry("02");
+        // Mock returns entries in REVERSE order; load_entries must sort by id.
+        let response = serde_json::json!([
+            serde_json::to_value(&e2)?,
+            serde_json::to_value(&e1)?,
+        ]);
+        let mock = Arc::new(MockTrigger::new(vec![Ok(response)]));
+        let store = IiiStateSessionStore::new(mock.clone());
+
+        let entries = store
+            .load_entries("s1")
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id(), "01");
+        assert_eq!(entries[1].id(), "02");
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "state::list");
+        assert_eq!(calls[0].payload["scope"], "session_tree:s1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_entries_returns_empty_for_unknown_session() -> anyhow::Result<()> {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(serde_json::json!([]))]));
+        let store = IiiStateSessionStore::new(mock);
+        let entries = store
+            .load_entries("missing")
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert!(entries.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_entries_returns_err_on_trigger_failure() {
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let store = IiiStateSessionStore::new(mock);
+        let result = store.load_entries("s1").await;
         assert!(matches!(result, Err(SessionError::Storage(_))));
     }
 }
