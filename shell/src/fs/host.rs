@@ -67,23 +67,12 @@ impl ChannelMaker for IiiChannelMaker {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HostFsConfig {
     pub host_root: Option<PathBuf>,
     pub max_read_bytes: usize,
     pub max_write_bytes: usize,
     pub denylist_paths: Vec<PathBuf>,
-}
-
-impl Default for HostFsConfig {
-    fn default() -> Self {
-        Self {
-            host_root: None,
-            max_read_bytes: 0,
-            max_write_bytes: 0,
-            denylist_paths: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -65,7 +65,7 @@ mod tests {
         assert_eq!(e.code, "S213");
         let e = FsError::from_io("/x", io::Error::new(ErrorKind::PermissionDenied, "no"));
         assert_eq!(e.code, "S215");
-        let e = FsError::from_io("/x", io::Error::new(ErrorKind::Other, "io"));
+        let e = FsError::from_io("/x", io::Error::other("io"));
         assert_eq!(e.code, "S216");
     }
 
