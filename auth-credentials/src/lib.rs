@@ -4,6 +4,9 @@
 //! pure resolution helpers. The production backend writes to iii state via CAS;
 //! the in-memory backend is provided for tests.
 
+pub const SKILL_ID: &str = "auth-credentials";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
 pub mod io;
 pub mod store_iii_state;
 
