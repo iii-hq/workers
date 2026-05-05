@@ -3,6 +3,8 @@
 //! P0 surface: create / load / append / active_path / list / load_messages.
 //! P2 surface: fork / clone_session / compact / export_html / tree.
 
+pub mod io;
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
