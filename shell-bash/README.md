@@ -23,7 +23,10 @@ iii-shell-bash --engine-url ws://127.0.0.1:49134
 
 ## Engine functions consumed
 
-`sandbox::exec` — provided by the iii engine `iii-exec` builtin.
+`sandbox::exec` — provided by the `iii-worker` sandbox surface
+(see `iii/crates/iii-worker/src/cli/sandbox.rs`). Note: `iii-exec` is a
+different engine builtin (a startup pipeline daemon) and exposes no bus
+functions.
 
 ## Build
 

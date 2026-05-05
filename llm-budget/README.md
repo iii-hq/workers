@@ -20,10 +20,13 @@ durable iii engine backend.
 
 ## Registered functions (14)
 
-`budget::create`, `budget::get`, `budget::list`, `budget::update`,
-`budget::delete`, `budget::record_spend`, `budget::check`, `budget::forecast`,
-`budget::rollover`, `budget::alert_set`, `budget::alert_clear`,
-`budget::exemption_grant`, `budget::exemption_revoke`, `budget::log_list`.
+`budget::create`, `budget::list`, `budget::get`, `budget::update`,
+`budget::delete`, `budget::check`, `budget::record`, `budget::reset`,
+`budget::alert_set`, `budget::usage`, `budget::forecast`, `budget::enforce`,
+`budget::exempt`, `budget::pause`.
+
+Function ids match `src/register.rs:18-33`; verify there before editing
+this list.
 
 ## Build
 

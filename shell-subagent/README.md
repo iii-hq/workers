@@ -24,8 +24,7 @@ iii-shell-subagent --engine-url ws://127.0.0.1:49134
 
 ## Registered functions
 
-`shell::subagent::start`, `shell::subagent::wait`,
-`shell::subagent::cancel`.
+`shell::subagent::start` — spawn a child agent session and await its result.
 
 ## Worker dependencies
 
