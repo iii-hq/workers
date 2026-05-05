@@ -5,6 +5,7 @@
 //! the in-memory backend is provided for tests.
 
 pub mod io;
+pub mod store_iii_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
