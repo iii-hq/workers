@@ -4,6 +4,7 @@
 //! P2 surface: fork / clone_session / compact / export_html / tree.
 
 pub mod io;
+pub mod store_iii_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
