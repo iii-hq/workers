@@ -26,3 +26,15 @@ Feature: skills::resources-* and prompts::mcp-* bridge to the mcp worker
   Scenario: prompts::mcp-get dispatches the handler and returns the MCP messages shape
     When I call prompts::mcp-get through the bridge with arguments to=alice@example.com
     Then the bridged prompts::mcp-get returns a single user message
+
+  # The fetch tool is registered twice: `skills::fetch_skill` (canonical,
+  # hidden by the MCP hard floor) and `skill::fetch` (public alias).
+  # This scenario locks in that the alias namespace stays non-hidden so
+  # the mcp worker continues to surface it in `tools/list`.
+  Scenario: skill::fetch is registered on a non-hidden namespace so the MCP bridge surfaces it
+    When I list registered functions through engine::functions::list
+    Then the listing includes a function "skill::fetch"
+    And  the function "skill::fetch" has a non-empty description
+    And  the function "skill::fetch" is in a non-hidden namespace
+    And  the listing includes a function "skills::fetch_skill"
+    And  the function "skills::fetch_skill" is in the always-hidden namespace floor

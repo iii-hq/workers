@@ -66,12 +66,23 @@ async fn seed_skill_block(
     .await;
 }
 
+/// Each scenario uses a per-scenario unique function id whose
+/// `::`-separated parts each pass `validate_id_segment`. The unique
+/// id is constructed from the World's `unique_id` (a UUID-derived
+/// kebab string) so it survives the new section-URI segment validator.
+fn section_fn_id(world: &IiiSkillsWorld, label: &str) -> String {
+    // Two segments: `bdd::<label>-<unique>`. Joining with `/` and
+    // prefixing `iii://fn/` yields a valid section URI; both segments
+    // are lowercase ASCII / digits / `-`, so the parser accepts them.
+    format!("bdd::{label}-{}", world.unique_id)
+}
+
 #[given("a sub-skill function that returns a markdown string")]
 async fn seed_section_string(world: &mut IiiSkillsWorld) {
     let Some(iii) = world.iii.clone() else {
         return;
     };
-    let fn_id = format!("bdd::section-str-{}", world.unique_id);
+    let fn_id = section_fn_id(world, "section-str");
     world
         .stash
         .insert(SECTION_FN.into(), Value::String(fn_id.clone()));
@@ -89,7 +100,7 @@ async fn seed_section_content(world: &mut IiiSkillsWorld) {
     let Some(iii) = world.iii.clone() else {
         return;
     };
-    let fn_id = format!("bdd::section-content-{}", world.unique_id);
+    let fn_id = section_fn_id(world, "section-content");
     world
         .stash
         .insert(SECTION_FN.into(), Value::String(fn_id.clone()));
@@ -107,7 +118,7 @@ async fn seed_section_json(world: &mut IiiSkillsWorld) {
     let Some(iii) = world.iii.clone() else {
         return;
     };
-    let fn_id = format!("bdd::section-json-{}", world.unique_id);
+    let fn_id = section_fn_id(world, "section-json");
     world
         .stash
         .insert(SECTION_FN.into(), Value::String(fn_id.clone()));
@@ -194,7 +205,7 @@ fn templates_two_entries(world: &mut IiiSkillsWorld) {
         "patterns: {patterns:?}"
     );
     assert!(
-        patterns.contains(&"iii://{skill_id}/{function_id}"),
+        patterns.contains(&"iii://fn/{function_path}"),
         "patterns: {patterns:?}"
     );
 }
@@ -230,20 +241,19 @@ async fn read_seeded(world: &mut IiiSkillsWorld) {
     .await;
 }
 
-#[when(regex = r#"^I read the section URI with skill id "([^"]*)"$"#)]
-async fn read_section(world: &mut IiiSkillsWorld, skill_id_base: String) {
-    let skill_id = if skill_id_base.is_empty() {
-        "anything".to_string()
-    } else {
-        world.scoped_id(&skill_id_base)
-    };
+#[when("I read the section URI for the seeded function")]
+async fn read_section(world: &mut IiiSkillsWorld) {
+    // Build a section URI by replacing `::` in the registered function
+    // id with `/` and prefixing `iii://fn/`. This is the canonical
+    // mapping documented in the README.
     let fn_id = world
         .stash
         .get(SECTION_FN)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let uri = format!("iii://{skill_id}/{fn_id}");
+    let path = fn_id.replace("::", "/");
+    let uri = format!("iii://fn/{path}");
     trigger_json(
         world,
         "skills::resources-read",

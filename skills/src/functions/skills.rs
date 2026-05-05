@@ -5,6 +5,16 @@
 //!   * `skills::register`   — store a markdown skill body keyed by id.
 //!   * `skills::unregister` — delete one by id (idempotent).
 //!   * `skills::list`       — metadata-only listing, sorted by id.
+//!   * `skills::fetch_skill` — batched read over one or more `iii://` URIs.
+//!     Internal id only; MCP clients never see it because the bridge
+//!     hard-floors `skills::*`.
+//!
+//! Public alias on a non-hidden namespace (visible as the MCP tool
+//! `skill__fetch`):
+//!
+//!   * `skill::fetch` — same handler as `skills::fetch_skill`. Lets agents
+//!     resolve `iii://` links in skill bodies on demand without changes
+//!     to the mcp worker.
 //!
 //! Internal RPC called only by the `mcp` worker (hard-floored under
 //! `skills::*` so never an MCP tool):
@@ -29,9 +39,32 @@ use crate::state;
 use crate::trigger_types::{self, SubscriberSet};
 
 const SKILL_BODY_MAX_BYTES: usize = 256 * 1024;
-const ID_MAX_LEN: usize = 64;
+
+/// Per-segment cap for both skill ids and section URI segments.
+/// The total id is allowed to chain many segments via `/`, but each
+/// individual segment stays short so directory listings stay readable.
+const ID_SEGMENT_MAX_LEN: usize = 64;
+
+/// Soft ceiling on the slashed id length. With the per-segment cap above
+/// this allows depth ~16 in practice — far deeper than any reasonable
+/// tree, while preventing pathological inputs.
+const ID_TOTAL_MAX_LEN: usize = 1024;
+
+/// Reserved as the first path segment of any URI. `iii://fn/...` is the
+/// section-URI marker; `iii://anything-else/...` is a state-backed
+/// skill body lookup. The reservation only applies to the first segment
+/// — `iii://docs/fn-reference` (the literal `fn` deeper in the path) is
+/// a perfectly valid skill id.
+const FN_PREFIX: &str = "fn";
 const INDEX_URI: &str = "iii://skills";
 const URI_PREFIX: &str = "iii://";
+
+/// Description shared by both `skills::fetch_skill` and its public alias
+/// `skill::fetch`. Phrased to nudge an MCP client that sees an
+/// `iii://...` link in a skill body to call the tool with that URI.
+const FETCH_DESCRIPTION: &str = "Fetches the content of one or more skill resources identified by iii:// URIs. \
+     When you encounter iii:// links in skill instructions, use this tool to retrieve their contents \
+     (batch with `uris` when helpful).";
 
 /// Prefixes that are NEVER allowed as the `function_id` half of an
 /// `iii://{skill}/{fn}` resource URI. Mirrors the hard-floor list in
@@ -105,6 +138,16 @@ struct ReadResourceInput {
     uri: String,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct FetchSkillInput {
+    /// A single iii:// URI to read. Must start with "iii://".
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Multiple iii:// URIs to read and concatenate into one response.
+    #[serde(default)]
+    pub uris: Option<Vec<String>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct StoredSkill {
     id: String,
@@ -119,6 +162,8 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &Subscribe
     register_resources_list(iii, cfg);
     register_resources_read(iii, cfg);
     register_resources_templates(iii);
+    register_fetch_skill(iii, cfg);
+    register_fetch_skill_public_alias(iii, cfg);
 }
 
 fn register_register_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &SubscriberSet) {
@@ -281,6 +326,46 @@ fn register_resources_templates(iii: &Arc<III>) {
     );
 }
 
+/// Internal id, hidden from MCP `tools/list` because the bridge
+/// hard-floors every `skills::` prefix. Sibling workers can still call
+/// it directly via `iii.trigger`.
+fn register_fetch_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
+    let iii_inner = iii.clone();
+    let cfg_inner = cfg.clone();
+    iii.register_function(
+        RegisterFunction::new_async("skills::fetch_skill", move |req: FetchSkillInput| {
+            let iii = iii_inner.clone();
+            let cfg = cfg_inner.clone();
+            async move {
+                fetch_skill(&iii, &cfg, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
+        .description(FETCH_DESCRIPTION),
+    );
+}
+
+/// Public alias on a non-hidden namespace so MCP clients see the tool
+/// (as `skill__fetch`) without changing the mcp worker. Delegates to
+/// the same shared core fn as `skills::fetch_skill`.
+fn register_fetch_skill_public_alias(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
+    let iii_inner = iii.clone();
+    let cfg_inner = cfg.clone();
+    iii.register_function(
+        RegisterFunction::new_async("skill::fetch", move |req: FetchSkillInput| {
+            let iii = iii_inner.clone();
+            let cfg = cfg_inner.clone();
+            async move {
+                fetch_skill(&iii, &cfg, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
+        .description(FETCH_DESCRIPTION),
+    );
+}
+
 // ---------- core resource helpers (also usable by in-process tests) ----------
 
 pub async fn list_resources(iii: &III, cfg: &SkillsConfig) -> Value {
@@ -309,13 +394,13 @@ pub fn list_templates() -> Value {
             {
                 "uriTemplate": "iii://{skill_id}",
                 "name": "Skill",
-                "description": "Markdown body of a registered skill",
+                "description": "Markdown body of a registered skill (1+ segments separated by '/')",
                 "mimeType": "text/markdown"
             },
             {
-                "uriTemplate": "iii://{skill_id}/{function_id}",
+                "uriTemplate": "iii://fn/{function_path}",
                 "name": "Skill section",
-                "description": "Markdown returned by triggering function_id with empty input",
+                "description": "Trigger the function at `function_path` (each '/' becomes '::') with empty input and serve its output. e.g. `iii://fn/scope/echo` triggers `scope::echo`.",
                 "mimeType": "text/markdown"
             }
         ]
@@ -330,16 +415,20 @@ pub async fn read(iii: &III, cfg: &SkillsConfig, uri: &str) -> Result<Value, Str
             Ok(wrap_contents(uri, "text/markdown", &body))
         }
         ParsedUri::Skill(id) => {
+            // The slashed path is the state key. Re-validate so a
+            // crafted `iii://Foo` URI fails fast even if it slipped
+            // past the section-prefix check.
             validate_id(&id)?;
             let stored = read_skill(iii, cfg, &id)
                 .await?
                 .ok_or_else(|| format!("Skill not found: {id}"))?;
             Ok(wrap_contents(uri, "text/markdown", &stored.skill))
         }
-        ParsedUri::Section { function_id, .. } => {
-            // Recursion guard — a client that crafts iii://x/state::set would
-            // otherwise tunnel into infra. We also block skills::* / prompts::*
-            // so the resource resolver can't drive the admin API.
+        ParsedUri::Section { function_id } => {
+            // Recursion guard — a client that crafts iii://fn/state/set
+            // would otherwise tunnel into infra. We also block
+            // skills::* / prompts::* so the resource resolver can't
+            // drive the admin API.
             if is_always_hidden(&function_id) {
                 return Err(format!(
                     "Function '{function_id}' is in an internal namespace and cannot back a skill resource"
@@ -360,18 +449,95 @@ pub async fn read(iii: &III, cfg: &SkillsConfig, uri: &str) -> Result<Value, Str
     }
 }
 
+// ---------- batched fetch (skills::fetch_skill / skill::fetch) ----------
+
+/// Pure half of the fetch tool: validates the input shape, normalizes
+/// to an ordered list of trimmed `iii://` URIs, and rejects anything
+/// outside the `iii://` scheme. Split out so the validation branches
+/// can be unit-tested without an iii engine.
+pub fn validate_fetch_input(input: FetchSkillInput) -> Result<Vec<String>, String> {
+    // `uris` wins when both are provided — matches the TS reference
+    // impl and the handoff doc.
+    let raw: Vec<String> = match (input.uris, input.uri) {
+        (Some(v), _) if !v.is_empty() => v,
+        (_, Some(s)) if !s.trim().is_empty() => vec![s],
+        _ => return Err("Provide uri or a non-empty uris array".into()),
+    };
+    let list: Vec<String> = raw
+        .into_iter()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+    if list.is_empty() {
+        return Err("Provide uri or a non-empty uris array".into());
+    }
+    for u in &list {
+        if !u.starts_with(URI_PREFIX) {
+            return Err(format!("Invalid URI (must start with iii://): {u}"));
+        }
+    }
+    Ok(list)
+}
+
+/// Resolve every `iii://` URI in `input` through [`read`], wrap each
+/// result as `# {uri}\n\n{text}`, and join sections with
+/// `\n\n---\n\n`. Returns plain markdown — the MCP bridge's
+/// `tool_text` passes through `Value::String` as `text/plain` content
+/// without re-encoding it as JSON.
+pub async fn fetch_skill(
+    iii: &III,
+    cfg: &SkillsConfig,
+    input: FetchSkillInput,
+) -> Result<String, String> {
+    let list = validate_fetch_input(input)?;
+    let mut sections = Vec::with_capacity(list.len());
+    for uri in &list {
+        let v = read(iii, cfg, uri).await?;
+        let text = v["contents"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        sections.push(format!("# {uri}\n\n{}", text.trim_end()));
+    }
+    Ok(sections.join("\n\n---\n\n"))
+}
+
 // ---------- URI parsing ----------
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParsedUri {
+    /// `iii://skills` — the auto-rendered tree-of-skills index.
     Index,
+    /// State-backed skill body. The payload is the full slashed path
+    /// the body was registered under (1+ segments). The first segment
+    /// is never `fn` — that prefix is reserved for [`Section`].
     Skill(String),
-    Section {
-        skill_id: String,
-        function_id: String,
-    },
+    /// Function trigger. The payload is the resolved iii function id
+    /// built by joining the URI segments after `fn/` with `::`.
+    /// e.g. `iii://fn/scope/echo` → `function_id == "scope::echo"`.
+    Section { function_id: String },
 }
 
+/// Parse an `iii://...` resource URI into a [`ParsedUri`].
+///
+/// Branching is on the **first path segment**:
+///
+/// - Empty body → error.
+/// - `skills` → [`ParsedUri::Index`].
+/// - `fn` → [`ParsedUri::Section`]; remaining segments must satisfy
+///   [`validate_id_segment`] and are joined with `::` to form the
+///   function id. `iii://fn` alone (no segments after) is an error.
+/// - Anything else → [`ParsedUri::Skill`] with the full slashed path
+///   as the state key.
+///
+/// Empty path segments anywhere (`iii://a//b`, leading or trailing
+/// `/`) are rejected so the parser stays a strict bijection with the
+/// state key.
 pub fn parse_uri(uri: &str) -> Result<ParsedUri, String> {
     let rest = uri
         .strip_prefix(URI_PREFIX)
@@ -382,47 +548,84 @@ pub fn parse_uri(uri: &str) -> Result<ParsedUri, String> {
     if rest == "skills" {
         return Ok(ParsedUri::Index);
     }
-    match rest.split_once('/') {
-        None => Ok(ParsedUri::Skill(rest.to_string())),
-        Some((skill_id, function_id)) => {
-            if skill_id.is_empty() {
-                return Err(format!("Empty skill id in URI: {uri}"));
-            }
-            if function_id.is_empty() {
-                return Err(format!("Empty function id in URI: {uri}"));
-            }
-            // Function ids contain `::` but not `/`; reject extra path
-            // segments rather than silently joining them.
-            if function_id.contains('/') {
-                return Err(format!(
-                    "Resource URI may not have more than one path segment after the skill id: {uri}"
-                ));
-            }
-            Ok(ParsedUri::Section {
-                skill_id: skill_id.to_string(),
-                function_id: function_id.to_string(),
-            })
+
+    let segments: Vec<&str> = rest.split('/').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return Err(format!(
+            "Resource URI may not contain empty segments (no leading, trailing, or doubled '/'): {uri}"
+        ));
+    }
+
+    if segments[0] == FN_PREFIX {
+        let fn_segments = &segments[1..];
+        if fn_segments.is_empty() {
+            return Err(format!(
+                "Section URI 'iii://fn' is missing a function path: expected iii://fn/{{a}}/{{b}}/...: {uri}"
+            ));
         }
+        for seg in fn_segments {
+            validate_id_segment(seg)
+                .map_err(|e| format!("invalid section URI segment {seg:?}: {e}"))?;
+        }
+        Ok(ParsedUri::Section {
+            function_id: fn_segments.join("::"),
+        })
+    } else {
+        Ok(ParsedUri::Skill(rest.to_string()))
     }
 }
 
+/// Validate a single id segment. Used for both the per-segment check
+/// in [`validate_id`] and the per-segment check inside section URIs
+/// in [`parse_uri`].
+pub fn validate_id_segment(s: &str) -> Result<(), String> {
+    if s.is_empty() {
+        return Err("segment must be non-empty".into());
+    }
+    if s.len() > ID_SEGMENT_MAX_LEN {
+        return Err(format!(
+            "segment too long ({} chars; max {ID_SEGMENT_MAX_LEN}): {s:?}",
+            s.len()
+        ));
+    }
+    for c in s.chars() {
+        let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
+        if !ok {
+            return Err(format!(
+                "segment may only contain lowercase ASCII letters, digits, '-' and '_': {s:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a full skill id. Accepts 1+ segments separated by `/`.
+/// The first segment must NOT equal [`FN_PREFIX`] (`"fn"`) — that
+/// literal is reserved as the section-URI prefix at the top level so
+/// `iii://fn/...` is unambiguously a function trigger. Other segments
+/// can use `fn` freely (e.g. `docs/fn-reference` is a valid id).
 pub fn validate_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("id must be non-empty".into());
     }
-    if id.len() > ID_MAX_LEN {
+    if id.starts_with('/') || id.ends_with('/') {
+        return Err(format!("id may not have a leading or trailing '/': {id:?}"));
+    }
+    if id.len() > ID_TOTAL_MAX_LEN {
         return Err(format!(
-            "id too long ({} chars; max {ID_MAX_LEN})",
+            "id too long ({} chars; max {ID_TOTAL_MAX_LEN}): {id:?}",
             id.len()
         ));
     }
-    for c in id.chars() {
-        let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
-        if !ok {
-            return Err(format!(
-                "id may only contain lowercase ASCII letters, digits, '-' and '_': {id:?}"
-            ));
-        }
+    let segments: Vec<&str> = id.split('/').collect();
+    for (i, seg) in segments.iter().enumerate() {
+        validate_id_segment(seg)
+            .map_err(|e| format!("invalid id (segment {} of {:?}): {e}", i + 1, id))?;
+    }
+    if segments[0] == FN_PREFIX {
+        return Err(format!(
+            "id may not have {FN_PREFIX:?} as its first segment (reserved as the iii://fn/ section-URI marker): {id:?}"
+        ));
     }
     Ok(())
 }
@@ -437,13 +640,22 @@ async fn render_index(iii: &III, cfg: &SkillsConfig) -> String {
         }
     };
     let mut out = String::from(
-        "# Skills\n\nRead each skill's resource for orientation on when and why to call its functions.\n\n",
+        "# Skills\n\nRead each skill's resource for orientation on when and why to call its functions. \
+         Sub-skills are indented under their parent path so a top-level skill stays small \
+         and the LLM can drill in only when it needs more detail.\n\n",
     );
     if skills.is_empty() {
         out.push_str("_No skills are currently registered._\n");
         return out;
     }
+    // `list_stored` returns entries sorted lexicographically by id, so a
+    // single linear pass yields a correct tree: every nested entry
+    // appears immediately after its parent (or its parent's last
+    // descendant). Indent each entry by `2 * depth` spaces, where depth
+    // is the number of '/' separators in the id.
     for s in skills {
+        let depth = s.id.matches('/').count();
+        let indent = " ".repeat(depth * 2);
         let title = extract_title(&s.skill).unwrap_or(&s.id);
         let desc = extract_description(&s.skill).unwrap_or_default();
         let suffix = if desc.is_empty() {
@@ -452,7 +664,7 @@ async fn render_index(iii: &III, cfg: &SkillsConfig) -> String {
             format!(" — {desc}")
         };
         out.push_str(&format!(
-            "- [`{}`](iii://{}) — {}{}\n",
+            "{indent}- [`{}`](iii://{}) — {}{}\n",
             s.id, s.id, title, suffix
         ));
     }
@@ -554,10 +766,14 @@ async fn list_stored(iii: &III, cfg: &SkillsConfig) -> Result<Vec<StoredSkill>, 
 mod tests {
     use super::*;
 
+    // ── parse_uri: index ────────────────────────────────────────────────
+
     #[test]
     fn parse_index_uri() {
         assert_eq!(parse_uri("iii://skills").unwrap(), ParsedUri::Index);
     }
+
+    // ── parse_uri: skill bodies (state-backed) ──────────────────────────
 
     #[test]
     fn parse_single_skill_uri() {
@@ -568,15 +784,87 @@ mod tests {
     }
 
     #[test]
-    fn parse_section_uri() {
+    fn parse_two_segment_skill_uri() {
         assert_eq!(
-            parse_uri("iii://brain/brain::summarize").unwrap(),
+            parse_uri("iii://parent/sub").unwrap(),
+            ParsedUri::Skill("parent/sub".into())
+        );
+    }
+
+    #[test]
+    fn parse_three_segment_skill_uri() {
+        assert_eq!(
+            parse_uri("iii://a/b/c").unwrap(),
+            ParsedUri::Skill("a/b/c".into())
+        );
+    }
+
+    #[test]
+    fn parse_deeply_nested_skill_uri() {
+        assert_eq!(
+            parse_uri("iii://a/b/c/d/e").unwrap(),
+            ParsedUri::Skill("a/b/c/d/e".into())
+        );
+    }
+
+    #[test]
+    fn parse_skill_uri_allows_fn_at_non_first_segment() {
+        // `fn` is reserved only at depth 0. Deeper occurrences are
+        // ordinary path segments.
+        assert_eq!(
+            parse_uri("iii://docs/fn-reference").unwrap(),
+            ParsedUri::Skill("docs/fn-reference".into())
+        );
+        assert_eq!(
+            parse_uri("iii://a/fn/c").unwrap(),
+            ParsedUri::Skill("a/fn/c".into())
+        );
+    }
+
+    // ── parse_uri: section URIs (function triggers) ─────────────────────
+
+    #[test]
+    fn parse_section_uri_single_segment() {
+        // `iii://fn/foo` triggers function `foo` (no scope).
+        assert_eq!(
+            parse_uri("iii://fn/foo").unwrap(),
             ParsedUri::Section {
-                skill_id: "brain".into(),
-                function_id: "brain::summarize".into(),
+                function_id: "foo".into(),
             }
         );
     }
+
+    #[test]
+    fn parse_section_uri_two_segments_join_with_double_colon() {
+        assert_eq!(
+            parse_uri("iii://fn/scope/echo").unwrap(),
+            ParsedUri::Section {
+                function_id: "scope::echo".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_section_uri_three_segments() {
+        assert_eq!(
+            parse_uri("iii://fn/resend/email/send").unwrap(),
+            ParsedUri::Section {
+                function_id: "resend::email::send".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_section_uri_arbitrary_depth() {
+        assert_eq!(
+            parse_uri("iii://fn/a/b/c/d").unwrap(),
+            ParsedUri::Section {
+                function_id: "a::b::c::d".into(),
+            }
+        );
+    }
+
+    // ── parse_uri: error cases ──────────────────────────────────────────
 
     #[test]
     fn rejects_missing_prefix() {
@@ -585,19 +873,40 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_id() {
+    fn rejects_empty_body() {
         assert!(parse_uri("iii://").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_segments() {
+        // Leading slash, trailing slash, doubled slash all yield empty
+        // segments and must error rather than collapse silently.
         assert!(parse_uri("iii:///fn").is_err());
         assert!(parse_uri("iii://skill/").is_err());
+        assert!(parse_uri("iii://a//b").is_err());
+        assert!(parse_uri("iii://fn/").is_err());
     }
 
     #[test]
-    fn rejects_extra_path_segments() {
-        assert!(parse_uri("iii://x/y/z").is_err());
+    fn rejects_section_uri_with_no_function_path() {
+        // `iii://fn` alone has nothing to call.
+        let err = parse_uri("iii://fn").unwrap_err();
+        assert!(err.contains("missing a function path"), "got: {err}");
     }
 
     #[test]
-    fn id_validation_accepts_kebab_and_underscore() {
+    fn rejects_section_uri_with_invalid_segment() {
+        // Per-segment rules apply to the function path too — uppercase
+        // ASCII would otherwise smuggle through as a function id.
+        assert!(parse_uri("iii://fn/Bad-Case").is_err());
+        assert!(parse_uri("iii://fn/a/b::c").is_err());
+        assert!(parse_uri("iii://fn/a b").is_err());
+    }
+
+    // ── validate_id: happy paths ────────────────────────────────────────
+
+    #[test]
+    fn id_validation_accepts_single_segment() {
         assert!(validate_id("brain").is_ok());
         assert!(validate_id("agent_memory").is_ok());
         assert!(validate_id("my-skill-1").is_ok());
@@ -605,13 +914,64 @@ mod tests {
     }
 
     #[test]
+    fn id_validation_accepts_multi_segment() {
+        assert!(validate_id("a/b").is_ok());
+        assert!(validate_id("a/b/c").is_ok());
+        assert!(validate_id("a/b/c/d/e").is_ok());
+        assert!(validate_id("resend/email/send").is_ok());
+    }
+
+    #[test]
+    fn id_validation_allows_fn_at_non_first_segment() {
+        // Reserved-word rule only applies at depth 0.
+        assert!(validate_id("docs/fn-reference").is_ok());
+        assert!(validate_id("a/fn").is_ok());
+        assert!(validate_id("a/fn/c").is_ok());
+    }
+
+    // ── validate_id: error cases ────────────────────────────────────────
+
+    #[test]
     fn id_validation_rejects_bad_chars() {
         assert!(validate_id("").is_err());
         assert!(validate_id("UpperCase").is_err());
         assert!(validate_id("with space").is_err());
-        assert!(validate_id("with/slash").is_err());
         assert!(validate_id("with::colon").is_err());
-        assert!(validate_id(&"x".repeat(ID_MAX_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn id_validation_rejects_leading_or_trailing_slash() {
+        assert!(validate_id("/a").is_err());
+        assert!(validate_id("a/").is_err());
+        assert!(validate_id("a//b").is_err());
+    }
+
+    #[test]
+    fn id_validation_rejects_fn_as_first_segment() {
+        let err = validate_id("fn").unwrap_err();
+        assert!(err.contains("first segment"), "got: {err}");
+        assert!(validate_id("fn/anything").is_err());
+        assert!(validate_id("fn/a/b").is_err());
+    }
+
+    #[test]
+    fn id_validation_enforces_per_segment_length() {
+        let too_long = "x".repeat(ID_SEGMENT_MAX_LEN + 1);
+        assert!(validate_id(&too_long).is_err());
+        let nested_with_long_segment = format!("ok/{too_long}");
+        assert!(validate_id(&nested_with_long_segment).is_err());
+        let max_segment = "x".repeat(ID_SEGMENT_MAX_LEN);
+        assert!(validate_id(&max_segment).is_ok());
+    }
+
+    #[test]
+    fn id_validation_enforces_total_length() {
+        // Build an id just over the total cap: many short segments.
+        // Each "ab/" is 3 chars; ~342 of them get over 1024.
+        let too_long: String = "ab/".repeat((ID_TOTAL_MAX_LEN / 3) + 5);
+        let trimmed = too_long.trim_end_matches('/').to_string();
+        assert!(trimmed.len() > ID_TOTAL_MAX_LEN);
+        assert!(validate_id(&trimmed).is_err());
     }
 
     #[test]
@@ -711,5 +1071,104 @@ mod tests {
         let v = list_templates();
         let templates = v["resourceTemplates"].as_array().unwrap();
         assert_eq!(templates.len(), 2);
+    }
+
+    // ── fetch input validation ─────────────────────────────────────────
+
+    #[test]
+    fn fetch_skill_rejects_no_uri() {
+        let err = validate_fetch_input(FetchSkillInput::default()).unwrap_err();
+        assert!(err.contains("Provide uri"), "got: {err}");
+    }
+
+    #[test]
+    fn fetch_skill_rejects_blank_uri() {
+        let err = validate_fetch_input(FetchSkillInput {
+            uri: Some("   ".into()),
+            uris: None,
+        })
+        .unwrap_err();
+        assert!(err.contains("Provide uri"), "got: {err}");
+    }
+
+    #[test]
+    fn fetch_skill_rejects_empty_uris_array() {
+        let err = validate_fetch_input(FetchSkillInput {
+            uri: None,
+            uris: Some(vec![]),
+        })
+        .unwrap_err();
+        assert!(err.contains("Provide uri"), "got: {err}");
+    }
+
+    #[test]
+    fn fetch_skill_rejects_non_iii_uri() {
+        let err = validate_fetch_input(FetchSkillInput {
+            uri: Some("https://example.com".into()),
+            uris: None,
+        })
+        .unwrap_err();
+        assert!(err.contains("iii://"), "got: {err}");
+    }
+
+    #[test]
+    fn fetch_skill_rejects_non_iii_uri_in_array() {
+        let err = validate_fetch_input(FetchSkillInput {
+            uri: None,
+            uris: Some(vec!["iii://ok".into(), "ftp://nope".into()]),
+        })
+        .unwrap_err();
+        assert!(err.contains("iii://"), "got: {err}");
+    }
+
+    #[test]
+    fn fetch_skill_uris_takes_precedence_when_both_provided() {
+        // `uris` wins; the single `uri` is ignored.
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: Some("iii://from-uri".into()),
+            uris: Some(vec!["iii://from-uris".into()]),
+        })
+        .unwrap();
+        assert_eq!(list, vec!["iii://from-uris".to_string()]);
+    }
+
+    #[test]
+    fn fetch_skill_trims_whitespace_around_uris() {
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: None,
+            uris: Some(vec!["  iii://a  ".into(), "iii://b\n".into()]),
+        })
+        .unwrap();
+        assert_eq!(list, vec!["iii://a".to_string(), "iii://b".to_string()]);
+    }
+
+    #[test]
+    fn fetch_skill_drops_blank_entries_in_uris_array() {
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: None,
+            uris: Some(vec!["iii://a".into(), "   ".into(), "iii://b".into()]),
+        })
+        .unwrap();
+        assert_eq!(list, vec!["iii://a".to_string(), "iii://b".to_string()]);
+    }
+
+    #[test]
+    fn fetch_skill_single_uri_preserved_after_trim() {
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: Some("  iii://only  ".into()),
+            uris: None,
+        })
+        .unwrap();
+        assert_eq!(list, vec!["iii://only".to_string()]);
+    }
+
+    #[test]
+    fn skill_fetch_alias_namespace_not_in_hard_floor() {
+        // Regression guard: if someone broadens ALWAYS_HIDDEN_PREFIXES
+        // to also catch `skill::` (singular), the public alias would
+        // disappear from `tools/list` and fail under the section
+        // resolver's recursion guard. This pins the namespace as
+        // user-callable.
+        assert!(!is_always_hidden("skill::fetch"));
     }
 }

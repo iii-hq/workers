@@ -86,8 +86,14 @@ iii.trigger(TriggerRequest {
 
 Validation rules (rejected at registration time):
 
-- `id`: lowercase ASCII letters, digits, `-` and `_` only; max 64 chars
-- `skill`: non-empty; max 256 KiB
+- `id`: 1+ path segments separated by `/`. Each segment uses lowercase
+  ASCII letters, digits, `-` and `_`; max 64 chars per segment. Total
+  id length capped at 1024 chars.
+- The literal `fn` is **reserved as the first segment** of any id
+  (used as the section-URI marker — see [Section URIs](#section-uris-function-backed-content)).
+  `fn` may appear at deeper segments freely (`docs/fn-reference` is
+  fine).
+- `skill`: non-empty; max 256 KiB.
 
 Re-registering with the same id overwrites the body and refreshes the
 `registered_at` timestamp. **Workers MUST re-register on every boot**
@@ -99,69 +105,180 @@ during local development.
 
 | URI | Returns |
 |---|---|
-| `iii://skills` | Auto-rendered markdown index of every registered skill (entry point) |
-| `iii://{your_id}` | The body you registered |
-| `iii://{your_id}/{your_function_id}` | Triggers `your_function_id` with `{}` and returns its output as content |
+| `iii://skills` | Auto-rendered markdown index of every registered skill (entry point). |
+| `iii://{id}` | The body registered at that id (single segment). |
+| `iii://{a}/{b}/.../{leaf}` | The body registered at the slashed path. Any depth. First segment must NOT equal `fn`. |
+| `iii://fn/{a}/{b}/.../{leaf}` | Trigger function `a::b::...::leaf` with `{}` and serve its output. Each `/` after `fn/` becomes `::`. |
 
-The third shape lets you split a skill across multiple files. Register
-your top-level skill at `iii://{your_id}`, then reference sub-content
-inside it as markdown links to functions you also registered. Any
-function the engine knows about is reachable this way; there's no
-opt-in flag. A short reserved-prefix list (engine internals, state
-plumbing, this worker's own admin functions) is rejected at read time
-to keep the resolver from tunneling back into infra.
-
-A function backing `iii://{id}/{fn}` should return one of:
-
-- a string → served as `text/markdown`
-- `{ "content": "..." }` → the `content` field is served as `text/markdown`
-- anything else → pretty-printed JSON, served as `application/json`
+The first-segment `fn` literal flips the URI from "skill body lookup"
+to "function trigger". Anything else as the first segment is treated
+as a slashed path of skill ids and resolved against the `skills`
+state scope as a single key. This keeps the scheme unambiguous at
+arbitrary depth: `iii://resend/email/send` is always a stored
+markdown body, while `iii://fn/resend/email/send` is always a call to
+`resend::email::send`.
 
 The auto-rendered `iii://skills` index uses the first H1 of each skill
 as the link title and the first non-heading paragraph as the
-description (truncated at 140 chars). Lead with a `# {title}` and a
-short summary paragraph and the index reads cleanly without further
-work.
+description (truncated at 140 chars). Nested entries are indented by
+`2 * depth` spaces so the index reads as a tree. Lead each registered
+body with a `# {title}` and a short summary paragraph and the index
+reads cleanly without further work.
 
-#### Worked example: skill with sub-skills
+#### Modeling a deep skill tree
+
+Top-level skill bodies should stay **small** — a router that links to
+deeper, more granular content. The agent only loads `iii://yourworker`
+initially; everything else is fetched lazily through `skill::fetch`
+(see below). Token cost grows with **how deep the agent actually drills**,
+not with how big your worker's docs are.
+
+Each level is an independent state row. Parents don't have to exist
+first (orphans are allowed but read awkwardly in the index). A
+re-register at the same id overwrites that row only — siblings and
+children are untouched.
+
+Worked example: a small `resend` worker with two depths of nested
+skills plus one section URI that points at a function.
 
 ```rust
 use iii_sdk::{RegisterFunction, TriggerRequest};
-use schemars::JsonSchema;
-use serde::Serialize;
 use serde_json::{json, Value};
 
-#[derive(Serialize, JsonSchema)]
-struct SkillContent {
-    content: String,
-}
-
+// 1. Top-level router (small body — links into children).
 iii.trigger(TriggerRequest {
     function_id: "skills::register".into(),
     payload: json!({
-        "id": "brain",
-        "skill": "# brain\n\nHelps build UIs with Tailwind.\n\n\
-                  See [`summarize`](iii://brain/brain::summarize) \
-                  for the catalogue.\n",
+        "id": "resend",
+        "skill": "# resend\n\nEmail provider integration.\n\n\
+                  - [`email`](iii://resend/email) — sending and tracking\n\
+                  - [`contacts`](iii://resend/contacts) — audience management\n\
+                  \n\
+                  Live status check: \
+                  [`health`](iii://fn/resend/health)\n",
     }),
     action: None,
     timeout_ms: Some(5_000),
 }).await?;
 
+// 2. Mid-level group (also a router into its own children).
+iii.trigger(TriggerRequest {
+    function_id: "skills::register".into(),
+    payload: json!({
+        "id": "resend/email",
+        "skill": "# resend/email\n\nEmail flows.\n\n\
+                  - [`send`](iii://resend/email/send) — outbound\n\
+                  - [`track`](iii://resend/email/track) — webhooks + status\n",
+    }),
+    action: None,
+    timeout_ms: Some(5_000),
+}).await?;
+
+// 3. Leaf body — the actual content the agent will read once it
+// decides to drill in. Loaded on demand via skill::fetch.
+iii.trigger(TriggerRequest {
+    function_id: "skills::register".into(),
+    payload: json!({
+        "id": "resend/email/send",
+        "skill": include_str!("../docs/resend-email-send.md"),
+    }),
+    action: None,
+    timeout_ms: Some(5_000),
+}).await?;
+
+// 4. A section URI: live function output instead of a static body.
+// `iii://fn/resend/health` triggers `resend::health` with {} and
+// returns its output. Useful for status, dynamic catalogues, etc.
 iii.register_function(
-    RegisterFunction::new("brain::summarize", |_input: Value| {
-        Ok::<_, String>(SkillContent {
-            content: include_str!("../docs/summarize.md").to_string(),
-        })
+    RegisterFunction::new("resend::health", |_input: Value| {
+        Ok::<_, String>(json!({
+            "content": "# Resend health\n\nAPI: ok. Quota: 73% remaining."
+        }))
     })
-    .description("Index of UI design guidelines."),
+    .description("Live operational health for the resend integration."),
 );
 ```
 
-Now any consumer can read `iii://brain` for the orientation and click
-through to `iii://brain/brain::summarize` for the catalogue. The
-resource resolver invokes the sub-skill function directly through
-`iii.trigger`, so it doesn't need any extra opt-in flag.
+Once registered, an agent reading `iii://resend` sees the small
+router. If it needs send semantics, it asks `skill::fetch` for
+`iii://resend/email/send` (one round trip, ~200 lines of markdown
+instead of the worker's full 2000-line documentation).
+
+#### Section URIs (function-backed content)
+
+Section URIs trigger an iii function with `{}` and serve its output
+as resource content. The URI shape is `iii://fn/{a}/{b}/...` and the
+mapping to a function id is mechanical: every `/` after `fn/` becomes
+`::`. This means agents and humans can construct a URI from any
+function id by string-replace alone.
+
+| URI | Function id triggered |
+|---|---|
+| `iii://fn/foo` | `foo` |
+| `iii://fn/scope/foo` | `scope::foo` |
+| `iii://fn/resend/email/send` | `resend::email::send` |
+| `iii://fn/a/b/c/d` | `a::b::c::d` |
+
+A function backing a section URI should return one of:
+
+- a `String` → served as `text/markdown`.
+- `{ "content": "..." }` → the `content` field is served as `text/markdown`.
+- anything else → pretty-printed JSON, served as `application/json`.
+
+The recursion guard blocks the internal namespaces (`engine::*`,
+`state::*`, `mcp::*`, `skills::*`, `prompts::*`, `iii::*`, `iii.*`,
+`a2a::*`) at read time so a crafted `iii://fn/state/set` can't tunnel
+into infra.
+
+Function ids that contain `.` (e.g. the engine's `iii.on_foo`
+lifecycle handlers) are NOT reachable through this shape. That's
+intentional — those handlers are triggered on engine events, not by
+agents.
+
+#### Fetching skills on demand
+
+Top-level skill bodies are designed to stay small (a router that
+points at sub-skills) so they don't burn the LLM's context budget on
+content the agent might never need. Consumers resolve those `iii://`
+links lazily via the **`skill::fetch`** tool — a thin batched wrapper
+over the same resolver that backs `skills::resources-read`.
+
+| Field | Type | Description |
+|---|---|---|
+| `uri` | string | A single `iii://` URI to read. |
+| `uris` | string[] | Multiple `iii://` URIs to read and concatenate. Wins when both are provided. |
+
+Each URI is wrapped as `# {uri}\n\n{body}` and sections are joined
+with `\n\n---\n\n` into one markdown document, so the agent can pull
+several sub-skills in one round trip:
+
+```json
+{ "uris": ["iii://resend/email/send", "iii://resend/email/track"] }
+```
+
+This composes naturally with the multi-level body shape: the agent
+loads the top-level router once, then batches fetches for the deeper
+bodies it actually needs (and the `iii://fn/...` section URIs of the
+functions it expects to call).
+
+Two registrations, one handler:
+
+- **`skill::fetch`** — public alias on a non-hidden namespace. MCP
+  clients see it as the tool `skill__fetch`, which is what the
+  description tells agents to call when they encounter `iii://`
+  links in skill instructions. This is the id agents should use.
+- **`skills::fetch_skill`** — canonical id, colocated with the rest
+  of the registry. Hidden from MCP `tools/list` because the bridge
+  hard-floors every `skills::` prefix; sibling workers can still call
+  it directly via `iii.trigger`.
+
+Validation rules (rejected before any resource is touched):
+
+- At least one of `uri` / `uris` must be present and non-blank after
+  trim.
+- Every URI must start with `iii://`. Other schemes are rejected with
+  a clear error so an agent can correct the call rather than silently
+  fetching nothing.
 
 ### Prompts (slash commands)
 
@@ -519,11 +636,13 @@ config path.
 
 ## Functions
 
-Eleven functions across the two registries. The six public CRUD
-entries are callable by any worker over `iii.trigger`. The five
-internal-RPC entries are reserved for protocol-bridge workers that
-serve the registries to external clients; they never surface as agent
-tools.
+Thirteen functions across the two registries plus one fetch alias.
+The seven public CRUD entries (six registry CRUD + the public fetch
+alias) are callable by any worker over `iii.trigger`; the alias is
+also surfaced as an MCP tool. The remaining six entries are
+internal-RPC reserved for protocol-bridge workers; they never appear
+in `tools/list` because their ids start with the `skills::` /
+`prompts::` hard-floor prefixes.
 
 | Function ID | Description |
 |---|---|
@@ -533,6 +652,8 @@ tools.
 | `skills::resources-list` | Internal: enumerate registered skills as resource entries. |
 | `skills::resources-read` | Internal: resolve an `iii://` URI to its content. |
 | `skills::resources-templates` | Internal: declare the `iii://{id}` URI templates. |
+| `skills::fetch_skill` | Internal: batched read across one or more `iii://` URIs. Hidden from MCP because the id starts with `skills::`. |
+| `skill::fetch` | Public alias of `skills::fetch_skill` on a non-hidden namespace. Surfaces as the MCP tool `skill__fetch` so agents can resolve `iii://` links on demand. |
 | `prompts::register` | Store a slash-command prompt definition. |
 | `prompts::unregister` | Delete a prompt by name. Idempotent. |
 | `prompts::list` | Metadata-only listing, sorted by name. |
@@ -572,12 +693,45 @@ cargo test
 
 # One feature group at a time. Available tags:
 #   @pure  @markdown
-#   @engine  @skills_register  @skills_resources
-#   @prompts_register  @prompts_get  @notifications
-cargo test --test bdd -- --tags @skills_resources
+#   @engine  @skills_register  @skills_resources  @skills_fetch  @skills_nested
+#   @prompts_register  @prompts_get  @notifications  @mcp_bridge
+cargo test --test bdd -- --tags @skills_nested
 ```
 
 The BDD harness lives under [tests/](tests/). Feature files mirror the
 modules in [src/functions/](src/functions/). Step definitions under
 [tests/steps/](tests/steps/) drive each feature through the same
 `iii.trigger` path the production binary uses.
+
+---
+
+## Migration (v0.1.x → v0.2.0)
+
+The URI scheme changed in two breaking ways. Workers that registered
+skills against `0.1.x` need to update before upgrading.
+
+**1. Function-backed URIs use `fn/` as a fixed prefix.** The legacy
+two-segment form `iii://{anything}/{worker::function_id}` is gone.
+Rewrite each link by prefixing `iii://fn/` and replacing every `::`
+with `/`:
+
+| Old | New |
+|---|---|
+| `iii://anything/myworker::echo` | `iii://fn/myworker/echo` |
+| `iii://brain/brain::summarize` | `iii://fn/brain/summarize` |
+| `iii://x/state::get` | `iii://fn/state/get` (still blocked by the recursion guard) |
+
+The legacy two-segment form now resolves to a state-backed sub-skill
+lookup, so it returns "Skill not found" instead of triggering the
+function. There is no silent fallback.
+
+**2. Multi-segment ids are now stored skills.** `iii://resend/email`
+and similar are state-backed bodies you can register. There is no
+depth cap (per-segment cap stays at 64 chars; total id capped at
+1024 chars). The `fn` literal is reserved as the **first** segment of
+any registered id; deeper occurrences (`docs/fn-reference`) are fine.
+
+Workers MUST update their bundled markdown bodies (replace any
+`iii://x/worker::fn` in skill text with `iii://fn/worker/fn`) and
+re-register at boot. The `skills::on-change` trigger fires on every
+re-registration, so subscribers stay in sync automatically.

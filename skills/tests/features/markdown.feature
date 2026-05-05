@@ -75,16 +75,36 @@ Feature: pure markdown, URI, and validation helpers
     When I parse the URI "iii://brain"
     Then parse_uri returns a skill with id "brain"
 
-  Scenario: parse_uri returns Section for iii://skill/fn
-    When I parse the URI "iii://brain/brain::summarize"
-    Then parse_uri returns a section with skill "brain" and function "brain::summarize"
+  Scenario: parse_uri returns Skill for nested iii://parent/sub
+    When I parse the URI "iii://parent/sub"
+    Then parse_uri returns a skill with id "parent/sub"
+
+  Scenario: parse_uri returns Skill for arbitrarily deep paths
+    When I parse the URI "iii://a/b/c/d/e"
+    Then parse_uri returns a skill with id "a/b/c/d/e"
+
+  Scenario: parse_uri returns Section for iii://fn/{single}
+    When I parse the URI "iii://fn/echo"
+    Then parse_uri returns a section with function "echo"
+
+  Scenario: parse_uri returns Section for iii://fn/{a}/{b} joining with ::
+    When I parse the URI "iii://fn/scope/echo"
+    Then parse_uri returns a section with function "scope::echo"
+
+  Scenario: parse_uri returns Section for deep iii://fn/{...}
+    When I parse the URI "iii://fn/resend/email/send"
+    Then parse_uri returns a section with function "resend::email::send"
 
   Scenario: parse_uri rejects a missing scheme
     When I parse the URI "brain"
     Then parse_uri fails
 
-  Scenario: parse_uri rejects extra path segments
-    When I parse the URI "iii://x/y/z"
+  Scenario: parse_uri rejects iii://fn alone (no function path)
+    When I parse the URI "iii://fn"
+    Then parse_uri fails
+
+  Scenario: parse_uri rejects empty segments anywhere
+    When I parse the URI "iii://a//b"
     Then parse_uri fails
 
   # ── validate_id ──────────────────────────────────────────────────────

@@ -22,5 +22,5 @@ pub fn register_all(
 ) {
     skills::register(iii, cfg, &trigger_types.skills);
     prompts::register(iii, cfg, &trigger_types.prompts);
-    tracing::info!("skills registered 5 skills::* and 5 prompts::* functions");
+    tracing::info!("skills registered 7 skills::*, 1 skill::* and 5 prompts::* functions");
 }

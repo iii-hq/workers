@@ -23,8 +23,16 @@ Feature: skills::register / unregister / list
     When I register a skill with id "with space" and body "# hi"
     Then the skills::register call fails
 
-  Scenario: register rejects an id with a slash
-    When I register a skill with id "with/slash" and body "# hi"
+  Scenario: register rejects an id with a leading slash
+    When I register a skill with id "/leading-slash" and body "# hi"
+    Then the skills::register call fails
+
+  Scenario: register rejects an id with a trailing slash
+    When I register a skill with id "trailing-slash/" and body "# hi"
+    Then the skills::register call fails
+
+  Scenario: register rejects an id with a doubled slash
+    When I register a skill with id "doubled//slash" and body "# hi"
     Then the skills::register call fails
 
   Scenario: register rejects an id with a colon
