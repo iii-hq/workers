@@ -213,9 +213,9 @@ mod tests {
     #[test]
     fn parse_yaml_config_overrides_topic() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 topic: agent::custom_after_tool_call
-"#,
+",
         );
 
         assert_eq!(

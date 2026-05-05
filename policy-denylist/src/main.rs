@@ -317,12 +317,12 @@ mod tests {
     #[test]
     fn parse_yaml_config_overrides_topic_and_denied_tools() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 topic: agent::custom_before_tool_call
 denied_tools:
   - bash:rm -rf
   - sudo
-"#,
+",
         );
 
         assert_eq!(

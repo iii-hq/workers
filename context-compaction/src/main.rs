@@ -263,10 +263,10 @@ mod tests {
     #[test]
     fn parse_yaml_config_overrides_threshold_and_window() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 threshold_pct: 0.75
 fallback_context_window: 128000
-"#,
+",
         );
 
         assert_eq!(overrides.threshold_pct, Some(0.75));

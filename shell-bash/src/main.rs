@@ -242,11 +242,11 @@ mod tests {
     #[test]
     fn parse_yaml_config_overrides_exec_limits() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 default_timeout_ms: 1
 trigger_timeout_ms: 2
 max_output_bytes: 3
-"#,
+",
         );
 
         assert_eq!(overrides.default_timeout_ms, Some(1));

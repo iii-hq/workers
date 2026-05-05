@@ -255,10 +255,10 @@ mod tests {
     #[test]
     fn parse_yaml_config_overrides_topic_and_log_path() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 topic: agent::custom_after_tool_call
 log_path: ~/audit/custom.jsonl
-"#,
+",
         );
 
         assert_eq!(
@@ -292,11 +292,11 @@ log_path: ~/audit/custom.jsonl
     #[test]
     fn parse_yaml_ignores_nested_keys() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 nested:
   topic: wrong
 topic: right
-"#,
+",
         );
 
         assert_eq!(overrides.topic.as_deref(), Some("right"));
@@ -305,14 +305,14 @@ topic: right
     #[test]
     fn parse_yaml_config_overrides_wrapped_config() {
         let overrides = parse_config_overrides(
-            r#"
+            r"
 name: audit-log
 config:
   topic: agent::wrapped_after_tool_call
   log_path: ~/audit/wrapped.jsonl
 metadata:
   topic: wrong
-"#,
+",
         );
 
         assert_eq!(
