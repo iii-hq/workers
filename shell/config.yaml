@@ -11,9 +11,11 @@ allowed_env:
   - TERM
 # Default allowlist is intentionally read-only. Tools that can shell out
 # (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, cargo
-# build.rs, node -e, python3 -c, npm run) are left out on purpose — add them
-# per deployment after you've decided on the threat model. This worker is
-# NOT a sandbox.
+# build.rs, node -e, python3 -c, npm run, env <cmd>) are left out on
+# purpose — add them per deployment after you've decided on the threat
+# model. This worker is NOT a sandbox. Use `printenv` for read-only env
+# inspection; `env` is excluded because `env <cmd>` execs arbitrary
+# programs while passing argv[0]=="env" through the allowlist gate.
 allowlist:
   - ls
   - cat
@@ -35,7 +37,6 @@ allowlist:
   - df
   - du
   - ps
-  - env
   - printenv
   - basename
   - dirname

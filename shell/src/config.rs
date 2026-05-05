@@ -276,6 +276,32 @@ mod tests {
         assert!(c.is_command_allowed(&[]).is_err());
     }
 
+    /// Loads the shipped `config.yaml` and asserts the default allowlist
+    /// preserves read-only env inspection (`printenv`) while rejecting the
+    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
+    /// because `is_command_allowed` only checks argv[0]; with `env`
+    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
+    /// Loads the shipped `config.yaml` and asserts the default allowlist
+    /// preserves read-only env inspection (`printenv`) while rejecting the
+    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
+    /// because `is_command_allowed` only checks argv[0]; with `env`
+    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
+    /// Parses the YAML directly (skipping `load_config`'s fs-jail check,
+    /// which is unrelated to the allowlist policy under test).
+    #[test]
+    fn shipped_config_blocks_env_exec_escape() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
+        let content = fs::read_to_string(path).expect("read config.yaml");
+        let mut c: ShellConfig =
+            serde_yaml::from_str(&content).expect("config.yaml parses");
+        c.compile_denylist().expect("denylist compiles");
+        assert!(c.is_command_allowed(&["printenv".into()]).is_ok());
+        let err = c
+            .is_command_allowed(&["env".into(), "nmap".into(), "host".into()])
+            .expect_err("env <cmd> must be rejected");
+        assert!(err.contains("not in allowlist"));
+    }
+
     #[test]
     fn test_resolve_timeout_caps_at_max() {
         let c = ShellConfig::default();
