@@ -30,6 +30,7 @@ PR.
 |---|---|---|
 | `<worker>/README.md` | all | Non-empty. Body becomes the `readme` field on `POST /publish`. |
 | `<worker>/iii.worker.yaml` | all | Declares `name`, `language`, `deploy`, `manifest` (and `bin` for Rust binaries). |
+| `<worker>/skill.md` | all | Top-level skill registered at `iii://<worker>` so MCP clients can orient to the worker. See §10. |
 | Language manifest | all | `Cargo.toml` (Rust), `package.json` (Node), `pyproject.toml` (Python). The `version` field is the source of truth. |
 | `<worker>/tests/` | all | Non-empty. Holds at least one test file the standard runner picks up. |
 | `<worker>/Dockerfile` | `deploy: image` only | Listens on `III_URL`, exits cleanly on `SIGTERM`. |
@@ -180,3 +181,230 @@ exported handler.
 
 For `deploy: image`: `<worker>/Dockerfile` that respects `III_URL` and traps
 `SIGTERM`.
+
+## 10. Skill registration
+
+Every worker should register a markdown skill on the [`skills` platform
+worker](https://workers.iii.dev/workers/skills) at startup so MCP clients
+(Claude Desktop, Cursor, MCP Inspector) can discover and orient to its
+functions. The skill body lives at `<worker>/skill.md` and is served at
+`iii://<worker>`; the auto-rendered `iii://skills` index links every worker.
+
+> The `skills` worker version pinned by this convention is **v0.2.0+** —
+> needed for multi-segment ids and `skills::unregister`.
+
+### 10.1 Skill ID validation rules (skills v0.2.0+)
+
+- 1+ segments separated by `/`.
+- Each segment: lowercase ASCII letters, digits, `-`, `_`; max 64 chars per segment.
+- Total id length ≤ 1024 chars.
+- First segment MUST NOT be the literal `fn` (reserved for section URIs).
+
+For workers in this repo, the id equals the folder name — a single segment.
+
+### 10.2 Content shape
+
+`<worker>/skill.md` is loaded into agent context. Keep it small — aim for
+1–3 KB; the registry hard cap is 256 KiB. Content is "when and why to use",
+not install/configure (that lives in `README.md`). Imperative tone.
+
+```markdown
+# <worker-name>
+
+<One-sentence summary used as the description in the iii://skills index.>
+
+## When to use
+
+<Bullet list of agent intents where this worker is the right call.>
+
+## Functions
+
+- `<worker>::<fn>(input) → output` — one-line purpose
+- `<worker>::<fn>(input) → output` — one-line purpose
+
+## When NOT to use
+
+<Close-but-different situations where another worker is the right answer.>
+
+## Notes
+
+<Optional: required config, dependencies on other workers, operational caveats.>
+```
+
+The heading is `## Functions` (not `## Tools`). iii terminology is
+"function" for registered handlers; "tool" is reserved for MCP's own term.
+
+### 10.3 Optional: nested sub-skills
+
+Workers with a wide function surface MAY register additional sub-skills
+under slashed paths (`<worker>/<group>`, `<worker>/<group>/<leaf>`). The
+top-level `skill.md` should then be a small router that links to the
+sub-skills via `[label](iii://<worker>/<group>/...)`. Sub-skill bodies
+live under `<worker>/skills/...` and are loaded with `include_str!` from
+`src/lib.rs`. Each sub-skill is its own `skills::register` call. Out of
+scope for the current 7-worker batch — all are flat.
+
+### 10.4 Wire-up: lib.rs
+
+Expose the id and the embedded markdown as `pub const`s in `src/lib.rs`
+so both `main.rs` and the integration tests can reference them:
+
+```rust
+// In src/lib.rs (near the top):
+pub const SKILL_ID: &str = "<worker>"; // must equal the folder name
+pub const SKILL_MD: &str = include_str!("../skill.md");
+```
+
+`include_str!("../skill.md")` resolves from `src/lib.rs`, so the file must
+be at the worker root. Don't use `env!("CARGO_PKG_NAME")` — that returns
+`iii-<worker>` (with the `iii-` prefix) for these workers, not the
+folder name.
+
+### 10.5 Wire-up: main.rs
+
+Add three small helpers to `main.rs` and call them from `main`:
+
+```rust
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use iii_sdk::TriggerRequest;
+use serde_json::json;
+
+// Background task — fires AFTER the worker's register_with_iii() returns,
+// so the skill never advertises functions that aren't registered yet.
+fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
+    tokio::spawn(async move {
+        let mut backoff = Duration::from_secs(5);
+        let started = Instant::now();
+        loop {
+            let res = iii
+                .trigger(TriggerRequest {
+                    function_id: "skills::register".into(),
+                    payload: json!({
+                        "id": <crate>::SKILL_ID,
+                        "skill": <crate>::SKILL_MD,
+                    }),
+                    action: None,
+                    timeout_ms: Some(5_000),
+                })
+                .await;
+            if res.is_ok() {
+                log::info!("registered skill: {}", <crate>::SKILL_ID);
+                return;
+            }
+            if started.elapsed() > Duration::from_secs(180) {
+                log::warn!(
+                    "skills handshake gave up for {}; install/start the skills worker and restart",
+                    <crate>::SKILL_ID
+                );
+                return;
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(60));
+        }
+    });
+}
+
+// Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
+// unregister below runs in production container shutdown, not just dev.
+async fn wait_for_shutdown() -> Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => {}
+    }
+    Ok(())
+}
+
+// Best-effort: a missed unregister is self-healing on next boot's re-register.
+async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::unregister".into(),
+            payload: json!({ "id": <crate>::SKILL_ID }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await;
+}
+```
+
+Replace `<crate>` with the worker's library crate name (e.g.
+`auth_credentials`, `auth_rbac`).
+
+In `main()`, immediately after the worker's existing
+`register_with_iii(...)` call, replace the old `tokio::signal::ctrl_c().await.ok();`
+line with three calls:
+
+```rust
+// After register_with_iii(...) succeeds:
+spawn_skill_register(iii.clone());
+
+wait_for_shutdown().await?;
+
+unregister_skill(&iii).await;
+Ok(())
+```
+
+### 10.6 Tests
+
+Add `<worker>/tests/skill.rs` with two assertions. They run as part of
+`cargo test` — no iii engine needed.
+
+```rust
+#[test]
+fn skill_md_well_formed() {
+    let skill = <crate>::SKILL_MD;
+    assert!(!skill.trim().is_empty(), "skill.md is empty");
+    assert!(
+        skill.len() <= 256 * 1024,
+        "skill.md exceeds 256 KiB ({} bytes)",
+        skill.len()
+    );
+    let first_non_blank = skill.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    assert!(
+        first_non_blank.starts_with("# "),
+        "skill.md must start with an H1, got: {first_non_blank:?}"
+    );
+    assert!(
+        skill.lines().any(|l| l.trim() == "## Functions"),
+        "skill.md must contain a `## Functions` section"
+    );
+}
+
+#[test]
+fn skill_id_is_valid() {
+    let id = <crate>::SKILL_ID;
+    assert!(!id.is_empty(), "SKILL_ID is empty");
+    assert!(id.len() <= 64, "SKILL_ID exceeds 64 chars");
+    assert_ne!(id, "fn", "SKILL_ID must not be the reserved literal `fn`");
+
+    let first = id.chars().next().unwrap();
+    assert!(
+        first.is_ascii_lowercase() || first.is_ascii_digit(),
+        "SKILL_ID first char must be lowercase ASCII letter or digit"
+    );
+    assert!(
+        id.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
+        "SKILL_ID has invalid characters"
+    );
+}
+```
+
+### 10.7 Lifecycle summary
+
+```
+boot:
+  register_worker()  →  configure_store/cfg  →  register_with_iii()  →  serve traffic
+                                                       │
+                                                       ▼  (spawn here, async)
+                                           skills::register
+                                           retry 5s → 60s, give up at 180s
+
+shutdown (SIGINT or SIGTERM):
+  wait_for_shutdown()  →  skills::unregister (2s timeout, errors swallowed)  →  exit
+```
