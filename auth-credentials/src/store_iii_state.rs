@@ -51,12 +51,35 @@ impl CredentialStore for IiiStateCredentialStore {
         })?))
     }
 
-    async fn set(&self, _provider: &str, _credential: Credential) -> anyhow::Result<()> {
-        unimplemented!("Task E4 implements set")
+    async fn set(&self, provider: &str, credential: Credential) -> anyhow::Result<()> {
+        self.iii
+            .trigger(TriggerRequest {
+                function_id: "state::set".into(),
+                payload: json!({
+                    "scope": SCOPE,
+                    "key": key_for(provider),
+                    "value": serde_json::to_value(&credential)
+                        .map_err(|e| anyhow::anyhow!("serialize credential: {e}"))?,
+                }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("state::set failed: {e}"))?;
+        Ok(())
     }
 
-    async fn clear(&self, _provider: &str) -> anyhow::Result<()> {
-        unimplemented!("Task E4 implements clear")
+    async fn clear(&self, provider: &str) -> anyhow::Result<()> {
+        self.iii
+            .trigger(TriggerRequest {
+                function_id: "state::delete".into(),
+                payload: json!({ "scope": SCOPE, "key": key_for(provider) }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("state::delete failed: {e}"))?;
+        Ok(())
     }
 
     async fn list(&self) -> anyhow::Result<Vec<(String, Credential)>> {
@@ -130,5 +153,52 @@ mod tests {
     #[test]
     fn key_for_uses_provider_prefix() {
         assert_eq!(key_for("anthropic"), "credential:anthropic");
+    }
+
+    #[tokio::test]
+    async fn set_writes_state_set_with_correct_payload() -> anyhow::Result<()> {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(Value::Null)]));
+        let store = IiiStateCredentialStore::new(mock.clone());
+        let cred = Credential::ApiKey { key: "sk-test".into() };
+
+        store.set("anthropic", cred.clone()).await?;
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "state::set");
+        assert_eq!(calls[0].payload["scope"], SCOPE);
+        assert_eq!(calls[0].payload["key"], "credential:anthropic");
+        assert_eq!(calls[0].payload["value"], serde_json::to_value(&cred)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_returns_err_on_trigger_failure() {
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let cred = Credential::ApiKey { key: "k".into() };
+        assert!(store.set("anthropic", cred).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn clear_calls_state_delete_with_correct_payload() -> anyhow::Result<()> {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(Value::Null)]));
+        let store = IiiStateCredentialStore::new(mock.clone());
+
+        store.clear("anthropic").await?;
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, "state::delete");
+        assert_eq!(calls[0].payload["scope"], SCOPE);
+        assert_eq!(calls[0].payload["key"], "credential:anthropic");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clear_returns_err_on_trigger_failure() {
+        let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler("boom".into()))]));
+        let store = IiiStateCredentialStore::new(mock);
+        assert!(store.clear("anthropic").await.is_err());
     }
 }
