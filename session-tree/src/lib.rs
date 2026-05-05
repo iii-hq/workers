@@ -191,12 +191,13 @@ impl SessionStore for InMemoryStore {
     }
 
     async fn load_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, SessionError> {
-        self.entries
+        Ok(self
+            .entries
             .read()
             .map_err(|e| SessionError::Storage(e.to_string()))?
             .get(session_id)
             .cloned()
-            .ok_or_else(|| SessionError::NotFound(session_id.to_string()))
+            .unwrap_or_default())
     }
 
     async fn load_meta(&self, session_id: &str) -> Result<SessionMeta, SessionError> {
