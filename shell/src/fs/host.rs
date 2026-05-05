@@ -347,23 +347,28 @@ fn literal_replace_line(
     }
     if case_insensitive {
         let escaped_needle = regex::escape(needle);
-        let escaped_replacement = replacement.replace('$', "$$");
         let pattern = format!("(?i){escaped_needle}");
         let re = match regex::Regex::new(&pattern) {
             Ok(r) => r,
             Err(_) => return (line.to_string(), 0),
         };
+        // Closures returning `String` to `Regex::replacen`/`replace_all`
+        // satisfy `Replacer` via the FnMut blanket impl, which inserts the
+        // returned string verbatim — no `$N` capture substitution. So the
+        // literal replacement must NOT be pre-escaped; doing so would
+        // double user-supplied `$` characters.
+        let owned = replacement.to_string();
         let mut count = 0u64;
         let out = if first_only {
             re.replacen(line, 1, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                owned.clone()
             })
             .into_owned()
         } else {
             re.replace_all(line, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                owned.clone()
             })
             .into_owned()
         };
@@ -2109,5 +2114,36 @@ mod tests {
             .unwrap();
         assert_eq!(resp.total_replacements, 1);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "Bob then Alice\n");
+    }
+
+    /// Regression: with `regex=false, ignore_case=true`, replacement is
+    /// supposed to be literal text. The case-insensitive path used to
+    /// `replace('$', "$$")` before returning from a closure passed to
+    /// `Regex::replace_all`, but closure returns are inserted verbatim
+    /// (no $N substitution), so the escape doubled `$` and corrupted
+    /// user-supplied literals like "$1" into "$$1".
+    #[tokio::test]
+    async fn sed_literal_ignore_case_preserves_dollar_in_replacement() {
+        let root = tmp();
+        let f = root.join("d.txt");
+        std::fs::write(&f, "HELLO world\n").unwrap();
+        let h = stub_backend(HostFsConfig::default());
+        let resp = h
+            .sed(crate::fs::SedArgs {
+                files: vec![f.to_str().unwrap().into()],
+                path: None,
+                recursive: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                pattern: "hello".into(),
+                replacement: "$1".into(),
+                regex: false,
+                first_only: false,
+                ignore_case: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.total_replacements, 1);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "$1 world\n");
     }
 }
