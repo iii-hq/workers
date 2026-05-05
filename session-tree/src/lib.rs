@@ -709,7 +709,7 @@ pub mod function_ids {
 ///   → `{ "html": str }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
-    S: SessionStore + Send + Sync + 'static,
+    S: SessionStore + Send + Sync + ?Sized + 'static,
 {
     use iii_sdk::{IIIError, RegisterFunctionMessage};
     use serde_json::json;

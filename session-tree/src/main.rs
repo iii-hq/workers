@@ -12,7 +12,20 @@ async fn main() -> Result<()> {
     let engine_url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
 
-    let store = Arc::new(session_tree::InMemoryStore::default());
+    let store: Arc<dyn session_tree::SessionStore> =
+        match std::env::var("SESSION_TREE_STORE").as_deref() {
+            Ok("memory") => {
+                log::info!("session-tree: using in-memory store (SESSION_TREE_STORE=memory)");
+                Arc::new(session_tree::InMemoryStore::default())
+            }
+            _ => {
+                log::info!("session-tree: using iii-state store");
+                let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
+                Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
+                    iii_for_store,
+                ))
+            }
+        };
     let _refs = session_tree::register_with_iii(&iii, store);
     log::info!("session-tree registered (session::*)");
 
