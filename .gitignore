@@ -13,3 +13,6 @@ yarn.lock
 !shell/tests/e2e/workers/harness/package-lock.json
 iii_workers/
 graphify-out
+HARNESS-WORKER-PUBLISHING-MAP.md
+WORKERS-MIGRATING.md
+WORKERS-PR-REVIEW.md
