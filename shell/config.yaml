@@ -1,0 +1,83 @@
+max_timeout_ms: 30000
+default_timeout_ms: 10000
+max_output_bytes: 1048576
+working_dir: null
+inherit_env: false
+allowed_env:
+  - PATH
+  - HOME
+  - LANG
+  - LC_ALL
+  - TERM
+# Default allowlist is intentionally read-only. Tools that can shell out
+# (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, cargo
+# build.rs, node -e, python3 -c, npm run, env <cmd>) are left out on
+# purpose — add them per deployment after you've decided on the threat
+# model. This worker is NOT a sandbox. Use `printenv` for read-only env
+# inspection; `env` is excluded because `env <cmd>` execs arbitrary
+# programs while passing argv[0]=="env" through the allowlist gate.
+allowlist:
+  - ls
+  - cat
+  - pwd
+  - echo
+  - grep
+  - wc
+  - head
+  - tail
+  - sort
+  - uniq
+  - cut
+  - date
+  - whoami
+  - hostname
+  - which
+  - jq
+  - uname
+  - df
+  - du
+  - ps
+  - printenv
+  - basename
+  - dirname
+# Denylist patterns are advisory, not a security boundary. They run as
+# regex against `argv.join(" ")`, so a caller invoking an allowlisted
+# shell or interpreter (sh, node, python, etc.) can bypass any pattern
+# by constructing the forbidden token at runtime — variables, eval,
+# IFS tricks, base64, etc. Treat these as a tripwire for honest
+# mistakes; the actual security boundary is the sandbox backend.
+denylist_patterns:
+  - "rm\\s+-rf\\s+/"
+  - ":\\(\\)\\s*\\{\\s*:\\|"
+  - "mkfs"
+  - "dd\\s+if="
+  - "shutdown"
+  - "reboot"
+  - "/etc/passwd"
+  - "/etc/shadow"
+  # Sub-execution / write escapes for commonly-added tools
+  - "\\bfind\\b[^|;&]*-exec(dir)?\\b"
+  - "\\bawk\\b[^|;&]*system\\s*\\("
+  - "\\bsed\\b[^|;&]*(-i\\b|\\be\\b)"
+  - "\\bcurl\\b[^|;&]*(file://|-o\\s|--output-dir\\b|-F\\s+@)"
+  - "\\bgit\\b[^|;&]*(--upload-pack|--receive-pack|core\\.pager|core\\.hooksPath|GIT_SSH_COMMAND)"
+  - "\\b(node|python3?)\\b[^|;&]*\\s-(e|c)\\b"
+  - "\\bnpm\\b[^|;&]*\\brun\\b"
+max_concurrent_jobs: 16
+job_retention_secs: 3600
+
+fs:
+  # SET host_root to a directory you intend to expose to shell::fs::*.
+  # When unset, the worker refuses to start unless allow_unjailed is true
+  # (because the alternative is "the entire filesystem is reachable
+  # behind only the advisory denylist", which is rarely intended).
+  host_root: null
+  allow_unjailed: false
+  max_read_bytes: 16777216
+  max_write_bytes: 16777216
+  denylist_paths:
+    - /etc/passwd
+    - /etc/shadow
+
+sandbox:
+  enabled: true

@@ -1,0 +1,78 @@
+name: shell E2E
+
+on:
+  pull_request:
+    paths:
+      - 'shell/**'
+      - '.github/workflows/shell-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: shell-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Harness (default + jailed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: shell/tests/e2e/workers/harness/package-lock.json
+
+      - name: Install iii engine (latest from main)
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine
+        run: iii --version
+
+      # The jailed suite (cases-vuln-repro-jailed.ts) hardcodes JAIL_ROOT to
+      # /private/tmp/iii-shell-jailed-root — that's the macOS layout where
+      # /private/tmp is the canonical location of /tmp. On Linux runners
+      # /private doesn't exist, so create the parents world-writable so the
+      # non-root harness can mkdir under it.
+      - name: Pre-create jail root for run-tests-jailed.sh
+        run: |
+          sudo mkdir -p /private/tmp
+          sudo chmod 1777 /private/tmp
+
+      - name: Run default harness (144 cases)
+        working-directory: shell/tests/e2e
+        run: ./run-tests.sh
+
+      # Reuse the binary built by the default suite — saves ~40s of cargo build.
+      - name: Run jailed harness (2 cases, S-C1 regression)
+        working-directory: shell/tests/e2e
+        run: ./run-tests-jailed.sh --no-build
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-e2e-report
+          path: |
+            shell/tests/e2e/reports/
+          retention-days: 7
