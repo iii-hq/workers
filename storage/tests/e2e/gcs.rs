@@ -1,8 +1,8 @@
 //! Real GCS round-trip. Gated on GOOGLE_APPLICATION_CREDENTIALS + GCS_TEST_BUCKET.
 
+use std::collections::HashMap;
 use storage::backend::{factory, GetReq, PutReq};
 use storage::config::{BucketConfig, GcsBucketConfig, ProvidersConfig};
-use std::collections::HashMap;
 
 #[tokio::test]
 #[ignore = "opt-in: set GOOGLE_APPLICATION_CREDENTIALS and GCS_TEST_BUCKET"]

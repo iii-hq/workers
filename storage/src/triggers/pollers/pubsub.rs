@@ -54,7 +54,6 @@ impl PubsubPoller {
     }
 }
 
-
 /// Pull from the configured subscription and dispatch each message. The
 /// gcloud-pubsub client owns the gRPC connection — caller passes one in so
 /// we don't rebuild auth/connection per loop iteration.

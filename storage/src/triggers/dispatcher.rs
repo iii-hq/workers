@@ -34,7 +34,9 @@ impl EngineDispatcher {
 #[async_trait::async_trait]
 impl EventDispatcher for EngineDispatcher {
     async fn dispatch(&self, event: ObjectEventNormalized) -> bool {
-        let subs = self.registry.subscribers_for(&event.bucket, event.event_kind);
+        let subs = self
+            .registry
+            .subscribers_for(&event.bucket, event.event_kind);
         if subs.is_empty() {
             return true;
         }
@@ -81,10 +83,7 @@ impl EventDispatcher for EngineDispatcher {
                     if value.is_null() {
                         true
                     } else {
-                        value
-                            .get("ack")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(true)
+                        value.get("ack").and_then(|v| v.as_bool()).unwrap_or(true)
                     }
                 }
                 Ok(Err(e)) => {

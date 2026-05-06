@@ -23,8 +23,11 @@ pub struct ObjectCreatedHandler {
 #[async_trait]
 impl TriggerHandler for ObjectCreatedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
-        let cfg: CreatedConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| IIIError::Handler(format!(r#"{{"code":"CONFIG_ERROR","message":"object-created config: {e}"}}"#)))?;
+        let cfg: CreatedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
+            IIIError::Handler(format!(
+                r#"{{"code":"CONFIG_ERROR","message":"object-created config: {e}"}}"#
+            ))
+        })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
             return Err(IIIError::Handler(format!(
                 r#"{{"code":"CONFIG_ERROR","message":"bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config"}}"#,
@@ -61,8 +64,11 @@ pub struct ObjectDeletedHandler {
 #[async_trait]
 impl TriggerHandler for ObjectDeletedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
-        let cfg: DeletedConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| IIIError::Handler(format!(r#"{{"code":"CONFIG_ERROR","message":"object-deleted config: {e}"}}"#)))?;
+        let cfg: DeletedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
+            IIIError::Handler(format!(
+                r#"{{"code":"CONFIG_ERROR","message":"object-deleted config: {e}"}}"#
+            ))
+        })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
             return Err(IIIError::Handler(format!(
                 r#"{{"code":"CONFIG_ERROR","message":"bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config"}}"#,

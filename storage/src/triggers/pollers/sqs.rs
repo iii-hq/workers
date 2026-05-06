@@ -107,7 +107,6 @@ impl SqsPoller {
     }
 }
 
-
 /// Run `poll_once` forever, sleeping briefly between empty pulls so we don't
 /// hammer SQS when the queue is quiet. Cancel by aborting the JoinHandle.
 pub async fn run_loop<D>(poller: SqsPoller, dispatcher: std::sync::Arc<D>)

@@ -46,12 +46,12 @@ pub async fn spawn_receiver(state: WebhookState) -> std::io::Result<WebhookHandl
     Ok(WebhookHandle { addr, shutdown_tx })
 }
 
-
 /// Same as `spawn_receiver` but binds on a pre-allocated port. Used at worker
 /// startup so we can pass the URL to the rustfs sidecar via env vars at spawn
 /// time, before the receiver itself is bound.
 pub async fn spawn_receiver_on(state: WebhookState, port: u16) -> std::io::Result<WebhookHandle> {
-    let listener = TcpListener::bind(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))).await?;
+    let listener =
+        TcpListener::bind(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))).await?;
     let addr = listener.local_addr()?;
     let app = Router::new()
         .route("/notify", post(notify_handler))

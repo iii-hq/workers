@@ -13,9 +13,10 @@ pub struct R2BackendOpts {
 }
 
 pub async fn build(opts: R2BackendOpts, bucket: String) -> Result<Arc<dyn Backend>, BackendError> {
-    let endpoint = opts.endpoint_url.clone().unwrap_or_else(|| {
-        format!("https://{}.r2.cloudflarestorage.com", opts.account_id)
-    });
+    let endpoint = opts
+        .endpoint_url
+        .clone()
+        .unwrap_or_else(|| format!("https://{}.r2.cloudflarestorage.com", opts.account_id));
     if opts.endpoint_url.is_some() {
         tracing::warn!(
             target = "storage::r2",

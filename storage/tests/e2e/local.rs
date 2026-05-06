@@ -2,12 +2,12 @@
 //! discoverable (in which case the test reports "skip" but does not fail).
 //! Otherwise spawns rustfs on a temp data dir, runs put/get/delete.
 
+use std::collections::HashMap;
+use std::time::Duration;
 use storage::backend::factory::{self, LocalBackendCtx};
 use storage::backend::{GetReq, PutReq};
 use storage::config::{BucketConfig, LocalBucketConfig, LocalProviderConfig, ProvidersConfig};
 use storage::rustfs::{health, spawn};
-use std::collections::HashMap;
-use std::time::Duration;
 
 #[tokio::test]
 async fn local_round_trip_when_rustfs_available() {

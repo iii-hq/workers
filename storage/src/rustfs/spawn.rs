@@ -50,9 +50,8 @@ pub fn discover_binary() -> Result<PathBuf, StorageError> {
         return Ok(p);
     }
     Err(StorageError::LocalBackendBinNotFound {
-        reason:
-            "set $RUSTFS_BIN, place a rustfs binary next to storage, or install rustfs on PATH"
-                .into(),
+        reason: "set $RUSTFS_BIN, place a rustfs binary next to storage, or install rustfs on PATH"
+            .into(),
     })
 }
 
@@ -157,7 +156,10 @@ pub async fn shutdown(mut handle: RustfsHandle) {
             tracing::warn!(?pid, error = %e, "rustfs wait() failed");
         }
         Err(_) => {
-            tracing::warn!(?pid, "rustfs sidecar did not exit within 10s; sending SIGKILL");
+            tracing::warn!(
+                ?pid,
+                "rustfs sidecar did not exit within 10s; sending SIGKILL"
+            );
             if let Err(e) = handle.child.kill().await {
                 tracing::warn!(?pid, error = %e, "rustfs SIGKILL failed");
             }

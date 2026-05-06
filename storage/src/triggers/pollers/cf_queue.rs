@@ -141,7 +141,6 @@ impl CfQueuePoller {
     }
 }
 
-
 /// Run `poll_once` forever. CF Queues' pull API doesn't have native long-poll,
 /// so we sleep ~2s between empty pulls.
 pub async fn run_loop<D>(poller: CfQueuePoller, dispatcher: std::sync::Arc<D>)

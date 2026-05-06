@@ -104,8 +104,15 @@ pub async fn register_webhook_target(
     // the service display name "webhook". See rustfs/src/admin/handlers/
     // target_descriptor.rs::target_spec.
     let path = format!("/rustfs/admin/v3/target/notify_webhook/{WEBHOOK_TARGET_ID}");
-    let (status, text) =
-        signed_admin_request(port, access_key_id, secret_access_key, "PUT", &path, body.as_bytes()).await?;
+    let (status, text) = signed_admin_request(
+        port,
+        access_key_id,
+        secret_access_key,
+        "PUT",
+        &path,
+        body.as_bytes(),
+    )
+    .await?;
     if !(200..300).contains(&status) {
         return Err(BackendError::Provider {
             inner_code: Some(status.to_string()),
@@ -126,10 +133,24 @@ pub async fn register_webhook_target(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        let (_, ls_body) =
-            signed_admin_request(port, access_key_id, secret_access_key, "GET", "/rustfs/admin/v3/target/list", b"").await?;
-        let (_, arns_body) =
-            signed_admin_request(port, access_key_id, secret_access_key, "GET", "/rustfs/admin/v3/target/arns", b"").await?;
+        let (_, ls_body) = signed_admin_request(
+            port,
+            access_key_id,
+            secret_access_key,
+            "GET",
+            "/rustfs/admin/v3/target/list",
+            b"",
+        )
+        .await?;
+        let (_, arns_body) = signed_admin_request(
+            port,
+            access_key_id,
+            secret_access_key,
+            "GET",
+            "/rustfs/admin/v3/target/arns",
+            b"",
+        )
+        .await?;
         last_list = ls_body;
         last_arns = arns_body;
         if !last_arns.trim().starts_with("[]") {
@@ -193,12 +214,11 @@ async fn signed_admin_request(
         .into();
 
     let header_iter = std::iter::empty::<(&str, &str)>();
-    let signable = SignableRequest::new(method, &url, header_iter, SignableBody::Bytes(body_bytes)).map_err(|e| {
-        BackendError::Provider {
+    let signable = SignableRequest::new(method, &url, header_iter, SignableBody::Bytes(body_bytes))
+        .map_err(|e| BackendError::Provider {
             inner_code: None,
             message: format!("sigv4 signable: {e}"),
-        }
-    })?;
+        })?;
     let (signing_instructions, _signature) = sign(signable, &signing_params)
         .map_err(|e| BackendError::Provider {
             inner_code: None,
@@ -219,7 +239,9 @@ async fn signed_admin_request(
         }
     };
     if !body_bytes.is_empty() {
-        req = req.header("content-type", "application/json").body(body_bytes.to_vec());
+        req = req
+            .header("content-type", "application/json")
+            .body(body_bytes.to_vec());
     }
     for (name, value) in signing_instructions.headers() {
         req = req.header(name, value);
