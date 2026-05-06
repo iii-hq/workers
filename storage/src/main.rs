@@ -1,25 +1,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterTriggerType, WorkerMetadata};
+use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 use storage::backend::factory::{self, LocalBackendCtx};
 use storage::backend::local;
 use storage::config::{redact_url, BucketConfig as CfgBucket, WorkerConfig};
-use storage::handlers::{
-    delete_object::{self, DeleteReq},
-    get_object::{self, GetReq},
-    presign_url::{self, PresignReq},
-    put_object::{self, PutReq},
-    AppState,
-};
+use storage::handlers::AppState;
 use storage::rustfs::{health, spawn};
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
 use storage::triggers::pollers::{cf_queue, pubsub, rustfs_webhook, sqs};
 use storage::triggers::registry::TriggerRegistry;
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(name = "storage", about = "storage worker")]
@@ -28,6 +22,9 @@ struct Cli {
     config: String,
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
+    /// Print the registry publish manifest as JSON and exit. No engine connection.
+    #[arg(long)]
+    manifest: bool,
 }
 
 #[tokio::main]
@@ -40,6 +37,16 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.manifest {
+        let m = storage::manifest::build_manifest();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&m).expect("manifest serializes")
+        );
+        return Ok(());
+    }
+
     tracing::info!(
         name = storage::worker_name(),
         config = %cli.config,
@@ -47,9 +54,17 @@ async fn main() -> Result<()> {
         "starting"
     );
 
-    let cfg = WorkerConfig::from_file(&cli.config)
-        .map_err(|e| anyhow::anyhow!(e))
-        .with_context(|| format!("loading config from {}", cli.config))?;
+    let cfg = match WorkerConfig::from_file(&cli.config) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %cli.config,
+                "failed to load config, using defaults"
+            );
+            WorkerConfig::default()
+        }
+    };
 
     // Pre-compute which buckets have a notifications source. Trigger
     // registrations targeting any other bucket fail fast in the handler.
@@ -80,11 +95,9 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let webhook_addr: Option<SocketAddr> = webhook_port.map(|p| {
-        SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))
-    });
-    let webhook_url: Option<String> =
-        webhook_addr.as_ref().map(|a| format!("http://{a}/notify"));
+    let webhook_addr: Option<SocketAddr> =
+        webhook_port.map(|p| SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p)));
+    let webhook_url: Option<String> = webhook_addr.as_ref().map(|a| format!("http://{a}/notify"));
 
     let mut rustfs_handle = None;
     let mut local_ctx: Option<LocalBackendCtx> = None;
@@ -150,6 +163,14 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: storage::worker_name().to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+            }),
             ..Default::default()
         },
     );
@@ -347,50 +368,7 @@ async fn main() -> Result<()> {
         tracing::info!(queue_id = %queue_id, "cf-queue poller started");
     }
 
-    {
-        let st = state.clone();
-        iii.register_function(
-            RegisterFunction::new_async("storage::putObject", move |req: PutReq| {
-                let st = st.clone();
-                async move { put_object::handle(&st, req).await }
-            })
-            .description(
-                "Write an object to a configured bucket. Body is base64; max 10MB inline.",
-            ),
-        );
-    }
-    {
-        let st = state.clone();
-        iii.register_function(
-            RegisterFunction::new_async("storage::getObject", move |req: GetReq| {
-                let st = st.clone();
-                async move { get_object::handle(&st, req).await }
-            })
-            .description("Read an object. Body is base64; for large objects use presignUrl."),
-        );
-    }
-    {
-        let st = state.clone();
-        iii.register_function(
-            RegisterFunction::new_async("storage::deleteObject", move |req: DeleteReq| {
-                let st = st.clone();
-                async move { delete_object::handle(&st, req).await }
-            })
-            .description("Delete an object. No-op when the object does not exist."),
-        );
-    }
-    {
-        let st = state.clone();
-        iii.register_function(
-            RegisterFunction::new_async("storage::presignUrl", move |req: PresignReq| {
-                let st = st.clone();
-                async move { presign_url::handle(&st, req).await }
-            })
-            .description(
-                "Issue a short-lived URL the browser can hit directly to PUT or GET an object.",
-            ),
-        );
-    }
+    storage::handlers::register_all(&iii, &state);
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         "storage::object-created",
@@ -409,9 +387,7 @@ async fn main() -> Result<()> {
         },
     ));
 
-    tracing::info!(
-        "storage registered 4 functions and 2 trigger types, waiting for invocations"
-    );
+    tracing::info!("storage registered 4 functions and 2 trigger types, waiting for invocations");
     wait_for_shutdown_signal().await?;
     tracing::info!("storage shutting down");
     iii.shutdown_async().await;

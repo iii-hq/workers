@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct WorkerConfig {
     #[serde(default)]
     pub providers: ProvidersConfig,
@@ -140,7 +140,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml)?;
         let cfg: WorkerConfig =
-            serde_yml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -252,6 +252,17 @@ pub fn redact_url(input: &str) -> String {
 /// a truncated env var, never the value itself.
 pub fn redact_secret(s: &str) -> String {
     format!("***[{}]***", s.len())
+}
+
+/// Load and validate a `WorkerConfig` from `path`.
+///
+/// Free-function alias for [`WorkerConfig::from_file`] that returns
+/// [`anyhow::Result`], matching the binary-worker spec (`workers/binary-worker.md`
+/// §5). Errors carry the file path as context.
+pub fn load_config(path: &str) -> anyhow::Result<WorkerConfig> {
+    WorkerConfig::from_file(path)
+        .map_err(|e| anyhow::anyhow!(e))
+        .map_err(|e| e.context(format!("loading config from {path}")))
 }
 
 #[cfg(test)]
@@ -428,10 +439,7 @@ buckets:
     provider: local
 "#;
         let c = WorkerConfig::from_yaml(yaml).unwrap();
-        assert_eq!(
-            c.providers.local.as_ref().unwrap().data_dir,
-            "/tmp/storage"
-        );
+        assert_eq!(c.providers.local.as_ref().unwrap().data_dir, "/tmp/storage");
     }
 
     #[test]
@@ -451,7 +459,6 @@ buckets:
         }
         std::env::remove_var("IIISTORE_TEST_REGION");
     }
-
 
     #[test]
     fn missing_env_var_fails_config_load() {

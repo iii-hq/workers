@@ -4,6 +4,7 @@ pub mod backend;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod manifest;
 pub mod rustfs;
 pub mod triggers;
 
