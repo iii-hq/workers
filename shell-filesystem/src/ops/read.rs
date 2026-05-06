@@ -1,14 +1,11 @@
-//! `shell::filesystem::read` — wrap `sandbox::fs::read` and drain the
-//! returned `StreamChannelRef`.
+//! `shell::filesystem::read` — read a host file directly.
 
-use iii_sdk::{IIIError, StreamChannelRef, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
-
-use sandbox_helpers::{drain_ref, resolve_sandbox_id};
 
 pub const ID: &str = "shell::filesystem::read";
 pub const DESCRIPTION: &str =
-    "Read a file inside the sandbox and return its UTF-8 contents (or base64 fallback).";
+    "Read a file from the host filesystem and return its UTF-8 contents (or a binary marker).";
 pub const MAX_INLINE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,17 +26,10 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
 }
 
 pub async fn execute_with_config(
-    iii: &III,
+    _iii: &III,
     args: &Value,
     config: ReadConfig,
 ) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
     let path = args
         .get("path")
         .and_then(Value::as_str)
@@ -47,75 +37,35 @@ pub async fn execute_with_config(
         .ok_or_else(|| IIIError::Handler("missing required arg: path".into()))?
         .to_string();
 
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::read".into(),
-            payload: json!({ "sandbox_id": sandbox_id, "path": path }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-
-    let resp = match resp {
-        Ok(v) => v,
-        Err(e) => {
-            return Ok(json!({
-                "content": [{ "type": "text", "text": format!("sandbox::fs::read failed: {e}") }],
-                "details": { "error": e.to_string() },
-                "terminate": false,
-            }));
-        }
-    };
-
-    let channel_ref = match resp.get("content").cloned() {
-        Some(v) => match serde_json::from_value::<StreamChannelRef>(v) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(json!({
-                    "content": [{ "type": "text", "text": format!("invalid channel ref: {e}") }],
-                    "details": { "error": e.to_string() },
-                    "terminate": false,
-                }));
-            }
-        },
-        None => {
-            return Ok(json!({
-                "content": [{ "type": "text", "text": "sandbox::fs::read returned no content channel" }],
-                "details": resp,
-                "terminate": false,
-            }));
-        }
-    };
-
-    let bytes = match drain_ref(iii, &channel_ref).await {
+    let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(e) => {
             return Ok(json!({
-                "content": [{ "type": "text", "text": format!("channel drain failed: {e}") }],
+                "content": [{ "type": "text", "text": format!("read {path}: {e}") }],
                 "details": { "error": e.to_string() },
                 "terminate": false,
             }));
         }
     };
 
-    let truncated = bytes.len() > config.max_inline_bytes;
+    let total = bytes.len();
+    let truncated = total > config.max_inline_bytes;
     let body = if truncated {
         bytes[..config.max_inline_bytes].to_vec()
     } else {
-        bytes.clone()
+        bytes
     };
-    let text = match String::from_utf8(body.clone()) {
-        Ok(s) => s,
+    let text = match std::str::from_utf8(&body) {
+        Ok(s) => s.to_string(),
         Err(_) => format!("<binary {} bytes>", body.len()),
     };
+
     Ok(json!({
         "content": [{ "type": "text", "text": text }],
         "details": {
-            "size": resp.get("size").cloned().unwrap_or(Value::Null),
-            "mode": resp.get("mode").cloned().unwrap_or(Value::Null),
-            "mtime": resp.get("mtime").cloned().unwrap_or(Value::Null),
+            "size": total,
             "truncated": truncated,
-            "bytes_read": bytes.len(),
+            "bytes_read": body.len(),
         },
         "terminate": false,
     }))

@@ -77,7 +77,6 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "policy-denylist",
     "shell-bash",
     "shell-filesystem",
-    "sandbox-host",
     "subagent",
     "provider-anthropic",
     "provider-openai",

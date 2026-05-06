@@ -15,7 +15,6 @@ dependencies:
   policy-denylist: "^0.1.0"
   shell-bash: "^0.1.0"
   shell-filesystem: "^0.1.0"
-  sandbox-host: "^0.1.0"
   subagent: "^0.1.0"
   provider-anthropic: "^0.1.0"
   provider-openai: "^0.1.0"
