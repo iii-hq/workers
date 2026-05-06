@@ -67,6 +67,10 @@ fn build_run_request(payload: &Value) -> Value {
         "model": payload.get("model").cloned().unwrap_or_else(|| json!("")),
         "system_prompt": payload.get("system_prompt").cloned().unwrap_or_else(|| json!("")),
         "tools": payload.get("tools").cloned().unwrap_or_else(|| json!([])),
+        "approval_required": payload
+            .get("approval_required")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "image": payload.get("image").cloned().unwrap_or_else(|| json!("python")),
         "idle_timeout_secs": payload.get("idle_timeout_secs").cloned().unwrap_or_else(|| json!(300)),
         "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
@@ -222,6 +226,23 @@ mod tests {
 
         assert_eq!(request["cwd"], Value::Null);
         assert_eq!(request["cwd_hash"], Value::Null);
+    }
+
+    #[test]
+    fn build_run_request_propagates_approval_required() {
+        let request = build_run_request(&json!({
+            "approval_required": ["shell::filesystem::write"],
+        }));
+        assert_eq!(
+            request["approval_required"],
+            json!(["shell::filesystem::write"]),
+        );
+    }
+
+    #[test]
+    fn build_run_request_defaults_approval_required_to_empty() {
+        let request = build_run_request(&json!({}));
+        assert_eq!(request["approval_required"], json!([]));
     }
 
     #[test]
