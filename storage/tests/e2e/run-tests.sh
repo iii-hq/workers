@@ -398,9 +398,14 @@ if [[ "$NEEDS_S3" -eq 1 ]]; then
   export AWS_ACCESS_KEY_ID="elasticmq"
   export AWS_SECRET_ACCESS_KEY="elasticmq"
   export AWS_REGION="us-east-1"
-  # Defensive: a developer with AWS_ENDPOINT_URL pinned to real AWS would
-  # silently break SQS polling. The queue URL in config.all.yaml already
-  # encodes the ElasticMQ host:port; clear any global override.
+  # Critical: the AWS Rust SDK does NOT derive its endpoint from QueueUrl.
+  # Without an override it sends ReceiveMessage to sqs.us-east-1.amazonaws.com,
+  # which rejects our placeholder creds as InvalidClientTokenId (surfaces in
+  # the worker as the opaque "service error"). Pinning the SQS endpoint
+  # routes traffic to the local ElasticMQ container instead.
+  export AWS_ENDPOINT_URL_SQS="http://127.0.0.1:9324"
+  # Defensive: a developer with a global AWS_ENDPOINT_URL pinned to real AWS
+  # would override the per-service var above. Drop it.
   unset AWS_ENDPOINT_URL
 fi
 
@@ -492,8 +497,10 @@ if [[ -f "$REPORT_PATH" ]]; then
 import json, sys
 data = json.load(open(sys.argv[1]))
 for r in data["results"]:
-    tag = "PASS" if r["status"] == "PASS" else "FAIL"
-    err = (" — " + r.get("error","")) if r["status"] == "FAIL" else ""
+    # Render the actual status — collapsing ERROR (probe-skipped) into FAIL
+    # is misleading when triaging failures. Keep them distinct.
+    tag = r["status"]
+    err = (" — " + r.get("error","")) if r["status"] in ("FAIL", "ERROR") else ""
     print(f"  [{tag}] {r['case']}{err}")
 PY
 fi

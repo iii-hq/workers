@@ -69,13 +69,29 @@ const server = Bun.serve({
     if (!Array.isArray(body.Records) || body.Records.length === 0) {
       return new Response('no records', { status: 200 })
     }
+    // MinIO emits `eventName: "s3:ObjectCreated:Put"` whereas AWS S3 → SQS
+    // omits the `s3:` prefix, and the storage worker's normalize_s3 uses
+    // `event_name.starts_with("ObjectCreated:")`. Strip the prefix here so
+    // the worker accepts MinIO-sourced events without the spec-correct
+    // AWS-S3 normalizer needing a MinIO-shaped escape hatch.
+    const normalized = body.Records.map((rec) => {
+      const r = rec as Record<string, unknown>
+      const en = typeof r.eventName === 'string' ? r.eventName : ''
+      return en.startsWith('s3:') ? { ...r, eventName: en.slice('s3:'.length) } : r
+    })
     try {
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: SQS_QUEUE_URL,
-          MessageBody: JSON.stringify({ Records: body.Records }),
+          MessageBody: JSON.stringify({ Records: normalized }),
         }),
       )
+      // Compact one-line trace per relayed event keeps the chain debuggable.
+      const r0 = body.Records[0] as Record<string, any>
+      const eventName = r0?.eventName ?? '?'
+      const bucket = r0?.s3?.bucket?.name ?? '?'
+      const key = r0?.s3?.object?.key ?? '?'
+      console.log(`[bridge] ${eventName} ${bucket}/${key}`)
     } catch (e: unknown) {
       console.error(`[bridge] sqs send failed: ${String(e)}`)
       return new Response(`sqs send failed: ${String(e)}`, { status: 502 })
