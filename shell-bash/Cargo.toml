@@ -20,7 +20,6 @@ name = "iii-shell-bash"
 path = "src/main.rs"
 
 [dependencies]
-sandbox-helpers = { path = "crates/sandbox-helpers" }
 iii-sdk = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

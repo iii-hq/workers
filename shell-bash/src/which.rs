@@ -1,44 +1,35 @@
-//! `shell::bash::which` — runs `command -v <name>` inside the sandbox.
+//! `shell::bash::which` — runs `command -v <name>` directly on the host.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
-
-use sandbox_helpers::resolve_sandbox_id;
+use std::process::Stdio;
+use std::time::Duration;
 
 pub const ID: &str = "shell::bash::which";
-pub const DESCRIPTION: &str = "Resolve a CLI name to its absolute path inside the sandbox.";
+pub const DESCRIPTION: &str = "Resolve a CLI name to its absolute path on the host.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let name = args
         .get("name")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| IIIError::Handler("missing required arg: name".into()))?
         .to_string();
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::exec".into(),
-            payload: json!({
-                "sandbox_id": sandbox_id,
-                "cmd": "bash",
-                "args": ["-lc", format!("command -v {}", shell_escape(&name))],
-                "timeout_ms": 5_000,
-            }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
+    let script = format!("command -v {}", shell_escape(&name));
+    let child = tokio::process::Command::new("bash")
+        .arg("-lc")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| IIIError::Handler(format!("spawn bash: {e}")))?;
+    let result = tokio::time::timeout(Duration::from_millis(5_000), child.wait_with_output())
         .await
-        .map_err(|e| IIIError::Handler(format!("sandbox::exec failed: {e}")))?;
-
-    let exit = resp.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-    let stdout = resp.get("stdout").and_then(Value::as_str).unwrap_or("");
+        .map_err(|_| IIIError::Handler("which timed out".into()))?
+        .map_err(|e| IIIError::Handler(format!("wait bash: {e}")))?;
+    let exit = result.status.code().unwrap_or(-1) as i64;
+    let stdout = String::from_utf8_lossy(&result.stdout);
     let path = stdout.trim();
     Ok(json!({
         "content": [{ "type": "text", "text": path }],
