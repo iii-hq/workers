@@ -1,21 +1,12 @@
-//! `shell::filesystem::rm` — wrap `sandbox::fs::rm`.
+//! `shell::filesystem::rm` — remove a path directly on the host filesystem.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
-use sandbox_helpers::resolve_sandbox_id;
-
 pub const ID: &str = "shell::filesystem::rm";
-pub const DESCRIPTION: &str = "Remove a path inside the sandbox. Args: path, recursive?.";
+pub const DESCRIPTION: &str = "Remove a path on the host filesystem. Args: path, recursive?.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
@@ -26,26 +17,26 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
         .get("recursive")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::rm".into(),
-            payload: json!({
-                "sandbox_id": sandbox_id,
-                "path": path,
-                "recursive": recursive,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    Ok(match resp {
-        Ok(v) => json!({
+
+    let result = if recursive {
+        tokio::fs::remove_dir_all(&path).await
+    } else {
+        // Stat to decide between file and directory removal.
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.is_dir() => tokio::fs::remove_dir(&path).await,
+            Ok(_) => tokio::fs::remove_file(&path).await,
+            Err(e) => Err(e),
+        }
+    };
+
+    Ok(match result {
+        Ok(()) => json!({
             "content": [{ "type": "text", "text": format!("removed {}", path) }],
-            "details": v,
+            "details": { "path": path },
             "terminate": false,
         }),
         Err(e) => json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::rm failed: {e}") }],
+            "content": [{ "type": "text", "text": format!("rm {path}: {e}") }],
             "details": { "error": e.to_string() },
             "terminate": false,
         }),

@@ -1,56 +1,81 @@
-//! `shell::filesystem::chmod` — wrap `sandbox::fs::chmod`.
+//! `shell::filesystem::chmod` — change permissions directly on the host filesystem.
+//!
+//! `uid`/`gid` ownership changes are not supported (require `nix`/`libc::chown`
+//! which are not in scope); those args are silently ignored.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use std::os::unix::fs::PermissionsExt;
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
-
-use sandbox_helpers::resolve_sandbox_id;
 
 pub const ID: &str = "shell::filesystem::chmod";
 pub const DESCRIPTION: &str =
-    "Change permissions inside the sandbox. Args: path, mode, uid?, gid?, recursive?.";
+    "Change permissions on the host filesystem. Args: path, mode (octal string), recursive?. uid/gid are accepted but ignored.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = required_str(args, "path")?;
-    let mode = required_str(args, "mode")?;
-    let mut payload = json!({
-        "sandbox_id": sandbox_id,
-        "path": path,
-        "mode": mode,
-        "recursive": args.get("recursive").and_then(Value::as_bool).unwrap_or(false),
-    });
-    if let Some(uid) = args.get("uid").and_then(Value::as_u64) {
-        payload["uid"] = json!(uid);
+    let mode_str = required_str(args, "mode")?;
+    let recursive = args
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // Parse mode as octal (e.g. "0644", "644", "755").
+    let mode = u32::from_str_radix(mode_str.trim_start_matches('0'), 8)
+        .or_else(|_| u32::from_str_radix(&mode_str, 8))
+        .map_err(|_| IIIError::Handler(format!("invalid mode: {mode_str}")))?;
+
+    if recursive {
+        // Walk directory tree and apply to every entry plus the root.
+        let mut stack: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(&path)];
+        let mut errors: Vec<String> = Vec::new();
+
+        while let Some(p) = stack.pop() {
+            match apply_mode(&p, mode).await {
+                Ok(()) => {}
+                Err(e) => errors.push(e),
+            }
+            // If it's a directory, enqueue children.
+            if let Ok(mut rd) = tokio::fs::read_dir(&p).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    stack.push(entry.path());
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(json!({
+                "content": [{ "type": "text", "text": format!("chmod {} ok", path) }],
+                "details": { "path": path, "mode": mode_str },
+                "terminate": false,
+            }))
+        } else {
+            Ok(json!({
+                "content": [{ "type": "text", "text": format!("chmod {} partial: {}", path, errors.join("; ")) }],
+                "details": { "errors": errors },
+                "terminate": false,
+            }))
+        }
+    } else {
+        match apply_mode(std::path::Path::new(&path), mode).await {
+            Ok(()) => Ok(json!({
+                "content": [{ "type": "text", "text": format!("chmod {} ok", path) }],
+                "details": { "path": path, "mode": mode_str },
+                "terminate": false,
+            })),
+            Err(e) => Ok(json!({
+                "content": [{ "type": "text", "text": format!("chmod {path}: {e}") }],
+                "details": { "error": e },
+                "terminate": false,
+            })),
+        }
     }
-    if let Some(gid) = args.get("gid").and_then(Value::as_u64) {
-        payload["gid"] = json!(gid);
-    }
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::chmod".into(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    Ok(match resp {
-        Ok(v) => json!({
-            "content": [{ "type": "text", "text": format!("chmod {} ok", path) }],
-            "details": v,
-            "terminate": false,
-        }),
-        Err(e) => json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::chmod failed: {e}") }],
-            "details": { "error": e.to_string() },
-            "terminate": false,
-        }),
-    })
+}
+
+async fn apply_mode(path: &std::path::Path, mode: u32) -> Result<(), String> {
+    let perms = std::fs::Permissions::from_mode(mode);
+    tokio::fs::set_permissions(path, perms)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn required_str(args: &Value, key: &str) -> Result<String, IIIError> {
