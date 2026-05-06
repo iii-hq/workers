@@ -1,6 +1,5 @@
 [workspace]
 resolver = "2"
-members = ["crates/sandbox-helpers"]
 
 [package]
 name = "iii-shell-bash"
