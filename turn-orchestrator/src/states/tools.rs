@@ -19,10 +19,22 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     record.tool_results.clear();
     let calls = record.pending_tool_calls.clone();
 
+    // run_request is immutable for a session; loading it here on every retry of
+    // ToolPrepare is wasteful but correct. Cache on TurnStateRecord if hot.
     let run_request = persistence::load_run_request(iii, &record.session_id).await;
     let approval_required: Vec<String> = run_request
         .get("approval_required")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .and_then(|v| match serde_json::from_value::<Vec<String>>(v.clone()) {
+            Ok(list) => Some(list),
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    session_id = %record.session_id,
+                    "approval_required malformed in run_request; treating as empty"
+                );
+                None
+            }
+        })
         .unwrap_or_default();
 
     let mut prepared: Vec<(ToolCall, Option<ToolResult>)> = Vec::with_capacity(calls.len());
@@ -421,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn before_tool_call_payload_omits_approval_required_when_empty() {
+    fn before_tool_call_payload_has_empty_approval_required_when_none_configured() {
         let tc = ToolCall {
             id: "tc-1".into(),
             name: "shell::filesystem::ls".into(),
