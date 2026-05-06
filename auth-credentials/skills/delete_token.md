@@ -1,9 +1,9 @@
-# auth-credentials/delete_token
+# auth::delete_token
 
 Remove the stored credential for a provider.
 
-`auth::delete_token({ provider }) → { ok: true }` — idempotent. Deleting a
-provider that has no stored credential is not an error.
+`({ provider }) → { ok: true }` — idempotent. Deleting a provider that has
+no stored credential is not an error.
 
 ## When to use
 

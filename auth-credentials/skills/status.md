@@ -1,9 +1,9 @@
-# auth-credentials/status
+# auth::status
 
 Check whether a credential is stored for a provider, and its configuration details.
 
-`auth::status({ provider }) → { configured, source?, label? }` — `configured`
-is a boolean; `source` is one of `"stored"`, `"environment"` (omitted when not
+`({ provider }) → { configured, source?, label? }` — `configured` is a
+boolean; `source` is one of `"stored"`, `"environment"` (omitted when not
 configured); `label` is a short human-readable hint (e.g. `"api-key:sk-ant-…"`,
 `"oauth"`) useful for display without revealing the full credential.
 

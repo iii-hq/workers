@@ -1,10 +1,10 @@
-# auth-credentials/get_token
+# auth::get_token
 
 Read the stored credential for a provider, or null if none is stored.
 
-`auth::get_token({ provider }) → Credential | null` — resolves stored
-credential first, then falls back to the process environment (e.g.
-`ANTHROPIC_API_KEY`). Returns the full credential object or null.
+`({ provider }) → Credential | null` — resolves stored credential first, then
+falls back to the process environment (e.g. `ANTHROPIC_API_KEY`). Returns the
+full credential object or null.
 
 ## When to use
 

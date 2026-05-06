@@ -1,12 +1,11 @@
-# auth-credentials/set_token
+# auth::set_token
 
-Store a credential for a provider so later `get_token` and `status` calls
-can resolve it.
+Store a credential for a provider so later `auth::get_token` and `auth::status`
+calls can resolve it.
 
-`auth::set_token({ provider, credential }) → { ok: true }` — overwrites any
-existing credential for that provider. `credential` is a typed object:
-`{ type: "api_key", key }` or `{ type: "oauth", access_token, ... }`.
-No verification at write time.
+`({ provider, credential }) → { ok: true }` — overwrites any existing credential
+for that provider. `credential` is a typed object: `{ type: "api_key", key }`
+or `{ type: "oauth", access_token, ... }`. No verification at write time.
 
 ## When to use
 

@@ -1,9 +1,9 @@
-# auth-credentials/list_providers
+# auth::list_providers
 
 List providers that currently have a stored credential.
 
-`auth::list_providers() → { providers: [provider] }` — returns provider
-names only; tokens are never returned by this function.
+`() → { providers: [provider] }` — returns provider names only; tokens are
+never returned by this function.
 
 ## When to use
 

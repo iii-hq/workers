@@ -238,21 +238,28 @@ this).
 <One-sentence summary used as the description in the iii://skills index. Imperative tone.>
 
 - [`<worker>`](iii://<worker>)
-  - [`<sub_a>`](iii://<worker>/<sub_a>) — one-line purpose
-  - [`<sub_b>`](iii://<worker>/<sub_b>) — one-line purpose
+  - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
+  - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
 
 <Optional cross-reference paragraph linking to related workers via iii:// URIs.>
 ```
 
+Leaf link text is the **actual function id** (e.g. `auth::set_token`) — what
+the agent calls via `iii.trigger`. The link target is the **skill URI**
+(`iii://<worker>/<sub>`) — what `skill::fetch` resolves. The two strings
+diverge: a worker named `auth-credentials` registers functions under the
+`auth::*` namespace, so the function id `auth::set_token` lives at the
+skill URI `iii://auth-credentials/set_token`.
+
 **Leaf template** (`<worker>/skills/<sub>.md`):
 
 ```markdown
-# <worker-name>/<sub>
+# <namespace>::<fn>
 
-<One-sentence summary.>
+<One-sentence summary used as the description in the iii://skills index.>
 
-`<worker>::<fn>(input) → output` — one-line purpose. Mention any nuance the
-caller needs (idempotency, side effects, bus failures).
+`(input) → output` — argument/return shape and any nuance the caller needs
+(idempotency, side effects, bus failures).
 
 ## When to use
 
@@ -262,6 +269,11 @@ caller needs (idempotency, side effects, bus failures).
 
 <Optional: required config, dependencies on other workers, operational caveats.>
 ```
+
+The leaf H1 is the function id with `::` so the auto-rendered `iii://skills`
+index shows the calling shape directly. The skill URI in the registry
+(`iii://<worker>/<sub>`) stays path-form — that's what `skill::fetch`
+resolves and what `SUB_SKILLS` registers (see §10.4).
 
 If a worker exposes only one function (e.g. `document-extract`), skip the
 leaves layer and put the leaf content directly in `<worker>/skill.md`. The
