@@ -4,6 +4,15 @@ use crate::agent_message::{AgentMessage, ToolResultMessage};
 use crate::stream_event::AssistantMessageEvent;
 use crate::tool::ToolResult;
 
+/// Outcome of an approval gate. Wire format is the lowercase string
+/// `"allow"` or `"deny"`; the typed enum prevents constructing illegal values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalDecision {
+    Allow,
+    Deny,
+}
+
 /// Stable wire format emitted by the loop on `agent::events/<session_id>`.
 /// UIs and observers consume this verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +63,9 @@ pub enum AgentEvent {
         is_error: bool,
     },
     /// A tool call is paused by an approval subscriber, awaiting user decision.
+    /// `tool_call_id`, `tool_name`, and `args` intentionally duplicate the fields on
+    /// `ToolExecutionStart` so consumers subscribing only to approval events have full
+    /// context without replaying the rest of the stream.
     ApprovalRequested {
         tool_call_id: String,
         tool_name: String,
@@ -64,8 +76,7 @@ pub enum AgentEvent {
     /// Approval gate has resolved a previously-requested approval.
     ApprovalResolved {
         tool_call_id: String,
-        /// "allow" or "deny".
-        decision: String,
+        decision: ApprovalDecision,
         /// Free-form reason — populated for "deny" (e.g. "timeout", "user").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -113,7 +124,7 @@ mod tests {
     fn approval_resolved_round_trips_with_optional_reason() {
         let evt = AgentEvent::ApprovalResolved {
             tool_call_id: "tc-9".into(),
-            decision: "deny".into(),
+            decision: ApprovalDecision::Deny,
             reason: Some("timeout".into()),
         };
         let json = serde_json::to_value(&evt).unwrap();
@@ -124,10 +135,14 @@ mod tests {
 
         let none_reason = AgentEvent::ApprovalResolved {
             tool_call_id: "tc-9".into(),
-            decision: "allow".into(),
+            decision: ApprovalDecision::Allow,
             reason: None,
         };
         let json = serde_json::to_value(&none_reason).unwrap();
-        assert!(json.get("reason").map_or(true, |v| v.is_null()));
+        assert_eq!(json["decision"], "allow");
+        assert!(
+            !json.as_object().unwrap().contains_key("reason"),
+            "reason should be omitted when None: {json}"
+        );
     }
 }
