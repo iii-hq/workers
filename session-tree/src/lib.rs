@@ -3,6 +3,26 @@
 //! P0 surface: create / load / append / active_path / list / load_messages.
 //! P2 surface: fork / clone_session / compact / export_html / tree.
 
+pub const SKILL_ID: &str = "session-tree";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    ("session-tree/create", include_str!("../skills/create.md")),
+    ("session-tree/append", include_str!("../skills/append.md")),
+    (
+        "session-tree/messages",
+        include_str!("../skills/messages.md"),
+    ),
+    ("session-tree/tree", include_str!("../skills/tree.md")),
+    ("session-tree/fork", include_str!("../skills/fork.md")),
+    ("session-tree/clone", include_str!("../skills/clone.md")),
+    ("session-tree/compact", include_str!("../skills/compact.md")),
+    (
+        "session-tree/export_html",
+        include_str!("../skills/export_html.md"),
+    ),
+];
+
 pub mod io;
 pub mod store_iii_state;
 
