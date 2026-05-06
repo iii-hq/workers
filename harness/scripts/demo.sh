@@ -43,19 +43,29 @@ ensure_dirs() {
   mkdir -p "$DEMO_DIR/pids" "$DEMO_DIR/logs"
 }
 
+# Most workers ship a binary named `iii-{worker}`; `skills` keeps the
+# unprefixed `skills` name from before the convention. Centralize the lookup
+# so the build/spawn paths stay consistent.
+bin_name_for() {
+  case "$1" in
+    skills) echo "skills" ;;
+    *) echo "iii-$1" ;;
+  esac
+}
+
 cmd_build() {
   ensure_dirs
   echo "==> building harness + ${#WORKERS[@]} dep workers (release)..."
   for w in "${WORKERS[@]}" harness; do
     echo "    [build] $w"
-    (cd "$WORKERS_REPO/$w" && cargo build --release --bin "iii-$w" --quiet)
+    (cd "$WORKERS_REPO/$w" && cargo build --release --bin "$(bin_name_for "$w")" --quiet)
   done
   echo "==> all binaries built."
 }
 
 spawn_one() {
   local w="$1"
-  local bin="$WORKERS_REPO/$w/target/release/iii-$w"
+  local bin="$WORKERS_REPO/$w/target/release/$(bin_name_for "$w")"
   local pidfile="$DEMO_DIR/pids/$w.pid"
   local logfile="$DEMO_DIR/logs/$w.log"
 
