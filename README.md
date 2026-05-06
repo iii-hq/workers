@@ -12,14 +12,8 @@ matching GitHub Release asset for the host's target triple.
 
 | Worker | Kind | Summary |
 |---|---|---|
-| [`audit-log`](audit-log/) | Rust | Append-only JSON-lines audit log of every tool call + result on `agent::after_tool_call`. |
 | [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
-| [`auth-rbac`](auth-rbac/) | Rust | HMAC API keys and workspace roles (owner/admin/member/viewer) under `auth::rbac::*`. |
-| [`context-compaction`](context-compaction/) | Rust | Subscriber that triggers session compaction once context-window thresholds are reached. |
-| [`dlp-scrubber`](dlp-scrubber/) | Rust | Hook subscriber on `agent::after_tool_call` that redacts common secret shapes in tool result text. |
-| [`document-extract`](document-extract/) | Rust | PDF/Word text extraction under `document::extract` for agent context ingestion. |
 | [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `inbox::*` (push, drain, peek). |
-| [`guardrails`](guardrails/) | Rust | Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under `guardrails::*`. |
 | [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
 | [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hooks::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
@@ -36,28 +30,7 @@ matching GitHub Release asset for the host's target triple.
 | [`policy-denylist`](policy-denylist/) | Rust | Hook subscriber on `agent::before_tool_call` that blocks calls whose name is on a configured denylist. |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Native Anthropic Messages API streaming provider under `provider::anthropic::*`. |
-| [`provider-azure-openai`](provider-azure-openai/) | Rust | Azure OpenAI Responses provider under `provider::azure-openai::*`. |
-| [`provider-bedrock`](provider-bedrock/) | Rust | AWS Bedrock provider under `provider::bedrock::*`. (Stub today; emits a not-implemented error.) |
-| [`provider-cerebras`](provider-cerebras/) | Rust | OpenAI-compatible Cerebras provider under `provider::cerebras::*`. |
-| [`provider-cli`](provider-cli/) | Rust | Wraps installed coding CLIs (claude, codex, opencode, openclaw, hermes, pi, gemini, cursor-agent) under `provider::cli::*`. |
-| [`provider-deepseek`](provider-deepseek/) | Rust | OpenAI-compatible DeepSeek provider under `provider::deepseek::*`. |
-| [`provider-fireworks`](provider-fireworks/) | Rust | OpenAI-compatible Fireworks provider under `provider::fireworks::*`. |
-| [`provider-google`](provider-google/) | Rust | Google Gemini provider under `provider::google::*`. |
-| [`provider-google-vertex`](provider-google-vertex/) | Rust | Vertex AI Gemini provider under `provider::google-vertex::*`. |
-| [`provider-groq`](provider-groq/) | Rust | OpenAI-compatible Groq provider under `provider::groq::*`. |
-| [`provider-huggingface`](provider-huggingface/) | Rust | OpenAI-compatible Hugging Face Inference provider under `provider::huggingface::*`. |
-| [`provider-kimi-coding`](provider-kimi-coding/) | Rust | OpenAI-compatible Moonshot Kimi coding provider under `provider::kimi-coding::*`. |
-| [`provider-minimax`](provider-minimax/) | Rust | OpenAI-compatible MiniMax provider under `provider::minimax::*`. |
-| [`provider-mistral`](provider-mistral/) | Rust | OpenAI-compatible Mistral La Plateforme provider under `provider::mistral::*`. |
 | [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider under `provider::openai::*`. |
-| [`provider-openai-responses`](provider-openai-responses/) | Rust | OpenAI Responses API provider under `provider::openai-responses::*`. |
-| [`provider-opencode-go`](provider-opencode-go/) | Rust | OpenAI-compatible opencode Go endpoint under `provider::opencode-go::*`. |
-| [`provider-opencode-zen`](provider-opencode-zen/) | Rust | OpenAI-compatible opencode Zen endpoint under `provider::opencode-zen::*`. |
-| [`provider-openrouter`](provider-openrouter/) | Rust | OpenAI-compatible OpenRouter routing layer under `provider::openrouter::*`. |
-| [`provider-vercel-ai-gateway`](provider-vercel-ai-gateway/) | Rust | OpenAI-compatible Vercel AI Gateway provider under `provider::vercel-ai-gateway::*`. |
-| [`provider-xai`](provider-xai/) | Rust | OpenAI-compatible xAI Grok provider under `provider::xai::*`. |
-| [`provider-zai`](provider-zai/) | Rust | OpenAI-compatible Z.ai provider under `provider::zai::*`. |
-| [`session-corpus`](session-corpus/) | Rust | Dataset publishing pipeline for completed sessions under `corpus::*` — secret scan, redact, review, publish. |
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
 | [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
