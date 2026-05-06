@@ -32,6 +32,7 @@ type Tab = "chat" | "cost" | "files";
 const TOOLS = [
   {
     name: "shell::filesystem::ls",
+    label: "List directory",
     description: "List directory entries inside the sandbox.",
     parameters: {
       type: "object",
@@ -46,6 +47,7 @@ const TOOLS = [
   },
   {
     name: "shell::filesystem::read",
+    label: "Read file",
     description:
       "Read a file inside the sandbox. Returns UTF-8 contents (max 256 KB inline).",
     parameters: {
@@ -61,6 +63,7 @@ const TOOLS = [
   },
   {
     name: "shell::filesystem::write",
+    label: "Write file",
     description:
       "Write content to a file inside the sandbox. Creates parent dirs as needed; overwrites any existing file at the path.",
     parameters: {
@@ -80,6 +83,7 @@ const TOOLS = [
   },
   {
     name: "shell::filesystem::mkdir",
+    label: "Make directory",
     description: "Create a directory (and parents) inside the sandbox.",
     parameters: {
       type: "object",
@@ -89,6 +93,7 @@ const TOOLS = [
   },
   {
     name: "shell::filesystem::stat",
+    label: "File stat",
     description: "Return metadata (size, mode, mtime) for a sandbox path.",
     parameters: {
       type: "object",
@@ -98,6 +103,7 @@ const TOOLS = [
   },
   {
     name: "skill::fetch",
+    label: "Fetch skill",
     description:
       "Read one or more iii:// skill URIs as markdown. Use to drill into specific worker docs after seeing them in the iii://skills index.",
     parameters: {

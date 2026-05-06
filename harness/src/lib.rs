@@ -285,31 +285,13 @@ async fn pump_events(iii: &III, session_id: &str, since: Option<String>) -> Stri
         })
         .await
         .ok();
+    // `stream::list` returns the raw `data` values in emit order with NO
+    // `item_id` per item (T11 discovery). Synthesise positional ids so the
+    // browser's `Last-Event-ID` cursor still works — zero-padded so the
+    // lexicographic compare matches numeric order.
     if let Some(items) = snapshot.as_ref().and_then(|v| v.as_array()) {
-        let mut sorted: Vec<&Value> = items.iter().collect();
-        sorted.sort_by(|a, b| {
-            let ai = a
-                .get("id")
-                .or_else(|| a.get("item_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let bi = b
-                .get("id")
-                .or_else(|| b.get("item_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            ai.cmp(bi)
-        });
-        for item in sorted {
-            let id = item
-                .get("id")
-                .or_else(|| item.get("item_id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if id.is_empty() {
-                continue;
-            }
+        for (idx, item) in items.iter().enumerate() {
+            let id = format!("{session_id}-{idx:08}");
             if let Some(s) = since.as_deref() {
                 if id.as_str() <= s {
                     seen.insert(id);
