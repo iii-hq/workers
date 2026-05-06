@@ -19,12 +19,18 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     record.tool_results.clear();
     let calls = record.pending_tool_calls.clone();
 
+    let run_request = persistence::load_run_request(iii, &record.session_id).await;
+    let approval_required: Vec<String> = run_request
+        .get("approval_required")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
     let mut prepared: Vec<(ToolCall, Option<ToolResult>)> = Vec::with_capacity(calls.len());
     for tc in calls {
         let merged = publish_collect(
             iii,
             TOPIC_BEFORE,
-            json!({ "tool_call": tc }),
+            build_before_tool_call_payload(&tc, &approval_required),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
         )
@@ -185,6 +191,18 @@ pub(crate) fn executed_staging_for_new_prepare_batch(
     _stale: &[(ToolCall, ToolResult, bool)],
 ) -> Vec<(ToolCall, ToolResult, bool)> {
     Vec::new()
+}
+
+/// Pure helper: build the inner payload for the `agent::before_tool_call`
+/// topic. Subscribers (policy-denylist, approval-gate) read this shape.
+pub(crate) fn build_before_tool_call_payload(
+    tc: &ToolCall,
+    approval_required: &[String],
+) -> Value {
+    json!({
+        "tool_call": tc,
+        "approval_required": approval_required,
+    })
 }
 
 /// Pure helper: build the [`AgentEvent::ToolExecutionEnd`] for one tool.
@@ -384,6 +402,33 @@ mod tests {
             }
             other => panic!("expected ToolExecutionEnd, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn before_tool_call_payload_carries_approval_required() {
+        let tc = ToolCall {
+            id: "tc-1".into(),
+            name: "shell::filesystem::write".into(),
+            arguments: json!({"path": "/tmp/x"}),
+        };
+        let approval_required = vec!["shell::filesystem::write".to_string()];
+        let inner = build_before_tool_call_payload(&tc, &approval_required);
+        assert_eq!(inner["tool_call"]["id"], "tc-1");
+        assert_eq!(
+            inner["approval_required"],
+            json!(["shell::filesystem::write"]),
+        );
+    }
+
+    #[test]
+    fn before_tool_call_payload_omits_approval_required_when_empty() {
+        let tc = ToolCall {
+            id: "tc-1".into(),
+            name: "shell::filesystem::ls".into(),
+            arguments: json!({}),
+        };
+        let inner = build_before_tool_call_payload(&tc, &[]);
+        assert_eq!(inner["approval_required"], json!([]));
     }
 
     #[test]
