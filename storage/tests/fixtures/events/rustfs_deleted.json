@@ -1,0 +1,12 @@
+{
+  "EventName": "s3:ObjectRemoved:Delete",
+  "Records": [
+    {
+      "eventTime": "2026-05-05T12:30:00.000Z",
+      "s3": {
+        "bucket": { "name": "scratch" },
+        "object": { "key": "test.txt" }
+      }
+    }
+  ]
+}

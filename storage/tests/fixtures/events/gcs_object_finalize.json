@@ -1,0 +1,23 @@
+{
+  "messageId": "1234567890",
+  "publishTime": "2026-05-05T12:00:00.000Z",
+  "attributes": {
+    "eventType": "OBJECT_FINALIZE",
+    "bucketId": "my-app-documents",
+    "objectId": "reports/2026-05/summary.pdf",
+    "objectGeneration": "1714900000000000",
+    "payloadFormat": "JSON_API_V1",
+    "notificationConfig": "projects/_/buckets/my-app-documents/notificationConfigs/1"
+  },
+  "data": {
+    "kind": "storage#object",
+    "name": "reports/2026-05/summary.pdf",
+    "bucket": "my-app-documents",
+    "generation": "1714900000000000",
+    "size": "204800",
+    "etag": "CKaeqfWp/v0CEAE=",
+    "contentType": "application/pdf",
+    "timeCreated": "2026-05-05T12:00:00.000Z",
+    "updated": "2026-05-05T12:00:00.000Z"
+  }
+}

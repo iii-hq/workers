@@ -1,0 +1,53 @@
+# Engine config for the multi-provider e2e harness. Selected by run-tests.sh
+# when --providers != local. Each provider gets a dedicated bucket so the
+# harness can parameterize cases over them without collision.
+#
+# Triggers are still registered DYNAMICALLY by the harness via the SDK
+# (registerTrigger in runner.ts); we don't list them here.
+#
+# The harness only registers triggers against `scratch-local` per the design
+# spec — non-local triggers are out of scope for this phase.
+
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: storage-tests
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: storage
+    config:
+      providers:
+        local:
+          data_dir: ./data/storage
+
+      buckets:
+        scratch-local:
+          provider: local
+          bucket: scratch-local
+
+        scratch-s3:
+          provider: s3
+          region: us-east-1
+          endpoint_url: http://127.0.0.1:9000
+          access_key_id: minioadmin
+          secret_access_key: minioadmin
+          bucket: scratch-s3
+
+        scratch-r2:
+          provider: r2
+          # account_id is unused when endpoint_url is set, but the field is
+          # required by the schema. "fake" is intentional and visible in
+          # tracing::warn output to make it obvious this is a test config.
+          account_id: fake
+          access_key_id: minioadmin
+          secret_access_key: minioadmin
+          endpoint_url: http://127.0.0.1:9000
+          bucket: scratch-r2

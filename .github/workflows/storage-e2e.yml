@@ -1,0 +1,91 @@
+name: storage E2E
+
+on:
+  pull_request:
+    paths:
+      - 'storage/**'
+      - '.github/workflows/storage-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: storage-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  script-tests:
+    name: Script self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: storage
+
+      - name: Build worker
+        run: cargo build --release --bin storage
+        working-directory: storage
+
+      - name: Run script-tests
+        run: ./script-tests/run.sh
+        working-directory: storage/tests/e2e
+
+  e2e:
+    name: Harness (--providers=all)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: storage
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: storage/tests/e2e/workers/harness/package-lock.json
+
+      - name: Install iii engine
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine + docker
+        run: |
+          iii --version
+          docker --version
+          docker compose version
+
+      - name: Pull docker images
+        run: docker compose --profile cloud pull --quiet
+        working-directory: storage/tests/e2e
+
+      - name: Run harness (--providers=all)
+        working-directory: storage/tests/e2e
+        run: ./run-tests.sh --providers=all --no-pull
+
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-e2e-reports
+          path: |
+            storage/tests/e2e/reports/
+          retention-days: 7
