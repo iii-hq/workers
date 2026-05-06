@@ -275,7 +275,7 @@ index shows the calling shape directly. The skill URI in the registry
 (`iii://<worker>/<sub>`) stays path-form — that's what `skill::fetch`
 resolves and what `SUB_SKILLS` registers (see §10.4).
 
-If a worker exposes only one function (e.g. `document-extract`), skip the
+If a worker exposes only one function (e.g. `policy-denylist`), skip the
 leaves layer and put the leaf content directly in `<worker>/skill.md`. The
 router pattern only pays off when there's something to route to.
 
