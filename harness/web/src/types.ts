@@ -140,3 +140,64 @@ export interface FsReadDetails {
   bytes_read?: number;
   error?: string;
 }
+
+export type AgentEvent =
+  | { type: "agent_start" }
+  | { type: "agent_end"; messages: AgentMessage[] }
+  | { type: "turn_start" }
+  | { type: "turn_end"; message: AgentMessage; tool_results: unknown[] }
+  | { type: "message_start"; message: AgentMessage }
+  | { type: "message_update"; message: AgentMessage; llm_event: unknown }
+  | { type: "message_end"; message: AgentMessage }
+  | {
+      type: "tool_execution_start";
+      tool_call_id: string;
+      tool_name: string;
+      args: unknown;
+    }
+  | {
+      type: "tool_execution_update";
+      tool_call_id: string;
+      tool_name: string;
+      args: unknown;
+      partial_result: unknown;
+    }
+  | {
+      type: "tool_execution_end";
+      tool_call_id: string;
+      tool_name: string;
+      result: unknown;
+      is_error: boolean;
+    }
+  | {
+      type: "approval_requested";
+      tool_call_id: string;
+      tool_name: string;
+      args: unknown;
+      expires_at: number;
+    }
+  | {
+      type: "approval_resolved";
+      tool_call_id: string;
+      decision: "allow" | "deny";
+      reason?: string | null;
+    };
+
+export interface PendingApproval {
+  tool_call_id: string;
+  tool_name: string;
+  args: unknown;
+  expires_at: number;
+}
+
+export interface StreamState {
+  messages: AgentMessage[];
+  pendingApprovals: PendingApproval[];
+  status: "idle" | "running" | "ended";
+}
+
+export const INITIAL_STREAM_STATE: StreamState = {
+  messages: [],
+  pendingApprovals: [],
+  status: "idle",
+};
