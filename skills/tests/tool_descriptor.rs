@@ -5,7 +5,6 @@
 ///   - `ToolDescriptor` serialises / deserialises correctly.
 ///   - `validate_tool_namespace` accepts properly-namespaced tools.
 ///   - `validate_tool_namespace` rejects tools under a different namespace.
-
 use iii_skills::{validate_tool_namespace, ToolDescriptor};
 
 #[test]

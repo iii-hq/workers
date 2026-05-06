@@ -45,7 +45,7 @@ pub async fn register_with_iii(iii: &III) -> Result<McpRefs> {
             move |payload: Value| {
                 let iii = iii_for_handler.clone();
                 async move {
-                    let res = iii
+                    let outcome = iii
                         .trigger(TriggerRequest {
                             function_id: entry_static.function_id.to_string(),
                             payload,
@@ -55,7 +55,7 @@ pub async fn register_with_iii(iii: &III) -> Result<McpRefs> {
                         .await
                         .map_err(|e| IIIError::Handler(e.to_string()))?;
                     let max = entry_static.max_bytes.unwrap_or(usize::MAX);
-                    Ok::<_, IIIError>(truncate_result(res, max))
+                    Ok::<_, IIIError>(truncate_result(outcome, max))
                 }
             },
         ));

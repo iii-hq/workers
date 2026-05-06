@@ -186,8 +186,7 @@ fn register_register_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers:
             let subs = subs_inner.clone();
             async move {
                 validate_id(&req.id).map_err(IIIError::Handler)?;
-                validate_tool_namespace(&req.id, &req.tools)
-                    .map_err(IIIError::Handler)?;
+                validate_tool_namespace(&req.id, &req.tools).map_err(IIIError::Handler)?;
                 if req.skill.is_empty() {
                     return Err(IIIError::Handler("skill must be non-empty".into()));
                 }
