@@ -307,8 +307,7 @@ pub async fn status() -> bool {
 
 /// Internal bus surface for the oauth-openai-codex register handlers.
 ///
-/// Mirrors the per-worker `CredentialBus` pattern from context-compaction:
-/// production wraps an `iii_sdk::III` via [`IiiSdkBus`]; tests inject an
+/// Production wraps an `iii_sdk::III` via [`IiiSdkBus`]; tests inject an
 /// in-memory recorder. Treat as private API.
 #[allow(dead_code)]
 // set_token + record_trigger are reserved for future handlers; today only record_function is wired.

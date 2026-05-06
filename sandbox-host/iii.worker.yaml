@@ -1,0 +1,7 @@
+iii: v1
+name: sandbox-host
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-sandbox-host
+description: Single-tenant pseudo-sandbox that maps sandbox::* and sandbox::fs::* / sandbox::exec calls to direct host operations. NO isolation. For local solo-developer harness installs only.

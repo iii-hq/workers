@@ -10,4 +10,3 @@ workers so providers and agents never see raw secrets.
   - [`auth::list_providers`](iii://auth-credentials/list_providers) — list providers with stored credentials
   - [`auth::status`](iii://auth-credentials/status) — check whether a credential is stored
 
-For workspace API keys and roles, see [`auth-rbac`](iii://auth-rbac).

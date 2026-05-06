@@ -5,9 +5,7 @@
 //!
 //! This crate is the trivial OpenAI-compat case — it wraps
 //! [`provider_base::stream_chat_completions`] with a fixed endpoint, provider
-//! name, and `Authorization: Bearer` header. For richer wire shapes (Responses
-//! API, reasoning items, tool-call streaming events) see
-//! `provider-openai-responses`.
+//! name, and `Authorization: Bearer` header.
 
 use std::sync::Arc;
 

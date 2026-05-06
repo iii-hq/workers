@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local demo harness driver — registry-free.
 #
-# The migration workers (audit-log, provider-anthropic, ...) aren't published
+# The migration workers aren't published
 # to registry/index.json yet, so `iii worker add <name>` can't find them. But
 # every worker is just an iii-sdk client that connects to the engine and
 # registers its functions on the bus. We can run them all directly.
@@ -121,9 +121,6 @@ cmd_verify() {
   echo
   echo "==> models::list (proves models-catalog connected)"
   iii --use-default-config trigger --function-id models::list || true
-  echo
-  echo "==> provider::cli::list_models (proves provider-cli connected)"
-  iii --use-default-config trigger --function-id provider::cli::list_models || true
 }
 
 cmd_logs() {
