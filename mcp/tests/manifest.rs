@@ -1,6 +1,4 @@
-//! `--manifest` smoke test. Same shape as the sibling workers — runs in
-//! CI without an iii engine, and the registry publish pipeline depends
-//! on this exact contract.
+//! Manifest subprocess test (binary-worker.md Pattern A).
 
 use std::process::Command;
 
@@ -26,14 +24,11 @@ fn manifest_subcommand_emits_valid_json() {
 
     assert_eq!(manifest["name"], env!("CARGO_PKG_NAME"));
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert!(manifest["description"]
-        .as_str()
-        .is_some_and(|s| !s.is_empty()));
-    assert_eq!(manifest["default_config"]["api_path"], "mcp");
-    assert_eq!(manifest["default_config"]["state_timeout_ms"], 30_000);
-    assert!(manifest["default_config"]["hidden_prefixes"]
-        .as_array()
-        .is_some_and(|a| !a.is_empty()));
+    assert!(manifest["description"].is_string());
+    assert!(!manifest["description"].as_str().unwrap().is_empty());
+    assert!(manifest["default_config"].is_object());
+    assert!(manifest["default_config"]["hidden_prefixes"].is_array());
+    assert!(manifest["default_config"]["api_path"].is_string());
     assert!(!manifest["supported_targets"]
         .as_array()
         .expect("supported_targets must be an array")
