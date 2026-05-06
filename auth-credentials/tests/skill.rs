@@ -31,6 +31,7 @@ fn skill_id_is_valid() {
     let id = auth_credentials::SKILL_ID;
     assert!(!id.is_empty(), "SKILL_ID is empty");
     assert!(id.len() <= 64, "SKILL_ID exceeds 64 chars");
+    // `fn` is the only reserved first-segment literal as of skills v0.2.0.
     assert_ne!(id, "fn", "SKILL_ID must not be the reserved literal `fn`");
 
     let first = id.chars().next().unwrap();

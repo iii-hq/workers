@@ -10,11 +10,11 @@ Provider credential vault. Stores API keys and OAuth tokens under `auth::*` so p
 
 ## Functions
 
-- `auth::set(provider, credential) → ()` — store a credential for a provider.
-- `auth::get(provider) → credential?` — read the stored credential, or null.
-- `auth::list() → [provider]` — list providers with stored credentials.
-- `auth::clear(provider) → ()` — remove a credential.
-- `auth::resolve(provider) → credential` — return the effective credential, refreshing OAuth tokens if needed.
+- `auth::set_token(provider, token)` — store an API key or OAuth token for a provider.
+- `auth::get_token(provider) → token?` — read the stored token for a provider, or null.
+- `auth::list_providers() → [provider]` — list providers with stored tokens.
+- `auth::delete_token(provider)` — remove a stored token.
+- `auth::status(provider) → { has_token, kind }` — check whether a credential is stored and what shape it has.
 
 ## When NOT to use
 
@@ -24,5 +24,5 @@ Provider credential vault. Stores API keys and OAuth tokens under `auth::*` so p
 ## Notes
 
 - Default backend is `iii_state` (durable). Set `AUTH_CREDENTIALS_STORE=memory` for ephemeral in-process storage in tests.
-- `auth::resolve` may make a network call (OAuth refresh). The other functions are local state operations.
+- All five functions are local state operations (no network calls).
 - Transient bus errors surface as `Err` to the caller; retry policy is the caller's choice.

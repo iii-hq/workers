@@ -66,16 +66,24 @@ fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
                     timeout_ms: Some(5_000),
                 })
                 .await;
-            if res.is_ok() {
-                log::info!("registered skill: {}", auth_credentials::SKILL_ID);
-                return;
-            }
-            if started.elapsed() > Duration::from_secs(180) {
-                log::warn!(
-                    "skills handshake gave up for {}; install/start the skills worker and restart",
-                    auth_credentials::SKILL_ID
-                );
-                return;
+            match res {
+                Ok(_) => {
+                    log::info!("registered skill: {}", auth_credentials::SKILL_ID);
+                    return;
+                }
+                Err(e) => {
+                    if started.elapsed() > Duration::from_secs(180) {
+                        log::warn!(
+                            "skills handshake gave up for {}; install/start the skills worker and restart (last error: {e})",
+                            auth_credentials::SKILL_ID
+                        );
+                        return;
+                    }
+                    log::debug!(
+                        "skills::register failed for {}: {e}; retrying in {backoff:?}",
+                        auth_credentials::SKILL_ID
+                    );
+                }
             }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -84,15 +92,26 @@ fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
 }
 
 async fn wait_for_shutdown() -> Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut sigterm = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = sigterm.recv() => {}
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("failed to await SIGINT")?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to await SIGINT")
+    }
 }
 
+// Best-effort: a missed unregister is self-healing on next boot's re-register.
 async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
     let _ = iii
         .trigger(TriggerRequest {
