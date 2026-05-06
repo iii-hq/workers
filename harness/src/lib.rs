@@ -2,6 +2,56 @@
 //! runtime dependencies; this lib registers `harness::status` plus a
 //! browser-facing `bridge::trigger` HTTP route that forwards arbitrary
 //! `{function_id, payload}` calls onto the iii bus.
+//!
+//! ## SSE event-tail API discovery (T11)
+//!
+//! iii-sdk 0.11.3 exposes NO blocking/tailing read API for streams. The only
+//! built-in stream functions invokable via `iii.trigger(...)` are:
+//!
+//! - `stream::set`     payload `{stream_name, group_id, item_id, data}`
+//!                     -> `{old_value, new_value}` (one-shot, returns immediately)
+//! - `stream::update`  payload `{stream_name, group_id, item_id, ops: [UpdateOp]}`
+//! - `stream::delete`  payload `{stream_name, group_id, item_id}`
+//! - `stream::get`     payload `{stream_name, group_id, item_id}`
+//!                     -> the item's `data` value (or `null` if absent). Single item only.
+//! - `stream::list`    payload `{stream_name, group_id}`
+//!                     -> JSON array of all items' `data` in that group.
+//!                     One-shot snapshot — does NOT block, does NOT return
+//!                     item_ids, has NO `since_id`/`max_items`/`block_ms` params,
+//!                     and has NO `next_cursor` in the response.
+//!
+//! There is no `stream::tail`, `stream::range`, `stream::read`, or `stream::since`,
+//! and no `subscribe_stream` / `consume_stream` / `tail_stream` method on `III`.
+//! Verified by inspection of `~/.cargo/registry/src/.../iii-sdk-0.11.3/src/`
+//! (`builtin_triggers.rs`, `iii.rs`, `stream.rs`, `lib.rs`) plus
+//! `tests/stream.rs`, which only exercises set/get/delete/list.
+//!
+//! Live-event consumption is pull-via-push: register a `stream` trigger
+//! (`builtin_triggers::IIITrigger::Stream` with `StreamTriggerConfig` filtered
+//! by `stream_name = "agent::events"` and optional `group_id = <session_id>`).
+//! The engine then invokes the bound function with a `StreamCallRequest`
+//! `{type: "stream", timestamp, streamName, groupId, id, event: {type, data}}`
+//! every time a peer calls `stream::set`/`update`/`delete`. There is no
+//! cursor field in the response from any read API; the only durable
+//! sequence available is the `item_id` we mint ourselves in
+//! `turn-orchestrator/src/events.rs::format_item_id` (`<sid>-<seq:08>`).
+//!
+//! T12's SSE pump must therefore:
+//! 1. On `GET /bridge/events?session_id=<sid>`, register a `stream` trigger
+//!    bound to a per-request handler that forwards `StreamCallRequest`
+//!    frames into a per-session `tokio::sync::broadcast::Sender<AgentEvent>`
+//!    (or build it once at boot and fan-out by `group_id`). Unregister the
+//!    trigger when the response body is dropped.
+//! 2. To honor `Last-Event-ID: <sid>-NNNNNNNN`, seed the SSE response by
+//!    calling `stream::list` once, sorting by `item_id`, and replaying only
+//!    items whose `item_id` sorts strictly greater than `Last-Event-ID`
+//!    BEFORE attaching the broadcast receiver. (Items inserted between the
+//!    list snapshot and the trigger registration must be deduped by
+//!    `item_id` on the receiving end — keep a small "seen" set.)
+//! 3. Use the `item_id` as the SSE `id:` field so browsers reconnect with
+//!    the right `Last-Event-ID`. The stream trigger payload itself does not
+//!    carry `item_id` under that key — it arrives as the top-level `id`
+//!    field of `StreamCallRequest` (Option<String>).
 
 use iii_sdk::{
     FunctionRef, IIIError, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, Value,
