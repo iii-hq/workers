@@ -205,14 +205,30 @@ at `iii-acp` directly.
 | `initialize` | client → agent | implemented |
 | `authenticate` | client → agent | no-op success |
 | `session/new` | client → agent | implemented |
-| `session/load` | client → agent | implemented (replays history as `session/update`) |
-| `session/list` | client → agent | implemented |
+| `session/load` | client → agent | implemented; replays history as `session/update` notifications |
+| `session/resume` | client → agent | implemented; refreshes cwd + mcpServers, no history replay |
+| `session/list` | client → agent | implemented; dedupes index on read |
 | `session/prompt` | client → agent | implemented; routes to brain fn or echo |
 | `session/cancel` | client → agent | implemented; flips in-process abort + publishes cancel topic |
-| `session/close` | client → agent | implemented |
+| `session/close` | client → agent | implemented; full cleanup of record + history + index |
+| `session/set_mode` | client → agent | implemented; persists `modeId` on session record for the brain |
+| `session/set_config_option` | client → agent | implemented; persists `configId`/`value` pairs on session record |
 | `session/update` | agent → client | streamed during prompt turn |
-| `session/request_permission` | agent → client | deferred (v0.2) |
-| `fs/*`, `terminal/*` | agent → client | deferred — agents use iii primitives directly |
+| `session/request_permission` | agent → client | deferred — needs reverse-RPC framer |
+| `fs/read_text_file`, `fs/write_text_file` | agent → client | deferred — internal iii brains use iii fs primitives directly |
+| `terminal/create`, `terminal/kill`, `terminal/output`, `terminal/release`, `terminal/wait_for_exit` | agent → client | deferred — internal iii brains use iii terminal primitives directly |
+
+`agentCapabilities.sessionCapabilities` advertises `list`, `close`, and
+`resume` on `initialize`. The `loadSession` capability (top-level for now,
+unifying with sessionCapabilities is on the ACP roadmap) is also advertised.
+
+`session/set_mode` and `session/set_config_option` ship without an explicit
+capability flag because the version of the ACP schema in this repo doesn't
+include those slots in `SessionCapabilities` yet — clients that try them
+get a successful response; clients that don't try are unaffected. Both
+methods persist their values on the session record (`mode: Option<String>`
+and `config_options: Map<String, Value>`). Brains opt in to honoring them
+on the next `session/prompt` turn; iii-acp just stores.
 
 ## Brain contract
 

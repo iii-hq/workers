@@ -78,3 +78,37 @@ fn parse_returns_error_on_missing_params() {
     let r: Result<iii_acp::types::SessionPromptParams, _> = iii_acp::types::parse(None);
     assert!(r.is_err());
 }
+
+#[test]
+fn session_resume_params_round_trips() {
+    let raw = json!({
+        "sessionId": "sess_abc",
+        "cwd": "/home/user/project",
+        "mcpServers": []
+    });
+    let p: iii_acp::types::SessionResumeParams = serde_json::from_value(raw).unwrap();
+    assert_eq!(p.session_id, "sess_abc");
+    assert_eq!(p.cwd, "/home/user/project");
+    assert!(p.mcp_servers.is_empty());
+}
+
+#[test]
+fn session_set_mode_params_round_trips() {
+    let raw = json!({ "sessionId": "sess_x", "modeId": "code" });
+    let p: iii_acp::types::SessionSetModeParams = serde_json::from_value(raw).unwrap();
+    assert_eq!(p.session_id, "sess_x");
+    assert_eq!(p.mode_id, "code");
+}
+
+#[test]
+fn session_set_config_option_params_round_trips() {
+    let raw = json!({
+        "sessionId": "sess_x",
+        "configId": "thinking_level",
+        "value": "high"
+    });
+    let p: iii_acp::types::SessionSetConfigOptionParams = serde_json::from_value(raw).unwrap();
+    assert_eq!(p.session_id, "sess_x");
+    assert_eq!(p.config_id, "thinking_level");
+    assert_eq!(p.value, json!("high"));
+}

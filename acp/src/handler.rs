@@ -14,7 +14,8 @@ use crate::session::{
 use crate::transport::Outbound;
 use crate::types::{
     ACP_PROTOCOL_VERSION, INTERNAL_ERROR, INVALID_PARAMS, JsonRpcResponse, METHOD_NOT_FOUND,
-    SessionCancelParams, SessionLoadParams, SessionNewParams, SessionPromptParams, parse,
+    SessionCancelParams, SessionLoadParams, SessionNewParams, SessionPromptParams,
+    SessionResumeParams, SessionSetConfigOptionParams, SessionSetModeParams, parse,
 };
 
 // Canonical iii brain function. Any worker exposing this id with the
@@ -169,10 +170,13 @@ impl AcpHandler {
             "authenticate" => Ok(json!({})),
             "session/new" => self.session_new(params).await,
             "session/load" => self.session_load(params).await,
+            "session/resume" => self.session_resume(params).await,
             "session/list" => self.session_list().await,
             "session/prompt" => self.session_prompt(params).await,
             "session/cancel" => self.session_cancel(params).await.map(|_| Value::Null),
             "session/close" => self.session_close(params).await.map(|_| Value::Null),
+            "session/set_mode" => self.session_set_mode(params).await,
+            "session/set_config_option" => self.session_set_config_option(params).await,
             _ => Err((METHOD_NOT_FOUND, format!("Unknown method: {}", method))),
         };
 
@@ -204,7 +208,11 @@ impl AcpHandler {
                     "http": true,
                     "sse": false
                 },
-                "sessionCapabilities": {}
+                "sessionCapabilities": {
+                    "list": {},
+                    "close": {},
+                    "resume": {}
+                }
             },
             "agentInfo": {
                 "name": "iii-acp",
@@ -226,6 +234,8 @@ impl AcpHandler {
             mcp_servers: p.mcp_servers,
             created_at_ms: now,
             last_activity_ms: now,
+            mode: None,
+            config_options: serde_json::Map::new(),
         };
         let key = session_key(&session_id);
         let value = serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
@@ -399,6 +409,102 @@ impl AcpHandler {
                 format!("session_close partial failure: {}", errs.join("; ")),
             ))
         }
+    }
+
+    // session/resume — like session/load but skips history replay. Per
+    // ACP spec: "useful for agents that can resume sessions but don't
+    // implement full session loading." We keep history but emit nothing.
+    // The new cwd / mcpServers fields are persisted on the session record
+    // so subsequent session/prompt calls see the refreshed environment.
+    async fn session_resume(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
+        self.require_initialized()?;
+        let p: SessionResumeParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
+        let key = session_key(&p.session_id);
+        let scope = scope();
+        let rec_value = state_get(&self.iii, &scope, &key)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
+            .ok_or_else(|| {
+                (
+                    INVALID_PARAMS,
+                    format!("session not found: {}", p.session_id),
+                )
+            })?;
+        let mut record: SessionRecord = serde_json::from_value(rec_value)
+            .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
+        record.cwd = p.cwd;
+        record.mcp_servers = p.mcp_servers;
+        record.last_activity_ms = now_ms();
+        let new_value =
+            serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        state_set(&self.iii, &scope, &key, new_value)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        self.owned_sessions.insert(p.session_id.clone());
+        Ok(json!({}))
+    }
+
+    // session/set_mode — store the mode id on the session record so the
+    // brain can read it on the next prompt turn (e.g. via a system prompt
+    // suffix or per-mode tool gating). Validation of the mode id against
+    // any agent-specific catalog is left to the brain worker.
+    async fn session_set_mode(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
+        self.require_initialized()?;
+        let p: SessionSetModeParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
+        self.update_session_record(&p.session_id, |rec| {
+            rec.mode = Some(p.mode_id.clone());
+        })
+        .await?;
+        Ok(json!({}))
+    }
+
+    // session/set_config_option — store an arbitrary configId/value pair
+    // on the session record. Same rationale as set_mode: persistence lives
+    // here, semantics live in the brain.
+    async fn session_set_config_option(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Value, (i32, String)> {
+        self.require_initialized()?;
+        let p: SessionSetConfigOptionParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
+        self.update_session_record(&p.session_id, |rec| {
+            rec.config_options
+                .insert(p.config_id.clone(), p.value.clone());
+        })
+        .await?;
+        Ok(json!({}))
+    }
+
+    // Read-modify-write of one session record under the per-session
+    // history mutex (we reuse it to avoid adding a parallel lock map for
+    // the same session). Returns INVALID_PARAMS if the session is
+    // missing, INTERNAL_ERROR on backend failure.
+    async fn update_session_record<F>(
+        &self,
+        session_id: &str,
+        mutate: F,
+    ) -> Result<(), (i32, String)>
+    where
+        F: FnOnce(&mut SessionRecord),
+    {
+        let scope = scope();
+        let key = session_key(session_id);
+        let lock = self.history_lock(session_id);
+        let _g = lock.lock().await;
+        let rec_value = state_get(&self.iii, &scope, &key)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
+            .ok_or_else(|| (INVALID_PARAMS, format!("session not found: {}", session_id)))?;
+        let mut record: SessionRecord = serde_json::from_value(rec_value)
+            .map_err(|e| (INTERNAL_ERROR, format!("session decode: {}", e)))?;
+        mutate(&mut record);
+        record.last_activity_ms = now_ms();
+        let new_value =
+            serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        state_set(&self.iii, &scope, &key, new_value)
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        Ok(())
     }
 
     async fn run_brain(&self, session_id: &str, prompt: &[Value], cancel: &CancelHandle) -> String {
