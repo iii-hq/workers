@@ -7,6 +7,29 @@
 pub const SKILL_ID: &str = "auth-credentials";
 pub const SKILL_MD: &str = include_str!("../skill.md");
 
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    (
+        "auth-credentials/set_token",
+        include_str!("../skills/set_token.md"),
+    ),
+    (
+        "auth-credentials/get_token",
+        include_str!("../skills/get_token.md"),
+    ),
+    (
+        "auth-credentials/delete_token",
+        include_str!("../skills/delete_token.md"),
+    ),
+    (
+        "auth-credentials/list_providers",
+        include_str!("../skills/list_providers.md"),
+    ),
+    (
+        "auth-credentials/status",
+        include_str!("../skills/status.md"),
+    ),
+];
+
 pub mod io;
 pub mod store_iii_state;
 

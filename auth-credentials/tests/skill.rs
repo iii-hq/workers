@@ -1,47 +1,83 @@
-//! Compile-time and format checks for the registered skill.
+//! Compile-time and format checks for the registered skill set.
 //! Runs without an iii engine connection.
 //!
-//! Single-segment skill id checks. Workers in this repo all use a flat,
-//! folder-name-equals-skill-id convention (see AGENTS-NEW-WORKER.md §10.1).
-//! If a future worker adopts nested sub-skills, replace these tests with
-//! multi-segment-aware variants.
+//! Asserts the platform contract from skills/README.md: H1 first (used as
+//! the iii://skills index link title), then a non-heading paragraph (used
+//! as the description, truncated at 140 chars). Workers in this repo
+//! follow folder-name-equals-skill-id; if a future worker uses different
+//! naming, adjust id_is_valid accordingly.
 
-#[test]
-fn skill_md_well_formed() {
-    let skill = auth_credentials::SKILL_MD;
-    assert!(!skill.trim().is_empty(), "skill.md is empty");
+fn well_formed(label: &str, body: &str) {
+    assert!(!body.trim().is_empty(), "{label}: skill is empty");
     assert!(
-        skill.len() <= 256 * 1024,
-        "skill.md exceeds 256 KiB ({} bytes)",
-        skill.len()
+        body.len() <= 256 * 1024,
+        "{label}: skill exceeds 256 KiB ({} bytes)",
+        body.len()
     );
-    let first_non_blank = skill.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
+    let h1 = lines.next().unwrap_or("");
     assert!(
-        first_non_blank.starts_with("# "),
-        "skill.md must start with an H1, got: {first_non_blank:?}"
+        h1.starts_with("# "),
+        "{label}: skill must start with an H1, got: {h1:?}"
     );
+    let summary = lines.next().unwrap_or("");
     assert!(
-        skill.lines().any(|l| l.trim() == "## Functions"),
-        "skill.md must contain a `## Functions` section"
+        !summary.starts_with('#'),
+        "{label}: expected a summary paragraph after the H1, got another heading: {summary:?}"
     );
 }
 
-#[test]
-fn skill_id_is_valid() {
-    let id = auth_credentials::SKILL_ID;
-    assert!(!id.is_empty(), "SKILL_ID is empty");
-    assert!(id.len() <= 64, "SKILL_ID exceeds 64 chars");
-    // `fn` is the only reserved first-segment literal as of skills v0.2.0.
-    assert_ne!(id, "fn", "SKILL_ID must not be the reserved literal `fn`");
+fn id_is_valid(label: &str, id: &str) {
+    assert!(!id.is_empty(), "{label}: id is empty");
+    assert!(id.len() <= 1024, "{label}: id exceeds 1024 chars");
 
-    let first = id.chars().next().unwrap();
-    assert!(
-        first.is_ascii_lowercase() || first.is_ascii_digit(),
-        "SKILL_ID first char must be lowercase ASCII letter or digit"
+    // `fn` is the only reserved first-segment literal as of skills v0.2.0.
+    let first_segment = id.split('/').next().unwrap_or("");
+    assert_ne!(
+        first_segment, "fn",
+        "{label}: first segment must not be the reserved literal `fn`"
     );
-    assert!(
-        id.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
-        "SKILL_ID has invalid characters"
-    );
+
+    for segment in id.split('/') {
+        assert!(
+            !segment.is_empty(),
+            "{label}: empty path segment in id {id:?}"
+        );
+        assert!(
+            segment.len() <= 64,
+            "{label}: segment {segment:?} exceeds 64 chars"
+        );
+        let first = segment.chars().next().unwrap();
+        assert!(
+            first.is_ascii_lowercase() || first.is_ascii_digit(),
+            "{label}: segment {segment:?} must start with lowercase ASCII letter or digit"
+        );
+        assert!(
+            segment
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
+            "{label}: segment {segment:?} has invalid characters"
+        );
+    }
+}
+
+#[test]
+fn router_well_formed() {
+    well_formed("router", auth_credentials::SKILL_MD);
+    id_is_valid("router", auth_credentials::SKILL_ID);
+}
+
+#[test]
+fn sub_skills_well_formed() {
+    let prefix = format!("{}/", auth_credentials::SKILL_ID);
+    for (id, body) in auth_credentials::SUB_SKILLS {
+        well_formed(id, body);
+        id_is_valid(id, id);
+        assert!(
+            id.starts_with(&prefix),
+            "sub-skill id {id:?} must be nested under the worker id ({}/)",
+            auth_credentials::SKILL_ID
+        );
+    }
 }
