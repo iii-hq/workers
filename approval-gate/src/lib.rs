@@ -64,6 +64,17 @@ pub enum Decision {
     Deny { reason: String },
 }
 
+/// Wire-format decision string used by `approval::resolve` and stored
+/// as the `status` field of resolved approval records.
+///
+/// Serializes / deserializes as `"allow"` or `"deny"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireDecision {
+    Allow,
+    Deny,
+}
+
 /// Build the state-store key for a pending approval entry.
 ///
 /// `session_id` and `tool_call_id` must not contain `/`. They are caller-controlled
@@ -149,16 +160,16 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
         .get("tool_call_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let decision = payload
-        .get("decision")
-        .and_then(Value::as_str)
-        .unwrap_or("");
     if session_id.is_empty() || tool_call_id.is_empty() {
         return json!({ "ok": false, "error": "missing_id" });
     }
-    if decision != "allow" && decision != "deny" {
+    let Some(decision) = payload
+        .get("decision")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<WireDecision>(v).ok())
+    else {
         return json!({ "ok": false, "error": "bad_decision" });
-    }
+    };
     let key = pending_key(session_id, tool_call_id);
     let Some(mut existing) = bus.get(STATE_SCOPE, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
@@ -166,7 +177,8 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
     if existing.get("status").and_then(Value::as_str) != Some("pending") {
         return json!({ "ok": false, "error": "already_resolved" });
     }
-    existing["status"] = json!(decision);
+    existing["status"] = serde_json::to_value(decision)
+        .expect("WireDecision serializes via Serialize");
     if let Some(reason) = payload.get("reason").cloned() {
         existing["reason"] = reason;
     }
@@ -395,5 +407,35 @@ mod tests {
         let items = out["pending"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["tool_call_id"], "tc-1");
+    }
+
+    #[tokio::test]
+    async fn resolve_deny_records_reason() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+        )
+        .await;
+
+        let out = handle_resolve(
+            &bus,
+            json!({
+                "session_id": "s1",
+                "tool_call_id": "tc-1",
+                "decision": "deny",
+                "reason": "user clicked cancel",
+            }),
+        )
+        .await;
+        assert_eq!(out["ok"], true);
+
+        let stored = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
+        assert_eq!(stored["status"], "deny");
+        assert_eq!(stored["reason"], "user clicked cancel");
     }
 }

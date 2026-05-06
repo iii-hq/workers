@@ -697,6 +697,7 @@ dependencies = [
  "env_logger",
  "iii-sdk",
  "log",
+ "serde",
  "serde_json",
  "tokio",
 ]
