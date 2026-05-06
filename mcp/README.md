@@ -1,11 +1,12 @@
 # mcp
 
-Model Context Protocol (MCP) bridge for the [iii engine](https://github.com/iii-hq/iii),
+Model Context Protocol (MCP) bridge for the [iii engine](https://iii.dev),
 shipped as a single self-contained Rust binary worker. Registers an HTTP
 endpoint (default `POST /mcp`) that speaks MCP 2025-06-18 JSON-RPC and maps
-each method onto an `iii.trigger` call. Install [`skills`](../skills)
-alongside `mcp` so MCP clients see registered skills as `iii://{id}`
-resources and slash-commands as MCP prompts.
+each method onto an `iii.trigger` call. [`skills`](https://workers.iii.dev/workers/skills) is listed as a
+worker dependency in [`iii.worker.yaml`](iii.worker.yaml), so MCP clients see
+registered skills as `iii://{id}` resources and slash-commands as MCP
+prompts when `mcp` is installed.
 
 ## Install
 
@@ -13,20 +14,10 @@ resources and slash-commands as MCP prompts.
 iii worker add mcp
 ```
 
-To populate the resources and prompts surfaces, also install `skills`:
-
-```bash
-iii worker add skills
-```
-
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
-
 ## Quickstart
 
 Sanity-check the bridge with `curl` against MCP Inspector or any MCP client.
-Substitute your engine's HTTP port (default `3000`).
+Substitute your engine's HTTP port (default `3111`).
 
 Responses use the **MCP Streamable HTTP** transport: `POST /mcp` returns
 `text/event-stream` with a single `event: message` SSE event whose `data:`
@@ -34,23 +25,17 @@ line is the JSON-RPC reply. Pure JSON-RPC notifications (no `id`) get HTTP
 `202 Accepted` with no body.
 
 ```bash
-curl -sNX POST http://127.0.0.1:3000/mcp \
+curl -sNX POST http://127.0.0.1:3111/mcp \
   -H 'content-type: application/json' \
   -H 'accept: text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   | sed -n 's/^data: //p' | jq '.result.protocolVersion'
 
-curl -sNX POST http://127.0.0.1:3000/mcp \
+curl -sNX POST http://127.0.0.1:3111/mcp \
   -H 'content-type: application/json' \
   -H 'accept: text/event-stream' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | sed -n 's/^data: //p' | jq '.result.tools[].name'
-
-curl -sNX POST http://127.0.0.1:3000/mcp \
-  -H 'content-type: application/json' \
-  -H 'accept: text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo__hello","arguments":{}}}' \
-  | sed -n 's/^data: //p' | jq '.result.content[0].text'
 ```
 
 `-N` disables curl's output buffering so the SSE frame appears as soon as the
@@ -73,9 +58,8 @@ require_expose: false
 api_path: "/mcp"
 ```
 
-`require_expose: true` advertises only functions whose `metadata.mcp.expose ==
-true`. `api_path` lets you co-deploy with the TypeScript bridge in
-`src/mcp/` by binding a different path (e.g. `/mcp-rs`).
+`require_expose: true` advertises only functions whose `metadata.mcp.expose == true`.
+`api_path` lets you bind a different path (e.g. `/mcp-custom`) for the bridge.
 
 ### Hidden namespaces
 
@@ -114,7 +98,7 @@ discovery and invocation:
 | `prompts/list` | Delegates to `prompts::mcp-list` |
 | `prompts/get` | Delegates to `prompts::mcp-get` |
 
-Out of scope in v0.1: `resources/subscribe`, `resources/unsubscribe`,
+Out of scope for this version: `resources/subscribe`, `resources/unsubscribe`,
 `completion/complete`, `logging/setLevel`, MCP notification fan-out
 (`tools/list_changed`, `resources/updated`, `notifications/message`,
 `notifications/progress`), and the stdio transport.
