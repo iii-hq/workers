@@ -1,0 +1,9 @@
+iii: v1
+name: provider-openai
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-openai
+description: OpenAI Chat Completions provider under provider::openai::*.
+dependencies:
+  auth-credentials: "^0.1.0"

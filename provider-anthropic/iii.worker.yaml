@@ -1,0 +1,9 @@
+iii: v1
+name: provider-anthropic
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-anthropic
+description: Native Anthropic Messages API streaming provider under provider::anthropic::*.
+dependencies:
+  auth-credentials: "^0.1.0"

@@ -207,10 +207,15 @@ def build_payload(
     readme_path = root / "README.md"
     readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
 
-    config_path = root / "config.yaml"
-    config = _read_yaml(config_path) if config_path.exists() else {}
+    if "config" in meta and meta["config"] is not None:
+        config = meta["config"]
+    else:
+        config_path = root / "config.yaml"
+        config = _read_yaml(config_path) if config_path.exists() else {}
     if config is None:
         config = {}
+    if not isinstance(config, dict):
+        raise ValueError("worker config must be an object")
 
     payload: dict[str, Any] = {
         "worker_name": worker,

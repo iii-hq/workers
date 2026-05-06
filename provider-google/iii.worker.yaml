@@ -1,0 +1,9 @@
+iii: v1
+name: provider-google
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-google
+description: Google Gemini provider under provider::google::*.
+dependencies:
+  auth-credentials: "^0.1.0"

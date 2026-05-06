@@ -1,0 +1,9 @@
+iii: v1
+name: provider-google-vertex
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-google-vertex
+description: Vertex AI Gemini provider under provider::google-vertex::*.
+dependencies:
+  auth-credentials: "^0.1.0"

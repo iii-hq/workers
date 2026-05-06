@@ -1,0 +1,7 @@
+iii: v1
+name: llm-budget
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-llm-budget
+description: Workspace + agent LLM spend caps with alerts, forecast, and period rollover under budget::*.

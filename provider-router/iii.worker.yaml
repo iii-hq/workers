@@ -1,0 +1,10 @@
+iii: v1
+name: provider-router
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-router
+description: router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers.
+dependencies:
+  session-inbox: "^0.1.0"
+  llm-budget: "^0.1.0"
