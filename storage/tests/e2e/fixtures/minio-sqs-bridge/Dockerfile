@@ -5,8 +5,10 @@ FROM oven/bun:1.1.30-slim
 WORKDIR /app
 
 # Install deps first to keep the layer cache hot across index.ts edits.
-COPY package.json ./
-RUN bun install --production --no-save
+# `--frozen-lockfile` makes CI builds reproducible — bun.lock pins
+# @aws-sdk/client-sqs to an exact resolved version.
+COPY package.json bun.lock ./
+RUN bun install --production --frozen-lockfile
 
 COPY index.ts ./
 COPY tsconfig.json ./
