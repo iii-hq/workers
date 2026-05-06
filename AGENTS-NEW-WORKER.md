@@ -274,7 +274,7 @@ Add three small helpers to `main.rs` and call them from `main`:
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iii_sdk::TriggerRequest;
 use serde_json::json;
 
@@ -296,16 +296,24 @@ fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
                     timeout_ms: Some(5_000),
                 })
                 .await;
-            if res.is_ok() {
-                log::info!("registered skill: {}", <crate>::SKILL_ID);
-                return;
-            }
-            if started.elapsed() > Duration::from_secs(180) {
-                log::warn!(
-                    "skills handshake gave up for {}; install/start the skills worker and restart",
-                    <crate>::SKILL_ID
-                );
-                return;
+            match res {
+                Ok(_) => {
+                    log::info!("registered skill: {}", <crate>::SKILL_ID);
+                    return;
+                }
+                Err(e) => {
+                    if started.elapsed() > Duration::from_secs(180) {
+                        log::warn!(
+                            "skills handshake gave up for {}; install/start the skills worker and restart (last error: {e})",
+                            <crate>::SKILL_ID
+                        );
+                        return;
+                    }
+                    log::debug!(
+                        "skills::register failed for {}: {e}; retrying in {backoff:?}",
+                        <crate>::SKILL_ID
+                    );
+                }
             }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -316,13 +324,23 @@ fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
 // Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
 // unregister below runs in production container shutdown, not just dev.
 async fn wait_for_shutdown() -> Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut sigterm = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = sigterm.recv() => {}
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("failed to await SIGINT")?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to await SIGINT")
+    }
 }
 
 // Best-effort: a missed unregister is self-healing on next boot's re-register.
@@ -361,6 +379,9 @@ Add `<worker>/tests/skill.rs` with two assertions. They run as part of
 `cargo test` — no iii engine needed.
 
 ```rust
+//! Compile-time and format checks for the registered skill.
+//! Runs without an iii engine connection.
+//!
 //! Single-segment skill id checks. Workers in this repo all use a flat,
 //! folder-name-equals-skill-id convention (see §10.1). If a future worker
 //! adopts nested sub-skills, replace these tests with multi-segment-aware
@@ -391,6 +412,7 @@ fn skill_id_is_valid() {
     let id = <crate>::SKILL_ID;
     assert!(!id.is_empty(), "SKILL_ID is empty");
     assert!(id.len() <= 64, "SKILL_ID exceeds 64 chars");
+    // `fn` is the only reserved first-segment literal as of skills v0.2.0.
     assert_ne!(id, "fn", "SKILL_ID must not be the reserved literal `fn`");
 
     let first = id.chars().next().unwrap();
