@@ -226,13 +226,20 @@ truncated at 140 chars). Everything else is up to the worker.
 
 **Router template** (`<worker>/skill.md`):
 
+The body shape is a **nested list**: the worker id at the top, with each
+sub-skill indented as a child. Renders as a tree in any markdown viewer and
+makes the parent–child relationship explicit when the body is read raw (the
+auto-rendered `iii://skills` index applies its own indentation on top of
+this).
+
 ```markdown
 # <worker-name>
 
 <One-sentence summary used as the description in the iii://skills index. Imperative tone.>
 
-- [`<sub_a>`](iii://<worker>/<sub_a>) — one-line purpose
-- [`<sub_b>`](iii://<worker>/<sub_b>) — one-line purpose
+- [`<worker>`](iii://<worker>)
+  - [`<sub_a>`](iii://<worker>/<sub_a>) — one-line purpose
+  - [`<sub_b>`](iii://<worker>/<sub_b>) — one-line purpose
 
 <Optional cross-reference paragraph linking to related workers via iii:// URIs.>
 ```
