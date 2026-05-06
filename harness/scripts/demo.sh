@@ -36,6 +36,7 @@ WORKERS=(
   shell-bash shell-filesystem subagent
   provider-anthropic provider-openai
   auth-credentials llm-budget
+  skills
 )
 
 ensure_dirs() {

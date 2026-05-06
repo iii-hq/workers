@@ -20,3 +20,4 @@ dependencies:
   provider-openai: "^0.1.0"
   auth-credentials: "^0.1.0"
   llm-budget: "^0.1.0"
+  skills: "^0.1.0"

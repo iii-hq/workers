@@ -24,7 +24,7 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| IIIError::Handler(format!("spawn bash: {e}")))?;
-    let result = tokio::time::timeout(Duration::from_millis(5_000), child.wait_with_output())
+    let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
         .await
         .map_err(|_| IIIError::Handler("which timed out".into()))?
         .map_err(|e| IIIError::Handler(format!("wait bash: {e}")))?;

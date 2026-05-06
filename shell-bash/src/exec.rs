@@ -29,8 +29,8 @@ impl Default for ExecConfig {
     }
 }
 
-pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
-    execute_with_config(_iii, args, ExecConfig::default()).await
+pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
+    execute_with_config(iii, args, ExecConfig::default()).await
 }
 
 pub async fn execute_with_config(

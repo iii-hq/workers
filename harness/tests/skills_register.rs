@@ -8,6 +8,6 @@ fn build_skills_payload_has_expected_shape() {
     assert!(payload["min_console_version"].is_string());
     assert!(payload["expected_workers"].is_array());
     let workers = payload["expected_workers"].as_array().unwrap();
-    assert!(workers.iter().all(|w| w.is_string()));
+    assert!(workers.iter().all(serde_json::Value::is_string));
     assert!(workers.contains(&Value::String("turn-orchestrator".to_string())));
 }

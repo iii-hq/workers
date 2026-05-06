@@ -737,12 +737,13 @@ mod tests {
     async fn await_decision_returns_deny_timeout_when_expired() {
         let bus = InMemoryStateBus::new();
         let key = pending_key("s1", "tc-1");
-        bus.set(
-            STATE_SCOPE,
-            &key,
-            build_pending_record("tc-1", "write", &json!({}), 0, 0),
-        )
-        .await;
+        let _ = bus
+            .set(
+                STATE_SCOPE,
+                &key,
+                build_pending_record("tc-1", "write", &json!({}), 0, 0),
+            )
+            .await;
         let decision = await_decision(&bus, "s1", "tc-1", now_ms() - 10).await;
         match decision {
             Decision::Deny { reason } => assert_eq!(reason, "timeout"),
@@ -763,12 +764,13 @@ mod tests {
     #[tokio::test]
     async fn resolve_deny_records_reason() {
         let bus = InMemoryStateBus::new();
-        bus.set(
-            STATE_SCOPE,
-            &pending_key("s1", "tc-1"),
-            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
-        )
-        .await;
+        let _ = bus
+            .set(
+                STATE_SCOPE,
+                &pending_key("s1", "tc-1"),
+                build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+            )
+            .await;
 
         let out = handle_resolve(
             &bus,

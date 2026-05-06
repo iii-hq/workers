@@ -9,16 +9,16 @@
 //! built-in stream functions invokable via `iii.trigger(...)` are:
 //!
 //! - `stream::set`     payload `{stream_name, group_id, item_id, data}`
-//!                     -> `{old_value, new_value}` (one-shot, returns immediately)
+//!   -> `{old_value, new_value}` (one-shot, returns immediately)
 //! - `stream::update`  payload `{stream_name, group_id, item_id, ops: [UpdateOp]}`
 //! - `stream::delete`  payload `{stream_name, group_id, item_id}`
 //! - `stream::get`     payload `{stream_name, group_id, item_id}`
-//!                     -> the item's `data` value (or `null` if absent). Single item only.
+//!   -> the item's `data` value (or `null` if absent). Single item only.
 //! - `stream::list`    payload `{stream_name, group_id}`
-//!                     -> JSON array of all items' `data` in that group.
-//!                     One-shot snapshot — does NOT block, does NOT return
-//!                     item_ids, has NO `since_id`/`max_items`/`block_ms` params,
-//!                     and has NO `next_cursor` in the response.
+//!   -> JSON array of all items' `data` in that group.
+//!   One-shot snapshot — does NOT block, does NOT return
+//!   item_ids, has NO `since_id`/`max_items`/`block_ms` params,
+//!   and has NO `next_cursor` in the response.
 //!
 //! There is no `stream::tail`, `stream::range`, `stream::read`, or `stream::since`,
 //! and no `subscribe_stream` / `consume_stream` / `tail_stream` method on `III`.
@@ -82,6 +82,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "provider-openai",
     "auth-credentials",
     "llm-budget",
+    "skills",
 ];
 
 /// Build the payload sent to skills::register at boot. Pure helper so the
@@ -184,7 +185,7 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs>
         move |input: Value| {
             let iii = iii_for_events.clone();
             async move {
-                let body = input.get("body").cloned().unwrap_or(input.clone());
+                let body = input.get("body").cloned().unwrap_or_else(|| input.clone());
                 let query = input
                     .get("query_params")
                     .cloned()
