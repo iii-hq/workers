@@ -7,6 +7,21 @@
 //!   are first-class on the output lane).
 //! - `guardrails::classify`     — `{ text } → { pii, jailbreak, toxicity, keys_leaked }`
 
+pub const SKILL_ID: &str = "guardrails";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    (
+        "guardrails/check_input",
+        include_str!("../skills/check_input.md"),
+    ),
+    (
+        "guardrails/check_output",
+        include_str!("../skills/check_output.md"),
+    ),
+    ("guardrails/classify", include_str!("../skills/classify.md")),
+];
+
 pub mod register;
 pub mod rules;
 pub mod scan;
