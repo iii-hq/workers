@@ -51,7 +51,8 @@ export function SessionList({ sessions, active, onPick, onNew }: Props) {
       </header>
       {sessions.length === 0 ? (
         <p className="rail-empty">
-          no turns yet. send your first message on the right.
+          The bus is quiet. Address the agent at right and the first turn will
+          appear here.
         </p>
       ) : (
         <ul className="session-list">

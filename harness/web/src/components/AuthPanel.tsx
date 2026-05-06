@@ -1,4 +1,10 @@
-import { FormEvent, forwardRef, useImperativeHandle, useState } from "react";
+import {
+  FormEvent,
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useState,
+} from "react";
 import { bridge, BridgeError } from "../bridge";
 import type { AuthStatus } from "../types";
 
@@ -28,6 +34,13 @@ export const AuthPanel = forwardRef<AuthPanelHandle, Props>(function AuthPanel(
   const [busy, setBusy] = useState(false);
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
+
+  // Status arrives async after the component mounts. If the credential turns
+  // out to be configured (env fallback or pre-existing bus state), collapse
+  // the panel so the chat surface gets full real estate.
+  useEffect(() => {
+    if (configured) setOpen(false);
+  }, [configured]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -68,7 +81,7 @@ export const AuthPanel = forwardRef<AuthPanelHandle, Props>(function AuthPanel(
         <span className="auth-summary-label">credential · {provider}</span>
         <span className="auth-summary-state">
           {configured
-            ? `stored · ${status?.source ?? "unknown"}`
+            ? `held in ${status?.source === "environment" ? "env" : "bus state"}`
             : "no key set"}
         </span>
       </summary>
@@ -87,11 +100,12 @@ export const AuthPanel = forwardRef<AuthPanelHandle, Props>(function AuthPanel(
           onChange={(e) => setKey(e.target.value)}
         />
         <p className="auth-hint">
-          stored on the bus via <code>auth::set_token {`{provider:"${provider}"}`}</code>.
-          Lives only in this engine&rsquo;s state; never persisted to disk by
-          the harness. The harness consults env vars
-          (<code>{provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}</code>)
-          as a fallback.
+          Held in engine state via <code>auth::set_token</code>. Never written
+          to disk. Falls back to{" "}
+          <code>
+            {provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}
+          </code>{" "}
+          if unset.
         </p>
         <button className="btn-primary" disabled={busy || !key.trim()}>
           {busy ? "storing…" : `store ${provider} credential`}

@@ -44,8 +44,14 @@ export function SessionView({ sessionId, messages, loading }: Props) {
   if (!sessionId) {
     return (
       <section className="view view-empty">
-        <h2 className="view-empty-h">no session selected</h2>
-        <p className="view-empty-p">start a new turn or pick one from the rail.</p>
+        <span className="view-empty-eyebrow">{"// no transcript"}</span>
+        <h2 className="view-empty-h">A blank page.</h2>
+        <p className="view-empty-p">
+          Open a session from the sidebar, or address the agent below.
+        </p>
+        <p className="view-empty-foot">
+          You're a solo operator on a local bus. The agent is listening.
+        </p>
       </section>
     );
   }

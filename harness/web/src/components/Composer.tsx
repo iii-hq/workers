@@ -28,8 +28,8 @@ export function Composer({ disabled, onSend }: Props) {
         className="composer-input"
         placeholder={
           disabled
-            ? "set an api key to send messages"
-            : "say something. shift+enter for newline."
+            ? "set a credential to begin"
+            : "address the agent. shift+enter inserts a new line."
         }
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -47,7 +47,10 @@ export function Composer({ disabled, onSend }: Props) {
         className="composer-send"
         disabled={disabled || busy || !text.trim()}
       >
-        {busy ? "sending…" : "send → run::start_and_wait"}
+        <span className="composer-send-mark" aria-hidden>
+          ⏎
+        </span>
+        <span className="composer-send-label">{busy ? "running" : "send"}</span>
       </button>
     </form>
   );
