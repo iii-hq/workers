@@ -5,3 +5,6 @@ deploy: binary
 manifest: Cargo.toml
 bin: mcp
 description: MCP 2025-06-18 Streamable HTTP bridge for the iii engine.
+
+dependencies:
+  skills: "^0.2.1"

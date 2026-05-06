@@ -57,6 +57,15 @@ Feature: pure markdown, URI, and validation helpers
       """
     Then there is no extracted description
 
+  Scenario: extract_description keeps a long first paragraph intact
+    When I extract the description from:
+      """
+      # title
+
+      This is intentionally a long first paragraph that runs past 140 characters so we can verify the description helper preserves the full author text without inserting an ellipsis or truncating midway.
+      """
+    Then the extracted description is "This is intentionally a long first paragraph that runs past 140 characters so we can verify the description helper preserves the full author text without inserting an ellipsis or truncating midway."
+
   # ── truncate_chars ───────────────────────────────────────────────────
 
   Scenario: truncate_chars keeps multibyte characters intact

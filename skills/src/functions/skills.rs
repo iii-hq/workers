@@ -703,7 +703,12 @@ pub fn extract_description(markdown: &str) -> Option<String> {
     if buf.is_empty() {
         return None;
     }
-    Some(truncate_chars(&buf, 140))
+    // Return the first paragraph verbatim. We deliberately do not cap the
+    // length here: the LLM consuming the index needs the full opening
+    // sentence to decide whether to drill into the skill, and the loop
+    // already stops at the first blank line / heading so the buffer is
+    // bounded by the author's paragraph length, not the full body.
+    Some(buf)
 }
 
 pub fn truncate_chars(s: &str, max_chars: usize) -> String {
@@ -1009,12 +1014,25 @@ mod tests {
     }
 
     #[test]
-    fn extract_description_truncates_long_lines() {
+    fn extract_description_keeps_long_first_paragraph() {
+        // The 140-char cap that used to truncate this paragraph mangled
+        // the index bullets surfaced over MCP. The first paragraph must
+        // come back verbatim — the loop already stops at the first
+        // blank line / heading, so length is bounded by the author.
         let body = "x".repeat(200);
         let md = format!("# t\n\n{body}\n");
         let desc = extract_description(&md).unwrap();
-        assert!(desc.ends_with("..."));
-        assert!(desc.chars().count() <= 144);
+        assert_eq!(desc, body);
+        assert!(!desc.contains("..."));
+    }
+
+    #[test]
+    fn extract_description_stops_at_blank_line() {
+        let md = "# t\n\nfirst paragraph here.\n\nsecond paragraph.\n";
+        assert_eq!(
+            extract_description(md).as_deref(),
+            Some("first paragraph here.")
+        );
     }
 
     #[test]
