@@ -47,3 +47,16 @@ topic) must be running on the bus.
 ```bash
 cargo build --release
 ```
+
+## Workspace allowlist composition
+
+Chat clients (e.g. `iii-console`) layer a workspace allowlist on top of `policy-denylist`. The allowlist enforces:
+
+- Filesystem writes restricted to a configured workspace root.
+- Absolute paths outside the workspace are rejected by the SDK wrapper *before* the bus call is dispatched.
+
+`policy-denylist` remains the second layer (deny by tool name regardless of arguments). The two layers compose:
+
+1. SDK wrapper (chat client side) — workspace allowlist on path arguments.
+2. `policy-denylist` (engine side) — deny by tool name (exact match, case-sensitive).
+3. `<ApprovalRow>` (chat UI) — per-call user approval surfaced inline before any write reaches disk.
