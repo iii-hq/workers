@@ -30,10 +30,9 @@ stderr is reserved for logs. stdout is reserved for ACP frames.
 
 | Flag / env | Effect |
 |---|---|
-| `--engine-url` (`-e`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
+| `--engine-url` (`-e`, `IIIACP_ENGINE_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
 | `--debug` (`-d`) | Verbose tracing on stderr. |
 | `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that processes `session/prompt`. Receives `{ sessionId, connId, prompt, respondTopic }` and returns `{ stopReason }`. Falls back to a built-in echo brain. |
-| `--publish-updates` (`IIIACP_PUBLISH_UPDATES`) | Also publish `session/update` notifications to the durable topic `acp:<connId>:session:<sessId>:updates` for external observers. Stdout delivery is always on; this is opt-in fan-out. |
 | `--rbac-tag` | Forwards `x-iii-rbac-tag` on the worker WebSocket so `iii-worker-manager`'s `auth_function_id` can apply policy. |
 
 ## Methods
@@ -67,9 +66,11 @@ connection so concurrent editors don't read each other's sessions.
 
 ## Wire example
 
+Pipe a JSON-RPC frame on stdin, read the reply on stdout:
+
 ```bash
-iii-acp & ; pid=$!
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"demo","version":"0"}}}' >&2
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"demo","version":"0"}}}' \
+  | iii-acp
 ```
 
 Streamed reply on stdout (one frame per line):
@@ -88,17 +89,18 @@ Register a worker that exposes a function with this contract:
   "sessionId": "sess_...",
   "connId": "<connId>",
   "prompt": [ { "type": "text", "text": "..." }, ... ],
-  "respondTopic": "acp:<connId>:session:<sessId>:updates"
+  "respondTopic": "acp:<connId>:updates"
 }
 // response
 { "stopReason": "end_turn" | "max_tokens" | "refusal" | "cancelled" }
 ```
 
-Stream `session/update` notifications by publishing to the `respondTopic` via
-`iii::durable::publish`. The acp worker forwards anything published to that
-topic out to its stdout when `--publish-updates` is set, or skips it when
-your brain runs in the same process and writes notifications inline via the
-trigger response.
+Stream `session/update` chunks by publishing `{ sessionId, update }` payloads
+to the `respondTopic` via `iii::durable::publish`. acp registers one durable
+subscriber per connection on this topic at startup; every published payload
+is decoded and forwarded as a `session/update` JSON-RPC notification on the
+client's stdout. The brain returns synchronously when the turn ends — only
+the final `{ stopReason }` rides on the trigger response.
 
 Then point acp at it:
 

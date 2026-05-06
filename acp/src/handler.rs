@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::DashMap;
-use iii_sdk::III;
+use iii_sdk::{III, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::session::{
-    self, SessionRecord, append_history, append_session_to_index, durable_publish, now_ms,
-    read_history, read_session_index, scope, session_key, state_delete, state_get, state_set,
-    updates_topic,
+    self, SessionRecord, append_history, append_session_to_index, connection_updates_topic,
+    durable_publish, now_ms, read_history, read_session_index, remove_session_from_index, scope,
+    session_history_key, session_key, state_delete, state_get, state_set,
 };
 use crate::transport::Outbound;
 use crate::types::{
@@ -22,30 +22,38 @@ pub struct AcpHandler {
     conn_id: String,
     initialized: AtomicBool,
     cancels: DashMap<String, Arc<AtomicBool>>,
-    update_seq: AtomicU64,
+    update_seq: Arc<AtomicU64>,
     outbound: Arc<Outbound>,
     brain_fn: Option<String>,
-    publish_updates: bool,
+    // Trigger guard: dropping it deregisters the durable subscriber on the
+    // engine. Held for the lifetime of the handler so brain updates keep
+    // flowing.
+    _update_subscriber: Option<iii_sdk::Trigger>,
 }
 
 impl AcpHandler {
-    pub fn new(
-        iii: III,
-        outbound: Arc<Outbound>,
-        brain_fn: Option<String>,
-        publish_updates: bool,
-    ) -> Self {
+    pub fn new(iii: III, outbound: Arc<Outbound>, brain_fn: Option<String>) -> Self {
         let conn_id = Uuid::new_v4().to_string();
+        let update_seq = Arc::new(AtomicU64::new(0));
         tracing::info!(%conn_id, "acp handler initialized");
+
+        // Wire the brain update fan-in only when an external brain is
+        // configured. The echo brain writes session/update notifications
+        // directly via send_notification, so it doesn't need the round trip
+        // through durable publish.
+        let update_subscriber = brain_fn
+            .as_deref()
+            .and_then(|_| register_update_subscriber(&iii, &conn_id, &outbound, &update_seq));
+
         Self {
             iii,
             conn_id,
             initialized: AtomicBool::new(false),
             cancels: DashMap::new(),
-            update_seq: AtomicU64::new(0),
+            update_seq,
             outbound,
             brain_fn,
-            publish_updates,
+            _update_subscriber: update_subscriber,
         }
     }
 
@@ -251,9 +259,43 @@ impl AcpHandler {
 
     async fn session_close(&self, params: Option<Value>) -> Result<(), (i32, String)> {
         let p: SessionLoadParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        let key = session_key(&self.conn_id, &p.session_id);
-        let _ = state_delete(&self.iii, &scope(), &key).await;
-        Ok(())
+        let scope = scope();
+        let mut errs: Vec<String> = Vec::new();
+
+        if let Err(e) = state_delete(
+            &self.iii,
+            &scope,
+            &session_key(&self.conn_id, &p.session_id),
+        )
+        .await
+        {
+            errs.push(format!("session record: {}", e));
+        }
+        if let Err(e) = state_delete(
+            &self.iii,
+            &scope,
+            &session_history_key(&self.conn_id, &p.session_id),
+        )
+        .await
+        {
+            errs.push(format!("history: {}", e));
+        }
+        if let Err(e) = remove_session_from_index(&self.iii, &self.conn_id, &p.session_id).await {
+            errs.push(format!("index: {}", e));
+        }
+
+        // In-flight cancel slot for this session is a process-local concern,
+        // unrelated to engine state. Drop it.
+        self.cancels.remove(&p.session_id);
+
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err((
+                INTERNAL_ERROR,
+                format!("session_close partial failure: {}", errs.join("; ")),
+            ))
+        }
     }
 
     async fn run_brain(
@@ -306,7 +348,11 @@ impl AcpHandler {
         prompt: &[Value],
         abort: Arc<AtomicBool>,
     ) -> String {
-        let respond_topic = updates_topic(&self.conn_id, session_id);
+        // The brain publishes `session/update` payloads to this topic via
+        // `iii::durable::publish`. Our durable subscriber (registered in
+        // AcpHandler::new) decodes them and writes to stdout. Brain returns
+        // `{ stopReason }` synchronously when the turn is over.
+        let respond_topic = connection_updates_topic(&self.conn_id);
         let payload = json!({
             "sessionId": session_id,
             "connId": self.conn_id,
@@ -339,10 +385,6 @@ impl AcpHandler {
     async fn emit_update(&self, session_id: &str, update: Value) {
         let payload = json!({ "sessionId": session_id, "update": update });
         let _ = append_history(&self.iii, &self.conn_id, session_id, update.clone()).await;
-        if self.publish_updates {
-            let topic = updates_topic(&self.conn_id, session_id);
-            let _ = durable_publish(&self.iii, &topic, payload.clone()).await;
-        }
         self.send_notification("session/update", payload).await;
     }
 
@@ -400,6 +442,88 @@ async fn wait_aborted(flag: Arc<AtomicBool>) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+// Register a durable subscriber on the connection's updates topic. The
+// returned Trigger handle MUST be kept alive for the lifetime of the
+// handler — dropping it tears the subscription down on the engine.
+fn register_update_subscriber(
+    iii: &III,
+    conn_id: &str,
+    outbound: &Arc<Outbound>,
+    update_seq: &Arc<AtomicU64>,
+) -> Option<iii_sdk::Trigger> {
+    let fn_id = format!("acp::__on_update::{}", conn_id);
+    let topic = connection_updates_topic(conn_id);
+
+    let outbound_inner = outbound.clone();
+    let seq_inner = update_seq.clone();
+    iii.register_function_with(
+        RegisterFunctionMessage {
+            id: fn_id.clone(),
+            description: Some("ACP brain → stdout fan-in".into()),
+            request_format: Some(json!({
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "update": {}
+                },
+                "required": ["sessionId", "update"]
+            })),
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |input: Value| {
+            let outbound = outbound_inner.clone();
+            let seq = seq_inner.clone();
+            async move {
+                forward_brain_update(&outbound, &seq, input).await;
+                Ok(json!({}))
+            }
+        },
+    );
+
+    match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable::subscriber".to_string(),
+        function_id: fn_id,
+        config: json!({ "topic": topic }),
+        metadata: None,
+    }) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to register acp update subscriber");
+            None
+        }
+    }
+}
+
+// Subscriber payload may arrive bare ({sessionId, update}) or wrapped under
+// a `data` envelope depending on engine version. Accept either.
+async fn forward_brain_update(outbound: &Outbound, seq: &AtomicU64, input: Value) {
+    let body = input.get("data").cloned().unwrap_or(input);
+    let session_id = body.get("sessionId").and_then(|v| v.as_str());
+    let update = body.get("update").cloned();
+    let (Some(sid), Some(up)) = (session_id, update) else {
+        tracing::warn!(?body, "brain update missing sessionId/update");
+        return;
+    };
+    let mut params = json!({ "sessionId": sid, "update": up });
+    let s = seq.fetch_add(1, Ordering::SeqCst);
+    if let Some(obj) = params.as_object_mut() {
+        let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+        if let Some(meta_obj) = meta.as_object_mut() {
+            meta_obj.insert("iii.dev/seq".to_string(), json!(s));
+        }
+    }
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": params,
+    });
+    if let Err(e) = outbound.write(&frame).await {
+        tracing::error!(error = %e, "outbound write failed (brain update)");
     }
 }
 

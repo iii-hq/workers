@@ -20,8 +20,12 @@ pub fn session_history_key(conn_id: &str, session_id: &str) -> String {
     format!("{}:sessions:{}:history", conn_id, session_id)
 }
 
-pub fn updates_topic(conn_id: &str, session_id: &str) -> String {
-    format!("acp:{}:session:{}:updates", conn_id, session_id)
+// One updates topic per connection. External brains publish
+// `{sessionId, update}` payloads here; iii-acp's durable subscriber routes
+// them to the right session output. Per-session topics are avoidable
+// because the subscriber registration cost is per-connection, not per-prompt.
+pub fn connection_updates_topic(conn_id: &str) -> String {
+    format!("acp:{}:updates", conn_id)
 }
 
 pub fn cancel_topic(conn_id: &str, session_id: &str) -> String {
@@ -160,6 +164,22 @@ pub async fn append_session_to_index(
     Ok(())
 }
 
+pub async fn remove_session_from_index(
+    iii: &III,
+    conn_id: &str,
+    session_id: &str,
+) -> Result<(), IIIError> {
+    let scope = scope();
+    let key = session_index_key(conn_id);
+    let idx = state_get(iii, &scope, &key)
+        .await?
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let entry = Value::String(session_id.to_string());
+    let next: Vec<Value> = idx.into_iter().filter(|v| v != &entry).collect();
+    state_set(iii, &scope, &key, Value::Array(next)).await
+}
+
 pub async fn read_session_index(iii: &III, conn_id: &str) -> Result<Vec<String>, IIIError> {
     let scope = scope();
     let key = session_index_key(conn_id);
@@ -193,7 +213,7 @@ mod tests {
 
     #[test]
     fn topics_namespace_globally() {
-        assert_eq!(updates_topic("c1", "s1"), "acp:c1:session:s1:updates");
+        assert_eq!(connection_updates_topic("c1"), "acp:c1:updates");
         assert_eq!(cancel_topic("c1", "s1"), "acp:c1:session:s1:cancel");
     }
 

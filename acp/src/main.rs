@@ -11,7 +11,12 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[command(version)]
 #[command(about = "Agent Client Protocol worker for iii-engine")]
 struct Args {
-    #[arg(long, short = 'e', default_value = "ws://localhost:49134")]
+    #[arg(
+        long,
+        short = 'e',
+        env = "IIIACP_ENGINE_URL",
+        default_value = "ws://localhost:49134"
+    )]
     engine_url: String,
 
     #[arg(long, short = 'd')]
@@ -26,16 +31,6 @@ struct Args {
                 brain when unset."
     )]
     brain_fn: Option<String>,
-
-    #[arg(
-        long,
-        env = "IIIACP_PUBLISH_UPDATES",
-        help = "Also publish session/update notifications to the engine \
-                durable topic acp:<connId>:session:<sessId>:updates so \
-                external observers can subscribe. Stdout delivery is \
-                always on; this is opt-in for fan-out."
-    )]
-    publish_updates: bool,
 
     #[arg(
         long,
@@ -74,12 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker(&args.engine_url, init_opts);
 
     let outbound = Arc::new(transport::Outbound::new());
-    let handler = Arc::new(AcpHandler::new(
-        iii,
-        outbound,
-        args.brain_fn,
-        args.publish_updates,
-    ));
+    let handler = Arc::new(AcpHandler::new(iii, outbound, args.brain_fn));
 
     transport::run_stdio(handler).await?;
 

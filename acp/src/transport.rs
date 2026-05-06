@@ -69,12 +69,26 @@ pub async fn run_stdio(handler: Arc<AcpHandler>) -> anyhow::Result<()> {
                     }
                 };
 
-                // Serial dispatch. ACP is a state machine: initialize must
-                // complete before session/new, session/new before
-                // session/prompt, etc. Concurrent in-flight requests on
-                // independent sessions are a v1 concern. Notifications
-                // stream out via the same Outbound writer regardless.
-                if let Some(reply) = handler.handle(body).await {
+                // Hybrid dispatch:
+                // - state-machine ops (initialize, session/new, ...) run
+                //   serially so handshake ordering and session-existence
+                //   invariants hold.
+                // - session/prompt is long-running (LLM turn). Spawn it so
+                //   stdin keeps reading — otherwise session/cancel can't
+                //   reach the handler until the prompt finishes.
+                // The Outbound writer is locked, so concurrent writes still
+                // produce intact frames.
+                let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                if method == "session/prompt" {
+                    let h = handler.clone();
+                    tokio::spawn(async move {
+                        if let Some(reply) = h.handle(body).await {
+                            if let Err(e) = h.outbound().write(&reply).await {
+                                tracing::error!(error = %e, "stdout write failed");
+                            }
+                        }
+                    });
+                } else if let Some(reply) = handler.handle(body).await {
                     if let Err(e) = handler.outbound().write(&reply).await {
                         tracing::error!(error = %e, "stdout write failed");
                     }
