@@ -44,6 +44,13 @@ pub struct SessionRecord {
     pub mcp_servers: Vec<Value>,
     pub created_at_ms: i64,
     pub last_activity_ms: i64,
+    // Optional ACP mode set via session/set_mode. None until first set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    // Per-session config options set via session/set_config_option. Keys are
+    // configId strings, values are arbitrary JSON.
+    #[serde(default)]
+    pub config_options: serde_json::Map<String, Value>,
 }
 
 pub async fn state_get(iii: &III, scope: &str, key: &str) -> Result<Option<Value>, IIIError> {

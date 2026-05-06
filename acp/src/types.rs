@@ -90,6 +90,32 @@ pub struct SessionCancelParams {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResumeParams {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub cwd: String,
+    #[serde(rename = "mcpServers", default)]
+    pub mcp_servers: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSetModeParams {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "modeId")]
+    pub mode_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSetConfigOptionParams {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "configId")]
+    pub config_id: String,
+    pub value: Value,
+}
+
 pub fn parse<T: for<'de> Deserialize<'de>>(params: Option<Value>) -> Result<T, String> {
     let v = params.ok_or_else(|| "params required".to_string())?;
     serde_json::from_value(v).map_err(|e| format!("invalid params: {}", e))
