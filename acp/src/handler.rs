@@ -557,19 +557,22 @@ async fn forward_agent_event(
     owned: &DashSet<String>,
     payload: Value,
 ) {
-    let session_id = payload.get("group_id").and_then(|v| v.as_str());
-    let Some(sid) = session_id else {
+    // Stream-trigger envelope (engine 0.11.x):
+    //   { type:"stream", streamName, groupId, id, timestamp,
+    //     event: { type: "create"|"update", data: <AgentEvent> } }
+    // Older envelopes used snake_case (group_id / data at top level); we
+    // accept both so this code keeps working if the engine envelope flips.
+    let Some((sid, data)) = extract_event_payload(&payload) else {
         return;
     };
-    if !owned.contains(sid) {
+    if !owned.contains(&sid) {
         return;
     }
-    let data = payload.get("data").cloned().unwrap_or(Value::Null);
     let Some(updates) = translate_agent_event(&data) else {
         return;
     };
     for update in updates {
-        if let Err(e) = append_history(iii, conn_id, sid, update.clone()).await {
+        if let Err(e) = append_history(iii, conn_id, &sid, update.clone()).await {
             tracing::warn!(error = %e, sid, "append_history failed for agent event");
         }
         let mut params = json!({ "sessionId": sid, "update": update });
@@ -589,6 +592,23 @@ async fn forward_agent_event(
             tracing::error!(error = %e, "outbound write failed (agent event)");
         }
     }
+}
+
+// Pull (group_id, AgentEvent) out of the engine's stream-trigger envelope.
+// Accepts both nested camelCase (current) and flat snake_case (older).
+fn extract_event_payload(payload: &Value) -> Option<(String, Value)> {
+    let sid = payload
+        .get("groupId")
+        .or_else(|| payload.get("group_id"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let data = payload
+        .get("event")
+        .and_then(|e| e.get("data"))
+        .cloned()
+        .or_else(|| payload.get("data").cloned())
+        .unwrap_or(Value::Null);
+    Some((sid, data))
 }
 
 // AgentEvent → ACP `session/update.update` payload(s). Returns None when
@@ -616,6 +636,44 @@ fn translate_agent_event(event: &Value) -> Option<Vec<Value>> {
                 "sessionUpdate": session_update,
                 "content": { "type": "text", "text": delta },
             })])
+        }
+        // turn-orchestrator (current head) does not emit message_update
+        // text deltas — provider-router consumes the streaming response
+        // internally and returns the fully-assembled assistant message,
+        // surfaced as a single message_end event. Translate those to one
+        // agent_message_chunk per text content block so Zed renders the
+        // full reply. message_start and tool-result message_end variants
+        // are dropped to avoid duplication.
+        "message_end" => {
+            let message = event.get("message")?;
+            if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+                return None;
+            }
+            let content = message.get("content")?.as_array()?;
+            let chunks: Vec<Value> = content
+                .iter()
+                .filter_map(|cb| {
+                    let cb_type = cb.get("type").and_then(|v| v.as_str())?;
+                    let session_update = match cb_type {
+                        "text" => "agent_message_chunk",
+                        "thinking" => "agent_thought_chunk",
+                        _ => return None,
+                    };
+                    let text = cb.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if text.is_empty() {
+                        return None;
+                    }
+                    Some(json!({
+                        "sessionUpdate": session_update,
+                        "content": { "type": "text", "text": text },
+                    }))
+                })
+                .collect();
+            if chunks.is_empty() {
+                None
+            } else {
+                Some(chunks)
+            }
         }
         "tool_execution_start" => {
             let id = event.get("tool_call_id").and_then(|v| v.as_str())?;
@@ -823,6 +881,36 @@ mod tests {
     fn translate_unknown_event_drops_silently() {
         assert!(translate_agent_event(&json!({ "type": "agent_start" })).is_none());
         assert!(translate_agent_event(&json!({ "type": "turn_start" })).is_none());
+    }
+
+    #[test]
+    fn translate_message_end_assistant_emits_chunk() {
+        let ev = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "hi there" }],
+                "stop_reason": "end",
+                "model": "x", "provider": "y", "timestamp": 0
+            }
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(updates[0]["content"]["text"], "hi there");
+    }
+
+    #[test]
+    fn translate_message_end_user_dropped() {
+        let ev = json!({
+            "type": "message_end",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "x" }],
+                "timestamp": 0
+            }
+        });
+        assert!(translate_agent_event(&ev).is_none());
     }
 
     #[test]
