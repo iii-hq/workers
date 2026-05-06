@@ -30,35 +30,16 @@ WORKERS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS_DIR="$WORKERS_REPO/harness"
 
 WORKERS=(
-  turn-orchestrator provider-router context-compaction
-  session-tree session-corpus document-extract models-catalog
-  auth-credentials auth-rbac audit-log policy-denylist
-  dlp-scrubber guardrails llm-budget
-  session-inbox hook-fanout
+  turn-orchestrator provider-router
+  session-tree session-inbox
+  models-catalog hook-fanout policy-denylist
   shell-bash shell-filesystem subagent
-  provider-cli provider-anthropic provider-openai
+  provider-anthropic provider-openai
+  auth-credentials llm-budget
 )
 
 ensure_dirs() {
   mkdir -p "$DEMO_DIR/pids" "$DEMO_DIR/logs"
-  ensure_auth_secret
-}
-
-# auth-rbac refuses to start without AUTH_HMAC_SECRET. Generate once and
-# persist so restarts keep the same secret (existing tokens stay valid).
-ensure_auth_secret() {
-  local secret_file="$DEMO_DIR/auth.secret"
-  if [[ ! -s "$secret_file" ]]; then
-    if command -v openssl >/dev/null; then
-      openssl rand -hex 32 > "$secret_file"
-    else
-      head -c 32 /dev/urandom | xxd -p -c 64 > "$secret_file"
-    fi
-    chmod 600 "$secret_file"
-    echo "==> generated $secret_file (AUTH_HMAC_SECRET for auth-rbac)"
-  fi
-  AUTH_HMAC_SECRET="$(cat "$secret_file")"
-  export AUTH_HMAC_SECRET
 }
 
 cmd_build() {
