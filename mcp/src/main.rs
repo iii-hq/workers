@@ -1,3 +1,10 @@
+//! `mcp` binary entry. Connects to the iii engine, registers the
+//! [`mcp::handler`](mcp::functions::FUNCTION_ID) function plus an HTTP
+//! trigger at the configured `api_path`, then sleeps on Ctrl+C.
+//!
+//! All real logic lives under [`mcp`]; tests under `tests/` reuse the
+//! same modules to drive the bridge in-process.
+
 use anyhow::Result;
 use clap::Parser;
 use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterTriggerInput, WorkerMetadata};
@@ -5,14 +12,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-mod config;
-mod functions;
-mod handler;
-mod jsonrpc;
-mod manifest;
-mod skills_bridge;
-mod tools;
-mod transport;
+use iii_mcp::{config, functions, manifest};
 
 use crate::config::McpConfig;
 

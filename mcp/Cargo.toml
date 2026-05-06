@@ -10,6 +10,10 @@ publish = false
 name = "mcp"
 path = "src/main.rs"
 
+[lib]
+name = "iii_mcp"
+path = "src/lib.rs"
+
 [dependencies]
 iii-sdk = "=0.11.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
@@ -28,3 +32,21 @@ serde_json = "1"
 which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# BDD test runner. Drives Gherkin .feature files under tests/features/.
+cucumber = "0.22"
+# Used by step defs that need to drive multiple awaits in fixed order.
+futures = "0.3"
+# Per-scenario unique ids so concurrent BDD runs don't collide.
+uuid = { version = "1", features = ["v4"] }
+
+# Single BDD entry point. cucumber needs full control of the runner, so
+# `harness = false` is required. All .feature files under
+# `tests/features/**` are discovered at runtime; tags (`@pure`, `@engine`,
+# `@manifest`, `@initialize`, ...) let you filter to a subset:
+#
+#   cargo test --test bdd                          # everything
+#   cargo test --test bdd -- --tags @pure          # no engine required
+#   cargo test --test bdd -- --tags @initialize    # one feature group
+[[test]]
+name = "bdd"
+harness = false
