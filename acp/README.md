@@ -32,7 +32,11 @@ stderr is reserved for logs. stdout is reserved for ACP frames.
 |---|---|
 | `--engine-url` (`-e`, `IIIACP_ENGINE_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
 | `--debug` (`-d`) | Verbose tracing on stderr. |
-| `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that processes `session/prompt`. Receives `{ sessionId, connId, prompt, respondTopic }` and returns `{ stopReason }`. Falls back to a built-in echo brain. |
+| `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain. Canonical value is `run::start_and_wait` (turn-orchestrator). |
+| `--use-canonical-brain` (`IIIACP_USE_CANONICAL_BRAIN`) | Shortcut for `--brain-fn run::start_and_wait`. |
+| `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain (e.g. `claude-opus-4-7`). |
+| `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to the brain (e.g. `anthropic`). Routes to `provider::<provider>::complete`. |
+| `--system-prompt` (`IIIACP_SYSTEM_PROMPT`) | System prompt prepended to every turn. |
 | `--rbac-tag` | Forwards `x-iii-rbac-tag` on the worker WebSocket so `iii-worker-manager`'s `auth_function_id` can apply policy. |
 
 ## Methods
@@ -81,26 +85,83 @@ Streamed reply on stdout (one frame per line):
 
 ## Plugging a real brain
 
-Register a worker that exposes a function with this contract:
+iii-acp talks to the canonical iii brain shape used by `turn-orchestrator`
+and every provider worker. Any function with this input contract works
+as a drop-in brain — no adapter required.
+
+**Brain function input** (forwarded as `iii.trigger` payload):
 
 ```jsonc
-// payload
 {
-  "sessionId": "sess_...",
-  "connId": "<connId>",
-  "prompt": [ { "type": "text", "text": "..." }, ... ],
-  "respondTopic": "acp:<connId>:updates"
+  "session_id": "sess_...",          // ACP sessionId reused as run id
+  "messages": [
+    {
+      "role": "user",
+      "content": [{"type": "text", "text": "..."}, ...],
+      "timestamp": 1234567890
+    }
+  ],
+  "model": "claude-opus-4-7",        // when --model is set
+  "provider": "anthropic",           // when --provider is set
+  "system_prompt": "You are ...",    // when --system-prompt is set
+  "timeout_ms": 600000
 }
-// response
-{ "stopReason": "end_turn" | "max_tokens" | "refusal" | "cancelled" }
 ```
 
-Stream `session/update` chunks by publishing `{ sessionId, update }` payloads
-to the `respondTopic` via `iii::durable::publish`. acp registers one durable
-subscriber per connection on this topic at startup; every published payload
-is decoded and forwarded as a `session/update` JSON-RPC notification on the
-client's stdout. The brain returns synchronously when the turn ends — only
-the final `{ stopReason }` rides on the trigger response.
+**Brain function output:**
+
+```jsonc
+{
+  "session_id": "sess_...",
+  "messages": [...],                 // full transcript including assistant tail
+  "turn_count": 1
+}
+```
+
+iii-acp picks the ACP `stopReason` from the final assistant message's
+`stop_reason` field (`end` → `end_turn`, `length` → `max_tokens`,
+`aborted` → `cancelled`, `error` → `refusal`).
+
+**Streaming.** While the brain runs, it emits `AgentEvent` frames into the
+canonical `agent::events` stream (group_id = session_id). iii-acp registers
+**one** stream subscriber per connection at startup and translates each
+event:
+
+| `AgentEvent` | ACP `session/update.update.sessionUpdate` |
+|---|---|
+| `message_update { llm_event: text_delta }` | `agent_message_chunk` |
+| `message_update { llm_event: thinking_delta }` | `agent_thought_chunk` |
+| `tool_execution_start` | `tool_call` (status: `in_progress`) |
+| `tool_execution_end` | `tool_call_update` (status: `completed`/`failed`) |
+| other | dropped (no ACP equivalent) |
+
+This is the same stream `context-compaction`, every provider worker, and
+any other observer subscribes to. **No bespoke iii-acp publish protocol.**
+
+### Wire to turn-orchestrator
+
+```bash
+iii worker add turn-orchestrator provider-router provider-anthropic auth-credentials
+iii-acp --use-canonical-brain --model claude-opus-4-7 --provider anthropic
+```
+
+Or from Zed `agent_servers`:
+
+```jsonc
+{
+  "agent_servers": {
+    "iii-acp": {
+      "type": "custom",
+      "command": "/path/to/iii-acp",
+      "env": {
+        "IIIACP_USE_CANONICAL_BRAIN": "1",
+        "IIIACP_MODEL": "claude-opus-4-7",
+        "IIIACP_PROVIDER": "anthropic"
+      }
+    }
+  }
+}
+```
 
 Then point acp at it:
 

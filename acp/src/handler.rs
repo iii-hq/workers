@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use dashmap::DashMap;
-use iii_sdk::{III, RegisterFunctionMessage, RegisterTriggerInput};
+use dashmap::{DashMap, DashSet};
+use iii_sdk::{FunctionRef, III, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::session::{
-    self, SessionRecord, append_history, append_session_to_index, connection_updates_topic,
+    self, AGENT_EVENTS_STREAM, SessionRecord, append_history, append_session_to_index,
     durable_publish, now_ms, read_history, read_session_index, remove_session_from_index, scope,
     session_history_key, session_key, state_delete, state_get, state_set,
 };
@@ -17,6 +17,12 @@ use crate::types::{
     SessionCancelParams, SessionLoadParams, SessionNewParams, SessionPromptParams, parse,
 };
 
+// Canonical iii brain function. Any worker exposing this id with the
+// turn-orchestrator wire shape (session_id, messages, model, ...) can
+// drive iii-acp without an adapter.
+pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
+const BRAIN_TIMEOUT_MS: u64 = 600_000;
+
 pub struct AcpHandler {
     iii: III,
     conn_id: String,
@@ -25,25 +31,42 @@ pub struct AcpHandler {
     update_seq: Arc<AtomicU64>,
     outbound: Arc<Outbound>,
     brain_fn: Option<String>,
-    // Trigger guard: dropping it deregisters the durable subscriber on the
-    // engine. Held for the lifetime of the handler so brain updates keep
-    // flowing.
-    _update_subscriber: Option<iii_sdk::Trigger>,
+    brain_model: Option<String>,
+    brain_provider: Option<String>,
+    brain_system_prompt: Option<String>,
+    // Session ids owned by this connection. The agent::events stream
+    // subscriber filters by this set so we don't forward events for
+    // sessions another iii-acp subprocess owns. Also written by
+    // session/new and session/close so close cleans up.
+    owned_sessions: Arc<DashSet<String>>,
+    // Trigger + function guards. Dropping them tears the registration
+    // down on the engine, so they live for the lifetime of the handler.
+    _event_subscriber: Option<iii_sdk::Trigger>,
+    _event_function: Option<FunctionRef>,
+}
+
+pub struct BrainConfig {
+    pub function_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub system_prompt: Option<String>,
 }
 
 impl AcpHandler {
-    pub fn new(iii: III, outbound: Arc<Outbound>, brain_fn: Option<String>) -> Self {
+    pub fn new(iii: III, outbound: Arc<Outbound>, brain: BrainConfig) -> Self {
         let conn_id = Uuid::new_v4().to_string();
         let update_seq = Arc::new(AtomicU64::new(0));
+        let owned_sessions: Arc<DashSet<String>> = Arc::new(DashSet::new());
         tracing::info!(%conn_id, "acp handler initialized");
 
-        // Wire the brain update fan-in only when an external brain is
-        // configured. The echo brain writes session/update notifications
-        // directly via send_notification, so it doesn't need the round trip
-        // through durable publish.
-        let update_subscriber = brain_fn
-            .as_deref()
-            .and_then(|_| register_update_subscriber(&iii, &conn_id, &outbound, &update_seq));
+        // Subscribe to the canonical agent::events stream once when an
+        // external brain is configured. Echo brain bypasses (it emits
+        // session/update directly via send_notification).
+        let (event_subscriber, event_function) = if brain.function_id.is_some() {
+            register_event_subscriber(&iii, &conn_id, &outbound, &update_seq, &owned_sessions)
+        } else {
+            (None, None)
+        };
 
         Self {
             iii,
@@ -52,8 +75,13 @@ impl AcpHandler {
             cancels: DashMap::new(),
             update_seq,
             outbound,
-            brain_fn,
-            _update_subscriber: update_subscriber,
+            brain_fn: brain.function_id,
+            brain_model: brain.model,
+            brain_provider: brain.provider,
+            brain_system_prompt: brain.system_prompt,
+            owned_sessions,
+            _event_subscriber: event_subscriber,
+            _event_function: event_function,
         }
     }
 
@@ -142,6 +170,7 @@ impl AcpHandler {
         append_session_to_index(&self.iii, &self.conn_id, &session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        self.owned_sessions.insert(session_id.clone());
         Ok(json!({ "sessionId": session_id }))
     }
 
@@ -285,8 +314,10 @@ impl AcpHandler {
         }
 
         // In-flight cancel slot for this session is a process-local concern,
-        // unrelated to engine state. Drop it.
+        // unrelated to engine state. Drop it. Same for session ownership —
+        // any further agent::events for this session are foreign now.
         self.cancels.remove(&p.session_id);
+        self.owned_sessions.remove(&p.session_id);
 
         if errs.is_empty() {
             Ok(())
@@ -348,33 +379,46 @@ impl AcpHandler {
         prompt: &[Value],
         abort: Arc<AtomicBool>,
     ) -> String {
-        // The brain publishes `session/update` payloads to this topic via
-        // `iii::durable::publish`. Our durable subscriber (registered in
-        // AcpHandler::new) decodes them and writes to stdout. Brain returns
-        // `{ stopReason }` synchronously when the turn is over.
-        let respond_topic = connection_updates_topic(&self.conn_id);
-        let payload = json!({
-            "sessionId": session_id,
-            "connId": self.conn_id,
-            "prompt": prompt,
-            "respondTopic": respond_topic,
+        // Canonical iii brain shape: feed run::start_and_wait (or any
+        // function with the same input contract) a User message built
+        // from ACP prompt content blocks. The brain emits AgentEvent
+        // frames into agent::events/<session_id>; our stream subscriber
+        // (registered in AcpHandler::new) translates them to ACP
+        // session/update notifications on stdout. The brain returns
+        // synchronously with the final transcript when the turn ends.
+        let user_msg = json!({
+            "role": "user",
+            "content": acp_prompt_to_content_blocks(prompt),
+            "timestamp": now_ms(),
         });
+
+        let mut payload = json!({
+            "session_id": session_id,
+            "messages": [user_msg],
+            "timeout_ms": BRAIN_TIMEOUT_MS,
+        });
+        if let Some(model) = self.brain_model.as_deref() {
+            payload["model"] = json!(model);
+        }
+        if let Some(provider) = self.brain_provider.as_deref() {
+            payload["provider"] = json!(provider);
+        }
+        if let Some(sys) = self.brain_system_prompt.as_deref() {
+            payload["system_prompt"] = json!(sys);
+        }
+
         let req = iii_sdk::TriggerRequest {
             function_id: fn_id.to_string(),
             payload,
             action: None,
-            timeout_ms: Some(120_000),
+            timeout_ms: Some(BRAIN_TIMEOUT_MS + 5_000),
         };
         let res = tokio::select! {
             r = self.iii.trigger(req) => r,
             _ = wait_aborted(abort.clone()) => return "cancelled".to_string(),
         };
         match res {
-            Ok(v) => v
-                .get("stopReason")
-                .and_then(|s| s.as_str())
-                .unwrap_or("end_turn")
-                .to_string(),
+            Ok(v) => derive_stop_reason(&v).unwrap_or("end_turn").to_string(),
             Err(e) => {
                 tracing::error!(error = %e, fn_id, "external brain failed");
                 "refusal".to_string()
@@ -445,102 +489,236 @@ async fn wait_aborted(flag: Arc<AtomicBool>) {
     }
 }
 
-// Register a durable subscriber on the connection's updates topic. The
-// returned Trigger handle MUST be kept alive for the lifetime of the
-// handler — dropping it tears the subscription down on the engine.
-fn register_update_subscriber(
+// Register a stream subscriber on the canonical `agent::events` stream.
+// Both function ref and trigger handle are returned so AcpHandler can
+// hold them; dropping either tears the registration down.
+//
+// The same stream is used by `turn-orchestrator`, every provider worker,
+// `context-compaction`, etc. iii-acp filters frames by group_id (the
+// session_id) against the per-process owned_sessions set so multiple
+// iii-acp subprocesses don't fight over the same events.
+fn register_event_subscriber(
     iii: &III,
     conn_id: &str,
     outbound: &Arc<Outbound>,
     update_seq: &Arc<AtomicU64>,
-) -> Option<iii_sdk::Trigger> {
-    let fn_id = format!("acp::__on_update::{}", conn_id);
-    let topic = connection_updates_topic(conn_id);
+    owned_sessions: &Arc<DashSet<String>>,
+) -> (Option<iii_sdk::Trigger>, Option<FunctionRef>) {
+    let fn_id = format!("acp::__on_event::{}", conn_id);
 
     let outbound_inner = outbound.clone();
     let seq_inner = update_seq.clone();
     let iii_inner = iii.clone();
     let conn_id_inner = conn_id.to_string();
-    iii.register_function_with(
-        RegisterFunctionMessage {
-            id: fn_id.clone(),
-            description: Some("ACP brain → stdout fan-in".into()),
-            request_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "sessionId": { "type": "string" },
-                    "update": {}
-                },
-                "required": ["sessionId", "update"]
-            })),
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        move |input: Value| {
+    let owned_inner = owned_sessions.clone();
+    let function = iii.register_function((
+        RegisterFunctionMessage::with_id(fn_id.clone())
+            .with_description("ACP agent::events → stdout fan-in".into()),
+        move |payload: Value| {
             let outbound = outbound_inner.clone();
             let seq = seq_inner.clone();
             let iii = iii_inner.clone();
             let conn_id = conn_id_inner.clone();
+            let owned = owned_inner.clone();
             async move {
-                forward_brain_update(&iii, &conn_id, &outbound, &seq, input).await;
-                Ok(json!({}))
+                forward_agent_event(&iii, &conn_id, &outbound, &seq, &owned, payload).await;
+                Ok(json!({ "ok": true }))
             }
         },
-    );
+    ));
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "durable::subscriber".to_string(),
+    let trigger = match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "stream".into(),
         function_id: fn_id,
-        config: json!({ "topic": topic }),
+        config: json!({ "stream_name": AGENT_EVENTS_STREAM }),
         metadata: None,
     }) {
         Ok(t) => Some(t),
         Err(e) => {
-            tracing::error!(error = %e, "failed to register acp update subscriber");
+            tracing::error!(error = %e, "failed to register acp event stream subscriber");
             None
         }
-    }
+    };
+
+    (trigger, Some(function))
 }
 
-// Subscriber payload may arrive bare ({sessionId, update}) or wrapped under
-// a `data` envelope depending on engine version. Accept either.
-async fn forward_brain_update(
+// Stream-trigger envelope: `{ stream_name, group_id, item_id, data }`.
+// `group_id` is the session_id; `data` is an `AgentEvent` JSON.
+//
+// Translates the iii AgentEvent shape to the ACP `session/update` shape
+// and writes it to stdout. Frames for sessions we don't own (another
+// connection's editor, or sessions closed mid-flight) are skipped.
+async fn forward_agent_event(
     iii: &III,
     conn_id: &str,
     outbound: &Outbound,
     seq: &AtomicU64,
-    input: Value,
+    owned: &DashSet<String>,
+    payload: Value,
 ) {
-    let body = input.get("data").cloned().unwrap_or(input);
-    let session_id = body.get("sessionId").and_then(|v| v.as_str());
-    let update = body.get("update").cloned();
-    let (Some(sid), Some(up)) = (session_id, update) else {
-        tracing::warn!(?body, "brain update missing sessionId/update");
+    let session_id = payload.get("group_id").and_then(|v| v.as_str());
+    let Some(sid) = session_id else {
         return;
     };
-    // Persist the update before emitting so session/load replay sees brain
-    // chunks too. Same format the echo brain stores via append_history:
-    // the inner `update` value, not the params wrapper.
-    if let Err(e) = append_history(iii, conn_id, sid, up.clone()).await {
-        tracing::warn!(error = %e, sid, "append_history failed for brain update");
+    if !owned.contains(sid) {
+        return;
     }
-    let mut params = json!({ "sessionId": sid, "update": up });
-    let s = seq.fetch_add(1, Ordering::SeqCst);
-    if let Some(obj) = params.as_object_mut() {
-        let meta = obj.entry("_meta").or_insert_with(|| json!({}));
-        if let Some(meta_obj) = meta.as_object_mut() {
-            meta_obj.insert("iii.dev/seq".to_string(), json!(s));
+    let data = payload.get("data").cloned().unwrap_or(Value::Null);
+    let Some(updates) = translate_agent_event(&data) else {
+        return;
+    };
+    for update in updates {
+        if let Err(e) = append_history(iii, conn_id, sid, update.clone()).await {
+            tracing::warn!(error = %e, sid, "append_history failed for agent event");
+        }
+        let mut params = json!({ "sessionId": sid, "update": update });
+        let s = seq.fetch_add(1, Ordering::SeqCst);
+        if let Some(obj) = params.as_object_mut() {
+            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+            if let Some(meta_obj) = meta.as_object_mut() {
+                meta_obj.insert("iii.dev/seq".to_string(), json!(s));
+            }
+        }
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": params,
+        });
+        if let Err(e) = outbound.write(&frame).await {
+            tracing::error!(error = %e, "outbound write failed (agent event)");
         }
     }
-    let frame = json!({
-        "jsonrpc": "2.0",
-        "method": "session/update",
-        "params": params,
-    });
-    if let Err(e) = outbound.write(&frame).await {
-        tracing::error!(error = %e, "outbound write failed (brain update)");
+}
+
+// AgentEvent → ACP `session/update.update` payload(s). Returns None when
+// the event doesn't map to a user-visible update (e.g., AgentStart,
+// TurnStart — useful internally but no ACP equivalent).
+fn translate_agent_event(event: &Value) -> Option<Vec<Value>> {
+    let kind = event.get("type").and_then(|v| v.as_str())?;
+    match kind {
+        "message_update" => {
+            let llm_event = event.get("llm_event")?;
+            let llm_kind = llm_event.get("type").and_then(|v| v.as_str())?;
+            let delta = llm_event
+                .get("delta")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if delta.is_empty() {
+                return None;
+            }
+            let session_update = match llm_kind {
+                "text_delta" => "agent_message_chunk",
+                "thinking_delta" => "agent_thought_chunk",
+                _ => return None,
+            };
+            Some(vec![json!({
+                "sessionUpdate": session_update,
+                "content": { "type": "text", "text": delta },
+            })])
+        }
+        "tool_execution_start" => {
+            let id = event.get("tool_call_id").and_then(|v| v.as_str())?;
+            let name = event.get("tool_name").and_then(|v| v.as_str())?;
+            let args = event.get("args").cloned().unwrap_or(json!({}));
+            Some(vec![json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": format!("Running {}", name),
+                "kind": tool_kind(name),
+                "status": "in_progress",
+                "rawInput": args,
+            })])
+        }
+        "tool_execution_end" => {
+            let id = event.get("tool_call_id").and_then(|v| v.as_str())?;
+            let is_error = event
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let result = event.get("result").cloned().unwrap_or(Value::Null);
+            Some(vec![json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": id,
+                "status": if is_error { "failed" } else { "completed" },
+                "rawOutput": result,
+            })])
+        }
+        _ => None,
     }
+}
+
+// Map iii tool name → ACP ToolKind hint. Best-effort heuristics; default
+// to `other` so unknown tools still surface.
+fn tool_kind(name: &str) -> &'static str {
+    let n = name.to_ascii_lowercase();
+    match n.as_str() {
+        s if s.contains("read") || s.contains("cat") || s.contains("grep") => "read",
+        s if s.contains("write") || s.contains("edit") || s.contains("patch") => "edit",
+        s if s.contains("delete") || s.contains("rm") => "delete",
+        s if s.contains("move") || s.contains("rename") => "move",
+        s if s.contains("search") || s.contains("find") => "search",
+        s if s.contains("exec")
+            || s.contains("bash")
+            || s.contains("shell")
+            || s.contains("run") =>
+        {
+            "execute"
+        }
+        s if s.contains("think") || s.contains("plan") => "think",
+        s if s.contains("fetch") || s.contains("http") || s.contains("curl") => "fetch",
+        _ => "other",
+    }
+}
+
+// Build ACP-shape ContentBlock array from the ACP prompt content blocks.
+// Currently passes text and resource-text through; non-text blocks
+// (image, audio) become text placeholders so the brain still gets
+// something — refine when iii content types catch up.
+fn acp_prompt_to_content_blocks(prompt: &[Value]) -> Vec<Value> {
+    prompt
+        .iter()
+        .filter_map(|p| {
+            let kind = p.get("type").and_then(|v| v.as_str())?;
+            match kind {
+                "text" => p
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|t| json!({ "type": "text", "text": t })),
+                "resource" => {
+                    let r = p.get("resource")?;
+                    let text = r.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                    Some(json!({
+                        "type": "text",
+                        "text": format!("<resource uri=\"{uri}\">\n{text}\n</resource>"),
+                    }))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+// Read run::start_and_wait return shape and pick a stop reason for ACP.
+// Result envelope: { session_id, messages, turn_count }. The final
+// assistant message in `messages` carries iii's `stop_reason`; map to
+// ACP's vocabulary.
+fn derive_stop_reason(result: &Value) -> Option<&'static str> {
+    let messages = result.get("messages")?.as_array()?;
+    let last_assistant = messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))?;
+    let iii_reason = last_assistant.get("stop_reason").and_then(|v| v.as_str())?;
+    Some(match iii_reason {
+        "end" => "end_turn",
+        "length" => "max_tokens",
+        "tool" => "end_turn",
+        "aborted" => "cancelled",
+        "error" => "refusal",
+        _ => "end_turn",
+    })
 }
 
 #[cfg(test)]
@@ -575,5 +753,117 @@ mod tests {
             json!({"type": "text", "text": "ok"}),
         ];
         assert_eq!(prompt_to_text(&p), "ok");
+    }
+
+    #[test]
+    fn translate_text_delta_to_agent_message_chunk() {
+        let ev = json!({
+            "type": "message_update",
+            "llm_event": { "type": "text_delta", "delta": "hello" }
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(updates[0]["content"]["text"], "hello");
+    }
+
+    #[test]
+    fn translate_thinking_delta_to_thought_chunk() {
+        let ev = json!({
+            "type": "message_update",
+            "llm_event": { "type": "thinking_delta", "delta": "musing..." }
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates[0]["sessionUpdate"], "agent_thought_chunk");
+    }
+
+    #[test]
+    fn translate_tool_start_to_tool_call() {
+        let ev = json!({
+            "type": "tool_execution_start",
+            "tool_call_id": "tc1",
+            "tool_name": "shell::exec",
+            "args": { "cmd": "ls" }
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates[0]["sessionUpdate"], "tool_call");
+        assert_eq!(updates[0]["toolCallId"], "tc1");
+        assert_eq!(updates[0]["kind"], "execute");
+        assert_eq!(updates[0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn translate_tool_end_marks_completed() {
+        let ev = json!({
+            "type": "tool_execution_end",
+            "tool_call_id": "tc1",
+            "tool_name": "shell::exec",
+            "result": { "stdout": "ok" },
+            "is_error": false
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates[0]["sessionUpdate"], "tool_call_update");
+        assert_eq!(updates[0]["status"], "completed");
+    }
+
+    #[test]
+    fn translate_tool_end_marks_failed_on_error() {
+        let ev = json!({
+            "type": "tool_execution_end",
+            "tool_call_id": "tc1",
+            "tool_name": "x",
+            "result": null,
+            "is_error": true
+        });
+        let updates = translate_agent_event(&ev).unwrap();
+        assert_eq!(updates[0]["status"], "failed");
+    }
+
+    #[test]
+    fn translate_unknown_event_drops_silently() {
+        assert!(translate_agent_event(&json!({ "type": "agent_start" })).is_none());
+        assert!(translate_agent_event(&json!({ "type": "turn_start" })).is_none());
+    }
+
+    #[test]
+    fn derive_stop_reason_maps_iii_to_acp() {
+        let result = json!({
+            "messages": [
+                { "role": "user", "content": [] },
+                { "role": "assistant", "stop_reason": "end" }
+            ]
+        });
+        assert_eq!(derive_stop_reason(&result), Some("end_turn"));
+
+        let result = json!({
+            "messages": [{ "role": "assistant", "stop_reason": "length" }]
+        });
+        assert_eq!(derive_stop_reason(&result), Some("max_tokens"));
+
+        let result = json!({
+            "messages": [{ "role": "assistant", "stop_reason": "aborted" }]
+        });
+        assert_eq!(derive_stop_reason(&result), Some("cancelled"));
+    }
+
+    #[test]
+    fn acp_prompt_to_content_blocks_passes_text() {
+        let p = vec![json!({"type": "text", "text": "hello"})];
+        let cb = acp_prompt_to_content_blocks(&p);
+        assert_eq!(cb.len(), 1);
+        assert_eq!(cb[0]["type"], "text");
+        assert_eq!(cb[0]["text"], "hello");
+    }
+
+    #[test]
+    fn acp_prompt_to_content_blocks_inlines_resource() {
+        let p = vec![json!({
+            "type": "resource",
+            "resource": { "uri": "file:///x", "text": "contents" }
+        })];
+        let cb = acp_prompt_to_content_blocks(&p);
+        let s = cb[0]["text"].as_str().unwrap();
+        assert!(s.contains("file:///x"));
+        assert!(s.contains("contents"));
     }
 }

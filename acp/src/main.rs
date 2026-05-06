@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use iii_acp::handler::AcpHandler;
+use iii_acp::handler::{AcpHandler, BrainConfig, DEFAULT_BRAIN_FN};
 use iii_acp::transport;
 use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -25,12 +25,47 @@ struct Args {
     #[arg(
         long,
         env = "IIIACP_BRAIN_FN",
-        help = "iii function id that processes session/prompt. \
-                Receives { sessionId, connId, prompt, respondTopic } and \
-                returns { stopReason }. Falls back to a built-in echo \
-                brain when unset."
+        help = "iii function id that processes session/prompt. Defaults to \
+                run::start_and_wait when --use-canonical-brain is set; off \
+                otherwise (built-in echo brain). Any function with the \
+                turn-orchestrator wire shape (session_id, messages, model, \
+                ...) emitting AgentEvent frames into the agent::events \
+                stream will work."
     )]
     brain_fn: Option<String>,
+
+    #[arg(
+        long,
+        env = "IIIACP_USE_CANONICAL_BRAIN",
+        help = "Shortcut for --brain-fn run::start_and_wait. Wires iii-acp \
+                straight to turn-orchestrator. Ignored if --brain-fn is \
+                already set."
+    )]
+    use_canonical_brain: bool,
+
+    #[arg(
+        long,
+        env = "IIIACP_MODEL",
+        help = "Model id passed to the brain (e.g., claude-opus-4-7). \
+                Required when the brain talks to a multi-model provider."
+    )]
+    model: Option<String>,
+
+    #[arg(
+        long,
+        env = "IIIACP_PROVIDER",
+        help = "Provider id passed to the brain (e.g., anthropic, openai). \
+                Routes to the matching provider::<provider>::complete worker."
+    )]
+    provider: Option<String>,
+
+    #[arg(
+        long,
+        env = "IIIACP_SYSTEM_PROMPT",
+        help = "System prompt prepended to the agent's transcript on every \
+                session/prompt turn."
+    )]
+    system_prompt: Option<String>,
 
     #[arg(
         long,
@@ -69,7 +104,20 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker(&args.engine_url, init_opts);
 
     let outbound = Arc::new(transport::Outbound::new());
-    let handler = Arc::new(AcpHandler::new(iii, outbound, args.brain_fn));
+    let brain_fn = args.brain_fn.or_else(|| {
+        args.use_canonical_brain
+            .then(|| DEFAULT_BRAIN_FN.to_string())
+    });
+    let handler = Arc::new(AcpHandler::new(
+        iii,
+        outbound,
+        BrainConfig {
+            function_id: brain_fn,
+            model: args.model,
+            provider: args.provider,
+            system_prompt: args.system_prompt,
+        },
+    ));
 
     transport::run_stdio(handler).await?;
 

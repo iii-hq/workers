@@ -20,13 +20,11 @@ pub fn session_history_key(conn_id: &str, session_id: &str) -> String {
     format!("{}:sessions:{}:history", conn_id, session_id)
 }
 
-// One updates topic per connection. External brains publish
-// `{sessionId, update}` payloads here; iii-acp's durable subscriber routes
-// them to the right session output. Per-session topics are avoidable
-// because the subscriber registration cost is per-connection, not per-prompt.
-pub fn connection_updates_topic(conn_id: &str) -> String {
-    format!("acp:{}:updates", conn_id)
-}
+// Streaming wire = the iii ecosystem's `agent::events` stream. No
+// per-connection topic exists. Brains (turn-orchestrator and any
+// drop-in replacement) emit AgentEvent frames into that stream with
+// group_id = session_id; iii-acp subscribes once and routes by group.
+pub const AGENT_EVENTS_STREAM: &str = "agent::events";
 
 pub fn cancel_topic(conn_id: &str, session_id: &str) -> String {
     format!("acp:{}:session:{}:cancel", conn_id, session_id)
@@ -213,7 +211,7 @@ mod tests {
 
     #[test]
     fn topics_namespace_globally() {
-        assert_eq!(connection_updates_topic("c1"), "acp:c1:updates");
+        assert_eq!(AGENT_EVENTS_STREAM, "agent::events");
         assert_eq!(cancel_topic("c1", "s1"), "acp:c1:session:s1:cancel");
     }
 
