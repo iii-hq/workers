@@ -17,10 +17,7 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
         .ok_or_else(|| IIIError::Handler("missing required arg: path".into()))?
         .to_string();
     let bytes = decode_content(args)?;
-    let parents = args
-        .get("parents")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    let parents = args.get("parents").and_then(Value::as_bool).unwrap_or(true);
 
     if parents {
         if let Some(parent) = std::path::Path::new(&path).parent() {

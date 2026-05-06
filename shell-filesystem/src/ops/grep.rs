@@ -56,9 +56,10 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     }
     cmd.arg("--").arg(&pattern).arg(&path);
 
-    let output = cmd.output().await.map_err(|e| {
-        IIIError::Handler(format!("grep failed: {e}"))
-    })?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| IIIError::Handler(format!("grep failed: {e}")))?;
 
     // grep exits 1 when no matches, 2 on error — both are acceptable here.
     let stdout = String::from_utf8_lossy(&output.stdout);

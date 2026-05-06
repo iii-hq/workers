@@ -13,10 +13,7 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| IIIError::Handler("missing required arg: path".into()))?
         .to_string();
-    let parents = args
-        .get("parents")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    let parents = args.get("parents").and_then(Value::as_bool).unwrap_or(true);
 
     let result = if parents {
         tokio::fs::create_dir_all(&path).await

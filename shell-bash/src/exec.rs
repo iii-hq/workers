@@ -86,11 +86,8 @@ pub async fn execute_with_config(
         if let Some(mut stdin_handle) = child.stdin.take() {
             let _ = stdin_handle.write_all(data.as_bytes()).await;
         }
-        let result = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let v = match result {
             Ok(Ok(output)) => json!({
@@ -118,11 +115,8 @@ pub async fn execute_with_config(
     let child = cmd
         .spawn()
         .map_err(|e| IIIError::Handler(format!("spawn bash: {e}")))?;
-    let result = tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        child.wait_with_output(),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await;
     let duration_ms = start.elapsed().as_millis() as u64;
     let v = match result {
         Ok(Ok(output)) => json!({

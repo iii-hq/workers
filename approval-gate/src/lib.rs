@@ -85,21 +85,24 @@ pub enum WireDecision {
 /// IDs minted by turn-orchestrator; today neither format uses the separator.
 pub fn pending_key(session_id: &str, tool_call_id: &str) -> String {
     debug_assert!(!session_id.contains('/'), "session_id must not contain '/'");
-    debug_assert!(!tool_call_id.contains('/'), "tool_call_id must not contain '/'");
+    debug_assert!(
+        !tool_call_id.contains('/'),
+        "tool_call_id must not contain '/'"
+    );
     format!("{session_id}/{tool_call_id}")
 }
 
 pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
-    let event_id = envelope.get("event_id").and_then(Value::as_str)?.to_string();
+    let event_id = envelope
+        .get("event_id")
+        .and_then(Value::as_str)?
+        .to_string();
     let reply_stream = envelope
         .get("reply_stream")
         .and_then(Value::as_str)?
         .to_string();
     let inner = envelope.get("payload").unwrap_or(envelope);
-    let session_id = inner
-        .get("session_id")
-        .and_then(Value::as_str)?
-        .to_string();
+    let session_id = inner.get("session_id").and_then(Value::as_str)?.to_string();
     let tc = inner.get("tool_call")?;
     Some(IncomingCall {
         session_id,
@@ -181,8 +184,8 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
     if existing.get("status").and_then(Value::as_str) != Some("pending") {
         return json!({ "ok": false, "error": "already_resolved" });
     }
-    existing["status"] = serde_json::to_value(decision)
-        .expect("WireDecision serializes via Serialize");
+    existing["status"] =
+        serde_json::to_value(decision).expect("WireDecision serializes via Serialize");
     if let Some(reason) = payload.get("reason").cloned() {
         existing["reason"] = reason;
     }
@@ -409,7 +412,8 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 {
                     log::error!(
                         "approval-gate: failed to write pending record for {}/{}: {err}",
-                        call.session_id, call.tool_call_id
+                        call.session_id,
+                        call.tool_call_id
                     );
                     let reply = json!({ "block": false });
                     write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
@@ -427,9 +431,13 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     }),
                 )
                 .await;
-                let decision =
-                    await_decision(bus.as_ref(), &call.session_id, &call.tool_call_id, expires_at)
-                        .await;
+                let decision = await_decision(
+                    bus.as_ref(),
+                    &call.session_id,
+                    &call.tool_call_id,
+                    expires_at,
+                )
+                .await;
                 let (decision_str, reason_for_event) = match &decision {
                     Decision::Allow => ("allow", None),
                     Decision::Deny { reason } => ("deny", Some(reason.clone())),
@@ -536,7 +544,9 @@ mod tests {
 
     #[test]
     fn block_reply_for_deny_includes_reason() {
-        let reply = block_reply_for(&Decision::Deny { reason: "timeout".into() });
+        let reply = block_reply_for(&Decision::Deny {
+            reason: "timeout".into(),
+        });
         assert_eq!(reply["block"], true);
         assert_eq!(reply["reason"], "approval-gate: timeout");
     }
@@ -567,7 +577,10 @@ mod tests {
     fn block_reply_for_allow_omits_reason() {
         let reply = block_reply_for(&Decision::Allow);
         assert_eq!(reply["block"], false);
-        assert!(reply.get("reason").is_none(), "Allow must not include reason: {reply}");
+        assert!(
+            reply.get("reason").is_none(),
+            "Allow must not include reason: {reply}"
+        );
     }
 
     use std::sync::Mutex;
@@ -578,7 +591,9 @@ mod tests {
 
     impl InMemoryStateBus {
         fn new() -> Self {
-            Self { store: Mutex::new(std::collections::HashMap::new()) }
+            Self {
+                store: Mutex::new(std::collections::HashMap::new()),
+            }
         }
     }
 
@@ -592,7 +607,11 @@ mod tests {
             Ok(())
         }
         async fn get(&self, scope: &str, key: &str) -> Option<Value> {
-            self.store.lock().unwrap().get(&format!("{scope}/{key}")).cloned()
+            self.store
+                .lock()
+                .unwrap()
+                .get(&format!("{scope}/{key}"))
+                .cloned()
         }
         async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
             let map = self.store.lock().unwrap();

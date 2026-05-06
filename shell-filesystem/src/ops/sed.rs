@@ -61,10 +61,7 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
         .get("ignore_case")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let use_regex = args
-        .get("regex")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    let use_regex = args.get("regex").and_then(Value::as_bool).unwrap_or(true);
 
     // Build the sed substitution flags.
     // sed on macOS and Linux both support: s/pat/rep/[g][I]

@@ -109,7 +109,7 @@ async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
                 return;
             }
             Err(e) => {
-                if started.elapsed() > Duration::from_secs(180) {
+                if started.elapsed() > Duration::from_mins(3) {
                     tracing::warn!(
                         %id,
                         error = %e,
@@ -121,6 +121,6 @@ async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
             }
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
+        backoff = (backoff * 2).min(Duration::from_mins(1));
     }
 }

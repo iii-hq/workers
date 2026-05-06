@@ -8,9 +8,13 @@ use crate::ops;
 /// `RegisterFunction::new_async` builder still register through the raw
 /// `RegisterFunctionMessage` path, so this helper keeps the call sites
 /// readable.
-fn tool_message(id: &str, description: &str, label: &str, schema: Value) -> RegisterFunctionMessage {
-    let mut msg =
-        RegisterFunctionMessage::with_id(id.into()).with_description(description.into());
+fn tool_message(
+    id: &str,
+    description: &str,
+    label: &str,
+    schema: Value,
+) -> RegisterFunctionMessage {
+    let mut msg = RegisterFunctionMessage::with_id(id.into()).with_description(description.into());
     msg.request_format = Some(schema);
     msg.metadata = Some(json!({"tool": {"label": label}}));
     msg

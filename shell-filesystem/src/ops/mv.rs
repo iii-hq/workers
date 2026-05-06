@@ -4,7 +4,8 @@ use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
 pub const ID: &str = "shell::filesystem::mv";
-pub const DESCRIPTION: &str = "Move/rename a path on the host filesystem. Args: src, dst, overwrite?.";
+pub const DESCRIPTION: &str =
+    "Move/rename a path on the host filesystem. Args: src, dst, overwrite?.";
 
 pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let src = required(args, "src")?;

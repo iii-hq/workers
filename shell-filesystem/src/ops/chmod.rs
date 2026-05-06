@@ -3,9 +3,9 @@
 //! `uid`/`gid` ownership changes are not supported (require `nix`/`libc::chown`
 //! which are not in scope); those args are silently ignored.
 
-use std::os::unix::fs::PermissionsExt;
 use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 
 pub const ID: &str = "shell::filesystem::chmod";
 pub const DESCRIPTION: &str =

@@ -38,7 +38,10 @@ pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
 
     // Write.
     match tokio::fs::write(&path, updated.as_bytes()).await {
-        Ok(()) => Ok(text_result(&format!("edited {}", path), json!({ "matches": 1 }))),
+        Ok(()) => Ok(text_result(
+            &format!("edited {}", path),
+            json!({ "matches": 1 }),
+        )),
         Err(e) => Ok(text_result(
             &format!("write {path}: {e}"),
             json!({ "error": e.to_string() }),

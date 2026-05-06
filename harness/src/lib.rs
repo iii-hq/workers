@@ -179,8 +179,7 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs>
     let iii_for_events = iii.clone();
     let events_fn = iii.register_function((
         RegisterFunctionMessage::with_id("bridge::events".into()).with_description(
-            "Tail agent::events/<session_id> as Server-Sent Events. Used by harness/web/."
-                .into(),
+            "Tail agent::events/<session_id> as Server-Sent Events. Used by harness/web/.".into(),
         ),
         move |input: Value| {
             let iii = iii_for_events.clone();

@@ -25,11 +25,7 @@ async fn read_entries(path: &str) -> std::io::Result<Vec<Value>> {
     let mut out: Vec<Value> = Vec::new();
     while let Some(entry) = rd.next_entry().await? {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_dir = entry
-            .file_type()
-            .await
-            .map(|t| t.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
         let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
         out.push(json!({ "name": name, "is_dir": is_dir, "size": size }));
     }
