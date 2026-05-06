@@ -79,7 +79,7 @@ jobs:
 
       - name: Run harness (--providers=all)
         working-directory: storage/tests/e2e
-        run: ./run-tests.sh --providers=all --no-pull
+        run: ./run-tests.sh --providers=all --trigger-providers=local,s3 --no-pull
 
       - name: Upload reports on failure
         if: failure()

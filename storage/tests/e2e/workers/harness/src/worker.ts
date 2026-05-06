@@ -16,10 +16,25 @@ const REPORT_PATH = resolve(process.env.HARNESS_REPORT_PATH ?? './reports/report
 const FILTER = process.env.HARNESS_FILTER;
 const PROVIDERS_RAW = process.env.HARNESS_PROVIDERS ?? 'local';
 const PROVIDERS = PROVIDERS_RAW.split(',').map((s) => s.trim()).filter(Boolean) as Provider[];
+// Optional subset of providers whose trigger plumbing is wired in this
+// harness deployment. Defaults to PROVIDERS (fan triggers across every
+// selected provider) so existing callers don't need to know about it.
+// CI sets HARNESS_TRIGGER_PROVIDERS=local,s3 to keep r2 trigger ERRORs
+// (no Cloudflare Queue plumbing in this harness) from failing the run.
+const TRIGGER_PROVIDERS_RAW = process.env.HARNESS_TRIGGER_PROVIDERS;
+const TRIGGER_PROVIDERS: Provider[] | undefined = TRIGGER_PROVIDERS_RAW
+  ? (TRIGGER_PROVIDERS_RAW.split(',').map((s) => s.trim()).filter(Boolean) as Provider[])
+  : undefined;
 
 const iii = registerWorker(URL);
 const logger = new Logger();
-const runner = new Runner({ iii, reportPath: REPORT_PATH, filterCase: FILTER, providers: PROVIDERS });
+const runner = new Runner({
+  iii,
+  reportPath: REPORT_PATH,
+  filterCase: FILTER,
+  providers: PROVIDERS,
+  triggerProviders: TRIGGER_PROVIDERS,
+});
 
 iii.registerFunction(
   'harness::on_object_created',

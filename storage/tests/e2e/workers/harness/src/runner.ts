@@ -35,6 +35,15 @@ export interface RunnerOptions {
   iii: ISdk;
   reportPath: string;
   providers: Provider[];
+  /**
+   * Subset of `providers` whose trigger plumbing is wired. Trigger
+   * registration, probe, and case fan-out all use this list. Defaults to
+   * `providers`, so callers that don't care opt into "fan out triggers
+   * across every selected provider" automatically. CI sets this to
+   * `local,s3` to keep `r2` (no Cloudflare Queue plumbing here) out of
+   * trigger ERRORs that would otherwise force a non-zero exit.
+   */
+  triggerProviders?: Provider[];
   /** Optional case-name substring filter — when set, only matching cases run. */
   filterCase?: string;
 }
@@ -373,7 +382,14 @@ export class Runner {
 
   async runAll(): Promise<{ pass: number; fail: number; errored: number; total: number; results: CaseResult[] }> {
     await this.waitForStorageWorker();
-    this.registerTriggers(this.opts.providers);
+    // Trigger fan-out is constrained to providers that are both selected
+    // (`opts.providers`) AND known to be wired (`opts.triggerProviders`).
+    // The intersection is computed once here and reused below.
+    const selected = new Set(this.opts.providers);
+    const triggerProviders = (this.opts.triggerProviders ?? this.opts.providers).filter((p) =>
+      selected.has(p),
+    );
+    this.registerTriggers(triggerProviders);
 
     const results: CaseResult[] = [];
     const useColor = process.stdout.isTTY === true;
@@ -461,8 +477,8 @@ export class Runner {
     // probe failed (downProviders) or whose trigger plumbing didn't echo
     // a probe event (triggerlessProviders). The local provider always
     // probes successfully because rustfs's webhook is in-process.
-    await this.probeTriggerPaths(providers.filter((p) => !downProviders.has(p)));
-    for (const c of buildTriggerCases(providers)) {
+    await this.probeTriggerPaths(triggerProviders.filter((p) => !downProviders.has(p)));
+    for (const c of buildTriggerCases(triggerProviders)) {
       if (!accept(c)) continue;
       if (c.provider && downProviders.has(c.provider)) { recordSkip(c); continue; }
       if (c.provider && this.triggerlessProviders.has(c.provider)) {
