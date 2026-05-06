@@ -29,3 +29,34 @@ for bucket in scratch-s3 scratch-r2; do
     echo "[minio-init] created bucket $bucket"
   fi
 done
+
+# Bind the BRIDGE webhook target (declared via MINIO_NOTIFY_WEBHOOK_*
+# env vars on the MinIO container) to scratch-s3 for create/delete events.
+# `mc event add` is idempotent in spirit but errors if the rule already
+# exists — we tolerate that by checking `mc event list` first.
+mc() {
+  docker run --rm --network host \
+    -e MC_HOST_local="http://${AK}:${SK}@127.0.0.1:9000" \
+    minio/mc:RELEASE.2024-11-21T17-21-54Z \
+    "$@"
+}
+
+WEBHOOK_ARN="arn:minio:sqs::BRIDGE:webhook"
+
+# Wait briefly for MinIO admin to recognise the env-supplied target.
+for _ in 1 2 3 4 5; do
+  if mc admin info local >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+
+if mc event list local/scratch-s3 2>/dev/null | grep -qF "$WEBHOOK_ARN"; then
+  echo "[minio-init] event rule already bound on scratch-s3"
+else
+  if mc event add local/scratch-s3 "$WEBHOOK_ARN" --event put,delete >/dev/null; then
+    echo "[minio-init] bound $WEBHOOK_ARN → scratch-s3 (put,delete)"
+  else
+    echo "[minio-init] WARN: could not bind webhook event rule on scratch-s3" >&2
+    # Don't hard-fail — non-trigger e2e cases should still run; the trigger
+    # cases will skip via the runner's per-provider trigger probe.
+  fi
+fi

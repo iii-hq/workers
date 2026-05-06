@@ -383,6 +383,27 @@ ENGINE_CONFIG="./config.yaml"
 if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
   ENGINE_CONFIG="./config.all.yaml"
 fi
+
+# When the s3 provider is in scope, the storage worker spawns an SQS poller
+# (storage/src/main.rs:296-308) that uses the AWS SDK default credential
+# chain to sign requests against ElasticMQ. ElasticMQ accepts any signature
+# but the SDK still demands non-empty creds + a region. Override via env so
+# we don't leak the developer's real `aws sso` session into the test, and
+# so tests pass on a machine with no AWS config at all.
+NEEDS_S3=0
+for p in "${PROVIDER_LIST[@]}"; do
+  if [[ "$p" == "s3" ]]; then NEEDS_S3=1; break; fi
+done
+if [[ "$NEEDS_S3" -eq 1 ]]; then
+  export AWS_ACCESS_KEY_ID="elasticmq"
+  export AWS_SECRET_ACCESS_KEY="elasticmq"
+  export AWS_REGION="us-east-1"
+  # Defensive: a developer with AWS_ENDPOINT_URL pinned to real AWS would
+  # silently break SQS polling. The queue URL in config.all.yaml already
+  # encodes the ElasticMQ host:port; clear any global override.
+  unset AWS_ENDPOINT_URL
+fi
+
 echo "[run-tests] starting iii engine (config=$ENGINE_CONFIG)"
 ( cd "$ROOT_DIR" && "$III_BIN" --no-update-check -c "$ENGINE_CONFIG" ) > "$ENGINE_LOG" 2>&1 &
 ENGINE_PID=$!

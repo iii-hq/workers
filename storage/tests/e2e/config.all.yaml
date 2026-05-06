@@ -5,8 +5,10 @@
 # Triggers are still registered DYNAMICALLY by the harness via the SDK
 # (registerTrigger in runner.ts); we don't list them here.
 #
-# The harness only registers triggers against `scratch-local` per the design
-# spec — non-local triggers are out of scope for this phase.
+# The harness registers `storage::object-{created,deleted}` triggers against
+# both `scratch-local` (rustfs webhook) and `scratch-s3` (SQS poller →
+# ElasticMQ via the minio-sqs-bridge fixture). R2 triggers are out of scope
+# for the e2e harness — covered separately via Rust integration tests.
 
 workers:
   - name: iii-queue
@@ -40,6 +42,15 @@ workers:
           access_key_id: minioadmin
           secret_access_key: minioadmin
           bucket: scratch-s3
+          # Wires the storage worker's SQS poller to ElasticMQ. The bridge
+          # service (fixtures/minio-sqs-bridge) translates MinIO webhook
+          # events into messages on this queue. Account ID `000000000000`
+          # is ElasticMQ's default; queue is created on bridge boot.
+          # Worker process needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+          # in env (any non-empty values; ElasticMQ accepts unsigned creds)
+          # — set by run-tests.sh.
+          notifications:
+            sqs_queue_url: "http://127.0.0.1:9324/000000000000/storage-events"
 
         scratch-r2:
           provider: r2

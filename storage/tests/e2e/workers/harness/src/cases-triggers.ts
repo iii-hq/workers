@@ -1,13 +1,15 @@
 // Trigger dispatch assertions. Each case drains buffered events first to
-// avoid contamination from RPC-suite puts/deletes that arrived asynchronously.
+// avoid contamination from prior puts/deletes that arrived asynchronously.
 //
-// Rustfs delivers webhooks within ~100ms of the underlying mutation in our
-// observed runs; 5 seconds is generous headroom and keeps these tests stable
-// under load. If an assertion-window expires without a match, the case
-// fails with a useful message rather than hanging the whole harness.
-import type { TestCase } from './cases.ts';
+// Rustfs delivers webhooks within ~100ms of the underlying mutation. The
+// SQS path (S3 backend → MinIO webhook → bridge → ElasticMQ → worker
+// SQS poller, 1-second long-poll) adds a few seconds of latency, so we
+// pick a 10s window that's generous headroom for both. If the window
+// expires without a match, the case fails with a useful message rather
+// than hanging the whole harness.
+import type { CaseContext, Provider, TestCase } from './cases.ts';
 
-const EVENT_TIMEOUT_MS = 5_000;
+const EVENT_TIMEOUT_MS = 10_000;
 const SILENCE_WINDOW_MS = 2_000;
 
 async function flush(ctx: { resetEvents: () => void }): Promise<void> {
@@ -17,7 +19,16 @@ async function flush(ctx: { resetEvents: () => void }): Promise<void> {
   ctx.resetEvents();
 }
 
-export const TRIGGER_CASES: TestCase[] = [
+interface TriggerScenario {
+  name: string;
+  run: (ctx: CaseContext) => Promise<void>;
+}
+
+// One scenario per behavioural assertion. The runner instantiates each
+// scenario once per provider, so keys must be unique-per-case (provider
+// is encoded in `ctx.bucket` but the key namespace is shared across runs
+// against the same backend).
+const SCENARIOS: readonly TriggerScenario[] = [
   {
     name: 'object-created fires on putObject',
     async run(ctx) {
@@ -57,8 +68,9 @@ export const TRIGGER_CASES: TestCase[] = [
   {
     name: 'multiple puts produce at least one created event',
     async run(ctx) {
-      // Rustfs may coalesce rapid same-key puts; we assert ">=1" rather than
-      // "==2" so the test stays stable under future event-batching changes.
+      // Backends may coalesce rapid same-key puts; we assert ">=1" rather
+      // than "==2" so the test stays stable under future event-batching
+      // changes.
       await flush(ctx);
       const key = 'harness/triggers/multi-put';
       for (const body of ['v1', 'v2-larger', 'v3']) {
@@ -113,3 +125,19 @@ export const TRIGGER_CASES: TestCase[] = [
     },
   },
 ];
+
+/**
+ * Build the full trigger-dispatch suite, fanned out across every provider
+ * in `providers`. The runner is responsible for skipping providers whose
+ * trigger registration failed (`triggerlessProviders`) — this builder
+ * doesn't know which backends have working SQS / webhook plumbing.
+ */
+export function buildTriggerCases(providers: readonly Provider[]): TestCase[] {
+  return providers.flatMap((provider) =>
+    SCENARIOS.map((s) => ({
+      name: `[${provider}] ${s.name}`,
+      provider,
+      run: s.run,
+    })),
+  );
+}

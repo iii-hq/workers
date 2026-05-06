@@ -12,7 +12,7 @@ import {
   type Provider,
   type TestCase,
 } from './cases.ts';
-import { TRIGGER_CASES } from './cases-triggers.ts';
+import { buildTriggerCases } from './cases-triggers.ts';
 import { ERROR_CASES } from './cases-errors.ts';
 import {
   buildBodyShapeCases,
@@ -60,6 +60,14 @@ export class Runner {
   }> = [];
 
   private triggers: { unregister: () => void }[] = [];
+
+  /**
+   * Providers whose trigger plumbing didn't deliver a probe event within
+   * the deadline. Their trigger cases get ERROR-skipped instead of FAILing
+   * so a half-broken cloud profile (e.g., MinIO up, bridge down) doesn't
+   * mask unrelated regressions in the rest of the suite.
+   */
+  private triggerlessProviders = new Set<Provider>();
 
   constructor(private opts: RunnerOptions) {}
 
@@ -272,23 +280,75 @@ export class Runner {
 
   // ---------------- trigger lifecycle ----------------
 
-  private registerTriggers(): void {
-    // Register both trigger types pointing at our two sink functions.
-    // The 60s handler_timeout is the storage default (see
-    // triggers/object_created.rs::default_handler_timeout); we leave it as-is
-    // since our handlers are near-instant.
-    this.triggers.push(
-      this.opts.iii.registerTrigger({
-        type: 'storage::object-created',
-        function_id: 'harness::on_object_created',
-        config: { bucket: LOCAL_BUCKET },
-      }),
-      this.opts.iii.registerTrigger({
-        type: 'storage::object-deleted',
-        function_id: 'harness::on_object_deleted',
-        config: { bucket: LOCAL_BUCKET },
-      }),
-    );
+  private registerTriggers(providers: readonly Provider[]): void {
+    // Register both trigger types pointing at our two sink functions, once
+    // per provider. The 60s handler_timeout is the storage default (see
+    // triggers/object_created.rs::default_handler_timeout); we leave it
+    // as-is since our handlers are near-instant.
+    //
+    // If a provider's bucket isn't wired for triggers in the worker config
+    // (e.g., scratch-s3 missing the `notifications.sqs_queue_url` field),
+    // registerTrigger throws synchronously per
+    // storage/src/triggers/handler.rs::register, and we tag the provider
+    // as triggerless so its cases ERROR-skip later.
+    for (const provider of providers) {
+      const bucket = BUCKETS[provider];
+      try {
+        this.triggers.push(
+          this.opts.iii.registerTrigger({
+            type: 'storage::object-created',
+            function_id: 'harness::on_object_created',
+            config: { bucket },
+          }),
+          this.opts.iii.registerTrigger({
+            type: 'storage::object-deleted',
+            function_id: 'harness::on_object_deleted',
+            config: { bucket },
+          }),
+        );
+      } catch (e: unknown) {
+        this.triggerlessProviders.add(provider);
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[harness] trigger registration failed for ${provider}: ${msg}`);
+      }
+    }
+  }
+
+  /**
+   * Smoke-test the trigger delivery path for each provider that managed to
+   * register triggers. Local skips the probe (in-process webhook is
+   * deterministic). Cloud providers do a put + waitForEvent and on timeout
+   * are added to `triggerlessProviders`. The probe key namespace is
+   * disjoint from scenario keys so any leftover events drained at the
+   * start of the first scenario via `flush()` won't confuse assertions.
+   */
+  private async probeTriggerPaths(providers: readonly Provider[]): Promise<void> {
+    const PROBE_TIMEOUT_MS = 8_000;
+    for (const provider of providers) {
+      if (provider === 'local') continue;
+      if (this.triggerlessProviders.has(provider)) continue;
+      const bucket = BUCKETS[provider];
+      const key = `harness/.trigger-probe-${provider}-${Date.now()}`;
+      try {
+        await this.callOnce('storage::putObject', {
+          bucket,
+          key,
+          body_base64: Buffer.from('probe').toString('base64'),
+          content_type: 'text/plain',
+        });
+        await this.waitForEvent('created', key, PROBE_TIMEOUT_MS);
+        // Best-effort cleanup; failures here aren't relevant to the probe.
+        try {
+          await this.callOnce('storage::deleteObject', { bucket, key });
+        } catch {
+          // ignored
+        }
+      } catch (e: unknown) {
+        this.triggerlessProviders.add(provider);
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[harness] trigger probe failed for ${provider}: ${msg}`);
+      }
+    }
   }
 
   /**
@@ -313,7 +373,7 @@ export class Runner {
 
   async runAll(): Promise<{ pass: number; fail: number; errored: number; total: number; results: CaseResult[] }> {
     await this.waitForStorageWorker();
-    this.registerTriggers();
+    this.registerTriggers(this.opts.providers);
 
     const results: CaseResult[] = [];
     const useColor = process.stdout.isTTY === true;
@@ -397,9 +457,24 @@ export class Runner {
       record(await this.runCase(c));
     }
 
-    // 3. Trigger dispatch suite (local-only — no provider gating needed).
-    for (const c of TRIGGER_CASES) {
+    // 3. Trigger dispatch suite (per-provider). Skip providers whose RPC
+    // probe failed (downProviders) or whose trigger plumbing didn't echo
+    // a probe event (triggerlessProviders). The local provider always
+    // probes successfully because rustfs's webhook is in-process.
+    await this.probeTriggerPaths(providers.filter((p) => !downProviders.has(p)));
+    for (const c of buildTriggerCases(providers)) {
       if (!accept(c)) continue;
+      if (c.provider && downProviders.has(c.provider)) { recordSkip(c); continue; }
+      if (c.provider && this.triggerlessProviders.has(c.provider)) {
+        record({
+          case: c.name,
+          provider: c.provider,
+          status: 'ERROR',
+          error: `provider ${c.provider} trigger path unreachable (probe failed)`,
+          duration_ms: 0,
+        });
+        continue;
+      }
       record(await this.runCase(c));
     }
 
