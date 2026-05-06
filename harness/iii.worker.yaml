@@ -1,0 +1,22 @@
+iii: v1
+name: harness
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-harness
+description: Meta-worker that composes the modular workers backing the iii chat surface.
+dependencies:
+  turn-orchestrator: "^0.1.0"
+  provider-router: "^0.1.0"
+  session-tree: "^0.1.0"
+  session-inbox: "^0.1.0"
+  models-catalog: "^0.1.0"
+  hook-fanout: "^0.1.0"
+  policy-denylist: "^0.1.0"
+  shell-bash: "^0.1.0"
+  shell-filesystem: "^0.1.0"
+  subagent: "^0.1.0"
+  provider-anthropic: "^0.1.0"
+  provider-openai: "^0.1.0"
+  auth-credentials: "^0.1.0"
+  llm-budget: "^0.1.0"
