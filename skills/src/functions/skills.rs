@@ -37,7 +37,6 @@ use serde_json::{json, Value};
 use crate::config::SkillsConfig;
 use crate::state;
 use crate::trigger_types::{self, SubscriberSet};
-use crate::{validate_tool_namespace, ToolDescriptor};
 
 const SKILL_BODY_MAX_BYTES: usize = 256 * 1024;
 
@@ -97,12 +96,6 @@ struct RegisterSkillInput {
     id: String,
     /// Markdown body served at iii://{id}.
     skill: String,
-    /// Optional list of LLM tool descriptors exported by this worker.
-    /// Each tool name must be prefixed with `{id}::`. Chat clients read
-    /// these descriptors via `skills::list` to build the LLM tool array
-    /// without hard-coding each worker's function catalogue.
-    #[serde(default)]
-    tools: Vec<ToolDescriptor>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -160,8 +153,6 @@ struct StoredSkill {
     id: String,
     skill: String,
     registered_at: String,
-    #[serde(default)]
-    tools: Vec<ToolDescriptor>,
 }
 
 pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &SubscriberSet) {
@@ -186,7 +177,6 @@ fn register_register_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers:
             let subs = subs_inner.clone();
             async move {
                 validate_id(&req.id).map_err(IIIError::Handler)?;
-                validate_tool_namespace(&req.id, &req.tools).map_err(IIIError::Handler)?;
                 if req.skill.is_empty() {
                     return Err(IIIError::Handler("skill must be non-empty".into()));
                 }
@@ -201,7 +191,6 @@ fn register_register_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers:
                     id: req.id.clone(),
                     skill: req.skill,
                     registered_at: chrono::Utc::now().to_rfc3339(),
-                    tools: req.tools,
                 };
                 let value = serde_json::to_value(&stored)
                     .map_err(|e| IIIError::Handler(format!("encode skill: {e}")))?;
@@ -373,7 +362,8 @@ fn register_fetch_skill_public_alias(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                     .map_err(IIIError::Handler)
             }
         })
-        .description(FETCH_DESCRIPTION),
+        .description(FETCH_DESCRIPTION)
+        .metadata(json!({"tool": {"label": "Fetch skill"}})),
     );
 }
 

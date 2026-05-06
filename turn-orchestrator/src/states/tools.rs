@@ -217,10 +217,7 @@ pub(crate) fn executed_staging_for_new_prepare_batch(
 
 /// Pure helper: build the inner payload for the `agent::before_tool_call`
 /// topic. Subscribers (policy-denylist, approval-gate) read this shape.
-pub(crate) fn build_before_tool_call_payload(
-    tc: &ToolCall,
-    approval_required: &[String],
-) -> Value {
+pub(crate) fn build_before_tool_call_payload(tc: &ToolCall, approval_required: &[String]) -> Value {
     json!({
         "tool_call": tc,
         "approval_required": approval_required,

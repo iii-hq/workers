@@ -735,16 +735,3 @@ Workers MUST update their bundled markdown bodies (replace any
 `iii://x/worker::fn` in skill text with `iii://fn/worker/fn`) and
 re-register at boot. The `skills::on-change` trigger fires on every
 re-registration, so subscribers stay in sync automatically.
-
-## Tool descriptor schema (consumed by chat clients)
-
-`skills::register` accepts an optional `tools: Vec<ToolDescriptor>` field. Each descriptor:
-
-| Field | Type | Notes |
-|---|---|---|
-| `name` | string | MUST be prefixed with the registering worker id, e.g. `foo::do_thing`. Enforced server-side. |
-| `description` | string | Free text. Rendered in the `/skills` console route. **Do not embed instructions for the LLM here** — chat clients sanitize this field before passing to the model. |
-| `input_schema` | JSON Schema object | Standard JSON Schema. Used by the LLM to call the tool with valid arguments. |
-| `max_bytes` | optional integer | Per-call max-bytes contract for the tool's result. Chat clients truncate beyond this. |
-
-Tool descriptors are read by chat clients via `skills::list`; mutations fire `skills::on-change`.

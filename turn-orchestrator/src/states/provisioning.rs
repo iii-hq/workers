@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
+use crate::tools_catalog;
 
 const SHELL_PREFIX: &str = "shell::";
 
@@ -59,7 +60,16 @@ async fn sandbox_alive(iii: &III, sandbox_id: &str) -> bool {
 
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
-    let tools = request.get("tools").cloned().unwrap_or_else(|| json!([]));
+
+    // Build the LLM tool catalog from the engine's own function registry
+    // rather than trusting whatever the client put on `run::start`. The
+    // empty-catalog error surfaces as `agent::error` (per plan-eng-review
+    // D4) so a cold-start race is loud, not silent.
+    let catalog = tools_catalog::load_tool_catalog(iii)
+        .await
+        .map_err(|e| anyhow::anyhow!("load_tool_catalog failed: {e}"))?;
+    let tools = serde_json::to_value(&catalog)
+        .map_err(|e| anyhow::anyhow!("serialize tool catalog: {e}"))?;
 
     persistence::save_tool_schemas(iii, &record.session_id, tools.clone()).await;
 

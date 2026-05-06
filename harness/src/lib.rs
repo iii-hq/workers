@@ -93,9 +93,6 @@ pub fn build_skills_register_payload() -> serde_json::Value {
         "min_console_version": "0.1.0",
         "body": "Harness meta-worker. Composes the modular workers that back the iii chat surface.",
         "expected_workers": EXPECTED_WORKERS,
-        // No tools: harness exposes harness::status + bridge::trigger,
-        // and bridge::trigger is intentionally NOT advertised as an LLM tool.
-        "tools": [],
     })
 }
 

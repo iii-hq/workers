@@ -21,120 +21,18 @@ import type {
 
 type Tab = "chat" | "cost" | "files";
 
-// Tool schemas advertised to the LLM with each turn. Names map 1:1 to bus
-// function ids — turn-orchestrator dispatches `tool_call.name` directly via
-// `iii.trigger`. Add or trim entries here to widen/narrow the model's surface.
+// Tool schemas are no longer shipped from the client. The harness builds the
+// LLM tool catalog server-side from `engine::functions::list` (see
+// turn-orchestrator/src/tools_catalog.rs). To widen or narrow the model's
+// surface, edit which workers register tools — not this file.
 //
-// Permission lives one layer down: `policy-denylist` subscribes to
-// `agent::before_tool_call` and refuses by name. Set its env var when starting
-// the worker, e.g.:
+// Permission still lives in `policy-denylist`, which subscribes to
+// `agent::before_tool_call` and refuses by name. Set its env var when
+// starting the worker, e.g.:
 //   POLICY_DENIED_TOOLS=shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv
-const TOOLS = [
-  {
-    name: "shell::filesystem::ls",
-    label: "List directory",
-    description: "List directory entries inside the sandbox.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Absolute path to a directory inside the sandbox.",
-        },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "shell::filesystem::read",
-    label: "Read file",
-    description:
-      "Read a file inside the sandbox. Returns UTF-8 contents (max 256 KB inline).",
-    parameters: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Absolute path to a file inside the sandbox.",
-        },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "shell::filesystem::write",
-    label: "Write file",
-    description:
-      "Write content to a file inside the sandbox. Creates parent dirs as needed; overwrites any existing file at the path.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Absolute path inside the sandbox.",
-        },
-        content: {
-          type: "string",
-          description: "UTF-8 file contents.",
-        },
-      },
-      required: ["path", "content"],
-    },
-  },
-  {
-    name: "shell::filesystem::mkdir",
-    label: "Make directory",
-    description: "Create a directory (and parents) inside the sandbox.",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "shell::filesystem::stat",
-    label: "File stat",
-    description: "Return metadata (size, mode, mtime) for a sandbox path.",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "skill::fetch",
-    label: "Fetch skill",
-    description:
-      "Read one or more iii:// skill URIs as markdown. Use to drill into specific worker docs after seeing them in the iii://skills index.",
-    parameters: {
-      type: "object",
-      properties: {
-        uri: {
-          type: "string",
-          description:
-            "Single iii:// URI to read (e.g. iii://auth-credentials/get_token).",
-        },
-        uris: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Multiple iii:// URIs to read and concatenate. Wins when both `uri` and `uris` are provided.",
-        },
-      },
-    },
-  },
-] as const;
 
-const BASE_SYSTEM_PROMPT = [
-  "You have filesystem tools that operate inside a sandbox:",
-  "  - shell::filesystem::ls   → list a directory",
-  "  - shell::filesystem::read → read a file",
-  "  - shell::filesystem::write → create or overwrite a file",
-  "  - shell::filesystem::mkdir → make a directory",
-  "  - shell::filesystem::stat → file metadata",
-  "",
-  "Use them whenever the user asks to read, inspect, create, or modify files. Paths must be absolute (e.g. /tmp/notes.md). Some destructive ops (rm, mv, chmod, sed, edit) may be denied by policy — if a tool comes back with `blocked` in the result, explain to the user which policy refused and stop, do not retry.",
-].join("\n");
+const BASE_SYSTEM_PROMPT =
+  "You have filesystem tools that operate inside a sandbox. Use them when the user asks to read, inspect, create, or modify files. Paths must be absolute (e.g. /tmp/notes.md). Some destructive ops may be denied by policy — if a tool result contains `blocked`, explain which policy refused and stop, do not retry.";
 
 function buildSystemPrompt(skillsIndex: string | null): string {
   const skillsSection = skillsIndex
@@ -308,7 +206,6 @@ export default function App() {
         model,
         messages: fullHistory,
         system_prompt: buildSystemPrompt(skillsIndex),
-        tools: TOOLS,
         approval_required: APPROVAL_REQUIRED,
       });
       void refreshSessions();

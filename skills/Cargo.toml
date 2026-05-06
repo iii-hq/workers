@@ -2,7 +2,7 @@
 
 [package]
 name = "skills"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 publish = false
 
@@ -51,7 +51,3 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signa
 [[test]]
 name = "bdd"
 harness = false
-
-[[test]]
-name = "tool_descriptor"
-path = "tests/tool_descriptor.rs"
