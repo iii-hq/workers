@@ -53,6 +53,23 @@ pub enum AgentEvent {
         result: ToolResult,
         is_error: bool,
     },
+    /// A tool call is paused by an approval subscriber, awaiting user decision.
+    ApprovalRequested {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+        /// Unix milliseconds. After this point the gate auto-denies.
+        expires_at: u64,
+    },
+    /// Approval gate has resolved a previously-requested approval.
+    ApprovalResolved {
+        tool_call_id: String,
+        /// "allow" or "deny".
+        decision: String,
+        /// Free-form reason — populated for "deny" (e.g. "timeout", "user").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -75,5 +92,42 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: AgentEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn approval_requested_round_trips() {
+        let evt = AgentEvent::ApprovalRequested {
+            tool_call_id: "tc-9".into(),
+            tool_name: "shell::filesystem::write".into(),
+            args: serde_json::json!({ "path": "/tmp/x" }),
+            expires_at: 1_700_000_000_000,
+        };
+        let json = serde_json::to_value(&evt).unwrap();
+        assert_eq!(json["type"], "approval_requested");
+        assert_eq!(json["tool_call_id"], "tc-9");
+        let back: AgentEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, evt);
+    }
+
+    #[test]
+    fn approval_resolved_round_trips_with_optional_reason() {
+        let evt = AgentEvent::ApprovalResolved {
+            tool_call_id: "tc-9".into(),
+            decision: "deny".into(),
+            reason: Some("timeout".into()),
+        };
+        let json = serde_json::to_value(&evt).unwrap();
+        assert_eq!(json["type"], "approval_resolved");
+        assert_eq!(json["decision"], "deny");
+        let back: AgentEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, evt);
+
+        let none_reason = AgentEvent::ApprovalResolved {
+            tool_call_id: "tc-9".into(),
+            decision: "allow".into(),
+            reason: None,
+        };
+        let json = serde_json::to_value(&none_reason).unwrap();
+        assert!(json.get("reason").map_or(true, |v| v.is_null()));
     }
 }
