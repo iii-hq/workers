@@ -1,6 +1,6 @@
 # Harness Architecture
 
-The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental/harness) bus. It does not implement chat, agents, or providers itself — it **composes** ~22 specialized workers into a runnable chat surface, exposes a small browser-facing HTTP bridge, and ships a Vite/React UI that talks to the bus through that bridge.
+The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental/harness) bus. It does not implement chat, agents, or providers itself — it **composes** 14 specialized workers into a runnable chat surface, exposes a small browser-facing HTTP bridge, and ships a Vite/React UI that talks to the bus through that bridge.
 
 ```
                          ┌────────────────────────────┐
@@ -22,10 +22,10 @@ The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental
             │  harness::status     bridge::trigger               │◄── iii-harness
             │  run::start_and_wait turn::*                       │◄── turn-orchestrator
             │  provider::*         models::*                     │◄── provider-router, …
-            │  session::* state::*                               │◄── session-tree, session-corpus
+            │  session::* state::*                               │◄── session-tree
             │  shell::filesystem::* shell::bash::*               │◄── shell-* workers
-            │  agent::before_tool_call (topic)                   │◄── policy-denylist, audit-log, dlp-scrubber
-            │  auth::* skills::register …                        │◄── auth-credentials, skills, …
+            │  agent::before_tool_call (topic)                   │◄── policy-denylist
+            │  auth::* skills::register …                        │◄── auth-credentials, skills
             └────────────────────────────────────────────────────┘
 ```
 
@@ -57,20 +57,20 @@ Vite + React 18 single-page app. All bus calls go through one helper:
 
 The UI advertises a fixed tool surface to the LLM in `App.tsx:30` (`shell::filesystem::ls/read/write/mkdir/...`). Tool *names* map 1:1 to bus function ids — `turn-orchestrator` dispatches `tool_call.name` directly via `iii.trigger`, so adding a tool is just adding a schema entry. Permission is enforced one layer down by `policy-denylist` (see Trust boundary below).
 
-### 3. The 22 expected workers
+### 3. The 14 expected workers
 
 `EXPECTED_WORKERS` (`lib.rs:18`) is the source of truth for what the harness assumes is on the bus. Grouped by role:
 
 | Group | Workers | Role |
 |---|---|---|
-| Orchestration | `turn-orchestrator`, `provider-router`, `context-compaction` | Runs a turn end-to-end: fan a request to a provider, dispatch tool calls, compact history. |
-| Sessions / state | `session-tree`, `session-corpus`, `session-inbox` | Persisted message trees, attachments, and an inbox queue. |
-| Catalog | `models-catalog`, `document-extract` | Model metadata; document → text extraction. |
-| Auth | `auth-credentials`, `auth-rbac` | Provider credentials store; role checks. |
-| Policy / safety | `audit-log`, `policy-denylist`, `dlp-scrubber`, `guardrails`, `llm-budget` | Hook subscribers on `agent::before_tool_call` and friends. |
-| Hooks | `hook-fanout` | Generic pub/sub multiplexer. |
+| Orchestration | `turn-orchestrator`, `provider-router` | Runs a turn end-to-end: fan a request to a provider and dispatch tool calls. |
+| Sessions / state | `session-tree`, `session-inbox` | Persisted message trees and a steering/follow-up inbox queue. |
+| Catalog | `models-catalog` | Model metadata. |
+| Auth | `auth-credentials` | Provider credentials store. |
+| Policy / safety | `policy-denylist`, `llm-budget` | Hook subscriber on `agent::before_tool_call` and budget tracking. |
+| Hooks | `hook-fanout` | Generic publish-and-collect primitive. |
 | Tools | `shell-bash`, `shell-filesystem`, `subagent` | LLM-callable tool implementations. |
-| Providers | `provider-cli`, `provider-anthropic`, `provider-openai` | Concrete LLM transport workers behind `provider-router`. |
+| Providers | `provider-anthropic`, `provider-openai` | Concrete LLM transport workers behind `provider-router`. |
 
 The harness owns *no* logic from any of these — it only knows their names. Each worker is a separate crate in `workers/<name>/` with its own `iii.worker.yaml`, lifecycle, and tests.
 
@@ -81,9 +81,9 @@ The integration test `tests/integration.rs:7` enforces that `EXPECTED_WORKERS` a
 The harness ships without a registry entry, so `iii worker add harness` does not work yet. `scripts/demo.sh` is the supported way to bring up the full stack from this checkout:
 
 ```
-demo.sh build    # cargo build --release for harness + 22 workers
+demo.sh build    # cargo build --release for harness + 14 workers
 demo.sh engine   # start `iii --use-default-config` in background
-demo.sh start    # spawn all 22 workers + harness as nohup processes
+demo.sh start    # spawn all 14 workers + harness as nohup processes
 demo.sh verify   # call harness::status, models::list, provider::cli::list_models
 demo.sh web      # npm install + vite in a tmux session
 demo.sh stop     # kill every PID in $DEMO_DIR/pids/ + engine + tmux
@@ -104,9 +104,9 @@ A user message from the browser:
 3. bridge::trigger handler unwraps {body} → {function_id, payload}
 4. iii.trigger("run::start_and_wait", payload, timeout=240s)
 5. turn-orchestrator picks it up, runs the agent loop:
-     - emits `agent::before_tool_call` (subscribers: policy-denylist, audit-log, dlp-scrubber)
+     - emits `agent::before_tool_call` (subscribers: policy-denylist, llm-budget)
      - dispatches tool_call.name via iii.trigger → shell-filesystem / shell-bash / subagent
-     - calls provider-router → provider-anthropic / provider-openai / provider-cli
+     - calls provider-router → provider-anthropic / provider-openai
      - persists transcript via session-tree / state
 6. turn-orchestrator returns full transcript
 7. bridge::trigger wraps it as {status_code, headers, body} and returns to the browser
@@ -139,7 +139,7 @@ On boot the harness publishes a skill descriptor via `skills::register`:
   "skill_version": "<Cargo.toml version>",
   "min_console_version": "0.1.0",
   "body": "Harness meta-worker. Composes the modular workers …",
-  "expected_workers": [ … 22 … ],
+  "expected_workers": [ … 14 … ],
   "tools": []
 }
 ```
