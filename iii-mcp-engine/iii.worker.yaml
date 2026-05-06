@@ -1,9 +1,0 @@
-iii: v1
-name: iii-mcp-engine
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-mcp-engine
-description: MCP engine worker. Exposes registered MCP servers via standard tool and resource interfaces, enabling harnesses to call MCP tools through iii workers.
-dependencies:
-  skills: "^0.1.0"
