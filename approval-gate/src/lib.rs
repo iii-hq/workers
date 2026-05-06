@@ -9,7 +9,7 @@ pub const FN_LIST_PENDING: &str = "approval::list_pending";
 pub const STATE_SCOPE: &str = "approvals";
 pub const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub topic: String,
     pub timeout_ms: u64,
@@ -28,8 +28,12 @@ impl Config {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(t) = std::env::var("APPROVAL_GATE_TIMEOUT_MS") {
-            if let Ok(n) = t.parse() {
-                cfg.timeout_ms = n;
+            match t.parse::<u64>() {
+                Ok(n) => cfg.timeout_ms = n,
+                Err(err) => log::warn!(
+                    "APPROVAL_GATE_TIMEOUT_MS={t:?} is not a valid u64 ({err}); \
+                     using default {DEFAULT_TIMEOUT_MS}ms"
+                ),
             }
         }
         cfg
