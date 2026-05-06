@@ -1,0 +1,9 @@
+iii: v1
+name: provider-bedrock
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-bedrock
+description: AWS Bedrock provider under provider::bedrock::*. (stub today; emits a not-implemented error.)
+dependencies:
+  auth-credentials: "^0.1.0"

@@ -1,36 +1,21 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use iii_sdk::IIIError;
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::config::ShellConfig;
 use crate::exec::{build_command, parse_argv};
+use crate::functions::types::ExecBgResponse;
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use tokio::io::AsyncReadExt;
 
-pub fn build_handler(
-    config: Arc<ShellConfig>,
-) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, IIIError>> + Send>>
-       + Send
-       + Sync
-       + 'static {
-    move |payload: Value| {
-        let cfg = config.clone();
-        Box::pin(async move { handle(cfg, payload).await })
-    }
-}
-
-async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError> {
+pub async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<ExecBgResponse, String> {
     let command = payload
         .get("command")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| IIIError::Handler("missing 'command'".to_string()))?;
-    // Strict validation — see exec.rs for the reasoning. Silently dropping
-    // non-strings turned partial args into successful background spawns,
-    // which is the worst possible behaviour for a long-lived job.
+        .ok_or_else(|| "missing 'command'".to_string())?;
+    // See exec.rs — silently dropping non-string args is especially
+    // dangerous for a backgrounded long-lived job.
     let args: Option<Vec<String>> = match payload.get("args") {
         None | Some(Value::Null) => None,
         Some(Value::Array(arr)) => {
@@ -39,40 +24,26 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
                 match v.as_str() {
                     Some(s) => out.push(s.to_string()),
                     None => {
-                        return Err(IIIError::Handler(format!(
-                            "'args[{}]' must be a string (got {})",
-                            i, v
-                        )));
+                        return Err(format!("'args[{}]' must be a string (got {})", i, v));
                     }
                 }
             }
             Some(out)
         }
         Some(other) => {
-            return Err(IIIError::Handler(format!(
+            return Err(format!(
                 "'args' must be an array of strings (got {})",
                 other
-            )));
+            ));
         }
     };
 
-    let argv = parse_argv(command, args.as_ref())
-        .map_err(|e| IIIError::Handler(format!("argv: {}", e)))?;
+    let argv = parse_argv(command, args.as_ref()).map_err(|e| format!("argv: {}", e))?;
 
-    cfg.is_command_allowed(&argv).map_err(IIIError::Handler)?;
+    cfg.is_command_allowed(&argv)?;
 
-    let running = jobs::running_count().await;
-    if running >= cfg.max_concurrent_jobs {
-        return Err(IIIError::Handler(format!(
-            "max concurrent jobs ({}) reached",
-            cfg.max_concurrent_jobs
-        )));
-    }
-
-    let mut cmd = build_command(&argv, &cfg).map_err(IIIError::Handler)?;
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| IIIError::Handler(format!("spawn: {}", e)))?;
+    let mut cmd = build_command(&argv, &cfg)?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -90,11 +61,29 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         stdout_truncated: false,
         stderr_truncated: false,
     };
-    jobs::insert(JobHandle {
-        record,
-        child: Some(child),
-    })
-    .await;
+    // Atomic check-and-insert: prevents a TOCTOU where two concurrent
+    // exec_bg calls both pass a separate running_count() check before
+    // either insert lands. On rejection, kill the orphaned child.
+    match jobs::try_reserve_and_insert(
+        JobHandle {
+            record,
+            child: Some(child),
+        },
+        cfg.max_concurrent_jobs,
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err((running, mut handle)) => {
+            if let Some(mut ch) = handle.child.take() {
+                let _ = ch.start_kill();
+            }
+            return Err(format!(
+                "max concurrent jobs ({}) reached, currently running: {}",
+                cfg.max_concurrent_jobs, running
+            ));
+        }
+    }
 
     let id_clone = id.clone();
     let limit = cfg.max_output_bytes;
@@ -104,9 +93,9 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
             None => return,
         };
 
-        // Drain stdout and stderr concurrently. Sequential reads deadlock
-        // when the child fills one pipe's buffer (~64 KiB on Linux) before
-        // closing the other — matches the pattern used by run_to_completion.
+        // Drain stdout/stderr concurrently — sequential reads deadlock
+        // once the child fills one pipe's ~64 KiB buffer before closing
+        // the other.
         let stdout_task = stdout_pipe.map(|mut out| {
             tokio::spawn(async move {
                 let mut buf = Vec::new();
@@ -165,10 +154,7 @@ async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<Value, IIIError
         h.record.finished_at_ms = Some(jobs::now_ms());
     });
 
-    Ok(json!({
-        "job_id": id,
-        "argv": argv,
-    }))
+    Ok(ExecBgResponse { job_id: id, argv })
 }
 
 async fn read_bounded<R: AsyncReadExt + Unpin>(
@@ -182,13 +168,16 @@ async fn read_bounded<R: AsyncReadExt + Unpin>(
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
-                if buf.len() + n > limit {
-                    let take = limit.saturating_sub(buf.len());
-                    buf.extend_from_slice(&chunk[..take]);
-                    *truncated = true;
-                    break;
+                if !*truncated {
+                    if buf.len() + n > limit {
+                        let take = limit.saturating_sub(buf.len());
+                        buf.extend_from_slice(&chunk[..take]);
+                        *truncated = true;
+                        // Keep draining to avoid SIGPIPE on the child.
+                    } else {
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
                 }
-                buf.extend_from_slice(&chunk[..n]);
             }
             Err(_) => break,
         }

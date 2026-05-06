@@ -1,7 +1,0 @@
-iii: v1
-name: a2a
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-a2a
-description: A2A (Agent-to-Agent) JSON-RPC protocol worker

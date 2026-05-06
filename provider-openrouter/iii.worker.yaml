@@ -1,0 +1,9 @@
+iii: v1
+name: provider-openrouter
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-openrouter
+description: OpenAI-compatible provider under provider::openrouter::*.
+dependencies:
+  auth-credentials: "^0.1.0"

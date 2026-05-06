@@ -1,5 +1,0 @@
-anthropic_model: "claude-sonnet-4-20250514"
-max_tokens: 4096
-max_iterations: 10
-session_ttl_hours: 24
-cron_session_cleanup: "0 0 * * * *"

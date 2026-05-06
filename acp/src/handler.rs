@@ -459,6 +459,8 @@ fn register_update_subscriber(
 
     let outbound_inner = outbound.clone();
     let seq_inner = update_seq.clone();
+    let iii_inner = iii.clone();
+    let conn_id_inner = conn_id.to_string();
     iii.register_function_with(
         RegisterFunctionMessage {
             id: fn_id.clone(),
@@ -478,8 +480,10 @@ fn register_update_subscriber(
         move |input: Value| {
             let outbound = outbound_inner.clone();
             let seq = seq_inner.clone();
+            let iii = iii_inner.clone();
+            let conn_id = conn_id_inner.clone();
             async move {
-                forward_brain_update(&outbound, &seq, input).await;
+                forward_brain_update(&iii, &conn_id, &outbound, &seq, input).await;
                 Ok(json!({}))
             }
         },
@@ -501,7 +505,13 @@ fn register_update_subscriber(
 
 // Subscriber payload may arrive bare ({sessionId, update}) or wrapped under
 // a `data` envelope depending on engine version. Accept either.
-async fn forward_brain_update(outbound: &Outbound, seq: &AtomicU64, input: Value) {
+async fn forward_brain_update(
+    iii: &III,
+    conn_id: &str,
+    outbound: &Outbound,
+    seq: &AtomicU64,
+    input: Value,
+) {
     let body = input.get("data").cloned().unwrap_or(input);
     let session_id = body.get("sessionId").and_then(|v| v.as_str());
     let update = body.get("update").cloned();
@@ -509,6 +519,12 @@ async fn forward_brain_update(outbound: &Outbound, seq: &AtomicU64, input: Value
         tracing::warn!(?body, "brain update missing sessionId/update");
         return;
     };
+    // Persist the update before emitting so session/load replay sees brain
+    // chunks too. Same format the echo brain stores via append_history:
+    // the inner `update` value, not the params wrapper.
+    if let Err(e) = append_history(iii, conn_id, sid, up.clone()).await {
+        tracing::warn!(error = %e, sid, "append_history failed for brain update");
+    }
     let mut params = json!({ "sessionId": sid, "update": up });
     let s = seq.fetch_add(1, Ordering::SeqCst);
     if let Some(obj) = params.as_object_mut() {

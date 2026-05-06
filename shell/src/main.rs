@@ -1,16 +1,17 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{
-    register_worker, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput,
-};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
+use serde_json::Value;
 use std::sync::Arc;
 
 mod config;
 mod exec;
+mod fs;
 mod functions;
 mod jobs;
 mod manifest;
+
+use functions::types::{KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -61,6 +62,10 @@ async fn main() -> Result<()> {
             tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
             let mut c = config::ShellConfig::default();
             c.compile_denylist()?;
+            // Defaults have host_root=None and allow_unjailed=false, so this
+            // path refuses to start. Otherwise a missing config file would
+            // silently bypass the S-H2 jail requirement.
+            c.validate_fs_jail()?;
             c
         }
     };
@@ -75,124 +80,209 @@ async fn main() -> Result<()> {
         },
     );
 
-    let _exec_fn = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "shell::exec".to_string(),
-            description: Some("Execute a command and return full output".to_string()),
-            request_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string", "description": "Program name or full command line if 'args' omitted" },
-                    "args": { "type": "array", "items": { "type": "string" } },
-                    "timeout_ms": { "type": "integer" }
-                },
-                "required": ["command"]
-            })),
-            response_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "exit_code": { "type": ["integer", "null"] },
-                    "stdout": { "type": "string" },
-                    "stderr": { "type": "string" },
-                    "duration_ms": { "type": "integer" },
-                    "timed_out": { "type": "boolean" },
-                    "stdout_truncated": { "type": "boolean" },
-                    "stderr_truncated": { "type": "boolean" }
-                }
-            })),
-            metadata: None,
-            invocation: None,
-        },
-        functions::exec::build_handler(shared.clone()),
-    );
+    // shell::exec, shell::exec_bg, and the 10 shell::fs::* handlers take
+    // Value at the registration boundary so they can preserve legacy wire
+    // contracts (S210 for fs malformed payloads, "missing 'command'" /
+    // "must be a string" for exec, silent timeout_ms fallback) that the
+    // SDK's typed deserialization can't reproduce.
 
-    let _exec_bg_fn = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "shell::exec_bg".to_string(),
-            description: Some("Spawn a command in background, return job_id".to_string()),
-            request_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" },
-                    "args": { "type": "array", "items": { "type": "string" } }
-                },
-                "required": ["command"]
-            })),
-            response_format: Some(json!({
-                "type": "object",
-                "properties": {
-                    "job_id": { "type": "string" },
-                    "argv": { "type": "array" }
-                }
-            })),
-            metadata: None,
-            invocation: None,
-        },
-        functions::exec_bg::build_handler(shared.clone()),
-    );
-
-    let _kill_fn = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "shell::kill".to_string(),
-            description: Some("Kill a running background job".to_string()),
-            request_format: Some(json!({
-                "type": "object",
-                "properties": { "job_id": { "type": "string" } },
-                "required": ["job_id"]
-            })),
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        functions::kill::build_handler(),
-    );
-
-    let _status_fn = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "shell::status".to_string(),
-            description: Some("Get status of a background job".to_string()),
-            request_format: Some(json!({
-                "type": "object",
-                "properties": { "job_id": { "type": "string" } },
-                "required": ["job_id"]
-            })),
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        functions::status::build_handler(),
-    );
-
-    let _list_fn = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "shell::list".to_string(),
-            description: Some("List all background jobs".to_string()),
-            request_format: Some(json!({ "type": "object", "properties": {} })),
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        functions::list::build_handler(shared.clone()),
-    );
-
-    for (fn_id, path, method) in [
-        ("shell::exec", "shell/exec", "POST"),
-        ("shell::exec_bg", "shell/exec_bg", "POST"),
-        ("shell::kill", "shell/kill", "POST"),
-        ("shell::status", "shell/status", "POST"),
-        ("shell::list", "shell/list", "GET"),
-    ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: fn_id.to_string(),
-            config: json!({ "api_path": path, "http_method": method }),
-            metadata: None,
-        }) {
-            tracing::warn!(error = %e, "failed to register http trigger for {}", fn_id);
-        }
+    {
+        let cfg = shared.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::exec", move |req: Value| {
+                let cfg = cfg.clone();
+                async move { functions::exec::handle(cfg, req).await }
+            })
+            .description("Execute a command and return full output"),
+        );
     }
 
-    tracing::info!("iii-shell registered 5 functions and 5 HTTP triggers, ready");
+    {
+        let cfg = shared.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::exec_bg", move |req: Value| {
+                let cfg = cfg.clone();
+                async move { functions::exec_bg::handle(cfg, req).await }
+            })
+            .description("Spawn a command in background, return job_id"),
+        );
+    }
+
+    iii.register_function(
+        RegisterFunction::new_async("shell::kill", |req: KillRequest| async move {
+            functions::kill::handle(req).await
+        })
+        .description("Kill a running background job"),
+    );
+
+    iii.register_function(
+        RegisterFunction::new_async("shell::status", |req: StatusRequest| async move {
+            functions::status::handle(req).await
+        })
+        .description("Get status of a background job"),
+    );
+
+    {
+        let cfg = shared.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::list", move |_req: Value| {
+                let cfg = cfg.clone();
+                async move { functions::list::handle(cfg).await }
+            })
+            .description("List all background jobs"),
+        );
+    }
+
+    let host_fs_cfg = std::sync::Arc::new(crate::fs::host::HostFsConfig {
+        host_root: shared.fs.host_root.clone(),
+        max_read_bytes: shared.fs.max_read_bytes,
+        max_write_bytes: shared.fs.max_write_bytes,
+        denylist_paths: shared.fs.denylist_paths.clone(),
+    });
+    let chan_maker: std::sync::Arc<dyn crate::fs::host::ChannelMaker> =
+        std::sync::Arc::new(crate::fs::host::IiiChannelMaker::new(iii.clone()));
+    let host_backend: std::sync::Arc<dyn crate::fs::FsBackend> =
+        std::sync::Arc::new(crate::fs::host::HostFsBackend::new(host_fs_cfg, chan_maker));
+    let sb_enabled = shared.sandbox.enabled;
+
+    if shared.fs.host_root.is_none() {
+        tracing::warn!(
+            "fs.host_root is unset — host backend is unjailed; \
+             every absolute path is reachable by shell::fs::* (denylist still applies)",
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::ls", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_ls::handle(h, i, sb_enabled, req).await }
+            })
+            .description("List directory contents on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::stat", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_stat::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Stat a path on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::mkdir", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_mkdir::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Create a directory on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::rm", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_rm::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Remove a path on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::chmod", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_chmod::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Change permissions on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::mv", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_mv::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Move/rename a path on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::grep", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_grep::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Recursive regex search on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::sed", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_sed::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Find-and-replace on host or sandbox"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::write", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_write::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Stream a file to a host path or sandbox via StreamChannelRef"),
+        );
+    }
+
+    {
+        let h = host_backend.clone();
+        let i = iii.clone();
+        iii.register_function(
+            RegisterFunction::new_async("shell::fs::read", move |req: Value| {
+                let h = h.clone();
+                let i = i.clone();
+                async move { functions::fs_read::handle(h, i, sb_enabled, req).await }
+            })
+            .description("Stream a file from a host path or sandbox via StreamChannelRef"),
+        );
+    }
+
+    tracing::info!("iii-shell registered 15 functions, ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-shell shutting down");

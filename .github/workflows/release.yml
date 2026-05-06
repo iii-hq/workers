@@ -3,24 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - 'a2a/v*'
-      - 'a2a-client/v*'
       - 'acp/v*'
-      - 'agent/v*'
-      - 'coding/v*'
-      - 'conductor/v*'
-      - 'eval/v*'
-      - 'experiment/v*'
-      - 'guardrails/v*'
+      - 'iii-database/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
-      - 'introspect/v*'
-      - 'llm-router/v*'
       - 'mcp/v*'
-      - 'mcp-client/v*'
       - 'proof/v*'
-      - 'shell/v*'
       - 'todo-worker/v*'
+      - 'skills/v*'
       - 'todo-worker-python/v*'
   workflow_dispatch:
     inputs:
@@ -59,6 +49,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+
+      - name: Refetch annotated tag
+        env:
+          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$RAW_TAG" ]]; then
+            git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
+          fi
 
       - name: Install pyyaml
         run: pip install --quiet pyyaml

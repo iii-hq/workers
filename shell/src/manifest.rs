@@ -26,6 +26,46 @@ pub fn build_manifest() -> Value {
                 "id": "shell::list",
                 "description": "List all background jobs (running + recently completed)",
             },
+            {
+                "id": "shell::fs::ls",
+                "description": "List directory contents on host or sandbox",
+            },
+            {
+                "id": "shell::fs::stat",
+                "description": "Stat a path on host or sandbox",
+            },
+            {
+                "id": "shell::fs::mkdir",
+                "description": "Create a directory on host or sandbox",
+            },
+            {
+                "id": "shell::fs::rm",
+                "description": "Remove a path on host or sandbox",
+            },
+            {
+                "id": "shell::fs::chmod",
+                "description": "Change permissions on host or sandbox",
+            },
+            {
+                "id": "shell::fs::mv",
+                "description": "Move/rename a path on host or sandbox",
+            },
+            {
+                "id": "shell::fs::grep",
+                "description": "Recursive regex search on host or sandbox",
+            },
+            {
+                "id": "shell::fs::sed",
+                "description": "Find-and-replace on host or sandbox",
+            },
+            {
+                "id": "shell::fs::write",
+                "description": "Stream a file to a host path or sandbox via StreamChannelRef",
+            },
+            {
+                "id": "shell::fs::read",
+                "description": "Stream a file from a host path or sandbox via StreamChannelRef",
+            },
         ],
     })
 }
@@ -41,7 +81,7 @@ mod tests {
         assert!(m.get("version").is_some());
         assert!(m.get("functions").is_some());
         let fns = m.get("functions").unwrap().as_array().unwrap();
-        assert_eq!(fns.len(), 5);
+        assert_eq!(fns.len(), 15);
     }
 
     #[test]
@@ -51,5 +91,8 @@ mod tests {
         assert!(s.contains("shell::exec"));
         assert!(s.contains("shell::exec_bg"));
         assert!(s.contains("shell::kill"));
+        assert!(s.contains("shell::fs::read"));
+        assert!(s.contains("shell::fs::write"));
+        assert!(s.contains("shell::fs::grep"));
     }
 }

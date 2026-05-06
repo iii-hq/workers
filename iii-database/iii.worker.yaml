@@ -1,0 +1,7 @@
+iii: v1
+name: iii-database
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-database
+description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and change feeds.

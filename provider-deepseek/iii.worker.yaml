@@ -1,0 +1,9 @@
+iii: v1
+name: provider-deepseek
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-deepseek
+description: OpenAI-compatible provider under provider::deepseek::*.
+dependencies:
+  auth-credentials: "^0.1.0"

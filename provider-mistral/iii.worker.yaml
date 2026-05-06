@@ -1,0 +1,9 @@
+iii: v1
+name: provider-mistral
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-mistral
+description: OpenAI-compatible provider under provider::mistral::*.
+dependencies:
+  auth-credentials: "^0.1.0"

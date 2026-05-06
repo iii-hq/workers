@@ -102,13 +102,21 @@ async fn read_bounded<R: AsyncReadExt + Unpin>(reader: &mut R, limit: usize) -> 
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
-                if buf.len() + n > limit {
-                    let take = limit.saturating_sub(buf.len());
-                    buf.extend_from_slice(&chunk[..take]);
-                    truncated = true;
-                    break;
+                if !truncated {
+                    if buf.len() + n > limit {
+                        let take = limit.saturating_sub(buf.len());
+                        buf.extend_from_slice(&chunk[..take]);
+                        truncated = true;
+                        // Fall through and continue draining; do NOT break.
+                        // Dropping the reader here closes the pipe, and the
+                        // child's next write() raises SIGPIPE — making
+                        // ExitStatus::code() report None on what should have
+                        // been a normal-exit-with-truncated-output run.
+                    } else {
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
                 }
-                buf.extend_from_slice(&chunk[..n]);
+                // truncated == true: discard everything past `limit`.
             }
             Err(_) => break,
         }

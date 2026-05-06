@@ -1,7 +1,0 @@
-iii: v1
-name: conductor
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-conductor
-description: Multi-agent fan-out + verifier-gated merge worker. Dispatches a task across N agent CLIs in parallel, runs verifier gates per result, picks a winning diff.

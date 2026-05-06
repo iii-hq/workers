@@ -1,0 +1,11 @@
+# skills runtime config.
+
+# State scopes used to persist the two registries. Changing these at
+# runtime is supported but orphans prior entries; treat them as
+# deployment-time constants in practice.
+scopes:
+  skills: skills
+  prompts: prompts
+
+# Default timeout for `state::*` and sub-skill function triggers (ms).
+state_timeout_ms: 10000

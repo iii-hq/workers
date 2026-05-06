@@ -1,0 +1,9 @@
+iii: v1
+name: provider-groq
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-groq
+description: OpenAI-compatible provider under provider::groq::*.
+dependencies:
+  auth-credentials: "^0.1.0"

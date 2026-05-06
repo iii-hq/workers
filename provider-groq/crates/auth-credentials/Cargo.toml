@@ -1,0 +1,19 @@
+[package]
+name = "auth-credentials"
+description = "Provider credential vault. Multi-process safe storage for API keys and OAuth tokens, registered as auth::get_token / auth::set_token / auth::delete_token / auth::list_providers / auth::status. Renamed from auth-storage in P4."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+iii-sdk = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,35 @@
+# mcp runtime config.
+
+# HTTP api_path the engine binds POST to. Final URL is
+# `<engine_http>/mcp`. Override here if you need to host two MCP
+# endpoints on the same engine.
+api_path: mcp
+
+# Default timeout (ms) for the trigger calls into the skills worker
+# and into user-tool functions. The MCP client's transport-level
+# timeout is independent of this.
+state_timeout_ms: 30000
+
+# Function-id prefixes that are NEVER advertised in tools/list and
+# refused at tools/call. The defaults match the hard floor enforced
+# by `skills`. Add custom prefixes here if a deploy needs to hide
+# additional namespaces from MCP clients.
+hidden_prefixes:
+  - "engine::"
+  - "state::"
+  - "stream::"
+  - "iii."
+  - "iii::"
+  - "mcp::"
+  - "a2a::"
+  - "skills::"
+  - "prompts::"
+
+# When true, only functions whose `metadata.mcp.expose == true` are
+# advertised in tools/list. Workers that follow the typed-handler
+# convention (agentmemory, brain, etc.) tag their agent-callable
+# functions with this flag and intentionally omit it from HTTP
+# wrappers, sub-skill handlers, and prompt handlers. Recommended for
+# agent-facing deployments to keep tools/list curated. Default false
+# so existing workers that haven't adopted the flag stay visible.
+require_expose: false

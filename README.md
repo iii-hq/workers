@@ -12,20 +12,57 @@ matching GitHub Release asset for the host's target triple.
 
 | Worker | Kind | Summary |
 |---|---|---|
-| [`a2a`](a2a/) | Rust | A2A (Agent-to-Agent) JSON-RPC protocol worker. Publishes an agent card, routes `message/send` to exposed functions gated by `a2a.expose` metadata. |
-| [`agent`](agent/) | Rust | Chat + planning agent that discovers other workers' functions at runtime and drives them via `iii.trigger()`. |
-| [`coding`](coding/) | Rust | Code-generation / refactor assistant. |
-| [`eval`](eval/) | Rust | OTel span ingestion, latency percentiles, baseline + drift detection, system health score. |
-| [`experiment`](experiment/) | Rust | A/B experiment tracking with weighted variant sampling and outcome aggregation. |
-| [`guardrails`](guardrails/) | Rust | Input/output guardrails — PII detection, prompt-injection filters, length enforcement. |
+| [`audit-log`](audit-log/) | Rust | Append-only JSON-lines audit log of every tool call + result on `agent::after_tool_call`. |
+| [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
+| [`auth-rbac`](auth-rbac/) | Rust | HMAC API keys and workspace roles (owner/admin/member/viewer) under `auth::rbac::*`. |
+| [`context-compaction`](context-compaction/) | Rust | Subscriber that triggers session compaction once context-window thresholds are reached. |
+| [`dlp-scrubber`](dlp-scrubber/) | Rust | Hook subscriber on `agent::after_tool_call` that redacts common secret shapes in tool result text. |
+| [`document-extract`](document-extract/) | Rust | PDF/Word text extraction under `document::extract` for agent context ingestion. |
+| [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `inbox::*` (push, drain, peek). |
+| [`guardrails`](guardrails/) | Rust | Local heuristics for PII, leaked API keys, jailbreak keywords, and toxicity under `guardrails::*`. |
+| [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
+| [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hooks::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O. JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
-| [`introspect`](introspect/) | Rust | Live topology, trace walks, Mermaid diagrams, and per-function explain output. |
-| [`llm-router`](llm-router/) | Rust | Unopinionated LLM routing brain — policies, classifiers, A/B tests, health + budget aware. Sits in front of any gateway. |
+| [`llm-budget`](llm-budget/) | Rust | Workspace + agent LLM spend caps with alerts, forecast, and period rollover under `budget::*`. |
 | [`mcp`](mcp/) | Rust | Model Context Protocol surface — stdio + HTTP JSON-RPC, exposes iii functions tagged `mcp.expose` as MCP tools. |
+| [`models-catalog`](models-catalog/) | Rust | Model capabilities knowledge base under `models::*` (list/get/supports/register). |
+| [`oauth-anthropic`](oauth-anthropic/) | Rust | Anthropic Claude Pro/Max OAuth (PKCE localhost flow) under `oauth::anthropic::*`. |
+| [`oauth-github-copilot`](oauth-github-copilot/) | Rust | GitHub Copilot OAuth (device-code flow) under `oauth::github_copilot::*`. |
+| [`oauth-google-antigravity`](oauth-google-antigravity/) | Rust | Google Antigravity OAuth (PKCE localhost flow) under `oauth::google_antigravity::*`. |
+| [`oauth-google-gemini-cli`](oauth-google-gemini-cli/) | Rust | Google Gemini CLI OAuth (PKCE localhost flow) under `oauth::google_gemini_cli::*`. |
+| [`oauth-openai-codex`](oauth-openai-codex/) | Rust | OpenAI Codex OAuth (PKCE localhost flow) under `oauth::openai_codex::*`. |
+| [`policy-denylist`](policy-denylist/) | Rust | Hook subscriber on `agent::before_tool_call` that blocks calls whose name is on a configured denylist. |
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
-| [`shell`](shell/) | Rust | Sandboxed-ish Unix shell execution. Allowlist + denylist, timeout + output caps, background jobs. |
+| [`provider-anthropic`](provider-anthropic/) | Rust | Native Anthropic Messages API streaming provider under `provider::anthropic::*`. |
+| [`provider-azure-openai`](provider-azure-openai/) | Rust | Azure OpenAI Responses provider under `provider::azure-openai::*`. |
+| [`provider-bedrock`](provider-bedrock/) | Rust | AWS Bedrock provider under `provider::bedrock::*`. (Stub today; emits a not-implemented error.) |
+| [`provider-cerebras`](provider-cerebras/) | Rust | OpenAI-compatible Cerebras provider under `provider::cerebras::*`. |
+| [`provider-cli`](provider-cli/) | Rust | Wraps installed coding CLIs (claude, codex, opencode, openclaw, hermes, pi, gemini, cursor-agent) under `provider::cli::*`. |
+| [`provider-deepseek`](provider-deepseek/) | Rust | OpenAI-compatible DeepSeek provider under `provider::deepseek::*`. |
+| [`provider-fireworks`](provider-fireworks/) | Rust | OpenAI-compatible Fireworks provider under `provider::fireworks::*`. |
+| [`provider-google`](provider-google/) | Rust | Google Gemini provider under `provider::google::*`. |
+| [`provider-google-vertex`](provider-google-vertex/) | Rust | Vertex AI Gemini provider under `provider::google-vertex::*`. |
+| [`provider-groq`](provider-groq/) | Rust | OpenAI-compatible Groq provider under `provider::groq::*`. |
+| [`provider-huggingface`](provider-huggingface/) | Rust | OpenAI-compatible Hugging Face Inference provider under `provider::huggingface::*`. |
+| [`provider-kimi-coding`](provider-kimi-coding/) | Rust | OpenAI-compatible Moonshot Kimi coding provider under `provider::kimi-coding::*`. |
+| [`provider-minimax`](provider-minimax/) | Rust | OpenAI-compatible MiniMax provider under `provider::minimax::*`. |
+| [`provider-mistral`](provider-mistral/) | Rust | OpenAI-compatible Mistral La Plateforme provider under `provider::mistral::*`. |
+| [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider under `provider::openai::*`. |
+| [`provider-openai-responses`](provider-openai-responses/) | Rust | OpenAI Responses API provider under `provider::openai-responses::*`. |
+| [`provider-opencode-go`](provider-opencode-go/) | Rust | OpenAI-compatible opencode Go endpoint under `provider::opencode-go::*`. |
+| [`provider-opencode-zen`](provider-opencode-zen/) | Rust | OpenAI-compatible opencode Zen endpoint under `provider::opencode-zen::*`. |
+| [`provider-openrouter`](provider-openrouter/) | Rust | OpenAI-compatible OpenRouter routing layer under `provider::openrouter::*`. |
+| [`provider-vercel-ai-gateway`](provider-vercel-ai-gateway/) | Rust | OpenAI-compatible Vercel AI Gateway provider under `provider::vercel-ai-gateway::*`. |
+| [`provider-xai`](provider-xai/) | Rust | OpenAI-compatible xAI Grok provider under `provider::xai::*`. |
+| [`provider-zai`](provider-zai/) | Rust | OpenAI-compatible Z.ai provider under `provider::zai::*`. |
+| [`session-corpus`](session-corpus/) | Rust | Dataset publishing pipeline for completed sessions under `corpus::*` — secret scan, redact, review, publish. |
+| [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
+| [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
+| [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
+| [`subagent`](subagent/) | Rust | Spawn child agent sessions under `subagent::*` via `run::start_and_wait`. |
+| [`turn-orchestrator`](turn-orchestrator/) | Rust | Durable `run::start` state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
 | [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |
 
@@ -48,9 +85,8 @@ flow — see each module's README for specifics.
 
 ## Binary releases
 
-Rust workers that ship as standalone binaries (`a2a`, `agent`, `coding`,
-`eval`, `experiment`, `guardrails`, `iii-lsp`, `image-resize`, `introspect`,
-`llm-router`, `mcp`, `shell`) are released via GitHub Actions:
+All Rust workers ship as standalone binaries — see the modules table above
+— and are released via GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
    type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
@@ -87,6 +123,10 @@ reads this file to locate the right asset for the host.
 See [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md) for the full checklist
 covering folder layout, `iii.worker.yaml`, lint, tests, deploy type
 (`binary` vs. `image`), and the release flow.
+[`binary-worker.md`](binary-worker.md) goes deeper for the Rust binary
+scaffold; [`worker-readme.md`](worker-readme.md) covers the README
+contract every worker shares (install via `iii worker add`, run via
+`iii start`, how-to over reference).
 
 ## CI
 

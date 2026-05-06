@@ -1,0 +1,9 @@
+iii: v1
+name: provider-openai-responses
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-provider-openai-responses
+description: OpenAI Responses API provider under provider::openai-responses::*.
+dependencies:
+  auth-credentials: "^0.1.0"

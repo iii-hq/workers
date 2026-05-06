@@ -1,4 +1,0 @@
-state_scope: "llm-router"
-classifier_default_id: "default"
-stats_default_days: 7
-health_skip_threshold_error_rate: 0.3

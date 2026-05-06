@@ -1,0 +1,47 @@
+# Variant of config.yaml used by run-tests-jailed.sh to reproduce
+# S-C1 (symlink-parent jail escape) — see
+# `cases-vuln-repro-jailed.ts`. Only difference from the default
+# config is `fs.host_root` being set to a fixed absolute path; the
+# jailed suite creates the directory and a symlink inside it that
+# points at /private/tmp/<uuid>. The vuln is that
+# `validate_path` falls back to lexical normalization on ENOENT
+# (target doesn't yet exist), which never resolves the symlink, so
+# the jail check passes against the lexical path inside the jail
+# while the kernel follows the symlink and writes to /private/tmp/.
+
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii-shell-tests
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: shell
+    config:
+      max_timeout_ms: 5000
+      default_timeout_ms: 1500
+      max_output_bytes: 4096
+      working_dir: ./data
+      inherit_env: false
+      allowed_env: [PATH, HOME, LANG, HARNESS_TEST_VAR]
+      allowlist: [echo, ls, cat, sleep, pwd, printf, sh, false, "true", env]
+      denylist_patterns:
+        - "rm\\s+-rf\\s+/"
+      max_concurrent_jobs: 2
+      job_retention_secs: 2
+      fs:
+        host_root: /private/tmp/iii-shell-jailed-root
+        max_read_bytes: 1048576
+        max_write_bytes: 1048576
+        denylist_paths:
+          - /etc/passwd
+          - /etc/shadow
+      sandbox:
+        enabled: false

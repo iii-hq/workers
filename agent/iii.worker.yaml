@@ -1,7 +1,0 @@
-iii: v1
-name: agent
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: iii-agent
-description: Chat + planning agent that discovers and drives other iii workers

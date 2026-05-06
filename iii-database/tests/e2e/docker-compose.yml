@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iii
+      POSTGRES_PASSWORD: iii
+      POSTGRES_DB: iii_test
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_replication_slots=4
+    ports:
+      - "55432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iii -d iii_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: iii
+      MYSQL_DATABASE: iii_test
+      MYSQL_USER: iii
+      MYSQL_PASSWORD: iii
+    ports:
+      - "53306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uiii", "-piii"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pg_data:
+  mysql_data:

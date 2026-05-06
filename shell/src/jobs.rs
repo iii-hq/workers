@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Running,
@@ -15,7 +16,7 @@ pub enum JobStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct JobRecord {
     pub id: String,
     pub argv: Vec<String>,
@@ -55,11 +56,38 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub async fn insert(handle: JobHandle) -> String {
+/// Atomically count running jobs and insert a new one if under `max`. Holds
+/// the map mutex across both operations so two concurrent callers cannot
+/// each pass the count check and then both insert. A handle whose lock is
+/// currently held by another task is conservatively counted as running —
+/// it's mid-finalization and either still Running or about to be — so the
+/// soft cap may briefly under-allow at the boundary, but never over-allows.
+///
+/// On rejection, returns the running count and the original handle so the
+/// caller can reclaim the spawned child process and kill it.
+pub async fn try_reserve_and_insert(
+    handle: JobHandle,
+    max: usize,
+) -> Result<String, (usize, JobHandle)> {
+    let mut guard = JOBS.map.lock().await;
+    let mut running = 0usize;
+    for h in guard.values() {
+        match h.try_lock() {
+            Ok(g) => {
+                if g.record.status == JobStatus::Running {
+                    running += 1;
+                }
+            }
+            Err(_) => running += 1,
+        }
+    }
+    if running >= max {
+        return Err((running, handle));
+    }
     let id = handle.record.id.clone();
     let boxed = Arc::new(Mutex::new(handle));
-    JOBS.map.lock().await.insert(id.clone(), boxed);
-    id
+    guard.insert(id.clone(), boxed);
+    Ok(id)
 }
 
 pub async fn get(id: &str) -> Option<Arc<Mutex<JobHandle>>> {
@@ -104,6 +132,10 @@ pub async fn list_all() -> Vec<JobRecord> {
     out
 }
 
+/// Used by integration tests to assert lifecycle invariants. The
+/// production exec_bg path uses `try_reserve_and_insert` which does the
+/// counting and insertion atomically.
+#[allow(dead_code)]
 pub async fn running_count() -> usize {
     let handles = snapshot().await;
     let mut n = 0;
@@ -121,24 +153,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_and_get() {
-        let rec = JobRecord {
-            id: "test-1".to_string(),
-            argv: vec!["echo".to_string()],
-            started_at_ms: now_ms(),
-            finished_at_ms: None,
-            status: JobStatus::Running,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-        };
-        insert(JobHandle {
-            record: rec.clone(),
+        let id = format!("test-insert-{}", uuid::Uuid::new_v4());
+        match try_reserve_and_insert(make_handle(&id, JobStatus::Running), usize::MAX).await {
+            Ok(_) => {}
+            Err(_) => panic!("usize::MAX cap must always succeed"),
+        }
+        let got = get(&id).await.expect("job exists");
+        assert_eq!(got.lock().await.record.id, id);
+        JOBS.map.lock().await.remove(&id);
+    }
+
+    fn make_handle(id: &str, status: JobStatus) -> JobHandle {
+        JobHandle {
+            record: JobRecord {
+                id: id.into(),
+                argv: vec!["x".into()],
+                started_at_ms: now_ms(),
+                finished_at_ms: if status == JobStatus::Running {
+                    None
+                } else {
+                    Some(now_ms())
+                },
+                status,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
             child: None,
-        })
-        .await;
-        let got = get("test-1").await.expect("job exists");
-        assert_eq!(got.lock().await.record.id, "test-1");
+        }
+    }
+
+    // The `JOBS` singleton is shared across all tests in the binary and
+    // tokio runs them concurrently, so these tests use deterministic
+    // assertions that don't depend on absolute counts.
+
+    #[tokio::test]
+    async fn try_reserve_with_zero_cap_rejects_and_returns_handle() {
+        let id = format!("reserve-zero-{}", uuid::Uuid::new_v4());
+        match try_reserve_and_insert(make_handle(&id, JobStatus::Running), 0).await {
+            Ok(_) => panic!("cap=0 must reject"),
+            Err((_, returned)) => {
+                assert_eq!(returned.record.id, id);
+            }
+        }
+        assert!(
+            get(&id).await.is_none(),
+            "rejected reservation must not insert into the map"
+        );
     }
 }
