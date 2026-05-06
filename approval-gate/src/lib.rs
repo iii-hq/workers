@@ -2,7 +2,11 @@
 //! whose `tool_call.name` appears in the run's `approval_required` list,
 //! waiting for the UI to call `approval::resolve` (or for a timeout).
 
-use iii_sdk::{FunctionRef, III};
+use std::sync::Arc;
+
+use iii_sdk::{
+    FunctionRef, IIIError, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, III,
+};
 use serde_json::{json, Value};
 
 pub const FN_RESOLVE: &str = "approval::resolve";
@@ -203,8 +207,262 @@ pub async fn handle_list_pending(bus: &dyn StateBus, payload: Value) -> Value {
     json!({ "pending": pending })
 }
 
-pub fn register(_iii: &III, _config: Config) -> anyhow::Result<Refs> {
-    anyhow::bail!("not yet implemented")
+const POLL_INTERVAL_MS: u64 = 250;
+
+pub async fn await_decision(
+    bus: &dyn StateBus,
+    session_id: &str,
+    tool_call_id: &str,
+    expires_at: u64,
+) -> Decision {
+    let key = pending_key(session_id, tool_call_id);
+    loop {
+        let Some(rec) = bus.get(STATE_SCOPE, &key).await else {
+            return Decision::Deny {
+                reason: "state_unavailable".into(),
+            };
+        };
+        match rec.get("status").and_then(Value::as_str) {
+            Some("allow") => return Decision::Allow,
+            Some("deny") => {
+                let reason = rec
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("user")
+                    .to_string();
+                return Decision::Deny { reason };
+            }
+            _ => {}
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(expires_at);
+        if now >= expires_at {
+            return Decision::Deny {
+                reason: "timeout".into(),
+            };
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+}
+
+/// Production [`StateBus`] backed by a real iii-sdk [`III`] connection.
+pub struct IiiStateBus(pub III);
+
+#[async_trait::async_trait]
+impl StateBus for IiiStateBus {
+    async fn set(&self, scope: &str, key: &str, value: Value) {
+        let _ = self
+            .0
+            .trigger(TriggerRequest {
+                function_id: "state::set".into(),
+                payload: json!({ "scope": scope, "key": key, "value": value }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await;
+    }
+    async fn get(&self, scope: &str, key: &str) -> Option<Value> {
+        self.0
+            .trigger(TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "scope": scope, "key": key }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .ok()
+            .filter(|v| !v.is_null())
+    }
+    async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
+        let resp = self
+            .0
+            .trigger(TriggerRequest {
+                function_id: "state::list".into(),
+                payload: json!({ "scope": scope, "prefix": prefix }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .unwrap_or_else(|_| json!({ "items": [] }));
+        resp.get("items")
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.get("value").cloned().unwrap_or(entry))
+            .collect()
+    }
+}
+
+async fn write_event(iii: &III, session_id: &str, event: &Value) {
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": "agent::events",
+                "group_id": session_id,
+                "item_id": format!("approval-{}", uuid_like()),
+                "data": event,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+}
+
+fn uuid_like() -> String {
+    // Lightweight unique-ish id without pulling uuid in: ns timestamp + counter.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static C: AtomicU64 = AtomicU64::new(0);
+    let n = C.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{t:x}-{n:x}")
+}
+
+async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
+    if stream_name.is_empty() || event_id.is_empty() {
+        return;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": stream_name,
+                "group_id": event_id,
+                "item_id": uuid_like(),
+                "data": reply,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+}
+
+pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
+    let bus: Arc<dyn StateBus> = Arc::new(IiiStateBus(iii.clone()));
+
+    let bus_for_resolve = bus.clone();
+    let resolve = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_RESOLVE.into())
+            .with_description("Flip a pending approval entry to allow or deny.".into()),
+        move |payload: Value| {
+            let bus = bus_for_resolve.clone();
+            async move { Ok::<_, IIIError>(handle_resolve(bus.as_ref(), payload).await) }
+        },
+    ));
+
+    let bus_for_list = bus.clone();
+    let list_pending = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_LIST_PENDING.into())
+            .with_description("Return pending approvals for a session.".into()),
+        move |payload: Value| {
+            let bus = bus_for_list.clone();
+            async move { Ok::<_, IIIError>(handle_list_pending(bus.as_ref(), payload).await) }
+        },
+    ));
+
+    let timeout_ms = config.timeout_ms;
+    let topic = config.topic.clone();
+    let iii_for_sub = iii.clone();
+    let bus_for_sub = bus.clone();
+    let subscriber_fn = iii.register_function((
+        RegisterFunctionMessage::with_id("policy::approval_gate".into())
+            .with_description("Pause tool calls listed in approval_required.".into()),
+        move |envelope: Value| {
+            let iii = iii_for_sub.clone();
+            let bus = bus_for_sub.clone();
+            async move {
+                let Some(call) = extract_call(&envelope) else {
+                    return Ok::<_, IIIError>(json!({ "block": false }));
+                };
+                if !call.requires_approval() {
+                    let reply = json!({ "block": false });
+                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
+                    return Ok(reply);
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let expires_at = now + timeout_ms;
+                let record = build_pending_record(
+                    &call.tool_call_id,
+                    &call.tool_name,
+                    &call.args,
+                    now,
+                    timeout_ms,
+                );
+                bus.set(
+                    STATE_SCOPE,
+                    &pending_key(&call.session_id, &call.tool_call_id),
+                    record,
+                )
+                .await;
+                write_event(
+                    &iii,
+                    &call.session_id,
+                    &json!({
+                        "type": "approval_requested",
+                        "tool_call_id": call.tool_call_id,
+                        "tool_name": call.tool_name,
+                        "args": call.args,
+                        "expires_at": expires_at,
+                    }),
+                )
+                .await;
+                let decision =
+                    await_decision(bus.as_ref(), &call.session_id, &call.tool_call_id, expires_at)
+                        .await;
+                let reason = match &decision {
+                    Decision::Allow => None,
+                    Decision::Deny { reason } => Some(reason.clone()),
+                };
+                let decision_str = match decision {
+                    Decision::Allow => "allow",
+                    Decision::Deny { .. } => "deny",
+                };
+                write_event(
+                    &iii,
+                    &call.session_id,
+                    &json!({
+                        "type": "approval_resolved",
+                        "tool_call_id": call.tool_call_id,
+                        "decision": decision_str,
+                        "reason": reason,
+                    }),
+                )
+                .await;
+                let reply = block_reply_for(&match decision_str {
+                    "allow" => Decision::Allow,
+                    _ => Decision::Deny {
+                        reason: reason.unwrap_or_else(|| "user".into()),
+                    },
+                });
+                write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
+                Ok(reply)
+            }
+        },
+    ));
+
+    let subscriber_trigger = iii
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "subscribe".into(),
+            function_id: "policy::approval_gate".into(),
+            config: json!({ "topic": topic }),
+            metadata: None,
+        })
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    Ok(Refs {
+        resolve,
+        list_pending,
+        subscriber_fn,
+        subscriber_trigger,
+    })
 }
 
 #[cfg(test)]
@@ -407,6 +665,67 @@ mod tests {
         let items = out["pending"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["tool_call_id"], "tc-1");
+    }
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    #[tokio::test]
+    async fn await_decision_returns_allow_when_status_flips() {
+        let bus = Arc::new(InMemoryStateBus::new());
+        let key = pending_key("s1", "tc-1");
+        bus.set(
+            STATE_SCOPE,
+            &key,
+            build_pending_record("tc-1", "write", &json!({}), now_ms(), 5_000),
+        )
+        .await;
+
+        let bus2 = bus.clone();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut rec = bus2.get(STATE_SCOPE, &key).await.unwrap();
+            rec["status"] = json!("allow");
+            bus2.set(STATE_SCOPE, &key, rec).await;
+        });
+
+        let decision = await_decision(&*bus, "s1", "tc-1", now_ms() + 5_000).await;
+        writer.await.unwrap();
+        assert_eq!(decision, Decision::Allow);
+    }
+
+    #[tokio::test]
+    async fn await_decision_returns_deny_timeout_when_expired() {
+        let bus = InMemoryStateBus::new();
+        let key = pending_key("s1", "tc-1");
+        bus.set(
+            STATE_SCOPE,
+            &key,
+            build_pending_record("tc-1", "write", &json!({}), 0, 0),
+        )
+        .await;
+        let decision = await_decision(&bus, "s1", "tc-1", now_ms() - 10).await;
+        match decision {
+            Decision::Deny { reason } => assert_eq!(reason, "timeout"),
+            other => panic!("expected Deny(timeout), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn await_decision_fail_closed_on_missing_record() {
+        let bus = InMemoryStateBus::new();
+        let decision = await_decision(&bus, "s1", "tc-1", now_ms() + 1_000).await;
+        match decision {
+            Decision::Deny { reason } => assert_eq!(reason, "state_unavailable"),
+            other => panic!("expected Deny(state_unavailable), got {other:?}"),
+        }
     }
 
     #[tokio::test]
