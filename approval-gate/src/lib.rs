@@ -133,6 +133,64 @@ pub struct Refs {
     pub subscriber_trigger: iii_sdk::Trigger,
 }
 
+#[async_trait::async_trait]
+pub trait StateBus: Send + Sync {
+    async fn set(&self, scope: &str, key: &str, value: Value);
+    async fn get(&self, scope: &str, key: &str) -> Option<Value>;
+    async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
+}
+
+pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let tool_call_id = payload
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let decision = payload
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_id.is_empty() || tool_call_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_id" });
+    }
+    if decision != "allow" && decision != "deny" {
+        return json!({ "ok": false, "error": "bad_decision" });
+    }
+    let key = pending_key(session_id, tool_call_id);
+    let Some(mut existing) = bus.get(STATE_SCOPE, &key).await else {
+        return json!({ "ok": false, "error": "not_found" });
+    };
+    if existing.get("status").and_then(Value::as_str) != Some("pending") {
+        return json!({ "ok": false, "error": "already_resolved" });
+    }
+    existing["status"] = json!(decision);
+    if let Some(reason) = payload.get("reason").cloned() {
+        existing["reason"] = reason;
+    }
+    bus.set(STATE_SCOPE, &key, existing).await;
+    json!({ "ok": true })
+}
+
+pub async fn handle_list_pending(bus: &dyn StateBus, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_id.is_empty() {
+        return json!({ "pending": [] });
+    }
+    let prefix = format!("{session_id}/");
+    let all = bus.list_prefix(STATE_SCOPE, &prefix).await;
+    let pending: Vec<Value> = all
+        .into_iter()
+        .filter(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
+        .collect();
+    json!({ "pending": pending })
+}
+
 pub fn register(_iii: &III, _config: Config) -> anyhow::Result<Refs> {
     anyhow::bail!("not yet implemented")
 }
@@ -236,5 +294,106 @@ mod tests {
         let reply = block_reply_for(&Decision::Allow);
         assert_eq!(reply["block"], false);
         assert!(reply.get("reason").is_none(), "Allow must not include reason: {reply}");
+    }
+
+    use std::sync::Mutex;
+
+    struct InMemoryStateBus {
+        store: Mutex<std::collections::HashMap<String, Value>>,
+    }
+
+    impl InMemoryStateBus {
+        fn new() -> Self {
+            Self { store: Mutex::new(std::collections::HashMap::new()) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StateBus for InMemoryStateBus {
+        async fn set(&self, scope: &str, key: &str, value: Value) {
+            self.store
+                .lock()
+                .unwrap()
+                .insert(format!("{scope}/{key}"), value);
+        }
+        async fn get(&self, scope: &str, key: &str) -> Option<Value> {
+            self.store.lock().unwrap().get(&format!("{scope}/{key}")).cloned()
+        }
+        async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
+            let map = self.store.lock().unwrap();
+            map.iter()
+                .filter(|(k, _)| k.starts_with(&format!("{scope}/{prefix}")))
+                .map(|(_, v)| v.clone())
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_flips_status_when_pending() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+        )
+        .await;
+
+        let out = handle_resolve(
+            &bus,
+            json!({
+                "tool_call_id": "tc-1",
+                "session_id": "s1",
+                "decision": "allow",
+            }),
+        )
+        .await;
+
+        assert_eq!(out["ok"], true);
+        let stored = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
+        assert_eq!(stored["status"], "allow");
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_already_resolved_entry() {
+        let bus = InMemoryStateBus::new();
+        let mut rec = build_pending_record("tc-1", "write", &json!({}), 0, 60_000);
+        rec["status"] = json!("allow");
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec).await;
+
+        let out = handle_resolve(
+            &bus,
+            json!({"tool_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
+        )
+        .await;
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["error"], "already_resolved");
+    }
+
+    #[tokio::test]
+    async fn list_pending_returns_only_pending_for_session() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+        )
+        .await;
+        let mut resolved = build_pending_record("tc-2", "write", &json!({}), 0, 60_000);
+        resolved["status"] = json!("allow");
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-2"), resolved).await;
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("other", "tc-3"),
+            build_pending_record("tc-3", "write", &json!({}), 0, 60_000),
+        )
+        .await;
+
+        let out = handle_list_pending(&bus, json!({ "session_id": "s1" })).await;
+        let items = out["pending"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tool_call_id"], "tc-1");
     }
 }
