@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, BridgeError } from "./bridge";
+import { useAgentStream } from "./useAgentStream";
 import { useSkillsIndex } from "./useSkillsIndex";
+import { ApprovalRow } from "./components/ApprovalRow";
 import { AuthPanel, type AuthPanelHandle } from "./components/AuthPanel";
 import { Composer } from "./components/Composer";
 import { ContextMeter } from "./components/ContextMeter";
@@ -31,7 +33,7 @@ const TOOLS = [
   {
     name: "shell::filesystem::ls",
     description: "List directory entries inside the sandbox.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         path: {
@@ -46,7 +48,7 @@ const TOOLS = [
     name: "shell::filesystem::read",
     description:
       "Read a file inside the sandbox. Returns UTF-8 contents (max 256 KB inline).",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         path: {
@@ -61,7 +63,7 @@ const TOOLS = [
     name: "shell::filesystem::write",
     description:
       "Write content to a file inside the sandbox. Creates parent dirs as needed; overwrites any existing file at the path.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         path: {
@@ -79,7 +81,7 @@ const TOOLS = [
   {
     name: "shell::filesystem::mkdir",
     description: "Create a directory (and parents) inside the sandbox.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { path: { type: "string" } },
       required: ["path"],
@@ -88,7 +90,7 @@ const TOOLS = [
   {
     name: "shell::filesystem::stat",
     description: "Return metadata (size, mode, mtime) for a sandbox path.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { path: { type: "string" } },
       required: ["path"],
@@ -98,7 +100,7 @@ const TOOLS = [
     name: "skill::fetch",
     description:
       "Read one or more iii:// skill URIs as markdown. Use to drill into specific worker docs after seeing them in the iii://skills index.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         uri: {
@@ -151,6 +153,11 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<Provider, string> = {
   openai: "gpt-5",
 };
 
+const APPROVAL_REQUIRED = [
+  "shell::filesystem::write",
+  "shell::filesystem::mkdir",
+];
+
 function newSessionId(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -182,6 +189,15 @@ export default function App() {
   const authPanelRef = useRef<AuthPanelHandle>(null);
 
   const [tab, setTab] = useState<Tab>("chat");
+
+  const stream = useAgentStream(active);
+
+  useEffect(() => {
+    if (!active) return;
+    if (stream.messages.length > 0) setMessages(stream.messages);
+  }, [active, stream.messages]);
+
+  const isRunning = loading || stream.status === "running";
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -276,36 +292,19 @@ export default function App() {
       content: [{ type: "text", text: prompt }],
       timestamp: Date.now(),
     };
-
-    // turn-orchestrator's `run::start` overwrites the persisted transcript
-    // with whatever `messages` arrives in the payload (run_start.rs:28).
-    // To keep multi-turn memory we send the full prior transcript plus the
-    // new user message every time. The bus will replay it back to the LLM.
     const fullHistory = [...messages, optimistic];
     setMessages(fullHistory);
 
     try {
-      const result = await bridge<{ messages: AgentMessage[] }>(
-        "run::start_and_wait",
-        {
-          session_id: sid,
-          provider,
-          model,
-          messages: fullHistory,
-          system_prompt: buildSystemPrompt(skillsIndex),
-          // Tool calling temporarily disabled: UI sends Anthropic-native
-          // `input_schema`, but provider-router validates with `parameters`
-          // (OpenAI-native). Until the schema is unified, advertise no tools
-          // so the provider call goes through and chat works.
-          tools: [],
-          // Tool-calling turns roundtrip the model 2+ times plus filesystem
-          // ops; allow generous headroom. The engine's HTTP trigger and the
-          // bridge::trigger inner call must each be ≥ this for the turn to
-          // surface a result instead of a 504.
-          timeout_ms: 240000,
-        },
-      );
-      setMessages(result.messages ?? fullHistory);
+      await bridge<{ session_id: string }>("run::start", {
+        session_id: sid,
+        provider,
+        model,
+        messages: fullHistory,
+        system_prompt: buildSystemPrompt(skillsIndex),
+        tools: TOOLS,
+        approval_required: APPROVAL_REQUIRED,
+      });
       void refreshSessions();
     } catch (e) {
       const msg = e instanceof BridgeError ? e.message : String(e);
@@ -385,7 +384,7 @@ export default function App() {
               <SessionView
                 sessionId={sessionId}
                 messages={messages}
-                loading={loading}
+                loading={isRunning}
               />
               {error ? (
                 <p className="app-error" role="alert">
@@ -396,6 +395,10 @@ export default function App() {
                 messages={messages}
                 contextWindow={contextWindow}
                 model={model}
+              />
+              <ApprovalRow
+                sessionId={active ?? ""}
+                pending={stream.pendingApprovals}
               />
               <Composer disabled={composerDisabled} onSend={send} />
             </>
