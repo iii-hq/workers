@@ -9,9 +9,13 @@ and drive it through their native agent UI. No editor plugin, no fork, no
 bespoke per-client integration.
 
 > Status: 0.1.0. Server-side only (`acp-client` for consuming external ACP
-> agents ships separately). Reverse-RPC paths (`session/request_permission`,
-> `fs/*`, `terminal/*`) are deferred to v0.2 — internal iii brains use iii
-> primitives directly for filesystem and terminal access.
+> agents ships separately). All eleven client→agent methods are implemented
+> (`initialize`, `authenticate`, `session/{new,load,resume,list,prompt,cancel,close,set_mode,set_config_option}`)
+> plus the `session/update` agent→client notification. Reverse-RPC paths
+> (`session/request_permission`, `fs/{read,write}_text_file`,
+> `terminal/{create,kill,output,release,wait_for_exit}`) remain deferred —
+> internal iii brains use iii primitives directly for filesystem and
+> terminal access. Full per-method status in the [Methods](#methods) table.
 
 ## Why this exists (vs MCP, skills, agent workers)
 
