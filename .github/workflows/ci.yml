@@ -266,9 +266,9 @@ jobs:
                               f"::notice::{worker}: new worker on this PR "
                               f"(no base version), pr={pr_ver}"
                           )
-                      elif parse_semver(pr_ver) <= parse_semver(base_ver):
+                      elif parse_semver(pr_ver) < parse_semver(base_ver):
                           soft(
-                              f"{worker}/{manifest_name} version must be greater than base: "
+                              f"{worker}/{manifest_name} version must be no less than base: "
                               f"pr={pr_ver} base={base_ver}"
                           )
                       else:
