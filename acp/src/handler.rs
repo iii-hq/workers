@@ -23,11 +23,46 @@ use crate::types::{
 pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
 const BRAIN_TIMEOUT_MS: u64 = 600_000;
 
+#[derive(Clone)]
+struct CancelHandle {
+    flag: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CancelHandle {
+    fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) {
+        if self.flag.load(Ordering::SeqCst) {
+            return;
+        }
+        self.notify.notified().await;
+    }
+}
+
 pub struct AcpHandler {
     iii: III,
     conn_id: String,
     initialized: AtomicBool,
-    cancels: DashMap<String, Arc<AtomicBool>>,
+    // Cancel handle per active session: AtomicBool gates the abort state for
+    // tool handlers that poll, Notify wakes any awaiter (run_external_brain)
+    // immediately on session/cancel without a 100ms poll loop.
+    cancels: DashMap<String, CancelHandle>,
+    // Per-session write mutex serializing append_history calls in-process.
+    // Engine state::update lacks an array-append op so each append is a
+    // read-modify-write; without this lock concurrent agent::events for one
+    // session race and drop entries.
+    history_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     update_seq: Arc<AtomicU64>,
     outbound: Arc<Outbound>,
     brain_fn: Option<String>,
@@ -62,6 +97,8 @@ impl AcpHandler {
         let conn_id = Uuid::new_v4().to_string();
         let update_seq = Arc::new(AtomicU64::new(0));
         let owned_sessions: Arc<DashSet<String>> = Arc::new(DashSet::new());
+        let history_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>> =
+            Arc::new(DashMap::new());
         tracing::info!(%conn_id, "acp handler initialized");
 
         // Subscribe to the canonical agent::events stream once when an
@@ -69,7 +106,14 @@ impl AcpHandler {
         // session/update directly via send_notification).
         let brain_configured = brain.function_id.is_some();
         let (event_subscriber, event_function) = if brain_configured {
-            register_event_subscriber(&iii, &conn_id, &outbound, &update_seq, &owned_sessions)
+            register_event_subscriber(
+                &iii,
+                &conn_id,
+                &outbound,
+                &update_seq,
+                &owned_sessions,
+                &history_locks,
+            )
         } else {
             (None, None)
         };
@@ -85,6 +129,7 @@ impl AcpHandler {
             conn_id,
             initialized: AtomicBool::new(false),
             cancels: DashMap::new(),
+            history_locks,
             update_seq,
             outbound,
             brain_fn: brain.function_id,
@@ -96,6 +141,13 @@ impl AcpHandler {
             _event_function: event_function,
             event_subscriber_healthy,
         }
+    }
+
+    fn history_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.history_locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn outbound(&self) -> Arc<Outbound> {
@@ -267,23 +319,25 @@ impl AcpHandler {
             ));
         }
 
-        let abort = Arc::new(AtomicBool::new(false));
-        self.cancels.insert(p.session_id.clone(), abort.clone());
+        let cancel = CancelHandle::new();
+        self.cancels.insert(p.session_id.clone(), cancel.clone());
 
-        append_history(
-            &self.iii,
-            &p.session_id,
-            json!({
-                "sessionUpdate": "user_message_chunk",
-                "content": { "type": "text", "text": prompt_to_text(&p.prompt) }
-            }),
-        )
-        .await
-        .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        {
+            let lock = self.history_lock(&p.session_id);
+            let _g = lock.lock().await;
+            append_history(
+                &self.iii,
+                &p.session_id,
+                json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": { "type": "text", "text": prompt_to_text(&p.prompt) }
+                }),
+            )
+            .await
+            .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
+        }
 
-        let stop_reason = self
-            .run_brain(&p.session_id, &p.prompt, abort.clone())
-            .await;
+        let stop_reason = self.run_brain(&p.session_id, &p.prompt, &cancel).await;
 
         self.cancels.remove(&p.session_id);
 
@@ -304,8 +358,8 @@ impl AcpHandler {
 
     async fn session_cancel(&self, params: Option<Value>) -> Result<(), (i32, String)> {
         let p: SessionCancelParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        if let Some(flag) = self.cancels.get(&p.session_id) {
-            flag.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.cancels.get(&p.session_id) {
+            handle.cancel();
         }
         let _ = durable_publish(
             &self.iii,
@@ -347,30 +401,25 @@ impl AcpHandler {
         }
     }
 
-    async fn run_brain(
-        &self,
-        session_id: &str,
-        prompt: &[Value],
-        abort: Arc<AtomicBool>,
-    ) -> String {
+    async fn run_brain(&self, session_id: &str, prompt: &[Value], cancel: &CancelHandle) -> String {
         if let Some(fn_id) = self.brain_fn.as_deref() {
             return self
-                .run_external_brain(fn_id, session_id, prompt, abort)
+                .run_external_brain(fn_id, session_id, prompt, cancel)
                 .await;
         }
-        self.run_echo_brain(session_id, prompt, abort).await
+        self.run_echo_brain(session_id, prompt, cancel).await
     }
 
     async fn run_echo_brain(
         &self,
         session_id: &str,
         prompt: &[Value],
-        abort: Arc<AtomicBool>,
+        cancel: &CancelHandle,
     ) -> String {
         let text = prompt_to_text(prompt);
         let chunks: Vec<&str> = text.split_inclusive(' ').collect();
         for chunk in chunks {
-            if abort.load(Ordering::SeqCst) {
+            if cancel.flag.load(Ordering::SeqCst) {
                 return "cancelled".to_string();
             }
             self.emit_update(
@@ -390,7 +439,7 @@ impl AcpHandler {
         fn_id: &str,
         session_id: &str,
         prompt: &[Value],
-        abort: Arc<AtomicBool>,
+        cancel: &CancelHandle,
     ) -> String {
         // Canonical iii brain shape: feed run::start_and_wait (or any
         // function with the same input contract) a User message built
@@ -428,7 +477,7 @@ impl AcpHandler {
         };
         let res = tokio::select! {
             r = self.iii.trigger(req) => r,
-            _ = wait_aborted(abort.clone()) => return "cancelled".to_string(),
+            _ = cancel.wait() => return "cancelled".to_string(),
         };
         match res {
             Ok(v) => derive_stop_reason(&v).unwrap_or("end_turn").to_string(),
@@ -441,28 +490,16 @@ impl AcpHandler {
 
     async fn emit_update(&self, session_id: &str, update: Value) {
         let payload = json!({ "sessionId": session_id, "update": update });
-        let _ = append_history(&self.iii, session_id, update.clone()).await;
+        {
+            let lock = self.history_lock(session_id);
+            let _g = lock.lock().await;
+            let _ = append_history(&self.iii, session_id, update.clone()).await;
+        }
         self.send_notification("session/update", payload).await;
     }
 
-    async fn send_notification(&self, method: &str, mut params: Value) {
-        let seq = self.update_seq.fetch_add(1, Ordering::SeqCst);
-        // Stamp seq into params._meta (per ACP extensibility rules) without
-        // overwriting any existing _meta keys callers already set.
-        if let Some(obj) = params.as_object_mut() {
-            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
-            if let Some(meta_obj) = meta.as_object_mut() {
-                meta_obj.insert("iii.dev/seq".to_string(), json!(seq));
-            }
-        }
-        let frame = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
-        if let Err(e) = self.outbound.write(&frame).await {
-            tracing::error!(error = %e, "outbound write failed");
-        }
+    async fn send_notification(&self, method: &str, params: Value) {
+        write_notification(&self.outbound, &self.update_seq, method, params).await;
     }
 
     fn require_initialized(&self) -> Result<(), (i32, String)> {
@@ -493,12 +530,25 @@ fn prompt_to_text(prompt: &[Value]) -> String {
         .join("\n")
 }
 
-async fn wait_aborted(flag: Arc<AtomicBool>) {
-    loop {
-        if flag.load(Ordering::SeqCst) {
-            return;
+// Stamp params._meta["iii.dev/seq"] (without clobbering caller-supplied
+// _meta), wrap in a JSON-RPC notification frame, and write to stdout. One
+// helper for both the in-handler send_notification and the stream-subscriber
+// fan-in path so both flow through the same shape.
+async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, mut params: Value) {
+    let s = seq.fetch_add(1, Ordering::SeqCst);
+    if let Some(obj) = params.as_object_mut() {
+        let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+        if let Some(meta_obj) = meta.as_object_mut() {
+            meta_obj.insert("iii.dev/seq".to_string(), json!(s));
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    });
+    if let Err(e) = outbound.write(&frame).await {
+        tracing::error!(error = %e, "outbound write failed");
     }
 }
 
@@ -516,6 +566,7 @@ fn register_event_subscriber(
     outbound: &Arc<Outbound>,
     update_seq: &Arc<AtomicU64>,
     owned_sessions: &Arc<DashSet<String>>,
+    history_locks: &Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 ) -> (Option<iii_sdk::Trigger>, Option<FunctionRef>) {
     let fn_id = format!("acp::__on_event::{}", conn_id);
 
@@ -523,6 +574,7 @@ fn register_event_subscriber(
     let seq_inner = update_seq.clone();
     let iii_inner = iii.clone();
     let owned_inner = owned_sessions.clone();
+    let locks_inner = history_locks.clone();
     let function = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id.clone())
             .with_description("ACP agent::events → stdout fan-in".into()),
@@ -531,8 +583,9 @@ fn register_event_subscriber(
             let seq = seq_inner.clone();
             let iii = iii_inner.clone();
             let owned = owned_inner.clone();
+            let locks = locks_inner.clone();
             async move {
-                forward_agent_event(&iii, &outbound, &seq, &owned, payload).await;
+                forward_agent_event(&iii, &outbound, &seq, &owned, &locks, payload).await;
                 Ok(json!({ "ok": true }))
             }
         },
@@ -565,6 +618,7 @@ async fn forward_agent_event(
     outbound: &Outbound,
     seq: &AtomicU64,
     owned: &DashSet<String>,
+    history_locks: &DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     payload: Value,
 ) {
     // Stream-trigger envelope (engine 0.11.x):
@@ -581,26 +635,19 @@ async fn forward_agent_event(
     let Some(updates) = translate_agent_event(&data) else {
         return;
     };
+    let lock = history_locks
+        .entry(sid.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
     for update in updates {
-        if let Err(e) = append_history(iii, &sid, update.clone()).await {
-            tracing::warn!(error = %e, sid, "append_history failed for agent event");
-        }
-        let mut params = json!({ "sessionId": sid, "update": update });
-        let s = seq.fetch_add(1, Ordering::SeqCst);
-        if let Some(obj) = params.as_object_mut() {
-            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
-            if let Some(meta_obj) = meta.as_object_mut() {
-                meta_obj.insert("iii.dev/seq".to_string(), json!(s));
+        {
+            let _g = lock.lock().await;
+            if let Err(e) = append_history(iii, &sid, update.clone()).await {
+                tracing::warn!(error = %e, sid, "append_history failed for agent event");
             }
         }
-        let frame = json!({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": params,
-        });
-        if let Err(e) = outbound.write(&frame).await {
-            tracing::error!(error = %e, "outbound write failed (agent event)");
-        }
+        let params = json!({ "sessionId": sid, "update": update });
+        write_notification(outbound, seq, "session/update", params).await;
     }
 }
 

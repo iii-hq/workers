@@ -81,11 +81,14 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let filter = if args.debug {
-        EnvFilter::new("iii_acp=debug,iii_sdk=debug")
+    // Honor RUST_LOG when set (gives operators per-module control); fall
+    // back to the --debug switch otherwise.
+    let fallback = if args.debug {
+        "iii_acp=debug,iii_sdk=debug"
     } else {
-        EnvFilter::new("iii_acp=info,iii_sdk=warn")
+        "iii_acp=info,iii_sdk=warn"
     };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback));
 
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(std::io::stderr))

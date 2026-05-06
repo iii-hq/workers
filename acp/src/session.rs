@@ -119,6 +119,12 @@ fn unwrap_value(v: Value) -> Option<Value> {
     Some(v)
 }
 
+// Read-modify-write. Engine `state::update` (this engine version) only ships
+// set/merge/increment/decrement/remove ops — no array append, so atomic
+// append at the engine level is not available. Concurrent writers for the
+// same session race here. Caller (handler.rs) serializes via a per-session
+// in-process mutex to close the window for the common case (multiple
+// agent::events arriving in parallel from one stream subscriber).
 pub async fn append_history(iii: &III, session_id: &str, entry: Value) -> Result<(), IIIError> {
     let scope = scope();
     let key = session_history_key(session_id);
@@ -140,6 +146,7 @@ pub async fn read_history(iii: &III, session_id: &str) -> Result<Vec<Value>, III
 }
 
 pub async fn append_session_to_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
+    // Read-modify-write under in-process index mutex (caller-owned).
     let scope = scope();
     let key = session_index_key();
     let mut idx = state_get(iii, &scope, key)
@@ -155,6 +162,11 @@ pub async fn append_session_to_index(iii: &III, session_id: &str) -> Result<(), 
 }
 
 pub async fn remove_session_from_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
+    // state::update has no array-element-by-value remove op, so this stays
+    // a read-modify-write. Race window: a concurrent append from
+    // session/new for a different id can be lost. Acceptable in practice
+    // because session/close is single-user / single-action and the
+    // sweeper-style use case isn't part of v0.
     let scope = scope();
     let key = session_index_key();
     let idx = state_get(iii, &scope, key)
@@ -169,13 +181,23 @@ pub async fn remove_session_from_index(iii: &III, session_id: &str) -> Result<()
 pub async fn read_session_index(iii: &III) -> Result<Vec<String>, IIIError> {
     let scope = scope();
     let key = session_index_key();
-    Ok(state_get(iii, &scope, key)
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for v in state_get(iii, &scope, key)
         .await?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect())
+    {
+        if let Some(s) = v.as_str() {
+            // Dedupe on read — append_session_to_index uses an atomic
+            // append, so the index can carry duplicates if the same id
+            // ever lands twice.
+            if seen.insert(s.to_string()) {
+                out.push(s.to_string());
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn now_ms() -> i64 {
