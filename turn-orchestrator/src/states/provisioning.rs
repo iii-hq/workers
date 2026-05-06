@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
+use crate::tools_catalog;
 
 const SHELL_PREFIX: &str = "shell::";
 
@@ -59,7 +60,16 @@ async fn sandbox_alive(iii: &III, sandbox_id: &str) -> bool {
 
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
-    let tools = request.get("tools").cloned().unwrap_or_else(|| json!([]));
+
+    // Build the LLM tool catalog from the engine's own function registry
+    // rather than trusting whatever the client put on `run::start`. The
+    // empty-catalog error surfaces as `agent::error` (per plan-eng-review
+    // D4) so a cold-start race is loud, not silent.
+    let catalog = tools_catalog::load_tool_catalog(iii)
+        .await
+        .map_err(|e| anyhow::anyhow!("load_tool_catalog failed: {e}"))?;
+    let tools = serde_json::to_value(&catalog)
+        .map_err(|e| anyhow::anyhow!("serialize tool catalog: {e}"))?;
 
     persistence::save_tool_schemas(iii, &record.session_id, tools.clone()).await;
 
@@ -102,7 +112,7 @@ async fn provision_sandbox(
             .and_then(Value::as_u64)
             .unwrap_or(300),
     });
-    let resp = iii
+    let resp = match iii
         .trigger(TriggerRequest {
             function_id: "sandbox::create".into(),
             payload,
@@ -110,12 +120,33 @@ async fn provision_sandbox(
             timeout_ms: Some(300_000),
         })
         .await
-        .map_err(|e| anyhow::anyhow!("sandbox::create failed: {e}"))?;
+    {
+        Ok(resp) => resp,
+        Err(e) if is_function_not_found(&e) => {
+            tracing::warn!(
+                %session_id,
+                error = %e,
+                "sandbox::create not registered on the bus; advancing without a sandbox. \
+                 shell::* tool calls will fail with MissingSandbox until a sandbox worker is added."
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(anyhow::anyhow!("sandbox::create failed: {e}")),
+    };
     let sandbox_id = resp
         .get("sandbox_id")
         .and_then(Value::as_str)
         .map(str::to_string);
     Ok(sandbox_id)
+}
+
+// Recognize the engine's `function_not_found` error without coupling to a
+// specific IIIError variant. The engine returns a JSON body whose `code`
+// field is `function_not_found`; the SDK surfaces it via `Display` so a
+// substring check is the most portable detector.
+fn is_function_not_found<E: std::fmt::Display>(err: &E) -> bool {
+    let msg = err.to_string();
+    msg.contains("function_not_found") || msg.contains("Function not found")
 }
 
 #[cfg(test)]
@@ -169,5 +200,21 @@ mod tests {
     fn sandbox_list_contains_id_rejects_missing_id() {
         let resp = json!([{ "sandbox_id": "s1" }]);
         assert!(!sandbox_list_contains_id(&resp, "s3"));
+    }
+
+    #[test]
+    fn function_not_found_detector_matches_engine_error_codes() {
+        struct E(&'static str);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        assert!(is_function_not_found(&E(
+            "remote error (function_not_found): Function sandbox::create not found"
+        )));
+        assert!(is_function_not_found(&E("Function not found")));
+        assert!(!is_function_not_found(&E("timeout waiting for reply")));
+        assert!(!is_function_not_found(&E("invocation_failed: bad payload")));
     }
 }

@@ -30,6 +30,7 @@ PR.
 |---|---|---|
 | `<worker>/README.md` | all | Non-empty. Body becomes the `readme` field on `POST /publish`. |
 | `<worker>/iii.worker.yaml` | all | Declares `name`, `language`, `deploy`, `manifest` (and `bin` for Rust binaries). |
+| `<worker>/skill.md` | all | Top-level skill registered at `iii://<worker>` so MCP clients can orient to the worker. Convention only — not yet a CI gate. See §10. |
 | Language manifest | all | `Cargo.toml` (Rust), `package.json` (Node), `pyproject.toml` (Python). The `version` field is the source of truth. |
 | `<worker>/tests/` | all | Non-empty. Holds at least one test file the standard runner picks up. |
 | `<worker>/Dockerfile` | `deploy: image` only | Listens on `III_URL`, exits cleanly on `SIGTERM`. |
@@ -172,11 +173,358 @@ expected `config.yaml` shape.
 
 ## Functions
 
-- `<worker>.<function>(input)` → `output`
+- `<worker>::<function>(input)` → `output`
 ```
 
 `<worker>/tests/<smoke>.{rs,ts,py}`: at least one assertion against an
 exported handler.
 
+`<worker>/skill.md`: top-level skill markdown for the registry; see §10.2
+for the content template.
+
+`<worker>/tests/skill.rs` (Rust workers): one assertion that `skill.md` is
+well-formed and the SKILL_ID is valid; see §10.6 for the test code.
+
 For `deploy: image`: `<worker>/Dockerfile` that respects `III_URL` and traps
 `SIGTERM`.
+
+## 10. Skill registration
+
+Every worker should register a markdown skill on the [`skills` platform
+worker](https://workers.iii.dev/workers/skills) at startup so MCP clients
+(Claude Desktop, Cursor, MCP Inspector) can discover and orient to its
+functions. The skill body lives at `<worker>/skill.md` and is served at
+`iii://<worker>`; the auto-rendered `iii://skills` index links every worker.
+
+> The `skills` worker version pinned by this convention is **v0.2.0+** —
+> needed for multi-segment ids and `skills::unregister`.
+
+### 10.1 Skill ID validation rules (skills v0.2.0+)
+
+- 1+ segments separated by `/`.
+- Each segment: lowercase ASCII letters, digits, `-`, `_`; max 64 chars per segment.
+- Total id length ≤ 1024 chars.
+- First segment MUST NOT be the literal `fn` (reserved for section URIs).
+
+For workers in this repo, the router id equals the folder name — a single
+segment. Leaf ids are `<worker>/<sub>`.
+
+### 10.2 Content shape
+
+The skill registry expects two kinds of bodies:
+
+- **Router** (`<worker>/skill.md`) — small. Lists the per-function or
+  per-group sub-skills under `iii://<worker>/...`. The agent loads this
+  first; it then fetches deeper bodies on demand via `skill::fetch`.
+- **Leaf** (`<worker>/skills/<sub>.md`) — describes one function (or one
+  logical group of functions). Loaded only when the agent decides to drill
+  in.
+
+The platform contract is minimal: H1 first (used as the link title in
+`iii://skills`), then a non-heading paragraph (used as the description,
+truncated at 140 chars). Everything else is up to the worker.
+
+**Router template** (`<worker>/skill.md`):
+
+The body shape is a **nested list**: the worker id at the top, with each
+sub-skill indented as a child. Renders as a tree in any markdown viewer and
+makes the parent–child relationship explicit when the body is read raw (the
+auto-rendered `iii://skills` index applies its own indentation on top of
+this).
+
+```markdown
+# <worker-name>
+
+<One-sentence summary used as the description in the iii://skills index. Imperative tone.>
+
+- [`<worker>`](iii://<worker>)
+  - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
+  - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
+
+<Optional cross-reference paragraph linking to related workers via iii:// URIs.>
+```
+
+Leaf link text is the **actual function id** (e.g. `auth::set_token`) — what
+the agent calls via `iii.trigger`. The link target is the **skill URI**
+(`iii://<worker>/<sub>`) — what `skill::fetch` resolves. The two strings
+diverge: a worker named `auth-credentials` registers functions under the
+`auth::*` namespace, so the function id `auth::set_token` lives at the
+skill URI `iii://auth-credentials/set_token`.
+
+**Leaf template** (`<worker>/skills/<sub>.md`):
+
+```markdown
+# <namespace>::<fn>
+
+<One-sentence summary used as the description in the iii://skills index.>
+
+`(input) → output` — argument/return shape and any nuance the caller needs
+(idempotency, side effects, bus failures).
+
+## When to use
+
+- <Bullet list of agent intents.>
+
+## Notes
+
+<Optional: required config, dependencies on other workers, operational caveats.>
+```
+
+The leaf H1 is the function id with `::` so the auto-rendered `iii://skills`
+index shows the calling shape directly. The skill URI in the registry
+(`iii://<worker>/<sub>`) stays path-form — that's what `skill::fetch`
+resolves and what `SUB_SKILLS` registers (see §10.4).
+
+If a worker exposes only one function (e.g. `policy-denylist`), skip the
+leaves layer and put the leaf content directly in `<worker>/skill.md`. The
+router pattern only pays off when there's something to route to.
+
+Aim for the router under 1 KB; leaves under 3 KB. Hard cap is 256 KiB.
+
+### 10.3 When to nest deeper
+
+Two-depth nesting (`<worker>/<group>/<leaf>`) is supported when one
+group justifies its own router (e.g., a `harness` worker might expose
+`harness/providers/anthropic` under a `harness/providers` group router).
+Workers in this repo's current batch are single-depth.
+
+### 10.4 Wire-up: lib.rs
+
+Expose the id, the router markdown, and the leaf bodies as `pub const`s in
+`src/lib.rs` so both `main.rs` and the integration tests can reference them:
+
+```rust
+// In src/lib.rs (near the top):
+pub const SKILL_ID: &str = "<worker>"; // must equal the folder name
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
+// Per-function or per-group sub-skill bodies. Empty for workers with one function.
+// Each id must be nested under SKILL_ID (i.e., start with "<worker>/").
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    ("<worker>/<sub_a>", include_str!("../skills/<sub_a>.md")),
+    ("<worker>/<sub_b>", include_str!("../skills/<sub_b>.md")),
+];
+```
+
+`include_str!("../skill.md")` resolves from `src/lib.rs`, so the file must
+be at the worker root. Don't use `env!("CARGO_PKG_NAME")` — that returns
+`iii-<worker>` (with the `iii-` prefix) for these workers, not the
+folder name.
+
+### 10.5 Wire-up: main.rs
+
+Add four small helpers to `main.rs` and call them from `main`:
+
+```rust
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use iii_sdk::TriggerRequest;
+use serde_json::json;
+
+// Registers ONE skill with capped exponential backoff. Background-friendly:
+// caller wraps a series of these in a single tokio::spawn.
+async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
+    let mut backoff = Duration::from_secs(5);
+    let started = Instant::now();
+    loop {
+        let res = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::register".into(),
+                payload: json!({ "id": id, "skill": body }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        match res {
+            Ok(_) => {
+                log::info!("registered skill: {id}");
+                return;
+            }
+            Err(e) => {
+                if started.elapsed() > Duration::from_secs(180) {
+                    log::warn!(
+                        "skills handshake gave up for {id}; install/start the skills worker and restart (last error: {e})"
+                    );
+                    return;
+                }
+                log::debug!("skills::register failed for {id}: {e}; retrying in {backoff:?}");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(60));
+    }
+}
+
+// Registers the worker's router skill plus every leaf. Fires AFTER the
+// worker's register_with_iii() returns so leaves never advertise functions
+// that aren't registered yet.
+fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
+    tokio::spawn(async move {
+        register_skill_with_retry(&iii, <crate>::SKILL_ID, <crate>::SKILL_MD).await;
+        for (id, body) in <crate>::SUB_SKILLS {
+            register_skill_with_retry(&iii, id, body).await;
+        }
+    });
+}
+
+// Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
+// unregister below runs in production container shutdown, not just dev.
+async fn wait_for_shutdown() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("failed to await SIGINT")?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to await SIGINT")
+    }
+}
+
+// Best-effort: a missed unregister is self-healing on next boot's re-register.
+// Leaves go first so the router is the last entry to disappear from iii://skills.
+async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
+    for (id, _) in <crate>::SUB_SKILLS {
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::unregister".into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(2_000),
+            })
+            .await;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::unregister".into(),
+            payload: json!({ "id": <crate>::SKILL_ID }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await;
+}
+```
+
+Replace `<crate>` with the worker's library crate name (e.g.
+`auth_credentials`, `auth_rbac`).
+
+In `main()`, immediately after the worker's existing
+`register_with_iii(...)` call, place three calls:
+
+```rust
+// After register_with_iii(...) succeeds:
+spawn_skill_register(iii.clone());
+
+wait_for_shutdown().await?;
+
+unregister_skill(&iii).await;
+Ok(())
+```
+
+### 10.6 Tests
+
+Add `<worker>/tests/skill.rs`. Tests run as part of `cargo test` — no iii
+engine needed. The helpers parametrise over `SUB_SKILLS` so every leaf is
+validated automatically.
+
+```rust
+//! Compile-time and format checks for the registered skill set.
+//! Runs without an iii engine connection.
+//!
+//! Asserts the platform contract from skills/README.md: H1 first (used as
+//! the iii://skills index link title), then a non-heading paragraph (used
+//! as the description, truncated at 140 chars). Workers in this repo
+//! follow folder-name-equals-skill-id; if a future worker uses different
+//! naming, adjust id_is_valid accordingly.
+
+fn well_formed(label: &str, body: &str) {
+    assert!(!body.trim().is_empty(), "{label}: skill is empty");
+    assert!(
+        body.len() <= 256 * 1024,
+        "{label}: skill exceeds 256 KiB ({} bytes)",
+        body.len()
+    );
+
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
+    let h1 = lines.next().unwrap_or("");
+    assert!(
+        h1.starts_with("# "),
+        "{label}: skill must start with an H1, got: {h1:?}"
+    );
+    let summary = lines.next().unwrap_or("");
+    assert!(
+        !summary.starts_with('#'),
+        "{label}: expected a summary paragraph after the H1, got another heading: {summary:?}"
+    );
+}
+
+fn id_is_valid(label: &str, id: &str) {
+    assert!(!id.is_empty(), "{label}: id is empty");
+    assert!(id.len() <= 1024, "{label}: id exceeds 1024 chars");
+
+    // `fn` is the only reserved first-segment literal as of skills v0.2.0.
+    let first_segment = id.split('/').next().unwrap_or("");
+    assert_ne!(first_segment, "fn", "{label}: first segment must not be the reserved literal `fn`");
+
+    for segment in id.split('/') {
+        assert!(!segment.is_empty(), "{label}: empty path segment in id {id:?}");
+        assert!(segment.len() <= 64, "{label}: segment {segment:?} exceeds 64 chars");
+        let first = segment.chars().next().unwrap();
+        assert!(
+            first.is_ascii_lowercase() || first.is_ascii_digit(),
+            "{label}: segment {segment:?} must start with lowercase ASCII letter or digit"
+        );
+        assert!(
+            segment.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'),
+            "{label}: segment {segment:?} has invalid characters"
+        );
+    }
+}
+
+#[test]
+fn router_well_formed() {
+    well_formed("router", <crate>::SKILL_MD);
+    id_is_valid("router", <crate>::SKILL_ID);
+}
+
+#[test]
+fn sub_skills_well_formed() {
+    let prefix = format!("{}/", <crate>::SKILL_ID);
+    for (id, body) in <crate>::SUB_SKILLS {
+        well_formed(id, body);
+        id_is_valid(id, id);
+        assert!(
+            id.starts_with(&prefix),
+            "sub-skill id {id:?} must be nested under the worker id ({}/)",
+            <crate>::SKILL_ID
+        );
+    }
+}
+```
+
+### 10.7 Lifecycle summary
+
+```
+boot:
+  register_worker()  →  configure_store/cfg  →  register_with_iii()  →  serve traffic
+                                                       │
+                                                       ▼  (spawn here, async)
+                                           skills::register router
+                                           skills::register leaf 1
+                                           skills::register leaf 2
+                                           ... (each with capped retry)
+
+shutdown (SIGINT or SIGTERM):
+  wait_for_shutdown()  →  skills::unregister leaves  →  skills::unregister router  →  exit
+                          (best-effort, 2s timeout each, errors swallowed)
+```

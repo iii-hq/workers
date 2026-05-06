@@ -1,37 +1,35 @@
-//! `shell::filesystem::ls` — wrap `sandbox::fs::ls`.
+//! `shell::filesystem::ls` — list a host directory directly.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
-use sandbox_helpers::resolve_sandbox_id;
-
 pub const ID: &str = "shell::filesystem::ls";
-pub const DESCRIPTION: &str = "List directory entries inside the sandbox.";
+pub const DESCRIPTION: &str = "List entries in a directory on the host filesystem.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = required_str(args, "path")?;
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::ls".into(),
-            payload: json!({ "sandbox_id": sandbox_id, "path": path }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    match resp {
-        Ok(v) => Ok(text_result(format_entries(&v), v)),
+    match read_entries(&path).await {
+        Ok(entries) => {
+            let names = format_entries_from(&entries);
+            Ok(text_result(names, json!({ "entries": entries })))
+        }
         Err(e) => Ok(text_result(
-            format!("sandbox::fs::ls failed: {e}"),
+            format!("ls {path}: {e}"),
             json!({ "error": e.to_string() }),
         )),
     }
+}
+
+async fn read_entries(path: &str) -> std::io::Result<Vec<Value>> {
+    let mut rd = tokio::fs::read_dir(path).await?;
+    let mut out: Vec<Value> = Vec::new();
+    while let Some(entry) = rd.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+        let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+        out.push(json!({ "name": name, "is_dir": is_dir, "size": size }));
+    }
+    Ok(out)
 }
 
 fn required_str(args: &Value, key: &str) -> Result<String, IIIError> {
@@ -42,12 +40,8 @@ fn required_str(args: &Value, key: &str) -> Result<String, IIIError> {
         .ok_or_else(|| IIIError::Handler(format!("missing required arg: {key}")))
 }
 
-fn format_entries(value: &Value) -> String {
-    let entries = value.get("entries").and_then(Value::as_array);
-    let Some(arr) = entries else {
-        return String::new();
-    };
-    let mut names: Vec<String> = arr
+fn format_entries_from(entries: &[Value]) -> String {
+    let mut names: Vec<String> = entries
         .iter()
         .filter_map(|e| {
             e.get("name")
@@ -73,15 +67,16 @@ mod tests {
 
     #[test]
     fn format_entries_returns_sorted_names() {
-        let v = json!({ "entries": [
-            { "name": "b" }, { "name": "a" }, { "name": "c" }
-        ]});
-        assert_eq!(format_entries(&v), "a\nb\nc");
+        let entries = vec![
+            json!({ "name": "b" }),
+            json!({ "name": "a" }),
+            json!({ "name": "c" }),
+        ];
+        assert_eq!(format_entries_from(&entries), "a\nb\nc");
     }
 
     #[test]
-    fn format_entries_handles_missing_field() {
-        assert_eq!(format_entries(&json!({})), "");
-        assert_eq!(format_entries(&json!({ "entries": [] })), "");
+    fn format_entries_handles_empty() {
+        assert_eq!(format_entries_from(&[]), "");
     }
 }

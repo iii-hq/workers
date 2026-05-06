@@ -167,13 +167,25 @@ pub fn content_block_to_wire(b: &ContentBlock) -> Option<serde_json::Value> {
     }
 }
 
+/// Encode bus function ids (e.g. `shell::filesystem::ls`) into Anthropic's
+/// tool-name regex `^[a-zA-Z0-9_-]{1,128}$`. Anthropic rejects `::`; encode
+/// every `::` as `__` and decode on the way back. Tool names that already
+/// contain `__` will round-trip incorrectly — current tools don't.
+fn encode_tool_name(name: &str) -> String {
+    name.replace("::", "__")
+}
+
+pub(crate) fn decode_tool_name(name: &str) -> String {
+    name.replace("__", "::")
+}
+
 /// Tool definitions in Anthropic wire shape.
 pub fn tools_to_wire(tools: &[harness_types::AgentTool]) -> Vec<serde_json::Value> {
     tools
         .iter()
         .map(|t| {
             serde_json::json!({
-                "name": t.name,
+                "name": encode_tool_name(&t.name),
                 "description": t.description,
                 "input_schema": t.parameters,
             })
@@ -369,8 +381,8 @@ async fn handle_sse_event(
                     let name = block
                         .and_then(|b| b.get("name"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                        .map(decode_tool_name)
+                        .unwrap_or_default();
                     state.tool_calls.push(PartialToolCall {
                         id,
                         name,

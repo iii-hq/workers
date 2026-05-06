@@ -1,7 +1,7 @@
 # auth-credentials
 
 Provider credential vault on the iii bus. Stores API keys and OAuth tokens
-under `auth::*`. Distinct from `auth-rbac` (workspace roles + HMAC keys).
+under `auth::*`.
 
 ## Installation
 

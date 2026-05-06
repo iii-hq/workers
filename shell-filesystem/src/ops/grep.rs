@@ -1,61 +1,109 @@
-//! `shell::filesystem::grep` — wrap `sandbox::fs::grep`.
+//! `shell::filesystem::grep` — spawn `grep` directly on the host filesystem.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
-
-use sandbox_helpers::resolve_sandbox_id;
+use std::process::Stdio;
 
 pub const ID: &str = "shell::filesystem::grep";
 pub const DESCRIPTION: &str =
-    "Recursive regex search inside the sandbox. Args: path, pattern, recursive?, ignore_case?, include_glob?, exclude_glob?, max_matches?, max_line_bytes?.";
+    "Recursive regex search on the host filesystem. Args: path, pattern, recursive?, ignore_case?, include_glob?, exclude_glob?, max_matches?, max_line_bytes?.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = required(args, "path")?;
     let pattern = required(args, "pattern")?;
-    let mut payload = json!({
-        "sandbox_id": sandbox_id,
-        "path": path,
-        "pattern": pattern,
-    });
-    for key in [
-        "recursive",
-        "ignore_case",
-        "include_glob",
-        "exclude_glob",
-        "max_matches",
-        "max_line_bytes",
-    ] {
-        if let Some(v) = args.get(key) {
-            payload[key] = v.clone();
-        }
+
+    let recursive = args
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let ignore_case = args
+        .get("ignore_case")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let max_matches = args.get("max_matches").and_then(Value::as_u64);
+    let include_glob = args
+        .get("include_glob")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let exclude_glob = args
+        .get("exclude_glob")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let max_line_bytes = args.get("max_line_bytes").and_then(Value::as_u64);
+
+    let mut cmd = tokio::process::Command::new("grep");
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    // Always use -n for line numbers; -E for extended regex.
+    cmd.arg("-En");
+
+    if recursive {
+        cmd.arg("-r");
     }
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::grep".into(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    Ok(match resp {
-        Ok(v) => json!({
-            "content": [{ "type": "text", "text": render(&v) }],
-            "details": v,
-            "terminate": false,
-        }),
-        Err(e) => json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::grep failed: {e}") }],
-            "details": { "error": e.to_string() },
-            "terminate": false,
-        }),
-    })
+    if ignore_case {
+        cmd.arg("-i");
+    }
+    if let Some(n) = max_matches {
+        cmd.arg(format!("-m{n}"));
+    }
+    if let Some(ref pat) = include_glob {
+        cmd.arg(format!("--include={pat}"));
+    }
+    if let Some(ref pat) = exclude_glob {
+        cmd.arg(format!("--exclude={pat}"));
+    }
+    cmd.arg("--").arg(&pattern).arg(&path);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| IIIError::Handler(format!("grep failed: {e}")))?;
+
+    // grep exits 1 when no matches, 2 on error — both are acceptable here.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut matches: Vec<Value> = Vec::new();
+
+    for raw_line in stdout.lines() {
+        // Format from grep -rn: path:line_no:rest
+        // For non-recursive (single file), grep emits line_no:rest with no path prefix.
+        let parts: Vec<&str> = raw_line.splitn(3, ':').collect();
+        let (match_path, line_no, line) = if recursive || parts.len() == 3 {
+            if parts.len() < 3 {
+                continue;
+            }
+            let ln: u64 = parts[1].parse().unwrap_or(0);
+            (parts[0].to_string(), ln, parts[2].to_string())
+        } else {
+            // Non-recursive: "line_no:text"
+            if parts.len() < 2 {
+                continue;
+            }
+            let ln: u64 = parts[0].parse().unwrap_or(0);
+            (path.clone(), ln, parts[1].to_string())
+        };
+
+        let line = if let Some(max) = max_line_bytes {
+            let max = max as usize;
+            if line.len() > max {
+                line[..max].to_string()
+            } else {
+                line
+            }
+        } else {
+            line
+        };
+
+        matches.push(json!({ "path": match_path, "line_no": line_no, "line": line }));
+    }
+
+    let details = json!({ "matches": matches });
+    Ok(json!({
+        "content": [{ "type": "text", "text": render(&details) }],
+        "details": details,
+        "terminate": false,
+    }))
 }
 
 fn required(args: &Value, key: &str) -> Result<String, IIIError> {

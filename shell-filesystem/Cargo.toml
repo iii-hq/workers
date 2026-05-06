@@ -1,6 +1,5 @@
 [workspace]
 resolver = "2"
-members = ["crates/sandbox-helpers"]
 
 [package]
 name = "iii-shell-filesystem"
@@ -20,7 +19,6 @@ name = "iii-shell-filesystem"
 path = "src/main.rs"
 
 [dependencies]
-sandbox-helpers = { path = "crates/sandbox-helpers" }
 iii-sdk = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

@@ -1,58 +1,34 @@
-//! `shell::filesystem::mkdir` — wrap `sandbox::fs::mkdir`.
+//! `shell::filesystem::mkdir` — create a directory on the host filesystem.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
-use sandbox_helpers::resolve_sandbox_id;
-
 pub const ID: &str = "shell::filesystem::mkdir";
-pub const DESCRIPTION: &str = "Create a directory in the sandbox. Args: path, mode?, parents?.";
+pub const DESCRIPTION: &str = "Create a directory on the host filesystem. Args: path, parents?.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| IIIError::Handler("missing required arg: path".into()))?
         .to_string();
-    let mode = args
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("0755")
-        .to_string();
-    let parents = args
-        .get("parents")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let parents = args.get("parents").and_then(Value::as_bool).unwrap_or(true);
 
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::mkdir".into(),
-            payload: json!({
-                "sandbox_id": sandbox_id,
-                "path": path,
-                "mode": mode,
-                "parents": parents,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    Ok(match resp {
-        Ok(v) => json!({
+    let result = if parents {
+        tokio::fs::create_dir_all(&path).await
+    } else {
+        tokio::fs::create_dir(&path).await
+    };
+
+    Ok(match result {
+        Ok(()) => json!({
             "content": [{ "type": "text", "text": format!("created {}", path) }],
-            "details": v,
+            "details": {},
             "terminate": false,
         }),
         Err(e) => json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::mkdir failed: {e}") }],
+            "content": [{ "type": "text", "text": format!("mkdir {path}: {e}") }],
             "details": { "error": e.to_string() },
             "terminate": false,
         }),

@@ -10,7 +10,7 @@ mod stream_event;
 mod thinking;
 mod tool;
 
-pub use agent_event::AgentEvent;
+pub use agent_event::{AgentEvent, ApprovalDecision};
 pub use agent_message::{
     AgentContext, AgentMessage, AgentSessionState, AssistantMessage, CustomMessage,
     ToolResultMessage, UserMessage,

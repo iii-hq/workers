@@ -362,7 +362,8 @@ fn register_fetch_skill_public_alias(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                     .map_err(IIIError::Handler)
             }
         })
-        .description(FETCH_DESCRIPTION),
+        .description(FETCH_DESCRIPTION)
+        .metadata(json!({"tool": {"label": "Fetch skill"}})),
     );
 }
 

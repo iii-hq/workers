@@ -1,43 +1,38 @@
-//! `shell::filesystem::stat` — wrap `sandbox::fs::stat`.
+//! `shell::filesystem::stat` — stat a path on the host filesystem.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
-use sandbox_helpers::resolve_sandbox_id;
-
 pub const ID: &str = "shell::filesystem::stat";
-pub const DESCRIPTION: &str = "Stat a path inside the sandbox.";
+pub const DESCRIPTION: &str = "Stat a file or directory on the host filesystem.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| IIIError::Handler("missing required arg: path".into()))?
         .to_string();
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::stat".into(),
-            payload: json!({ "sandbox_id": sandbox_id, "path": path }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    match resp {
-        Ok(v) => Ok(json!({
-            "content": [{ "type": "text", "text": render_stat(&v) }],
-            "details": v,
-            "terminate": false,
-        })),
+
+    match tokio::fs::metadata(&path).await {
+        Ok(m) => {
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let v = json!({
+                "name": name,
+                "is_dir": m.is_dir(),
+                "size": m.len(),
+            });
+            Ok(json!({
+                "content": [{ "type": "text", "text": render_stat(&v) }],
+                "details": v,
+                "terminate": false,
+            }))
+        }
         Err(e) => Ok(json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::stat failed: {e}") }],
+            "content": [{ "type": "text", "text": format!("stat {path}: {e}") }],
             "details": { "error": e.to_string() },
             "terminate": false,
         })),

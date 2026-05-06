@@ -16,3 +16,11 @@ graphify-out
 HARNESS-WORKER-PUBLISHING-MAP.md
 WORKERS-MIGRATING.md
 WORKERS-PR-REVIEW.md
+.gstack/
+*.pid
+*.zip
+config.yaml
+iii.lock
+harness/.omx/
+harness/web/.vite/
+harness/web/dist/

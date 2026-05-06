@@ -1,9 +1,12 @@
 //! `run::start` — durable session entrypoint.
 
+use std::sync::Arc;
+
 use harness_types::{AgentEvent, AgentMessage};
 use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 
+use crate::config::TurnOrchestratorConfig;
 use crate::events;
 use crate::persistence;
 use crate::state::TurnStateRecord;
@@ -11,9 +14,6 @@ use crate::state::TurnStateRecord;
 pub const FUNCTION_ID: &str = "run::start";
 pub const SYNC_FUNCTION_ID: &str = "run::start_and_wait";
 pub const STEP_TOPIC: &str = "turn::step_requested";
-
-const POLL_INTERVAL_MS: u64 = 50;
-const DEFAULT_WAIT_TIMEOUT_MS: u64 = 120_000;
 
 pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
     let session_id = required_str(&payload, "session_id")?;
@@ -61,12 +61,19 @@ fn decode_initial_messages(payload: &Value) -> Result<Vec<AgentMessage>, IIIErro
 }
 
 /// Pure helper: produce the request envelope persisted for later resume.
+///
+/// `tools` is intentionally NOT read from the payload: the catalog is
+/// rebuilt from `engine::functions::list` in the provisioning state, so
+/// any `tools` the caller supplies is silently ignored.
 fn build_run_request(payload: &Value) -> Value {
     json!({
         "provider": payload.get("provider").cloned().unwrap_or_else(|| json!("")),
         "model": payload.get("model").cloned().unwrap_or_else(|| json!("")),
         "system_prompt": payload.get("system_prompt").cloned().unwrap_or_else(|| json!("")),
-        "tools": payload.get("tools").cloned().unwrap_or_else(|| json!([])),
+        "approval_required": payload
+            .get("approval_required")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
         "image": payload.get("image").cloned().unwrap_or_else(|| json!("python")),
         "idle_timeout_secs": payload.get("idle_timeout_secs").cloned().unwrap_or_else(|| json!(300)),
         "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
@@ -87,11 +94,15 @@ fn build_initial_event_plan(initial_messages: &[AgentMessage]) -> Vec<AgentEvent
     plan
 }
 
-pub async fn execute_sync(iii: III, payload: Value) -> Result<Value, IIIError> {
+pub async fn execute_sync(
+    iii: III,
+    cfg: Arc<TurnOrchestratorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let timeout_ms = payload
         .get("timeout_ms")
         .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        .unwrap_or(cfg.sync_default_timeout_ms);
 
     let started = execute(iii.clone(), payload).await?;
     let session_id = started
@@ -117,7 +128,7 @@ pub async fn execute_sync(iii: III, payload: Value) -> Result<Value, IIIError> {
                 "run::start_and_wait timed out after {timeout_ms} ms"
             )));
         }
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(cfg.sync_poll_interval_ms)).await;
     }
 }
 
@@ -138,7 +149,7 @@ pub async fn publish_step(iii: &III, session_id: &str) {
     }
 }
 
-pub fn register(iii: &III) {
+pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
     let iii_async = iii.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string())
@@ -149,6 +160,7 @@ pub fn register(iii: &III) {
         },
     ));
     let iii_sync = iii.clone();
+    let cfg_sync = cfg.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(SYNC_FUNCTION_ID.to_string()).with_description(
             "Start a durable agent session and block until terminal (test/dev convenience)."
@@ -156,7 +168,8 @@ pub fn register(iii: &III) {
         ),
         move |payload: Value| {
             let iii = iii_sync.clone();
-            async move { execute_sync(iii, payload).await }
+            let cfg = cfg_sync.clone();
+            async move { execute_sync(iii, cfg, payload).await }
         },
     ));
 }
@@ -222,6 +235,38 @@ mod tests {
 
         assert_eq!(request["cwd"], Value::Null);
         assert_eq!(request["cwd_hash"], Value::Null);
+    }
+
+    #[test]
+    fn build_run_request_propagates_approval_required() {
+        let request = build_run_request(&json!({
+            "approval_required": ["shell::filesystem::write"],
+        }));
+        assert_eq!(
+            request["approval_required"],
+            json!(["shell::filesystem::write"]),
+        );
+    }
+
+    #[test]
+    fn build_run_request_defaults_approval_required_to_empty() {
+        let request = build_run_request(&json!({}));
+        assert_eq!(request["approval_required"], json!([]));
+    }
+
+    #[test]
+    fn build_run_request_drops_caller_supplied_tools() {
+        // The catalog is rebuilt server-side from engine::functions::list,
+        // so any `tools` the caller puts in the run::start payload must
+        // not survive into the persisted request envelope.
+        let request = build_run_request(&json!({
+            "provider": "openai",
+            "tools": [{ "name": "stale_tool", "description": "x" }],
+        }));
+        assert!(
+            request.get("tools").is_none(),
+            "expected `tools` to be dropped from the persisted run request envelope"
+        );
     }
 
     #[test]

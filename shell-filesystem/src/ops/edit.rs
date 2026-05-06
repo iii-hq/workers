@@ -3,23 +3,14 @@
 //! Mirrors the legacy `edit` tool: fails when `old_string` matches zero or
 //! more than one time so the model is forced to disambiguate.
 
-use iii_sdk::{IIIError, StreamChannelRef, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
-
-use sandbox_helpers::{drain_ref, fill_ref, resolve_sandbox_id};
 
 pub const ID: &str = "shell::filesystem::edit";
 pub const DESCRIPTION: &str =
-    "Replace the unique occurrence of `old_string` with `new_string` in a sandboxed file.";
+    "Replace the unique occurrence of `old_string` with `new_string` in a file.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let path = required(args, "path")?;
     let old = required(args, "old_string")?;
     let new = args
@@ -29,26 +20,9 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
         .to_string();
 
     // Read.
-    let read = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::read".into(),
-            payload: json!({ "sandbox_id": sandbox_id, "path": path }),
-            action: None,
-            timeout_ms: None,
-        })
+    let text = tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| IIIError::Handler(format!("sandbox::fs::read failed: {e}")))?;
-    let channel_ref: StreamChannelRef = serde_json::from_value(
-        read.get("content")
-            .cloned()
-            .ok_or_else(|| IIIError::Handler("read returned no channel".into()))?,
-    )
-    .map_err(|e| IIIError::Handler(e.to_string()))?;
-    let bytes = drain_ref(iii, &channel_ref)
-        .await
-        .map_err(|e| IIIError::Handler(format!("drain failed: {e}")))?;
-    let text =
-        String::from_utf8(bytes).map_err(|_| IIIError::Handler("file is not utf-8".into()))?;
+        .map_err(|e| IIIError::Handler(format!("read {path}: {e}")))?;
 
     let count = text.matches(&old).count();
     if count == 0 {
@@ -63,34 +37,13 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
     let updated = text.replacen(&old, &new, 1);
 
     // Write.
-    let channel = iii
-        .create_channel(None)
-        .await
-        .map_err(|e| IIIError::Handler(format!("create_channel failed: {e}")))?;
-    let trigger_fut = iii.trigger(TriggerRequest {
-        function_id: "sandbox::fs::write".into(),
-        payload: json!({
-            "sandbox_id": sandbox_id,
-            "path": path,
-            "mode": "0644",
-            "parents": false,
-            "content": channel.reader_ref,
-        }),
-        action: None,
-        timeout_ms: None,
-    });
-    let fill_fut = fill_ref(iii, &channel.writer_ref, updated.as_bytes());
-    let (trigger_res, fill_res) = tokio::join!(trigger_fut, fill_fut);
-    if let Err(e) = fill_res {
-        return Ok(text_result(
-            &format!("channel fill failed: {e}"),
-            json!({ "error": e.to_string() }),
-        ));
-    }
-    match trigger_res {
-        Ok(v) => Ok(text_result(&format!("edited {}", path), v)),
+    match tokio::fs::write(&path, updated.as_bytes()).await {
+        Ok(()) => Ok(text_result(
+            &format!("edited {}", path),
+            json!({ "matches": 1 }),
+        )),
         Err(e) => Ok(text_result(
-            &format!("sandbox::fs::write failed: {e}"),
+            &format!("write {path}: {e}"),
             json!({ "error": e.to_string() }),
         )),
     }

@@ -14,8 +14,24 @@
 //! once state has at least one entry.
 //!
 //! Sync `pub fn list/get/supports` still query the embedded baseline for
-//! callers that can't await a bus round-trip (e.g. `context-compaction`'s
-//! `CompactionConfig::new`); they're documented as best-effort fallbacks.
+//! callers that can't await a bus round-trip; they're documented as
+//! best-effort fallbacks.
+
+pub const SKILL_ID: &str = "models-catalog";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    ("models-catalog/list", include_str!("../skills/list.md")),
+    ("models-catalog/get", include_str!("../skills/get.md")),
+    (
+        "models-catalog/supports",
+        include_str!("../skills/supports.md"),
+    ),
+    (
+        "models-catalog/register",
+        include_str!("../skills/register.md"),
+    ),
+];
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};

@@ -1,48 +1,36 @@
-//! `shell::filesystem::mv` — wrap `sandbox::fs::mv`.
+//! `shell::filesystem::mv` — rename/move a path directly on the host filesystem.
 
-use iii_sdk::{IIIError, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, Value, III};
 use serde_json::json;
 
-use sandbox_helpers::resolve_sandbox_id;
-
 pub const ID: &str = "shell::filesystem::mv";
-pub const DESCRIPTION: &str = "Move/rename a path inside the sandbox. Args: src, dst, overwrite?.";
+pub const DESCRIPTION: &str =
+    "Move/rename a path on the host filesystem. Args: src, dst, overwrite?.";
 
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
-    let sandbox_id = match resolve_sandbox_id(iii, args).await {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(serde_json::to_value(e.to_tool_result())
-                .expect("ToolResult is always serializable"))
-        }
-    };
+pub async fn execute(_iii: &III, args: &Value) -> Result<Value, IIIError> {
     let src = required(args, "src")?;
     let dst = required(args, "dst")?;
     let overwrite = args
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::fs::mv".into(),
-            payload: json!({
-                "sandbox_id": sandbox_id,
-                "src": src,
-                "dst": dst,
-                "overwrite": overwrite,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-    Ok(match resp {
-        Ok(v) => json!({
+
+    if !overwrite && tokio::fs::metadata(&dst).await.is_ok() {
+        return Ok(json!({
+            "content": [{ "type": "text", "text": format!("mv {src} -> {dst}: destination exists") }],
+            "details": { "error": "destination exists" },
+            "terminate": false,
+        }));
+    }
+
+    Ok(match tokio::fs::rename(&src, &dst).await {
+        Ok(()) => json!({
             "content": [{ "type": "text", "text": format!("moved {} -> {}", src, dst) }],
-            "details": v,
+            "details": { "src": src, "dst": dst },
             "terminate": false,
         }),
         Err(e) => json!({
-            "content": [{ "type": "text", "text": format!("sandbox::fs::mv failed: {e}") }],
+            "content": [{ "type": "text", "text": format!("mv {src} -> {dst}: {e}") }],
             "details": { "error": e.to_string() },
             "terminate": false,
         }),
