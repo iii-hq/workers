@@ -105,16 +105,27 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
-        let payload = json!({
-            "id": tc.id.clone(),
-            "name": tc.name.clone(),
-            "arguments": tc.arguments.clone(),
-            "tool_call": {
-                "id": tc.id.clone(),
-                "name": tc.name.clone(),
-                "arguments": tc.arguments.clone(),
-            },
-        });
+        // Tool handlers expect the model's arguments at the top level (e.g.
+        // `args.path` for shell::filesystem::ls). Augment with session_id and
+        // tool metadata so handlers can resolve the per-session sandbox via
+        // sandbox-helpers' resolve_sandbox_id, which looks at args.session_id.
+        let mut payload = match tc.arguments.clone() {
+            Value::Object(o) => Value::Object(o),
+            other => json!({ "arguments": other }),
+        };
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("session_id".into(), json!(record.session_id));
+            obj.insert("tool_call_id".into(), json!(tc.id));
+            obj.insert("tool_name".into(), json!(tc.name));
+            obj.insert(
+                "tool_call".into(),
+                json!({
+                    "id": tc.id.clone(),
+                    "name": tc.name.clone(),
+                    "arguments": tc.arguments.clone(),
+                }),
+            );
+        }
         let response = iii
             .trigger(TriggerRequest {
                 function_id: tc.name.clone(),

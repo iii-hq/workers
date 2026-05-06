@@ -47,11 +47,16 @@ pub async fn load_sandbox_id_from_state(iii: &III, session_id: &str) -> Option<S
         })
         .await;
     match resp {
-        Ok(value) => value
-            .get("value")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string),
+        Ok(value) => {
+            // The engine returns the stored scalar directly (e.g. `"host"`),
+            // not wrapped in a `{value: ...}` envelope. Older shapes used
+            // the envelope, so accept either.
+            value
+                .as_str()
+                .or_else(|| value.get("value").and_then(Value::as_str))
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+        }
         Err(e) => {
             tracing::warn!(error = %e, %session_id, "state::get for sandbox_id failed");
             None
