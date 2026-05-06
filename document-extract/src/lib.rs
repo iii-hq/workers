@@ -5,6 +5,12 @@
 //! `byte_size` and `sniffed_mime`. Page count is best-effort and only
 //! populated for PDFs.
 
+pub const SKILL_ID: &str = "document-extract";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+
+// Empty: single-function worker — no leaves layer. See AGENTS-NEW-WORKER.md §10.2.
+pub const SUB_SKILLS: &[(&str, &str)] = &[];
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};

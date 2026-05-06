@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::Value;
+use anyhow::{Context, Result};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::{json, Value};
 
 const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
@@ -196,8 +197,97 @@ async fn main() -> Result<()> {
         cfg.max_bytes
     );
 
-    tokio::signal::ctrl_c().await.ok();
+    spawn_skill_register(iii.clone());
+
+    wait_for_shutdown().await?;
+
+    unregister_skill(&iii).await;
     Ok(())
+}
+
+async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
+    let mut backoff = Duration::from_secs(5);
+    let started = Instant::now();
+    loop {
+        let res = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::register".into(),
+                payload: json!({ "id": id, "skill": body }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        match res {
+            Ok(_) => {
+                log::info!("registered skill: {id}");
+                return;
+            }
+            Err(e) => {
+                if started.elapsed() > Duration::from_secs(180) {
+                    log::warn!(
+                        "skills handshake gave up for {id}; install/start the skills worker and restart (last error: {e})"
+                    );
+                    return;
+                }
+                log::debug!("skills::register failed for {id}: {e}; retrying in {backoff:?}");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(60));
+    }
+}
+
+fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
+    tokio::spawn(async move {
+        register_skill_with_retry(&iii, document_extract::SKILL_ID, document_extract::SKILL_MD)
+            .await;
+        for (id, body) in document_extract::SUB_SKILLS {
+            register_skill_with_retry(&iii, id, body).await;
+        }
+    });
+}
+
+async fn wait_for_shutdown() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("failed to await SIGINT")?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to await SIGINT")
+    }
+}
+
+// Best-effort: a missed unregister is self-healing on next boot's re-register.
+// Leaves go first so the router is the last entry to disappear from iii://skills.
+async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
+    for (id, _) in document_extract::SUB_SKILLS {
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::unregister".into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(2_000),
+            })
+            .await;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::unregister".into(),
+            payload: json!({ "id": document_extract::SKILL_ID }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await;
 }
 
 #[cfg(test)]
