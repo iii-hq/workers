@@ -1,0 +1,40 @@
+[package]
+name = "iii-harness"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+authors = ["iii contributors"]
+publish = false
+
+[lib]
+name = "harness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iii-harness"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.11.3"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+single_call_fn = "allow"
+unused_async = "allow"
+uninlined_format_args = "allow"
