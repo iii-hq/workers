@@ -92,12 +92,18 @@ fn nested_iii_uri_regex() -> &'static Regex {
 }
 
 /// Un-anchored regex used by [`strip_nested_iii_lines_from_markdown`] -- it
-/// scans for nested `iii://...` URIs anywhere inside a line, even when the
-/// line is a markdown bullet (e.g. `- iii://skills/emails`).
+/// scans for `iii://...` URIs at depth >= 2 anywhere inside a line. First-
+/// level entries (e.g. `iii://resend/contacts`) stay so the index is
+/// browsable; only depth >= 2 (e.g. `iii://resend/emails/send-email`)
+/// collapses, which keeps the index small without hiding the entry points.
+/// Path-segment classes exclude `/`, whitespace, and `)` so that markdown
+/// link syntax `[label](iii://a/b/c)` terminates the URI cleanly.
 fn nested_iii_line_regex() -> &'static Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"iii://[^/]+/.+").expect("nested-iii line regex compiles"))
+    RE.get_or_init(|| {
+        Regex::new(r"iii://[^/\s)]+/[^/\s)]+/[^\s)]+").expect("nested-iii line regex compiles")
+    })
 }
 
 /// True when the resource URI has a path after the first segment (nested skill
@@ -274,26 +280,80 @@ mod tests {
     }
 
     #[test]
-    fn strip_nested_lines_keeps_index_root_links() {
-        let text = "Index:\n- iii://skills\n- iii://skills/emails\nfooter";
+    fn strip_nested_lines_keeps_root_and_first_level() {
+        // Root (`iii://resend`) and first-level (`iii://resend/contacts`)
+        // entries stay so the index has navigable entry points; only
+        // depth >= 2 (`iii://resend/emails/send-email`) collapses.
+        let text = "\
+Index:
+- [`resend`](iii://resend) — root entry
+  - [`resend/contacts`](iii://resend/contacts) — first level
+  - [`resend/emails`](iii://resend/emails) — first level
+    - [`resend/emails/send-email`](iii://resend/emails/send-email) — deep
+    - [`resend/emails/troubleshooting`](iii://resend/emails/troubleshooting) — deep
+footer";
         let out = strip_nested_iii_lines_from_markdown(text);
-        assert!(out.contains("iii://skills"));
-        assert!(!out.contains("iii://skills/emails"));
+        assert!(out.contains("(iii://resend)"), "root URI dropped: {out}");
+        assert!(
+            out.contains("(iii://resend/contacts)"),
+            "first-level URI dropped: {out}"
+        );
+        assert!(
+            out.contains("(iii://resend/emails)"),
+            "first-level URI dropped: {out}"
+        );
+        assert!(
+            !out.contains("send-email"),
+            "depth-2 URI line not stripped: {out}"
+        );
+        assert!(
+            !out.contains("troubleshooting"),
+            "depth-2 URI line not stripped: {out}"
+        );
         assert!(out.contains("footer"));
     }
 
     #[test]
     fn post_process_skills_index_filters_inline_text() {
+        // Mirror the actual `render_index` shape: bullet lines with
+        // markdown links plus indentation, so the regex sees URIs in
+        // their natural `(iii://...)` context.
+        let text = "\
+# Skills
+
+- [`resend`](iii://resend) — root entry summary
+  - [`resend/contacts`](iii://resend/contacts) — first-level summary
+  - [`resend/emails`](iii://resend/emails) — first-level summary
+    - [`resend/emails/send-email`](iii://resend/emails/send-email) — deep summary
+    - [`resend/emails/troubleshooting`](iii://resend/emails/troubleshooting) — deep summary
+";
         let r = json!({
             "contents": [
-                {"text": "iii://skills\niii://skills/emails\nbody"}
+                {"text": text}
             ]
         });
         let out = post_process_skills_index_read(r);
         let txt = out["contents"][0]["text"].as_str().unwrap();
-        assert!(txt.contains("iii://skills\n") || txt.starts_with("iii://skills"));
-        assert!(!txt.contains("iii://skills/emails"));
-        assert!(txt.contains("body"));
+        assert!(
+            txt.contains("(iii://resend)"),
+            "root URI line dropped: {txt}"
+        );
+        assert!(
+            txt.contains("(iii://resend/contacts)"),
+            "first-level URI line dropped: {txt}"
+        );
+        assert!(
+            txt.contains("(iii://resend/emails)"),
+            "first-level URI line dropped: {txt}"
+        );
+        assert!(
+            !txt.contains("send-email"),
+            "depth-2 URI line not stripped: {txt}"
+        );
+        assert!(
+            !txt.contains("troubleshooting"),
+            "depth-2 URI line not stripped: {txt}"
+        );
     }
 
     #[test]
