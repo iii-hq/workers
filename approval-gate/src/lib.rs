@@ -58,35 +58,36 @@ impl IncomingCall {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
     Deny { reason: String },
 }
 
+/// Build the state-store key for a pending approval entry.
+///
+/// `session_id` and `tool_call_id` must not contain `/`. They are caller-controlled
+/// IDs minted by turn-orchestrator; today neither format uses the separator.
 pub fn pending_key(session_id: &str, tool_call_id: &str) -> String {
+    debug_assert!(!session_id.contains('/'), "session_id must not contain '/'");
+    debug_assert!(!tool_call_id.contains('/'), "tool_call_id must not contain '/'");
     format!("{session_id}/{tool_call_id}")
 }
 
 pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
-    let event_id = envelope
-        .get("event_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let event_id = envelope.get("event_id").and_then(Value::as_str)?.to_string();
     let reply_stream = envelope
         .get("reply_stream")
-        .and_then(Value::as_str)
-        .unwrap_or("")
+        .and_then(Value::as_str)?
         .to_string();
     let inner = envelope.get("payload").unwrap_or(envelope);
+    let session_id = inner
+        .get("session_id")
+        .and_then(Value::as_str)?
+        .to_string();
     let tc = inner.get("tool_call")?;
     Some(IncomingCall {
-        session_id: inner
-            .get("session_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        session_id,
         tool_call_id: tc.get("id").and_then(Value::as_str)?.to_string(),
         tool_name: tc.get("name").and_then(Value::as_str)?.to_string(),
         args: tc.get("arguments").cloned().unwrap_or_else(|| json!({})),
@@ -111,7 +112,7 @@ pub fn build_pending_record(
         "tool_name": tool_name,
         "args": args,
         "status": "pending",
-        "expires_at": now_ms + timeout_ms,
+        "expires_at": now_ms.saturating_add(timeout_ms),
     })
 }
 
@@ -206,5 +207,34 @@ mod tests {
         let reply = block_reply_for(&Decision::Deny { reason: "timeout".into() });
         assert_eq!(reply["block"], true);
         assert_eq!(reply["reason"], "approval-gate: timeout");
+    }
+
+    #[test]
+    fn extract_call_returns_none_when_tool_call_absent() {
+        let envelope = json!({
+            "event_id": "evt-1",
+            "reply_stream": "rs-1",
+            "payload": { "session_id": "s1", "approval_required": ["write"] }
+        });
+        assert!(extract_call(&envelope).is_none());
+    }
+
+    #[test]
+    fn extract_call_returns_none_when_session_id_absent() {
+        let envelope = json!({
+            "event_id": "evt-1",
+            "reply_stream": "rs-1",
+            "payload": {
+                "tool_call": { "id": "tc-1", "name": "write", "arguments": {} }
+            }
+        });
+        assert!(extract_call(&envelope).is_none());
+    }
+
+    #[test]
+    fn block_reply_for_allow_omits_reason() {
+        let reply = block_reply_for(&Decision::Allow);
+        assert_eq!(reply["block"], false);
+        assert!(reply.get("reason").is_none(), "Allow must not include reason: {reply}");
     }
 }
