@@ -150,7 +150,7 @@ pub struct Refs {
 
 #[async_trait::async_trait]
 pub trait StateBus: Send + Sync {
-    async fn set(&self, scope: &str, key: &str, value: Value);
+    async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError>;
     async fn get(&self, scope: &str, key: &str) -> Option<Value>;
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
 }
@@ -186,7 +186,10 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
     if let Some(reason) = payload.get("reason").cloned() {
         existing["reason"] = reason;
     }
-    bus.set(STATE_SCOPE, &key, existing).await;
+    if let Err(err) = bus.set(STATE_SCOPE, &key, existing).await {
+        log::error!("approval-gate: failed to write resolved state: {err}");
+        return json!({ "ok": false, "error": "state_write_failed" });
+    }
     json!({ "ok": true })
 }
 
@@ -252,16 +255,16 @@ pub struct IiiStateBus(pub III);
 
 #[async_trait::async_trait]
 impl StateBus for IiiStateBus {
-    async fn set(&self, scope: &str, key: &str, value: Value) {
-        let _ = self
-            .0
+    async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
+        self.0
             .trigger(TriggerRequest {
                 function_id: "state::set".into(),
                 payload: json!({ "scope": scope, "key": key, "value": value }),
                 action: None,
                 timeout_ms: None,
             })
-            .await;
+            .await
+            .map(|_| ())
     }
     async fn get(&self, scope: &str, key: &str) -> Option<Value> {
         self.0
@@ -388,7 +391,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let expires_at = now + timeout_ms;
+                let expires_at = now.saturating_add(timeout_ms);
                 let record = build_pending_record(
                     &call.tool_call_id,
                     &call.tool_name,
@@ -396,12 +399,22 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     now,
                     timeout_ms,
                 );
-                bus.set(
-                    STATE_SCOPE,
-                    &pending_key(&call.session_id, &call.tool_call_id),
-                    record,
-                )
-                .await;
+                if let Err(err) = bus
+                    .set(
+                        STATE_SCOPE,
+                        &pending_key(&call.session_id, &call.tool_call_id),
+                        record,
+                    )
+                    .await
+                {
+                    log::error!(
+                        "approval-gate: failed to write pending record for {}/{}: {err}",
+                        call.session_id, call.tool_call_id
+                    );
+                    let reply = json!({ "block": false });
+                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
+                    return Ok(reply);
+                }
                 write_event(
                     &iii,
                     &call.session_id,
@@ -417,13 +430,9 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 let decision =
                     await_decision(bus.as_ref(), &call.session_id, &call.tool_call_id, expires_at)
                         .await;
-                let reason = match &decision {
-                    Decision::Allow => None,
-                    Decision::Deny { reason } => Some(reason.clone()),
-                };
-                let decision_str = match decision {
-                    Decision::Allow => "allow",
-                    Decision::Deny { .. } => "deny",
+                let (decision_str, reason_for_event) = match &decision {
+                    Decision::Allow => ("allow", None),
+                    Decision::Deny { reason } => ("deny", Some(reason.clone())),
                 };
                 write_event(
                     &iii,
@@ -432,16 +441,11 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                         "type": "approval_resolved",
                         "tool_call_id": call.tool_call_id,
                         "decision": decision_str,
-                        "reason": reason,
+                        "reason": reason_for_event,
                     }),
                 )
                 .await;
-                let reply = block_reply_for(&match decision_str {
-                    "allow" => Decision::Allow,
-                    _ => Decision::Deny {
-                        reason: reason.unwrap_or_else(|| "user".into()),
-                    },
-                });
+                let reply = block_reply_for(&decision);
                 write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
                 Ok(reply)
             }
@@ -580,11 +584,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StateBus for InMemoryStateBus {
-        async fn set(&self, scope: &str, key: &str, value: Value) {
+        async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
             self.store
                 .lock()
                 .unwrap()
                 .insert(format!("{scope}/{key}"), value);
+            Ok(())
         }
         async fn get(&self, scope: &str, key: &str) -> Option<Value> {
             self.store.lock().unwrap().get(&format!("{scope}/{key}")).cloned()
@@ -606,7 +611,8 @@ mod tests {
             &pending_key("s1", "tc-1"),
             build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
         )
-        .await;
+        .await
+        .unwrap();
 
         let out = handle_resolve(
             &bus,
@@ -631,7 +637,9 @@ mod tests {
         let bus = InMemoryStateBus::new();
         let mut rec = build_pending_record("tc-1", "write", &json!({}), 0, 60_000);
         rec["status"] = json!("allow");
-        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec).await;
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec)
+            .await
+            .unwrap();
 
         let out = handle_resolve(
             &bus,
@@ -650,16 +658,20 @@ mod tests {
             &pending_key("s1", "tc-1"),
             build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
         )
-        .await;
+        .await
+        .unwrap();
         let mut resolved = build_pending_record("tc-2", "write", &json!({}), 0, 60_000);
         resolved["status"] = json!("allow");
-        bus.set(STATE_SCOPE, &pending_key("s1", "tc-2"), resolved).await;
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-2"), resolved)
+            .await
+            .unwrap();
         bus.set(
             STATE_SCOPE,
             &pending_key("other", "tc-3"),
             build_pending_record("tc-3", "write", &json!({}), 0, 60_000),
         )
-        .await;
+        .await
+        .unwrap();
 
         let out = handle_list_pending(&bus, json!({ "session_id": "s1" })).await;
         let items = out["pending"].as_array().unwrap();
@@ -686,14 +698,15 @@ mod tests {
             &key,
             build_pending_record("tc-1", "write", &json!({}), now_ms(), 5_000),
         )
-        .await;
+        .await
+        .unwrap();
 
         let bus2 = bus.clone();
         let writer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let mut rec = bus2.get(STATE_SCOPE, &key).await.unwrap();
             rec["status"] = json!("allow");
-            bus2.set(STATE_SCOPE, &key, rec).await;
+            bus2.set(STATE_SCOPE, &key, rec).await.unwrap();
         });
 
         let decision = await_decision(&*bus, "s1", "tc-1", now_ms() + 5_000).await;
