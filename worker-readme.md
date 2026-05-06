@@ -10,12 +10,11 @@ reference. The reference lives in the code — rustdoc, source links,
 
 ## What the README answers
 
-In order, four questions:
+In order, three questions:
 
 1. **What does this worker do?** One paragraph.
 2. **How do I install it?** One command.
-3. **How do I run it?** One command.
-4. **How do I make my first useful call?** A short, runnable example.
+3. **How do I make my first useful call?** A short, runnable example.
 
 Anything else is a follow-up section. The README is **not**:
 
@@ -23,8 +22,8 @@ Anything else is a follow-up section. The README is **not**:
 - A request/response schema dump. Same.
 - A deep architecture document. That belongs in a sibling design doc
   (`<worker>/project-*.md` or similar).
-- A build-from-source recipe for end users. Source builds belong in the
-  optional `## Local development & testing` section.
+- A build-from-source recipe. Source builds are a contributor concern
+  and don't belong in the README.
 
 ## Required structure
 
@@ -32,9 +31,8 @@ Every worker README has these sections, in this order:
 
 1. Title + one-paragraph summary
 2. `## Install`
-3. `## Run`
-4. `## Quickstart` (or a more specific name like `## Build a worker that …`)
-5. `## Configuration`
+3. `## Quickstart` (or a more specific name like `## Build a worker that …`)
+4. `## Configuration`
 
 Optional, only when relevant:
 
@@ -42,8 +40,6 @@ Optional, only when relevant:
   types for sibling workers.
 - `## Migration notes` — for renamed function ids or breaking payload
   changes in a recent release.
-- `## Local development & testing` — `cargo run`, `cargo test`, BDD
-  tags, end-to-end smoke instructions for contributors.
 
 For longer READMEs (>~200 lines), add a `## Table of contents` after
 the summary. Short ones don't need one.
@@ -102,9 +98,10 @@ iii worker add mcp
 
 ### What does NOT go here
 
-Do not show `cargo build` / `cargo install` / `From source` blocks in
-the user-facing flow. Source builds are for contributors; gate them
-behind `## Local development & testing`.
+Do not show `cargo build` / `cargo install` / `From source` blocks
+anywhere in the README. Source builds are a contributor concern;
+document them in the worker's contributor docs, not the published
+README.
 
 Do not show binary-verification steps (`<bin> --help`,
 `<bin> --manifest | jq`). The registry already verifies the manifest
@@ -210,31 +207,6 @@ Function ids you used to call as `mcp::register-skill` /
 `prompts::register`. Payloads are unchanged.
 ```
 
-## Optional: Local development & testing
-
-The escape hatch for contributors. Anything that uses `cargo` directly
-goes here, never in `## Install` or `## Run`.
-
-````markdown
-## Local development & testing
-
-### Run from source
-
-```bash
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
-```
-
-### Tests
-
-```bash
-cargo test
-```
-````
-
-If your test suite has tags or scenarios worth surfacing (BDD harness,
-optional engine-required suites), document them here. See
-[`skills/README.md`](skills/README.md) for a worked example.
-
 ## Skeleton
 
 Drop this in as `<worker>/README.md` and fill in the placeholders. Use
@@ -256,12 +228,6 @@ iii worker add <worker>
 `iii worker add` fetches the binary, writes a config block into
 `~/.iii/config.yaml`, and the engine starts the worker on the next
 `iii start`.
-
-## Run
-
-```bash
-iii start
-```
 
 ## Quickstart
 
@@ -290,18 +256,11 @@ async fn main() -> anyhow::Result<()> {
 ```yaml
 key: value   # one line of intent per field
 ```
-
-## Local development & testing
-
-```bash
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
-cargo test
-```
 ````
 
 ## Worked examples
 
 - [`skills/README.md`](skills/README.md) — install (with
-  companion `mcp`), end-to-end how-to, minimal configuration, dev
-  section. Canonical reference for this guide.
+  companion `mcp`), end-to-end how-to, minimal configuration.
+  Canonical reference for this guide.
 

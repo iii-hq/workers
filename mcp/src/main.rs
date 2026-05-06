@@ -1,26 +1,25 @@
-//! `mcp` binary entry.
-//!
-//! Boot sequence:
-//!   1. Parse CLI / load YAML config (with fallback to defaults).
-//!   2. Connect to the iii engine over WebSocket.
-//!   3. Register the `mcp::handler` function and bind it to `POST /mcp`.
-//!   4. Sleep on Ctrl+C, then `shutdown_async` cleanly.
-//!
-//! All real work happens inside `mcp::handler`, dispatched per
-//! [`iii_mcp::functions::handler`].
-
-use std::sync::Arc;
-
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterTriggerInput, WorkerMetadata};
+use serde_json::json;
+use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
-use iii_mcp::{config, functions, manifest};
+mod config;
+mod functions;
+mod handler;
+mod jsonrpc;
+mod manifest;
+mod skills_bridge;
+mod tools;
+mod transport;
+
+use crate::config::McpConfig;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "mcp",
-    about = "Model Context Protocol bridge. Exposes iii functions as MCP tools and the skills worker as MCP resources/prompts over POST /mcp."
+    about = "MCP 2025-06-18 Streamable HTTP bridge for the iii engine."
 )]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
@@ -37,8 +36,7 @@ struct Cli {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -51,18 +49,10 @@ async fn main() -> Result<()> {
     }
 
     let cfg = match config::load_config(&cli.config) {
-        Ok(c) => {
-            tracing::info!(
-                api_path = %c.api_path,
-                state_timeout_ms = c.state_timeout_ms,
-                "loaded config from {}",
-                cli.config
-            );
-            c
-        }
+        Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            config::McpConfig::default()
+            McpConfig::default()
         }
     };
     let cfg = Arc::new(cfg);
@@ -71,32 +61,46 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             otel: Some(OtelConfig::default()),
-            ..Default::default()
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: "mcp".to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
         },
     );
     let iii = Arc::new(iii);
 
-    match functions::register_all(&iii, &cfg) {
-        Ok(()) => {
-            tracing::info!(
-                api_path = %cfg.api_path,
-                "mcp ready: POST /{} bound",
-                cfg.api_path
-            );
-        }
-        Err(e) => {
-            // mcp::handler is still registered, so direct
-            // `iii.trigger("mcp::handler", body)` calls keep working.
-            // But the HTTP surface — the only public entrypoint — is
-            // not bound. Be loud about it instead of advertising ready.
-            tracing::error!(
-                error = %e,
-                api_path = %cfg.api_path,
-                "mcp HTTP trigger registration failed; bridge is not reachable over HTTP"
-            );
-        }
+    functions::register_all(&iii, &cfg);
+
+    let api_path = cfg.api_path.clone();
+    match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".to_string(),
+        function_id: functions::FUNCTION_ID.to_string(),
+        config: json!({
+            "api_path": api_path,
+            "http_method": "POST",
+        }),
+        metadata: None,
+    }) {
+        Ok(_) => tracing::info!(
+            function_id = functions::FUNCTION_ID,
+            api_path = %api_path,
+            "http trigger registered"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            function_id = functions::FUNCTION_ID,
+            api_path = %api_path,
+            "failed to register http trigger"
+        ),
     }
 
+    tracing::info!("mcp ready, waiting for invocations");
     tokio::signal::ctrl_c().await?;
     tracing::info!("mcp shutting down");
     iii.shutdown_async().await;
