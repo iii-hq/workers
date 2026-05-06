@@ -1,0 +1,11 @@
+iii: v1
+name: approval-gate
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-approval-gate
+description: Hook subscriber on agent::before_tool_call that pauses tool calls listed in approval_required until the UI resolves them via approval::resolve.
+config:
+  topic: agent::before_tool_call
+  approval_state_scope: approvals
+  default_timeout_ms: 300000
