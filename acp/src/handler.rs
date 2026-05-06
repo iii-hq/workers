@@ -43,6 +43,11 @@ pub struct AcpHandler {
     // down on the engine, so they live for the lifetime of the handler.
     _event_subscriber: Option<iii_sdk::Trigger>,
     _event_function: Option<FunctionRef>,
+    // True iff agent::events stream subscriber registered cleanly. When an
+    // external brain is configured but this is false, session/prompt fails
+    // fast with an actionable error rather than running the brain whose
+    // updates would silently never reach stdout.
+    event_subscriber_healthy: bool,
 }
 
 pub struct BrainConfig {
@@ -62,11 +67,18 @@ impl AcpHandler {
         // Subscribe to the canonical agent::events stream once when an
         // external brain is configured. Echo brain bypasses (it emits
         // session/update directly via send_notification).
-        let (event_subscriber, event_function) = if brain.function_id.is_some() {
+        let brain_configured = brain.function_id.is_some();
+        let (event_subscriber, event_function) = if brain_configured {
             register_event_subscriber(&iii, &conn_id, &outbound, &update_seq, &owned_sessions)
         } else {
             (None, None)
         };
+        // Healthy when (a) no external brain is configured (echo path
+        // doesn't need the subscriber) or (b) both function + trigger
+        // registered. Failed registration here is logged inside
+        // register_event_subscriber.
+        let event_subscriber_healthy =
+            !brain_configured || (event_subscriber.is_some() && event_function.is_some());
 
         Self {
             iii,
@@ -82,6 +94,7 @@ impl AcpHandler {
             owned_sessions,
             _event_subscriber: event_subscriber,
             _event_function: event_function,
+            event_subscriber_healthy,
         }
     }
 
@@ -162,12 +175,12 @@ impl AcpHandler {
             created_at_ms: now,
             last_activity_ms: now,
         };
-        let key = session_key(&self.conn_id, &session_id);
+        let key = session_key(&session_id);
         let value = serde_json::to_value(&record).map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
         state_set(&self.iii, &scope(), &key, value)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
-        append_session_to_index(&self.iii, &self.conn_id, &session_id)
+        append_session_to_index(&self.iii, &session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
         self.owned_sessions.insert(session_id.clone());
@@ -177,7 +190,7 @@ impl AcpHandler {
     async fn session_load(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
         self.require_initialized()?;
         let p: SessionLoadParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        let key = session_key(&self.conn_id, &p.session_id);
+        let key = session_key(&p.session_id);
         let _record = state_get(&self.iii, &scope(), &key)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
@@ -187,7 +200,10 @@ impl AcpHandler {
                     format!("session not found: {}", p.session_id),
                 )
             })?;
-        let history = read_history(&self.iii, &self.conn_id, &p.session_id)
+        // session/load on a session this subprocess didn't create still
+        // gets ownership transferred so agent::events route here from now on.
+        self.owned_sessions.insert(p.session_id.clone());
+        let history = read_history(&self.iii, &p.session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
         for entry in history {
@@ -205,12 +221,12 @@ impl AcpHandler {
 
     async fn session_list(&self) -> Result<Value, (i32, String)> {
         self.require_initialized()?;
-        let ids = read_session_index(&self.iii, &self.conn_id)
+        let ids = read_session_index(&self.iii)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
         let mut sessions = Vec::with_capacity(ids.len());
         for id in ids {
-            let key = session_key(&self.conn_id, &id);
+            let key = session_key(&id);
             if let Some(rec) = state_get(&self.iii, &scope(), &key)
                 .await
                 .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
@@ -224,7 +240,7 @@ impl AcpHandler {
     async fn session_prompt(&self, params: Option<Value>) -> Result<Value, (i32, String)> {
         self.require_initialized()?;
         let p: SessionPromptParams = parse(params).map_err(|e| (INVALID_PARAMS, e))?;
-        let key = session_key(&self.conn_id, &p.session_id);
+        let key = session_key(&p.session_id);
         if state_get(&self.iii, &scope(), &key)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?
@@ -235,13 +251,27 @@ impl AcpHandler {
                 format!("session not found: {}", p.session_id),
             ));
         }
+        // Defensive: if this is the first time we see the session in this
+        // subprocess (e.g., an external brain prompted it via run::start
+        // without going through ACP session/new), claim it now so
+        // agent::events for it forward to our stdout.
+        self.owned_sessions.insert(p.session_id.clone());
+
+        if self.brain_fn.is_some() && !self.event_subscriber_healthy {
+            return Err((
+                INTERNAL_ERROR,
+                "iii-acp: agent::events stream subscriber failed to register at startup; \
+                 external brain updates would not reach the editor. Check engine logs and \
+                 ensure `iii-stream` worker is active before retrying."
+                    .to_string(),
+            ));
+        }
 
         let abort = Arc::new(AtomicBool::new(false));
         self.cancels.insert(p.session_id.clone(), abort.clone());
 
         append_history(
             &self.iii,
-            &self.conn_id,
             &p.session_id,
             json!({
                 "sessionUpdate": "user_message_chunk",
@@ -291,25 +321,13 @@ impl AcpHandler {
         let scope = scope();
         let mut errs: Vec<String> = Vec::new();
 
-        if let Err(e) = state_delete(
-            &self.iii,
-            &scope,
-            &session_key(&self.conn_id, &p.session_id),
-        )
-        .await
-        {
+        if let Err(e) = state_delete(&self.iii, &scope, &session_key(&p.session_id)).await {
             errs.push(format!("session record: {}", e));
         }
-        if let Err(e) = state_delete(
-            &self.iii,
-            &scope,
-            &session_history_key(&self.conn_id, &p.session_id),
-        )
-        .await
-        {
+        if let Err(e) = state_delete(&self.iii, &scope, &session_history_key(&p.session_id)).await {
             errs.push(format!("history: {}", e));
         }
-        if let Err(e) = remove_session_from_index(&self.iii, &self.conn_id, &p.session_id).await {
+        if let Err(e) = remove_session_from_index(&self.iii, &p.session_id).await {
             errs.push(format!("index: {}", e));
         }
 
@@ -364,11 +382,6 @@ impl AcpHandler {
             )
             .await;
         }
-        let echo = json!({
-            "sessionUpdate": "agent_message_chunk",
-            "content": { "type": "text", "text": "" }
-        });
-        let _ = append_history(&self.iii, &self.conn_id, session_id, echo).await;
         "end_turn".to_string()
     }
 
@@ -428,7 +441,7 @@ impl AcpHandler {
 
     async fn emit_update(&self, session_id: &str, update: Value) {
         let payload = json!({ "sessionId": session_id, "update": update });
-        let _ = append_history(&self.iii, &self.conn_id, session_id, update.clone()).await;
+        let _ = append_history(&self.iii, session_id, update.clone()).await;
         self.send_notification("session/update", payload).await;
     }
 
@@ -509,7 +522,6 @@ fn register_event_subscriber(
     let outbound_inner = outbound.clone();
     let seq_inner = update_seq.clone();
     let iii_inner = iii.clone();
-    let conn_id_inner = conn_id.to_string();
     let owned_inner = owned_sessions.clone();
     let function = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id.clone())
@@ -518,10 +530,9 @@ fn register_event_subscriber(
             let outbound = outbound_inner.clone();
             let seq = seq_inner.clone();
             let iii = iii_inner.clone();
-            let conn_id = conn_id_inner.clone();
             let owned = owned_inner.clone();
             async move {
-                forward_agent_event(&iii, &conn_id, &outbound, &seq, &owned, payload).await;
+                forward_agent_event(&iii, &outbound, &seq, &owned, payload).await;
                 Ok(json!({ "ok": true }))
             }
         },
@@ -551,7 +562,6 @@ fn register_event_subscriber(
 // connection's editor, or sessions closed mid-flight) are skipped.
 async fn forward_agent_event(
     iii: &III,
-    conn_id: &str,
     outbound: &Outbound,
     seq: &AtomicU64,
     owned: &DashSet<String>,
@@ -572,7 +582,7 @@ async fn forward_agent_event(
         return;
     };
     for update in updates {
-        if let Err(e) = append_history(iii, conn_id, &sid, update.clone()).await {
+        if let Err(e) = append_history(iii, &sid, update.clone()).await {
             tracing::warn!(error = %e, sid, "append_history failed for agent event");
         }
         let mut params = json!({ "sessionId": sid, "update": update });

@@ -8,16 +8,21 @@ pub fn scope() -> String {
     "acp".to_string()
 }
 
-pub fn session_key(conn_id: &str, session_id: &str) -> String {
-    format!("{}:sessions:{}", conn_id, session_id)
+// Persisted keys are NOT scoped by conn_id. session_id is a globally
+// unique uuid (sess_<32hex>) and must survive subprocess restarts so a
+// reconnecting editor can resume an old thread via session/load. conn_id
+// stays in-memory only as transient ownership metadata for routing
+// agent::events to the right subprocess.
+pub fn session_key(session_id: &str) -> String {
+    format!("sessions:{}", session_id)
 }
 
-pub fn session_index_key(conn_id: &str) -> String {
-    format!("{}:sessions:_index", conn_id)
+pub fn session_index_key() -> &'static str {
+    "sessions:_index"
 }
 
-pub fn session_history_key(conn_id: &str, session_id: &str) -> String {
-    format!("{}:sessions:{}:history", conn_id, session_id)
+pub fn session_history_key(session_id: &str) -> String {
+    format!("sessions:{}:history", session_id)
 }
 
 // Streaming wire = the iii ecosystem's `agent::events` stream. No
@@ -114,14 +119,9 @@ fn unwrap_value(v: Value) -> Option<Value> {
     Some(v)
 }
 
-pub async fn append_history(
-    iii: &III,
-    conn_id: &str,
-    session_id: &str,
-    entry: Value,
-) -> Result<(), IIIError> {
+pub async fn append_history(iii: &III, session_id: &str, entry: Value) -> Result<(), IIIError> {
     let scope = scope();
-    let key = session_history_key(conn_id, session_id);
+    let key = session_history_key(session_id);
     let mut hist = state_get(iii, &scope, &key)
         .await?
         .and_then(|v| v.as_array().cloned())
@@ -130,58 +130,46 @@ pub async fn append_history(
     state_set(iii, &scope, &key, Value::Array(hist)).await
 }
 
-pub async fn read_history(
-    iii: &III,
-    conn_id: &str,
-    session_id: &str,
-) -> Result<Vec<Value>, IIIError> {
+pub async fn read_history(iii: &III, session_id: &str) -> Result<Vec<Value>, IIIError> {
     let scope = scope();
-    let key = session_history_key(conn_id, session_id);
+    let key = session_history_key(session_id);
     Ok(state_get(iii, &scope, &key)
         .await?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default())
 }
 
-pub async fn append_session_to_index(
-    iii: &III,
-    conn_id: &str,
-    session_id: &str,
-) -> Result<(), IIIError> {
+pub async fn append_session_to_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
     let scope = scope();
-    let key = session_index_key(conn_id);
-    let mut idx = state_get(iii, &scope, &key)
+    let key = session_index_key();
+    let mut idx = state_get(iii, &scope, key)
         .await?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     let new_entry = Value::String(session_id.to_string());
     if !idx.contains(&new_entry) {
         idx.push(new_entry);
-        state_set(iii, &scope, &key, Value::Array(idx)).await?;
+        state_set(iii, &scope, key, Value::Array(idx)).await?;
     }
     Ok(())
 }
 
-pub async fn remove_session_from_index(
-    iii: &III,
-    conn_id: &str,
-    session_id: &str,
-) -> Result<(), IIIError> {
+pub async fn remove_session_from_index(iii: &III, session_id: &str) -> Result<(), IIIError> {
     let scope = scope();
-    let key = session_index_key(conn_id);
-    let idx = state_get(iii, &scope, &key)
+    let key = session_index_key();
+    let idx = state_get(iii, &scope, key)
         .await?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     let entry = Value::String(session_id.to_string());
     let next: Vec<Value> = idx.into_iter().filter(|v| v != &entry).collect();
-    state_set(iii, &scope, &key, Value::Array(next)).await
+    state_set(iii, &scope, key, Value::Array(next)).await
 }
 
-pub async fn read_session_index(iii: &III, conn_id: &str) -> Result<Vec<String>, IIIError> {
+pub async fn read_session_index(iii: &III) -> Result<Vec<String>, IIIError> {
     let scope = scope();
-    let key = session_index_key(conn_id);
-    Ok(state_get(iii, &scope, &key)
+    let key = session_index_key();
+    Ok(state_get(iii, &scope, key)
         .await?
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default()
@@ -203,10 +191,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_namespace_by_conn() {
-        assert_eq!(session_key("c1", "s1"), "c1:sessions:s1");
-        assert_eq!(session_index_key("c1"), "c1:sessions:_index");
-        assert_eq!(session_history_key("c1", "s1"), "c1:sessions:s1:history");
+    fn keys_are_session_id_only() {
+        assert_eq!(session_key("s1"), "sessions:s1");
+        assert_eq!(session_index_key(), "sessions:_index");
+        assert_eq!(session_history_key("s1"), "sessions:s1:history");
     }
 
     #[test]
