@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, BridgeError } from "./bridge";
+import { disposeIiiClient, getIiiClient } from "./iii-client";
 import { exportJson, exportMd } from "./export";
 import { loadMessagesWithEntryIds } from "./loadMessages";
 import { visibleMessages } from "./reducer";
@@ -176,12 +177,62 @@ export default function App() {
     }
   }, []);
 
-  // Pull sessions on a slow tick so new turns surface in the rail.
+  // Refresh sessions when the harness fanout pushes `ui::sessions::changed`.
+  // Replaces the 4-second polling interval. The all-sessions subscription is
+  // owned by App for the lifetime of the page; per-session subscriptions are
+  // managed by useAgentStream.
   useEffect(() => {
     void refreshSessions();
-    const id = setInterval(refreshSessions, 4000);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let off: (() => void) | undefined;
+    let subscribed = false;
+    let browserId: string | null = null;
+
+    void (async () => {
+      try {
+        const client = await getIiiClient();
+        if (cancelled) return;
+        browserId = client.browserId;
+        off = client.on("ui::sessions::changed", () => {
+          void refreshSessions();
+        });
+        await client.call("ui::subscribe", {
+          browser_id: browserId,
+          session_id: null,
+        });
+        subscribed = true;
+      } catch {
+        // No connection — refreshSessions above already ran once. The status
+        // pill will show the disconnected state via useConnection.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      off?.();
+      if (subscribed && browserId) {
+        void getIiiClient().then((client) =>
+          client
+            .call("ui::unsubscribe", {
+              browser_id: browserId,
+              session_id: null,
+            })
+            .catch(() => {}),
+        );
+      }
+    };
   }, [refreshSessions]);
+
+  // Tear down the iii-client on page unload so the fanout can drop our
+  // subscriptions promptly. The browser will close the WS regardless, but
+  // an explicit shutdown lets the engine clean up registered handlers.
+  useEffect(() => {
+    const handler = () => {
+      void disposeIiiClient();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   // Load model catalog once.
   useEffect(() => {
