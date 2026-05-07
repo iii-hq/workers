@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { bridge, BridgeError } from "../bridge";
 import type {
   FsEntry,
-  FsLsDetails,
+  FsLsResponse,
   FsReadDetails,
   ToolResult,
 } from "../types";
@@ -28,6 +28,7 @@ function fmtSize(n: number | undefined): string {
 }
 
 function entryKind(e: FsEntry): "dir" | "file" {
+  if (e.is_dir === true) return "dir";
   if (e.kind === "dir") return "dir";
   if (typeof e.mode === "string" && e.mode.startsWith("d")) return "dir";
   return "file";
@@ -51,18 +52,11 @@ export function FilesystemPanel() {
     setError(null);
     setEntries(null);
     try {
-      const result = await bridge<ToolResult<FsLsDetails>>(
-        "shell::filesystem::ls",
+      const result = await bridge<FsLsResponse>(
+        "shell::fs::ls",
         { path: target },
       );
-      if (result.details?.error) {
-        throw new BridgeError(
-          result.details.error,
-          "shell::filesystem::ls",
-          0,
-        );
-      }
-      setEntries(result.details?.entries ?? []);
+      setEntries(result.entries ?? []);
       setPath(target);
       setPathDraft(target);
     } catch (e) {
@@ -81,13 +75,13 @@ export function FilesystemPanel() {
     setPreviewMeta(null);
     try {
       const result = await bridge<ToolResult<FsReadDetails>>(
-        "shell::filesystem::read",
+        "harness::fs::read_inline",
         { path: target },
       );
       if (result.details?.error) {
         throw new BridgeError(
           result.details.error,
-          "shell::filesystem::read",
+          "harness::fs::read_inline",
           0,
         );
       }
@@ -120,7 +114,7 @@ export function FilesystemPanel() {
     <section className="fs-panel">
       <header className="panel-head">
         <span className="panel-title">filesystem</span>
-        <span className="panel-sub">sandbox via shell::filesystem::*</span>
+        <span className="panel-sub">sandbox via shell::fs::*</span>
       </header>
 
       <form
