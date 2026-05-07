@@ -1,7 +1,8 @@
-//! Harness-side filesystem adapters that wrap the consolidated `shell`
-//! worker. The shell worker's `shell::fs::read` returns a streaming
-//! `StreamChannelRef`; the harness web FilesystemPanel preview wants
-//! inline bytes. `read_inline` bridges the two.
+//! Harness-side filesystem adapters wrapping the consolidated `shell` worker.
+//!
+//! The shell worker's `shell::fs::read` returns a streaming `StreamChannelRef`;
+//! the harness web FilesystemPanel preview wants inline bytes. This module
+//! provides `read_inline` to bridge the two.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,10 +45,8 @@ pub struct ContentRef {
 pub fn build_inline_envelope(bytes: &[u8], total_size: u64) -> Value {
     let bytes_read = bytes.len();
     let truncated = (bytes_read as u64) < total_size;
-    let text = match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => format!("<binary {} bytes>", bytes_read),
-    };
+    let text = std::str::from_utf8(bytes)
+        .map_or_else(|_| format!("<binary {} bytes>", bytes_read), str::to_string);
     json!({
         "content": [{ "type": "text", "text": text }],
         "details": {
