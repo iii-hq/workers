@@ -18,7 +18,7 @@ pub async fn register_with_iii(
     subscriber::register(iii);
 
     iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "subscribe".into(),
+        trigger_type: "durable:subscriber".into(),
         function_id: STEP_FN_ID.into(),
         config: json!({ "topic": STEP_TOPIC }),
         metadata: None,

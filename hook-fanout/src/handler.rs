@@ -42,7 +42,7 @@ pub async fn execute(
     let envelope = build_publish_envelope(&topic, &event_id, inner.clone());
     if let Err(e) = iii
         .trigger(TriggerRequest {
-            function_id: "publish".into(),
+            function_id: "iii::durable::publish".into(),
             payload: envelope,
             action: None,
             timeout_ms: None,

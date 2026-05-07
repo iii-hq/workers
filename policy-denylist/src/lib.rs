@@ -94,7 +94,7 @@ pub(crate) fn denylist_function_message() -> RegisterFunctionMessage {
 /// Build the canonical [`RegisterTriggerInput`] for the denylist subscriber.
 pub(crate) fn denylist_trigger_input(config: &PolicyDenylistConfig) -> RegisterTriggerInput {
     RegisterTriggerInput {
-        trigger_type: "subscribe".into(),
+        trigger_type: "durable:subscriber".into(),
         function_id: FN_DENYLIST.into(),
         config: json!({ "topic": config.topic }),
         metadata: None,
@@ -296,7 +296,7 @@ mod tests {
 
         let trigs = bus.recorded_triggers();
         assert_eq!(trigs.len(), 1);
-        assert_eq!(trigs[0].trigger_type, "subscribe");
+        assert_eq!(trigs[0].trigger_type, "durable:subscriber");
         assert_eq!(trigs[0].function_id, FN_DENYLIST);
         assert_eq!(
             trigs[0].config.get("topic").and_then(Value::as_str),
