@@ -1,63 +1,66 @@
 # provider-router
 
-The `router::*` provider router on the iii bus. Owns the routing surface
-that `turn-orchestrator` calls when an assistant message is generated, plus
-helpers that push steering / follow-up messages onto session inboxes and
-flip the abort flag for a session.
+The `router::*` surfaces on the iii bus for assistant streaming and session
+helpers: routing to `provider::<name>::complete` (with optional `router::decide`
+from `llm-router` when installed), abort via `state::set`, and steering /
+follow-up messages through `session-inbox::push`. The turn loop itself lives in
+`turn-orchestrator`; this worker only registers handlers and HTTP triggers.
 
-Renamed from `harness-runtime`; the turn-execution loop lives in
-`turn-orchestrator`, not here.
+`iii worker add` pulls declared worker dependencies (`session-inbox`,
+`llm-budget`). Function ids use `::` throughout (see
+[`src/register.rs`](src/register.rs)).
 
-## Installation
+## Install
 
 ```bash
 iii worker add provider-router
 ```
 
-`iii worker add` resolves and installs the declared dependencies
-(`session-inbox`, `llm-budget`). Abort uses `state::*` directly (no
-`state-flag` dependency since that worker was removed in favor of
-inline `state::set` / `state::get` calls).
+`iii worker add` fetches the binary, writes a config block into
+`~/.iii/config.yaml`, and the engine starts the worker on the next
+`iii start`.
 
-## Run
+## Quickstart
 
-```bash
-iii-provider-router --engine-url ws://127.0.0.1:49134
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "router::abort".into(),
+            payload: json!({ "session_id": "my-session" }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
 ```
 
-(Or set `III_URL`.)
-
-## Registered functions
-
-| Function | Description |
-|---|---|
-| `router::stream_assistant` | Provider router. Calls `provider::<name>::complete` (with optional `router::decide` indirection when `llm-router` is on the bus). |
-| `router::abort` | Set the abort flag for a session via `state::set` on `session/<id>/abort_signal` (scope `agent`). |
-| `router::push_steering` | Push messages onto the session's steering inbox via `inbox::push`. |
-| `router::push_followup` | Push messages onto the session's follow-up inbox via `inbox::push`. |
-
-Plus three HTTP triggers under `agent/{session_id}/...` for the same
-three push/abort handlers (HTTP path stable for backwards compat).
+Streaming and budget checks use `router::stream_assistant` with the payload
+shape your orchestrator sends; see in-repo callers for full examples.
 
 ## Configuration
 
-| Env var | Default | Effect |
-|---|---|---|
-| `III_URL` | `ws://127.0.0.1:49134` | Engine WebSocket URL. |
+Committed default for local runs (`--config ./config.yaml`):
 
-## Dependencies
-
-| Worker | Range | Reason |
-|---|---|---|
-| `session-inbox` | `^0.1.0` | `router::push_steering` and `router::push_followup` call `inbox::push`. |
-| `llm-budget` | `^0.1.0` | `router::stream_assistant` calls `budget::check` and `budget::record`. |
-
-`router::decide` (from `llm-router`) is consulted when present but is
-not required.
-
-## Build / Test
-
-```bash
-cargo build --release
-cargo test
+```yaml
+engine_url: ws://127.0.0.1:49134   # iii engine WebSocket URL
 ```
+
+CLI overrides: `--url` / `III_URL` wins when set; otherwise `engine_url` from
+config is used. Other defaults live in [`src/config.rs`](src/config.rs).
+
+## Custom trigger types
+
+This worker registers HTTP triggers (POST) for `router::push_steering`,
+`router::abort`, and `router::push_followup` at `agent/{session_id}/steer`,
+`agent/{session_id}/abort`, and `agent/{session_id}/follow_up` respectively,
+bound to those same function ids.

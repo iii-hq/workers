@@ -29,10 +29,11 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 tracing = "0.1"
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde_yaml = { workspace = true }
 hex = "0.4"
 sha2 = "0.10"
-log = "0.4"
-env_logger = "0.11"
 
 [workspace.package]
 version = "0.1.0"
@@ -49,6 +50,9 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive", "env"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
