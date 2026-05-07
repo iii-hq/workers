@@ -1,0 +1,8 @@
+node_modules/
+dist/
+package-lock.json
+bridge/node_modules/
+bridge/dist/
+bridge/package-lock.json
+bridge/.wrangler/
+.DS_Store
