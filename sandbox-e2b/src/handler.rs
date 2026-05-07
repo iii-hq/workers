@@ -115,11 +115,20 @@ pub async fn do_stop(ctx: &HandlerCtx, input: Value) -> Result<Value, WorkerErro
 }
 
 pub async fn do_list(ctx: &HandlerCtx, _input: Value) -> Result<Value, WorkerError> {
-    // Best-effort upstream fetch. If the provider is unreachable the local
-    // capacity envelope is still useful, so we degrade to an empty list
-    // rather than failing the whole call. Callers see `sandboxes: []` and
-    // can still trust `in_flight`/`cap`/`remaining`.
-    let sandboxes = ctx.client.list().await.unwrap_or_default();
+    // Best-effort upstream fetch. When the upstream answer is available we
+    // also reconcile `in_flight` against it — providers like E2B reap idle
+    // sandboxes without notifying us, so the locally-incremented counter
+    // would otherwise drift upward forever. Reconciling here makes `list`
+    // both query and self-heal, at the cost of a tiny window where a
+    // create racing this snapshot can briefly underreport.
+    let (sandboxes, reconciled) = match ctx.client.list().await {
+        Ok(items) => {
+            let n = items.len();
+            ctx.in_flight.store(n, Ordering::SeqCst);
+            (items, true)
+        }
+        Err(_) => (Vec::new(), false),
+    };
     let in_flight = ctx.in_flight.load(Ordering::SeqCst);
     let cap = ctx.config.max_concurrent_sandboxes;
     Ok(json!({
@@ -127,6 +136,7 @@ pub async fn do_list(ctx: &HandlerCtx, _input: Value) -> Result<Value, WorkerErr
         "in_flight": in_flight,
         "cap": cap,
         "remaining": cap.saturating_sub(in_flight),
+        "reconciled": reconciled,
     }))
 }
 

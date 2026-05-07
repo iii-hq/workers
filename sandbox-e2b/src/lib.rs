@@ -89,5 +89,8 @@ pub fn map_http_status(status: u16, body: &str) -> WorkerError {
 pub struct SandboxRecord {
     pub sandbox_id: String,
     pub image: String,
-    pub started_at: i64,
+    /// RFC3339 timestamp from the upstream provider, passed through
+    /// untouched. Callers parse if they need a numeric form. We avoid
+    /// pulling a date crate just to convert to epoch seconds.
+    pub started_at: String,
 }
