@@ -242,10 +242,7 @@ mod tests {
         let request = build_run_request(&json!({
             "approval_required": ["shell::fs::write"],
         }));
-        assert_eq!(
-            request["approval_required"],
-            json!(["shell::fs::write"]),
-        );
+        assert_eq!(request["approval_required"], json!(["shell::fs::write"]),);
     }
 
     #[test]

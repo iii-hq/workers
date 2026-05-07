@@ -53,8 +53,8 @@
 //!    carry `item_id` under that key — it arrives as the top-level `id`
 //!    field of `StreamCallRequest` (Option<String>).
 
-pub mod fs;
 pub mod fanout;
+pub mod fs;
 pub mod sse;
 
 use std::sync::Arc;
@@ -426,7 +426,6 @@ pub async fn register_with_iii_with_engine_url(
             timeout_ms: Some(10_000),
         })
         .await;
-
 
     // Wire the upstream fanout pumps:
     //   - agent::events stream subscriber → ui::session::event::<browser_id>

@@ -511,10 +511,7 @@ mod tests {
         let approval_required = vec!["shell::fs::write".to_string()];
         let inner = build_before_function_call_payload(&fc, &approval_required);
         assert_eq!(inner["function_call"]["id"], "tc-1");
-        assert_eq!(
-            inner["approval_required"],
-            json!(["shell::fs::write"]),
-        );
+        assert_eq!(inner["approval_required"], json!(["shell::fs::write"]),);
     }
 
     #[test]
@@ -559,10 +556,7 @@ mod tests {
         };
         let inner = build_before_function_call_payload(&fc, &[]);
         assert_eq!(inner["function_call"]["id"], "tc-1");
-        assert_eq!(
-            inner["function_call"]["function_id"],
-            "shell::fs::ls"
-        );
+        assert_eq!(inner["function_call"]["function_id"], "shell::fs::ls");
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
         assert!(inner.get("approval_required").is_some());
     }
