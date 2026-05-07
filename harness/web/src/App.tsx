@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, BridgeError } from "./bridge";
+import { disposeIiiClient, getIiiClient } from "./iii-client";
+import { exportJson, exportMd } from "./export";
+import { loadMessagesWithEntryIds } from "./loadMessages";
 import { visibleMessages } from "./reducer";
 import { useAgentStream } from "./useAgentStream";
 import { useSkillsIndex } from "./useSkillsIndex";
@@ -10,9 +13,17 @@ import { ContextMeter } from "./components/ContextMeter";
 import { ControlsBar } from "./components/ControlsBar";
 import { CostPanel } from "./components/CostPanel";
 import { FilesystemPanel } from "./components/FilesystemPanel";
+import { FootStatus } from "./components/FootStatus";
+import { FunctionPalette } from "./components/FunctionPalette";
 import { SessionList, fetchSessions } from "./components/SessionList";
 import { SessionView } from "./components/SessionView";
 import { StatusPill } from "./components/StatusPill";
+import { StatusStrip } from "./components/StatusStrip";
+import { StatusTab } from "./components/StatusTab";
+import { useConnection } from "./useConnection";
+import { useGlobalShortcut } from "./useGlobalShortcut";
+import { useStatus } from "./useStatus";
+import { loadWorkspace, saveWorkspace } from "./workspace";
 import type {
   AgentMessage,
   AuthStatus,
@@ -20,7 +31,7 @@ import type {
   SessionRow,
 } from "./types";
 
-type Tab = "chat" | "cost" | "files";
+type Tab = "chat" | "cost" | "files" | "status";
 
 // Tool schemas are no longer shipped from the client. The harness builds the
 // LLM tool catalog server-side from `engine::functions::list` (see
@@ -35,7 +46,11 @@ type Tab = "chat" | "cost" | "files";
 const BASE_SYSTEM_PROMPT =
   "You have filesystem tools that operate inside a sandbox. Use them when the user asks to read, inspect, create, or modify files. Paths must be absolute (e.g. /tmp/notes.md). Some destructive ops may be denied by policy — if a tool result contains `blocked`, explain which policy refused and stop, do not retry.";
 
-function buildSystemPrompt(skillsIndex: string | null): string {
+function buildSystemPrompt(skillsIndex: string | null, cwd: string): string {
+  const cwdSection = cwd
+    ? `## Working directory\n${cwd}\nPrefer paths under this directory. Use absolute paths.\n\n`
+    : "";
+
   const skillsSection = skillsIndex
     ? `## Available skills
 
@@ -44,7 +59,7 @@ ${skillsIndex}
 Use the \`skill::fetch\` tool to load any \`iii://\` URI you see above when you need its full content.`
     : "## Available skills\n\n(Skills index not loaded — call `skill::fetch` with `uri: \"iii://skills\"` to discover what's registered.)";
 
-  return `${BASE_SYSTEM_PROMPT}\n\n${skillsSection}`;
+  return `${BASE_SYSTEM_PROMPT}\n\n${cwdSection}${skillsSection}`;
 }
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
@@ -76,8 +91,23 @@ export default function App() {
   const [active, setActive] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  // Parallel array to `messages`. Slot is the entry_id keying that message
+  // in session-tree, or `null` when the message came from the state::*
+  // fallback (drift case — fork is disabled for null entries).
+  //
+  // INVARIANT: `messageEntryIds.length === messages.length` at all times.
+  // Stream events (SSE today) don't carry entry_ids yet — we fill with
+  // `null` on stream-driven updates. Step B (WS migration) will let stream
+  // events carry real ids and this can become live data.
+  const [messageEntryIds, setMessageEntryIds] = useState<(string | null)[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Per-session working directory. Advisory only — surfaced in the system
+  // prompt so the agent prefers paths under it. `loadedCwd` tracks the value
+  // currently persisted so blur/Enter can decide whether to call save.
+  const [cwd, setCwd] = useState<string>("");
+  const [loadedCwd, setLoadedCwd] = useState<string>("");
 
   // Skills-index fetch is strictly non-blocking. The fallback branch in
   // buildSystemPrompt(null) is the agent's recovery path; do not gate
@@ -95,12 +125,35 @@ export default function App() {
 
   const [tab, setTab] = useState<Tab>("chat");
 
+  // Cmd-J (Ctrl-J on Linux/Win) opens the bus function palette. Cmd-K is
+  // taken by Chrome's address bar focus, so we deliberately picked J.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  useGlobalShortcut(
+    { key: "j", meta: true, ctrl: true },
+    openPalette,
+  );
+
   const stream = useAgentStream(active);
+
+  // Live ambient status — header chip + foot chips + status tab.
+  // The hook owns the rolling 200-event buffer and the per-page subscription
+  // to all-sessions topics (cost/workers/approvals).
+  const status = useStatus();
+  const connection = useConnection();
+  const isConnected = connection.status === "connected";
 
   useEffect(() => {
     if (!active) return;
     const visible = visibleMessages(stream);
-    if (visible.length > 0) setMessages(visible);
+    if (visible.length > 0) {
+      setMessages(visible);
+      // Stream events don't carry entry_ids today (Phase B step B will fix
+      // this when WS replaces SSE). Until then, fork buttons stay disabled
+      // for live messages — the next loadSessionMessages refresh hydrates
+      // entry_ids from session-tree.
+      setMessageEntryIds(visible.map(() => null));
+    }
   }, [active, stream]);
 
   const isRunning = loading || stream.status === "running";
@@ -125,29 +178,73 @@ export default function App() {
     }
   }, []);
 
-  const loadMessages = useCallback(async (id: string) => {
+  const loadSessionMessages = useCallback(async (id: string) => {
     try {
-      const msgs = await bridge<AgentMessage[]>("state::get", {
-        scope: "agent",
-        key: `session/${id}/messages`,
-      });
-      setMessages(Array.isArray(msgs) ? msgs : []);
-    } catch (e) {
-      // brand new session — state::get returns null; treat as empty
-      if (e instanceof BridgeError && /session not found|null/.test(e.message)) {
-        setMessages([]);
-        return;
-      }
+      const pairs = await loadMessagesWithEntryIds(id);
+      setMessages(pairs.map((p) => p.message));
+      setMessageEntryIds(pairs.map((p) => p.entry_id));
+    } catch {
       setMessages([]);
+      setMessageEntryIds([]);
     }
   }, []);
 
-  // Pull sessions on a slow tick so new turns surface in the rail.
+  // Refresh sessions when the harness fanout pushes `ui::sessions::changed`.
+  // Replaces the 4-second polling interval. The all-sessions subscription is
+  // owned by App for the lifetime of the page; per-session subscriptions are
+  // managed by useAgentStream.
   useEffect(() => {
     void refreshSessions();
-    const id = setInterval(refreshSessions, 4000);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let off: (() => void) | undefined;
+    let subscribed = false;
+    let browserId: string | null = null;
+
+    void (async () => {
+      try {
+        const client = await getIiiClient();
+        if (cancelled) return;
+        browserId = client.browserId;
+        off = client.on("ui::sessions::changed", () => {
+          void refreshSessions();
+        });
+        await client.call("ui::subscribe", {
+          browser_id: browserId,
+          session_id: null,
+        });
+        subscribed = true;
+      } catch {
+        // No connection — refreshSessions above already ran once. The status
+        // pill will show the disconnected state via useConnection.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      off?.();
+      if (subscribed && browserId) {
+        void getIiiClient().then((client) =>
+          client
+            .call("ui::unsubscribe", {
+              browser_id: browserId,
+              session_id: null,
+            })
+            .catch(() => {}),
+        );
+      }
+    };
   }, [refreshSessions]);
+
+  // Tear down the iii-client on page unload so the fanout can drop our
+  // subscriptions promptly. The browser will close the WS regardless, but
+  // an explicit shutdown lets the engine clean up registered handlers.
+  useEffect(() => {
+    const handler = () => {
+      void disposeIiiClient();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   // Load model catalog once.
   useEffect(() => {
@@ -163,9 +260,43 @@ export default function App() {
   }, [refreshAuth]);
 
   useEffect(() => {
-    if (active) void loadMessages(active);
-    else setMessages([]);
-  }, [active, loadMessages]);
+    if (active) void loadSessionMessages(active);
+    else {
+      setMessages([]);
+      setMessageEntryIds([]);
+    }
+  }, [active, loadSessionMessages]);
+
+  // Load workspace cwd on session change. Resets to empty for the draft
+  // (no active session yet). Errors are swallowed by loadWorkspace.
+  useEffect(() => {
+    if (!active) {
+      setCwd("");
+      setLoadedCwd("");
+      return;
+    }
+    let cancelled = false;
+    void loadWorkspace(active).then((ws) => {
+      if (cancelled) return;
+      const value = ws?.cwd ?? "";
+      setCwd(value);
+      setLoadedCwd(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  // Persist cwd when it differs from the loaded value. Called from blur and
+  // Enter on the header field. Only writes when there's an active session.
+  const commitCwd = useCallback(() => {
+    if (!active) return;
+    const next = cwd.trim();
+    if (next === loadedCwd) return;
+    void saveWorkspace(active, next).then(() => {
+      setLoadedCwd(next);
+    });
+  }, [active, cwd, loadedCwd]);
 
   // When the catalog or provider changes, ensure the selected model belongs
   // to the active provider; otherwise pick the configured default or first
@@ -182,6 +313,7 @@ export default function App() {
   const startNew = () => {
     setActive(null);
     setMessages([]);
+    setMessageEntryIds([]);
     setDraftId(newSessionId());
     setError(null);
   };
@@ -200,6 +332,8 @@ export default function App() {
     };
     const fullHistory = [...messages, optimistic];
     setMessages(fullHistory);
+    // Optimistic message has no entry_id yet — pad to keep arrays in sync.
+    setMessageEntryIds([...messageEntryIds, null]);
 
     try {
       await bridge<{ session_id: string }>("run::start", {
@@ -207,7 +341,7 @@ export default function App() {
         provider,
         model,
         messages: fullHistory,
-        system_prompt: buildSystemPrompt(skillsIndex),
+        system_prompt: buildSystemPrompt(skillsIndex, cwd.trim()),
         approval_required: APPROVAL_REQUIRED,
       });
       void refreshSessions();
@@ -218,6 +352,78 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // Fork the active session at a specific message's entry_id. The new
+  // session's id is returned by session-tree::fork and becomes the active
+  // session. Refreshing the rail picks up the new row.
+  const handleForkFromMessage = useCallback(
+    async (entryId: string) => {
+      if (!active) return;
+      try {
+        const { session_id } = await bridge<{ session_id: string }>(
+          "session-tree::fork",
+          {
+            source_session_id: active,
+            from_entry_id: entryId,
+          },
+        );
+        setActive(session_id);
+        void refreshSessions();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [active, refreshSessions],
+  );
+
+  // /repair — read state::* snapshot, hand it to session-tree::reconcile
+  // so any drifted rows get re-keyed with entry_ids. Reload after so the
+  // UI's entry_ids reflect the new tree state.
+  const handleRepair = useCallback(async () => {
+    if (!active) return;
+    try {
+      const snapshot = await bridge<unknown>("state::get", {
+        scope: "agent",
+        key: `session/${active}/messages`,
+      });
+      const result = await bridge<{ repaired: number }>(
+        "session-tree::reconcile",
+        { session_id: active, state_snapshot: snapshot },
+      );
+      void loadSessionMessages(active);
+      if (result.repaired === 0) setError(null);
+    } catch (e) {
+      setError(`/repair failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [active, loadSessionMessages]);
+
+  // /fork — convenience: fork from the most recent message that has a
+  // real entry_id. Anything without an entry_id is a stream artifact or
+  // a drifted state row.
+  const handleForkLast = useCallback(async () => {
+    if (!active) return;
+    for (let i = messageEntryIds.length - 1; i >= 0; i--) {
+      const id = messageEntryIds[i];
+      if (id !== null) {
+        await handleForkFromMessage(id);
+        return;
+      }
+    }
+    setError("No messages with entry_ids — try /repair first");
+  }, [active, messageEntryIds, handleForkFromMessage]);
+
+  const handleExport = useCallback(
+    async (format: "md" | "json") => {
+      if (!active) return;
+      try {
+        if (format === "md") await exportMd(active);
+        else await exportJson(active);
+      } catch (e) {
+        setError(`/export failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [active],
+  );
 
   const sessionId = active ?? draftId ?? "";
   const currentAuth = authByProvider[provider] ?? null;
@@ -235,8 +441,38 @@ export default function App() {
           <span className="app-mark-glyph">⌘</span>
           <span className="app-mark-name">harness</span>
           <span className="app-mark-sub">bus console</span>
+          {sessionId ? (
+            <span className="app-mark-sub" title="session id">
+              · {sessionId}
+            </span>
+          ) : null}
+          <input
+            type="text"
+            className="app-head-cwd"
+            value={cwd}
+            placeholder="working directory (optional)"
+            spellCheck={false}
+            disabled={!active}
+            onChange={(e) => setCwd(e.target.value)}
+            onBlur={commitCwd}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitCwd();
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            aria-label="working directory"
+          />
         </div>
-        <StatusPill />
+        <div className="app-head-right">
+          <StatusStrip
+            pendingApprovals={status.pendingApprovals}
+            connected={isConnected}
+            onJumpToStatus={() => setTab("status")}
+          />
+          <StatusPill />
+        </div>
       </header>
 
       <div className="app-body">
@@ -253,7 +489,7 @@ export default function App() {
 
         <main className="main">
           <nav className="tabs" role="tablist" aria-label="harness panels">
-            {(["chat", "cost", "files"] as Tab[]).map((t) => (
+            {(["chat", "cost", "files", "status"] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -289,7 +525,9 @@ export default function App() {
               <SessionView
                 sessionId={sessionId}
                 messages={messages}
+                messageEntryIds={messageEntryIds}
                 loading={isRunning}
+                onForkFromMessage={handleForkFromMessage}
               />
               {error ? (
                 <p className="app-error" role="alert">
@@ -305,12 +543,51 @@ export default function App() {
                 sessionId={active ?? ""}
                 pending={stream.pendingApprovals}
               />
-              <Composer disabled={composerDisabled} onSend={send} />
+              <Composer
+                disabled={composerDisabled}
+                onSend={send}
+                cwd={cwd.trim()}
+                skillsIndex={skillsIndex}
+                sessionMessages={messages}
+                callbacks={{
+                  onNew: startNew,
+                  onClear: () => setError(null),
+                  onCwd: (path) => {
+                    setCwd(path);
+                    if (active) void saveWorkspace(active, path).then(() => setLoadedCwd(path));
+                  },
+                  onModel: (id) => setModel(id),
+                  onProvider: (name) => {
+                    if ((SUPPORTED_PROVIDERS as readonly string[]).includes(name)) {
+                      setProvider(name as Provider);
+                    }
+                  },
+                  onHelp: () => {
+                    setError(
+                      "shortcuts: / commands · @ files · ↑ history · shift+enter newline · enter send",
+                    );
+                  },
+                  onRepair: handleRepair,
+                  onFork: handleForkLast,
+                  onExport: handleExport,
+                }}
+              />
             </>
           ) : null}
 
           {tab === "cost" ? <CostPanel /> : null}
           {tab === "files" ? <FilesystemPanel /> : null}
+          {tab === "status" ? (
+            <StatusTab
+              cost={status.cost}
+              workers={status.workers}
+              events={status.events}
+              hydrated={status.hydrated}
+              connected={isConnected}
+              connectionSince={connection.since}
+              onClearEvents={status.clearEvents}
+            />
+          ) : null}
         </main>
       </div>
 
@@ -318,7 +595,19 @@ export default function App() {
         <span>provider · {provider}</span>
         <span>model · {model}</span>
         <span>endpoint · POST /bridge/trigger</span>
+        <span>shortcut · ⌘J palette</span>
+        <span className="app-foot-spacer" />
+        <FootStatus
+          cost={status.cost}
+          workers={status.workers}
+          connected={isConnected}
+        />
       </footer>
+
+      <FunctionPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
     </div>
   );
 }

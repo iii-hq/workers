@@ -42,6 +42,18 @@ export interface SessionRow {
   state: string;
   turn_count: number;
   updated_at_ms: number;
+  /** Working directory associated with the session, if any. */
+  cwd?: string | null;
+  /** First text snippet of the last message, used as a session preview. */
+  last_message_summary?: string | null;
+}
+
+// Per-session working directory. Advisory-only — surfaced in the system prompt
+// so the agent prefers paths under cwd. Path scoping/enforcement belongs to
+// `policy-denylist`, not the UI.
+export interface Workspace {
+  cwd: string;
+  set_at: number;
 }
 
 export interface HarnessStatus {
@@ -145,7 +157,11 @@ export type EntryId = string;
 
 export type AgentEvent =
   | { type: "agent_start" }
-  | { type: "agent_end"; messages: { entry_id?: EntryId; message: AgentMessage }[] }
+  // Backend (turn-orchestrator/crates/harness-types/src/agent_event.rs) emits
+  // bare AgentMessage[]. The reducer's agent_end handler also tolerates the
+  // wrapped {entry_id?, message}[] shape for forward-compat with a future
+  // backend that threads entry_ids through.
+  | { type: "agent_end"; messages: (AgentMessage | { entry_id?: EntryId; message: AgentMessage })[] }
   | { type: "turn_start" }
   | { type: "turn_end"; message: AgentMessage; tool_results: unknown[]; entry_id?: EntryId }
   | { type: "message_start"; message: AgentMessage; entry_id?: EntryId }

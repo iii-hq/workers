@@ -1,11 +1,19 @@
 import type { AgentMessage } from "../types";
+import { MessageActions } from "./MessageActions";
 import { ToolUseBlock } from "./ToolUseBlock";
 import { ToolResultBlock } from "./ToolResultBlock";
 
 interface Props {
   sessionId: string;
   messages: AgentMessage[];
+  /**
+   * Parallel array to `messages`. Each slot is the entry_id keying that
+   * message in session-tree, or `null` when the message came from the
+   * state::* fallback (drift case — fork is disabled for null entries).
+   */
+  messageEntryIds: (string | null)[];
   loading: boolean;
+  onForkFromMessage: (entryId: string) => void | Promise<void>;
 }
 
 function roleLabel(m: AgentMessage): string {
@@ -40,7 +48,13 @@ function renderBlocks(m: AgentMessage) {
   });
 }
 
-export function SessionView({ sessionId, messages, loading }: Props) {
+export function SessionView({
+  sessionId,
+  messages,
+  messageEntryIds,
+  loading,
+  onForkFromMessage,
+}: Props) {
   if (!sessionId) {
     return (
       <section className="view view-empty">
@@ -72,6 +86,11 @@ export function SessionView({ sessionId, messages, loading }: Props) {
                 {m.stop_reason ? ` · stop: ${m.stop_reason}` : null}
               </p>
             ) : null}
+            <MessageActions
+              entryId={messageEntryIds[i] ?? null}
+              message={m}
+              onFork={onForkFromMessage}
+            />
           </li>
         ))}
         {loading ? (
