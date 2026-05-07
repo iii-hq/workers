@@ -6,6 +6,9 @@
 pub const SKILL_ID: &str = "llm-budget";
 pub const SKILL_MD: &str = include_str!("../skill.md");
 
+pub mod config;
+pub mod manifest;
+
 pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("llm-budget/create", include_str!("../skills/create.md")),
     ("llm-budget/list", include_str!("../skills/list.md")),
