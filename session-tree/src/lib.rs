@@ -323,6 +323,98 @@ pub async fn load_messages<S: SessionStore + ?Sized>(
     Ok(messages)
 }
 
+/// One row in the response of [`list_sessions`] / `session-tree::list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListRow {
+    pub session_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub entry_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_summary: Option<String>,
+}
+
+/// Response envelope for `session-tree::list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListSessionsResult {
+    pub sessions: Vec<SessionListRow>,
+    pub total: u32,
+}
+
+/// Sort order for [`list_sessions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListOrder {
+    Asc,
+    Desc,
+}
+
+/// List sessions with optional pagination and ordering.
+///
+/// Default order is `Desc` by `updated_at`. `last_message_summary` is the
+/// first 80 chars of the last `Message` entry's first text content block
+/// (or `None` if no messages).
+pub async fn list_sessions<S: SessionStore + ?Sized>(
+    store: &S,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    order: Option<ListOrder>,
+) -> Result<ListSessionsResult, SessionError> {
+    let mut metas = store.list().await?;
+    let order = order.unwrap_or(ListOrder::Desc);
+    metas.sort_by(|a, b| match order {
+        ListOrder::Desc => b.updated_at.cmp(&a.updated_at),
+        ListOrder::Asc => a.updated_at.cmp(&b.updated_at),
+    });
+
+    let total = u32::try_from(metas.len()).unwrap_or(u32::MAX);
+    let offset = offset.unwrap_or(0) as usize;
+    let limit = limit.map(|l| l as usize).unwrap_or(metas.len());
+    let page: Vec<SessionMeta> = metas.into_iter().skip(offset).take(limit).collect();
+
+    let mut sessions: Vec<SessionListRow> = Vec::with_capacity(page.len());
+    for meta in page {
+        let entries = store
+            .load_entries(&meta.session_id)
+            .await
+            .unwrap_or_default();
+        let entry_count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+        let last_message_summary = entries.iter().rev().find_map(|e| match e {
+            SessionEntry::Message { message, .. } => extract_summary(message),
+            _ => None,
+        });
+        sessions.push(SessionListRow {
+            session_id: meta.session_id,
+            created_at: meta.created_at,
+            updated_at: meta.updated_at,
+            entry_count,
+            display_name: meta.display_name,
+            cwd: meta.cwd,
+            last_message_summary,
+        });
+    }
+
+    Ok(ListSessionsResult { sessions, total })
+}
+
+fn extract_summary(message: &AgentMessage) -> Option<String> {
+    let blocks: &[ContentBlock] = match message {
+        AgentMessage::User(m) => &m.content,
+        AgentMessage::Assistant(m) => &m.content,
+        AgentMessage::ToolResult(_) | AgentMessage::Custom(_) => return None,
+    };
+    for block in blocks {
+        if let ContentBlock::Text(text) = block {
+            let trimmed: String = text.text.chars().take(80).collect();
+            return Some(trimmed);
+        }
+    }
+    None
+}
+
 /// Hydrate an `AgentContext` from a session leaf using a system prompt.
 pub async fn load_context<S: SessionStore + ?Sized>(
     store: &S,
@@ -705,6 +797,7 @@ pub mod function_ids {
     pub const CREATE: &str = "session-tree::create";
     pub const APPEND: &str = "session-tree::append";
     pub const MESSAGES: &str = "session-tree::messages";
+    pub const LIST: &str = "session-tree::list";
 }
 
 /// Register all `session-tree::*` iii functions on `iii`, backed by `store`.
@@ -728,6 +821,8 @@ pub mod function_ids {
 /// - `session-tree::tree` — `{ "session_id": str }` → `TreeNode`
 /// - `session-tree::export_html` — `{ "session_id": str, "branch_leaf": str? }`
 ///   → `{ "html": str }`
+/// - `session-tree::list` — `{ "limit": u32?, "offset": u32?, "order": "asc"|"desc"? }`
+///   → `{ "sessions": [{session_id, created_at, updated_at, entry_count, display_name?, cwd?, last_message_summary?}], "total": u32 }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
     S: SessionStore + Send + Sync + ?Sized + 'static,
@@ -908,7 +1003,7 @@ where
         )),
     );
 
-    let store_messages = store;
+    let store_messages = store.clone();
     refs.push(iii.register_function((
         RegisterFunctionMessage::with_id(function_ids::MESSAGES.into()).with_description(
             "Load every AgentMessage on the active path of a session, oldest first".into(),
@@ -928,6 +1023,36 @@ where
             }
         },
     )));
+
+    let store_list = store;
+    refs.push(
+        iii.register_function((
+            RegisterFunctionMessage::with_id(function_ids::LIST.into())
+                .with_description("List sessions with optional pagination and ordering".into()),
+            move |payload: serde_json::Value| {
+                let store = store_list.clone();
+                async move {
+                    let limit = payload
+                        .get("limit")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+                    let offset = payload
+                        .get("offset")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+                    let order = match payload.get("order").and_then(serde_json::Value::as_str) {
+                        Some("asc") => Some(ListOrder::Asc),
+                        Some("desc") => Some(ListOrder::Desc),
+                        _ => None,
+                    };
+                    let result = list_sessions(store.as_ref(), limit, offset, order)
+                        .await
+                        .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    serde_json::to_value(result).map_err(|e| IIIError::Handler(e.to_string()))
+                }
+            },
+        )),
+    );
 
     SessionFunctionRefs { refs }
 }
@@ -1060,6 +1185,14 @@ mod tests {
             .unwrap();
         let listed = store.list().await.unwrap();
         assert_eq!(listed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_empty_store_returns_empty() {
+        let store = InMemoryStore::new();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.sessions.len(), 0);
+        assert_eq!(result.total, 0);
     }
 
     async fn build_linear_session(store: &InMemoryStore, len: usize) -> (String, Vec<String>) {
@@ -1258,5 +1391,96 @@ mod tests {
         assert!(!html.contains("offshoot"));
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("entry user"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_single_session_has_entry_count_and_summary() {
+        let store = InMemoryStore::new();
+        let id = create_session(&store, Some("alpha".into()), None)
+            .await
+            .unwrap();
+        append_message(&store, &id, None, user("hello world", 1))
+            .await
+            .unwrap();
+        append_message(&store, &id, None, user("second", 2))
+            .await
+            .unwrap();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.total, 1);
+        assert_eq!(result.sessions.len(), 1);
+        let row = &result.sessions[0];
+        assert_eq!(row.session_id, id);
+        assert_eq!(row.entry_count, 2);
+        assert_eq!(row.display_name.as_deref(), Some("alpha"));
+        assert_eq!(row.last_message_summary.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_pagination() {
+        let store = InMemoryStore::new();
+        for i in 0..100 {
+            create_session(&store, Some(format!("s{i}")), None)
+                .await
+                .unwrap();
+        }
+        let page0 = list_sessions(&store, Some(10), Some(0), None)
+            .await
+            .unwrap();
+        assert_eq!(page0.total, 100);
+        assert_eq!(page0.sessions.len(), 10);
+
+        let page9 = list_sessions(&store, Some(10), Some(90), None)
+            .await
+            .unwrap();
+        assert_eq!(page9.sessions.len(), 10);
+
+        let page_past_end = list_sessions(&store, Some(10), Some(100), None)
+            .await
+            .unwrap();
+        assert_eq!(page_past_end.sessions.len(), 0);
+        assert_eq!(page_past_end.total, 100);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_order_desc_by_updated_at() {
+        let store = InMemoryStore::new();
+        let id_a = create_session(&store, Some("a".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let id_b = create_session(&store, Some("b".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        // Touching 'a' bumps its updated_at past 'b'.
+        append_message(&store, &id_a, None, user("touch", 1))
+            .await
+            .unwrap();
+
+        let desc = list_sessions(&store, None, None, Some(ListOrder::Desc))
+            .await
+            .unwrap();
+        assert_eq!(desc.sessions[0].session_id, id_a);
+        assert_eq!(desc.sessions[1].session_id, id_b);
+
+        let asc = list_sessions(&store, None, None, Some(ListOrder::Asc))
+            .await
+            .unwrap();
+        assert_eq!(asc.sessions[0].session_id, id_b);
+        assert_eq!(asc.sessions[1].session_id, id_a);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_default_order_is_desc() {
+        let store = InMemoryStore::new();
+        let _old = create_session(&store, Some("old".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let new = create_session(&store, Some("new".into()), None)
+            .await
+            .unwrap();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.sessions[0].session_id, new);
     }
 }
