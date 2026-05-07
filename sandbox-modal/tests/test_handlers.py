@@ -53,10 +53,13 @@ async def test_exec_rejects_missing_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_rolls_through_stub_client() -> None:
+async def test_stop_is_idempotent_when_sandbox_unknown() -> None:
+    # ModalClient.stop now treats an unknown sandbox_id as already-gone
+    # (the registry never knew it, so the post-state is what the caller
+    # wanted). Matches the e2b/daytona/morph idempotency contract.
     ctx = make_ctx()
-    with pytest.raises(SandboxError):
-        await do_stop(ctx, {"sandbox_id": "sbx-1"})
+    result = await do_stop(ctx, {"sandbox_id": "sbx-1"})
+    assert result == {}
 
 
 @pytest.mark.asyncio
