@@ -10,9 +10,11 @@ import { ContextMeter } from "./components/ContextMeter";
 import { ControlsBar } from "./components/ControlsBar";
 import { CostPanel } from "./components/CostPanel";
 import { FilesystemPanel } from "./components/FilesystemPanel";
+import { FunctionPalette } from "./components/FunctionPalette";
 import { SessionList, fetchSessions } from "./components/SessionList";
 import { SessionView } from "./components/SessionView";
 import { StatusPill } from "./components/StatusPill";
+import { useGlobalShortcut } from "./useGlobalShortcut";
 import { loadWorkspace, saveWorkspace } from "./workspace";
 import type {
   AgentMessage,
@@ -105,6 +107,15 @@ export default function App() {
   const authPanelRef = useRef<AuthPanelHandle>(null);
 
   const [tab, setTab] = useState<Tab>("chat");
+
+  // Cmd-J (Ctrl-J on Linux/Win) opens the bus function palette. Cmd-K is
+  // taken by Chrome's address bar focus, so we deliberately picked J.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  useGlobalShortcut(
+    { key: "j", meta: true, ctrl: true },
+    openPalette,
+  );
 
   const stream = useAgentStream(active);
 
@@ -408,7 +419,13 @@ export default function App() {
         <span>provider · {provider}</span>
         <span>model · {model}</span>
         <span>endpoint · POST /bridge/trigger</span>
+        <span>shortcut · ⌘J palette</span>
       </footer>
+
+      <FunctionPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
     </div>
   );
 }
