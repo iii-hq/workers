@@ -24,14 +24,14 @@
 
 **Tracked here because:** the original skill-registration plan deliberately deferred the CI gate. Capturing the design here so it isn't re-derived when we decide to enforce.
 
-## harness: extract `unwrap_function_list` + `format_to_input_schema` to a shared crate
+## mcp: extract `unwrap_function_list` + `format_to_input_schema` (harness side gone)
 
-**What:** Move the two helpers from `mcp/src/tools.rs:67-94` and the copy in `turn-orchestrator/src/agent_call.rs` into a shared module — `harness-types`, a new `iii-tool-catalog` crate, or upstream into `iii-sdk`.
+**What:** `mcp/src/tools.rs:67-94` still has the two helpers. The harness's copy in `agent_call.rs` was deleted as part of the Tier 2 thin-dispatcher refactor (spec `docs/superpowers/specs/2026-05-07-tier2-iii-pure-harness-design.md`).
 
-**Why:** The copies will drift the first time the engine envelope changes or `format_to_input_schema` gets a bug fix. mcp tests pass while the harness silently breaks (or vice versa).
+**Why:** Drift risk dropped — only one copy now — but if any future caller in workers/ wants the same pattern, it's worth extracting before the second copy comes back.
 
-**Fix:** Pick a home, move the two functions + their tests, import from both crates. The functions are pure, stateless, ~20 LOC total.
+**Fix:** When a second caller appears, move the helpers into `harness-types`, a new `iii-tool-catalog` crate, or upstream into `iii-sdk`. Until then, leave the mcp copy where it is.
 
-**Effort:** ~15 min once the home is chosen. Picking the home is the bulk of the decision.
+**Effort:** ~15 min when triggered. Picking the home is the bulk of the decision.
 
-**Tracked here because:** the iii-native harness PR (spec `2026-05-07-iii-native-harness-design.md`) repurposed both helpers into `agent_call.rs` rather than extracting them — kept dep edges flat. Drift risk is real but contained; consolidate when the next bug or schema-format change touches either copy.
+**Tracked here because:** the iii-native + Tier 2 refactors made this less urgent. Capturing the design here so it isn't re-derived when the second caller emerges.
