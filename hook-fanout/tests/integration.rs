@@ -1,8 +1,8 @@
 //! Smoke tests that run without an iii engine connection.
 
 #[test]
-fn function_id_in_hooks_namespace() {
-    assert_eq!(hook_fanout::FUNCTION_ID, "hooks::publish_collect");
+fn function_id_uses_worker_namespace() {
+    assert_eq!(hook_fanout::FUNCTION_ID, "hook-fanout::publish_collect");
 }
 
 #[test]

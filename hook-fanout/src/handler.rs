@@ -1,20 +1,23 @@
-//! `hooks::publish_collect` handler.
+//! `hook-fanout::publish_collect` handler.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::config::WorkerConfig;
 use crate::{
     build_publish_envelope, merge_field_merge, merge_first_block_wins, merge_pipeline_last_wins,
     MergeRule, FUNCTION_ID, HOOK_REPLY_STREAM,
 };
 
-const POLL_INTERVAL_MS: u64 = 25;
-const MIN_TIMEOUT_MS: u64 = 50;
-
-pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
+pub async fn execute(
+    iii: Arc<III>,
+    cfg: Arc<WorkerConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let topic = payload
         .get("topic")
         .and_then(Value::as_str)
@@ -30,7 +33,10 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
     let timeout_ms = payload
         .get("timeout_ms")
         .and_then(Value::as_u64)
-        .unwrap_or(10_000);
+        .unwrap_or(cfg.default_timeout_ms);
+
+    let min_timeout = cfg.min_timeout_ms;
+    let poll_interval = Duration::from_millis(cfg.poll_interval_ms);
 
     let event_id = Uuid::new_v4().to_string();
     let envelope = build_publish_envelope(&topic, &event_id, inner.clone());
@@ -43,10 +49,10 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
         })
         .await
     {
-        tracing::warn!(error = %e, %topic, "hooks::publish_collect: publish trigger failed");
+        tracing::warn!(error = %e, %topic, "hook-fanout::publish_collect: publish trigger failed");
     }
 
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(MIN_TIMEOUT_MS));
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(min_timeout));
     let mut replies: Vec<Value> = Vec::new();
     let mut last_index: usize = 0;
     loop {
@@ -64,7 +70,7 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
         if Instant::now() >= deadline {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(poll_interval).await;
     }
 
     let merged = match merge_rule {
@@ -80,8 +86,9 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
     }))
 }
 
-pub fn register(iii: &III) {
+pub fn register(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
     let iii_for_handler = iii.clone();
+    let cfg = config.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string()).with_description(
             "Publish a topic, collect subscriber replies until timeout, apply merge_rule."
@@ -89,7 +96,8 @@ pub fn register(iii: &III) {
         ),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
-            async move { execute(iii, payload).await }
+            let cfg = cfg.clone();
+            async move { execute(iii, cfg, payload).await }
         },
     ));
 }
@@ -110,6 +118,8 @@ fn collect_stream_items(value: &Value, collected: &mut Vec<Value>, last_index: &
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]

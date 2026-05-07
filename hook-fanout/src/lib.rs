@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod config;
 pub mod handler;
+pub mod manifest;
 
-pub const FUNCTION_ID: &str = "hooks::publish_collect";
+pub use manifest::build_manifest;
+
+pub const FUNCTION_ID: &str = "hook-fanout::publish_collect";
 pub const HOOK_REPLY_STREAM: &str = "agent::hook_reply";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,8 +99,11 @@ pub fn build_publish_envelope(topic: &str, event_id: &str, payload: Value) -> Va
     })
 }
 
-pub fn register_with_iii(iii: &iii_sdk::III) {
-    handler::register(iii);
+pub fn register_with_iii(
+    iii: &std::sync::Arc<iii_sdk::III>,
+    config: &std::sync::Arc<config::WorkerConfig>,
+) {
+    handler::register(iii, config);
 }
 
 fn decode_transform_messages(reply: &Value) -> Option<Value> {
