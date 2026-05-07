@@ -35,6 +35,16 @@ jobs:
         run: cargo build --release --bin storage
         working-directory: storage
 
+      - name: Install iii engine
+        # script-tests/run.sh exercises the full preflight path of run-tests.sh,
+        # including the engine-binary check. Without iii on PATH the --filter
+        # and SIGINT tests bail early with "iii engine binary missing" instead
+        # of exercising what they're meant to assert.
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Run script-tests
         run: ./script-tests/run.sh
         working-directory: storage/tests/e2e
@@ -58,8 +68,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: storage/tests/e2e/workers/harness/package-lock.json
+          # No cache: harness has no committed package-lock.json (run-tests.sh
+          # generates one via `npm install` at first run). setup-node@v4 with
+          # `cache: 'npm'` against a missing lockfile is a hard failure, not a
+          # warning. ~10s slower per run; revisit if we ever commit a lockfile.
 
       - name: Install iii engine
         run: |
