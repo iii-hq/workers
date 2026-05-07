@@ -1,5 +1,6 @@
 //! `subagent::start` — spawn a child durable session via `run::start`.
 
+use crate::config::SubagentConfig;
 use iii_sdk::{IIIError, TriggerRequest, Value, III};
 use serde_json::json;
 
@@ -7,17 +8,15 @@ pub const ID: &str = "subagent::start";
 pub const DESCRIPTION: &str =
     "Spawn a sub-agent for a focused subtask. Args: prompt, provider, model, system_prompt?, max_turns?, parent_session_id?, max_subagent_depth?.";
 
-pub const DEFAULT_MAX_DEPTH: usize = 3;
-
-pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
+pub async fn execute(iii: &III, args: &Value, config: &SubagentConfig) -> Result<Value, IIIError> {
     let prompt = required(args, "prompt")?;
     let provider = required(args, "provider")?;
     let model = required(args, "model")?;
     let system_prompt = args
         .get("system_prompt")
         .and_then(Value::as_str)
-        .unwrap_or("You are a focused sub-agent. Answer the parent's subtask concisely and stop.")
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| config.default_system_prompt.clone());
     let parent_session = args
         .get("parent_session_id")
         .and_then(Value::as_str)
@@ -26,7 +25,7 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
     let max_depth = args
         .get("max_subagent_depth")
         .and_then(Value::as_u64)
-        .map_or(DEFAULT_MAX_DEPTH, |v| v as usize);
+        .map_or(config.default_max_subagent_depth as usize, |v| v as usize);
     let current_depth = parent_session.matches("::sub-").count();
     if current_depth >= max_depth {
         let msg = format!(
@@ -67,7 +66,7 @@ pub async fn execute(iii: &III, args: &Value) -> Result<Value, IIIError> {
             function_id: "run::start_and_wait".into(),
             payload,
             action: None,
-            timeout_ms: Some(600_000),
+            timeout_ms: Some(config.trigger_timeout_ms),
         })
         .await;
 
@@ -155,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn default_max_depth_matches_legacy() {
-        assert_eq!(DEFAULT_MAX_DEPTH, 3);
+    fn default_max_depth_matches_config() {
+        assert_eq!(SubagentConfig::default().default_max_subagent_depth, 3);
     }
 }

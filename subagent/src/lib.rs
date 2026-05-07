@@ -3,6 +3,8 @@
 //! Renamed from `shell-subagent`; nothing about this worker actually
 //! involves a shell — it spawns child agent sessions and awaits results.
 
+pub mod config;
+pub mod manifest;
 pub mod register;
 pub mod start;
 
