@@ -134,7 +134,6 @@ fn find_session_tree_memory_config() -> Option<PathBuf> {
 pub fn nonce() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     format!("{nanos}")
 }
