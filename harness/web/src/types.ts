@@ -42,6 +42,10 @@ export interface SessionRow {
   state: string;
   turn_count: number;
   updated_at_ms: number;
+  /** Working directory associated with the session, if any. */
+  cwd?: string | null;
+  /** First text snippet of the last message, used as a session preview. */
+  last_message_summary?: string | null;
 }
 
 // Per-session working directory. Advisory-only — surfaced in the system prompt

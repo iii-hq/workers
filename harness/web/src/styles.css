@@ -1690,3 +1690,76 @@ code,
     animation: none;
   }
 }
+
+/* ─── session list: groups + subtitle ────────────────────────────────────── */
+
+.session-groups {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.session-group {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.session-group-h {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0;
+  padding: 0 var(--space-3);
+}
+
+.session-subtitle {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── per-message actions ────────────────────────────────────────────────── */
+
+.msg-actions {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions {
+  opacity: 1;
+}
+
+.msg-action {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.msg-action:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
+.msg-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
