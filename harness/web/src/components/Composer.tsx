@@ -62,7 +62,7 @@ interface AtBrowseState {
   entries: FsEntry[];
   loading: boolean;
   /** Empty-state reason, mapped to user-visible text. */
-  error: "cwd-unset" | "permission" | "fetch-failed" | "io" | null;
+  error: "cwd-unset" | "permission" | "fetch-failed" | null;
 }
 
 const AT_BROWSE_INITIAL: AtBrowseState = {
@@ -638,8 +638,6 @@ function atErrorText(err: AtBrowseState["error"]): string {
       return "permission denied for this directory";
     case "fetch-failed":
       return "couldn't reach the bus to list files";
-    case "io":
-      return "io error listing this directory";
     default:
       return "";
   }
