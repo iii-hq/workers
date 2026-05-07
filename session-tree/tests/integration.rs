@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
 use serde_json::json;
+use serial_test::serial;
 use tokio::time::{sleep, timeout};
 
 const ENGINE_WS: &str = "ws://127.0.0.1:49134";
@@ -95,7 +96,16 @@ fn user_message(text: &str, ts: i64) -> serde_json::Value {
     })
 }
 
+fn uuid_like_nonce() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos}")
+}
+
 #[tokio::test]
+#[serial]
 async fn bus_list_returns_envelope_with_total_and_sessions() {
     let Some(_h) = boot().await else {
         eprintln!("skipping: `iii` binary not on PATH");
@@ -153,15 +163,8 @@ async fn bus_list_returns_envelope_with_total_and_sessions() {
     client.shutdown_async().await;
 }
 
-fn uuid_like_nonce() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{nanos}")
-}
-
 #[tokio::test]
+#[serial]
 async fn bus_messages_returns_entry_ids() {
     let Some(_h) = boot().await else {
         eprintln!("skipping: `iii` binary not on PATH");

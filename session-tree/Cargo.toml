@@ -38,6 +38,7 @@ clap = { workspace = true }
 
 [dev-dependencies]
 which = "8"
+serial_test = "3"
 
 [workspace.package]
 version = "0.1.0"
