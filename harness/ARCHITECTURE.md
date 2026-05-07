@@ -52,10 +52,13 @@ The harness exposes two dispatchers:
   POSTs `{function_id, payload}`; this forwards to `iii.trigger(...)`. Not
   advertised to the LLM.
 - `agent::call` (turn-orchestrator) — LLM-facing. The provider sees one
-  tool, `agent_call`, with `{function, payload}` arguments. Validates
-  payload against the target's `request_format`, lazy-provisions sandboxes
-  on the first `shell::*` call, and dispatches via `iii.trigger(...)`.
-  Both appear in `engine::functions::list`.
+  tool, `agent_call`, with `{function, payload}` arguments. Thin pass-
+  through: validates the `function` field, dispatches via
+  `iii.trigger(...)`, maps errors back to `ToolResult` envelopes the
+  model can read. No payload validation, no sandbox automation, no
+  registry introspection — the model learns iii contracts from skills
+  registered via the skills worker. Both `bridge::trigger` and
+  `agent::call` appear in `engine::functions::list`.
 
 `bridge::trigger` is **intentionally not advertised as an LLM tool** (`tools: []` in the skill payload). It exists only as the browser's call-anything escape hatch — exposing it to a model would let the model call itself recursively.
 
@@ -120,7 +123,7 @@ A user message from the browser:
 4. iii.trigger("run::start_and_wait", payload, timeout=240s)
 5. turn-orchestrator picks it up, runs the agent loop:
      - emits `agent::before_tool_call` (subscribers: policy-denylist, llm-budget)
-     - routes each tool execution through `agent_call::dispatch` (schema check, lazy sandbox, then `iii.trigger` to the inner function)
+     - routes each tool execution through `agent_call::dispatch` (validate function field, then `iii.trigger` to the inner function — Tier 2 thin pass-through)
      - calls provider-router → provider-anthropic / provider-openai
      - persists transcript via session-tree / state
 6. turn-orchestrator returns full transcript
@@ -139,7 +142,7 @@ Sessions are persisted in two stores that don't merge automatically:
 The harness assumes a layered model and does not enforce policy itself:
 
 1. **SDK wrapper (chat client side)** — workspace allowlist on path arguments before the bus call is dispatched.
-2. **`policy-denylist` (engine side)** — subscriber on `agent::before_tool_call` that blocks by tool name. Configured via `POLICY_DENIED_TOOLS` env var, e.g. `shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv`.
+2. **`policy-denylist` (engine side)** — subscriber on `agent::before_tool_call` that blocks by tool name. Configured via `POLICY_DENIED_TOOLS` env var. **Must include `bridge::trigger`** to prevent the LLM from calling `agent_call(function="bridge::trigger", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `bridge::trigger`, not the inner function). Recommended denylist for solo local dev: `bridge::trigger,shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv`. The demo script (`harness/scripts/demo.sh`) sets `bridge::trigger` automatically.
 3. **`<ApprovalRow>` (chat UI)** — per-call user approval surfaced inline before any write reaches disk.
 
 `bridge::trigger` is the one bus surface reachable from the browser. It has **no** allowlist — any function id is callable — so the deployment must keep `:3111` private and rely on the three layers above. There is no per-user auth on `bridge::trigger`; the harness assumes a single-tenant local install.
