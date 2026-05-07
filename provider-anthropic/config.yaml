@@ -1,0 +1,4 @@
+# Defaults applied when building Anthropic Messages requests (per-call
+# `model` still comes from the trigger payload).
+default_max_tokens: 4096
+default_api_url: "https://api.anthropic.com/v1/messages"
