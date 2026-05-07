@@ -323,6 +323,35 @@ pub async fn load_messages<S: SessionStore + ?Sized>(
     Ok(messages)
 }
 
+/// One row from [`load_messages_with_entry_ids`] / `session-tree::messages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageWithEntryId {
+    pub entry_id: String,
+    pub message: AgentMessage,
+}
+
+/// Like [`load_messages`], but pairs each message with its source entry id.
+/// Used by callers that need to fork from a specific message.
+pub async fn load_messages_with_entry_ids<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    leaf: Option<&str>,
+) -> Result<Vec<MessageWithEntryId>, SessionError> {
+    let entries = store.load_entries(session_id).await?;
+    let path = active_path(store, session_id, leaf).await?;
+    let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+    let mut out: Vec<MessageWithEntryId> = Vec::new();
+    for id in &path {
+        if let Some(SessionEntry::Message { message, .. }) = by_id.get(id.as_str()).copied() {
+            out.push(MessageWithEntryId {
+                entry_id: id.clone(),
+                message: message.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// One row in the response of [`list_sessions`] / `session-tree::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListRow {
@@ -821,6 +850,8 @@ pub mod function_ids {
 /// - `session-tree::tree` — `{ "session_id": str }` → `TreeNode`
 /// - `session-tree::export_html` — `{ "session_id": str, "branch_leaf": str? }`
 ///   → `{ "html": str }`
+/// - `session-tree::messages` — `{ "session_id": str, "branch_leaf": str? }`
+///   → `{ "messages": [{entry_id, message: AgentMessage}] }`
 /// - `session-tree::list` — `{ "limit": u32?, "offset": u32?, "order": "asc"|"desc"? }`
 ///   → `{ "sessions": [{session_id, created_at, updated_at, entry_count, display_name?, cwd?, last_message_summary?}], "total": u32 }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
@@ -1006,7 +1037,7 @@ where
     let store_messages = store.clone();
     refs.push(iii.register_function((
         RegisterFunctionMessage::with_id(function_ids::MESSAGES.into()).with_description(
-            "Load every AgentMessage on the active path of a session, oldest first".into(),
+            "Load every AgentMessage on the active path of a session, paired with its entry_id, oldest first".into(),
         ),
         move |payload: serde_json::Value| {
             let store = store_messages.clone();
@@ -1016,7 +1047,7 @@ where
                     .get("branch_leaf")
                     .and_then(serde_json::Value::as_str)
                     .map(ToString::to_string);
-                let messages = load_messages(store.as_ref(), &session_id, leaf.as_deref())
+                let messages = load_messages_with_entry_ids(store.as_ref(), &session_id, leaf.as_deref())
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
                 Ok(json!({ "messages": messages }))
@@ -1482,5 +1513,23 @@ mod tests {
             .unwrap();
         let result = list_sessions(&store, None, None, None).await.unwrap();
         assert_eq!(result.sessions[0].session_id, new);
+    }
+
+    #[tokio::test]
+    async fn load_messages_with_entry_ids_returns_pairs_in_order() {
+        let store = InMemoryStore::new();
+        let sid = create_session(&store, None, None).await.unwrap();
+        let id1 = append_message(&store, &sid, None, user("first", 1))
+            .await
+            .unwrap();
+        let id2 = append_message(&store, &sid, Some(id1.clone()), user("second", 2))
+            .await
+            .unwrap();
+        let pairs = load_messages_with_entry_ids(&store, &sid, None)
+            .await
+            .unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].entry_id, id1);
+        assert_eq!(pairs[1].entry_id, id2);
     }
 }
