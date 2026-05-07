@@ -1,0 +1,22 @@
+{
+  "Records": [
+    {
+      "eventVersion": "2.1",
+      "eventSource": "aws:s3",
+      "awsRegion": "us-east-1",
+      "eventTime": "2026-05-05T12:30:00.000Z",
+      "eventName": "ObjectRemoved:Delete",
+      "userIdentity": { "principalId": "AWS:AIDAEXAMPLE" },
+      "requestParameters": { "sourceIPAddress": "127.0.0.1" },
+      "responseElements": {
+        "x-amz-request-id": "REQ456EXAMPLE",
+        "x-amz-id-2": "id2example"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "bucket": { "name": "my-app-uploads", "arn": "arn:aws:s3:::my-app-uploads" },
+        "object": { "key": "u/1/profile.jpg", "sequencer": "00DEF456EXAMPLE" }
+      }
+    }
+  ]
+}

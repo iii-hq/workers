@@ -1,0 +1,39 @@
+workers:
+  - name: storage
+    config:
+      providers:
+        local:
+          data_dir: ./data/storage
+
+      buckets:
+        uploads:
+          provider: s3
+          bucket: my-app-uploads
+          region: us-east-1
+          notifications:
+            sqs_queue_url: https://sqs.us-east-1.amazonaws.com/123/my-app-uploads-events
+
+        documents:
+          provider: gcs
+          bucket: my-app-documents
+          # credentials_file: /etc/iii/gcs-sa.json
+
+        avatars:
+          provider: r2
+          bucket: avatars
+          account_id: ${R2_ACCOUNT_ID}
+          access_key_id: ${R2_ACCESS_KEY_ID}
+          secret_access_key: ${R2_SECRET_ACCESS_KEY}
+
+        scratch:
+          provider: local
+          bucket: scratch
+
+triggers:
+  - type: storage::object-created
+    config:
+      bucket: uploads
+
+  - type: storage::object-deleted
+    config:
+      bucket: uploads

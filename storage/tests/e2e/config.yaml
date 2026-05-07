@@ -1,0 +1,45 @@
+# iii engine configuration — passed via `iii -c config.yaml`.
+#
+# The harness TS worker is NOT registered here. It runs as a plain host
+# node process launched from run-tests.sh and connects to the engine via
+# WebSocket like any external client — sidesteps the libkrun-VM-based
+# managed-worker setup, which is overkill for a test harness.
+#
+# The storage worker config is inlined under its worker entry. The
+# engine serializes this `config:` value to a temp YAML and threads
+# `--config <path>` through to the spawned binary (same delivery path
+# iii-database uses for its e2e config).
+#
+# Triggers are registered DYNAMICALLY by the harness via the SDK
+# (`registerTrigger` in runner.ts) so the harness can route dispatches to
+# its own sink functions. We don't list triggers under the worker's
+# config below.
+
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: storage-tests
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: storage
+    config:
+      providers:
+        local:
+          # Path is relative to the engine's CWD. run-tests.sh `cd`s into
+          # tests/e2e/ before launching the engine, so this resolves to
+          # tests/e2e/data/storage. The script wipes this directory at
+          # the start of every run so rustfs starts with a clean tree.
+          data_dir: ./data/storage
+
+      buckets:
+        scratch-local:
+          provider: local
+          bucket: scratch-local
