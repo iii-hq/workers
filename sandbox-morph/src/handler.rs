@@ -115,11 +115,20 @@ pub async fn do_stop(ctx: &HandlerCtx, input: Value) -> Result<Value, WorkerErro
 }
 
 pub async fn do_list(ctx: &HandlerCtx, _input: Value) -> Result<Value, WorkerError> {
-    // Best-effort upstream fetch. If the provider is unreachable the local
-    // capacity envelope is still useful, so we degrade to an empty list
-    // rather than failing the whole call. Callers see `sandboxes: []` and
-    // can still trust `in_flight`/`cap`/`remaining`.
-    let sandboxes = ctx.client.list().await.unwrap_or_default();
+    // Best-effort upstream fetch. When the upstream answer is available we
+    // also reconcile `in_flight` against it — providers like Morph reap idle
+    // sandboxes without notifying us, so the locally-incremented counter
+    // would otherwise drift upward forever. Reconciling here makes `list`
+    // both query and self-heal, at the cost of a tiny window where a
+    // create racing this snapshot can briefly underreport.
+    let (sandboxes, reconciled) = match ctx.client.list().await {
+        Ok(items) => {
+            let n = items.len();
+            ctx.in_flight.store(n, Ordering::SeqCst);
+            (items, true)
+        }
+        Err(_) => (Vec::new(), false),
+    };
     let in_flight = ctx.in_flight.load(Ordering::SeqCst);
     let cap = ctx.config.max_concurrent_sandboxes;
     Ok(json!({
@@ -127,6 +136,7 @@ pub async fn do_list(ctx: &HandlerCtx, _input: Value) -> Result<Value, WorkerErr
         "in_flight": in_flight,
         "cap": cap,
         "remaining": cap.saturating_sub(in_flight),
+        "reconciled": reconciled,
     }))
 }
 
@@ -134,23 +144,6 @@ pub async fn do_snapshot(ctx: &HandlerCtx, input: Value) -> Result<Value, Worker
     let sandbox_id = require_str(&input, "sandbox_id")?;
     let snapshot_id = ctx.client.snapshot(&sandbox_id).await?;
     Ok(json!({ "snapshot_id": snapshot_id }))
-}
-
-/// Branch a running sandbox into N siblings. Morph's Infinibranch preserves
-/// live process state across branches in roughly 250 ms upstream; this
-/// worker is the only sandbox provider in the family that registers
-/// `branch`.
-pub async fn do_branch(ctx: &HandlerCtx, input: Value) -> Result<Value, WorkerError> {
-    let sandbox_id = require_str(&input, "sandbox_id")?;
-    let count = input
-        .get("count")
-        .and_then(Value::as_u64)
-        .map_or(2, |n| u32::try_from(n).unwrap_or(2));
-    if count == 0 {
-        return Err(WorkerError::BadInput("branch count must be >= 1".into()));
-    }
-    let ids = ctx.client.branch(&sandbox_id, count).await?;
-    Ok(json!({ "sandbox_ids": ids }))
 }
 
 pub async fn do_expose_port(ctx: &HandlerCtx, input: Value) -> Result<Value, WorkerError> {
@@ -187,4 +180,21 @@ pub async fn do_fs_write(ctx: &HandlerCtx, input: Value) -> Result<Value, Worker
         .fs_write(&sandbox_id, &path, &bytes, mode)
         .await?;
     Ok(json!({}))
+}
+
+/// Branch a running sandbox into N siblings. Morph's Infinibranch preserves
+/// live process state across branches in roughly 250 ms upstream; this
+/// worker is the only sandbox provider in the family that registers
+/// `branch`.
+pub async fn do_branch(ctx: &HandlerCtx, input: Value) -> Result<Value, WorkerError> {
+    let sandbox_id = require_str(&input, "sandbox_id")?;
+    let count = input
+        .get("count")
+        .and_then(Value::as_u64)
+        .map_or(2, |n| u32::try_from(n).unwrap_or(2));
+    if count == 0 {
+        return Err(WorkerError::BadInput("branch count must be >= 1".into()));
+    }
+    let ids = ctx.client.branch(&sandbox_id, count).await?;
+    Ok(json!({ "sandbox_ids": ids }))
 }

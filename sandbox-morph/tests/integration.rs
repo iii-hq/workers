@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use sandbox_morph::client::MorphClient;
 use sandbox_morph::config::Config;
-use sandbox_morph::handler::{do_create, do_exec, do_list, do_stop, HandlerCtx};
+use sandbox_morph::handler::{do_branch, do_create, do_exec, do_list, do_stop, HandlerCtx};
 use sandbox_morph::SCode;
 use serde_json::json;
 
@@ -68,15 +68,46 @@ async fn stop_returns_empty_object_on_success_path() {
 }
 
 #[tokio::test]
-async fn list_reports_capacity_envelope() {
+async fn list_reports_capacity_envelope_with_reconciled_flag() {
     let ctx = ctx(7, vec![]);
     let res = do_list(&ctx, json!({})).await.unwrap();
     assert_eq!(res["cap"], 7);
     assert_eq!(res["in_flight"], 0);
     assert_eq!(res["remaining"], 7);
-    // sandboxes is whatever the stubbed client returned (currently an error
-    // path — list bubbles ProviderUnavailable when the upstream fails). We
-    // only assert the envelope shape exists when the upstream succeeds; for
-    // the stubbed path the call errors, which is also fine for v0.
-    let _ = res;
+    // The stub client errors on list, so reconciled must be false. When
+    // morph's REST is wired the happy path will flip this to true and
+    // reset in_flight to the upstream count.
+    assert_eq!(res["reconciled"], false);
+}
+
+#[tokio::test]
+async fn branch_rejects_missing_sandbox_id() {
+    let ctx = ctx(10, vec![]);
+    let err = do_branch(&ctx, json!({ "count": 3 })).await.err().unwrap();
+    let s = err.to_string();
+    assert!(s.contains("missing string field"), "got: {s}");
+}
+
+#[tokio::test]
+async fn branch_rejects_count_zero() {
+    let ctx = ctx(10, vec![]);
+    let err = do_branch(&ctx, json!({ "sandbox_id": "sbx-1", "count": 0 }))
+        .await
+        .err()
+        .unwrap();
+    let s = err.to_string();
+    assert!(s.contains("branch count"), "got: {s}");
+}
+
+#[tokio::test]
+async fn branch_passes_through_to_client_stub() {
+    // Until the Morph REST is wired, the client returns S502 on every
+    // branch call. We assert the input parser routes correctly so when
+    // wiring lands, the only thing that changes is the client body.
+    let ctx = ctx(10, vec![]);
+    let err = do_branch(&ctx, json!({ "sandbox_id": "sbx-parent", "count": 3 }))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), SCode::ProviderUnavailable);
 }
