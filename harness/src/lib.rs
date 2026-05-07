@@ -114,6 +114,7 @@ pub struct HarnessFunctionRefs {
     pub bridge_info: FunctionRef,
     pub subscribe_fn: FunctionRef,
     pub unsubscribe_fn: FunctionRef,
+    pub fanout_pumps: Option<fanout::FanoutPumps>,
 }
 
 impl HarnessFunctionRefs {
@@ -124,6 +125,9 @@ impl HarnessFunctionRefs {
         self.bridge_info.unregister();
         self.subscribe_fn.unregister();
         self.unsubscribe_fn.unregister();
+        if let Some(p) = self.fanout_pumps {
+            p.shutdown();
+        }
     }
 }
 
@@ -366,6 +370,15 @@ pub async fn register_with_iii_with_engine_url(
         })
         .await;
 
+    // Wire the upstream fanout pumps:
+    //   - agent::events stream subscriber → ui::session::event::<browser_id>
+    //   - state::list poll                → ui::sessions::changed::<browser_id>
+    //
+    // These spawn long-lived tasks; the returned handle ends them on
+    // `unregister_all`. The `iii` clone here is fine — `III` is internally
+    // ref-counted (it's already an `Arc<...>` inside the SDK).
+    let fanout_pumps = fanout::spawn_subscribers(&Arc::new(iii.clone()), Arc::clone(&fanout));
+
     Ok(HarnessFunctionRefs {
         status,
         bridge,
@@ -373,6 +386,7 @@ pub async fn register_with_iii_with_engine_url(
         bridge_info,
         subscribe_fn,
         unsubscribe_fn,
+        fanout_pumps: Some(fanout_pumps),
     })
 }
 
