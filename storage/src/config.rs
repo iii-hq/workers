@@ -45,6 +45,12 @@ pub struct S3BucketConfig {
     /// When set, overrides the AWS-default endpoint. Use for self-hosted
     /// S3-compatible stores (MinIO, Ceph, SeaweedFS) or local testing.
     pub endpoint_url: Option<String>,
+    /// Force path-style addressing (`http://host/bucket/key`) instead of
+    /// virtual-hosted style (`http://bucket.host/key`). Required for most
+    /// S3-compatible stores (MinIO, Ceph, SeaweedFS, LocalStack). Defaults
+    /// to false to preserve current AWS behavior.
+    #[serde(default)]
+    pub force_path_style: Option<bool>,
     pub notifications: Option<S3Notifications>,
 }
 
@@ -63,6 +69,7 @@ impl std::fmt::Debug for S3BucketConfig {
                 &self.session_token.as_deref().map(redact_secret),
             )
             .field("endpoint_url", &self.endpoint_url)
+            .field("force_path_style", &self.force_path_style)
             .field("notifications", &self.notifications)
             .finish()
     }

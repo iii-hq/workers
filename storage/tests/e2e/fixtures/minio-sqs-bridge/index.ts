@@ -74,10 +74,14 @@ const server = Bun.serve({
     // `event_name.starts_with("ObjectCreated:")`. Strip the prefix here so
     // the worker accepts MinIO-sourced events without the spec-correct
     // AWS-S3 normalizer needing a MinIO-shaped escape hatch.
-    const normalized = body.Records.map((rec) => {
+    const normalized = body.Records.flatMap((rec) => {
+      // MinIO occasionally interleaves heartbeat/control entries that aren't
+      // S3-event objects. Skip primitives and nulls instead of letting them
+      // crash the eventName cast below.
+      if (typeof rec !== 'object' || rec === null) return []
       const r = rec as Record<string, unknown>
       const en = typeof r.eventName === 'string' ? r.eventName : ''
-      return en.startsWith('s3:') ? { ...r, eventName: en.slice('s3:'.length) } : r
+      return [en.startsWith('s3:') ? { ...r, eventName: en.slice('s3:'.length) } : r]
     })
     try {
       await sqs.send(

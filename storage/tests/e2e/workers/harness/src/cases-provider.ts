@@ -28,10 +28,18 @@ export function buildProviderQuirkCases(providers: readonly Provider[]): TestCas
         // S3 backend defaults to virtual-host (force_path_style: false). Against
         // MinIO that yields URLs like http://scratch-s3.127.0.0.1:9000/key OR
         // http://127.0.0.1:9000/scratch-s3/key depending on MINIO_DOMAIN. We
-        // accept either shape — the assertion is just "URL is parseable and
-        // contains the bucket name in some form".
-        assertTruthy(r.url.includes(ctx.bucket),
-          `presigned URL should reference bucket ${ctx.bucket}: ${r.url}`);
+        // accept either shape — but check the URL is actually parseable and
+        // the bucket lives in hostname OR pathname, not e.g. a query string.
+        let parsed: URL;
+        try {
+          parsed = new URL(r.url);
+        } catch (e) {
+          throw new Error(`presigned URL not parseable: ${r.url} (${(e as Error).message})`);
+        }
+        assertTruthy(
+          parsed.hostname.includes(ctx.bucket) || parsed.pathname.includes(ctx.bucket),
+          `presigned URL should reference bucket ${ctx.bucket} in hostname or pathname: ${r.url}`,
+        );
       },
     });
   }

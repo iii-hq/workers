@@ -37,7 +37,7 @@ export interface CaseContext {
   provider: Provider;
   iii: ISdk;
 
-  /** Invoke an storage RPC; throws on Err. */
+  /** Invoke a storage RPC; throws on Err. */
   call: (functionId: string, payload: unknown) => Promise<any>;
 
   /** base64-encode a string or Buffer for putObject's body_base64 field. */
@@ -161,7 +161,7 @@ export function buildFunctionCases(providers: readonly Provider[]): TestCase[] {
         bucket: ctx.bucket, key, body_base64: ctx.b64('byebye'), content_type: 'text/plain',
       });
       const del = await ctx.call('storage::deleteObject', { bucket: ctx.bucket, key });
-      assertEqual(del.deleted, true, 'delete returned deleted=false');
+      assertEqual(del.deleted, true, 'expected del.deleted=true');
       await ctx.expectError(
         async () => ctx.call('storage::getObject', { bucket: ctx.bucket, key }),
         'OBJECT_NOT_FOUND',

@@ -6,17 +6,16 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
-/// Decode an S3-style object key. AWS S3 event notifications, R2, and rustfs
-/// all percent-encode the object key in their event payloads (e.g. `/` becomes
-/// `%2F`, spaces become `+` or `%20`). Downstream consumers expect the raw key
-/// — without decoding here, trigger handlers receive encoded keys that don't
-/// round-trip with the keys they put or get via the storage RPC API.
-///
-/// Falls back to the raw input on invalid UTF-8 in the decoded bytes; that
-/// matches our policy of surfacing the event rather than dropping it on
-/// malformed input.
 fn decode_s3_key(raw: &str) -> String {
-    percent_decode_str(raw).decode_utf8_lossy().into_owned()
+    // S3 event notifications use application/x-www-form-urlencoded semantics
+    // for the key: spaces become `+`, other special chars are %XX. We must
+    // replace `+` first, BEFORE percent_decode_str runs, otherwise a literal
+    // `+` in a percent-encoded form (e.g. `%2B`) would be decoded to `+` and
+    // we'd incorrectly turn it into a space afterward.
+    let plus_decoded = raw.replace('+', " ");
+    percent_decode_str(&plus_decoded)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]

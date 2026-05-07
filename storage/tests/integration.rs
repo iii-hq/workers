@@ -42,7 +42,7 @@ async fn boot() -> Option<Harness> {
         return None;
     }
 
-    let iii = Command::new(&iii_bin)
+    let mut iii = Command::new(&iii_bin)
         .arg("--use-default-config")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -55,12 +55,23 @@ async fn boot() -> Option<Harness> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let config_path = format!("{manifest_dir}/config.yaml");
 
-    let worker = Command::new(worker_bin)
+    // If the worker fails to spawn, kill the engine before returning so we
+    // don't leak the iii subprocess into the next test (or out of the
+    // process entirely). Without this, a transient spawn failure could
+    // leave a stray engine bound to the test port.
+    let worker = match Command::new(worker_bin)
         .args(["--url", ENGINE_WS, "--config", &config_path])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+    {
+        Ok(w) => w,
+        Err(_) => {
+            let _ = iii.kill();
+            let _ = iii.wait();
+            return None;
+        }
+    };
 
     Some(Harness { iii, worker })
 }

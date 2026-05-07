@@ -40,7 +40,7 @@ pub async fn build(
                     region: &s.region,
                     credentials: creds,
                     endpoint_url: s.endpoint_url.clone(),
-                    force_path_style: false,
+                    force_path_style: s.force_path_style.unwrap_or(false),
                     provider_tag: "s3",
                 },
                 bucket,

@@ -28,55 +28,67 @@ async fn local_round_trip_when_rustfs_available() {
     })
     .await
     .expect("rustfs spawn");
-    health::wait_for_healthy(port, Duration::from_secs(30))
-        .await
-        .expect("rustfs healthy");
-    storage::backend::local::ensure_bucket(port, &access_key, &secret_key, "scratch")
-        .await
-        .expect("bucket bootstrap");
 
-    let local_ctx = LocalBackendCtx {
-        port,
-        access_key_id: access_key,
-        secret_access_key: secret_key,
-    };
-    let providers = ProvidersConfig {
-        local: Some(LocalProviderConfig { data_dir }),
-    };
-    let cfg = BucketConfig::Local(LocalBucketConfig {
-        bucket: Some("scratch".into()),
-    });
-    let backend = factory::build("scratch", &cfg, &providers, Some(&local_ctx))
-        .await
-        .expect("backend build");
+    // Wrap the test body so we can guarantee `spawn::shutdown(handle)` runs
+    // even when an inner step fails. Without this, a panic in
+    // `wait_for_healthy` or any `.expect(...)` below would skip the shutdown
+    // and leave a stray rustfs process bound to `port`.
+    let body_result: Result<(), String> = async {
+        health::wait_for_healthy(port, Duration::from_secs(30))
+            .await
+            .map_err(|e| format!("rustfs healthy: {e}"))?;
+        storage::backend::local::ensure_bucket(port, &access_key, &secret_key, "scratch")
+            .await
+            .map_err(|e| format!("bucket bootstrap: {e}"))?;
 
-    let key = "e2e/local/test.bin";
-    let body = b"hello-local".to_vec();
-    backend
-        .put(PutReq {
-            key: key.into(),
-            body: body.clone(),
-            content_type: "application/octet-stream".into(),
-            cache_control: None,
-            metadata: HashMap::new(),
-        })
-        .await
-        .expect("put");
-    let got = backend
-        .get(GetReq {
-            key: key.into(),
-            ..Default::default()
-        })
-        .await
-        .expect("get");
-    assert_eq!(got.body, body);
-    backend
-        .delete(storage::backend::DeleteReq {
-            key: key.into(),
-            version_id: None,
-        })
-        .await
-        .expect("delete");
+        let local_ctx = LocalBackendCtx {
+            port,
+            access_key_id: access_key.clone(),
+            secret_access_key: secret_key.clone(),
+        };
+        let providers = ProvidersConfig {
+            local: Some(LocalProviderConfig { data_dir }),
+        };
+        let cfg = BucketConfig::Local(LocalBucketConfig {
+            bucket: Some("scratch".into()),
+        });
+        let backend = factory::build("scratch", &cfg, &providers, Some(&local_ctx))
+            .await
+            .map_err(|e| format!("backend build: {e}"))?;
+
+        let key = "e2e/local/test.bin";
+        let body = b"hello-local".to_vec();
+        backend
+            .put(PutReq {
+                key: key.into(),
+                body: body.clone(),
+                content_type: "application/octet-stream".into(),
+                cache_control: None,
+                metadata: HashMap::new(),
+            })
+            .await
+            .map_err(|e| format!("put: {e}"))?;
+        let got = backend
+            .get(GetReq {
+                key: key.into(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("get: {e}"))?;
+        if got.body != body {
+            return Err(format!("body mismatch: got {} bytes", got.body.len()));
+        }
+        backend
+            .delete(storage::backend::DeleteReq {
+                key: key.into(),
+                version_id: None,
+            })
+            .await
+            .map_err(|e| format!("delete: {e}"))?;
+        Ok(())
+    }
+    .await;
 
     spawn::shutdown(handle).await;
+    body_result.expect("e2e local round-trip");
 }

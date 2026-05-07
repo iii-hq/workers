@@ -9,13 +9,30 @@
 import { registerWorker, Logger } from 'iii-sdk';
 import { resolve } from 'node:path';
 import { Runner } from './runner.ts';
-import type { Provider } from './cases.ts';
+import { ALL_PROVIDERS, type Provider } from './cases.ts';
 
 const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
 const REPORT_PATH = resolve(process.env.HARNESS_REPORT_PATH ?? './reports/report.json');
 const FILTER = process.env.HARNESS_FILTER;
+
+// Validate against the canonical Provider list rather than blindly casting.
+// A typo like `HARNESS_PROVIDERS=loval` would otherwise propagate silently
+// and surface as a confusing "no bucket configured" error mid-test.
+function parseProviders(raw: string, varName: string): Provider[] {
+  const tokens = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  const valid = new Set<string>(ALL_PROVIDERS);
+  const invalid = tokens.filter((t) => !valid.has(t));
+  if (invalid.length > 0) {
+    throw new Error(
+      `${varName} contains unknown provider(s): ${invalid.join(', ')}. ` +
+        `Valid: ${ALL_PROVIDERS.join(', ')}`,
+    );
+  }
+  return tokens as Provider[];
+}
+
 const PROVIDERS_RAW = process.env.HARNESS_PROVIDERS ?? 'local';
-const PROVIDERS = PROVIDERS_RAW.split(',').map((s) => s.trim()).filter(Boolean) as Provider[];
+const PROVIDERS = parseProviders(PROVIDERS_RAW, 'HARNESS_PROVIDERS');
 // Optional subset of providers whose trigger plumbing is wired in this
 // harness deployment. Defaults to PROVIDERS (fan triggers across every
 // selected provider) so existing callers don't need to know about it.
@@ -23,7 +40,7 @@ const PROVIDERS = PROVIDERS_RAW.split(',').map((s) => s.trim()).filter(Boolean) 
 // (no Cloudflare Queue plumbing in this harness) from failing the run.
 const TRIGGER_PROVIDERS_RAW = process.env.HARNESS_TRIGGER_PROVIDERS;
 const TRIGGER_PROVIDERS: Provider[] | undefined = TRIGGER_PROVIDERS_RAW
-  ? (TRIGGER_PROVIDERS_RAW.split(',').map((s) => s.trim()).filter(Boolean) as Provider[])
+  ? parseProviders(TRIGGER_PROVIDERS_RAW, 'HARNESS_TRIGGER_PROVIDERS')
   : undefined;
 
 const iii = registerWorker(URL);

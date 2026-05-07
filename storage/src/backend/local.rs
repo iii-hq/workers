@@ -33,8 +33,6 @@ pub async fn build(
     Ok(Arc::new(b))
 }
 
-/// Idempotent bucket bootstrap. `head_bucket` first; on 404, `create_bucket`.
-/// Used at startup once rustfs is healthy.
 pub async fn ensure_bucket(
     port: u16,
     access_key_id: &str,
@@ -43,8 +41,22 @@ pub async fn ensure_bucket(
 ) -> Result<(), BackendError> {
     let client = build_admin_client(port, access_key_id, secret_access_key).await;
 
-    if client.head_bucket().bucket(bucket).send().await.is_ok() {
-        return Ok(());
+    match client.head_bucket().bucket(bucket).send().await {
+        Ok(_) => return Ok(()),
+        Err(e) => {
+            // Only proceed to create_bucket on a definite 404. Treating auth
+            // failures, connection errors, or 5xx as "missing bucket" would
+            // mask real problems and trigger spurious create attempts that
+            // leak credentials into logs and may themselves fail noisily.
+            let status = e.raw_response().map(|r| r.status().as_u16());
+            let is_not_found = status == Some(404);
+            if !is_not_found {
+                return Err(BackendError::Provider {
+                    inner_code: None,
+                    message: format!("head_bucket {bucket}: {e}"),
+                });
+            }
+        }
     }
     client
         .create_bucket()
@@ -89,7 +101,10 @@ pub async fn register_webhook_target(
     // fails with `Permission denied (os error 13)` — at which point the
     // target is silently dropped and put_bucket_notification_configuration
     // returns `Configuration error: No targets configured`.
-    let _ = std::fs::create_dir_all(queue_dir);
+    std::fs::create_dir_all(queue_dir).map_err(|e| BackendError::Provider {
+        inner_code: None,
+        message: format!("create queue_dir {}: {e}", queue_dir.display()),
+    })?;
     let body = serde_json::json!({
         "key_values": [
             {"key": "enable",    "value": "on"},

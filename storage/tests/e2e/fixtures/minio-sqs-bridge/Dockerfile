@@ -13,6 +13,12 @@ RUN bun install --production --frozen-lockfile
 COPY index.ts ./
 COPY tsconfig.json ./
 
+# Run as a dedicated unprivileged user. The base image already provides a
+# `bun` user (uid/gid 1000); chown /app and switch to it before CMD so the
+# webhook listener and HEALTHCHECK both run unprivileged.
+RUN chown -R bun:bun /app
+USER bun
+
 ENV PORT=8080
 EXPOSE 8080
 

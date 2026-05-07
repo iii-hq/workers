@@ -120,7 +120,21 @@ impl CfQueuePoller {
                     }
                     continue;
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    // Permanent malformed (poison) message: redelivering will
+                    // hit the same parse error forever. Log with payload
+                    // context and ack so the lease is removed.
+                    tracing::warn!(
+                        error = ?e,
+                        lease_id = %lease_id,
+                        payload = %payload,
+                        "cf-queue normalize failed; acking poison message"
+                    );
+                    if !lease_id.is_empty() {
+                        acked_lease_ids.push(lease_id);
+                    }
+                    continue;
+                }
             };
             let f = dispatch(n);
             match timeout(dispatch_timeout, f).await {
@@ -189,12 +203,25 @@ pub async fn probe_auth(
             message: format!("probe: {e}"),
         })?;
     let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err(crate::error::StorageError::CfQueueAuthFailed {
-            message: format!("HTTP {status}: token missing queue:consume scope?"),
-        });
+    if status.is_success() {
+        return Ok(());
     }
-    Ok(())
+    // Read a bounded slice of the body for diagnostics. CF returns JSON on
+    // structured errors (e.g. 404 "queue not found") and HTML on infra 5xx;
+    // either way, 256 chars is enough to identify the failure mode.
+    let body = resp.text().await.unwrap_or_default();
+    let body_snippet: String = body.chars().take(256).collect();
+    let message = if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        format!("HTTP {status}: token missing queue:consume scope? body: {body_snippet}")
+    } else {
+        // 404 = wrong account_id/queue_id, 429 = rate limited, 5xx = CF outage.
+        // All of these mean the worker would silently never receive messages
+        // if we let startup proceed.
+        format!("HTTP {status} from cf queues probe; body: {body_snippet}")
+    };
+    Err(crate::error::StorageError::CfQueueAuthFailed { message })
 }
 
 pub fn matches_direction(event: &ObjectEventNormalized, direction: EventKind) -> bool {

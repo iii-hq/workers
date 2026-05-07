@@ -118,9 +118,25 @@ impl Backend for S3Backend {
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_string());
         let etag = resp.e_tag.clone().unwrap_or_default();
-        let size = resp.content_length.unwrap_or(0).max(0) as u64;
         // Reject BEFORE consuming the body stream — content_length comes back in
         // headers, so this avoids buffering an oversized object into worker memory.
+        // When max_inline_bytes is set we MUST know the size up front; some
+        // S3-compatible servers omit Content-Length on chunked transfers, and
+        // letting the cap be 0 there would silently bypass the limit.
+        let size = match resp.content_length {
+            Some(n) if n >= 0 => n as u64,
+            Some(_) | None => {
+                if let Some(cap) = req.max_inline_bytes {
+                    return Err(BackendError::Provider {
+                        inner_code: None,
+                        message: format!(
+                            "GET response missing Content-Length; cannot enforce {cap}-byte cap. Use presignUrl for objects of unknown size.",
+                        ),
+                    });
+                }
+                0
+            }
+        };
         if let Some(cap) = req.max_inline_bytes {
             if size > cap {
                 return Err(BackendError::ObjectTooLarge {

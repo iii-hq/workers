@@ -24,15 +24,28 @@ pub struct ObjectCreatedHandler {
 impl TriggerHandler for ObjectCreatedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
         let cfg: CreatedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
-            IIIError::Handler(format!(
-                r#"{{"code":"CONFIG_ERROR","message":"object-created config: {e}"}}"#
-            ))
+            // Build the envelope through serde_json so internal quotes,
+            // newlines, and other JSON-special chars in `e` are escaped
+            // rather than producing malformed JSON.
+            IIIError::Handler(
+                serde_json::json!({
+                    "code": "CONFIG_ERROR",
+                    "message": format!("object-created config: {e}"),
+                })
+                .to_string(),
+            )
         })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
-            return Err(IIIError::Handler(format!(
-                r#"{{"code":"CONFIG_ERROR","message":"bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config"}}"#,
-                cfg.bucket
-            )));
+            return Err(IIIError::Handler(
+                serde_json::json!({
+                    "code": "CONFIG_ERROR",
+                    "message": format!(
+                        "bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config",
+                        cfg.bucket
+                    ),
+                })
+                .to_string(),
+            ));
         }
         self.registry.register(
             cfg.bucket,
@@ -65,15 +78,25 @@ pub struct ObjectDeletedHandler {
 impl TriggerHandler for ObjectDeletedHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
         let cfg: DeletedConfig = serde_json::from_value(config.config.clone()).map_err(|e| {
-            IIIError::Handler(format!(
-                r#"{{"code":"CONFIG_ERROR","message":"object-deleted config: {e}"}}"#
-            ))
+            IIIError::Handler(
+                serde_json::json!({
+                    "code": "CONFIG_ERROR",
+                    "message": format!("object-deleted config: {e}"),
+                })
+                .to_string(),
+            )
         })?;
         if !self.wired_buckets.contains(&cfg.bucket) {
-            return Err(IIIError::Handler(format!(
-                r#"{{"code":"CONFIG_ERROR","message":"bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config"}}"#,
-                cfg.bucket
-            )));
+            return Err(IIIError::Handler(
+                serde_json::json!({
+                    "code": "CONFIG_ERROR",
+                    "message": format!(
+                        "bucket `{}` has no notifications source configured; add `notifications:` under the bucket in worker config",
+                        cfg.bucket
+                    ),
+                })
+                .to_string(),
+            ));
         }
         self.registry.register(
             cfg.bucket,

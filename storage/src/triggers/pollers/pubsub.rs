@@ -96,9 +96,23 @@ pub async fn run_loop<D>(
                 .iter()
                 .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
                 .collect();
-            // GCS publishes the Object resource as the JSON body; parse if we can.
-            let data = serde_json::from_slice::<serde_json::Value>(&pm.data)
-                .unwrap_or(serde_json::Value::Null);
+            // GCS publishes the Object resource as the JSON body. If we can't
+            // parse it, ack the message: the same payload will fail to parse on
+            // every redelivery, so retrying forever just stalls the queue.
+            let data = match serde_json::from_slice::<serde_json::Value>(&pm.data) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        message_id = %pm.message_id,
+                        error = %e,
+                        "pubsub message data not JSON; acking poison message"
+                    );
+                    if let Err(e) = received.ack().await {
+                        tracing::warn!(error = %e, "pubsub ack (poison) failed");
+                    }
+                    continue;
+                }
+            };
             let envelope = serde_json::json!({
                 "messageId": pm.message_id,
                 "attributes": serde_json::Value::Object(attrs),

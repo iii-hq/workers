@@ -13,6 +13,10 @@ use std::collections::HashMap;
 pub struct PutReq {
     pub bucket: String,
     pub key: String,
+    /// Base64-encoded body. The legacy field name `body` is accepted as an
+    /// alias for backward compatibility with clients that pre-date the
+    /// rename.
+    #[serde(alias = "body")]
     pub body_base64: String,
     pub content_type: Option<String>,
     pub cache_control: Option<String>,
@@ -34,6 +38,16 @@ pub async fn handle(state: &AppState, req: PutReq) -> Result<PutResp, String> {
         }));
     }
     let backend = state.backend(&req.bucket).map_err(err_to_str)?;
+    // Reject before allocating: a base64 string of length L decodes to at
+    // most (L*3)/4 bytes. If even the upper bound exceeds the cap, refuse
+    // without ever allocating the decode buffer.
+    let max_decoded: u64 = (req.body_base64.len() as u64).saturating_mul(3) / 4;
+    if max_decoded > INLINE_BODY_CAP {
+        return Err(err_to_str(StorageError::BodyTooLarge {
+            size: max_decoded,
+            cap: INLINE_BODY_CAP,
+        }));
+    }
     let bytes = B64.decode(&req.body_base64).map_err(|e| {
         err_to_str(StorageError::InvalidBase64 {
             reason: e.to_string(),

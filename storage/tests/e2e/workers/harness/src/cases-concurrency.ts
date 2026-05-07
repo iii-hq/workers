@@ -14,8 +14,14 @@ export function buildConcurrencyCases(providers: readonly Provider[]): TestCase[
           }),
         ),
       );
+      // Every put must report a non-empty etag. The previous `>= 1` check
+      // could pass even when most puts returned `undefined`/`''`, hiding
+      // backend bugs that drop the ETag header on concurrent writes.
+      assertTruthy(
+        puts.every((p) => typeof p.etag === 'string' && p.etag.length > 0),
+        `every put must return a non-empty etag; got: ${JSON.stringify(puts.map((p) => p.etag))}`,
+      );
       const etags = new Set(puts.map((p) => p.etag as string));
-      assertTruthy(etags.size >= 1, `expected at least one etag, got: ${JSON.stringify([...etags])}`);
 
       const got = await ctx.call('storage::getObject', { bucket: ctx.bucket, key });
       const finalBody = ctx.fromB64(got.body_base64);

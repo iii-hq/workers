@@ -20,6 +20,15 @@ async fn s3_round_trip() {
     let Some(bucket) = require_env("S3_TEST_BUCKET") else {
         return;
     };
+    // Without explicit credentials the SDK falls back to ADC, IMDS, etc. and
+    // produces opaque "credential provider not found" errors deep in the
+    // call. Skip up front with a clear reason instead.
+    if require_env("AWS_ACCESS_KEY_ID").is_none() {
+        return;
+    }
+    if require_env("AWS_SECRET_ACCESS_KEY").is_none() {
+        return;
+    }
     let region = std::env::var("S3_TEST_REGION").unwrap_or_else(|_| "us-east-1".into());
     let cfg = BucketConfig::S3(S3BucketConfig {
         bucket: Some(bucket.clone()),
@@ -28,6 +37,7 @@ async fn s3_round_trip() {
         secret_access_key: None,
         session_token: None,
         endpoint_url: None,
+        force_path_style: None,
         notifications: None,
     });
     let backend = factory::build("e2e", &cfg, &ProvidersConfig::default(), None)

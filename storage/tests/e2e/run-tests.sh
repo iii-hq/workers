@@ -334,9 +334,13 @@ if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
   # Wait for health.
   health_deadline=$(( $(date +%s) + 60 ))
   while :; do
+    # Services with no HEALTHCHECK defined emit an empty {{.Health}} field;
+    # treat empty as "no opinion" (don't block waiting on services that
+    # never report health). Only flag services that explicitly reported a
+    # non-healthy status.
     unhealthy=$(cd "$ROOT_DIR" && \
       docker compose --profile cloud ps --format '{{.Service}} {{.Health}}' \
-      | awk '$2 != "healthy" {print $1}')
+      | awk 'NF >= 2 && $2 != "healthy" {print $1}')
     if [[ -z "$unhealthy" ]]; then break; fi
     if (( $(date +%s) > health_deadline )); then
       echo "[run-tests] FATAL: compose services not healthy within 60s:" >&2

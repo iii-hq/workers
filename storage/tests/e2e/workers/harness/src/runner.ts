@@ -179,9 +179,13 @@ export class Runner {
   }
 
   private resetEvents(): void {
-    // Cancel any pending waiters first; their cases either already failed
-    // or are no longer interested.
-    for (const w of this.waiters) clearTimeout(w.timer);
+    // Cancel any pending waiters: clearing the timer alone leaves the
+    // promise hanging. Reject explicitly so the awaiting case fails fast
+    // instead of stalling until the test runner times out the whole job.
+    for (const w of this.waiters) {
+      clearTimeout(w.timer);
+      w.reject(new Error('waiter cancelled by resetEvents'));
+    }
     this.waiters = [];
     this.events = [];
   }

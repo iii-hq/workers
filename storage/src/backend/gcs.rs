@@ -24,6 +24,11 @@ use std::time::Duration;
 pub struct GcsBackend {
     client: Client,
     bucket: String,
+    /// True when an `endpoint_url` override is in effect. Presign always
+    /// signs against `storage.googleapis.com`, so it produces URLs that
+    /// can't reach the override; we fail closed to avoid silently handing
+    /// out unusable links.
+    endpoint_overridden: bool,
 }
 
 pub struct GcsBackendOpts {
@@ -62,6 +67,7 @@ impl GcsBackend {
         // writes, and metadata calls all hit the override. Presign signing
         // (sign.rs) generates URLs against storage.googleapis.com regardless;
         // fake-gcs accepts unsigned/anonymous URLs so this is fine for tests.
+        let endpoint_overridden = opts.endpoint_url.is_some();
         if let Some(url) = opts.endpoint_url.as_deref() {
             config.storage_endpoint = url.to_string();
             tracing::info!(
@@ -71,7 +77,11 @@ impl GcsBackend {
             );
         }
         let client = Client::new(config);
-        Ok(Self { client, bucket })
+        Ok(Self {
+            client,
+            bucket,
+            endpoint_overridden,
+        })
     }
 }
 
@@ -198,6 +208,11 @@ impl Backend for GcsBackend {
     }
 
     async fn presign(&self, req: PresignReq) -> Result<PresignResp, BackendError> {
+        if self.endpoint_overridden {
+            return Err(BackendError::PresignUnsupported(
+                "gcs presign always signs against storage.googleapis.com; not supported when endpoint_url is overridden (fake-gcs-server, etc.)".into(),
+            ));
+        }
         let mut opts = SignedURLOptions {
             expires: Duration::from_secs(req.expires_in_seconds),
             ..Default::default()

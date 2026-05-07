@@ -72,7 +72,11 @@ impl SqsPoller {
             let events = match normalize_s3(&value, &move |u| bucket_reverse.get(u).cloned()) {
                 Ok(events) => events,
                 Err(NormalizeError::Ignored(_)) | Err(NormalizeError::UnmappedBucket(_)) => {
-                    continue
+                    // Drop the message — ack so it doesn't redeliver forever.
+                    // s3:TestEvent heartbeats and events for buckets we don't
+                    // subscribe to are non-transient: every redelivery hits the
+                    // same condition. Match pubsub.rs / cf_queue.rs behavior.
+                    Vec::new()
                 }
                 Err(e) => {
                     tracing::warn!(error=?e, "normalize failed; skipping");
@@ -93,13 +97,23 @@ impl SqsPoller {
             }
             if all_acked {
                 if let Some(rh) = msg.receipt_handle {
-                    let _ = self
+                    if let Err(e) = self
                         .client
                         .delete_message()
                         .queue_url(&self.queue_url)
-                        .receipt_handle(rh)
+                        .receipt_handle(&rh)
                         .send()
-                        .await;
+                        .await
+                    {
+                        // Non-fatal: SQS will redeliver after visibility
+                        // timeout. Log so operators can spot a stuck queue.
+                        tracing::warn!(
+                            error = %e,
+                            queue_url = %self.queue_url,
+                            receipt_handle = %rh,
+                            "sqs delete_message failed; message will redeliver"
+                        );
+                    }
                 }
             }
         }
