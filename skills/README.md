@@ -58,6 +58,150 @@ handler functions for sub-skills and prompt rendering:
 | Register a prompt | `prompts::register` | Slash-command name + args + handler function id |
 | Subscribe to changes | `skills::on-change` / `prompts::on-change` | Custom trigger types fired on every mutation |
 
+---
+
+## Configuration
+
+```yaml
+# skills runtime config.
+
+# State scopes used to persist the two registries. Changing these at
+# runtime is supported but orphans prior entries; treat them as
+# deployment-time constants in practice.
+scopes:
+  skills: skills
+  prompts: prompts
+
+# Default timeout for state::* and sub-skill function triggers (ms).
+state_timeout_ms: 10000
+
+# Glob patterns for filesystem-backed skills / prompts. Resolved
+# relative to the directory of this config file. See
+# "Filesystem-backed skills and prompts" below.
+skills:
+  - my-custom-skills-folder/**/*.md
+prompts:
+  - my-custom-prompts-folder/**/*.md
+```
+
+---
+
+## Filesystem-backed skills and prompts
+
+The two top-level `skills:` and `prompts:` arrays in the config are
+glob patterns that point at markdown files on disk. Every match
+becomes a registry entry whose body is **re-read from the file on
+every resolve** — the file system is the single source of truth.
+Nothing is ever mirrored into iii-state.
+
+This is useful for shipping per-project documentation alongside an
+iii deployment without writing a worker, and for layering a team's
+canonical prompt library on top of the runtime registries.
+
+```yaml
+skills:
+  - my-custom-skills-folder/**/*.md
+  - shared/skills/**/*.md
+prompts:
+  - my-custom-prompts-folder/**/*.md
+```
+
+### How globs are resolved
+
+Patterns are interpreted by the `glob` crate (`*`, `?`, `[abc]`,
+`{a,b}`, `**` for recursive directory traversal). Relative paths
+resolve against the **directory of the config file**, not the
+worker's CWD; this keeps configurations portable when the config
+moves with the deployment.
+
+Glob expansion happens fresh on every list / index / read call, so
+files added or removed between worker boots are reflected without a
+restart. Body content is also re-read on every `iii://{id}` resolve
+— there is no in-memory body cache.
+
+### Skill ID derivation
+
+For each match, the worker derives an id by stripping:
+
+1. The **static prefix** of the glob (everything up to the first
+   wildcard, truncated back to the last `/`).
+2. The trailing `.md` extension.
+
+| Glob | Match | Derived id |
+|---|---|---|
+| `my-skills/**/*.md` | `my-skills/foo.md` | `foo` |
+| `my-skills/**/*.md` | `my-skills/foo/bar.md` | `foo/bar` |
+| `my-skills/**/*.md` | `my-skills/foo/bar/baz.md` | `foo/bar/baz` |
+| `*.md` | `top.md` | `top` |
+| `docs/team-a.md` | `docs/team-a.md` | `team-a` |
+
+Each segment must satisfy the same `[a-z0-9_-]{1,64}` rule that
+state-backed registrations enforce. Files whose derived id contains
+uppercase, spaces, or other invalid characters are skipped at boot
+with a `tracing::warn!`.
+
+The first H1 of the file is the title, and the first non-heading
+paragraph is the description — same rule the auto-rendered
+`iii://skills` index uses for state-backed bodies. No frontmatter is
+required for skills (you can keep your existing markdown layout).
+
+### Prompt frontmatter
+
+Filesystem-backed prompts **must** start with a YAML frontmatter
+block declaring at least `description`. `name` is optional and
+overrides the file-basename-derived default:
+
+```markdown
+---
+name: open-pr
+description: Create a GitHub pull request with a repository-standard title and a body that follows `.github/pull_request_template.md`. Use when the user wants to open a PR, create a pull request, or submit branch changes for review.
+---
+
+The body is returned verbatim as a single user-text message on
+`prompts::mcp-get`. No `{placeholder}` substitution and no
+caller-supplied `arguments` — fs prompts are static templates.
+```
+
+A prompt without frontmatter, with malformed YAML, or without a
+non-empty `description` is skipped at boot with a warning. Names
+must follow the same `[a-z0-9_-]{1,64}` rule as state-backed
+prompts.
+
+### Collision policy (state always wins)
+
+If a filesystem entry's id (or prompt name) is already present in
+the matching state-backed scope, the filesystem entry is **silently
+shadowed**: it does not appear in `skills::list` / `prompts::list`,
+it is not rendered in the `iii://skills` index, and `iii://{id}`
+resolves to the state row.
+
+Collisions are recorded as one of the boot warnings emitted by
+`log_fs_health` so the operator can resolve them by either
+unregistering the state row or moving / renaming the file.
+
+### Where filesystem entries appear
+
+| Surface | What you see |
+|---|---|
+| `skills::list` | All entries, each tagged `origin: "state"` or `origin: "fs"`. |
+| `prompts::list` | All entries, each tagged `origin: "state"` or `origin: "fs"`. |
+| `iii://skills` (auto-rendered index) | Existing state-backed bullets followed by a new `## Custom skills` H2 section listing fs entries (only when at least one fs skill is loaded). |
+| `iii://{id}` (resource read) | Direct body lookup. State row wins on any collision; on miss the fs entry is read fresh from disk. |
+| `prompts/get` (MCP) | Static body returned as a single user-text message; caller-supplied `arguments` are ignored with a debug log. |
+
+### Boot diagnostics
+
+`log_fs_health` runs once at boot and logs:
+
+- One `info!` line per loaded fs skill / prompt (id + absolute path).
+- One `warn!` line per skipped file (path + reason: invalid id,
+  missing frontmatter, intra-fs duplicate, collision with state, …).
+- A single summary line with totals.
+
+These are the canonical place to debug a misconfigured glob.
+
+---
+
 ### Skills (markdown orientation docs)
 
 A **skill** is a markdown document explaining when and why to use your
@@ -600,161 +744,6 @@ await iii.trigger(
     },
 )
 ```
-
----
-
-## Configuration
-
-```yaml
-# skills runtime config.
-
-# State scopes used to persist the two registries. Changing these at
-# runtime is supported but orphans prior entries; treat them as
-# deployment-time constants in practice.
-scopes:
-  skills: skills
-  prompts: prompts
-
-# Default timeout for state::* and sub-skill function triggers (ms).
-state_timeout_ms: 10000
-
-# Glob patterns for filesystem-backed skills / prompts. Resolved
-# relative to the directory of this config file. See
-# "Filesystem-backed skills and prompts" below.
-skills:
-  - my-custom-skills-folder/**/*.md
-prompts:
-  - my-custom-prompts-folder/**/*.md
-```
-
-CLI flags:
-
-```text
---config <PATH>    Path to config.yaml [default: ./config.yaml]
---url <URL>        WebSocket URL of the iii engine [default: ws://127.0.0.1:49134]
---manifest         Output the module manifest as JSON and exit
--h, --help         Print help
-```
-
-If the config file is missing or malformed the worker logs a warning
-and falls back to the defaults — boot is never blocked by a bad
-config path.
-
----
-
-## Filesystem-backed skills and prompts
-
-The two top-level `skills:` and `prompts:` arrays in the config are
-glob patterns that point at markdown files on disk. Every match
-becomes a registry entry whose body is **re-read from the file on
-every resolve** — the file system is the single source of truth.
-Nothing is ever mirrored into iii-state.
-
-This is useful for shipping per-project documentation alongside an
-iii deployment without writing a worker, and for layering a team's
-canonical prompt library on top of the runtime registries.
-
-```yaml
-skills:
-  - my-custom-skills-folder/**/*.md
-  - shared/skills/**/*.md
-prompts:
-  - my-custom-prompts-folder/**/*.md
-```
-
-### How globs are resolved
-
-Patterns are interpreted by the `glob` crate (`*`, `?`, `[abc]`,
-`{a,b}`, `**` for recursive directory traversal). Relative paths
-resolve against the **directory of the config file**, not the
-worker's CWD; this keeps configurations portable when the config
-moves with the deployment.
-
-Glob expansion happens fresh on every list / index / read call, so
-files added or removed between worker boots are reflected without a
-restart. Body content is also re-read on every `iii://{id}` resolve
-— there is no in-memory body cache.
-
-### Skill ID derivation
-
-For each match, the worker derives an id by stripping:
-
-1. The **static prefix** of the glob (everything up to the first
-   wildcard, truncated back to the last `/`).
-2. The trailing `.md` extension.
-
-| Glob | Match | Derived id |
-|---|---|---|
-| `my-skills/**/*.md` | `my-skills/foo.md` | `foo` |
-| `my-skills/**/*.md` | `my-skills/foo/bar.md` | `foo/bar` |
-| `my-skills/**/*.md` | `my-skills/foo/bar/baz.md` | `foo/bar/baz` |
-| `*.md` | `top.md` | `top` |
-| `docs/team-a.md` | `docs/team-a.md` | `team-a` |
-
-Each segment must satisfy the same `[a-z0-9_-]{1,64}` rule that
-state-backed registrations enforce. Files whose derived id contains
-uppercase, spaces, or other invalid characters are skipped at boot
-with a `tracing::warn!`.
-
-The first H1 of the file is the title, and the first non-heading
-paragraph is the description — same rule the auto-rendered
-`iii://skills` index uses for state-backed bodies. No frontmatter is
-required for skills (you can keep your existing markdown layout).
-
-### Prompt frontmatter
-
-Filesystem-backed prompts **must** start with a YAML frontmatter
-block declaring at least `description`. `name` is optional and
-overrides the file-basename-derived default:
-
-```markdown
----
-name: open-pr
-description: Create a GitHub pull request with a repository-standard title and a body that follows `.github/pull_request_template.md`. Use when the user wants to open a PR, create a pull request, or submit branch changes for review.
----
-
-The body is returned verbatim as a single user-text message on
-`prompts::mcp-get`. No `{placeholder}` substitution and no
-caller-supplied `arguments` — fs prompts are static templates.
-```
-
-A prompt without frontmatter, with malformed YAML, or without a
-non-empty `description` is skipped at boot with a warning. Names
-must follow the same `[a-z0-9_-]{1,64}` rule as state-backed
-prompts.
-
-### Collision policy (state always wins)
-
-If a filesystem entry's id (or prompt name) is already present in
-the matching state-backed scope, the filesystem entry is **silently
-shadowed**: it does not appear in `skills::list` / `prompts::list`,
-it is not rendered in the `iii://skills` index, and `iii://{id}`
-resolves to the state row.
-
-Collisions are recorded as one of the boot warnings emitted by
-`log_fs_health` so the operator can resolve them by either
-unregistering the state row or moving / renaming the file.
-
-### Where filesystem entries appear
-
-| Surface | What you see |
-|---|---|
-| `skills::list` | All entries, each tagged `origin: "state"` or `origin: "fs"`. |
-| `prompts::list` | All entries, each tagged `origin: "state"` or `origin: "fs"`. |
-| `iii://skills` (auto-rendered index) | Existing state-backed bullets followed by a new `## Custom skills` H2 section listing fs entries (only when at least one fs skill is loaded). |
-| `iii://{id}` (resource read) | Direct body lookup. State row wins on any collision; on miss the fs entry is read fresh from disk. |
-| `prompts/get` (MCP) | Static body returned as a single user-text message; caller-supplied `arguments` are ignored with a debug log. |
-
-### Boot diagnostics
-
-`log_fs_health` runs once at boot and logs:
-
-- One `info!` line per loaded fs skill / prompt (id + absolute path).
-- One `warn!` line per skipped file (path + reason: invalid id,
-  missing frontmatter, intra-fs duplicate, collision with state, …).
-- A single summary line with totals.
-
-These are the canonical place to debug a misconfigured glob.
 
 ---
 
