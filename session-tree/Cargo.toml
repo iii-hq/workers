@@ -10,6 +10,7 @@ license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
 authors = ["iii contributors"]
 publish = false
+build = "build.rs"
 
 [lib]
 name = "session_tree"
@@ -30,8 +31,10 @@ tokio = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
-log = "0.4"
-env_logger = "0.11"
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
 
 [workspace.package]
 version = "0.1.0"
@@ -50,6 +53,10 @@ thiserror = "2"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+serde_yaml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

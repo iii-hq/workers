@@ -1,4 +1,4 @@
-# session::fork
+# session-tree::fork
 
 Copy the active path up to a given entry into a new session and return the new
 session id.

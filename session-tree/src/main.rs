@@ -2,50 +2,101 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use clap::Parser;
+use iii_sdk::{register_worker, InitOptions, OtelConfig, TriggerRequest, WorkerMetadata};
 use serde_json::json;
 
-const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
+mod config;
+mod manifest;
+
+#[derive(Parser, Debug)]
+#[command(name = "iii-session-tree", about = "Session tree worker for iii")]
+struct Cli {
+    #[arg(long, default_value = "./config.yaml")]
+    config: String,
+
+    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    url: String,
+
+    #[arg(long)]
+    manifest: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
-    let engine_url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
-    let iii = Arc::new(register_worker(&engine_url, InitOptions::default()));
+    let cli = Cli::parse();
 
-    let store: Arc<dyn session_tree::SessionStore> =
-        match std::env::var("SESSION_TREE_STORE").as_deref() {
-            Ok("memory") => {
-                log::info!("session-tree: using in-memory store (SESSION_TREE_STORE=memory)");
-                Arc::new(session_tree::InMemoryStore::default())
-            }
-            Ok("iii_state") | Err(_) => {
-                log::info!("session-tree: using iii-state store");
-                let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
-                Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
-                    iii_for_store,
-                ))
-            }
-            Ok(other) => {
-                log::warn!(
-                "session-tree: unknown SESSION_TREE_STORE={other:?}; falling back to iii-state. \
-                     Valid values: memory, iii_state."
+    if cli.manifest {
+        let m = manifest::build_manifest();
+        println!("{}", serde_json::to_string_pretty(&m)?);
+        return Ok(());
+    }
+
+    let cfg = match config::load_config(&cli.config) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
+            config::SessionTreeConfig::default()
+        }
+    };
+
+    let iii = Arc::new(register_worker(
+        &cli.url,
+        InitOptions {
+            otel: Some(OtelConfig::default()),
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: "session-tree".to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
+
+    let store: Arc<dyn session_tree::SessionStore> = match cfg.store_backend.as_str() {
+        "memory" => {
+            tracing::info!("session-tree: using in-memory store (store_backend=memory)");
+            Arc::new(session_tree::InMemoryStore::default())
+        }
+        "iii_state" => {
+            tracing::info!("session-tree: using iii-state store");
+            let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
+            Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
+                iii_for_store,
+            ))
+        }
+        other => {
+            tracing::warn!(
+                unknown_backend = other,
+                "unknown store_backend; falling back to iii_state (valid: memory, iii_state)"
             );
-                let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
-                Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
-                    iii_for_store,
-                ))
-            }
-        };
+            let iii_for_store: Arc<dyn session_tree::io::IIITrigger> = iii.clone();
+            Arc::new(session_tree::store_iii_state::IiiStateSessionStore::new(
+                iii_for_store,
+            ))
+        }
+    };
+
     let _refs = session_tree::register_with_iii(&iii, store);
-    log::info!("session-tree registered (session::*)");
+    tracing::info!("session-tree registered (session-tree::*)");
 
     spawn_skill_register(iii.clone());
 
     wait_for_shutdown().await?;
 
     unregister_skill(&iii).await;
+    iii.shutdown_async().await;
     Ok(())
 }
 
@@ -63,21 +114,23 @@ async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
             .await;
         match res {
             Ok(_) => {
-                log::info!("registered skill: {id}");
+                tracing::info!(skill_id = id, "registered skill");
                 return;
             }
             Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
-                    log::warn!(
-                        "skills handshake gave up for {id}; install/start the skills worker and restart (last error: {e})"
+                if started.elapsed() > Duration::from_secs(3 * 60) {
+                    tracing::warn!(
+                        skill_id = id,
+                        error = %e,
+                        "skills handshake gave up; install/start the skills worker and restart"
                     );
                     return;
                 }
-                log::debug!("skills::register failed for {id}: {e}; retrying in {backoff:?}");
+                tracing::debug!(skill_id = id, error = %e, wait = ?backoff, "skills::register failed; retrying");
             }
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
+        backoff = (backoff * 2).min(Duration::from_secs(60));
     }
 }
 
@@ -110,8 +163,6 @@ async fn wait_for_shutdown() -> Result<()> {
     }
 }
 
-// Best-effort: a missed unregister is self-healing on next boot's re-register.
-// Leaves go first so the router is the last entry to disappear from iii://skills.
 async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
     for (id, _) in session_tree::SUB_SKILLS {
         let _ = iii

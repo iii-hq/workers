@@ -1,4 +1,4 @@
-# session::clone
+# session-tree::clone
 
 Duplicate an entire session — all entries across all branches — with remapped ids,
 and return the new session id.
@@ -16,7 +16,7 @@ the new ids, and persists everything into a new session record.
 
 ## Notes
 
-- Unlike `session::fork`, clone copies the entire entry set (all branches, not just
+- Unlike `session-tree::fork`, clone copies the entire entry set (all branches, not just
   the active path).
 - All entry ids in the clone are new UUIDs; none overlap with those in the source
   session.
@@ -25,4 +25,4 @@ the new ids, and persists everything into a new session record.
 - The new session's display name is `"<source name> (clone)"` if the source has a
   display name.
 - For very large sessions with many entries, clone can be expensive; prefer
-  `session::fork` when only the active-path context is needed.
+  `session-tree::fork` when only the active-path context is needed.

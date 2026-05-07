@@ -79,7 +79,7 @@ impl SessionStore for IiiStateSessionStore {
         // Non-fatal: refresh updated_at on the session's meta. Failures here log
         // a warning but do not roll back the entry write.
         if let Err(e) = self.refresh_meta_updated_at(session_id).await {
-            log::warn!(
+            tracing::warn!(
                 target: "session_tree::store_iii_state",
                 "meta updated_at refresh failed for session {session_id}: {e}; entry persisted but meta is stale"
             );

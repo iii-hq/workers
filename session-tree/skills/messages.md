@@ -1,4 +1,4 @@
-# session::messages
+# session-tree::messages
 
 Load every `AgentMessage` on the active path of a session, oldest first.
 
@@ -15,7 +15,7 @@ order. Only `SessionEntry::Message` entries are included; `BranchSummary`,
 - Diffing two branches of a session tree: call with different `branch_leaf` values
   and compare the resulting message lists.
 - Extracting the human-readable transcript of a single branch for display or export
-  (see also `session::export_html` for a styled HTML rendering).
+  (see also `session-tree::export_html` for a styled HTML rendering).
 
 ## Notes
 
@@ -25,6 +25,6 @@ order. Only `SessionEntry::Message` entries are included; `BranchSummary`,
   (`BranchSummary`, `Compaction`) are traversed for parent-link resolution but
   do not appear in the returned array.
 - The result reflects the active path only — sibling branches are not included.
-  Use `session::tree` to see the full DAG structure.
+  Use `session-tree::tree` to see the full DAG structure.
 - For a complete `AgentContext` (including system prompt), assemble one from the
   returned messages in the calling agent rather than here.

@@ -697,17 +697,17 @@ fn html_escape(input: &str) -> String {
 
 /// Registered function ids exposed by [`register_with_iii`].
 pub mod function_ids {
-    pub const FORK: &str = "session::fork";
-    pub const CLONE: &str = "session::clone";
-    pub const COMPACT: &str = "session::compact";
-    pub const TREE: &str = "session::tree";
-    pub const EXPORT_HTML: &str = "session::export_html";
-    pub const CREATE: &str = "session::create";
-    pub const APPEND: &str = "session::append";
-    pub const MESSAGES: &str = "session::messages";
+    pub const FORK: &str = "session-tree::fork";
+    pub const CLONE: &str = "session-tree::clone";
+    pub const COMPACT: &str = "session-tree::compact";
+    pub const TREE: &str = "session-tree::tree";
+    pub const EXPORT_HTML: &str = "session-tree::export_html";
+    pub const CREATE: &str = "session-tree::create";
+    pub const APPEND: &str = "session-tree::append";
+    pub const MESSAGES: &str = "session-tree::messages";
 }
 
-/// Register the five `session::*` iii functions on `iii`, backed by `store`.
+/// Register all `session-tree::*` iii functions on `iii`, backed by `store`.
 ///
 /// Returns a [`SessionFunctionRefs`] handle. Drop or call
 /// [`SessionFunctionRefs::unregister_all`] to deregister everything in one
@@ -717,16 +717,16 @@ pub mod function_ids {
 ///
 /// # Payload shapes
 ///
-/// - `session::fork` — `{ "source_session_id": str, "from_entry_id": str }`
+/// - `session-tree::fork` — `{ "source_session_id": str, "from_entry_id": str }`
 ///   → `{ "session_id": str }`
-/// - `session::clone` — `{ "source_session_id": str }`
+/// - `session-tree::clone` — `{ "source_session_id": str }`
 ///   → `{ "session_id": str }`
-/// - `session::compact` — `{ "session_id": str, "summary": str,
+/// - `session-tree::compact` — `{ "session_id": str, "summary": str,
 ///   "tokens_before": u64, "details": { "read_files": [str],
 ///   "modified_files": [str] }, "parent_id": str? }`
 ///   → `{ "entry_id": str }`
-/// - `session::tree` — `{ "session_id": str }` → `TreeNode`
-/// - `session::export_html` — `{ "session_id": str, "branch_leaf": str? }`
+/// - `session-tree::tree` — `{ "session_id": str }` → `TreeNode`
+/// - `session-tree::export_html` — `{ "session_id": str, "branch_leaf": str? }`
 ///   → `{ "html": str }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
@@ -952,7 +952,7 @@ pub struct SessionFunctionRefs {
 }
 
 impl SessionFunctionRefs {
-    /// Unregister every `session::*` function this batch installed.
+    /// Unregister every `session-tree::*` function this batch installed.
     pub fn unregister_all(self) {
         for f in self.refs {
             f.unregister();

@@ -1,67 +1,80 @@
 # session-tree
 
-Session storage as a parent-id tree of typed entries on the iii bus. Stores
-agent messages, custom messages, and tool results, addressable by parent id
-so multi-turn forks share a common history.
+Session storage as a parent-id tree of typed entries on the iii bus: agent
+messages, custom payloads, branch summaries, and compaction markers. Each session
+is a DAG keyed by parent id so forks share history; callers use
+`session-tree::*` functions to create sessions, append messages, fork branches,
+and export HTML views.
 
-## Installation
+## Install
 
 ```bash
 iii worker add session-tree
 ```
 
-## Run
+`iii worker add` fetches the binary, writes a config block into
+`~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
 
-```bash
-iii-session-tree --engine-url ws://127.0.0.1:49134
+## Quickstart
+
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let created = iii
+        .trigger(TriggerRequest {
+            function_id: "session-tree::create".into(),
+            payload: json!({ "display_name": "demo" }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    let session_id = created["session_id"].as_str().unwrap();
+
+    let appended = iii
+        .trigger(TriggerRequest {
+            function_id: "session-tree::append".into(),
+            payload: json!({
+                "session_id": session_id,
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hello" }],
+                    "timestamp": 0,
+                },
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    println!("entry_id = {:?}", appended["entry_id"]);
+    Ok(())
+}
 ```
 
-Defaults to an iii-state-backed store (sessions survive worker restart).
-Set `SESSION_TREE_STORE=memory` for ephemeral in-process storage; see
-[Storage backends](#storage-backends) below.
+Other surfaced calls include `session-tree::messages`, `session-tree::tree`,
+`session-tree::fork`, `session-tree::clone`, `session-tree::compact`, and
+`session-tree::export_html`.
 
-## Registered functions (P0 + P2 surface)
+## Configuration
 
-P0: `session::create`, `session::load`, `session::append`,
-`session::active_path`, `session::list`, `session::load_messages`.
-
-P2: `session::fork`, `session::clone_session`, `session::compact`,
-`session::export_html`, `session::tree`.
-
-## Storage backends
-
-`session-tree` supports two storage backends, selected via the
-`SESSION_TREE_STORE` env var:
-
-| Value | Persistence | Use case |
-|---|---|---|
-| `iii_state` (default) | Survives worker restart via `iii-state` | Production |
-| `memory` | In-process only; lost on restart | Tests, local dev |
-
-The `iii_state` backend uses a scope-per-session layout for bounded scan cost:
-
-- Scope `session_tree:<session_id>`, key `<entry_id>`, value `SessionEntry`
-- Scope `session_tree_meta`, key `<session_id>`, value `SessionMeta`
-
-`load_entries(sid)` lists the per-session scope and sorts by lexicographic
-`entry_id`. `append` is `O(1)` regardless of session length: one `state::set`
-for the entry, plus a non-fatal `state::set` to refresh `SessionMeta::updated_at`.
-If the meta refresh fails, the entry still persists and a warning is logged;
-`updated_at` may be slightly stale.
-
-### Failure semantics
-
-`SessionStore` methods return `Result<_, SessionError>`. With the `iii_state`
-backend, transient bus failures (engine restart, IPC hiccup) map to
-`SessionError::Storage(...)`. With `memory`, errors are limited to logical
-conditions like `NotFound` and `RwLock` poison.
-
-`load_meta` returns `SessionError::NotFound(<sid>)` when the session doesn't
-exist; `load_entries` returns an empty vec for a session with no appended
-entries (never `NotFound`).
-
-## Build
-
-```bash
-cargo build --release
+```yaml
+store_backend: iii_state   # iii_state (persist via iii-state) | memory (ephemeral)
 ```
+
+Defaults live in [`config.yaml`](config.yaml); missing keys use the values in
+[`src/config.rs`](src/config.rs).
+
+### Storage layout (iii_state)
+
+Scopes:
+
+- `session_tree:<session_id>` — entry id → `SessionEntry`
+- `session_tree_meta` — session id → `SessionMeta`
+
+With `memory`, everything stays in-process and is lost when the worker exits.
