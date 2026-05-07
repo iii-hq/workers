@@ -324,11 +324,11 @@ mod tests {
         let input = fc(
             "call_1",
             "agent_call",
-            json!({ "function": "shell::filesystem::ls", "payload": { "path": "/tmp" } }),
+            json!({ "function": "shell::fs::ls", "payload": { "path": "/tmp" } }),
         );
         let out = unwrap_agent_call(input);
         assert_eq!(out.id, "call_1");
-        assert_eq!(out.function_id, "shell::filesystem::ls");
+        assert_eq!(out.function_id, "shell::fs::ls");
         assert_eq!(out.arguments, json!({ "path": "/tmp" }));
     }
 
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn non_agent_call_returns_unchanged() {
-        let input = fc("call_3", "shell::filesystem::ls", json!({ "path": "/tmp" }));
+        let input = fc("call_3", "shell::fs::ls", json!({ "path": "/tmp" }));
         let out = unwrap_agent_call(input.clone());
         assert_eq!(out, input);
     }
@@ -365,12 +365,12 @@ mod tests {
             fc(
                 "a",
                 "agent_call",
-                json!({"function":"shell::filesystem::ls","payload":{"path":"/tmp"}}),
+                json!({"function":"shell::fs::ls","payload":{"path":"/tmp"}}),
             ),
             fc("b", "skills::list", json!({})),
         ];
         let unwrapped: Vec<_> = calls.into_iter().map(unwrap_agent_call).collect();
-        assert_eq!(unwrapped[0].function_id, "shell::filesystem::ls");
+        assert_eq!(unwrapped[0].function_id, "shell::fs::ls");
         assert_eq!(unwrapped[0].arguments, json!({"path":"/tmp"}));
         assert_eq!(unwrapped[1].function_id, "skills::list");
     }
@@ -505,15 +505,15 @@ mod tests {
     fn before_function_call_payload_carries_approval_required() {
         let fc = FunctionCall {
             id: "tc-1".into(),
-            function_id: "shell::filesystem::write".into(),
+            function_id: "shell::fs::write".into(),
             arguments: json!({"path": "/tmp/x"}),
         };
-        let approval_required = vec!["shell::filesystem::write".to_string()];
+        let approval_required = vec!["shell::fs::write".to_string()];
         let inner = build_before_function_call_payload(&fc, &approval_required);
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(
             inner["approval_required"],
-            json!(["shell::filesystem::write"]),
+            json!(["shell::fs::write"]),
         );
     }
 
@@ -521,7 +521,7 @@ mod tests {
     fn before_function_call_payload_has_empty_approval_required_when_none_configured() {
         let fc = FunctionCall {
             id: "tc-1".into(),
-            function_id: "shell::filesystem::ls".into(),
+            function_id: "shell::fs::ls".into(),
             arguments: json!({}),
         };
         let inner = build_before_function_call_payload(&fc, &[]);
@@ -554,14 +554,14 @@ mod tests {
     fn build_before_function_call_payload_preserves_function_call_shape() {
         let fc = FunctionCall {
             id: "tc-1".into(),
-            function_id: "shell::filesystem::ls".into(),
+            function_id: "shell::fs::ls".into(),
             arguments: json!({"path": "/tmp"}),
         };
         let inner = build_before_function_call_payload(&fc, &[]);
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(
             inner["function_call"]["function_id"],
-            "shell::filesystem::ls"
+            "shell::fs::ls"
         );
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
         assert!(inner.get("approval_required").is_some());

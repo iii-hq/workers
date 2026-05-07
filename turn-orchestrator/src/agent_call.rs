@@ -29,13 +29,13 @@ pub(crate) const DEFAULT_DISPATCH_TIMEOUT_MS: Option<u64> = None;
 pub fn agent_call_tool() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::filesystem::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.",
+        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.",
         "parameters": {
             "type": "object",
             "properties": {
                 "function": {
                     "type": "string",
-                    "description": "iii function id to dispatch, e.g. 'shell::filesystem::ls'."
+                    "description": "iii function id to dispatch, e.g. 'shell::fs::ls'."
                 },
                 "payload": {
                     "type": "object",
@@ -243,8 +243,8 @@ mod dispatch_tests {
 
     #[test]
     fn valid_function_returns_owned_string() {
-        let result = validate_function_field(&json!("shell::filesystem::ls")).unwrap();
-        assert_eq!(result, "shell::filesystem::ls");
+        let result = validate_function_field(&json!("shell::fs::ls")).unwrap();
+        assert_eq!(result, "shell::fs::ls");
     }
 
     #[test]
