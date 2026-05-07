@@ -76,7 +76,8 @@ async fn mirror_messages_to_session_tree(iii: &III, session_id: &str, messages: 
     // Find the current leaf entry_id by reading session-tree state — needed
     // so subsequent appends thread parent_id correctly. For a fresh session
     // (already_mirrored == 0), parent_id starts as None.
-    let mut last_appended: Option<String> = if already_mirrored > 0 {
+    let mut last_appended: Option<String> = None;
+    if already_mirrored > 0 {
         match iii
             .trigger(TriggerRequest {
                 function_id: "session-tree::messages".into(),
@@ -86,18 +87,25 @@ async fn mirror_messages_to_session_tree(iii: &III, session_id: &str, messages: 
             })
             .await
         {
-            Ok(resp) => resp
-                .get("messages")
-                .and_then(|m| m.as_array())
-                .and_then(|arr| arr.last())
-                .and_then(|last| last.get("entry_id"))
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            Err(_) => None,
+            Ok(resp) => {
+                last_appended = resp
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .and_then(|arr| arr.last())
+                    .and_then(|last| last.get("entry_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    %session_id,
+                    "turn-orchestrator: session-tree::messages read failed mid-mirror; skipping append batch to avoid orphaning"
+                );
+                return;
+            }
         }
-    } else {
-        None
-    };
+    }
 
     for msg in &messages[already_mirrored..] {
         let payload = json!({

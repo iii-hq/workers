@@ -6,6 +6,12 @@
 //!
 //! Tests skip gracefully when the `iii` binary or the prebuilt
 //! `iii-session-tree` worker binary is missing (CI without iii).
+//
+// TODO(phase-a-followup): D-4 from spec ("session-tree forced to fail, state::*
+// completes, warn logged, no panic") deferred — needs a fault-injection harness
+// that swaps the iii-session-tree binary with one that returns Err on append.
+// The structural guarantee (no `?`, no `.unwrap()` on session-tree calls in
+// `mirror_messages_to_session_tree`) is enforced by code review for now.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -87,6 +93,71 @@ async fn happy_path_state_and_session_tree_match_after_save() {
     assert!(
         mirrored[0].get("entry_id").is_some(),
         "mirrored row should carry entry_id; got {tree_msgs}"
+    );
+
+    harness.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn delta_append_only_does_not_duplicate_existing_messages() {
+    let Some(harness) = Harness::boot().await else {
+        return;
+    };
+    let sid = format!("delta-test-{}", common::nonce());
+
+    // First save: 1 msg
+    let msgs1 = vec![user_msg("1", 1)];
+    turn_orchestrator::persistence::save_messages(&harness.iii, &sid, &msgs1).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Second save: 3 msgs total (2 new beyond what was already mirrored)
+    let msgs2 = vec![user_msg("1", 1), user_msg("2", 2), user_msg("3", 3)];
+    turn_orchestrator::persistence::save_messages(&harness.iii, &sid, &msgs2).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let tree_msgs = trigger(
+        &harness.iii,
+        "session-tree::messages",
+        json!({ "session_id": sid }),
+    )
+    .await;
+
+    let arr = tree_msgs["messages"].as_array().unwrap_or_else(|| {
+        panic!("session-tree::messages should return an array; got {tree_msgs}")
+    });
+    assert_eq!(
+        arr.len(),
+        3,
+        "delta should have appended 2 new, total 3 (not 4) — got {}",
+        arr.len()
+    );
+
+    harness.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn first_save_creates_session_tree_session_lazily() {
+    let Some(harness) = Harness::boot().await else {
+        return;
+    };
+    let sid = format!("lazy-create-{}", common::nonce());
+
+    // No prior session-tree::create / ensure call from outside.
+    let msgs = vec![user_msg("first", 1)];
+    turn_orchestrator::persistence::save_messages(&harness.iii, &sid, &msgs).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let list_res = trigger(&harness.iii, "session-tree::list", json!({})).await;
+    let sessions = list_res["sessions"].as_array().unwrap_or_else(|| {
+        panic!("session-tree::list should return a sessions array; got {list_res}")
+    });
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s["session_id"].as_str() == Some(&sid)),
+        "session-tree::list should include the lazily-created session; got {list_res}"
     );
 
     harness.iii.shutdown_async().await;
