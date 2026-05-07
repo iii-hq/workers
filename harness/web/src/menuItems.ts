@@ -28,6 +28,30 @@ export const BUILT_IN_COMMANDS: MenuItem[] = [
     description: "Switch provider: /provider <name>",
   },
   { kind: "builtin", id: "/help", label: "/help", description: "Show shortcuts" },
+  {
+    kind: "builtin",
+    id: "/repair",
+    label: "/repair",
+    description: "Repair session-tree drift via session-tree::reconcile",
+  },
+  {
+    kind: "builtin",
+    id: "/fork",
+    label: "/fork",
+    description: "Fork session at last message",
+  },
+  {
+    kind: "builtin",
+    id: "/export md",
+    label: "/export md",
+    description: "Export current session as markdown",
+  },
+  {
+    kind: "builtin",
+    id: "/export json",
+    label: "/export json",
+    description: "Export current session as JSON",
+  },
 ];
 
 const SCORE_PREFIX = 100;

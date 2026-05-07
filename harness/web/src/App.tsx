@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, BridgeError } from "./bridge";
+import { exportJson, exportMd } from "./export";
+import { loadMessagesWithEntryIds } from "./loadMessages";
 import { visibleMessages } from "./reducer";
 import { useAgentStream } from "./useAgentStream";
 import { useSkillsIndex } from "./useSkillsIndex";
@@ -83,6 +85,15 @@ export default function App() {
   const [active, setActive] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  // Parallel array to `messages`. Slot is the entry_id keying that message
+  // in session-tree, or `null` when the message came from the state::*
+  // fallback (drift case — fork is disabled for null entries).
+  //
+  // INVARIANT: `messageEntryIds.length === messages.length` at all times.
+  // Stream events (SSE today) don't carry entry_ids yet — we fill with
+  // `null` on stream-driven updates. Step B (WS migration) will let stream
+  // events carry real ids and this can become live data.
+  const [messageEntryIds, setMessageEntryIds] = useState<(string | null)[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,7 +133,14 @@ export default function App() {
   useEffect(() => {
     if (!active) return;
     const visible = visibleMessages(stream);
-    if (visible.length > 0) setMessages(visible);
+    if (visible.length > 0) {
+      setMessages(visible);
+      // Stream events don't carry entry_ids today (Phase B step B will fix
+      // this when WS replaces SSE). Until then, fork buttons stay disabled
+      // for live messages — the next loadSessionMessages refresh hydrates
+      // entry_ids from session-tree.
+      setMessageEntryIds(visible.map(() => null));
+    }
   }, [active, stream]);
 
   const isRunning = loading || stream.status === "running";
@@ -147,20 +165,14 @@ export default function App() {
     }
   }, []);
 
-  const loadMessages = useCallback(async (id: string) => {
+  const loadSessionMessages = useCallback(async (id: string) => {
     try {
-      const msgs = await bridge<AgentMessage[]>("state::get", {
-        scope: "agent",
-        key: `session/${id}/messages`,
-      });
-      setMessages(Array.isArray(msgs) ? msgs : []);
-    } catch (e) {
-      // brand new session — state::get returns null; treat as empty
-      if (e instanceof BridgeError && /session not found|null/.test(e.message)) {
-        setMessages([]);
-        return;
-      }
+      const pairs = await loadMessagesWithEntryIds(id);
+      setMessages(pairs.map((p) => p.message));
+      setMessageEntryIds(pairs.map((p) => p.entry_id));
+    } catch {
       setMessages([]);
+      setMessageEntryIds([]);
     }
   }, []);
 
@@ -185,9 +197,12 @@ export default function App() {
   }, [refreshAuth]);
 
   useEffect(() => {
-    if (active) void loadMessages(active);
-    else setMessages([]);
-  }, [active, loadMessages]);
+    if (active) void loadSessionMessages(active);
+    else {
+      setMessages([]);
+      setMessageEntryIds([]);
+    }
+  }, [active, loadSessionMessages]);
 
   // Load workspace cwd on session change. Resets to empty for the draft
   // (no active session yet). Errors are swallowed by loadWorkspace.
@@ -235,6 +250,7 @@ export default function App() {
   const startNew = () => {
     setActive(null);
     setMessages([]);
+    setMessageEntryIds([]);
     setDraftId(newSessionId());
     setError(null);
   };
@@ -253,6 +269,8 @@ export default function App() {
     };
     const fullHistory = [...messages, optimistic];
     setMessages(fullHistory);
+    // Optimistic message has no entry_id yet — pad to keep arrays in sync.
+    setMessageEntryIds([...messageEntryIds, null]);
 
     try {
       await bridge<{ session_id: string }>("run::start", {
@@ -271,6 +289,78 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // Fork the active session at a specific message's entry_id. The new
+  // session's id is returned by session-tree::fork and becomes the active
+  // session. Refreshing the rail picks up the new row.
+  const handleForkFromMessage = useCallback(
+    async (entryId: string) => {
+      if (!active) return;
+      try {
+        const { session_id } = await bridge<{ session_id: string }>(
+          "session-tree::fork",
+          {
+            source_session_id: active,
+            from_entry_id: entryId,
+          },
+        );
+        setActive(session_id);
+        void refreshSessions();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [active, refreshSessions],
+  );
+
+  // /repair — read state::* snapshot, hand it to session-tree::reconcile
+  // so any drifted rows get re-keyed with entry_ids. Reload after so the
+  // UI's entry_ids reflect the new tree state.
+  const handleRepair = useCallback(async () => {
+    if (!active) return;
+    try {
+      const snapshot = await bridge<unknown>("state::get", {
+        scope: "agent",
+        key: `session/${active}/messages`,
+      });
+      const result = await bridge<{ repaired: number }>(
+        "session-tree::reconcile",
+        { session_id: active, state_snapshot: snapshot },
+      );
+      void loadSessionMessages(active);
+      if (result.repaired === 0) setError(null);
+    } catch (e) {
+      setError(`/repair failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [active, loadSessionMessages]);
+
+  // /fork — convenience: fork from the most recent message that has a
+  // real entry_id. Anything without an entry_id is a stream artifact or
+  // a drifted state row.
+  const handleForkLast = useCallback(async () => {
+    if (!active) return;
+    for (let i = messageEntryIds.length - 1; i >= 0; i--) {
+      const id = messageEntryIds[i];
+      if (id !== null) {
+        await handleForkFromMessage(id);
+        return;
+      }
+    }
+    setError("No messages with entry_ids — try /repair first");
+  }, [active, messageEntryIds, handleForkFromMessage]);
+
+  const handleExport = useCallback(
+    async (format: "md" | "json") => {
+      if (!active) return;
+      try {
+        if (format === "md") await exportMd(active);
+        else await exportJson(active);
+      } catch (e) {
+        setError(`/export failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [active],
+  );
 
   const sessionId = active ?? draftId ?? "";
   const currentAuth = authByProvider[provider] ?? null;
@@ -365,7 +455,9 @@ export default function App() {
               <SessionView
                 sessionId={sessionId}
                 messages={messages}
+                messageEntryIds={messageEntryIds}
                 loading={isRunning}
+                onForkFromMessage={handleForkFromMessage}
               />
               {error ? (
                 <p className="app-error" role="alert">
@@ -405,6 +497,9 @@ export default function App() {
                       "shortcuts: / commands · @ files · ↑ history · shift+enter newline · enter send",
                     );
                   },
+                  onRepair: handleRepair,
+                  onFork: handleForkLast,
+                  onExport: handleExport,
                 }}
               />
             </>

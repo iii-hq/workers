@@ -32,6 +32,12 @@ export interface ComposerCallbacks {
   onModel?: (id: string) => void;
   onProvider?: (name: string) => void;
   onHelp?: () => void;
+  /** /repair — reconciles session-tree against state::* snapshot. */
+  onRepair?: () => void | Promise<void>;
+  /** /fork — forks the active session from the last message with an entry_id. */
+  onFork?: () => void | Promise<void>;
+  /** /export md|json — downloads a transcript file via the browser. */
+  onExport?: (format: "md" | "json") => void | Promise<void>;
 }
 
 interface Props {
@@ -283,6 +289,26 @@ export function Composer({
         callbacks?.onHelp?.();
         return;
       }
+      if (trimmed === "/repair") {
+        void callbacks?.onRepair?.();
+        setText("");
+        return;
+      }
+      if (trimmed === "/fork") {
+        void callbacks?.onFork?.();
+        setText("");
+        return;
+      }
+      if (trimmed === "/export md") {
+        void callbacks?.onExport?.("md");
+        setText("");
+        return;
+      }
+      if (trimmed === "/export json") {
+        void callbacks?.onExport?.("json");
+        setText("");
+        return;
+      }
       const modelMatch = /^\/model\s+(.+)$/.exec(trimmed);
       if (modelMatch) {
         callbacks?.onModel?.(modelMatch[1].trim());
@@ -326,6 +352,10 @@ export function Composer({
           if (item.id === "/new") callbacks?.onNew?.();
           if (item.id === "/clear") callbacks?.onClear?.();
           if (item.id === "/help") callbacks?.onHelp?.();
+          if (item.id === "/repair") void callbacks?.onRepair?.();
+          if (item.id === "/fork") void callbacks?.onFork?.();
+          if (item.id === "/export md") void callbacks?.onExport?.("md");
+          if (item.id === "/export json") void callbacks?.onExport?.("json");
           setText("");
           dispatch({ kind: "close" });
           return;
