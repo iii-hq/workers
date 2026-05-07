@@ -99,6 +99,10 @@ spawn_one() {
       --config "$WORKERS_REPO/harness/config.yaml"
       --url "$DEMO_ENGINE_WS"
     )
+  elif [[ "$w" == "shell" ]]; then
+    run_args=(
+      --config "$WORKERS_REPO/harness/shell-config.yaml"
+    )
   fi
 
   # Per-worker env. policy-denylist needs POLICY_DENIED_FUNCTIONS to include
