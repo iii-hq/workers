@@ -58,6 +58,73 @@ pub fn build_inline_envelope(bytes: &[u8], total_size: u64) -> Value {
     })
 }
 
+use iii_sdk::channels::{ChannelDirection, ChannelReader, StreamChannelRef};
+use iii_sdk::{IIIError, TriggerRequest, III};
+
+const READ_TRIGGER_TIMEOUT_MS: u64 = 30_000;
+
+/// Drive `shell::fs::read` and inline up to `max_bytes` of the streamed
+/// channel into a legacy `{content:[{text}], details:{...}}` envelope.
+///
+/// `engine_ws_base` is the same URL passed to `register_worker` in
+/// `main.rs`; the harness already threads it through
+/// `register_with_iii_with_engine_url`, so callers can pass it directly.
+pub async fn read_inline(
+    iii: &III,
+    engine_ws_base: &str,
+    args: ReadInlineArgs,
+) -> Result<Value, IIIError> {
+    let max_bytes = args.max_bytes.unwrap_or(DEFAULT_MAX_INLINE_BYTES);
+
+    // 1. Ask the shell worker to set up the read channel.
+    let raw = iii
+        .trigger(TriggerRequest {
+            function_id: "shell::fs::read".into(),
+            payload: json!({ "path": args.path }),
+            action: None,
+            timeout_ms: Some(READ_TRIGGER_TIMEOUT_MS),
+        })
+        .await
+        .map_err(|e| IIIError::Handler(format!("shell::fs::read trigger failed: {e}")))?;
+
+    let parsed: ShellFsReadResponse = serde_json::from_value(raw.clone()).map_err(|e| {
+        IIIError::Handler(format!(
+            "shell::fs::read returned unexpected shape: {e} (raw: {raw})"
+        ))
+    })?;
+
+    // 2. Drain the channel into a capped buffer.
+    let chan_ref = StreamChannelRef {
+        channel_id: parsed.content.channel_id.clone(),
+        access_key: parsed.content.access_key.clone(),
+        direction: ChannelDirection::Read,
+    };
+    let reader = ChannelReader::new(engine_ws_base, &chan_ref);
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max_bytes {
+        match reader.next_binary().await {
+            Ok(Some(chunk)) => {
+                let remaining = max_bytes.saturating_sub(buf.len());
+                if chunk.len() <= remaining {
+                    buf.extend_from_slice(&chunk);
+                } else {
+                    buf.extend_from_slice(&chunk[..remaining]);
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = reader.close().await;
+                return Err(IIIError::Handler(format!("channel drain failed: {e}")));
+            }
+        }
+    }
+    let _ = reader.close().await;
+
+    // 3. Build the inline envelope (pure, unit-tested in Task 8).
+    Ok(build_inline_envelope(&buf, parsed.size))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
