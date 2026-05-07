@@ -7,6 +7,7 @@
 //! cucumber `before` hook in `tests/bdd.rs` wipes the two state scopes
 //! between scenarios so each scenario starts from a clean slate.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -26,6 +27,11 @@ pub struct Shared {
     /// probe it directly (the registered trigger types live here).
     #[allow(dead_code)]
     pub triggers: Arc<RegisteredTriggerTypes>,
+    /// Root directory the fs-sources scenarios write fixtures into.
+    /// Layout under this dir mirrors the configured globs:
+    ///   `<fs_root>/fs-skills/...`  → matched by `fs-skills/**/*.md`
+    ///   `<fs_root>/fs-prompts/...` → matched by `fs-prompts/**/*.md`
+    pub fs_root: PathBuf,
 }
 
 static SHARED: OnceCell<Arc<Shared>> = OnceCell::const_new();
@@ -36,7 +42,20 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
         return Ok(s.clone());
     }
 
-    let cfg = Arc::new(SkillsConfig::default());
+    // Build a leaked tempdir that lives for the test binary lifetime.
+    // The handlers below clone the cfg's config_dir into their closures
+    // so all subsequent fs scans resolve relative to this path.
+    let tmp = tempfile::tempdir()?;
+    let fs_root = tmp.keep();
+    std::fs::create_dir_all(fs_root.join("fs-skills"))?;
+    std::fs::create_dir_all(fs_root.join("fs-prompts"))?;
+
+    let cfg = Arc::new(SkillsConfig {
+        skills: vec!["fs-skills/**/*.md".into()],
+        prompts: vec!["fs-prompts/**/*.md".into()],
+        config_dir: Some(fs_root.clone()),
+        ..SkillsConfig::default()
+    });
     let registered = trigger_types::register_all(iii);
     functions::register_all(iii, &cfg, &registered);
 
@@ -47,6 +66,7 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
     let shared = Arc::new(Shared {
         cfg,
         triggers: Arc::new(registered),
+        fs_root,
     });
     let _ = SHARED.set(shared.clone());
     Ok(shared)
@@ -54,6 +74,17 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
 
 pub fn shared() -> Option<Arc<Shared>> {
     SHARED.get().cloned()
+}
+
+/// Wipe the fs-fixture directories between scenarios so leftover files
+/// from one scenario don't pollute the next. Only touches the per-test
+/// fs root — the rest of the file system is untouched.
+pub fn reset_fs(fs_root: &Path) {
+    for sub in ["fs-skills", "fs-prompts"] {
+        let dir = fs_root.join(sub);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+    }
 }
 
 /// Wipe both state scopes between scenarios. Called from the cucumber

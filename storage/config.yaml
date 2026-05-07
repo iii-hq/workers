@@ -1,0 +1,22 @@
+# Storage worker default config.
+#
+# This file is loaded when you run `cargo run -- --config ./config.yaml` (or
+# `iii start`). It declares a single `scratch` bucket on the bundled rustfs
+# sidecar, which gives you a working S3-compatible local backend with zero
+# external dependencies.
+#
+# For real-world configs (AWS S3, GCS, Cloudflare R2, change-notification
+# wiring, env-var-substituted credentials), see config.yaml.example.
+
+providers:
+  # Where the bundled rustfs sidecar persists data for `provider: local`
+  # buckets. Path is resolved relative to the worker's working directory.
+  local:
+    data_dir: ./data/storage
+
+buckets:
+  # A throwaway bucket served by the rustfs sidecar. Useful for local dev,
+  # tests, and tutorials. Replace or extend with cloud-backed buckets for
+  # production.
+  scratch:
+    provider: local

@@ -1,0 +1,77 @@
+# E2E support stack for storage. Brought up only when run-tests.sh is
+# invoked with --providers != local; --providers=local skips compose entirely.
+#
+# All services live in profile=cloud so `docker compose up` (no --profile)
+# is a no-op — keeps `docker compose down` cheap during local dev.
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # MINIO_DOMAIN enables virtual-host-style URL resolution for the R2
+      # backend's force_path_style: false code path. Combined with
+      # extra_hosts on the engine side (or /etc/hosts on the developer's
+      # machine), `<bucket>.minio.local:9000` resolves into MinIO.
+      MINIO_DOMAIN: minio.local
+      # Webhook event target used to deliver bucket-notification events to
+      # the minio-sqs-bridge service, which forwards them to ElasticMQ.
+      # Configured via env so MinIO loads it at boot and we don't have to
+      # `mc admin service restart` from minio-init.sh.
+      MINIO_NOTIFY_WEBHOOK_ENABLE_BRIDGE: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_BRIDGE: "http://minio-sqs-bridge:8080/"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    profiles: ["cloud"]
+
+  # Drop-in SQS-compatible broker. The storage worker's S3 trigger source
+  # (storage/src/triggers/pollers/sqs.rs) long-polls a real SQS endpoint;
+  # ElasticMQ lets us exercise that path without standing up LocalStack
+  # or hitting real AWS. Image is ~30MB.
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.6.11
+    ports:
+      - "9324:9324"   # SQS API
+      - "9325:9325"   # web UI / introspection
+    healthcheck:
+      # `?Action=ListQueues` is the unauthenticated probe ElasticMQ supports
+      # without requiring a queue to already exist.
+      test:
+        - "CMD-SHELL"
+        - "wget -qO- http://localhost:9324/?Action=ListQueues >/dev/null 2>&1 || exit 1"
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    profiles: ["cloud"]
+
+  # Webhook → SQS shim. MinIO has no built-in SQS notification target, so
+  # we point its webhook at this service and translate to ElasticMQ here.
+  # See fixtures/minio-sqs-bridge/index.ts for the relay logic.
+  minio-sqs-bridge:
+    build: ./fixtures/minio-sqs-bridge
+    environment:
+      SQS_ENDPOINT: "http://elasticmq:9324"
+      SQS_QUEUE_URL: "http://elasticmq:9324/000000000000/storage-events"
+      AWS_REGION: "us-east-1"
+      PORT: "8080"
+    ports:
+      - "8081:8080"   # host-side healthcheck only; MinIO talks via compose net
+    depends_on:
+      elasticmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "bun -e \"fetch('http://localhost:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    profiles: ["cloud"]
