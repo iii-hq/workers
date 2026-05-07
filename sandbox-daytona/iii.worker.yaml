@@ -1,0 +1,13 @@
+iii: v1
+name: sandbox-daytona
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-sandbox-daytona
+description: Narrow iii worker that exposes Daytona microVM sandboxes via the sandbox::daytona::* trigger family.
+config:
+  api_base: "https://app.daytona.io/api"
+  api_key_env: DAYTONA_API_KEY
+  max_concurrent_sandboxes: 10
+  default_idle_timeout_secs: 300
+  image_allowlist: []
