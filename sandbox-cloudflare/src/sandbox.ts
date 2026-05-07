@@ -22,7 +22,7 @@ export class SandboxError extends Error {
   }
 }
 
-// Capabilities advertised by sandbox::cf::create. CF Sandbox doesn't ship
+// Capabilities advertised by sandbox::cloudflare::create. CF Sandbox doesn't ship
 // snapshot or branch; the bridge exposes only exec, fs, and port surfaces.
 export const CAPABILITIES = ['expose_port', 'fs'] as const
 

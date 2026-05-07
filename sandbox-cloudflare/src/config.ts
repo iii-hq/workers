@@ -9,8 +9,8 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  bridge_url_env: 'CF_BRIDGE_URL',
-  bridge_token_env: 'CF_BRIDGE_TOKEN',
+  bridge_url_env: 'CLOUDFLARE_BRIDGE_URL',
+  bridge_token_env: 'CLOUDFLARE_BRIDGE_TOKEN',
   max_concurrent_sandboxes: 10,
   default_idle_timeout_secs: 300,
   image_allowlist: [],

@@ -1,5 +1,5 @@
 {
-  "name": "sandbox-cf-bridge",
+  "name": "sandbox-cloudflare-bridge",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",

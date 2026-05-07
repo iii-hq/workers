@@ -55,7 +55,7 @@ export class CfBridgeClient {
 export function authFromEnv(cfg: { bridge_url_env: string; bridge_token_env: string }): BridgeAuth {
   const url = process.env[cfg.bridge_url_env]
   const token = process.env[cfg.bridge_token_env]
-  if (!url) throw new Error(`sandbox-cf: ${cfg.bridge_url_env} is not set; deploy bridge/ first`)
-  if (!token) throw new Error(`sandbox-cf: ${cfg.bridge_token_env} is not set; share secret with bridge`)
+  if (!url) throw new Error(`sandbox-cloudflare: ${cfg.bridge_url_env} is not set; deploy bridge/ first`)
+  if (!token) throw new Error(`sandbox-cloudflare: ${cfg.bridge_token_env} is not set; share secret with bridge`)
   return { url, token }
 }

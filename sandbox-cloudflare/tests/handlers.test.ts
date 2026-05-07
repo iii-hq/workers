@@ -17,7 +17,7 @@ function ctx(max: number, allowlist: string[] = []): HandlerCtx {
   return { config, client, inFlight: { value: 0 } }
 }
 
-describe('sandbox::cf handlers', () => {
+describe('sandbox::cloudflare handlers', () => {
   it('create rejects image not in allowlist', async () => {
     const c = ctx(10, ['python'])
     await expect(doCreate(c, { image: 'node' })).rejects.toBeInstanceOf(SandboxError)

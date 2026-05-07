@@ -1,0 +1,12 @@
+iii: v1
+name: sandbox-cloudflare
+language: node
+deploy: image
+manifest: package.json
+description: Narrow iii worker that exposes Cloudflare Sandbox via the sandbox::cloudflare::* trigger family. Talks HTTPS to a thin Cloudflare Worker bridge (deployed separately from this worker's bridge/ subdir) because CF Sandbox lives inside a Durable Object on the Workers runtime, not on a host iii engine can run.
+config:
+  bridge_url_env: CLOUDFLARE_BRIDGE_URL
+  bridge_token_env: CLOUDFLARE_BRIDGE_TOKEN
+  max_concurrent_sandboxes: 10
+  default_idle_timeout_secs: 300
+  image_allowlist: []

@@ -1,6 +1,6 @@
-# sandbox-cf bridge
+# sandbox-cloudflare bridge
 
-Thin Cloudflare Worker that exposes HTTPS routes corresponding to every `sandbox::cf::*` function, calling `@cloudflare/sandbox`'s `getSandbox(env.Sandbox, id)` underneath. The iii worker in the parent directory talks to this bridge — that's the only way to reach a CF Sandbox from outside the Cloudflare Workers runtime.
+Thin Cloudflare Worker that exposes HTTPS routes corresponding to every `sandbox::cloudflare::*` function, calling `@cloudflare/sandbox`'s `getSandbox(env.Sandbox, id)` underneath. The iii worker in the parent directory talks to this bridge — that's the only way to reach a CF Sandbox from outside the Cloudflare Workers runtime.
 
 ## Why a bridge
 
@@ -18,17 +18,17 @@ CF Sandbox is a Durable Object that owns a Container. Both run inside the Cloudf
 | POST | `/fs/read` | `sandbox.readFile(path)` |
 | POST | `/fs/write` | `sandbox.writeFile(path, bytes, { mode })` |
 
-All routes require `Authorization: Bearer <CF_BRIDGE_TOKEN>` (shared secret with the iii worker).
+All routes require `Authorization: Bearer <CLOUDFLARE_BRIDGE_TOKEN>` (shared secret with the iii worker).
 
 ## Deploy
 
 ```bash
 npm install
-wrangler secret put CF_BRIDGE_TOKEN     # paste the same token you'll set in CF_BRIDGE_TOKEN on the iii worker side
+wrangler secret put CLOUDFLARE_BRIDGE_TOKEN     # paste the same token you'll set in CLOUDFLARE_BRIDGE_TOKEN on the iii worker side
 wrangler deploy
 ```
 
-`wrangler deploy` prints the bridge URL (e.g. `https://sandbox-cf-bridge.<account>.workers.dev`). Set that as `CF_BRIDGE_URL` on the iii worker side.
+`wrangler deploy` prints the bridge URL (e.g. `https://sandbox-cloudflare-bridge.<account>.workers.dev`). Set that as `CLOUDFLARE_BRIDGE_URL` on the iii worker side.
 
 ## Status
 

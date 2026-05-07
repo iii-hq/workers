@@ -1,9 +1,9 @@
-// Cloudflare Worker bridge for sandbox-cf. The iii worker side (parent
+// Cloudflare Worker bridge for sandbox-cloudflare. The iii worker side (parent
 // dir) talks to this Worker over HTTPS; this Worker calls @cloudflare/sandbox's
 // `getSandbox(env.Sandbox, id)` and drives the underlying Container
 // Durable Object.
 //
-// Auth: shared bearer token, set via `wrangler secret put CF_BRIDGE_TOKEN`.
+// Auth: shared bearer token, set via `wrangler secret put CLOUDFLARE_BRIDGE_TOKEN`.
 //
 // SDK shapes verified via context7 against /cloudflare/sandbox-sdk:
 //   sandbox.exec(cmd, {timeout, cwd, env, signal}) → {stdout, stderr, exitCode, success}
@@ -16,7 +16,7 @@ import { getSandbox, proxyToSandbox, type Sandbox } from '@cloudflare/sandbox'
 
 interface Env {
   Sandbox: DurableObjectNamespace<Sandbox>
-  CF_BRIDGE_TOKEN: string
+  CLOUDFLARE_BRIDGE_TOKEN: string
   PREVIEW_HOSTNAME?: string
 }
 
@@ -95,7 +95,7 @@ export default {
     if (proxyResponse) return proxyResponse
 
     const auth = req.headers.get('Authorization') ?? ''
-    if (!auth.startsWith('Bearer ') || auth.slice(7) !== env.CF_BRIDGE_TOKEN) {
+    if (!auth.startsWith('Bearer ') || auth.slice(7) !== env.CLOUDFLARE_BRIDGE_TOKEN) {
       return unauthorized()
     }
 
