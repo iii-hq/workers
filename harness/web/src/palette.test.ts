@@ -46,11 +46,11 @@ describe("isSensitive", () => {
     ["policy::list", true],
     ["auth::set_token", true],
     ["auth::set_anything", true],
-    ["shell::filesystem::write", true],
-    ["shell::filesystem::mkdir", true],
-    ["shell::filesystem::rm", true],
-    ["shell::filesystem::ls", false],
-    ["shell::filesystem::read", false],
+    ["shell::fs::write", true],
+    ["shell::fs::mkdir", true],
+    ["shell::fs::rm", true],
+    ["shell::fs::ls", false],
+    ["shell::fs::read", false],
     ["state::get", false],
     ["harness::status", false],
     ["auth::status", false],
@@ -63,7 +63,7 @@ describe("isSensitive", () => {
 describe("workerFromId", () => {
   it("returns prefix before ::", () => {
     expect(workerFromId("session-tree::list")).toBe("session-tree");
-    expect(workerFromId("shell::filesystem::ls")).toBe("shell");
+    expect(workerFromId("shell::fs::ls")).toBe("shell");
   });
   it("returns (unknown) when no separator", () => {
     expect(workerFromId("flat")).toBe("(unknown)");
