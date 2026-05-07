@@ -6,7 +6,7 @@ use serde_json::json;
 
 pub const ID: &str = "subagent::start";
 pub const DESCRIPTION: &str =
-    "Spawn a sub-agent for a focused subtask. Args: prompt, provider, model, system_prompt?, max_turns?, parent_session_id?, max_subagent_depth?.";
+    "Spawn a sub-agent for a focused subtask. Args: prompt, provider, model, system_prompt?, parent_session_id?, max_subagent_depth?.";
 
 pub async fn execute(iii: &III, args: &Value, config: &SubagentConfig) -> Result<Value, IIIError> {
     let prompt = required(args, "prompt")?;
@@ -47,6 +47,8 @@ pub async fn execute(iii: &III, args: &Value, config: &SubagentConfig) -> Result
         "{parent_session}::sub-{}",
         chrono::Utc::now().timestamp_millis()
     );
+    // Omit `tools`: run::start ignores caller tools; catalog is built in
+    // turn-orchestrator provisioning from engine::functions::list.
     let payload = json!({
         "session_id": child_session_id,
         "parent_session_id": parent_session,
@@ -58,7 +60,6 @@ pub async fn execute(iii: &III, args: &Value, config: &SubagentConfig) -> Result
             "content": [{"type": "text", "text": prompt}],
             "timestamp": chrono::Utc::now().timestamp_millis(),
         }],
-        "tools": [],
     });
 
     let response = iii
