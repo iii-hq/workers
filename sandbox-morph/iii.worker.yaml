@@ -1,0 +1,13 @@
+iii: v1
+name: sandbox-morph
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-sandbox-morph
+description: Narrow iii worker that exposes Morph microVM sandboxes via the sandbox::morph::* trigger family.
+config:
+  api_base: "https://cloud.morph.so/api"
+  api_key_env: MORPH_API_KEY
+  max_concurrent_sandboxes: 10
+  default_idle_timeout_secs: 300
+  image_allowlist: []
