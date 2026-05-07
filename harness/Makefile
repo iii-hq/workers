@@ -35,7 +35,7 @@ WORKERS := \
   turn-orchestrator provider-router \
   session-tree session-inbox \
   models-catalog hook-fanout policy-denylist \
-  shell-bash shell-filesystem subagent \
+  shell subagent \
   provider-anthropic provider-openai \
   auth-credentials llm-budget \
   skills approval-gate
