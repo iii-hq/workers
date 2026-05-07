@@ -13,9 +13,9 @@ matching GitHub Release asset for the host's target triple.
 | Worker | Kind | Summary |
 |---|---|---|
 | [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
-| [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `inbox::*` (push, drain, peek). |
+| [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `session-inbox::*` (push, drain, peek). |
 | [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
-| [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hooks::publish_collect` — fans an event to subscribers and merges replies. |
+| [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hook-fanout::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O. JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |

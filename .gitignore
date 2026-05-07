@@ -20,6 +20,8 @@ WORKERS-PR-REVIEW.md
 *.pid
 *.zip
 config.yaml
+!llm-budget/config.yaml
+!provider-anthropic/config.yaml
 iii.lock
 harness/.omx/
 harness/web/.vite/

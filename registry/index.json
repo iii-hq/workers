@@ -19,7 +19,7 @@
     },
     "session-inbox": {
       "type": "binary",
-      "description": "Per-session inbox under inbox::* (push, drain, peek) backed by iii state",
+      "description": "Per-session inbox (session-inbox::push, drain, peek) backed by iii state",
       "repo": "iii-hq/workers",
       "tag_prefix": "session-inbox",
       "supported_targets": [
@@ -47,7 +47,7 @@
     },
     "hook-fanout": {
       "type": "binary",
-      "description": "Reusable publish-collect primitive under hooks::publish_collect with subscriber reply merging",
+      "description": "Reusable publish-collect primitive (hook-fanout::publish_collect) with subscriber reply merging",
       "repo": "iii-hq/workers",
       "tag_prefix": "hook-fanout",
       "supported_targets": [

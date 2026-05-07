@@ -132,7 +132,7 @@ async fn abort_set(iii: &III, session_id: &str) -> bool {
 async fn drain_queue(iii: &III, name: &str, session_id: &str) -> Vec<AgentMessage> {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "inbox::drain".into(),
+            function_id: "session-inbox::drain".into(),
             payload: json!({ "name": name, "session_id": session_id }),
             action: None,
             timeout_ms: None,
