@@ -1,0 +1,13 @@
+iii: v1
+name: sandbox-e2b
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-sandbox-e2b
+description: Narrow iii worker that exposes E2B microVM sandboxes via the sandbox::e2b::* trigger family.
+config:
+  api_base: "https://api.e2b.dev"
+  api_key_env: E2B_API_KEY
+  max_concurrent_sandboxes: 10
+  default_idle_timeout_secs: 300
+  image_allowlist: []

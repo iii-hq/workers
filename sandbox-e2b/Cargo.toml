@@ -1,0 +1,52 @@
+[package]
+name = "iii-sandbox-e2b"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+authors = ["iii contributors"]
+publish = false
+
+[lib]
+name = "sandbox_e2b"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iii-sandbox-e2b"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.11.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+base64 = "0.22"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+unused_async = "allow"
+uninlined_format_args = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+match_same_arms = "allow"
