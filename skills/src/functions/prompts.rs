@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::SkillsConfig;
+use crate::fs_source::{self, FsPrompt};
 use crate::functions::skills::is_always_hidden;
 use crate::state;
 use crate::trigger_types::{self, SubscriberSet};
@@ -69,6 +70,10 @@ struct PromptEntry {
     function_id: String,
     arguments: usize,
     registered_at: String,
+    /// `"state"` for state-backed prompts (`prompts::register`), `"fs"`
+    /// for filesystem-backed entries loaded from `prompts:` glob
+    /// patterns. Mirrors the `skills::list` shape.
+    origin: &'static str,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -222,13 +227,30 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                         name: p.name,
                         function_id: p.function_id,
                         registered_at: p.registered_at,
+                        origin: "state",
                     })
                     .collect();
+                let state_names: HashSet<String> =
+                    out.iter().map(|e| e.name.clone()).collect();
+                for fs in non_colliding_fs_prompts(&cfg, &state_names) {
+                    out.push(PromptEntry {
+                        name: fs.name,
+                        // No backing function — fs prompts are static
+                        // markdown rendered straight as a user message.
+                        function_id: String::new(),
+                        arguments: 0,
+                        registered_at: fs_registered_at(&fs.abs_path),
+                        origin: "fs",
+                    });
+                }
                 out.sort_by(|a, b| a.name.cmp(&b.name));
                 Ok::<_, IIIError>(ListPromptsOutput { prompts: out })
             }
         })
-        .description("List registered prompts (name, function_id, arg count, registered_at)."),
+        .description(
+            "List registered prompts (name, function_id, arg count, registered_at, origin). \
+             `origin` is `state` for state-backed entries, `fs` for filesystem-backed.",
+        ),
     );
 }
 
@@ -270,6 +292,7 @@ fn register_mcp_get(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 
 pub async fn mcp_list(iii: &III, cfg: &SkillsConfig) -> Value {
     let entries = list_stored(iii, cfg).await.unwrap_or_default();
+    let state_names: HashSet<String> = entries.iter().map(|p| p.name.clone()).collect();
     let mut prompts: Vec<Value> = entries
         .into_iter()
         .map(|p| {
@@ -291,6 +314,13 @@ pub async fn mcp_list(iii: &III, cfg: &SkillsConfig) -> Value {
             })
         })
         .collect();
+    for fs in non_colliding_fs_prompts(cfg, &state_names) {
+        prompts.push(json!({
+            "name": fs.name,
+            "description": fs.description,
+            "arguments": [],
+        }));
+    }
     prompts.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     json!({ "prompts": prompts })
 }
@@ -304,29 +334,53 @@ pub async fn mcp_get(
     validate_name(&name)?;
     let arguments = arguments.unwrap_or_else(|| json!({}));
 
-    let stored = read_prompt(iii, cfg, &name)
-        .await?
-        .ok_or_else(|| format!("Prompt not found: {name}"))?;
+    if let Some(stored) = read_prompt(iii, cfg, &name).await? {
+        // State always wins — runtime registrations override any
+        // colliding filesystem prompt with the same name.
+        if is_always_hidden(&stored.function_id) {
+            return Err(format!(
+                "Prompt handler '{}' is in an internal namespace and cannot back a prompt",
+                stored.function_id
+            ));
+        }
+        let raw = iii
+            .trigger(TriggerRequest {
+                function_id: stored.function_id.clone(),
+                payload: arguments,
+                action: None,
+                timeout_ms: Some(cfg.state_timeout_ms),
+            })
+            .await
+            .map_err(|e| format!("trigger {}: {e}", stored.function_id))?;
 
-    if is_always_hidden(&stored.function_id) {
-        return Err(format!(
-            "Prompt handler '{}' is in an internal namespace and cannot back a prompt",
-            stored.function_id
-        ));
+        let messages = normalize_prompt_output(raw)?;
+        return Ok(json!({ "description": stored.description, "messages": messages }));
     }
 
-    let raw = iii
-        .trigger(TriggerRequest {
-            function_id: stored.function_id.clone(),
-            payload: arguments,
-            action: None,
-            timeout_ms: Some(cfg.state_timeout_ms),
-        })
-        .await
-        .map_err(|e| format!("trigger {}: {e}", stored.function_id))?;
+    if let Some(fs) = find_fs_prompt(cfg, &name) {
+        // Static fs prompts ignore caller-supplied `arguments` —
+        // there's no template engine in v1, just a verbatim body
+        // returned as a single user-text message.
+        if !arguments_is_empty(&arguments) {
+            tracing::debug!(prompt = %name, "fs prompt ignoring caller-supplied arguments (no templating)");
+        }
+        let body = fs_source::read_body(&fs.abs_path)?;
+        let messages = json!([{
+            "role": "user",
+            "content": { "type": "text", "text": body },
+        }]);
+        return Ok(json!({ "description": fs.description, "messages": messages }));
+    }
 
-    let messages = normalize_prompt_output(raw)?;
-    Ok(json!({ "description": stored.description, "messages": messages }))
+    Err(format!("Prompt not found: {name}"))
+}
+
+fn arguments_is_empty(args: &Value) -> bool {
+    match args {
+        Value::Null => true,
+        Value::Object(m) => m.is_empty(),
+        _ => false,
+    }
 }
 
 // ---------- validation ----------
@@ -414,6 +468,36 @@ async fn list_stored(iii: &III, cfg: &SkillsConfig) -> Result<Vec<StoredPrompt>,
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+// ---------- fs source helpers ----------
+
+/// Re-glob the configured `prompts:` patterns and return entries whose
+/// name is NOT shadowed by a state-backed prompt. Same collision
+/// policy as the skills counterpart.
+pub fn non_colliding_fs_prompts(
+    cfg: &SkillsConfig,
+    state_names: &HashSet<String>,
+) -> Vec<FsPrompt> {
+    let base = cfg.glob_base_dir();
+    let (fs, _skipped) = fs_source::expand_prompt_globs(&base, &cfg.prompts);
+    fs.into_iter()
+        .filter(|p| !state_names.contains(&p.name))
+        .collect()
+}
+
+fn find_fs_prompt(cfg: &SkillsConfig, name: &str) -> Option<FsPrompt> {
+    let base = cfg.glob_base_dir();
+    let (fs, _skipped) = fs_source::expand_prompt_globs(&base, &cfg.prompts);
+    fs.into_iter().find(|p| p.name == name)
+}
+
+fn fs_registered_at(path: &std::path::Path) -> String {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

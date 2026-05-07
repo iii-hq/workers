@@ -27,6 +27,7 @@
 //! `skills::on-change` trigger type so interested workers (the `mcp`
 //! worker today) can forward MCP notifications.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use iii_sdk::{IIIError, RegisterFunction, TriggerRequest, III};
@@ -35,10 +36,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::SkillsConfig;
+use crate::fs_source::{self, FsSkill};
 use crate::state;
 use crate::trigger_types::{self, SubscriberSet};
 
-const SKILL_BODY_MAX_BYTES: usize = 256 * 1024;
+pub const SKILL_BODY_MAX_BYTES: usize = 256 * 1024;
 
 /// Per-segment cap for both skill ids and section URI segments.
 /// The total id is allowed to chain many segments via `/`, but each
@@ -123,6 +125,11 @@ struct SkillEntry {
     id: String,
     bytes: usize,
     registered_at: String,
+    /// `"state"` for state-backed skills (`skills::register`), `"fs"`
+    /// for filesystem-backed entries loaded via the `skills:` glob
+    /// patterns. Lets clients distinguish the two without a separate
+    /// query.
+    origin: &'static str,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -273,13 +280,28 @@ fn register_list_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                         bytes: s.skill.len(),
                         id: s.id,
                         registered_at: s.registered_at,
+                        origin: "state",
                     })
                     .collect();
+                let state_ids: HashSet<String> =
+                    out.iter().map(|e| e.id.clone()).collect();
+                for fs in non_colliding_fs_skills(&cfg, &state_ids) {
+                    let (bytes, registered_at) = fs_metadata(&fs);
+                    out.push(SkillEntry {
+                        id: fs.id,
+                        bytes,
+                        registered_at,
+                        origin: "fs",
+                    });
+                }
                 out.sort_by(|a, b| a.id.cmp(&b.id));
                 Ok::<_, IIIError>(ListSkillsOutput { skills: out })
             }
         })
-        .description("List registered skills (id, body length, registered_at) without bodies."),
+        .description(
+            "List registered skills (id, body length, registered_at, origin) without bodies. \
+             `origin` is `state` for state-backed entries, `fs` for filesystem-backed.",
+        ),
     );
 }
 
@@ -376,15 +398,32 @@ pub async fn list_resources(iii: &III, cfg: &SkillsConfig) -> Value {
         "description": "Index of every registered skill",
         "mimeType": "text/markdown",
     })];
-    if let Ok(skills) = list_stored(iii, cfg).await {
-        for s in skills {
-            let title = extract_title(&s.skill).unwrap_or(&s.id);
-            resources.push(json!({
-                "uri": format!("{URI_PREFIX}{}", s.id),
-                "name": title,
-                "mimeType": "text/markdown",
-            }));
-        }
+    let state_skills = list_stored(iii, cfg).await.unwrap_or_default();
+    let state_ids: HashSet<String> = state_skills.iter().map(|s| s.id.clone()).collect();
+    for s in &state_skills {
+        let title = extract_title(&s.skill).unwrap_or(&s.id);
+        resources.push(json!({
+            "uri": format!("{URI_PREFIX}{}", s.id),
+            "name": title,
+            "mimeType": "text/markdown",
+        }));
+    }
+    for fs in non_colliding_fs_skills(cfg, &state_ids) {
+        // Cheap title resolution: read the file once. On any IO error
+        // we still surface the entry under its id so the resource
+        // listing isn't suddenly missing rows because of a transient
+        // read failure.
+        let title = match fs_source::read_body(&fs.abs_path) {
+            Ok(body) => extract_title(&body)
+                .map(String::from)
+                .unwrap_or_else(|| fs.id.clone()),
+            Err(_) => fs.id.clone(),
+        };
+        resources.push(json!({
+            "uri": format!("{URI_PREFIX}{}", fs.id),
+            "name": title,
+            "mimeType": "text/markdown",
+        }));
     }
     json!({ "resources": resources })
 }
@@ -420,10 +459,18 @@ pub async fn read(iii: &III, cfg: &SkillsConfig, uri: &str) -> Result<Value, Str
             // crafted `iii://Foo` URI fails fast even if it slipped
             // past the section-prefix check.
             validate_id(&id)?;
-            let stored = read_skill(iii, cfg, &id)
-                .await?
-                .ok_or_else(|| format!("Skill not found: {id}"))?;
-            Ok(wrap_contents(uri, "text/markdown", &stored.skill))
+            // State always wins on lookup so a runtime registration
+            // covering an fs id stays authoritative (matches the
+            // collision policy: fs entries colliding with state are
+            // never served).
+            if let Some(stored) = read_skill(iii, cfg, &id).await? {
+                return Ok(wrap_contents(uri, "text/markdown", &stored.skill));
+            }
+            if let Some(fs) = find_fs_skill(cfg, &id) {
+                let body = fs_source::read_body(&fs.abs_path)?;
+                return Ok(wrap_contents(uri, "text/markdown", &body));
+            }
+            Err(format!("Skill not found: {id}"))
         }
         ParsedUri::Section { function_id } => {
             // Recursion guard — a client that crafts iii://fn/state/set
@@ -634,7 +681,7 @@ pub fn validate_id(id: &str) -> Result<(), String> {
 // ---------- markdown helpers ----------
 
 async fn render_index(iii: &III, cfg: &SkillsConfig) -> String {
-    let skills = match list_stored(iii, cfg).await {
+    let state_skills = match list_stored(iii, cfg).await {
         Ok(s) => s,
         Err(e) => {
             return format!("# Skills\n\n_Error reading skills index: {e}_\n");
@@ -645,31 +692,63 @@ async fn render_index(iii: &III, cfg: &SkillsConfig) -> String {
          Sub-skills are indented under their parent path so a top-level skill stays small \
          and the LLM can drill in only when it needs more detail.\n\n",
     );
-    if skills.is_empty() {
+
+    let state_ids: HashSet<String> = state_skills.iter().map(|s| s.id.clone()).collect();
+    let fs_skills = non_colliding_fs_skills(cfg, &state_ids);
+
+    if state_skills.is_empty() && fs_skills.is_empty() {
         out.push_str("_No skills are currently registered._\n");
         return out;
     }
+
     // `list_stored` returns entries sorted lexicographically by id, so a
     // single linear pass yields a correct tree: every nested entry
     // appears immediately after its parent (or its parent's last
     // descendant). Indent each entry by `2 * depth` spaces, where depth
     // is the number of '/' separators in the id.
-    for s in skills {
-        let depth = s.id.matches('/').count();
-        let indent = " ".repeat(depth * 2);
+    for s in &state_skills {
         let title = extract_title(&s.skill).unwrap_or(&s.id);
         let desc = extract_description(&s.skill).unwrap_or_default();
-        let suffix = if desc.is_empty() {
-            String::new()
-        } else {
-            format!(" — {desc}")
-        };
-        out.push_str(&format!(
-            "{indent}- [`{}`](iii://{}) — {}{}\n",
-            s.id, s.id, title, suffix
-        ));
+        push_index_bullet(&mut out, &s.id, title, &desc);
     }
+
+    if !fs_skills.is_empty() {
+        if !state_skills.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(
+            "## Custom skills\n\nLoaded from `skills:` glob patterns in the worker config. \
+             The file system is the source of truth for these entries.\n\n",
+        );
+        for fs in &fs_skills {
+            let body = fs_source::read_body(&fs.abs_path).ok();
+            let title = body
+                .as_deref()
+                .and_then(extract_title)
+                .map(String::from)
+                .unwrap_or_else(|| fs.id.clone());
+            let desc = body
+                .as_deref()
+                .and_then(extract_description)
+                .unwrap_or_default();
+            push_index_bullet(&mut out, &fs.id, &title, &desc);
+        }
+    }
+
     out
+}
+
+fn push_index_bullet(out: &mut String, id: &str, title: &str, desc: &str) {
+    let depth = id.matches('/').count();
+    let indent = " ".repeat(depth * 2);
+    let suffix = if desc.is_empty() {
+        String::new()
+    } else {
+        format!(" — {desc}")
+    };
+    out.push_str(&format!(
+        "{indent}- [`{id}`](iii://{id}) — {title}{suffix}\n"
+    ));
 }
 
 pub fn extract_title(markdown: &str) -> Option<&str> {
@@ -766,6 +845,47 @@ async fn list_stored(iii: &III, cfg: &SkillsConfig) -> Result<Vec<StoredSkill>, 
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+// ---------- fs source helpers ----------
+
+/// Re-glob the configured `skills:` patterns and return entries whose
+/// id is NOT shadowed by a state-backed skill. This is the single
+/// place the collision policy is enforced — every read/list/index
+/// path goes through it.
+pub fn non_colliding_fs_skills(cfg: &SkillsConfig, state_ids: &HashSet<String>) -> Vec<FsSkill> {
+    let base = cfg.glob_base_dir();
+    let (fs, _skipped) = fs_source::expand_skill_globs(&base, &cfg.skills);
+    fs.into_iter()
+        .filter(|s| !state_ids.contains(&s.id))
+        .collect()
+}
+
+/// Targeted lookup for the read path. Returns `None` if no glob
+/// pattern matches `id` or if a glob expansion error swallowed it.
+fn find_fs_skill(cfg: &SkillsConfig, id: &str) -> Option<FsSkill> {
+    let base = cfg.glob_base_dir();
+    let (fs, _skipped) = fs_source::expand_skill_globs(&base, &cfg.skills);
+    fs.into_iter().find(|s| s.id == id)
+}
+
+/// Cheap metadata for `skills::list`. Bytes is the on-disk file size;
+/// `registered_at` is the file's mtime as RFC 3339. Falls back to "0"
+/// / "" when the metadata read fails so the listing entry still shows
+/// up rather than being silently dropped.
+fn fs_metadata(skill: &FsSkill) -> (usize, String) {
+    match std::fs::metadata(&skill.abs_path) {
+        Ok(meta) => {
+            let bytes = meta.len() as usize;
+            let modified = meta
+                .modified()
+                .ok()
+                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                .unwrap_or_default();
+            (bytes, modified)
+        }
+        Err(_) => (0, String::new()),
+    }
 }
 
 #[cfg(test)]
