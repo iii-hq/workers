@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, BridgeError } from "./bridge";
+import { visibleMessages } from "./reducer";
 import { useAgentStream } from "./useAgentStream";
 import { useSkillsIndex } from "./useSkillsIndex";
 import { ApprovalRow } from "./components/ApprovalRow";
@@ -98,8 +99,9 @@ export default function App() {
 
   useEffect(() => {
     if (!active) return;
-    if (stream.messages.length > 0) setMessages(stream.messages);
-  }, [active, stream.messages]);
+    const visible = visibleMessages(stream);
+    if (visible.length > 0) setMessages(visible);
+  }, [active, stream]);
 
   const isRunning = loading || stream.status === "running";
 

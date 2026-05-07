@@ -141,14 +141,16 @@ export interface FsReadDetails {
   error?: string;
 }
 
+export type EntryId = string;
+
 export type AgentEvent =
   | { type: "agent_start" }
-  | { type: "agent_end"; messages: AgentMessage[] }
+  | { type: "agent_end"; messages: { entry_id?: EntryId; message: AgentMessage }[] }
   | { type: "turn_start" }
-  | { type: "turn_end"; message: AgentMessage; tool_results: unknown[] }
-  | { type: "message_start"; message: AgentMessage }
-  | { type: "message_update"; message: AgentMessage; llm_event: unknown }
-  | { type: "message_end"; message: AgentMessage }
+  | { type: "turn_end"; message: AgentMessage; tool_results: unknown[]; entry_id?: EntryId }
+  | { type: "message_start"; message: AgentMessage; entry_id?: EntryId }
+  | { type: "message_update"; message: AgentMessage; llm_event: unknown; entry_id?: EntryId }
+  | { type: "message_end"; message: AgentMessage; entry_id?: EntryId }
   | {
       type: "tool_execution_start";
       tool_call_id: string;
@@ -191,13 +193,19 @@ export interface PendingApproval {
 }
 
 export interface StreamState {
-  messages: AgentMessage[];
+  messageMap: Map<EntryId, AgentMessage>;
+  unkeyedMessages: AgentMessage[];   // backwards-compat for events without entry_id
+  messageOrder: EntryId[];
+  lastEntryId: EntryId | null;
   pendingApprovals: PendingApproval[];
   status: "idle" | "running" | "ended";
 }
 
 export const INITIAL_STREAM_STATE: StreamState = {
-  messages: [],
+  messageMap: new Map(),
+  unkeyedMessages: [],
+  messageOrder: [],
+  lastEntryId: null,
   pendingApprovals: [],
   status: "idle",
 };
