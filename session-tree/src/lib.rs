@@ -355,6 +355,53 @@ pub struct MessageWithEntryId {
     pub message: AgentMessage,
 }
 
+/// Result of a [`reconcile`] call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileResult {
+    pub state_count: u32,
+    pub tree_count_before: u32,
+    pub tree_count_after: u32,
+    pub repaired: u32,
+}
+
+/// Compare the caller-supplied `state_snapshot` against the session's
+/// session-tree contents. Append any messages from `state_snapshot` that
+/// aren't already in the tree (positionally — assumes both are append-only
+/// and ordered). Idempotent: subsequent calls with the same snapshot are
+/// no-ops.
+pub async fn reconcile<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    state_snapshot: &[AgentMessage],
+) -> Result<ReconcileResult, SessionError> {
+    let tree_pairs = load_messages_with_entry_ids(store, session_id, None).await?;
+    let tree_count_before = u32::try_from(tree_pairs.len()).unwrap_or(u32::MAX);
+    let state_count = u32::try_from(state_snapshot.len()).unwrap_or(u32::MAX);
+
+    if state_snapshot.len() <= tree_pairs.len() {
+        return Ok(ReconcileResult {
+            state_count,
+            tree_count_before,
+            tree_count_after: tree_count_before,
+            repaired: 0,
+        });
+    }
+
+    let mut last_id: Option<String> = tree_pairs.last().map(|p| p.entry_id.clone());
+    let mut repaired = 0u32;
+    for msg in &state_snapshot[tree_pairs.len()..] {
+        let new_id = append_message(store, session_id, last_id.clone(), msg.clone()).await?;
+        last_id = Some(new_id);
+        repaired += 1;
+    }
+    Ok(ReconcileResult {
+        state_count,
+        tree_count_before,
+        tree_count_after: tree_count_before + repaired,
+        repaired,
+    })
+}
+
 /// Like [`load_messages`], but pairs each message with its source entry id.
 /// Used by callers that need to fork from a specific message.
 pub async fn load_messages_with_entry_ids<S: SessionStore + ?Sized>(
@@ -853,6 +900,7 @@ pub mod function_ids {
     pub const APPEND: &str = "session-tree::append";
     pub const MESSAGES: &str = "session-tree::messages";
     pub const LIST: &str = "session-tree::list";
+    pub const RECONCILE: &str = "session-tree::reconcile";
 }
 
 /// Register all `session-tree::*` iii functions on `iii`, backed by `store`.
@@ -882,6 +930,8 @@ pub mod function_ids {
 ///   → `{ "sessions": [{session_id, created_at, updated_at, entry_count, display_name?, cwd?, last_message_summary?}], "total": u32 }`
 /// - `session-tree::ensure` — `{ "session_id": str, "display_name": str?, "cwd": str? }`
 ///   → `{ "session_id": str }`  // idempotent
+/// - `session-tree::reconcile` — `{ "session_id": str, "state_snapshot": [AgentMessage] }`
+///   → `{ "state_count": u32, "tree_count_before": u32, "tree_count_after": u32, "repaired": u32 }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
     S: SessionStore + Send + Sync + ?Sized + 'static,
@@ -1105,6 +1155,28 @@ where
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
                 Ok(json!({ "messages": messages }))
+            }
+        },
+    )));
+
+    let store_reconcile = store.clone();
+    refs.push(iii.register_function((
+        RegisterFunctionMessage::with_id(function_ids::RECONCILE.into()).with_description(
+            "Mirror missing messages from a state-snapshot into session-tree".into(),
+        ),
+        move |payload: serde_json::Value| {
+            let store = store_reconcile.clone();
+            async move {
+                let session_id = required_str(&payload, "session_id")?;
+                let snapshot_value = payload.get("state_snapshot").cloned().ok_or_else(|| {
+                    IIIError::Handler("missing required field: state_snapshot".into())
+                })?;
+                let snapshot: Vec<AgentMessage> = serde_json::from_value(snapshot_value)
+                    .map_err(|e| IIIError::Handler(format!("invalid state_snapshot: {e}")))?;
+                let result = reconcile(store.as_ref(), &session_id, &snapshot)
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                serde_json::to_value(result).map_err(|e| IIIError::Handler(e.to_string()))
             }
         },
     )));
@@ -1604,5 +1676,51 @@ mod tests {
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].entry_id, id1);
         assert_eq!(pairs[1].entry_id, id2);
+    }
+
+    #[tokio::test]
+    async fn reconcile_appends_missing_messages_from_state_snapshot() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-test";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        // Tree has 1 message
+        append_message(&store, sid, None, user("first", 1))
+            .await
+            .unwrap();
+
+        // State snapshot says there should be 3 messages
+        let state_snapshot: Vec<AgentMessage> =
+            vec![user("first", 1), user("second", 2), user("third", 3)];
+
+        let result = reconcile(&store, sid, &state_snapshot).await.unwrap();
+        assert_eq!(result.state_count, 3);
+        assert_eq!(result.tree_count_before, 1);
+        assert_eq!(result.tree_count_after, 3);
+        assert_eq!(result.repaired, 2);
+    }
+
+    #[tokio::test]
+    async fn reconcile_in_sync_is_noop() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-sync";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        append_message(&store, sid, None, user("only", 1))
+            .await
+            .unwrap();
+        let snap = vec![user("only", 1)];
+        let result = reconcile(&store, sid, &snap).await.unwrap();
+        assert_eq!(result.repaired, 0);
+    }
+
+    #[tokio::test]
+    async fn reconcile_idempotent() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-idempotent";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        let snap = vec![user("a", 1), user("b", 2)];
+        let r1 = reconcile(&store, sid, &snap).await.unwrap();
+        let r2 = reconcile(&store, sid, &snap).await.unwrap();
+        assert_eq!(r1.repaired, 2);
+        assert_eq!(r2.repaired, 0);
     }
 }
