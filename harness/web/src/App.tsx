@@ -13,6 +13,7 @@ import { FilesystemPanel } from "./components/FilesystemPanel";
 import { SessionList, fetchSessions } from "./components/SessionList";
 import { SessionView } from "./components/SessionView";
 import { StatusPill } from "./components/StatusPill";
+import { loadWorkspace, saveWorkspace } from "./workspace";
 import type {
   AgentMessage,
   AuthStatus,
@@ -35,7 +36,11 @@ type Tab = "chat" | "cost" | "files";
 const BASE_SYSTEM_PROMPT =
   "You have filesystem tools that operate inside a sandbox. Use them when the user asks to read, inspect, create, or modify files. Paths must be absolute (e.g. /tmp/notes.md). Some destructive ops may be denied by policy — if a tool result contains `blocked`, explain which policy refused and stop, do not retry.";
 
-function buildSystemPrompt(skillsIndex: string | null): string {
+function buildSystemPrompt(skillsIndex: string | null, cwd: string): string {
+  const cwdSection = cwd
+    ? `## Working directory\n${cwd}\nPrefer paths under this directory. Use absolute paths.\n\n`
+    : "";
+
   const skillsSection = skillsIndex
     ? `## Available skills
 
@@ -44,7 +49,7 @@ ${skillsIndex}
 Use the \`skill::fetch\` tool to load any \`iii://\` URI you see above when you need its full content.`
     : "## Available skills\n\n(Skills index not loaded — call `skill::fetch` with `uri: \"iii://skills\"` to discover what's registered.)";
 
-  return `${BASE_SYSTEM_PROMPT}\n\n${skillsSection}`;
+  return `${BASE_SYSTEM_PROMPT}\n\n${cwdSection}${skillsSection}`;
 }
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
@@ -78,6 +83,12 @@ export default function App() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Per-session working directory. Advisory only — surfaced in the system
+  // prompt so the agent prefers paths under it. `loadedCwd` tracks the value
+  // currently persisted so blur/Enter can decide whether to call save.
+  const [cwd, setCwd] = useState<string>("");
+  const [loadedCwd, setLoadedCwd] = useState<string>("");
 
   // Skills-index fetch is strictly non-blocking. The fallback branch in
   // buildSystemPrompt(null) is the agent's recovery path; do not gate
@@ -167,6 +178,37 @@ export default function App() {
     else setMessages([]);
   }, [active, loadMessages]);
 
+  // Load workspace cwd on session change. Resets to empty for the draft
+  // (no active session yet). Errors are swallowed by loadWorkspace.
+  useEffect(() => {
+    if (!active) {
+      setCwd("");
+      setLoadedCwd("");
+      return;
+    }
+    let cancelled = false;
+    void loadWorkspace(active).then((ws) => {
+      if (cancelled) return;
+      const value = ws?.cwd ?? "";
+      setCwd(value);
+      setLoadedCwd(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  // Persist cwd when it differs from the loaded value. Called from blur and
+  // Enter on the header field. Only writes when there's an active session.
+  const commitCwd = useCallback(() => {
+    if (!active) return;
+    const next = cwd.trim();
+    if (next === loadedCwd) return;
+    void saveWorkspace(active, next).then(() => {
+      setLoadedCwd(next);
+    });
+  }, [active, cwd, loadedCwd]);
+
   // When the catalog or provider changes, ensure the selected model belongs
   // to the active provider; otherwise pick the configured default or first
   // available model for the provider.
@@ -207,7 +249,7 @@ export default function App() {
         provider,
         model,
         messages: fullHistory,
-        system_prompt: buildSystemPrompt(skillsIndex),
+        system_prompt: buildSystemPrompt(skillsIndex, cwd.trim()),
         approval_required: APPROVAL_REQUIRED,
       });
       void refreshSessions();
@@ -235,6 +277,29 @@ export default function App() {
           <span className="app-mark-glyph">⌘</span>
           <span className="app-mark-name">harness</span>
           <span className="app-mark-sub">bus console</span>
+          {sessionId ? (
+            <span className="app-mark-sub" title="session id">
+              · {sessionId}
+            </span>
+          ) : null}
+          <input
+            type="text"
+            className="app-head-cwd"
+            value={cwd}
+            placeholder="working directory (optional)"
+            spellCheck={false}
+            disabled={!active}
+            onChange={(e) => setCwd(e.target.value)}
+            onBlur={commitCwd}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitCwd();
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            aria-label="working directory"
+          />
         </div>
         <StatusPill />
       </header>

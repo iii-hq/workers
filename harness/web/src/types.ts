@@ -44,6 +44,14 @@ export interface SessionRow {
   updated_at_ms: number;
 }
 
+// Per-session working directory. Advisory-only — surfaced in the system prompt
+// so the agent prefers paths under cwd. Path scoping/enforcement belongs to
+// `policy-denylist`, not the UI.
+export interface Workspace {
+  cwd: string;
+  set_at: number;
+}
+
 export interface HarnessStatus {
   ok: boolean;
   name: string;

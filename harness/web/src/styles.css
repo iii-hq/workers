@@ -130,6 +130,28 @@ code,
   color: var(--ink-3);
 }
 
+.app-head-cwd {
+  margin-left: var(--space-3);
+  min-width: 240px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-1);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.app-head-cwd:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.app-head-cwd:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .app-body {
   display: grid;
   grid-template-columns: var(--rail-w) 1fr;
