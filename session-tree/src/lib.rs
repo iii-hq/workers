@@ -261,6 +261,31 @@ pub async fn create_session<S: SessionStore + ?Sized>(
     Ok(session_id)
 }
 
+/// Idempotent variant of [`create_session`] that uses a caller-supplied
+/// session_id. Returns `session_id` whether it created a new session or the
+/// session already existed.
+pub async fn ensure_session<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    display_name: Option<String>,
+    cwd: Option<String>,
+) -> Result<String, SessionError> {
+    if store.load_meta(session_id).await.is_ok() {
+        return Ok(session_id.to_string());
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let meta = SessionMeta {
+        session_id: session_id.to_string(),
+        display_name,
+        created_at: now,
+        updated_at: now,
+        cwd,
+        branch_count: 0,
+    };
+    store.create(meta).await?;
+    Ok(session_id.to_string())
+}
+
 /// Append a message entry, deriving id and timestamp.
 pub async fn append_message<S: SessionStore + ?Sized>(
     store: &S,
@@ -824,6 +849,7 @@ pub mod function_ids {
     pub const TREE: &str = "session-tree::tree";
     pub const EXPORT_HTML: &str = "session-tree::export_html";
     pub const CREATE: &str = "session-tree::create";
+    pub const ENSURE: &str = "session-tree::ensure";
     pub const APPEND: &str = "session-tree::append";
     pub const MESSAGES: &str = "session-tree::messages";
     pub const LIST: &str = "session-tree::list";
@@ -854,6 +880,8 @@ pub mod function_ids {
 ///   → `{ "messages": [{entry_id, message: AgentMessage}] }`
 /// - `session-tree::list` — `{ "limit": u32?, "offset": u32?, "order": "asc"|"desc"? }`
 ///   → `{ "sessions": [{session_id, created_at, updated_at, entry_count, display_name?, cwd?, last_message_summary?}], "total": u32 }`
+/// - `session-tree::ensure` — `{ "session_id": str, "display_name": str?, "cwd": str? }`
+///   → `{ "session_id": str }`  // idempotent
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
     S: SessionStore + Send + Sync + ?Sized + 'static,
@@ -1002,6 +1030,32 @@ where
                         .await
                         .map_err(|e| IIIError::Handler(e.to_string()))?;
                     Ok(json!({ "session_id": new_id }))
+                }
+            },
+        )),
+    );
+
+    let store_ensure = store.clone();
+    refs.push(
+        iii.register_function((
+            RegisterFunctionMessage::with_id(function_ids::ENSURE.into())
+                .with_description("Idempotently ensure a session exists with the given id".into()),
+            move |payload: serde_json::Value| {
+                let store = store_ensure.clone();
+                async move {
+                    let session_id = required_str(&payload, "session_id")?;
+                    let display_name = payload
+                        .get("display_name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string);
+                    let cwd = payload
+                        .get("cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string);
+                    let id = ensure_session(store.as_ref(), &session_id, display_name, cwd)
+                        .await
+                        .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    Ok(json!({ "session_id": id }))
                 }
             },
         )),
@@ -1513,6 +1567,25 @@ mod tests {
             .unwrap();
         let result = list_sessions(&store, None, None, None).await.unwrap();
         assert_eq!(result.sessions[0].session_id, new);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_creates_with_caller_id_if_absent() {
+        let store = InMemoryStore::new();
+        let sid = "harness-supplied-id";
+        let result = ensure_session(&store, sid, None, None).await.unwrap();
+        assert_eq!(result, sid);
+        let meta = store.load_meta(sid).await.unwrap();
+        assert_eq!(meta.session_id, sid);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_is_idempotent() {
+        let store = InMemoryStore::new();
+        let sid = "harness-supplied-id";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        let result = ensure_session(&store, sid, None, None).await.unwrap();
+        assert_eq!(result, sid);
     }
 
     #[tokio::test]
