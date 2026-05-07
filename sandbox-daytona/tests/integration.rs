@@ -68,15 +68,15 @@ async fn stop_returns_empty_object_on_success_path() {
 }
 
 #[tokio::test]
-async fn list_reports_capacity_envelope() {
+async fn list_reports_capacity_envelope_with_reconciled_flag() {
     let ctx = ctx(7, vec![]);
     let res = do_list(&ctx, json!({})).await.unwrap();
     assert_eq!(res["cap"], 7);
     assert_eq!(res["in_flight"], 0);
     assert_eq!(res["remaining"], 7);
-    // sandboxes is whatever the stubbed client returned (currently an error
-    // path — list bubbles ProviderUnavailable when the upstream fails). We
-    // only assert the envelope shape exists when the upstream succeeds; for
-    // the stubbed path the call errors, which is also fine for v0.
-    let _ = res;
+    // The stub client errors on list, so we land on the fallback branch
+    // and `reconciled` must be `false`. When daytona's REST is wired the
+    // happy path will flip this to `true` and reset in_flight against
+    // the upstream count (see the e2b live test for the full pattern).
+    assert_eq!(res["reconciled"], false);
 }
