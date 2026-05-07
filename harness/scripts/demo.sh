@@ -40,7 +40,7 @@ WORKERS=(
   turn-orchestrator provider-router
   session-tree session-inbox
   models-catalog hook-fanout policy-denylist
-  shell-bash shell-filesystem subagent
+  shell subagent
   provider-anthropic provider-openai
   auth-credentials llm-budget
   skills approval-gate
@@ -52,7 +52,7 @@ ensure_dirs() {
 
 # Binary artifact name comes from each crate’s `iii.worker.yaml` `bin:` field
 # (same value as `[[bin]]` in Cargo.toml). Do not assume `iii-{folder}` — names
-# are mixed historical (`iii-*`) and folder-matched (`shell-bash`, `skills`, …).
+# are mixed historical (`iii-*`) and folder-matched (`shell`, `skills`, …).
 bin_name_for() {
   local w="$1"
   local yaml="$WORKERS_REPO/$w/iii.worker.yaml"
