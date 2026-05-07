@@ -27,12 +27,17 @@ iii-sdk = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 tokio = { workspace = true }
 chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
 
 tokio-stream = "0.1"
-log = "0.4"
-env_logger = "0.11"
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [workspace.package]
 version = "0.1.0"

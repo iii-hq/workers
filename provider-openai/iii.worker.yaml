@@ -4,6 +4,6 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-provider-openai
-description: OpenAI Chat Completions provider under provider::openai::*.
+description: OpenAI Chat Completions; registers provider::openai::complete on the iii bus.
 dependencies:
   auth-credentials: "^0.1.0"

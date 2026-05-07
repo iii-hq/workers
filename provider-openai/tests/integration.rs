@@ -3,8 +3,10 @@
 use provider_openai::{OpenAIConfig, DEFAULT_API_URL, PROVIDER_NAME};
 
 #[test]
-fn library_exports_register_entry_point() {
-    let _ = &provider_openai::register_with_iii;
+fn worker_config_default_matches_crate_constants() {
+    let cfg = provider_openai::config::WorkerConfig::default();
+    assert_eq!(cfg.default_max_tokens, 4096);
+    assert_eq!(cfg.default_api_url, provider_openai::DEFAULT_API_URL);
 }
 
 #[test]

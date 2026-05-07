@@ -7,6 +7,8 @@
 //! [`provider_base::stream_chat_completions`] with a fixed endpoint, provider
 //! name, and `Authorization: Bearer` header.
 
+pub mod config;
+
 use std::sync::Arc;
 
 use harness_types::{
@@ -107,13 +109,21 @@ pub async fn stream(
     .await
 }
 
-/// Register `provider::openai::stream` on the iii bus.
-pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<()> {
+/// Register `provider::openai::complete` on the iii bus.
+pub async fn register_with_iii(
+    iii: &iii_sdk::III,
+    worker_cfg: &config::WorkerConfig,
+) -> anyhow::Result<()> {
+    let default_max = worker_cfg.default_max_tokens;
+    let default_url = worker_cfg.default_api_url.clone();
     provider_base::register_provider_complete::<OpenAIConfig, _, _, _, _>(
         iii,
         PROVIDER_NAME,
-        |model: &str, cred: &auth_credentials::Credential| {
-            OpenAIConfig::with_credential(model, cred)
+        move |model: &str, cred: &auth_credentials::Credential| {
+            OpenAIConfig::with_credential(model, cred).map(|c| {
+                c.with_max_tokens(default_max)
+                    .with_api_url(default_url.clone())
+            })
         },
         stream,
     );
