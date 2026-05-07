@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
+pub mod config;
 pub mod handler;
+pub mod manifest;
 
-pub const PUSH_ID: &str = "inbox::push";
-pub const DRAIN_ID: &str = "inbox::drain";
-pub const PEEK_ID: &str = "inbox::peek";
+pub const PUSH_ID: &str = "session-inbox::push";
+pub const DRAIN_ID: &str = "session-inbox::drain";
+pub const PEEK_ID: &str = "session-inbox::peek";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxRequest {
@@ -32,8 +35,8 @@ pub fn build_clear_set_op() -> Value {
     serde_json::json!({ "type": "set", "path": "", "value": [] })
 }
 
-pub fn register_with_iii(iii: &iii_sdk::III) {
-    handler::register(iii);
+pub fn register_with_iii(iii: &iii_sdk::III, cfg: &Arc<config::WorkerConfig>) {
+    handler::register(iii, cfg);
 }
 
 #[cfg(test)]

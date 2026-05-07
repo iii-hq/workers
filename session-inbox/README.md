@@ -1,54 +1,67 @@
 # session-inbox
 
-Per-session inbox on the iii bus under `inbox::*`. Producers push items keyed
-by `(session_id, name)`; consumers drain them atomically at session boundaries
+Per-session inbox on the iii bus. Producers push items keyed by
+`(session_id, name)`; consumers drain them atomically at session boundaries
 (typically between agent turns). Items live in iii state under
 `session/<id>/<name>` so they survive worker restart.
 
-This is **not** a job queue (compare `iii-queue`, the engine builtin with
-async consumers, retries, and DLQ). `session-inbox` is a pull-mode list:
-producers fire-and-forget, consumers drain when they decide.
+This is **not** a job queue (compare the engine’s queue builtin with async
+consumers, retries, and DLQ). `session-inbox` is a pull-mode list: producers
+fire-and-forget, consumers drain when they decide.
 
-## Installation
+## Install
 
 ```bash
 iii worker add session-inbox
 ```
 
-## Run
+`iii worker add` fetches the binary, writes a config block into
+`~/.iii/config.yaml`, and the engine starts the worker on the next
+`iii start`.
 
-```bash
-iii-session-inbox --engine-url ws://127.0.0.1:49134
+## Quickstart
+
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "session-inbox::push".into(),
+            payload: json!({
+                "session_id": "s1",
+                "name": "steering",
+                "item": { "role": "user", "content": "hello" },
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
 ```
 
-(Or set `III_URL`.)
-
-## Registered functions
-
-| Function | Payload | Returns |
-|---|---|---|
-| `inbox::push` | `{ session_id, name, item }` | `{ ok: true }` |
-| `inbox::drain` | `{ session_id, name }` | `{ items: [...] }` (atomic read+clear) |
-| `inbox::peek` | `{ session_id, name }` | `{ items: [...] }` (no mutation) |
-
-`drain` is atomic: implemented via `state::update` with a single `set` op,
-which returns the prior value AND writes `[]` in one round-trip. Producers
-that push during a drain see no items dropped.
+`session-inbox::drain` accepts `{ "session_id", "name" }` and returns
+`{ "items": [...] }` (atomic read+clear). `session-inbox::peek` reads without
+mutating.
 
 ## Configuration
 
-| Env var | Default | Effect |
-|---|---|---|
-| `III_URL` | `ws://127.0.0.1:49134` | Engine WebSocket URL. |
-
-## Dependencies
-
-Reads from / writes to scope `agent` of `iii-state` (the engine builtin).
-No worker dependencies.
-
-## Build / Test
-
-```bash
-cargo build --release
-cargo test
+```yaml
+engine_url: ws://127.0.0.1:49134 # used when --url / III_URL is unset
+state_scope: agent                # iii state scope for inbox keys
 ```
+
+Other defaults live in [`src/config.rs`](src/config.rs).
+
+## Migration notes
+
+Function ids were previously registered as `inbox::push`, `inbox::drain`, and
+`inbox::peek`. They are now `session-inbox::push`, `session-inbox::drain`, and
+`session-inbox::peek`. Payloads are unchanged.
