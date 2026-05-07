@@ -85,8 +85,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "models-catalog",
     "hook-fanout",
     "policy-denylist",
-    "shell-bash",
-    "shell-filesystem",
+    "shell",
     "subagent",
     "provider-anthropic",
     "provider-openai",
@@ -552,6 +551,23 @@ mod tests {
         assert!(
             EXPECTED_WORKERS.contains(&"approval-gate"),
             "approval-gate is required for approval_required to actually block (Phase A item #3)"
+        );
+    }
+
+    #[test]
+    fn expected_workers_includes_shell_consolidated() {
+        assert!(
+            EXPECTED_WORKERS.contains(&"shell"),
+            "consolidated `shell` worker must be in EXPECTED_WORKERS \
+             (replaces shell-bash + shell-filesystem)"
+        );
+        assert!(
+            !EXPECTED_WORKERS.contains(&"shell-bash"),
+            "shell-bash was consolidated into `shell`"
+        );
+        assert!(
+            !EXPECTED_WORKERS.contains(&"shell-filesystem"),
+            "shell-filesystem was consolidated into `shell`"
         );
     }
 }
