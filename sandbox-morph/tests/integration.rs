@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use sandbox_morph::client::MorphClient;
 use sandbox_morph::config::Config;
-use sandbox_morph::handler::{do_branch, do_create, do_exec, do_list, do_stop, HandlerCtx};
+use sandbox_morph::handler::{
+    do_branch, do_create, do_exec, do_list, do_snapshot, do_stop, HandlerCtx,
+};
 use sandbox_morph::SCode;
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -281,8 +283,6 @@ async fn snapshot_returns_id() {
         })))
         .mount(&server)
         .await;
-    // do_snapshot lives in handler.rs — invoke via direct call.
-    use sandbox_morph::handler::do_snapshot;
     let ctx = ctx(&server, 5, vec![]).await;
     let res = do_snapshot(&ctx, json!({ "sandbox_id": "morphvm_abc" }))
         .await
