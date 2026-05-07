@@ -157,7 +157,11 @@ export type EntryId = string;
 
 export type AgentEvent =
   | { type: "agent_start" }
-  | { type: "agent_end"; messages: { entry_id?: EntryId; message: AgentMessage }[] }
+  // Backend (turn-orchestrator/crates/harness-types/src/agent_event.rs) emits
+  // bare AgentMessage[]. The reducer's agent_end handler also tolerates the
+  // wrapped {entry_id?, message}[] shape for forward-compat with a future
+  // backend that threads entry_ids through.
+  | { type: "agent_end"; messages: (AgentMessage | { entry_id?: EntryId; message: AgentMessage })[] }
   | { type: "turn_start" }
   | { type: "turn_end"; message: AgentMessage; tool_results: unknown[]; entry_id?: EntryId }
   | { type: "message_start"; message: AgentMessage; entry_id?: EntryId }

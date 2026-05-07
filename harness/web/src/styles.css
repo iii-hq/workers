@@ -317,8 +317,14 @@ code,
 /* ─── main ───────────────────────────────────────────────────────────────── */
 
 .main {
-  display: grid;
-  grid-template-rows: auto 1fr auto auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* SessionView is the scrollable conversation area; everything else is auto-sized. */
+.main > .view {
+  flex: 1 1 auto;
   min-height: 0;
 }
 
