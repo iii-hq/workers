@@ -536,4 +536,69 @@ mod tests {
         assert!(matches!(&events[0], AgentEvent::MessageStart { .. }));
         assert!(matches!(events.last(), Some(AgentEvent::TurnEnd { .. })));
     }
+
+    // ── Adversarial unit tests added per plan
+    // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
+
+    /// Wire-contract regression guard. policy-denylist subscribes to
+    /// `agent::before_tool_call` by exact name; renaming the constant
+    /// here silently breaks the policy gate. Same risk for the after-
+    /// hook. Keep these strings stable or coordinate the rename.
+    #[test]
+    fn topic_constants_are_stable() {
+        assert_eq!(TOPIC_BEFORE, "agent::before_tool_call");
+        assert_eq!(TOPIC_AFTER, "agent::after_tool_call");
+    }
+
+    /// Pin the shape of the payload the policy hook subscribers consume.
+    /// `tool_call.name` is what `policy-denylist` matches against
+    /// `POLICY_DENIED_TOOLS`; if this field is renamed or moved, the
+    /// gate fails open silently.
+    #[test]
+    fn build_before_tool_call_payload_preserves_tool_call_shape() {
+        let tc = ToolCall {
+            id: "tc-1".into(),
+            name: "shell::filesystem::ls".into(),
+            arguments: json!({"path": "/tmp"}),
+        };
+        let inner = build_before_tool_call_payload(&tc, &[]);
+        assert_eq!(inner["tool_call"]["id"], "tc-1");
+        assert_eq!(inner["tool_call"]["name"], "shell::filesystem::ls");
+        assert_eq!(inner["tool_call"]["arguments"], json!({"path": "/tmp"}));
+        assert!(inner.get("approval_required").is_some());
+    }
+
+    // TODO(test-harden): tools.rs's `handle_finalize` calls .expect() on
+    // record.last_assistant. If the state machine ever transitions to
+    // ToolFinalize without an assistant message (resume after crash mid-
+    // AwaitingAssistant, concurrency bug, manual record forgery), the
+    // orchestrator panics and crashes the session.
+    //
+    // Real fix: replace .expect() with a graceful transition to
+    // TearingDown + AgentError event.
+    //
+    // Real test (deferred): construct a TurnStateRecord with
+    // last_assistant=None and call handle_finalize, asserting it returns
+    // Ok(()) with state == TearingDown. Needs a stub iii::III which
+    // doesn't exist in this repo yet. Until then, this source-grep test
+    // documents the issue and fails as a regression guard once the fix
+    // lands (mirrors the
+    // `handle_execute_does_not_call_iii_trigger_with_tc_name_directly`
+    // pattern earlier in this file).
+    #[ignore = "documents bug; needs stub iii::III for full reproduction"]
+    #[test]
+    fn handle_finalize_does_not_expect_last_assistant() {
+        let src = include_str!("tools.rs");
+        let start = src
+            .find("pub async fn handle_finalize")
+            .expect("handle_finalize exists");
+        let window = &src[start..start + src[start..].len().min(3000)];
+        assert!(
+            !window.contains(".expect(\"tools state requires last_assistant"),
+            "handle_finalize still .expect()s last_assistant; \
+             panics if the state machine ever transitions to ToolFinalize \
+             without an assistant message. Replace with a graceful \
+             transition to TearingDown + AgentError event."
+        );
+    }
 }

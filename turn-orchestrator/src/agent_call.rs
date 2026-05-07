@@ -280,4 +280,115 @@ mod dispatch_tests {
         assert!(!is_function_not_found(&E("timeout waiting for reply")));
         assert!(!is_function_not_found(&E("invocation_failed: bad payload")));
     }
+
+    // ── Adversarial unit tests added per plan
+    // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
+
+    #[test]
+    fn validate_function_field_rejects_object_value() {
+        let result = validate_function_field(&json!({"nested": "x"})).unwrap_err();
+        assert_eq!(result.details["error"], "missing_function");
+    }
+
+    #[test]
+    fn validate_function_field_rejects_array_value() {
+        let result = validate_function_field(&json!([1, 2, 3])).unwrap_err();
+        assert_eq!(result.details["error"], "missing_function");
+    }
+
+    #[test]
+    fn validate_function_field_rejects_float_number_value() {
+        // The existing `non_string_function_returns_missing_function_error`
+        // covers i64. This adds f64 coverage; both must take the
+        // not-a-string branch.
+        let result = validate_function_field(&json!(42.5)).unwrap_err();
+        assert_eq!(result.details["error"], "missing_function");
+    }
+
+    #[test]
+    fn decode_or_passthrough_handles_array_value() {
+        let inner = json!([1, 2, 3]);
+        let tr = decode_or_passthrough(inner.clone());
+        assert_eq!(tr.details, inner);
+        assert!(!tr.terminate);
+        // The Text fallback stringifies the JSON.
+        match tr.content.first() {
+            Some(harness_types::ContentBlock::Text(t)) => {
+                assert_eq!(t.text, "[1,2,3]");
+            }
+            other => panic!("expected Text content block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_or_passthrough_handles_primitive_value() {
+        let inner = json!("just a string");
+        let tr = decode_or_passthrough(inner.clone());
+        assert_eq!(tr.details, inner);
+        match tr.content.first() {
+            Some(harness_types::ContentBlock::Text(t)) => {
+                // serde_json::Value::to_string on a string adds quotes.
+                assert_eq!(t.text, "\"just a string\"");
+            }
+            other => panic!("expected Text content block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_or_passthrough_handles_partial_tool_result() {
+        // `terminate` has #[serde(default)]; partial input still
+        // deserializes as a ToolResult. If a future change drops the
+        // default, this test fails and forces an explicit decision.
+        let inner = json!({"content": [], "details": {"k": "v"}});
+        let tr = decode_or_passthrough(inner.clone());
+        assert!(tr.content.is_empty());
+        assert_eq!(tr.details, json!({"k": "v"}));
+        assert!(!tr.terminate);
+    }
+
+    #[test]
+    fn tool_name_and_function_id_constants_are_stable() {
+        assert_eq!(TOOL_NAME, "agent_call");
+        assert_eq!(FUNCTION_ID, "agent::call");
+    }
+
+    // TODO(test-harden): is_function_not_found uses substring matching on
+    // the error message. An inner function whose error message *contains*
+    // the literal "function_not_found" (e.g. it's logging a path that
+    // mentions the term, or reflecting a sub-call's error verbatim) gets
+    // misclassified as the dispatcher's function_not_found envelope.
+    // Tighten the heuristic to anchor on prefix ("remote error
+    // (function_not_found)"...) or use a structured error code instead of
+    // substring match.
+    #[ignore]
+    #[test]
+    fn is_function_not_found_misclassifies_user_content() {
+        struct E(&'static str);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        assert!(!is_function_not_found(&E(
+            "tool wrote log line: 'function_not_found in user data'"
+        )));
+    }
+
+    // TODO(test-harden): is_timeout uses lowercased substring match on
+    // "timeout" / "timed out". An inner function whose error message
+    // contains the term unrelated to a bus timeout (e.g. "scheduled
+    // timeout in 30 days") gets misclassified. Same fix as above.
+    #[ignore]
+    #[test]
+    fn is_timeout_misclassifies_user_content() {
+        struct E(&'static str);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        assert!(!is_timeout(&E(
+            "user input: scheduled timeout in 30 days from now"
+        )));
+    }
 }
