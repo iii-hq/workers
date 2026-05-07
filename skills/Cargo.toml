@@ -29,6 +29,7 @@ async-trait = "0.1"
 schemars = { version = "0.8", features = ["chrono", "uuid1"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+glob = "0.3"
 
 [dev-dependencies]
 serde_json = "1"

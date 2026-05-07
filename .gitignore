@@ -19,7 +19,6 @@ WORKERS-PR-REVIEW.md
 .gstack/
 *.pid
 *.zip
-config.yaml
 iii.lock
 harness/.omx/
 harness/web/.vite/
