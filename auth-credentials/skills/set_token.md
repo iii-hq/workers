@@ -15,5 +15,5 @@ or `{ type: "oauth", access_token, ... }`. No verification at write time.
 
 ## Notes
 
-- Default backend is `iii_state` (durable). Set `AUTH_CREDENTIALS_STORE=memory` for ephemeral storage in tests.
+- Default backend is `iii_state` (durable). Set `store: memory` in config or `AUTH_CREDENTIALS_STORE=memory` for ephemeral storage in tests.
 - Caller validates token shape; the worker only stores the serialised credential bytes.
