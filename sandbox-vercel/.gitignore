@@ -1,0 +1,8 @@
+node_modules/
+dist/
+package-lock.json
+.venv/
+__pycache__/
+*.egg-info/
+*.pyc
+.DS_Store

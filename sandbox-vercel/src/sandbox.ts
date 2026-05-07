@@ -50,5 +50,6 @@ export interface ExecResult {
 export interface SandboxRecord {
   sandbox_id: string
   image: string
-  started_at: number
+  /** RFC3339 timestamp passed through from upstream, or empty if absent. */
+  started_at: string
 }

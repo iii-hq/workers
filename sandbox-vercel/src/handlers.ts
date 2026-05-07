@@ -31,7 +31,14 @@ export async function doCreate(ctx: HandlerCtx, input: Record<string, unknown>) 
   }
   ctx.inFlight.value += 1
   try {
-    const created = await ctx.client.create(image, idle, runtime)
+    const sourceUrl = typeof input.source_url === 'string' ? input.source_url : undefined
+    const sourceRev = typeof input.source_revision === 'string' ? input.source_revision : undefined
+    const created = await ctx.client.create({
+      image,
+      idle_timeout_secs: idle,
+      runtime,
+      source: sourceUrl ? { url: sourceUrl, revision: sourceRev } : undefined,
+    })
     return {
       sandbox_id: created.sandbox_id,
       image: created.image,
