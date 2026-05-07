@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sandbox-modal"
+version = "0.1.0"
+description = "Narrow iii worker that exposes Modal sandboxes via the sandbox::modal::* trigger family. Uses the modal Python SDK as transport (Modal has no public REST surface)."
+authors = [{ name = "iii contributors" }]
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "iii-sdk==0.11.3",
+    "modal>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+sandbox-modal = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
