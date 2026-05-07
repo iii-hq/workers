@@ -28,9 +28,10 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
     }
     persistence::save_run_request(iii, &record.session_id, updated).await;
 
-    // Sandbox provisioning moves to agent_call::ensure_sandbox, fired
-    // lazily on the first shell::* dispatch. Sessions that never call
-    // shell::* don't pay the sandbox-create cost.
+    // Sandbox provisioning is the LLM's responsibility, learned from a
+    // skill (registered separately via the skills worker). The dispatcher
+    // does not auto-provision; sessions that need a sandbox follow a
+    // skill recipe to call sandbox::list / sandbox::create themselves.
 
     record.transition_to(TurnState::AwaitingAssistant);
     Ok(())
