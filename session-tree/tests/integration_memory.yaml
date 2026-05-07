@@ -1,0 +1,3 @@
+# Config consumed by bus-level integration tests; uses the in-memory store so
+# tests stay isolated and don't need iii-state to be present.
+store_backend: memory
