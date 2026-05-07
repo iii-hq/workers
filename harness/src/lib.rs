@@ -53,6 +53,7 @@
 //!    carry `item_id` under that key — it arrives as the top-level `id`
 //!    field of `StreamCallRequest` (Option<String>).
 
+pub mod fs;
 pub mod fanout;
 pub mod sse;
 
