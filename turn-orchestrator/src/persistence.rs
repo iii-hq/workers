@@ -39,6 +39,99 @@ pub async fn save_messages(iii: &III, session_id: &str, messages: &[AgentMessage
     if let Ok(value) = serde_json::to_value(messages) {
         state_set(iii, &key, value).await;
     }
+    // Best-effort mirror to session-tree. Failure does not abort the turn.
+    mirror_messages_to_session_tree(iii, session_id, messages).await;
+}
+
+async fn mirror_messages_to_session_tree(iii: &III, session_id: &str, messages: &[AgentMessage]) {
+    let last_key = crate::state::last_session_tree_len_key(session_id);
+    let already_mirrored = state_get(iii, &last_key)
+        .await
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    if messages.len() <= already_mirrored {
+        return;
+    }
+
+    if already_mirrored == 0 {
+        if let Err(e) = iii
+            .trigger(TriggerRequest {
+                function_id: "session-tree::ensure".into(),
+                payload: json!({ "session_id": session_id }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                %session_id,
+                "turn-orchestrator: session-tree::ensure failed; mirror skipped"
+            );
+            return;
+        }
+    }
+
+    // Find the current leaf entry_id by reading session-tree state — needed
+    // so subsequent appends thread parent_id correctly. For a fresh session
+    // (already_mirrored == 0), parent_id starts as None.
+    let mut last_appended: Option<String> = if already_mirrored > 0 {
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "session-tree::messages".into(),
+                payload: json!({ "session_id": session_id }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(resp) => resp
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| arr.last())
+                .and_then(|last| last.get("entry_id"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    for msg in &messages[already_mirrored..] {
+        let payload = json!({
+            "session_id": session_id,
+            "parent_id": last_appended,
+            "message": msg,
+        });
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "session-tree::append".into(),
+                payload,
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(resp) => {
+                last_appended = resp
+                    .get("entry_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    %session_id,
+                    "turn-orchestrator: session-tree::append mirror failed"
+                );
+                return;
+            }
+        }
+    }
+
+    state_set(iii, &last_key, json!(messages.len())).await;
 }
 
 pub async fn save_run_request(iii: &III, session_id: &str, request: JsonValue) {

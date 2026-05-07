@@ -37,6 +37,7 @@ schemars = "0.8"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 which = "8"
+serial_test = "3"
 
 [workspace.package]
 version = "0.1.0"
