@@ -156,8 +156,7 @@ fn run_glob(base_dir: &Path, pattern: &str) -> Result<Vec<(String, PathBuf)>, St
         PathBuf::from(static_prefix_str)
     };
 
-    let entries = glob::glob(&abs_pattern)
-        .map_err(|e| format!("invalid glob {pattern:?}: {e}"))?;
+    let entries = glob::glob(&abs_pattern).map_err(|e| format!("invalid glob {pattern:?}: {e}"))?;
 
     let mut out = Vec::new();
     for entry in entries {
@@ -192,10 +191,7 @@ fn run_glob(base_dir: &Path, pattern: &str) -> Result<Vec<(String, PathBuf)>, St
 ///
 /// Files matched by multiple glob patterns from the same scan deduplicate
 /// silently — they're the same file, the same id, no warning.
-pub fn expand_skill_globs(
-    base_dir: &Path,
-    patterns: &[String],
-) -> (Vec<FsSkill>, Vec<SkipReason>) {
+pub fn expand_skill_globs(base_dir: &Path, patterns: &[String]) -> (Vec<FsSkill>, Vec<SkipReason>) {
     let mut skills: Vec<FsSkill> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
 
@@ -516,8 +512,7 @@ mod tests {
         write_fixture(tmp.path(), "my-skills/sub/b.md", "# B\n");
         write_fixture(tmp.path(), "my-skills/sub/deep/c.md", "# C\n");
 
-        let (skills, skipped) =
-            expand_skill_globs(tmp.path(), &["my-skills/**/*.md".to_string()]);
+        let (skills, skipped) = expand_skill_globs(tmp.path(), &["my-skills/**/*.md".to_string()]);
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         let ids: Vec<_> = skills.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "sub/b", "sub/deep/c"]);
@@ -530,8 +525,7 @@ mod tests {
         write_fixture(tmp.path(), "my-skills/with space.md", "# space\n");
         write_fixture(tmp.path(), "my-skills/ok.md", "# ok\n");
 
-        let (skills, skipped) =
-            expand_skill_globs(tmp.path(), &["my-skills/**/*.md".to_string()]);
+        let (skills, skipped) = expand_skill_globs(tmp.path(), &["my-skills/**/*.md".to_string()]);
         let ids: Vec<_> = skills.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["ok"]);
         assert_eq!(skipped.len(), 2);
@@ -592,8 +586,7 @@ mod tests {
     fn expand_skills_invalid_glob_pattern_records_skip() {
         let tmp = tempfile::tempdir().unwrap();
         // `[` without closing `]` is an invalid pattern.
-        let (skills, skipped) =
-            expand_skill_globs(tmp.path(), &["[unclosed".to_string()]);
+        let (skills, skipped) = expand_skill_globs(tmp.path(), &["[unclosed".to_string()]);
         assert!(skills.is_empty());
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].kind, SourceKind::Skill);
@@ -610,8 +603,7 @@ mod tests {
             "---\nname: open-pr\ndescription: Open a PR.\n---\nBody here.\n",
         );
 
-        let (prompts, skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        let (prompts, skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "open-pr");
@@ -627,8 +619,7 @@ mod tests {
             "---\ndescription: Just a description.\n---\nBody.\n",
         );
 
-        let (prompts, _skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        let (prompts, _skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "foo");
     }
@@ -638,8 +629,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(tmp.path(), "p/no-fm.md", "# header\nbody\n");
 
-        let (prompts, skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        let (prompts, skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -652,13 +642,8 @@ mod tests {
     #[test]
     fn expand_prompts_rejects_missing_description() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(
-            tmp.path(),
-            "p/no-desc.md",
-            "---\nname: foo\n---\nBody.\n",
-        );
-        let (prompts, skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        write_fixture(tmp.path(), "p/no-desc.md", "---\nname: foo\n---\nBody.\n");
+        let (prompts, skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -676,8 +661,7 @@ mod tests {
             "p/bad.md",
             "---\nname: Has Spaces\ndescription: x\n---\nBody.\n",
         );
-        let (prompts, skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        let (prompts, skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert!(prompts.is_empty());
         assert_eq!(skipped.len(), 1);
         assert!(
@@ -700,8 +684,7 @@ mod tests {
             "p/b.md",
             "---\nname: shared\ndescription: from b\n---\nBody B.\n",
         );
-        let (prompts, skipped) =
-            expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
+        let (prompts, skipped) = expand_prompt_globs(tmp.path(), &["p/*.md".to_string()]);
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].name, "shared");
         assert_eq!(skipped.len(), 1);

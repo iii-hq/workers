@@ -283,8 +283,7 @@ fn register_list_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                         origin: "state",
                     })
                     .collect();
-                let state_ids: HashSet<String> =
-                    out.iter().map(|e| e.id.clone()).collect();
+                let state_ids: HashSet<String> = out.iter().map(|e| e.id.clone()).collect();
                 for fs in non_colliding_fs_skills(&cfg, &state_ids) {
                     let (bytes, registered_at) = fs_metadata(&fs);
                     out.push(SkillEntry {

@@ -230,8 +230,7 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
                         origin: "state",
                     })
                     .collect();
-                let state_names: HashSet<String> =
-                    out.iter().map(|e| e.name.clone()).collect();
+                let state_names: HashSet<String> = out.iter().map(|e| e.name.clone()).collect();
                 for fs in non_colliding_fs_prompts(&cfg, &state_names) {
                     out.push(PromptEntry {
                         name: fs.name,

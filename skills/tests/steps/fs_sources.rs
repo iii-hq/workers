@@ -24,7 +24,10 @@ const LAST_PROMPT_GET: &str = "fs_last_prompt_get";
 const LAST_ERR: &str = "fs_last_err";
 
 fn skill_path(world: &IiiSkillsWorld, rel: &str) -> Option<PathBuf> {
-    world.fs_root.as_ref().map(|r| r.join("fs-skills").join(rel))
+    world
+        .fs_root
+        .as_ref()
+        .map(|r| r.join("fs-skills").join(rel))
 }
 
 fn prompt_path(world: &IiiSkillsWorld, rel: &str) -> Option<PathBuf> {
@@ -52,11 +55,7 @@ fn normalize_docstring(s: &str) -> String {
 // ── seeding ─────────────────────────────────────────────────────────
 
 #[given(regex = r#"^a fs skill file at "([^"]+)" with body:$"#)]
-fn seed_fs_skill(
-    world: &mut IiiSkillsWorld,
-    rel: String,
-    step: &cucumber::gherkin::Step,
-) {
+fn seed_fs_skill(world: &mut IiiSkillsWorld, rel: String, step: &cucumber::gherkin::Step) {
     let Some(path) = skill_path(world, &rel) else {
         return;
     };
@@ -69,11 +68,7 @@ fn seed_fs_skill(
 }
 
 #[when(regex = r#"^I overwrite the fs skill file at "([^"]+)" with body:$"#)]
-fn overwrite_fs_skill(
-    world: &mut IiiSkillsWorld,
-    rel: String,
-    step: &cucumber::gherkin::Step,
-) {
+fn overwrite_fs_skill(world: &mut IiiSkillsWorld, rel: String, step: &cucumber::gherkin::Step) {
     let Some(path) = skill_path(world, &rel) else {
         return;
     };
@@ -86,11 +81,7 @@ fn overwrite_fs_skill(
 }
 
 #[given(regex = r#"^a fs prompt file at "([^"]+)" with content:$"#)]
-fn seed_fs_prompt(
-    world: &mut IiiSkillsWorld,
-    rel: String,
-    step: &cucumber::gherkin::Step,
-) {
+fn seed_fs_prompt(world: &mut IiiSkillsWorld, rel: String, step: &cucumber::gherkin::Step) {
     let Some(path) = prompt_path(world, &rel) else {
         return;
     };
@@ -104,12 +95,7 @@ fn seed_fs_prompt(
 
 // ── triggers ────────────────────────────────────────────────────────
 
-async fn trigger(
-    world: &mut IiiSkillsWorld,
-    function_id: &str,
-    payload: Value,
-    slot: &str,
-) {
+async fn trigger(world: &mut IiiSkillsWorld, function_id: &str, payload: Value, slot: &str) {
     world.stash.remove(slot);
     world.stash.remove(LAST_ERR);
     let Some(iii) = world.iii.clone() else {
@@ -176,9 +162,7 @@ fn listing_has_fs_entry(world: &mut IiiSkillsWorld, id: String, origin: String) 
     let arr = v["skills"]
         .as_array()
         .expect("missing .skills array in list response");
-    let found = arr
-        .iter()
-        .find(|e| e["id"].as_str() == Some(id.as_str()));
+    let found = arr.iter().find(|e| e["id"].as_str() == Some(id.as_str()));
     let entry = found.unwrap_or_else(|| {
         panic!(
             "no fs entry with id {id:?}; got: {}",
@@ -330,8 +314,5 @@ fn mcp_get_text_contains(world: &mut IiiSkillsWorld, needle: String) {
     let text = v["messages"][0]["content"]["text"]
         .as_str()
         .unwrap_or_default();
-    assert!(
-        text.contains(&needle),
-        "missing {needle:?} in: {text}"
-    );
+    assert!(text.contains(&needle), "missing {needle:?} in: {text}");
 }

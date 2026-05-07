@@ -51,8 +51,17 @@ mod tests {
         assert_eq!(parsed["default_config"]["state_timeout_ms"], 10_000);
         assert!(parsed["default_config"]["skills"].is_array());
         assert!(parsed["default_config"]["prompts"].is_array());
-        assert_eq!(parsed["default_config"]["skills"].as_array().unwrap().len(), 0);
-        assert_eq!(parsed["default_config"]["prompts"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            parsed["default_config"]["skills"].as_array().unwrap().len(),
+            0
+        );
+        assert_eq!(
+            parsed["default_config"]["prompts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }
 }
