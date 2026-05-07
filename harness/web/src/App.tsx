@@ -13,11 +13,16 @@ import { ContextMeter } from "./components/ContextMeter";
 import { ControlsBar } from "./components/ControlsBar";
 import { CostPanel } from "./components/CostPanel";
 import { FilesystemPanel } from "./components/FilesystemPanel";
+import { FootStatus } from "./components/FootStatus";
 import { FunctionPalette } from "./components/FunctionPalette";
 import { SessionList, fetchSessions } from "./components/SessionList";
 import { SessionView } from "./components/SessionView";
 import { StatusPill } from "./components/StatusPill";
+import { StatusStrip } from "./components/StatusStrip";
+import { StatusTab } from "./components/StatusTab";
+import { useConnection } from "./useConnection";
 import { useGlobalShortcut } from "./useGlobalShortcut";
+import { useStatus } from "./useStatus";
 import { loadWorkspace, saveWorkspace } from "./workspace";
 import type {
   AgentMessage,
@@ -26,7 +31,7 @@ import type {
   SessionRow,
 } from "./types";
 
-type Tab = "chat" | "cost" | "files";
+type Tab = "chat" | "cost" | "files" | "status";
 
 // Tool schemas are no longer shipped from the client. The harness builds the
 // LLM tool catalog server-side from `engine::functions::list` (see
@@ -130,6 +135,13 @@ export default function App() {
   );
 
   const stream = useAgentStream(active);
+
+  // Live ambient status — header chip + foot chips + status tab.
+  // The hook owns the rolling 200-event buffer and the per-page subscription
+  // to all-sessions topics (cost/workers/approvals).
+  const status = useStatus();
+  const connection = useConnection();
+  const isConnected = connection.status === "connected";
 
   useEffect(() => {
     if (!active) return;
@@ -453,7 +465,14 @@ export default function App() {
             aria-label="working directory"
           />
         </div>
-        <StatusPill />
+        <div className="app-head-right">
+          <StatusStrip
+            pendingApprovals={status.pendingApprovals}
+            connected={isConnected}
+            onJumpToStatus={() => setTab("status")}
+          />
+          <StatusPill />
+        </div>
       </header>
 
       <div className="app-body">
@@ -470,7 +489,7 @@ export default function App() {
 
         <main className="main">
           <nav className="tabs" role="tablist" aria-label="harness panels">
-            {(["chat", "cost", "files"] as Tab[]).map((t) => (
+            {(["chat", "cost", "files", "status"] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -558,6 +577,17 @@ export default function App() {
 
           {tab === "cost" ? <CostPanel /> : null}
           {tab === "files" ? <FilesystemPanel /> : null}
+          {tab === "status" ? (
+            <StatusTab
+              cost={status.cost}
+              workers={status.workers}
+              events={status.events}
+              hydrated={status.hydrated}
+              connected={isConnected}
+              connectionSince={connection.since}
+              onClearEvents={status.clearEvents}
+            />
+          ) : null}
         </main>
       </div>
 
@@ -566,6 +596,12 @@ export default function App() {
         <span>model · {model}</span>
         <span>endpoint · POST /bridge/trigger</span>
         <span>shortcut · ⌘J palette</span>
+        <span className="app-foot-spacer" />
+        <FootStatus
+          cost={status.cost}
+          workers={status.workers}
+          connected={isConnected}
+        />
       </footer>
 
       <FunctionPalette
