@@ -19,8 +19,9 @@
 # Usage:
 #   ./scripts/demo.sh <cmd> [DEMO_DIR]
 #
-# DEMO_DIR defaults to ~/iii-harness-demo. Env requires `iii` engine
-# reachable on ws://127.0.0.1:49134 (or set III_URL).
+# DEMO_DIR defaults to ~/iii-harness-demo. Requires a local `iii` engine via
+# `iii --use-default-config` (default ws://127.0.0.1:49134). Spawns pin
+# III_URL to that URL unless you set III_DEMO_ENGINE_URL.
 
 set -euo pipefail
 
@@ -28,6 +29,12 @@ CMD="${1:-}"
 DEMO_DIR="${2:-$HOME/iii-harness-demo}"
 WORKERS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS_DIR="$WORKERS_REPO/harness"
+
+# WebSocket URL for the demo engine. Must match `iii --use-default-config`
+# (default localhost:49134). Workers inherit `III_URL` from the environment;
+# if your shell points it at another engine, the demo would start processes
+# that register there while this script's health checks hit the local engine.
+DEMO_ENGINE_WS="${III_DEMO_ENGINE_URL:-ws://127.0.0.1:49134}"
 
 WORKERS=(
   turn-orchestrator provider-router
@@ -43,14 +50,21 @@ ensure_dirs() {
   mkdir -p "$DEMO_DIR/pids" "$DEMO_DIR/logs"
 }
 
-# Most workers ship a binary named `iii-{worker}`; `skills` keeps the
-# unprefixed `skills` name from before the convention. Centralize the lookup
-# so the build/spawn paths stay consistent.
+# Binary artifact name comes from each crate’s `iii.worker.yaml` `bin:` field
+# (same value as `[[bin]]` in Cargo.toml). Do not assume `iii-{folder}` — names
+# are mixed historical (`iii-*`) and folder-matched (`shell-bash`, `skills`, …).
 bin_name_for() {
-  case "$1" in
-    skills) echo "skills" ;;
-    *) echo "iii-$1" ;;
-  esac
+  local w="$1"
+  local yaml="$WORKERS_REPO/$w/iii.worker.yaml"
+  if [[ -f "$yaml" ]]; then
+    local name
+    name="$(awk '/^bin:/{sub(/^bin:[ \t]*/, ""); sub(/[ \t]+$/, ""); print; exit}' "$yaml")"
+    if [[ -n "$name" ]]; then
+      echo "$name"
+      return
+    fi
+  fi
+  echo "$w"
 }
 
 cmd_build() {
@@ -79,7 +93,14 @@ spawn_one() {
   fi
 
   : > "$logfile"
-  nohup "$bin" >>"$logfile" 2>&1 &
+  local -a run_args=()
+  if [[ "$w" == "harness" ]]; then
+    run_args=(
+      --config "$WORKERS_REPO/harness/config.yaml"
+      --url "$DEMO_ENGINE_WS"
+    )
+  fi
+  env III_URL="$DEMO_ENGINE_WS" nohup "$bin" "${run_args[@]}" >>"$logfile" 2>&1 &
   echo $! > "$pidfile"
   echo "    [start] $w pid=$! log=$logfile"
 }
