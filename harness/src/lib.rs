@@ -53,7 +53,10 @@
 //!    carry `item_id` under that key — it arrives as the top-level `id`
 //!    field of `StreamCallRequest` (Option<String>).
 
+pub mod fanout;
 pub mod sse;
+
+use std::sync::Arc;
 
 use iii_sdk::{
     FunctionRef, IIIError, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, Value,
@@ -67,6 +70,12 @@ use serde_json::json;
 /// seen with Opus + a few tool calls.
 const BRIDGE_TIMEOUT_MS: u64 = 240_000;
 
+// Note: `iii-worker-manager` is intentionally NOT listed here. It is provided
+// by the iii engine itself (built-in default in the engine's
+// `iii-worker/src/cli/builtin_defaults.rs`), not a discrete worker crate the
+// harness can depend on. The browser SDK README's `iii worker add
+// iii-worker-manager` instruction toggles that built-in feature, not a
+// separate dependency. So Phase B step A keeps EXPECTED_WORKERS unchanged.
 pub const EXPECTED_WORKERS: &[&str] = &[
     "turn-orchestrator",
     "provider-router",
@@ -102,6 +111,9 @@ pub struct HarnessFunctionRefs {
     pub status: FunctionRef,
     pub bridge: FunctionRef,
     pub events: FunctionRef,
+    pub bridge_info: FunctionRef,
+    pub subscribe_fn: FunctionRef,
+    pub unsubscribe_fn: FunctionRef,
 }
 
 impl HarnessFunctionRefs {
@@ -109,11 +121,30 @@ impl HarnessFunctionRefs {
         self.status.unregister();
         self.bridge.unregister();
         self.events.unregister();
+        self.bridge_info.unregister();
+        self.subscribe_fn.unregister();
+        self.unsubscribe_fn.unregister();
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Default engine URL used by `bridge::info` when no override is provided.
+/// Matches `harness/src/config.rs::default_engine_url`.
+const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
+
+/// Register harness functions with iii.
+///
+/// Uses [`DEFAULT_ENGINE_URL`] for the `engine_url` field of `bridge::info`.
+/// Production callers should prefer [`register_with_iii_with_engine_url`] so
+/// the URL reflects the actual engine the harness is connected to.
 pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs> {
+    register_with_iii_with_engine_url(iii, DEFAULT_ENGINE_URL).await
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn register_with_iii_with_engine_url(
+    iii: &III,
+    engine_url: &str,
+) -> anyhow::Result<HarnessFunctionRefs> {
     let status = iii.register_function((
         RegisterFunctionMessage::with_id("harness::status".into()).with_description(
             "Returns the harness bundle name, version, and the list of expected runtime workers."
@@ -236,6 +267,95 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs>
     })
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+    // bridge::info — relative WS path so reverse-proxy / HTTPS deployments
+    // compose the full URL from `window.location`. `engine_url` is the direct
+    // ws:// URL for callers (tests, native clients) that bypass the reverse
+    // proxy.
+    let engine_url_owned = engine_url.to_string();
+    let bridge_info = iii.register_function((
+        RegisterFunctionMessage::with_id("bridge::info".into()).with_description(
+            "Returns the relative WebSocket path and engine URL for browser clients.".into(),
+        ),
+        move |_payload: Value| {
+            let engine_url = engine_url_owned.clone();
+            async move {
+                Ok::<_, IIIError>(json!({
+                    "ws_path": "/iii/ws",
+                    "protocol": "ws",
+                    "engine_url": engine_url,
+                }))
+            }
+        },
+    ));
+
+    // Per-browser subscription registry. Skeleton: future steps will use this
+    // to drive WS push of agent::events / state diffs / cost / approvals.
+    let fanout = fanout::new_shared();
+
+    let fanout_for_subscribe = Arc::clone(&fanout);
+    let subscribe_fn = iii.register_function((
+        RegisterFunctionMessage::with_id("ui::subscribe".into()).with_description(
+            "Register a browser's interest in a session (or all sessions if session_id is null)."
+                .into(),
+        ),
+        move |input: Value| {
+            let fanout = Arc::clone(&fanout_for_subscribe);
+            async move {
+                let body = input.get("body").cloned().unwrap_or(input);
+                let browser_id = body
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
+                    .to_string();
+                let session_id = body
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let total = {
+                    let mut state = fanout.write().await;
+                    state.subscribe(browser_id, session_id);
+                    state.browser_count()
+                };
+                Ok::<_, IIIError>(json!({
+                    "ok": true,
+                    "total_browsers": total,
+                }))
+            }
+        },
+    ));
+
+    let fanout_for_unsubscribe = Arc::clone(&fanout);
+    let unsubscribe_fn = iii.register_function((
+        RegisterFunctionMessage::with_id("ui::unsubscribe".into()).with_description(
+            "Remove a browser's subscription to a session (or its all-sessions sub if session_id is null)."
+                .into(),
+        ),
+        move |input: Value| {
+            let fanout = Arc::clone(&fanout_for_unsubscribe);
+            async move {
+                let body = input.get("body").cloned().unwrap_or(input);
+                let browser_id = body
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
+                    .to_string();
+                let session_id = body
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let total = {
+                    let mut state = fanout.write().await;
+                    state.unsubscribe(&browser_id, session_id);
+                    state.browser_count()
+                };
+                Ok::<_, IIIError>(json!({
+                    "ok": true,
+                    "total_browsers": total,
+                }))
+            }
+        },
+    ));
+
     // Best-effort: a missing `skills` worker shouldn't stop harness from booting.
     let _ = iii
         .trigger(TriggerRequest {
@@ -250,6 +370,9 @@ pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs>
         status,
         bridge,
         events: events_fn,
+        bridge_info,
+        subscribe_fn,
+        unsubscribe_fn,
     })
 }
 

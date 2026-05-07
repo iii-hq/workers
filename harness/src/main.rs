@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    let _refs = harness::register_with_iii(&iii).await?;
+    let _refs = harness::register_with_iii_with_engine_url(&iii, &url).await?;
     tracing::info!(
         "harness ready — registered harness::status; expecting {} runtime workers from iii.worker.yaml",
         harness::EXPECTED_WORKERS.len()
