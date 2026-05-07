@@ -38,7 +38,23 @@ function upsertMessage(state: StreamState, entryId: EntryId, message: AgentMessa
   };
 }
 
+function unkeyedKey(m: AgentMessage): string {
+  // Content-hash key. Same role + timestamp + content-length collapse to one
+  // entry, so reconnect replays and message_end echoes don't duplicate.
+  // Matches the pre-Phase-B dedupe approach.
+  return `${m.role}:${m.timestamp ?? 0}:${JSON.stringify(m.content).length}`;
+}
+
 function pushUnkeyed(state: StreamState, message: AgentMessage): StreamState {
+  // Defensive: never let an undefined slot reach consumers (SessionView etc.
+  // map over messages and assume each is a real object).
+  if (!message || typeof message !== "object" || !("role" in message)) {
+    return state;
+  }
+  const key = unkeyedKey(message);
+  if (state.unkeyedMessages.some((m) => unkeyedKey(m) === key)) {
+    return state;
+  }
   return { ...state, unkeyedMessages: [...state.unkeyedMessages, message] };
 }
 
@@ -48,12 +64,28 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
       return { ...state, status: "running" };
 
     case "agent_end": {
+      // agent_end carries the canonical full transcript at end-of-turn.
+      // Route each item: entry-id-bearing items upsert into messageMap (idempotent),
+      // bare items push into unkeyedMessages (deduped by content hash).
+      // The dedupe in `pushUnkeyed` is what prevents the user-visible "repeated
+      // answers" bug — message_end fires per-message during the turn, then
+      // agent_end fires with the full transcript at end; without dedupe we'd
+      // see every message twice.
       let s: StreamState = { ...state, status: "ended" };
-      for (const pair of event.messages) {
-        if (pair.entry_id !== undefined) {
-          s = upsertMessage(s, pair.entry_id, pair.message);
+      for (const item of event.messages) {
+        // Tolerant of two shapes: bare AgentMessage (current backend) or
+        // {entry_id?, message} (forward-compat). Detect by presence of `role`.
+        const looksBare = item && typeof item === "object" && "role" in item;
+        if (looksBare) {
+          s = pushUnkeyed(s, item as AgentMessage);
         } else {
-          s = pushUnkeyed(s, pair.message);
+          const pair = item as { entry_id?: EntryId; message: AgentMessage };
+          if (!pair.message) continue;
+          if (pair.entry_id !== undefined) {
+            s = upsertMessage(s, pair.entry_id, pair.message);
+          } else {
+            s = pushUnkeyed(s, pair.message);
+          }
         }
       }
       return s;
