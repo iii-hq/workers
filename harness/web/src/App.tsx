@@ -40,7 +40,7 @@ type Tab = "chat" | "cost" | "files" | "status";
 // Permission still lives in `policy-denylist`, which subscribes to
 // `agent::before_function_call` and refuses by function id. Set its env var when
 // starting the worker, e.g.:
-//   POLICY_DENIED_FUNCTIONS=shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv
+//   POLICY_DENIED_FUNCTIONS=shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv
 // (Legacy `POLICY_DENIED_TOOLS` is still read if the new name is unset.)
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
@@ -55,8 +55,8 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<Provider, string> = {
 };
 
 const APPROVAL_REQUIRED = [
-  "shell::filesystem::write",
-  "shell::filesystem::mkdir",
+  "shell::fs::write",
+  "shell::fs::mkdir",
 ];
 
 function newSessionId(): string {
