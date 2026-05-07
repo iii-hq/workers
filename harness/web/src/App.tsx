@@ -370,7 +370,32 @@ export default function App() {
                 sessionId={active ?? ""}
                 pending={stream.pendingApprovals}
               />
-              <Composer disabled={composerDisabled} onSend={send} />
+              <Composer
+                disabled={composerDisabled}
+                onSend={send}
+                cwd={cwd.trim()}
+                skillsIndex={skillsIndex}
+                sessionMessages={messages}
+                callbacks={{
+                  onNew: startNew,
+                  onClear: () => setError(null),
+                  onCwd: (path) => {
+                    setCwd(path);
+                    if (active) void saveWorkspace(active, path).then(() => setLoadedCwd(path));
+                  },
+                  onModel: (id) => setModel(id),
+                  onProvider: (name) => {
+                    if ((SUPPORTED_PROVIDERS as readonly string[]).includes(name)) {
+                      setProvider(name as Provider);
+                    }
+                  },
+                  onHelp: () => {
+                    setError(
+                      "shortcuts: / commands · @ files · ↑ history · shift+enter newline · enter send",
+                    );
+                  },
+                }}
+              />
             </>
           ) : null}
 

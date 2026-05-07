@@ -812,6 +812,91 @@ code,
   background: var(--paper-2);
 }
 
+.composer-stack {
+  position: relative;
+  display: grid;
+}
+
+.composer-popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-2));
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  box-shadow: 0 6px 16px -8px oklch(0.2 0.012 var(--hue) / 0.18);
+  z-index: 10;
+}
+
+.composer-popover-head {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--ink-3);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-2);
+}
+
+.composer-popover-empty {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  padding: var(--space-3);
+}
+
+.composer-popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.composer-popover-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: 6px var(--space-3);
+  cursor: pointer;
+  border-bottom: 1px solid var(--rule);
+}
+
+.composer-popover-row:last-child {
+  border-bottom: 0;
+}
+
+.composer-popover-row[data-active="true"] {
+  background: var(--accent-wash);
+}
+
+.composer-popover-row:hover {
+  background: var(--paper-3);
+}
+
+.composer-popover-label {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.composer-popover-desc {
+  font-family: var(--body);
+  font-size: 12px;
+  color: var(--ink-3);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-popover-more .composer-popover-label {
+  color: var(--accent-ink);
+  font-style: italic;
+}
+
 .composer-input {
   width: 100%;
   font-family: var(--body);
