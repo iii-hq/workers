@@ -1,6 +1,6 @@
+import type { VercelClient } from './client.js'
 import type { Config } from './config.js'
 import { imageAllowed } from './config.js'
-import type { VercelClient } from './client.js'
 import { CAPABILITIES, S, SandboxError } from './sandbox.js'
 
 export interface HandlerCtx {

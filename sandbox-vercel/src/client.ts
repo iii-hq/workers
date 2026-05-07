@@ -3,7 +3,7 @@
 // pending a verified pass against the live Vercel Sandbox REST surface;
 // every call below returns SandboxError(S502) with a TODO marker.
 
-import { S, SandboxError, type CreatedSandbox, type ExecResult, type SandboxRecord } from './sandbox.js'
+import { type CreatedSandbox, type ExecResult, S, SandboxError, type SandboxRecord } from './sandbox.js'
 
 export interface VercelAuth {
   token: string
