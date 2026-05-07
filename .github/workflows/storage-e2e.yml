@@ -1,0 +1,103 @@
+name: storage E2E
+
+on:
+  pull_request:
+    paths:
+      - 'storage/**'
+      - '.github/workflows/storage-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: storage-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  script-tests:
+    name: Script self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: storage
+
+      - name: Build worker
+        run: cargo build --release --bin storage
+        working-directory: storage
+
+      - name: Install iii engine
+        # script-tests/run.sh exercises the full preflight path of run-tests.sh,
+        # including the engine-binary check. Without iii on PATH the --filter
+        # and SIGINT tests bail early with "iii engine binary missing" instead
+        # of exercising what they're meant to assert.
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run script-tests
+        run: ./script-tests/run.sh
+        working-directory: storage/tests/e2e
+
+  e2e:
+    name: Harness (--providers=all)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: storage
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # No cache: harness has no committed package-lock.json (run-tests.sh
+          # generates one via `npm install` at first run). setup-node@v4 with
+          # `cache: 'npm'` against a missing lockfile is a hard failure, not a
+          # warning. ~10s slower per run; revisit if we ever commit a lockfile.
+
+      - name: Install iii engine
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine + docker
+        run: |
+          iii --version
+          docker --version
+          docker compose version
+
+      - name: Pull docker images
+        run: docker compose --profile cloud pull --quiet
+        working-directory: storage/tests/e2e
+
+      - name: Run harness (--providers=all)
+        working-directory: storage/tests/e2e
+        run: ./run-tests.sh --providers=all --trigger-providers=local,s3 --no-pull
+
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-e2e-reports
+          path: |
+            storage/tests/e2e/reports/
+          retention-days: 7

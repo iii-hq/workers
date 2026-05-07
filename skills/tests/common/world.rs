@@ -12,6 +12,7 @@
 //!   matching `When` step wrote.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
@@ -28,6 +29,10 @@ pub struct IiiSkillsWorld {
     pub cfg: Arc<SkillsConfig>,
     pub unique_id: String,
     pub stash: HashMap<String, Value>,
+    /// Tempdir the fs-sources scenarios write fixture files into.
+    /// Mirrors the layout `Shared::fs_root` configured in
+    /// [crate::common::workers]. `None` when no engine is reachable.
+    pub fs_root: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for IiiSkillsWorld {
@@ -47,6 +52,7 @@ impl IiiSkillsWorld {
             cfg: Arc::new(SkillsConfig::default()),
             unique_id,
             stash: HashMap::new(),
+            fs_root: None,
         }
     }
 

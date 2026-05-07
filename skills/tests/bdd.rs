@@ -34,6 +34,10 @@ async fn main() {
                     world.iii = Some(iii.clone());
                     if let Some(shared) = common::workers::shared() {
                         world.cfg = shared.cfg.clone();
+                        world.fs_root = Some(shared.fs_root.clone());
+                        // Wipe any leftover fixture files so each
+                        // scenario starts from an empty fs source.
+                        common::workers::reset_fs(&shared.fs_root);
                     }
                     // Start every scenario with both registries empty
                     // so per-test assertions aren't polluted by earlier

@@ -1,0 +1,8 @@
+target/
+/data/
+
+# E2E test harness scratch state
+tests/e2e/data/
+tests/e2e/reports/
+tests/e2e/workers/harness/node_modules/
+tests/e2e/workers/harness/package-lock.json

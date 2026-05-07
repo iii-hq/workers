@@ -1,5 +1,6 @@
 //! Step-definition modules. One per `.feature` under `tests/features/`.
 
+pub mod fs_sources;
 pub mod markdown;
 pub mod mcp_bridge;
 pub mod notifications;
