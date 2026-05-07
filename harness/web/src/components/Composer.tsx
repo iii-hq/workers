@@ -45,7 +45,7 @@ interface Props {
   onSend: (prompt: string) => Promise<void>;
   /** Working directory used as the @-mention browse root. Empty = unset. */
   cwd: string;
-  /** Markdown index from useSkillsIndex. Used to populate slash menu skills. */
+  /** Markdown skills index for slash menu (`null` → built-in commands only; full index is loaded server-side for the model). */
   skillsIndex: string | null;
   /** Prior messages of the active session — drives ↑ history walk. */
   sessionMessages: AgentMessage[];

@@ -7,6 +7,7 @@ use harness_types::{
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
+use crate::agent_call::TOOL_NAME as AGENT_CALL_TOOL_NAME;
 use crate::events;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
@@ -15,9 +16,34 @@ const TOPIC_BEFORE: &str = "agent::before_tool_call";
 const TOPIC_AFTER: &str = "agent::after_tool_call";
 const HOOK_TIMEOUT_MS: u64 = 10_000;
 
+/// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
+/// a normal [`ToolCall`] carrying the inner function id. Non-`agent_call`
+/// tool calls pass through unchanged so legacy/test fixtures keep working.
+fn unwrap_agent_call(tc: ToolCall) -> ToolCall {
+    if tc.name != AGENT_CALL_TOOL_NAME {
+        return tc;
+    }
+    let function = tc
+        .arguments
+        .get("function")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let payload = tc
+        .arguments
+        .get("payload")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    ToolCall {
+        id: tc.id,
+        name: function,
+        arguments: payload,
+    }
+}
 pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     record.tool_results.clear();
-    let calls = record.pending_tool_calls.clone();
+    let raw = std::mem::take(&mut record.pending_tool_calls);
+    record.pending_tool_calls = raw.into_iter().map(unwrap_agent_call).collect();
 
     // run_request is immutable for a session; loading it here on every retry of
     // ToolPrepare is wasteful but correct. Cache on TurnStateRecord if hot.
@@ -37,8 +63,9 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         })
         .unwrap_or_default();
 
-    let mut prepared: Vec<(ToolCall, Option<ToolResult>)> = Vec::with_capacity(calls.len());
-    for tc in calls {
+    let mut prepared: Vec<(ToolCall, Option<ToolResult>)> =
+        Vec::with_capacity(record.pending_tool_calls.len());
+    for tc in record.pending_tool_calls.iter().cloned() {
         let merged = publish_collect(
             iii,
             TOPIC_BEFORE,
@@ -105,14 +132,11 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
-        // Tool handlers expect the model's arguments at the top level (e.g.
-        // `args.path` for shell::filesystem::ls). Augment with session_id and
-        // tool metadata so handlers can correlate calls with the active session.
-        let mut payload = match tc.arguments.clone() {
+        let mut augmented = match tc.arguments.clone() {
             Value::Object(o) => Value::Object(o),
             other => json!({ "arguments": other }),
         };
-        if let Some(obj) = payload.as_object_mut() {
+        if let Some(obj) = augmented.as_object_mut() {
             obj.insert("session_id".into(), json!(record.session_id));
             obj.insert("tool_call_id".into(), json!(tc.id));
             obj.insert("tool_name".into(), json!(tc.name));
@@ -125,27 +149,20 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
                 }),
             );
         }
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: tc.name.clone(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await;
-        let (result, is_error) = match response {
-            Ok(v) => (decode_tool_result(v), false),
-            Err(e) => (
-                ToolResult {
-                    content: vec![ContentBlock::Text(TextContent {
-                        text: format!("tool '{}' failed: {e}", tc.name),
-                    })],
-                    details: json!({}),
-                    terminate: false,
-                },
-                true,
-            ),
-        };
+
+        let result = crate::agent_call::dispatch(
+            iii,
+            &record.session_id,
+            &json!(tc.name.clone()),
+            augmented,
+        )
+        .await;
+        let is_error = result
+            .details
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some();
+
         persistence::upsert_executed_call(&mut results, (tc.clone(), result.clone(), is_error));
         persistence::save_executed_calls(iii, &record.session_id, &results).await;
         let evt = build_tool_execution_event(&tc, &result, is_error);
@@ -283,33 +300,90 @@ async fn publish_collect(
     .unwrap_or_else(|| json!({}))
 }
 
-fn decode_tool_result(value: Value) -> ToolResult {
-    serde_json::from_value::<ToolResult>(value.clone()).unwrap_or_else(|_| {
-        let content = value
-            .get("content")
-            .and_then(|c| serde_json::from_value::<Vec<ContentBlock>>(c.clone()).ok())
-            .unwrap_or_else(|| {
-                vec![ContentBlock::Text(TextContent {
-                    text: value.to_string(),
-                })]
-            });
-        let details = value.get("details").cloned().unwrap_or_else(|| json!({}));
-        let terminate = value
-            .get("terminate")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        ToolResult {
-            content,
-            details,
-            terminate,
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use harness_types::{AgentEvent, AssistantMessage, ContentBlock, TextContent, ToolCall};
+
+    fn tc(id: &str, name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: args,
+        }
+    }
+
+    #[test]
+    fn standard_agent_call_unwraps_to_inner() {
+        let input = tc(
+            "call_1",
+            "agent_call",
+            json!({ "function": "shell::filesystem::ls", "payload": { "path": "/tmp" } }),
+        );
+        let out = unwrap_agent_call(input);
+        assert_eq!(out.id, "call_1");
+        assert_eq!(out.name, "shell::filesystem::ls");
+        assert_eq!(out.arguments, json!({ "path": "/tmp" }));
+    }
+
+    #[test]
+    fn missing_payload_defaults_to_empty_object() {
+        let input = tc("call_2", "agent_call", json!({ "function": "skills::list" }));
+        let out = unwrap_agent_call(input);
+        assert_eq!(out.name, "skills::list");
+        assert_eq!(out.arguments, json!({}));
+    }
+
+    #[test]
+    fn non_agent_call_returns_unchanged() {
+        let input = tc("call_3", "shell::filesystem::ls", json!({ "path": "/tmp" }));
+        let out = unwrap_agent_call(input.clone());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn missing_function_field_unwraps_to_empty_name() {
+        let input = tc("call_4", "agent_call", json!({ "payload": { "x": 1 } }));
+        let out = unwrap_agent_call(input);
+        assert_eq!(out.name, "");
+        assert_eq!(out.arguments, json!({ "x": 1 }));
+    }
+
+    #[test]
+    fn unwrapped_tool_calls_replace_agent_call_in_place() {
+        let calls = vec![
+            tc(
+                "a",
+                "agent_call",
+                json!({"function":"shell::filesystem::ls","payload":{"path":"/tmp"}}),
+            ),
+            tc("b", "skills::list", json!({})),
+        ];
+        let unwrapped: Vec<_> = calls.into_iter().map(unwrap_agent_call).collect();
+        assert_eq!(unwrapped[0].name, "shell::filesystem::ls");
+        assert_eq!(unwrapped[0].arguments, json!({"path":"/tmp"}));
+        assert_eq!(unwrapped[1].name, "skills::list");
+    }
+
+    /// REGRESSION (plan-eng-review §3): `handle_execute` must route through
+    /// `agent_call::dispatch`, never `iii.trigger(tc.name, ...)`, directly.
+    #[test]
+    fn handle_execute_does_not_call_iii_trigger_with_tc_name_directly() {
+        let src = include_str!("tools.rs");
+        let start = src
+            .find("pub async fn handle_execute")
+            .expect("handle_execute exists");
+        let window = &src[start..start + src[start..].len().min(5000)];
+        assert!(
+            !window.contains("function_id: tc.name"),
+            "handle_execute must dispatch via agent_call::dispatch, \
+             not iii.trigger(tc.name, ...) directly."
+        );
+        assert!(
+            window.contains("agent_call::dispatch"),
+            "handle_execute must call agent_call::dispatch"
+        );
+    }
 
     fn assistant_with_tool_call(name: &str) -> AssistantMessage {
         AssistantMessage {

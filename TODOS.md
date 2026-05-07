@@ -24,30 +24,14 @@
 
 **Tracked here because:** the original skill-registration plan deliberately deferred the CI gate. Capturing the design here so it isn't re-derived when we decide to enforce.
 
-## harness: migrate tool filter from prefix denylist to `metadata.mcp.expose`
-
-**What:** Replace the prefix denylist in `turn-orchestrator/src/tools_catalog.rs::DENIED_PREFIXES` with `metadata.mcp.expose === true`. Touch each LLM-callable function's `register.rs` to set `metadata.mcp.expose = true` alongside the existing `metadata.tool.label`.
-
-**Why:** Single shared advertise-selector across mcp + harness. The denylist forks the convention — every new control-plane prefix has to be added by hand to the harness list. `metadata.mcp.expose` already exists in `mcp/src/tools.rs:44-63` with passing tests at `:280-292`.
-
-**Fix:** ~3-5 LOC per affected register site (shell-bash, shell-filesystem, subagent, skills::skill::fetch). Then collapse `should_advertise` in `tools_catalog.rs` to a one-line metadata read.
-
-**Effort:** ~30 LOC of register-site touches + ~10 LOC of harness filter rewrite + test updates.
-
-**Tracked here because:** plan-eng-review D3 chose denylist for the slim-harness PR to minimize register-site churn. After D6 added `metadata.tool.label` to the same files, the marginal cost of `expose: true` is one JSON line per call.
-
-**Depends on:** the slim-harness PR landing (denylist must exist as the thing being replaced).
-
 ## harness: extract `unwrap_function_list` + `format_to_input_schema` to a shared crate
 
-**What:** Move the two helpers from `mcp/src/tools.rs:67-94` and the copy in `turn-orchestrator/src/tools_catalog.rs:48-82` into a shared module — `harness-types`, a new `iii-tool-catalog` crate, or upstream into `iii-sdk`.
+**What:** Move the two helpers from `mcp/src/tools.rs:67-94` and the copy in `turn-orchestrator/src/agent_call.rs` into a shared module — `harness-types`, a new `iii-tool-catalog` crate, or upstream into `iii-sdk`.
 
-**Why:** Plan-eng-review D5 chose copy-paste; the copies will drift the first time the engine envelope changes or `format_to_input_schema` gets a bug fix. mcp tests pass while harness silently breaks (or vice versa).
+**Why:** The copies will drift the first time the engine envelope changes or `format_to_input_schema` gets a bug fix. mcp tests pass while the harness silently breaks (or vice versa).
 
-**Fix:** Pick a home, move the two functions + their mcp tests, import from both crates. The functions are pure, stateless, ~20 LOC total.
+**Fix:** Pick a home, move the two functions + their tests, import from both crates. The functions are pure, stateless, ~20 LOC total.
 
-**Effort:** ~15 min once the home is chosen. Picking the home is the bulk of the decision (harness-types is a types-not-utilities crate; new crate adds a workspace member; iii-sdk needs an upstream PR + version bump).
+**Effort:** ~15 min once the home is chosen. Picking the home is the bulk of the decision.
 
-**Tracked here because:** the slim-harness PR copy-pasted intentionally to keep crate dep edges flat. Drift risk is real but contained; consolidate when the next bug or schema-format change touches either copy.
-
-**Depends on:** the slim-harness PR landing (so there's a second copy to consolidate).
+**Tracked here because:** the iii-native harness PR (spec `2026-05-07-iii-native-harness-design.md`) repurposed both helpers into `agent_call.rs` rather than extracting them — kept dep edges flat. Drift risk is real but contained; consolidate when the next bug or schema-format change touches either copy.

@@ -32,6 +32,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
+jsonschema = "0.30"
 
 [dev-dependencies]
 tokio = { workspace = true }
