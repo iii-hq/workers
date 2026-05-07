@@ -116,7 +116,7 @@ async fn register_skill_with_retry(
             }
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
+        backoff = (backoff * 2).min(Duration::from_mins(1));
     }
 }
 
