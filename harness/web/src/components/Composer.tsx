@@ -20,7 +20,7 @@ import {
   filterCommands,
   skillsIndexToMenuItems,
 } from "../menuItems";
-import type { AgentMessage, ToolResult, FsLsDetails, FsEntry } from "../types";
+import type { AgentMessage, FsLsResponse, FsEntry } from "../types";
 
 // ─── Built-in command callbacks ────────────────────────────────────────────
 // Each /name route the Composer can dispatch. Optional callbacks; the
@@ -58,7 +58,7 @@ const AT_PAGE_SIZE = 25;
 interface AtBrowseState {
   /** Directory currently being listed. Empty when no @-mention is active. */
   dir: string;
-  /** Raw entries returned by `shell::filesystem::ls` for `dir`. */
+  /** Raw entries returned by `shell::fs::ls` for `dir`. */
   entries: FsEntry[];
   loading: boolean;
   /** Empty-state reason, mapped to user-visible text. */
@@ -143,24 +143,14 @@ export function Composer({
     if (!atBrowse.dir) return;
     let cancelled = false;
     setAtBrowse((s) => ({ ...s, loading: true, error: null }));
-    bridge<ToolResult<FsLsDetails>>("shell::filesystem::ls", {
+    bridge<FsLsResponse>("shell::fs::ls", {
       path: atBrowse.dir,
     })
       .then((res) => {
         if (cancelled) return;
-        const detailsErr = res.details?.error;
-        if (detailsErr) {
-          setAtBrowse({
-            dir: atBrowse.dir,
-            entries: [],
-            loading: false,
-            error: /permission|denied/i.test(detailsErr) ? "permission" : "io",
-          });
-          return;
-        }
         setAtBrowse({
           dir: atBrowse.dir,
-          entries: res.details?.entries ?? [],
+          entries: res.entries ?? [],
           loading: false,
           error: null,
         });
