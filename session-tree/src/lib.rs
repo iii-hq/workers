@@ -261,6 +261,31 @@ pub async fn create_session<S: SessionStore + ?Sized>(
     Ok(session_id)
 }
 
+/// Idempotent variant of [`create_session`] that uses a caller-supplied
+/// session_id. Returns `session_id` whether it created a new session or the
+/// session already existed.
+pub async fn ensure_session<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    display_name: Option<String>,
+    cwd: Option<String>,
+) -> Result<String, SessionError> {
+    if store.load_meta(session_id).await.is_ok() {
+        return Ok(session_id.to_string());
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let meta = SessionMeta {
+        session_id: session_id.to_string(),
+        display_name,
+        created_at: now,
+        updated_at: now,
+        cwd,
+        branch_count: 0,
+    };
+    store.create(meta).await?;
+    Ok(session_id.to_string())
+}
+
 /// Append a message entry, deriving id and timestamp.
 pub async fn append_message<S: SessionStore + ?Sized>(
     store: &S,
@@ -321,6 +346,174 @@ pub async fn load_messages<S: SessionStore + ?Sized>(
         }
     }
     Ok(messages)
+}
+
+/// One row from [`load_messages_with_entry_ids`] / `session-tree::messages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageWithEntryId {
+    pub entry_id: String,
+    pub message: AgentMessage,
+}
+
+/// Result of a [`reconcile`] call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileResult {
+    pub state_count: u32,
+    pub tree_count_before: u32,
+    pub tree_count_after: u32,
+    pub repaired: u32,
+}
+
+/// Compare the caller-supplied `state_snapshot` against the session's
+/// session-tree contents. Append any messages from `state_snapshot` that
+/// aren't already in the tree (positionally — assumes both are append-only
+/// and ordered). Idempotent: subsequent calls with the same snapshot are
+/// no-ops.
+pub async fn reconcile<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    state_snapshot: &[AgentMessage],
+) -> Result<ReconcileResult, SessionError> {
+    let tree_pairs = load_messages_with_entry_ids(store, session_id, None).await?;
+    let tree_count_before = u32::try_from(tree_pairs.len()).unwrap_or(u32::MAX);
+    let state_count = u32::try_from(state_snapshot.len()).unwrap_or(u32::MAX);
+
+    if state_snapshot.len() <= tree_pairs.len() {
+        return Ok(ReconcileResult {
+            state_count,
+            tree_count_before,
+            tree_count_after: tree_count_before,
+            repaired: 0,
+        });
+    }
+
+    let mut last_id: Option<String> = tree_pairs.last().map(|p| p.entry_id.clone());
+    let mut repaired = 0u32;
+    for msg in &state_snapshot[tree_pairs.len()..] {
+        let new_id = append_message(store, session_id, last_id.clone(), msg.clone()).await?;
+        last_id = Some(new_id);
+        repaired += 1;
+    }
+    Ok(ReconcileResult {
+        state_count,
+        tree_count_before,
+        tree_count_after: tree_count_before + repaired,
+        repaired,
+    })
+}
+
+/// Like [`load_messages`], but pairs each message with its source entry id.
+/// Used by callers that need to fork from a specific message.
+pub async fn load_messages_with_entry_ids<S: SessionStore + ?Sized>(
+    store: &S,
+    session_id: &str,
+    leaf: Option<&str>,
+) -> Result<Vec<MessageWithEntryId>, SessionError> {
+    let entries = store.load_entries(session_id).await?;
+    let path = active_path(store, session_id, leaf).await?;
+    let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+    let mut out: Vec<MessageWithEntryId> = Vec::new();
+    for id in &path {
+        if let Some(SessionEntry::Message { message, .. }) = by_id.get(id.as_str()).copied() {
+            out.push(MessageWithEntryId {
+                entry_id: id.clone(),
+                message: message.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// One row in the response of [`list_sessions`] / `session-tree::list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListRow {
+    pub session_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub entry_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_summary: Option<String>,
+}
+
+/// Response envelope for `session-tree::list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListSessionsResult {
+    pub sessions: Vec<SessionListRow>,
+    pub total: u32,
+}
+
+/// Sort order for [`list_sessions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListOrder {
+    Asc,
+    Desc,
+}
+
+/// List sessions with optional pagination and ordering.
+///
+/// Default order is `Desc` by `updated_at`. `last_message_summary` is the
+/// first 80 chars of the last `Message` entry's first text content block
+/// (or `None` if no messages).
+pub async fn list_sessions<S: SessionStore + ?Sized>(
+    store: &S,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    order: Option<ListOrder>,
+) -> Result<ListSessionsResult, SessionError> {
+    let mut metas = store.list().await?;
+    let order = order.unwrap_or(ListOrder::Desc);
+    metas.sort_by(|a, b| match order {
+        ListOrder::Desc => b.updated_at.cmp(&a.updated_at),
+        ListOrder::Asc => a.updated_at.cmp(&b.updated_at),
+    });
+
+    let total = u32::try_from(metas.len()).unwrap_or(u32::MAX);
+    let offset = offset.unwrap_or(0) as usize;
+    let limit = limit.map(|l| l as usize).unwrap_or(metas.len());
+    let page: Vec<SessionMeta> = metas.into_iter().skip(offset).take(limit).collect();
+
+    let mut sessions: Vec<SessionListRow> = Vec::with_capacity(page.len());
+    for meta in page {
+        let entries = store
+            .load_entries(&meta.session_id)
+            .await
+            .unwrap_or_default();
+        let entry_count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+        let last_message_summary = entries.iter().rev().find_map(|e| match e {
+            SessionEntry::Message { message, .. } => extract_summary(message),
+            _ => None,
+        });
+        sessions.push(SessionListRow {
+            session_id: meta.session_id,
+            created_at: meta.created_at,
+            updated_at: meta.updated_at,
+            entry_count,
+            display_name: meta.display_name,
+            cwd: meta.cwd,
+            last_message_summary,
+        });
+    }
+
+    Ok(ListSessionsResult { sessions, total })
+}
+
+fn extract_summary(message: &AgentMessage) -> Option<String> {
+    let blocks: &[ContentBlock] = match message {
+        AgentMessage::User(m) => &m.content,
+        AgentMessage::Assistant(m) => &m.content,
+        AgentMessage::ToolResult(_) | AgentMessage::Custom(_) => return None,
+    };
+    for block in blocks {
+        if let ContentBlock::Text(text) = block {
+            let trimmed: String = text.text.chars().take(80).collect();
+            return Some(trimmed);
+        }
+    }
+    None
 }
 
 /// Hydrate an `AgentContext` from a session leaf using a system prompt.
@@ -697,17 +890,20 @@ fn html_escape(input: &str) -> String {
 
 /// Registered function ids exposed by [`register_with_iii`].
 pub mod function_ids {
-    pub const FORK: &str = "session::fork";
-    pub const CLONE: &str = "session::clone";
-    pub const COMPACT: &str = "session::compact";
-    pub const TREE: &str = "session::tree";
-    pub const EXPORT_HTML: &str = "session::export_html";
-    pub const CREATE: &str = "session::create";
-    pub const APPEND: &str = "session::append";
-    pub const MESSAGES: &str = "session::messages";
+    pub const FORK: &str = "session-tree::fork";
+    pub const CLONE: &str = "session-tree::clone";
+    pub const COMPACT: &str = "session-tree::compact";
+    pub const TREE: &str = "session-tree::tree";
+    pub const EXPORT_HTML: &str = "session-tree::export_html";
+    pub const CREATE: &str = "session-tree::create";
+    pub const ENSURE: &str = "session-tree::ensure";
+    pub const APPEND: &str = "session-tree::append";
+    pub const MESSAGES: &str = "session-tree::messages";
+    pub const LIST: &str = "session-tree::list";
+    pub const RECONCILE: &str = "session-tree::reconcile";
 }
 
-/// Register the five `session::*` iii functions on `iii`, backed by `store`.
+/// Register all `session-tree::*` iii functions on `iii`, backed by `store`.
 ///
 /// Returns a [`SessionFunctionRefs`] handle. Drop or call
 /// [`SessionFunctionRefs::unregister_all`] to deregister everything in one
@@ -717,17 +913,25 @@ pub mod function_ids {
 ///
 /// # Payload shapes
 ///
-/// - `session::fork` — `{ "source_session_id": str, "from_entry_id": str }`
+/// - `session-tree::fork` — `{ "source_session_id": str, "from_entry_id": str }`
 ///   → `{ "session_id": str }`
-/// - `session::clone` — `{ "source_session_id": str }`
+/// - `session-tree::clone` — `{ "source_session_id": str }`
 ///   → `{ "session_id": str }`
-/// - `session::compact` — `{ "session_id": str, "summary": str,
+/// - `session-tree::compact` — `{ "session_id": str, "summary": str,
 ///   "tokens_before": u64, "details": { "read_files": [str],
 ///   "modified_files": [str] }, "parent_id": str? }`
 ///   → `{ "entry_id": str }`
-/// - `session::tree` — `{ "session_id": str }` → `TreeNode`
-/// - `session::export_html` — `{ "session_id": str, "branch_leaf": str? }`
+/// - `session-tree::tree` — `{ "session_id": str }` → `TreeNode`
+/// - `session-tree::export_html` — `{ "session_id": str, "branch_leaf": str? }`
 ///   → `{ "html": str }`
+/// - `session-tree::messages` — `{ "session_id": str, "branch_leaf": str? }`
+///   → `{ "messages": [{entry_id, message: AgentMessage}] }`
+/// - `session-tree::list` — `{ "limit": u32?, "offset": u32?, "order": "asc"|"desc"? }`
+///   → `{ "sessions": [{session_id, created_at, updated_at, entry_count, display_name?, cwd?, last_message_summary?}], "total": u32 }`
+/// - `session-tree::ensure` — `{ "session_id": str, "display_name": str?, "cwd": str? }`
+///   → `{ "session_id": str }`  // idempotent
+/// - `session-tree::reconcile` — `{ "session_id": str, "state_snapshot": [AgentMessage] }`
+///   → `{ "state_count": u32, "tree_count_before": u32, "tree_count_after": u32, "repaired": u32 }`
 pub fn register_with_iii<S>(iii: &iii_sdk::III, store: std::sync::Arc<S>) -> SessionFunctionRefs
 where
     S: SessionStore + Send + Sync + ?Sized + 'static,
@@ -881,6 +1085,32 @@ where
         )),
     );
 
+    let store_ensure = store.clone();
+    refs.push(
+        iii.register_function((
+            RegisterFunctionMessage::with_id(function_ids::ENSURE.into())
+                .with_description("Idempotently ensure a session exists with the given id".into()),
+            move |payload: serde_json::Value| {
+                let store = store_ensure.clone();
+                async move {
+                    let session_id = required_str(&payload, "session_id")?;
+                    let display_name = payload
+                        .get("display_name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string);
+                    let cwd = payload
+                        .get("cwd")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToString::to_string);
+                    let id = ensure_session(store.as_ref(), &session_id, display_name, cwd)
+                        .await
+                        .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    Ok(json!({ "session_id": id }))
+                }
+            },
+        )),
+    );
+
     let store_append = store_for_append(&store);
     refs.push(
         iii.register_function((
@@ -908,10 +1138,10 @@ where
         )),
     );
 
-    let store_messages = store;
+    let store_messages = store.clone();
     refs.push(iii.register_function((
         RegisterFunctionMessage::with_id(function_ids::MESSAGES.into()).with_description(
-            "Load every AgentMessage on the active path of a session, oldest first".into(),
+            "Load every AgentMessage on the active path of a session, paired with its entry_id, oldest first".into(),
         ),
         move |payload: serde_json::Value| {
             let store = store_messages.clone();
@@ -921,13 +1151,65 @@ where
                     .get("branch_leaf")
                     .and_then(serde_json::Value::as_str)
                     .map(ToString::to_string);
-                let messages = load_messages(store.as_ref(), &session_id, leaf.as_deref())
+                let messages = load_messages_with_entry_ids(store.as_ref(), &session_id, leaf.as_deref())
                     .await
                     .map_err(|e| IIIError::Handler(e.to_string()))?;
                 Ok(json!({ "messages": messages }))
             }
         },
     )));
+
+    let store_reconcile = store.clone();
+    refs.push(iii.register_function((
+        RegisterFunctionMessage::with_id(function_ids::RECONCILE.into()).with_description(
+            "Mirror missing messages from a state-snapshot into session-tree".into(),
+        ),
+        move |payload: serde_json::Value| {
+            let store = store_reconcile.clone();
+            async move {
+                let session_id = required_str(&payload, "session_id")?;
+                let snapshot_value = payload.get("state_snapshot").cloned().ok_or_else(|| {
+                    IIIError::Handler("missing required field: state_snapshot".into())
+                })?;
+                let snapshot: Vec<AgentMessage> = serde_json::from_value(snapshot_value)
+                    .map_err(|e| IIIError::Handler(format!("invalid state_snapshot: {e}")))?;
+                let result = reconcile(store.as_ref(), &session_id, &snapshot)
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                serde_json::to_value(result).map_err(|e| IIIError::Handler(e.to_string()))
+            }
+        },
+    )));
+
+    let store_list = store;
+    refs.push(
+        iii.register_function((
+            RegisterFunctionMessage::with_id(function_ids::LIST.into())
+                .with_description("List sessions with optional pagination and ordering".into()),
+            move |payload: serde_json::Value| {
+                let store = store_list.clone();
+                async move {
+                    let limit = payload
+                        .get("limit")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+                    let offset = payload
+                        .get("offset")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+                    let order = match payload.get("order").and_then(serde_json::Value::as_str) {
+                        Some("asc") => Some(ListOrder::Asc),
+                        Some("desc") => Some(ListOrder::Desc),
+                        _ => None,
+                    };
+                    let result = list_sessions(store.as_ref(), limit, offset, order)
+                        .await
+                        .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    serde_json::to_value(result).map_err(|e| IIIError::Handler(e.to_string()))
+                }
+            },
+        )),
+    );
 
     SessionFunctionRefs { refs }
 }
@@ -952,7 +1234,7 @@ pub struct SessionFunctionRefs {
 }
 
 impl SessionFunctionRefs {
-    /// Unregister every `session::*` function this batch installed.
+    /// Unregister every `session-tree::*` function this batch installed.
     pub fn unregister_all(self) {
         for f in self.refs {
             f.unregister();
@@ -1060,6 +1342,14 @@ mod tests {
             .unwrap();
         let listed = store.list().await.unwrap();
         assert_eq!(listed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_empty_store_returns_empty() {
+        let store = InMemoryStore::new();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.sessions.len(), 0);
+        assert_eq!(result.total, 0);
     }
 
     async fn build_linear_session(store: &InMemoryStore, len: usize) -> (String, Vec<String>) {
@@ -1258,5 +1548,179 @@ mod tests {
         assert!(!html.contains("offshoot"));
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("entry user"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_single_session_has_entry_count_and_summary() {
+        let store = InMemoryStore::new();
+        let id = create_session(&store, Some("alpha".into()), None)
+            .await
+            .unwrap();
+        append_message(&store, &id, None, user("hello world", 1))
+            .await
+            .unwrap();
+        append_message(&store, &id, None, user("second", 2))
+            .await
+            .unwrap();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.total, 1);
+        assert_eq!(result.sessions.len(), 1);
+        let row = &result.sessions[0];
+        assert_eq!(row.session_id, id);
+        assert_eq!(row.entry_count, 2);
+        assert_eq!(row.display_name.as_deref(), Some("alpha"));
+        assert_eq!(row.last_message_summary.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_pagination() {
+        let store = InMemoryStore::new();
+        for i in 0..100 {
+            create_session(&store, Some(format!("s{i}")), None)
+                .await
+                .unwrap();
+        }
+        let page0 = list_sessions(&store, Some(10), Some(0), None)
+            .await
+            .unwrap();
+        assert_eq!(page0.total, 100);
+        assert_eq!(page0.sessions.len(), 10);
+
+        let page9 = list_sessions(&store, Some(10), Some(90), None)
+            .await
+            .unwrap();
+        assert_eq!(page9.sessions.len(), 10);
+
+        let page_past_end = list_sessions(&store, Some(10), Some(100), None)
+            .await
+            .unwrap();
+        assert_eq!(page_past_end.sessions.len(), 0);
+        assert_eq!(page_past_end.total, 100);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_order_desc_by_updated_at() {
+        let store = InMemoryStore::new();
+        let id_a = create_session(&store, Some("a".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let id_b = create_session(&store, Some("b".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        // Touching 'a' bumps its updated_at past 'b'.
+        append_message(&store, &id_a, None, user("touch", 1))
+            .await
+            .unwrap();
+
+        let desc = list_sessions(&store, None, None, Some(ListOrder::Desc))
+            .await
+            .unwrap();
+        assert_eq!(desc.sessions[0].session_id, id_a);
+        assert_eq!(desc.sessions[1].session_id, id_b);
+
+        let asc = list_sessions(&store, None, None, Some(ListOrder::Asc))
+            .await
+            .unwrap();
+        assert_eq!(asc.sessions[0].session_id, id_b);
+        assert_eq!(asc.sessions[1].session_id, id_a);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_default_order_is_desc() {
+        let store = InMemoryStore::new();
+        let _old = create_session(&store, Some("old".into()), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let new = create_session(&store, Some("new".into()), None)
+            .await
+            .unwrap();
+        let result = list_sessions(&store, None, None, None).await.unwrap();
+        assert_eq!(result.sessions[0].session_id, new);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_creates_with_caller_id_if_absent() {
+        let store = InMemoryStore::new();
+        let sid = "harness-supplied-id";
+        let result = ensure_session(&store, sid, None, None).await.unwrap();
+        assert_eq!(result, sid);
+        let meta = store.load_meta(sid).await.unwrap();
+        assert_eq!(meta.session_id, sid);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_is_idempotent() {
+        let store = InMemoryStore::new();
+        let sid = "harness-supplied-id";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        let result = ensure_session(&store, sid, None, None).await.unwrap();
+        assert_eq!(result, sid);
+    }
+
+    #[tokio::test]
+    async fn load_messages_with_entry_ids_returns_pairs_in_order() {
+        let store = InMemoryStore::new();
+        let sid = create_session(&store, None, None).await.unwrap();
+        let id1 = append_message(&store, &sid, None, user("first", 1))
+            .await
+            .unwrap();
+        let id2 = append_message(&store, &sid, Some(id1.clone()), user("second", 2))
+            .await
+            .unwrap();
+        let pairs = load_messages_with_entry_ids(&store, &sid, None)
+            .await
+            .unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].entry_id, id1);
+        assert_eq!(pairs[1].entry_id, id2);
+    }
+
+    #[tokio::test]
+    async fn reconcile_appends_missing_messages_from_state_snapshot() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-test";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        // Tree has 1 message
+        append_message(&store, sid, None, user("first", 1))
+            .await
+            .unwrap();
+
+        // State snapshot says there should be 3 messages
+        let state_snapshot: Vec<AgentMessage> =
+            vec![user("first", 1), user("second", 2), user("third", 3)];
+
+        let result = reconcile(&store, sid, &state_snapshot).await.unwrap();
+        assert_eq!(result.state_count, 3);
+        assert_eq!(result.tree_count_before, 1);
+        assert_eq!(result.tree_count_after, 3);
+        assert_eq!(result.repaired, 2);
+    }
+
+    #[tokio::test]
+    async fn reconcile_in_sync_is_noop() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-sync";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        append_message(&store, sid, None, user("only", 1))
+            .await
+            .unwrap();
+        let snap = vec![user("only", 1)];
+        let result = reconcile(&store, sid, &snap).await.unwrap();
+        assert_eq!(result.repaired, 0);
+    }
+
+    #[tokio::test]
+    async fn reconcile_idempotent() {
+        let store = InMemoryStore::new();
+        let sid = "reconcile-idempotent";
+        ensure_session(&store, sid, None, None).await.unwrap();
+        let snap = vec![user("a", 1), user("b", 2)];
+        let r1 = reconcile(&store, sid, &snap).await.unwrap();
+        let r2 = reconcile(&store, sid, &snap).await.unwrap();
+        assert_eq!(r1.repaired, 2);
+        assert_eq!(r2.repaired, 0);
     }
 }

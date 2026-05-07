@@ -114,6 +114,13 @@ pub fn tool_schemas_key(session_id: &str) -> String {
     format!("session/{session_id}/tool_schemas")
 }
 
+/// Key under scope=agent that records how many messages from `messages_key`
+/// have already been mirrored into `session-tree`. Used by `save_messages`
+/// to compute the append delta.
+pub fn last_session_tree_len_key(session_id: &str) -> String {
+    format!("session/{session_id}/session_tree_mirror_len")
+}
+
 #[allow(dead_code)]
 fn _ensure_message_types_in_scope(_: AgentMessage) {}
 

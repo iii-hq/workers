@@ -21,3 +21,4 @@ dependencies:
   auth-credentials: "^0.1.0"
   llm-budget: "^0.1.0"
   skills: "^0.1.0"
+  approval-gate: "^0.1.0"

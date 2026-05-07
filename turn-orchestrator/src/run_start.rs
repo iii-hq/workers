@@ -135,7 +135,7 @@ pub async fn execute_sync(
 pub async fn publish_step(iii: &III, session_id: &str) {
     if let Err(e) = iii
         .trigger(TriggerRequest {
-            function_id: "publish".into(),
+            function_id: "iii::durable::publish".into(),
             payload: json!({
                 "topic": STEP_TOPIC,
                 "data": { "session_id": session_id },

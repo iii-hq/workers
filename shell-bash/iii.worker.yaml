@@ -3,7 +3,7 @@ name: shell-bash
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-shell-bash
+bin: shell-bash
 description: Sandboxed shell execution under shell::bash::* — wraps the engine sandbox::exec primitive with no host fallback.
 config:
   default_timeout_ms: 30000

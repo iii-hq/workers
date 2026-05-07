@@ -1,72 +1,106 @@
 # harness
 
-Meta-worker that composes 14 modular workers into a runnable iii chat
-surface, exposes a single browser-facing HTTP bridge, and ships a Vite/React
-UI that talks to the bus through it.
+Meta-worker that composes fifteen modular workers into a runnable iii chat surface, exposes a browser-facing HTTP bridge (`bridge::trigger`, `bridge::events`), and ships a Vite/React UI that talks to the bus through it. The harness does not own chat, agent, or provider logic; it registers a small set of bus functions and expects peers such as `turn-orchestrator`, `provider-router`, shell tools, and related workers to be installed alongside it. Deeper layout and streams behavior are documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-The harness owns no chat, agent, or provider logic itself. It registers
-exactly two functions on the iii bus and assumes the rest of the surface
-(`turn-orchestrator`, `provider-router`, `session-tree`, the shell tools,
-etc.) is provided by other workers. Architecture details are in
-`ARCHITECTURE.md`.
-
-## Installation
+## Install
 
 ```bash
 iii worker add harness
 ```
 
-## Run
+`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
+
+To register the harness skill bundle metadata with the bus (the worker does this automatically at boot when `skills` is available), ensure the [skills](../skills) worker is part of your stack:
 
 ```bash
-iii-harness
+iii worker add skills
 ```
 
-Defaults to `ws://127.0.0.1:49134`; override with `III_URL`.
+## Quickstart
 
-## Registered functions
+After `iii start`, probe the bundle and list expected runtime workers:
 
-| Function | Description |
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "harness::status".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
+```
+
+Forward an arbitrary bus call through the HTTP-oriented bridge (same shape as `bridge::trigger` on the engine):
+
+```rust
+// function_id / payload match iii.trigger(...)
+let result = iii
+    .trigger(TriggerRequest {
+        function_id: "bridge::trigger".into(),
+        payload: json!({
+            "function_id": "models::list",
+            "payload": {},
+        }),
+        action: None,
+        timeout_ms: Some(240_000),
+    })
+    .await?;
+```
+
+Registered functions (use `::` ids on the bus):
+
+| Function | Role |
 |---|---|
-| `harness::status` | Returns the bundle name, version, and the list of expected runtime workers. The cheapest "is the bundle alive" probe. |
-| `bridge::trigger` | Forwards `{function_id, payload}` from HTTP onto `iii.trigger(...)`. Backed by an HTTP trigger at `POST /bridge/trigger` with a 4-minute timeout. |
+| `harness::status` | Bundle name, version, and expected worker list (cheap liveness probe). |
+| `bridge::trigger` | Forwards `{ function_id, payload }` to `iii.trigger`. HTTP: `POST` `bridge/trigger`. |
+| `bridge::events` | SSE-style tail of `agent::events` for a session. HTTP: `GET` `bridge/events`. |
 
-`bridge::trigger` is intentionally not advertised as an LLM tool — it
-exists only as the browser's call-anything escape hatch.
+`bridge::trigger` is not meant as an LLM tool — it is the browser’s call-anything escape hatch.
+
+## Configuration
+
+```yaml
+# Default engine WebSocket URL when III_URL / --url are unset
+engine_url: "ws://127.0.0.1:49134"
+```
+
+Other runtime flags:
+
+- `--config` — path to this file (default `./config.yaml`; override with `III_HARNESS_CONFIG`).
+- `--url` or `III_URL` — engine WebSocket URL; wins over `engine_url` in the file.
+
+Registry-facing defaults also appear in `iii-harness --manifest` under `default_config`.
 
 ## Expected workers
 
-The 14 workers the harness assumes are running on the bus, sourced from
-`EXPECTED_WORKERS` in `src/lib.rs`:
+`EXPECTED_WORKERS` in [`src/lib.rs`](src/lib.rs) and the `dependencies:` block of [`iii.worker.yaml`](iii.worker.yaml) must stay in sync (see [`tests/integration.rs`](tests/integration.rs)).
 
-- `turn-orchestrator`, `provider-router`
-- `session-tree`, `session-inbox`
-- `models-catalog`, `hook-fanout`, `policy-denylist`
-- `shell-bash`, `shell-filesystem`, `subagent`
-- `provider-anthropic`, `provider-openai`
-- `auth-credentials`, `llm-budget`
+## Local demo stack
 
-`tests/integration.rs` keeps `EXPECTED_WORKERS` and the `dependencies:`
-block of `iii.worker.yaml` in sync.
-
-## Local stack
-
-`scripts/demo.sh` brings up the entire bundle directly from a checkout:
+From a checkout, [`scripts/demo.sh`](scripts/demo.sh) can build and run the full bundle:
 
 ```bash
-./scripts/demo.sh build    # cargo build --release for harness + 14 workers
+./scripts/demo.sh build    # cargo build --release for harness + dependencies
 ./scripts/demo.sh engine   # start `iii --use-default-config` in background
-./scripts/demo.sh start    # spawn all 14 workers + harness as nohup processes
+./scripts/demo.sh start    # spawn workers + harness as nohup processes
 ./scripts/demo.sh verify   # call harness::status and models::list
-./scripts/demo.sh web      # vite dev server on :5173 in a tmux session
-./scripts/demo.sh stop     # kill every PID + engine + tmux
+./scripts/demo.sh web      # Vite dev server on :5173 in a tmux session
+./scripts/demo.sh stop     # tear down PIDs, engine, tmux
 ./scripts/demo.sh all      # build + engine + start + verify
 ```
 
-PIDs and per-worker logs live under `~/iii-harness-demo` by default.
+PIDs and logs default under `~/iii-harness-demo`.
 
-## Build
-
-```bash
-cargo build --release
-```
+Contributor commands (fmt, clippy, tests) for this crate live in [`binary-worker.md`](../binary-worker.md) §11; source layout notes are in [`ARCHITECTURE.md`](ARCHITECTURE.md).

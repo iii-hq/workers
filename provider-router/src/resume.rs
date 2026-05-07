@@ -167,7 +167,7 @@ pub async fn resume_session(iii: &III, session_id: &str) -> Result<Vec<AgentMess
 
 async fn publish_step(iii: &III, session_id: &str) -> Result<(), ResumeError> {
     iii.trigger(TriggerRequest {
-        function_id: "publish".into(),
+        function_id: "iii::durable::publish".into(),
         payload: json!({
             "topic": "turn::step_requested",
             "data": { "session_id": session_id },

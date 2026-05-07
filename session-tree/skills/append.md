@@ -1,4 +1,4 @@
-# session::append
+# session-tree::append
 
 Append an `AgentMessage` entry to an existing session and return the new entry id.
 
@@ -14,7 +14,7 @@ metadata is advanced.
 - Building a branching history: pass the previous entry's id as `parent_id` to
   chain entries into a linked list; omit `parent_id` to start a new root (rare).
 - Writing replays or synthetic sessions entry-by-entry before calling
-  `session::messages` or `session::export_html`.
+  `session-tree::messages` or `session-tree::export_html`.
 
 ## Notes
 
@@ -24,5 +24,5 @@ metadata is advanced.
   In a linear conversation thread every entry except the first should supply the
   previous `entry_id` as `parent_id`.
 - Entry ids are UUIDs generated server-side; do not supply your own id.
-- `session::append` is not idempotent: calling it twice with the same payload
+- `session-tree::append` is not idempotent: calling it twice with the same payload
   creates two distinct entries.

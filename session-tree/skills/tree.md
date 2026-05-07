@@ -1,4 +1,4 @@
-# session::tree
+# session-tree::tree
 
 Return the full session history as a nested `TreeNode` DAG, rooted at the first
 entry appended with no parent.
@@ -22,9 +22,9 @@ in the tree correspond to entries that share the same `parent_id`.
   `parent_id: null`).
 - In a well-formed session exactly one entry has `parent_id: null`; if multiple
   root-less entries exist, the first one appended is treated as the root.
-- `tree` returns the full DAG (every branch); contrast with `session::messages`,
+- `tree` returns the full DAG (every branch); contrast with `session-tree::messages`,
   which returns only the messages on a single active path.
 - `TreeNode.entry` is a `SessionEntry` (may be `Message`, `CustomMessage`,
   `BranchSummary`, or `Compaction`).
 - For large sessions with many forks the response payload can be significant; prefer
-  `session::messages` when only the active path is needed.
+  `session-tree::messages` when only the active path is needed.

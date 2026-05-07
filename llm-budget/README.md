@@ -1,35 +1,57 @@
 # llm-budget
 
-Workspace + agent LLM spend caps on the iii bus. Registers `budget::*` for
-budget CRUD, alerts, forecast, and period rollover.
+Workspace + agent LLM spend caps on the iii bus: `budget::*` functions for budget CRUD, spend checks/recording, alerts, usage rollups, forecast, enforcement, exemptions, and pause/resume — with optional companion skills nested under `llm-budget/*`.
 
-## Installation
+## Install
 
 ```bash
 iii worker add llm-budget
 ```
 
-## Run
+`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
 
-```bash
-iii-llm-budget --engine-url ws://127.0.0.1:49134
+## Quickstart
+
+Register `budget::*` through the iii SDK:
+
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "budget::create".into(),
+            payload: json!({
+                "workspace_id": "ws-demo",
+                "name": "default",
+                "ceiling_usd": 500.0,
+                "period": "month",
+            }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
 ```
 
-State is persisted via iii state — survives restart when paired with a
-durable iii engine backend.
+Further calls use the returned `budget_id` with `"budget_id": "<uuid>"`, e.g. `budget::check`, `budget::record`, `budget::usage`. Exact payloads match the bundled skills under `/skills/` in this crate.
 
-## Registered functions (14)
+## Configuration
 
-`budget::create`, `budget::list`, `budget::get`, `budget::update`,
-`budget::delete`, `budget::check`, `budget::record`, `budget::reset`,
-`budget::alert_set`, `budget::usage`, `budget::forecast`, `budget::enforce`,
-`budget::exempt`, `budget::pause`.
+Committed defaults are loaded with `--config ./config.yaml` (the binary default):
 
-Function ids match `src/register.rs:18-33`; verify there before editing
-this list.
-
-## Build
-
-```bash
-cargo build --release
+```yaml
+skills_trigger_timeout_ms: 5000           # iii trigger timeout when registering skills::* 
+skills_handshake_deadline_secs: 180       # retry skills::register until this deadline
 ```
+
+Additional keys live in [`src/config.rs`](src/config.rs).
+
+State is persisted via built-in iii `state::*` helpers (scope `budgets`); survives restarts when the engine backend is durable.

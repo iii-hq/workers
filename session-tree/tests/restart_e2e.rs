@@ -11,13 +11,12 @@
 //!       IIITEST_WORKER_BIN=$(pwd)/target/release/iii-session-tree \
 //!       cargo test -p iii-session-tree --test restart_e2e -- --ignored
 //!
-//! Schema source (verified against session-tree/src/lib.rs `register_with_iii`,
-//! ~lines 710-910):
-//! - `session::create` payload: `{ "display_name": str?, "cwd": str? }` →
+//! Schema source (verified against session-tree/src/lib.rs `register_with_iii`):
+//! - `session-tree::create` payload: `{ "display_name": str?, "cwd": str? }` →
 //!   `{ "session_id": str }`
-//! - `session::append` payload: `{ "session_id": str, "parent_id": str?,
+//! - `session-tree::append` payload: `{ "session_id": str, "parent_id": str?,
 //!   "message": <AgentMessage> }` → `{ "entry_id": str }`
-//! - `session::messages` payload: `{ "session_id": str, "branch_leaf": str? }`
+//! - `session-tree::messages` payload: `{ "session_id": str, "branch_leaf": str? }`
 //!   → `{ "messages": [<AgentMessage>...] }`
 //!
 //! `AgentMessage` is `#[serde(tag = "role", rename_all = "snake_case")]`
@@ -33,11 +32,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 fn spawn_worker(engine_url: &str, bin: &str) -> Child {
+    let config_path = format!("{}/config.yaml", env!("CARGO_MANIFEST_DIR"));
     Command::new(bin)
-        .env("III_URL", engine_url)
-        // Force the iii-state backend explicitly so the test is robust if the
-        // worker default flips.
-        .env("SESSION_TREE_STORE", "iii_state")
+        .args(["--url", engine_url, "--config", &config_path])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -70,7 +67,7 @@ async fn session_messages_survive_worker_restart() {
     // 1. Create a session.
     let create_resp = iii
         .trigger(iii_sdk::TriggerRequest {
-            function_id: "session::create".into(),
+            function_id: "session-tree::create".into(),
             payload: serde_json::json!({
                 "display_name": "e2e-restart",
             }),
@@ -78,11 +75,11 @@ async fn session_messages_survive_worker_restart() {
             timeout_ms: None,
         })
         .await
-        .expect("session::create failed");
+        .expect("session-tree::create failed");
     let sid = create_resp
         .get("session_id")
         .and_then(serde_json::Value::as_str)
-        .expect("session::create response missing session_id")
+        .expect("session-tree::create response missing session_id")
         .to_string();
 
     // 2. Append two messages. Use distinctive text so we can grep for them
@@ -100,13 +97,13 @@ async fn session_messages_survive_worker_restart() {
         }
         let resp = iii
             .trigger(iii_sdk::TriggerRequest {
-                function_id: "session::append".into(),
+                function_id: "session-tree::append".into(),
                 payload,
                 action: None,
                 timeout_ms: None,
             })
             .await
-            .expect("session::append failed");
+            .expect("session-tree::append failed");
         last_entry_id = resp
             .get("entry_id")
             .and_then(serde_json::Value::as_str)
@@ -122,13 +119,13 @@ async fn session_messages_survive_worker_restart() {
     // 4. Load messages; assert both survived.
     let load_resp = iii
         .trigger(iii_sdk::TriggerRequest {
-            function_id: "session::messages".into(),
+            function_id: "session-tree::messages".into(),
             payload: serde_json::json!({ "session_id": &sid }),
             action: None,
             timeout_ms: None,
         })
         .await
-        .expect("session::messages failed");
+        .expect("session-tree::messages failed");
 
     // The function returns `{ "messages": [<AgentMessage>...] }`. Look for our
     // marker text inside the serialized response.

@@ -1,4 +1,4 @@
-# session::export_html
+# session-tree::export_html
 
 Render the active path of a session as a self-contained HTML document and return it
 as a string.

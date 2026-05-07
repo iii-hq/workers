@@ -1,33 +1,55 @@
 # models-catalog
 
-Model capabilities knowledge base on the iii bus. The bus is the source of
-truth: models live under `models:<provider>:<id>` in scope `models`. The
-embedded `data/models.json` is used only as a one-time seed when state is
-empty; subsequent registrations win.
+Model capabilities knowledge base on the iii bus. Models live under
+`models:<provider>:<id>` in scope `models`; the embedded `data/models.json` seeds
+state once when empty. Callers use `models::list`, `models::get`,
+`models::supports`, and `models::register`.
 
-## Installation
+## Install
 
 ```bash
 iii worker add models-catalog
 ```
 
-## Run
+`iii worker add` fetches the binary, writes a config block into
+`~/.iii/config.yaml`, and the engine starts the worker on the next
+`iii start`.
 
-```bash
-iii-models-catalog --engine-url ws://127.0.0.1:49134
+## Quickstart
+
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "models::list".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+
+    println!("{result:#?}");
+    Ok(())
+}
 ```
 
-## Registered functions
+`models::get` takes `{ "provider": "…", "model_id": "…" }`. `models::supports`
+takes `{ "provider", "model_id", "capability" }` (e.g. `"tools"`,
+`"thinking:xhigh"`). `models::register` accepts a full model object.
 
-| Function | Description |
-|---|---|
-| `models::list` | Read all known models from state. |
-| `models::get` | Read a model by `provider` + `id`. |
-| `models::supports` | Capability lookup (transport, thinking, cache retention). |
-| `models::register` | Write a model entry to state. |
+## Configuration
 
-## Build
-
-```bash
-cargo build --release
+```yaml
+engine_url: "ws://127.0.0.1:49134" # overridden by CLI --url or env III_URL when set
+state_request_timeout_ms: 5000 # state:: / internal bus triggers
+skills_register_timeout_ms: 5000
+skills_unregister_timeout_ms: 2000
 ```
+
+Other defaults and parsing live in [`src/config.rs`](src/config.rs).

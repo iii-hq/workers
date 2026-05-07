@@ -61,8 +61,8 @@ pub fn register(iii: &III) {
 }
 
 fn extract_session_id(payload: &Value) -> Option<String> {
-    // Triggers from `publish` arrive wrapped as { event_id, reply_stream?, payload: {...} }.
-    // Unwrap one level if present, then look up session_id under either `data` or top-level.
+    // `iii::durable::publish` delivers the `data` object here. Accept optional extra nesting
+    // (`payload` / `data`) for compatibility with older in-memory pub/sub shapes.
     let inner = payload
         .get("payload")
         .or_else(|| payload.get("data"))

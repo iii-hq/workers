@@ -17,6 +17,10 @@
 //! callers that can't await a bus round-trip; they're documented as
 //! best-effort fallbacks.
 
+pub mod config;
+
+use std::sync::Arc;
+
 pub const SKILL_ID: &str = "models-catalog";
 pub const SKILL_MD: &str = include_str!("../skill.md");
 
@@ -209,18 +213,23 @@ fn supports_model(m: &Model, capability: Capability) -> bool {
 /// `models:` prefix is empty. Existing setups keep zero-config; new
 /// deployments can clear state and register their own catalog from
 /// scratch.
-pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunctionRefs> {
+pub async fn register_with_iii(
+    iii: &iii_sdk::III,
+    cfg: &Arc<config::ModelsCatalogConfig>,
+) -> anyhow::Result<ModelsFunctionRefs> {
     use iii_sdk::{IIIError, RegisterFunctionMessage};
     use serde_json::{json, Value};
 
-    let _ = seed_state_if_empty(iii).await;
+    let _ = seed_state_if_empty(iii, cfg).await;
 
+    let cfg_list = Arc::clone(cfg);
     let iii_for_list = iii.clone();
     let list_fn = iii.register_function((
         RegisterFunctionMessage::with_id("models::list".to_string())
             .with_description("List models, optionally filtered by provider or capability. Reads from iii state; falls back to the embedded seed when state is empty.".into()),
         move |payload: Value| {
             let iii = iii_for_list.clone();
+            let cfg = cfg_list.clone();
             async move {
                 let provider = payload
                     .get("provider")
@@ -234,13 +243,14 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
                     provider,
                     capability,
                 };
-                let models = list_from_state_or_seed(&iii, &filter).await;
+                let models = list_from_state_or_seed(&iii, &cfg, &filter).await;
                 serde_json::to_value(json!({ "models": models }))
                     .map_err(|e| IIIError::Handler(e.to_string()))
             }
         },
     ));
 
+    let cfg_get = Arc::clone(cfg);
     let iii_for_get = iii.clone();
     let get_fn = iii.register_function((
         RegisterFunctionMessage::with_id("models::get".to_string()).with_description(
@@ -248,6 +258,7 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
         ),
         move |payload: Value| {
             let iii = iii_for_get.clone();
+            let cfg = cfg_get.clone();
             async move {
                 let provider = payload
                     .get("provider")
@@ -259,18 +270,20 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
                     .and_then(Value::as_str)
                     .ok_or_else(|| IIIError::Handler("missing required field: model_id".into()))?
                     .to_string();
-                let model = get_from_state_or_seed(&iii, &provider, &model_id).await;
+                let model = get_from_state_or_seed(&iii, &cfg, &provider, &model_id).await;
                 serde_json::to_value(model).map_err(|e| IIIError::Handler(e.to_string()))
             }
         },
     ));
 
+    let cfg_supports = Arc::clone(cfg);
     let iii_for_supports = iii.clone();
     let supports_fn = iii.register_function((
         RegisterFunctionMessage::with_id("models::supports".to_string())
             .with_description("Check whether a model supports a capability. State-first.".into()),
         move |payload: Value| {
             let iii = iii_for_supports.clone();
+            let cfg = cfg_supports.clone();
             async move {
                 let provider = payload
                     .get("provider")
@@ -287,7 +300,7 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
                     .and_then(Value::as_str)
                     .and_then(parse_capability)
                     .ok_or_else(|| IIIError::Handler("missing or unknown capability".into()))?;
-                let supported = get_from_state_or_seed(&iii, &provider, &model_id)
+                let supported = get_from_state_or_seed(&iii, &cfg, &provider, &model_id)
                     .await
                     .is_some_and(|m| supports_model(&m, capability));
                 Ok(json!({ "supported": supported }))
@@ -295,18 +308,21 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
         },
     ));
 
+    let cfg_register = Arc::clone(cfg);
     let iii_for_register = iii.clone();
     let register_fn = iii.register_function((
         RegisterFunctionMessage::with_id("models::register".to_string())
             .with_description("Write a model to iii state under models:<provider>:<id>.".into()),
         move |payload: Value| {
             let iii = iii_for_register.clone();
+            let cfg = cfg_register.clone();
             async move {
                 let model: Model = serde_json::from_value(payload.clone())
                     .map_err(|e| IIIError::Handler(format!("invalid Model payload: {e}")))?;
                 let key = format!("{MODELS_KEY_PREFIX}{}:{}", model.provider, model.id);
                 state_set(
                     &iii,
+                    &cfg,
                     &key,
                     &serde_json::to_value(&model).unwrap_or(Value::Null),
                 )
@@ -328,7 +344,10 @@ pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<ModelsFunct
 /// Seed the embedded baseline into iii state under `models:` if no
 /// `models:` keys exist yet. Idempotent and best-effort: a transient bus
 /// error or already-seeded state both leave the function silent.
-async fn seed_state_if_empty(iii: &iii_sdk::III) -> anyhow::Result<()> {
+async fn seed_state_if_empty(
+    iii: &iii_sdk::III,
+    cfg: &Arc<config::ModelsCatalogConfig>,
+) -> anyhow::Result<()> {
     use serde_json::Value;
     let existing = iii
         .trigger(iii_sdk::TriggerRequest {
@@ -338,7 +357,7 @@ async fn seed_state_if_empty(iii: &iii_sdk::III) -> anyhow::Result<()> {
                 "prefix": MODELS_KEY_PREFIX,
             }),
             action: None,
-            timeout_ms: Some(5_000),
+            timeout_ms: Some(cfg.state_request_timeout_ms),
         })
         .await
         .ok();
@@ -355,13 +374,20 @@ async fn seed_state_if_empty(iii: &iii_sdk::III) -> anyhow::Result<()> {
     }
     for m in CATALOG.iter() {
         let key = format!("{MODELS_KEY_PREFIX}{}:{}", m.provider, m.id);
-        let _ = state_set(iii, &key, &serde_json::to_value(m).unwrap_or(Value::Null)).await;
+        let _ = state_set(
+            iii,
+            cfg,
+            &key,
+            &serde_json::to_value(m).unwrap_or(Value::Null),
+        )
+        .await;
     }
     Ok(())
 }
 
 async fn state_set(
     iii: &iii_sdk::III,
+    cfg: &Arc<config::ModelsCatalogConfig>,
     key: &str,
     value: &serde_json::Value,
 ) -> Result<(), iii_sdk::IIIError> {
@@ -373,13 +399,17 @@ async fn state_set(
             "value": value,
         }),
         action: None,
-        timeout_ms: Some(5_000),
+        timeout_ms: Some(cfg.state_request_timeout_ms),
     })
     .await
     .map(|_| ())
 }
 
-async fn list_from_state_or_seed(iii: &iii_sdk::III, filter: &ListFilter) -> Vec<Model> {
+async fn list_from_state_or_seed(
+    iii: &iii_sdk::III,
+    cfg: &Arc<config::ModelsCatalogConfig>,
+    filter: &ListFilter,
+) -> Vec<Model> {
     use serde_json::Value;
     let resp = iii
         .trigger(iii_sdk::TriggerRequest {
@@ -389,7 +419,7 @@ async fn list_from_state_or_seed(iii: &iii_sdk::III, filter: &ListFilter) -> Vec
                 "prefix": MODELS_KEY_PREFIX,
             }),
             action: None,
-            timeout_ms: Some(5_000),
+            timeout_ms: Some(cfg.state_request_timeout_ms),
         })
         .await
         .ok();
@@ -420,6 +450,7 @@ async fn list_from_state_or_seed(iii: &iii_sdk::III, filter: &ListFilter) -> Vec
 
 async fn get_from_state_or_seed(
     iii: &iii_sdk::III,
+    cfg: &Arc<config::ModelsCatalogConfig>,
     provider: &str,
     model_id: &str,
 ) -> Option<Model> {
@@ -432,7 +463,7 @@ async fn get_from_state_or_seed(
                 "key": key,
             }),
             action: None,
-            timeout_ms: Some(5_000),
+            timeout_ms: Some(cfg.state_request_timeout_ms),
         })
         .await
         .ok();

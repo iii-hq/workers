@@ -1,5 +1,7 @@
+[workspace]
+
 [package]
-name = "iii-subagent"
+name = "subagent"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -8,21 +10,26 @@ authors = ["iii contributors"]
 publish = false
 
 [lib]
-name = "subagent"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-subagent"
+name = "subagent"
 path = "src/main.rs"
 
 [dependencies]
 iii-sdk = "=0.11.3"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-log = "0.4"
-env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

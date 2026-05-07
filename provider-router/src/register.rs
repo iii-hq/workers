@@ -4,8 +4,8 @@
 //! |-------------------------|----------------------------------------------|
 //! | `router::stream_assistant`| Provider router. Calls `provider::<name>::complete` (with optional `router::decide` indirection when llm-router is on the bus). |
 //! | `router::abort`           | Set the abort flag for a session via `state::set` on `session/<id>/abort_signal`. |
-//! | `router::push_steering`   | Push messages onto the session's steering queue via `inbox::push`. |
-//! | `router::push_followup`   | Push messages onto the session's follow-up queue via `inbox::push`. |
+//! | `router::push_steering`   | Push messages onto the session's steering queue via `session-inbox::push`. |
+//! | `router::push_followup`   | Push messages onto the session's follow-up queue via `session-inbox::push`. |
 //!
 //! Plus the `hook-fanout`, `session-inbox` primitives and the
 //! `shell-filesystem`, `shell-bash` shell crates.
@@ -447,7 +447,7 @@ async fn push_queue(iii: III, payload: Value, name: &'static str) -> Result<Valu
         let item = serde_json::to_value(&m).map_err(|e| IIIError::Handler(e.to_string()))?;
         if let Err(e) = iii
             .trigger(TriggerRequest {
-                function_id: "inbox::push".to_string(),
+                function_id: "session-inbox::push".to_string(),
                 payload: json!({
                     "name": name,
                     "session_id": session_id,
@@ -458,7 +458,7 @@ async fn push_queue(iii: III, payload: Value, name: &'static str) -> Result<Valu
             })
             .await
         {
-            tracing::warn!(error = %e, %name, %session_id, "inbox::push failed during push_queue");
+            tracing::warn!(error = %e, %name, %session_id, "session-inbox::push failed during push_queue");
         }
     }
     Ok(json!({ "ok": true, "queued": count }))

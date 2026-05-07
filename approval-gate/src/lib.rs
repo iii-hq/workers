@@ -462,7 +462,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
 
     let subscriber_trigger = iii
         .register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".into(),
+            trigger_type: "durable:subscriber".into(),
             function_id: "policy::approval_gate".into(),
             config: json!({ "topic": topic }),
             metadata: None,

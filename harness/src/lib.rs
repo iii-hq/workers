@@ -83,6 +83,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "auth-credentials",
     "llm-budget",
     "skills",
+    "approval-gate",
 ];
 
 /// Build the payload sent to skills::register at boot. Pure helper so the
@@ -319,5 +320,13 @@ mod tests {
         for w in EXPECTED_WORKERS {
             assert!(seen.insert(*w), "duplicate worker in EXPECTED_WORKERS: {w}");
         }
+    }
+
+    #[test]
+    fn expected_workers_includes_approval_gate() {
+        assert!(
+            EXPECTED_WORKERS.contains(&"approval-gate"),
+            "approval-gate is required for approval_required to actually block (Phase A item #3)"
+        );
     }
 }

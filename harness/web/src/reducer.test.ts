@@ -1,81 +1,90 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "vitest";
 import { applyEvent } from "./reducer";
 import { INITIAL_STREAM_STATE, type AgentEvent, type AgentMessage } from "./types";
 
-const userMsg = (text: string): AgentMessage => ({
+const msg = (text: string): AgentMessage => ({
   role: "user",
   content: [{ type: "text", text }],
-  timestamp: 0,
+  timestamp: 1,
 });
 
-describe("applyEvent", () => {
-  it("agent_start sets status to running", () => {
-    const next = applyEvent(INITIAL_STREAM_STATE, { type: "agent_start" });
-    expect(next.status).toBe("running");
+describe("reducer (entry-id keyed)", () => {
+  it("idempotent: same message_end event applied twice produces same state", () => {
+    const event: AgentEvent = { type: "message_end", message: msg("hi"), entry_id: "e1" };
+    const s1 = applyEvent(INITIAL_STREAM_STATE, event);
+    const s2 = applyEvent(s1, event);
+    expect(s2.messageMap.size).toBe(1);
+    expect(s2.messageOrder).toEqual(["e1"]);
   });
 
-  it("agent_end sets status to ended", () => {
-    const next = applyEvent(
-      { ...INITIAL_STREAM_STATE, status: "running" },
-      { type: "agent_end", messages: [] },
-    );
-    expect(next.status).toBe("ended");
+  it("upsert: message_start then message_end with same entry_id merges to one entry", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, { type: "message_start", message: msg(""), entry_id: "e1" });
+    s = applyEvent(s, { type: "message_end", message: msg("final"), entry_id: "e1" });
+    expect(s.messageMap.size).toBe(1);
+    expect(s.messageMap.get("e1")?.content).toEqual([{ type: "text", text: "final" }]);
   });
 
-  it("message_end appends the message", () => {
-    const m = userMsg("hi");
-    const next = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: m });
-    expect(next.messages).toHaveLength(1);
-    expect(next.messages[0]).toEqual(m);
+  it("late event for an already-snapshotted entry (entry_id < lastEntryId, never seen) is dropped", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: msg("first"), entry_id: "e2" });
+    s = applyEvent(s, { type: "message_end", message: msg("late"), entry_id: "e1" });
+    expect(s.messageMap.size).toBe(1);
+    expect(s.messageMap.has("e1")).toBe(false);
   });
 
-  it("duplicate message_end with same role+timestamp does not append twice", () => {
-    const m = userMsg("hi");
-    const s1 = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: m });
-    const s2 = applyEvent(s1, { type: "message_end", message: m });
-    expect(s2.messages).toHaveLength(1);
+  it("out-of-order: message_end then message_start with same entry_id still produces correct final state", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: msg("done"), entry_id: "e1" });
+    s = applyEvent(s, { type: "message_start", message: msg(""), entry_id: "e1" });
+    expect(s.messageMap.get("e1")?.content).toEqual([{ type: "text", text: "done" }]);
   });
 
-  it("approval_requested adds a pending entry", () => {
-    const next = applyEvent(INITIAL_STREAM_STATE, {
-      type: "approval_requested",
-      tool_call_id: "tc-1",
-      tool_name: "shell::filesystem::write",
-      args: { path: "/tmp/x" },
-      expires_at: 0,
+  it("agent_end self-heals — upserts any messages not seen via deltas", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: msg("a"), entry_id: "e1" });
+    s = applyEvent(s, {
+      type: "agent_end",
+      messages: [
+        { entry_id: "e1", message: msg("a") },
+        { entry_id: "e2", message: msg("b") },
+      ],
     });
-    expect(next.pendingApprovals).toHaveLength(1);
-    expect(next.pendingApprovals[0].tool_call_id).toBe("tc-1");
+    expect(s.messageMap.size).toBe(2);
+    expect(s.messageMap.get("e2")?.content).toEqual([{ type: "text", text: "b" }]);
+    expect(s.status).toBe("ended");
   });
 
-  it("approval_resolved clears the matching pending entry", () => {
-    const seeded = applyEvent(INITIAL_STREAM_STATE, {
+  it("unknown event type does not throw, returns state unchanged", () => {
+    const fake = { type: "absolutely_not_a_real_event" } as unknown as AgentEvent;
+    expect(() => applyEvent(INITIAL_STREAM_STATE, fake)).not.toThrow();
+    expect(applyEvent(INITIAL_STREAM_STATE, fake)).toBe(INITIAL_STREAM_STATE);
+  });
+
+  it("lastEntryId tracks max entry_id across upserts", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, { type: "message_end", message: msg("a"), entry_id: "e3" });
+    s = applyEvent(s, { type: "message_end", message: msg("b"), entry_id: "e7" });
+    s = applyEvent(s, { type: "message_end", message: msg("c"), entry_id: "e5" });
+    expect(s.lastEntryId).toBe("e7");
+  });
+
+  it("approval_requested + approval_resolved manage pendingApprovals", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
       type: "approval_requested",
-      tool_call_id: "tc-1",
-      tool_name: "x",
+      tool_call_id: "t1",
+      tool_name: "shell::filesystem::write",
       args: {},
       expires_at: 0,
     });
-    const next = applyEvent(seeded, {
+    expect(s.pendingApprovals.length).toBe(1);
+    s = applyEvent(s, {
       type: "approval_resolved",
-      tool_call_id: "tc-1",
+      tool_call_id: "t1",
       decision: "allow",
     });
-    expect(next.pendingApprovals).toHaveLength(0);
+    expect(s.pendingApprovals.length).toBe(0);
   });
 
-  it("approval_resolved before its requested is a no-op (replay)", () => {
-    const next = applyEvent(INITIAL_STREAM_STATE, {
-      type: "approval_resolved",
-      tool_call_id: "tc-1",
-      decision: "deny",
-    });
-    expect(next.pendingApprovals).toHaveLength(0);
-  });
-
-  it("unknown event variants pass through unchanged", () => {
-    const unknown = { type: "totally_made_up" } as unknown as AgentEvent;
-    const next = applyEvent(INITIAL_STREAM_STATE, unknown);
-    expect(next).toBe(INITIAL_STREAM_STATE);
+  it("messages without entry_id land in unkeyedMessages (backwards compat)", () => {
+    const e = { type: "message_end", message: msg("legacy") } as AgentEvent;
+    const s = applyEvent(INITIAL_STREAM_STATE, e);
+    expect(s.unkeyedMessages.length).toBe(1);
+    expect(s.messageMap.size).toBe(0);
   });
 });

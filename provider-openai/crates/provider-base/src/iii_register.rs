@@ -90,7 +90,7 @@ pub fn register_provider_complete<C, B, BErr, F, Fut>(
 ) -> FunctionRef
 where
     C: Send + Sync + 'static,
-    B: Fn(&str, &Credential) -> Result<C, BErr> + Copy + Send + Sync + 'static,
+    B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
     F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentTool>) -> Fut + Copy + Send + Sync + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
@@ -113,7 +113,7 @@ fn register_provider_with_id<C, B, BErr, F, Fut>(
 ) -> FunctionRef
 where
     C: Send + Sync + 'static,
-    B: Fn(&str, &Credential) -> Result<C, BErr> + Copy + Send + Sync + 'static,
+    B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
     F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentTool>) -> Fut + Copy + Send + Sync + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
@@ -128,6 +128,7 @@ where
         move |payload: Value| {
             let provider_label = provider_label.clone();
             let iii = iii_clone.clone();
+            let build_config = build_config.clone();
             async move {
                 let model = payload
                     .get("model")

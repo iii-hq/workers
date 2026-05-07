@@ -1,4 +1,4 @@
-# session::compact
+# session-tree::compact
 
 Append a `Compaction` entry to a session, recording a summary of the context that
 was compressed and the token count before compaction.
@@ -26,5 +26,5 @@ omitted.
   omit the `details` field entirely if no file operations occurred.
 - `parent_id` is optional; if omitted, the compaction entry is anchored at the
   most recent entry on the active path.
-- `session::compact` is not idempotent: calling it twice creates two compaction
+- `session-tree::compact` is not idempotent: calling it twice creates two compaction
   entries. Check existing entries before calling if idempotency is required.

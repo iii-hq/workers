@@ -7,6 +7,8 @@
 //! Cache control, transport selection, and OAuth refresh land alongside the
 //! provider-base infrastructure in 0.2.
 
+pub mod config;
+
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -61,7 +63,7 @@ impl AnthropicConfig {
             credential_value: key,
             model: model.into(),
             max_tokens: 4096,
-            api_url: "https://api.anthropic.com/v1/messages".into(),
+            api_url: config::DEFAULT_API_URL.into(),
             auth_mode: AuthMode::ApiKey,
         })
     }
@@ -83,9 +85,19 @@ impl AnthropicConfig {
             credential_value: key,
             model: model.into(),
             max_tokens: 4096,
-            api_url: "https://api.anthropic.com/v1/messages".into(),
+            api_url: config::DEFAULT_API_URL.into(),
             auth_mode,
         })
+    }
+
+    pub fn with_max_tokens(mut self, max: u32) -> Self {
+        self.max_tokens = max;
+        self
+    }
+
+    pub fn with_api_url(mut self, url: impl Into<String>) -> Self {
+        self.api_url = url.into();
+        self
     }
 }
 
@@ -560,17 +572,25 @@ pub(crate) fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     content
 }
 
-/// Register `provider::anthropic::stream` on the iii bus.
+/// Register `provider::anthropic::complete` on the iii bus.
 ///
 /// The handler decodes `{ config, system_prompt, messages, tools }`, calls
 /// [`stream`], drains the resulting event stream, and returns
 /// `{ events: [<AssistantMessageEvent>...] }`.
-pub async fn register_with_iii(iii: &iii_sdk::III) -> anyhow::Result<()> {
+pub async fn register_with_iii(
+    iii: &iii_sdk::III,
+    worker_cfg: &config::WorkerConfig,
+) -> anyhow::Result<()> {
+    let default_max = worker_cfg.default_max_tokens;
+    let default_url = worker_cfg.default_api_url.clone();
     provider_base::register_provider_complete::<AnthropicConfig, _, _, _, _>(
         iii,
         "anthropic",
-        |model: &str, cred: &auth_credentials::Credential| {
-            AnthropicConfig::with_credential(model, cred)
+        move |model: &str, cred: &auth_credentials::Credential| {
+            AnthropicConfig::with_credential(model, cred).map(|c| {
+                c.with_max_tokens(default_max)
+                    .with_api_url(default_url.clone())
+            })
         },
         stream,
     );

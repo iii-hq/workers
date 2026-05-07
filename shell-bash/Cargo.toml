@@ -2,7 +2,7 @@
 resolver = "2"
 
 [package]
-name = "iii-shell-bash"
+name = "shell-bash"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -15,16 +15,19 @@ name = "shell_bash"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-shell-bash"
+name = "shell-bash"
 path = "src/main.rs"
 
 [dependencies]
 iii-sdk = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 tokio = { workspace = true }
-log = "0.4"
-env_logger = "0.11"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [workspace.package]
 version = "0.1.0"

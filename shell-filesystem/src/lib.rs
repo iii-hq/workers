@@ -1,6 +1,5 @@
-//! `shell-filesystem` — wraps `sandbox::fs::*` triggers as
-//! `shell::filesystem::<op>` functions discoverable by the
-//! turn orchestrator.
+//! `shell-filesystem` worker — registers `shell::filesystem::<op>` functions
+//! for the turn orchestrator and agent tooling.
 
 pub mod ops;
 pub mod register;
