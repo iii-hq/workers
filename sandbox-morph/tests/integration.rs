@@ -1,6 +1,7 @@
-//! Smoke tests for sandbox-morph. Exercises the handler-level surface
-//! directly — no engine, no Morph. Covers config validation, concurrency
-//! tracking, and the `list` shape that callers depend on.
+//! Integration tests for sandbox-morph. Runs the handlers against a
+//! local wiremock that mimics Morph Cloud's REST surface (`/api/instance`
+//! family) so the suite exercises wired client paths without touching
+//! production morph.so. Tests stay offline-safe.
 
 use std::sync::Arc;
 
@@ -9,9 +10,12 @@ use sandbox_morph::config::Config;
 use sandbox_morph::handler::{do_branch, do_create, do_exec, do_list, do_stop, HandlerCtx};
 use sandbox_morph::SCode;
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn ctx(max: usize, allowlist: Vec<String>) -> HandlerCtx {
+async fn ctx(server: &MockServer, max: usize, allowlist: Vec<String>) -> HandlerCtx {
     let cfg = Config {
+        api_base: server.uri(),
         max_concurrent_sandboxes: max,
         image_allowlist: allowlist,
         ..Config::default()
@@ -25,8 +29,9 @@ fn ctx(max: usize, allowlist: Vec<String>) -> HandlerCtx {
 
 #[tokio::test]
 async fn create_rejects_image_not_in_allowlist() {
-    let ctx = ctx(10, vec!["python".to_string()]);
-    let err = do_create(&ctx, json!({ "image": "node" }))
+    let server = MockServer::start().await;
+    let ctx = ctx(&server, 10, vec!["snapshot_a".to_string()]).await;
+    let err = do_create(&ctx, json!({ "image": "snapshot_b" }))
         .await
         .err()
         .unwrap();
@@ -34,64 +39,231 @@ async fn create_rejects_image_not_in_allowlist() {
 }
 
 #[tokio::test]
-async fn create_returns_provider_unavailable_when_http_stubbed() {
-    // Until the REST client is wired, the upstream call returns S502.
-    // The test asserts the worker still releases the concurrency slot on
-    // failure so callers can retry without leaking capacity.
-    let ctx = ctx(2, vec![]);
-    let _ = do_create(&ctx, json!({ "image": "python" })).await;
+async fn create_rejects_empty_image() {
+    let server = MockServer::start().await;
+    let ctx = ctx(&server, 5, vec![]).await;
+    let err = do_create(&ctx, json!({ "image": "" })).await.err().unwrap();
+    let s = err.to_string();
+    assert!(s.contains("morph requires a non-empty"), "got: {s}");
+}
+
+#[tokio::test]
+async fn create_happy_path_returns_branch_capability() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "morphvm_abc",
+            "status": "ready",
+            "refs": { "snapshot_id": "snapshot_xyz" },
+            "createdAt": "2026-05-07T11:00:00Z"
+        })))
+        .mount(&server)
+        .await;
+
+    let ctx = ctx(&server, 5, vec![]).await;
+    let resp = do_create(&ctx, json!({ "image": "snapshot_xyz" }))
+        .await
+        .unwrap();
+    assert_eq!(resp["sandbox_id"], "morphvm_abc");
+    let caps = resp["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|v| v == "branch"));
+    assert!(caps.iter().any(|v| v == "snapshot"));
+    assert!(caps.iter().any(|v| v == "expose_port"));
+}
+
+#[tokio::test]
+async fn create_rolls_back_on_5xx() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+
+    let ctx = ctx(&server, 2, vec![]).await;
+    let res = do_create(&ctx, json!({ "image": "snap_a" })).await;
+    assert!(matches!(
+        res.err().map(|e| e.code()),
+        Some(SCode::ProviderUnavailable)
+    ));
     let list = do_list(&ctx, json!({})).await.unwrap();
-    assert_eq!(list["in_flight"], 0, "in_flight must roll back on failure");
-    assert_eq!(list["cap"], 2);
-    assert_eq!(list["remaining"], 2);
+    assert_eq!(list["in_flight"], 0);
+}
+
+#[tokio::test]
+async fn create_maps_401_to_auth_invalid() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 5, vec![]).await;
+    let err = do_create(&ctx, json!({ "image": "snap_a" }))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), SCode::AuthInvalid);
+}
+
+#[tokio::test]
+async fn exec_passes_command_array() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_abc/exec"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "stdout": "hello\n",
+            "stderr": "",
+            "exit_code": 0
+        })))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 5, vec![]).await;
+    let res = do_exec(
+        &ctx,
+        json!({
+            "sandbox_id": "morphvm_abc",
+            "cmd": "echo",
+            "args": ["hello"]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res["stdout"], "hello\n");
+    assert_eq!(res["exit_code"], 0);
 }
 
 #[tokio::test]
 async fn exec_rejects_missing_fields() {
-    let ctx = ctx(10, vec![]);
+    let server = MockServer::start().await;
+    let ctx = ctx(&server, 10, vec![]).await;
     let err = do_exec(&ctx, json!({})).await.err().unwrap();
     let s = err.to_string();
     assert!(s.contains("missing string field"), "got: {s}");
 }
 
 #[tokio::test]
-async fn stop_returns_empty_object_on_success_path() {
-    // The stub client returns S502 for stop; we just assert that the
-    // input parser passes through to the client, so the error here is
-    // S502 and not BadInput.
-    let ctx = ctx(10, vec![]);
-    let res = do_stop(&ctx, json!({ "sandbox_id": "sbx-1" })).await;
-    assert!(matches!(
-        res.err().map(|e| e.code()),
-        Some(SCode::ProviderUnavailable)
-    ));
+async fn stop_treats_404_as_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_gone/stop"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 3, vec![]).await;
+    ctx.in_flight.store(1, std::sync::atomic::Ordering::SeqCst);
+    let res = do_stop(&ctx, json!({ "sandbox_id": "morphvm_gone" }))
+        .await
+        .unwrap();
+    assert_eq!(res, json!({}));
+    assert_eq!(ctx.in_flight.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
-async fn list_reports_capacity_envelope_with_reconciled_flag() {
-    let ctx = ctx(7, vec![]);
+async fn stop_treats_409_as_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_busy/stop"))
+        .respond_with(ResponseTemplate::new(409))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 3, vec![]).await;
+    ctx.in_flight.store(1, std::sync::atomic::Ordering::SeqCst);
+    let res = do_stop(&ctx, json!({ "sandbox_id": "morphvm_busy" }))
+        .await
+        .unwrap();
+    assert_eq!(res, json!({}));
+}
+
+#[tokio::test]
+async fn stop_maps_5xx_to_provider_unavailable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_abc/stop"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 5, vec![]).await;
+    let err = do_stop(&ctx, json!({ "sandbox_id": "morphvm_abc" }))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), SCode::ProviderUnavailable);
+}
+
+#[tokio::test]
+async fn list_reconciles_in_flight_to_upstream_count() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "id": "morphvm_a",
+                "status": "ready",
+                "refs": { "snapshot_id": "snap_a" }
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let ctx = ctx(&server, 5, vec![]).await;
+    ctx.in_flight.store(4, std::sync::atomic::Ordering::SeqCst);
     let res = do_list(&ctx, json!({})).await.unwrap();
-    assert_eq!(res["cap"], 7);
-    assert_eq!(res["in_flight"], 0);
-    assert_eq!(res["remaining"], 7);
-    // The stub client errors on list, so reconciled must be false. When
-    // morph's REST is wired the happy path will flip this to true and
-    // reset in_flight to the upstream count.
+    assert_eq!(res["in_flight"], 1);
+    assert_eq!(res["reconciled"], true);
+    assert_eq!(res["sandboxes"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn list_falls_back_when_upstream_down() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/instance"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 5, vec![]).await;
+    ctx.in_flight.store(2, std::sync::atomic::Ordering::SeqCst);
+    let res = do_list(&ctx, json!({})).await.unwrap();
+    assert_eq!(res["in_flight"], 2);
     assert_eq!(res["reconciled"], false);
 }
 
 #[tokio::test]
-async fn branch_rejects_missing_sandbox_id() {
-    let ctx = ctx(10, vec![]);
-    let err = do_branch(&ctx, json!({ "count": 3 })).await.err().unwrap();
-    let s = err.to_string();
-    assert!(s.contains("missing string field"), "got: {s}");
+async fn branch_returns_sibling_ids() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_abc/branch"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "snapshot": { "id": "snap_branch" },
+            "instances": [
+                { "id": "morphvm_b1" },
+                { "id": "morphvm_b2" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let ctx = ctx(&server, 10, vec![]).await;
+    let res = do_branch(&ctx, json!({ "sandbox_id": "morphvm_abc", "count": 2 }))
+        .await
+        .unwrap();
+    let ids = res["sandbox_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], "morphvm_b1");
+    assert_eq!(ids[1], "morphvm_b2");
 }
 
 #[tokio::test]
 async fn branch_rejects_count_zero() {
-    let ctx = ctx(10, vec![]);
-    let err = do_branch(&ctx, json!({ "sandbox_id": "sbx-1", "count": 0 }))
+    let server = MockServer::start().await;
+    let ctx = ctx(&server, 10, vec![]).await;
+    let err = do_branch(&ctx, json!({ "sandbox_id": "morphvm_abc", "count": 0 }))
         .await
         .err()
         .unwrap();
@@ -100,14 +272,20 @@ async fn branch_rejects_count_zero() {
 }
 
 #[tokio::test]
-async fn branch_passes_through_to_client_stub() {
-    // Until the Morph REST is wired, the client returns S502 on every
-    // branch call. We assert the input parser routes correctly so when
-    // wiring lands, the only thing that changes is the client body.
-    let ctx = ctx(10, vec![]);
-    let err = do_branch(&ctx, json!({ "sandbox_id": "sbx-parent", "count": 3 }))
+async fn snapshot_returns_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/instance/morphvm_abc/snapshot"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "snapshot_xyz"
+        })))
+        .mount(&server)
+        .await;
+    // do_snapshot lives in handler.rs — invoke via direct call.
+    use sandbox_morph::handler::do_snapshot;
+    let ctx = ctx(&server, 5, vec![]).await;
+    let res = do_snapshot(&ctx, json!({ "sandbox_id": "morphvm_abc" }))
         .await
-        .err()
         .unwrap();
-    assert_eq!(err.code(), SCode::ProviderUnavailable);
+    assert_eq!(res["snapshot_id"], "snapshot_xyz");
 }
