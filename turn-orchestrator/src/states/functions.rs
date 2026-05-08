@@ -174,8 +174,7 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
 
 pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let executed = persistence::load_executed_calls(iii, &record.session_id).await;
-    let mut function_results: Vec<FunctionResultMessage> =
-        Vec::with_capacity(executed.len());
+    let mut function_results: Vec<FunctionResultMessage> = Vec::with_capacity(executed.len());
     let mut all_terminate = !executed.is_empty();
     for (fc, mut result, is_error) in executed {
         let merged = publish_collect(
@@ -560,7 +559,10 @@ mod tests {
         };
         let inner = build_before_function_call_payload(&fc, &[]);
         assert_eq!(inner["function_call"]["id"], "tc-1");
-        assert_eq!(inner["function_call"]["function_id"], "shell::filesystem::ls");
+        assert_eq!(
+            inner["function_call"]["function_id"],
+            "shell::filesystem::ls"
+        );
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
         assert!(inner.get("approval_required").is_some());
     }

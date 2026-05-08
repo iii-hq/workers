@@ -292,18 +292,16 @@ pub async fn load_prepared_calls(
     iii: &III,
     session_id: &str,
 ) -> Vec<(FunctionCall, Option<FunctionResult>)> {
-    let value =
-        staging_get_with_legacy(iii, session_id, PREPARED_KEY, LEGACY_PREPARED_KEY).await;
+    let value = staging_get_with_legacy(iii, session_id, PREPARED_KEY, LEGACY_PREPARED_KEY).await;
     let Some(arr) = value.as_array() else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|entry| {
-            let fc =
-                entry
-                    .get("function_call")
-                    .or_else(|| entry.get("tool_call"))
-                    .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
+            let fc = entry
+                .get("function_call")
+                .or_else(|| entry.get("tool_call"))
+                .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
             let pre = entry
                 .get("blocked")
                 .and_then(|v| serde_json::from_value::<Option<FunctionResult>>(v.clone()).ok())
@@ -332,20 +330,17 @@ pub async fn load_executed_calls(
     iii: &III,
     session_id: &str,
 ) -> Vec<(FunctionCall, FunctionResult, bool)> {
-    let value =
-        staging_get_with_legacy(iii, session_id, EXECUTED_KEY, LEGACY_EXECUTED_KEY).await;
+    let value = staging_get_with_legacy(iii, session_id, EXECUTED_KEY, LEGACY_EXECUTED_KEY).await;
     let Some(arr) = value.as_array() else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|entry| {
-            let fc =
-                entry
-                    .get("function_call")
-                    .or_else(|| entry.get("tool_call"))
-                    .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
-            let r =
-                serde_json::from_value::<FunctionResult>(entry.get("result")?.clone()).ok()?;
+            let fc = entry
+                .get("function_call")
+                .or_else(|| entry.get("tool_call"))
+                .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
+            let r = serde_json::from_value::<FunctionResult>(entry.get("result")?.clone()).ok()?;
             let e = entry
                 .get("is_error")
                 .and_then(Value::as_bool)
@@ -430,11 +425,7 @@ mod tests {
 
         upsert_executed_call(
             &mut executed,
-            (
-                fc("tc-2", "write"),
-                func_result("replacement"),
-                false,
-            ),
+            (fc("tc-2", "write"), func_result("replacement"), false),
         );
         upsert_executed_call(
             &mut executed,

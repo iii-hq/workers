@@ -281,9 +281,6 @@ mod tests {
     fn route_ends_turn_when_nothing_pending() {
         // No function call, no inbox messages, no abort — this is a clean
         // text-only assistant response: the turn legitimately ends here.
-        assert_eq!(
-            route(false, false, false, false),
-            SteeringRoute::EndTurn
-        );
+        assert_eq!(route(false, false, false, false), SteeringRoute::EndTurn);
     }
 }

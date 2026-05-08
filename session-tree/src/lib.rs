@@ -856,7 +856,9 @@ fn render_blocks_html(blocks: &[ContentBlock]) -> String {
                 out.push_str("]</pre>");
             }
             ContentBlock::FunctionCall {
-                function_id, arguments, ..
+                function_id,
+                arguments,
+                ..
             } => {
                 out.push_str("<pre>function call: ");
                 out.push_str(&html_escape(function_id));

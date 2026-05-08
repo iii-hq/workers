@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::content::ContentBlock;
+use crate::function::AgentFunction;
 use crate::stream_event::{ErrorKind, StopReason, Usage};
 use crate::thinking::ThinkingLevel;
-use crate::function::AgentFunction;
 
 /// Transcript message. Superset of LLM message types plus app-defined custom entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

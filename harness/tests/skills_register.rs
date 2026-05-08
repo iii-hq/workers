@@ -19,7 +19,10 @@ fn build_iii_skill_payload_matches_skills_register_contract() {
     assert_eq!(payload["id"], "iii");
     let skill = payload["skill"].as_str().expect("skill must be a string");
     assert!(!skill.trim().is_empty(), "skill body must be non-empty");
-    assert!(skill.starts_with("# iii"), "skill must lead with an H1 title");
+    assert!(
+        skill.starts_with("# iii"),
+        "skill must lead with an H1 title"
+    );
 }
 
 // TEMP(sandbox-skill): delete this test when iii-sandbox publishes its own.

@@ -58,7 +58,9 @@ pub struct IncomingCall {
 
 impl IncomingCall {
     pub fn requires_approval(&self) -> bool {
-        self.approval_required.iter().any(|n| n == &self.function_id)
+        self.approval_required
+            .iter()
+            .any(|n| n == &self.function_id)
     }
 }
 
@@ -103,7 +105,9 @@ pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
         .to_string();
     let inner = envelope.get("payload").unwrap_or(envelope);
     let session_id = inner.get("session_id").and_then(Value::as_str)?.to_string();
-    let fc = inner.get("function_call").or_else(|| inner.get("tool_call"))?;
+    let fc = inner
+        .get("function_call")
+        .or_else(|| inner.get("tool_call"))?;
     let function_id = fc
         .get("function_id")
         .or_else(|| fc.get("name"))

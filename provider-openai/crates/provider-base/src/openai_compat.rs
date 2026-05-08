@@ -10,8 +10,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::StreamExt;
 use harness_types::{
-    AgentFunction, AgentMessage, AssistantMessage, AssistantMessageEvent, ContentBlock,
-    StopReason, TextContent, Usage,
+    AgentFunction, AgentMessage, AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason,
+    TextContent, Usage,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;

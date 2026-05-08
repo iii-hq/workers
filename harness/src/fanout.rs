@@ -884,7 +884,10 @@ mod tests {
         assert_eq!(s.browser_count(), 1);
 
         let removed = s.evict_browser("browser-a");
-        assert!(removed, "evict must report success when the browser was present");
+        assert!(
+            removed,
+            "evict must report success when the browser was present"
+        );
         assert_eq!(s.browser_count(), 0);
         assert!(
             s.subscribers_for("sess-1").is_empty(),

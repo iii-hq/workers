@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use auth_credentials::Credential;
 use harness_types::{
-    AgentMessage, AgentFunction, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
+    AgentFunction, AgentMessage, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
     StopReason, TextContent,
 };
 use iii_sdk::{FunctionRef, IIIError, RegisterFunctionMessage, III};
@@ -92,7 +92,11 @@ where
     C: Send + Sync + 'static,
     B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
-    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut + Copy + Send + Sync + 'static,
+    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut
+        + Copy
+        + Send
+        + Sync
+        + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
 {
     register_provider_with_id(
@@ -115,7 +119,11 @@ where
     C: Send + Sync + 'static,
     B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
-    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut + Copy + Send + Sync + 'static,
+    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut
+        + Copy
+        + Send
+        + Sync
+        + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
 {
     let description = format!(

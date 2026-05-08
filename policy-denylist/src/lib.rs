@@ -150,7 +150,10 @@ pub(crate) async fn handle_event(bus: &dyn ReplyBus, denied: &[String], payload:
     reply
 }
 
-pub fn subscribe_denylist(iii: &III, denied_functions: Vec<String>) -> Result<Subscriber, IIIError> {
+pub fn subscribe_denylist(
+    iii: &III,
+    denied_functions: Vec<String>,
+) -> Result<Subscriber, IIIError> {
     subscribe_denylist_with_config(iii, denied_functions, PolicyDenylistConfig::default())
 }
 
@@ -351,7 +354,11 @@ mod tests {
     async fn handler_allows_unlisted_tool_name() {
         let bus = InMemoryBus::new();
         let denied = vec!["dangerous_tool".to_string()];
-        let payload = envelope("e1", "rs", json!({ "function_call": { "function_id": "safe_tool" } }));
+        let payload = envelope(
+            "e1",
+            "rs",
+            json!({ "function_call": { "function_id": "safe_tool" } }),
+        );
         let reply = handle_event(&bus, &denied, payload).await;
 
         assert_eq!(reply, json!({ "block": false }));
@@ -388,11 +395,7 @@ mod tests {
     async fn handler_reads_legacy_tool_call_envelope_name_field() {
         let bus = InMemoryBus::new();
         let denied = vec!["legacy_id".to_string()];
-        let payload = envelope(
-            "e1",
-            "rs",
-            json!({ "tool_call": { "name": "legacy_id" } }),
-        );
+        let payload = envelope("e1", "rs", json!({ "tool_call": { "name": "legacy_id" } }));
         let reply = handle_event(&bus, &denied, payload).await;
         assert_eq!(reply.get("block"), Some(&Value::Bool(true)));
     }

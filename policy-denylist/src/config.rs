@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct WorkerConfig {
     #[serde(default = "default_topic")]
     pub topic: String,
-    #[serde(
-        default = "default_denied_functions_vec",
-        alias = "denied_tools"
-    )]
+    #[serde(default = "default_denied_functions_vec", alias = "denied_tools")]
     pub denied_functions: Vec<String>,
 }
 
@@ -48,7 +45,10 @@ mod tests {
     fn defaults_from_empty_yaml_mapping() {
         let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.topic, policy_denylist::DEFAULT_TOPIC);
-        assert_eq!(cfg.denied_functions, policy_denylist::default_denied_functions());
+        assert_eq!(
+            cfg.denied_functions,
+            policy_denylist::default_denied_functions()
+        );
     }
 
     #[test]

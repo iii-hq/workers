@@ -450,7 +450,8 @@ async fn handle_sse_event(
         }
         "content_block_stop" => {
             // Either text or tool — emit the right end event using the most recent block.
-            if !state.function_calls.is_empty() && state.text_blocks.last().is_none_or(String::is_empty)
+            if !state.function_calls.is_empty()
+                && state.text_blocks.last().is_none_or(String::is_empty)
             {
                 // tool call just stopped (heuristic; Anthropic guarantees ordering)
             }
@@ -653,14 +654,16 @@ mod tests {
 
     #[test]
     fn tool_result_converts_to_user_with_tool_result_block() {
-        let msgs = vec![AgentMessage::FunctionResult(harness_types::FunctionResultMessage {
-            function_call_id: "tc1".into(),
-            function_id: "read".into(),
-            content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
-            details: serde_json::json!({}),
-            is_error: false,
-            timestamp: 2,
-        })];
+        let msgs = vec![AgentMessage::FunctionResult(
+            harness_types::FunctionResultMessage {
+                function_call_id: "tc1".into(),
+                function_id: "read".into(),
+                content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
+                details: serde_json::json!({}),
+                is_error: false,
+                timestamp: 2,
+            },
+        )];
         let wire = to_wire_messages(&msgs);
         assert_eq!(wire[0]["role"], "user");
         assert_eq!(wire[0]["content"][0]["type"], "tool_result");

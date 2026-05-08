@@ -70,7 +70,8 @@ mod tests {
 
     #[test]
     fn function_call_block_legacy_tool_call_type() {
-        let json = r#"{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"/tmp/x"}}"#;
+        let json =
+            r#"{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"/tmp/x"}}"#;
         let back: ContentBlock = serde_json::from_str(json).unwrap();
         assert_eq!(
             back,

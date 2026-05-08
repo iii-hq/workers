@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent_message::{AgentMessage, FunctionResultMessage};
-use crate::stream_event::AssistantMessageEvent;
 use crate::function::FunctionResult;
+use crate::stream_event::AssistantMessageEvent;
 
 /// Outcome of an approval gate. Wire format is the lowercase string
 /// `"allow"` or `"deny"`; the typed enum prevents constructing illegal values.
