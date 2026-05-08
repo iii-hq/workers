@@ -26,6 +26,11 @@ pub(crate) enum SteeringRoute {
     EndTurn,
 }
 
+// Four bools is one over the clippy default. Each represents an
+// independent precondition checked in priority order; collapsing them
+// into a struct or bitflag obscures the call site, where naming each
+// argument at the boundary is the readability win.
+#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) fn route(
     abort: bool,
     has_steering: bool,

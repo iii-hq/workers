@@ -4,6 +4,7 @@ target/
 .idea/
 .DS_Store
 docs
+!harness/docs/
 .worktrees
 node_modules
 package-lock.json
