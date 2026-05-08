@@ -54,6 +54,7 @@
 //!    field of `StreamCallRequest` (Option<String>).
 
 pub mod fanout;
+pub mod fs;
 pub mod sse;
 
 use std::sync::Arc;
@@ -84,8 +85,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "models-catalog",
     "hook-fanout",
     "policy-denylist",
-    "shell-bash",
-    "shell-filesystem",
+    "shell",
     "subagent",
     "provider-anthropic",
     "provider-openai",
@@ -93,6 +93,7 @@ pub const EXPECTED_WORKERS: &[&str] = &[
     "llm-budget",
     "skills",
     "approval-gate",
+    "iii-sandbox",
 ];
 
 /// Build the payload sent to skills::register at boot. Pure helper so the
@@ -107,6 +108,36 @@ pub fn build_skills_register_payload() -> serde_json::Value {
     })
 }
 
+// TEMP(iii-skill): the harness ships a generic iii-orientation skill body
+// at boot so agents always have the `iii://iii` document available, even
+// before the engine grows a dedicated skill worker that publishes its own.
+// Revert by deleting:
+//   1. harness/docs/iii-skill.md
+//   2. `build_iii_skill_register_payload` below
+//   3. the second `skills::register` call in `register_with_iii_with_engine_url`
+//   4. the matching test in tests/skills_register.rs
+pub fn build_iii_skill_register_payload() -> serde_json::Value {
+    serde_json::json!({
+        "id": "iii",
+        "skill": include_str!("../docs/iii-skill.md"),
+    })
+}
+
+// TEMP(sandbox-skill): same stopgap as iii-skill above, but for the
+// sandbox surface. The `iii-sandbox` worker registers 14 functions; this
+// body teaches the agent when to reach for them and how to discover
+// their schemas via `engine::functions::list`. Revert by deleting:
+//   1. harness/docs/sandbox-skill.md
+//   2. `build_sandbox_skill_register_payload` below
+//   3. the third `skills::register` call in `register_with_iii_with_engine_url`
+//   4. the matching test in tests/skills_register.rs
+pub fn build_sandbox_skill_register_payload() -> serde_json::Value {
+    serde_json::json!({
+        "id": "sandbox",
+        "skill": include_str!("../docs/sandbox-skill.md"),
+    })
+}
+
 pub struct HarnessFunctionRefs {
     pub status: FunctionRef,
     pub bridge: FunctionRef,
@@ -115,6 +146,7 @@ pub struct HarnessFunctionRefs {
     pub subscribe_fn: FunctionRef,
     pub unsubscribe_fn: FunctionRef,
     pub fanout_pumps: Option<fanout::FanoutPumps>,
+    pub fs_read_inline: FunctionRef,
 }
 
 impl HarnessFunctionRefs {
@@ -125,6 +157,7 @@ impl HarnessFunctionRefs {
         self.bridge_info.unregister();
         self.subscribe_fn.unregister();
         self.unsubscribe_fn.unregister();
+        self.fs_read_inline.unregister();
         if let Some(p) = self.fanout_pumps {
             p.shutdown();
         }
@@ -370,6 +403,30 @@ pub async fn register_with_iii_with_engine_url(
         })
         .await;
 
+    // TEMP(iii-skill): publish a generic iii-orientation body until the
+    // engine ships its own skill worker. See `build_iii_skill_register_payload`
+    // for revert instructions.
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::register".into(),
+            payload: build_iii_skill_register_payload(),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await;
+
+    // TEMP(sandbox-skill): publish the sandbox orientation body until
+    // iii-sandbox ships its own. See `build_sandbox_skill_register_payload`
+    // for revert instructions.
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::register".into(),
+            payload: build_sandbox_skill_register_payload(),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await;
+
     // Wire the upstream fanout pumps:
     //   - agent::events stream subscriber → ui::session::event::<browser_id>
     //   - state::list poll                → ui::sessions::changed::<browser_id>
@@ -379,6 +436,34 @@ pub async fn register_with_iii_with_engine_url(
     // ref-counted (it's already an `Arc<...>` inside the SDK).
     let fanout_pumps = fanout::spawn_subscribers(&Arc::new(iii.clone()), Arc::clone(&fanout));
 
+    // harness::fs::read_inline — wraps shell::fs::read and inlines the
+    // streamed bytes into the legacy {content,details} envelope so the
+    // harness web FilesystemPanel preview keeps working without
+    // channel-awareness.
+    let iii_for_read = iii.clone();
+    let engine_url_for_read = engine_url.to_string();
+    let fs_read_inline = iii.register_function((
+        RegisterFunctionMessage::with_id("harness::fs::read_inline".into()).with_description(
+            "Read a host file via shell::fs::read, drain its channel, and \
+             return a {content:[{text}], details:{size, truncated, bytes_read}} \
+             envelope (max 256 KiB inline by default)."
+                .into(),
+        ),
+        move |input: Value| {
+            let iii = iii_for_read.clone();
+            let ws_base = engine_url_for_read.clone();
+            async move {
+                // Direct callers send args at the top level. HTTP triggers
+                // wrap as { body, ... } — the bridge already unwraps before
+                // forwarding, so we accept either by trying `body` first.
+                let body = input.get("body").cloned().unwrap_or(input);
+                let args: fs::ReadInlineArgs = serde_json::from_value(body)
+                    .map_err(|e| IIIError::Handler(format!("bad read_inline args: {e}")))?;
+                fs::read_inline(&iii, &ws_base, args).await
+            }
+        },
+    ));
+
     Ok(HarnessFunctionRefs {
         status,
         bridge,
@@ -387,6 +472,7 @@ pub async fn register_with_iii_with_engine_url(
         subscribe_fn,
         unsubscribe_fn,
         fanout_pumps: Some(fanout_pumps),
+        fs_read_inline,
     })
 }
 
@@ -464,6 +550,23 @@ mod tests {
         assert!(
             EXPECTED_WORKERS.contains(&"approval-gate"),
             "approval-gate is required for approval_required to actually block (Phase A item #3)"
+        );
+    }
+
+    #[test]
+    fn expected_workers_includes_shell_consolidated() {
+        assert!(
+            EXPECTED_WORKERS.contains(&"shell"),
+            "consolidated `shell` worker must be in EXPECTED_WORKERS \
+             (replaces shell-bash + shell-filesystem)"
+        );
+        assert!(
+            !EXPECTED_WORKERS.contains(&"shell-bash"),
+            "shell-bash was consolidated into `shell`"
+        );
+        assert!(
+            !EXPECTED_WORKERS.contains(&"shell-filesystem"),
+            "shell-filesystem was consolidated into `shell`"
         );
     }
 }

@@ -1,5 +1,5 @@
-//! Approval gate. Subscribes to `agent::before_tool_call` and blocks calls
-//! whose `tool_call.name` appears in the run's `approval_required` list,
+//! Approval gate. Subscribes to `agent::before_function_call` and blocks calls
+//! whose `function_call.function_id` appears in the run's `approval_required` list,
 //! waiting for the UI to call `approval::resolve` (or for a timeout).
 
 use std::sync::Arc;
@@ -23,7 +23,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            topic: "agent::before_tool_call".into(),
+            topic: "agent::before_function_call".into(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
         }
     }
@@ -48,8 +48,8 @@ impl Config {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncomingCall {
     pub session_id: String,
-    pub tool_call_id: String,
-    pub tool_name: String,
+    pub function_call_id: String,
+    pub function_id: String,
     pub args: Value,
     pub approval_required: Vec<String>,
     pub event_id: String,
@@ -58,7 +58,9 @@ pub struct IncomingCall {
 
 impl IncomingCall {
     pub fn requires_approval(&self) -> bool {
-        self.approval_required.iter().any(|n| n == &self.tool_name)
+        self.approval_required
+            .iter()
+            .any(|n| n == &self.function_id)
     }
 }
 
@@ -81,15 +83,15 @@ pub enum WireDecision {
 
 /// Build the state-store key for a pending approval entry.
 ///
-/// `session_id` and `tool_call_id` must not contain `/`. They are caller-controlled
+/// `session_id` and `function_call_id` must not contain `/`. They are caller-controlled
 /// IDs minted by turn-orchestrator; today neither format uses the separator.
-pub fn pending_key(session_id: &str, tool_call_id: &str) -> String {
+pub fn pending_key(session_id: &str, function_call_id: &str) -> String {
     debug_assert!(!session_id.contains('/'), "session_id must not contain '/'");
     debug_assert!(
-        !tool_call_id.contains('/'),
-        "tool_call_id must not contain '/'"
+        !function_call_id.contains('/'),
+        "function_call_id must not contain '/'"
     );
-    format!("{session_id}/{tool_call_id}")
+    format!("{session_id}/{function_call_id}")
 }
 
 pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
@@ -103,12 +105,19 @@ pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
         .to_string();
     let inner = envelope.get("payload").unwrap_or(envelope);
     let session_id = inner.get("session_id").and_then(Value::as_str)?.to_string();
-    let tc = inner.get("tool_call")?;
+    let fc = inner
+        .get("function_call")
+        .or_else(|| inner.get("tool_call"))?;
+    let function_id = fc
+        .get("function_id")
+        .or_else(|| fc.get("name"))
+        .and_then(Value::as_str)?
+        .to_string();
     Some(IncomingCall {
         session_id,
-        tool_call_id: tc.get("id").and_then(Value::as_str)?.to_string(),
-        tool_name: tc.get("name").and_then(Value::as_str)?.to_string(),
-        args: tc.get("arguments").cloned().unwrap_or_else(|| json!({})),
+        function_call_id: fc.get("id").and_then(Value::as_str)?.to_string(),
+        function_id,
+        args: fc.get("arguments").cloned().unwrap_or_else(|| json!({})),
         approval_required: inner
             .get("approval_required")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -119,15 +128,15 @@ pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
 }
 
 pub fn build_pending_record(
-    tool_call_id: &str,
-    tool_name: &str,
+    function_call_id: &str,
+    function_id: &str,
     args: &Value,
     now_ms: u64,
     timeout_ms: u64,
 ) -> Value {
     json!({
-        "tool_call_id": tool_call_id,
-        "tool_name": tool_name,
+        "function_call_id": function_call_id,
+        "function_id": function_id,
         "args": args,
         "status": "pending",
         "expires_at": now_ms.saturating_add(timeout_ms),
@@ -163,11 +172,12 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
         .get("session_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let tool_call_id = payload
-        .get("tool_call_id")
+    let function_call_id = payload
+        .get("function_call_id")
+        .or_else(|| payload.get("tool_call_id"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    if session_id.is_empty() || tool_call_id.is_empty() {
+    if session_id.is_empty() || function_call_id.is_empty() {
         return json!({ "ok": false, "error": "missing_id" });
     }
     let Some(decision) = payload
@@ -177,7 +187,7 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
     else {
         return json!({ "ok": false, "error": "bad_decision" });
     };
-    let key = pending_key(session_id, tool_call_id);
+    let key = pending_key(session_id, function_call_id);
     let Some(mut existing) = bus.get(STATE_SCOPE, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
     };
@@ -218,10 +228,10 @@ const POLL_INTERVAL_MS: u64 = 250;
 pub async fn await_decision(
     bus: &dyn StateBus,
     session_id: &str,
-    tool_call_id: &str,
+    function_call_id: &str,
     expires_at: u64,
 ) -> Decision {
-    let key = pending_key(session_id, tool_call_id);
+    let key = pending_key(session_id, function_call_id);
     loop {
         let Some(rec) = bus.get(STATE_SCOPE, &key).await else {
             return Decision::Deny {
@@ -377,7 +387,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
     let bus_for_sub = bus.clone();
     let subscriber_fn = iii.register_function((
         RegisterFunctionMessage::with_id("policy::approval_gate".into())
-            .with_description("Pause tool calls listed in approval_required.".into()),
+            .with_description("Pause function calls listed in approval_required.".into()),
         move |envelope: Value| {
             let iii = iii_for_sub.clone();
             let bus = bus_for_sub.clone();
@@ -396,8 +406,8 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     .unwrap_or(0);
                 let expires_at = now.saturating_add(timeout_ms);
                 let record = build_pending_record(
-                    &call.tool_call_id,
-                    &call.tool_name,
+                    &call.function_call_id,
+                    &call.function_id,
                     &call.args,
                     now,
                     timeout_ms,
@@ -405,7 +415,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 if let Err(err) = bus
                     .set(
                         STATE_SCOPE,
-                        &pending_key(&call.session_id, &call.tool_call_id),
+                        &pending_key(&call.session_id, &call.function_call_id),
                         record,
                     )
                     .await
@@ -413,7 +423,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     log::error!(
                         "approval-gate: failed to write pending record for {}/{}: {err}",
                         call.session_id,
-                        call.tool_call_id
+                        call.function_call_id
                     );
                     let reply = json!({ "block": false });
                     write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
@@ -424,8 +434,10 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     &call.session_id,
                     &json!({
                         "type": "approval_requested",
-                        "tool_call_id": call.tool_call_id,
-                        "tool_name": call.tool_name,
+                        "function_call_id": call.function_call_id,
+                        "tool_call_id": call.function_call_id,
+                        "function_id": call.function_id,
+                        "tool_name": call.function_id,
                         "args": call.args,
                         "expires_at": expires_at,
                     }),
@@ -434,7 +446,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 let decision = await_decision(
                     bus.as_ref(),
                     &call.session_id,
-                    &call.tool_call_id,
+                    &call.function_call_id,
                     expires_at,
                 )
                 .await;
@@ -447,7 +459,8 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                     &call.session_id,
                     &json!({
                         "type": "approval_resolved",
-                        "tool_call_id": call.tool_call_id,
+                        "function_call_id": call.function_call_id,
+                        "tool_call_id": call.function_call_id,
                         "decision": decision_str,
                         "reason": reason_for_event,
                     }),
@@ -488,31 +501,47 @@ mod tests {
     }
 
     #[test]
-    fn extract_call_reads_session_id_and_tool_call_from_envelope() {
+    fn extract_call_reads_session_id_and_function_call_from_envelope() {
         let envelope = json!({
             "event_id": "evt-1",
             "reply_stream": "rs-1",
             "payload": {
-                "tool_call": { "id": "tc-1", "name": "write", "arguments": {"path": "/tmp/x"} },
+                "function_call": { "id": "tc-1", "function_id": "write", "arguments": {"path": "/tmp/x"} },
                 "approval_required": ["write"],
                 "session_id": "s1",
             }
         });
         let call = extract_call(&envelope).expect("decoded");
         assert_eq!(call.session_id, "s1");
-        assert_eq!(call.tool_call_id, "tc-1");
-        assert_eq!(call.tool_name, "write");
+        assert_eq!(call.function_call_id, "tc-1");
+        assert_eq!(call.function_id, "write");
         assert_eq!(call.event_id, "evt-1");
         assert_eq!(call.reply_stream, "rs-1");
         assert!(call.approval_required.iter().any(|s| s == "write"));
     }
 
     #[test]
-    fn requires_approval_only_for_listed_tools() {
+    fn extract_call_accepts_legacy_tool_call_envelope_with_name() {
+        let envelope = json!({
+            "event_id": "evt-1",
+            "reply_stream": "rs-1",
+            "payload": {
+                "tool_call": { "id": "tc-1", "name": "write", "arguments": {} },
+                "approval_required": ["write"],
+                "session_id": "s1",
+            }
+        });
+        let call = extract_call(&envelope).expect("decoded");
+        assert_eq!(call.function_call_id, "tc-1");
+        assert_eq!(call.function_id, "write");
+    }
+
+    #[test]
+    fn requires_approval_only_for_listed_functions() {
         let call = IncomingCall {
             session_id: "s1".into(),
-            tool_call_id: "tc-1".into(),
-            tool_name: "ls".into(),
+            function_call_id: "tc-1".into(),
+            function_id: "ls".into(),
             args: json!({}),
             approval_required: vec!["write".into()],
             event_id: "e".into(),
@@ -521,7 +550,7 @@ mod tests {
         assert!(!call.requires_approval());
 
         let call2 = IncomingCall {
-            tool_name: "write".into(),
+            function_id: "write".into(),
             ..call
         };
         assert!(call2.requires_approval());
@@ -532,7 +561,7 @@ mod tests {
         let now = 1_000_000;
         let rec = build_pending_record("tc-1", "write", &json!({"x": 1}), now, 60_000);
         assert_eq!(rec["status"], "pending");
-        assert_eq!(rec["tool_call_id"], "tc-1");
+        assert_eq!(rec["function_call_id"], "tc-1");
         assert_eq!(rec["expires_at"], 1_060_000);
     }
 
@@ -552,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_call_returns_none_when_tool_call_absent() {
+    fn extract_call_returns_none_when_function_call_absent() {
         let envelope = json!({
             "event_id": "evt-1",
             "reply_stream": "rs-1",
@@ -636,7 +665,7 @@ mod tests {
         let out = handle_resolve(
             &bus,
             json!({
-                "tool_call_id": "tc-1",
+                "function_call_id": "tc-1",
                 "session_id": "s1",
                 "decision": "allow",
             }),
@@ -652,6 +681,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_accepts_legacy_tool_call_id_field() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+        )
+        .await
+        .unwrap();
+
+        let out = handle_resolve(
+            &bus,
+            json!({
+                "tool_call_id": "tc-1",
+                "session_id": "s1",
+                "decision": "allow",
+            }),
+        )
+        .await;
+
+        assert_eq!(out["ok"], true);
+    }
+
+    #[tokio::test]
     async fn resolve_rejects_already_resolved_entry() {
         let bus = InMemoryStateBus::new();
         let mut rec = build_pending_record("tc-1", "write", &json!({}), 0, 60_000);
@@ -662,7 +715,7 @@ mod tests {
 
         let out = handle_resolve(
             &bus,
-            json!({"tool_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
+            json!({"function_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
         )
         .await;
         assert_eq!(out["ok"], false);
@@ -695,7 +748,7 @@ mod tests {
         let out = handle_list_pending(&bus, json!({ "session_id": "s1" })).await;
         let items = out["pending"].as_array().unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["tool_call_id"], "tc-1");
+        assert_eq!(items[0]["function_call_id"], "tc-1");
     }
 
     use std::sync::Arc;
@@ -776,7 +829,7 @@ mod tests {
             &bus,
             json!({
                 "session_id": "s1",
-                "tool_call_id": "tc-1",
+                "function_call_id": "tc-1",
                 "decision": "deny",
                 "reason": "user clicked cancel",
             }),

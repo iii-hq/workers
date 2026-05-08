@@ -208,14 +208,14 @@ mod tests {
     #[test]
     fn build_publish_envelope_matches_existing_subscribers() {
         let envelope = build_publish_envelope(
-            "agent::before_tool_call",
+            "agent::before_function_call",
             "event-1",
-            json!({"tool_call": {"id": "t1"}}),
+            json!({"function_call": {"id": "t1"}}),
         );
 
-        assert_eq!(envelope["topic"], "agent::before_tool_call");
+        assert_eq!(envelope["topic"], "agent::before_function_call");
         assert_eq!(envelope["data"]["event_id"], "event-1");
         assert_eq!(envelope["data"]["reply_stream"], HOOK_REPLY_STREAM);
-        assert_eq!(envelope["data"]["payload"]["tool_call"]["id"], "t1");
+        assert_eq!(envelope["data"]["payload"]["function_call"]["id"], "t1");
     }
 }

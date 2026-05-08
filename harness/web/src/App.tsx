@@ -5,7 +5,6 @@ import { exportJson, exportMd } from "./export";
 import { loadMessagesWithEntryIds } from "./loadMessages";
 import { visibleMessages } from "./reducer";
 import { useAgentStream } from "./useAgentStream";
-import { useSkillsIndex } from "./useSkillsIndex";
 import { ApprovalRow } from "./components/ApprovalRow";
 import { AuthPanel, type AuthPanelHandle } from "./components/AuthPanel";
 import { Composer } from "./components/Composer";
@@ -33,34 +32,16 @@ import type {
 
 type Tab = "chat" | "cost" | "files" | "status";
 
-// Tool schemas are no longer shipped from the client. The harness builds the
-// LLM tool catalog server-side from `engine::functions::list` (see
-// turn-orchestrator/src/tools_catalog.rs). To widen or narrow the model's
-// surface, edit which workers register tools — not this file.
+// Function catalog: a single `agent_call` tool plus server-built system prompt —
+// see turn-orchestrator `agent_call.rs` and `system_prompt.rs`. The client
+// does not send `tools` or `system_prompt` on `run::start` (override still
+// accepted if you pass a non-empty `system_prompt` for experiments).
 //
 // Permission still lives in `policy-denylist`, which subscribes to
-// `agent::before_tool_call` and refuses by name. Set its env var when
+// `agent::before_function_call` and refuses by function id. Set its env var when
 // starting the worker, e.g.:
-//   POLICY_DENIED_TOOLS=shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv
-
-const BASE_SYSTEM_PROMPT =
-  "You have filesystem tools that operate inside a sandbox. Use them when the user asks to read, inspect, create, or modify files. Paths must be absolute (e.g. /tmp/notes.md). Some destructive ops may be denied by policy — if a tool result contains `blocked`, explain which policy refused and stop, do not retry.";
-
-function buildSystemPrompt(skillsIndex: string | null, cwd: string): string {
-  const cwdSection = cwd
-    ? `## Working directory\n${cwd}\nPrefer paths under this directory. Use absolute paths.\n\n`
-    : "";
-
-  const skillsSection = skillsIndex
-    ? `## Available skills
-
-${skillsIndex}
-
-Use the \`skill::fetch\` tool to load any \`iii://\` URI you see above when you need its full content.`
-    : "## Available skills\n\n(Skills index not loaded — call `skill::fetch` with `uri: \"iii://skills\"` to discover what's registered.)";
-
-  return `${BASE_SYSTEM_PROMPT}\n\n${cwdSection}${skillsSection}`;
-}
+//   POLICY_DENIED_FUNCTIONS=shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv
+// (Legacy `POLICY_DENIED_TOOLS` is still read if the new name is unset.)
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
 // here — they'd appear in the UI but every send would error with "function
@@ -74,8 +55,8 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<Provider, string> = {
 };
 
 const APPROVAL_REQUIRED = [
-  "shell::filesystem::write",
-  "shell::filesystem::mkdir",
+  "shell::fs::write",
+  "shell::fs::mkdir",
 ];
 
 function newSessionId(): string {
@@ -109,11 +90,8 @@ export default function App() {
   const [cwd, setCwd] = useState<string>("");
   const [loadedCwd, setLoadedCwd] = useState<string>("");
 
-  // Skills-index fetch is strictly non-blocking. The fallback branch in
-  // buildSystemPrompt(null) is the agent's recovery path; do not gate
-  // rendering or send() on the index being loaded.
-  const { index: skillsIndex } = useSkillsIndex();
-
+  // Working directory is sent on `run::start` for server-side system prompt
+  // assembly; skills index is fetched in turn-orchestrator provisioning.
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [model, setModel] = useState<string>(DEFAULT_MODEL_BY_PROVIDER.anthropic);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -341,8 +319,8 @@ export default function App() {
         provider,
         model,
         messages: fullHistory,
-        system_prompt: buildSystemPrompt(skillsIndex, cwd.trim()),
         approval_required: APPROVAL_REQUIRED,
+        ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
       });
       void refreshSessions();
     } catch (e) {
@@ -547,7 +525,7 @@ export default function App() {
                 disabled={composerDisabled}
                 onSend={send}
                 cwd={cwd.trim()}
-                skillsIndex={skillsIndex}
+                skillsIndex={null}
                 sessionMessages={messages}
                 callbacks={{
                   onNew: startNew,

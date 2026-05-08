@@ -6,19 +6,19 @@
 mod agent_event;
 mod agent_message;
 mod content;
+mod function;
 mod stream_event;
 mod thinking;
-mod tool;
 
 pub use agent_event::{AgentEvent, ApprovalDecision};
 pub use agent_message::{
     AgentContext, AgentMessage, AgentSessionState, AssistantMessage, CustomMessage,
-    ToolResultMessage, UserMessage,
+    FunctionResultMessage, UserMessage,
 };
 pub use content::{ContentBlock, ImageContent, TextContent};
+pub use function::{
+    AgentFunction, CacheRetention, ExecutionMode, FinalizedFunctionCall, FunctionCall,
+    FunctionResult, PreparedFunctionCall, Transport,
+};
 pub use stream_event::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 pub use thinking::{TextPhase, TextSignature, ThinkingBudgets, ThinkingLevel};
-pub use tool::{
-    AgentTool, CacheRetention, ExecutionMode, FinalizedToolCall, PreparedToolCall, ToolCall,
-    ToolResult, Transport,
-};

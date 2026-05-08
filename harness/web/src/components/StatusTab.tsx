@@ -6,7 +6,7 @@
 //
 // Rules of thumb encoded here:
 //   - Workers table: text status (a11y), color secondary.
-//   - Events feed: rolling 200, filter chips (agent/state/tool/error), pause.
+//   - Events feed: rolling 200, filter chips (agent/state/function/error), pause.
 //   - Budget breakdown: hydrated once from budget::list + budget::usage,
 //     patched in-place from ui::cost::tick.
 //   - Disconnected >5s → "live updates paused" banner; on reconnect, refetch.
@@ -57,8 +57,14 @@ function summarizeEvent(ev: StatusEvent): string {
   if (!p) return ev.kind;
   switch (ev.kind) {
     case "approval": {
-      const id = (p.tool_call_id as string | undefined) ?? "?";
-      const name = (p.tool_name as string | undefined) ?? "";
+      const id =
+        (p.function_call_id as string | undefined) ??
+        (p.tool_call_id as string | undefined) ??
+        "?";
+      const name =
+        (p.function_id as string | undefined) ??
+        (p.tool_name as string | undefined) ??
+        "";
       const decision = p.decision as string | undefined;
       return decision
         ? `approval ${decision} · ${id}`

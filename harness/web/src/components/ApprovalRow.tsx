@@ -13,13 +13,14 @@ export function ApprovalRow({ sessionId, pending }: Props) {
 
   if (pending.length === 0) return null;
 
-  const resolve = async (toolCallId: string, decision: "allow" | "deny") => {
-    setBusyId(toolCallId);
+  const resolve = async (functionCallId: string, decision: "allow" | "deny") => {
+    setBusyId(functionCallId);
     setErr(null);
     try {
       await bridge<{ ok: boolean }>("approval::resolve", {
         session_id: sessionId,
-        tool_call_id: toolCallId,
+        function_call_id: functionCallId,
+        tool_call_id: functionCallId,
         decision,
       });
     } catch (e) {
@@ -31,33 +32,38 @@ export function ApprovalRow({ sessionId, pending }: Props) {
 
   return (
     <div className="approvals">
-      {pending.map((a) => (
-        <div className="approval" key={a.tool_call_id}>
+      {pending.map((a) => {
+        const callId = a.function_call_id ?? a.tool_call_id;
+        const fnId = a.function_id ?? a.tool_name ?? "";
+        if (!callId) return null;
+        return (
+        <div className="approval" key={callId}>
           <div className="approval-head">
             <span className="approval-eyebrow">approval needed</span>
-            <span className="approval-title">{a.tool_name}</span>
+            <span className="approval-title">{fnId}</span>
           </div>
           <pre className="approval-args">{JSON.stringify(a.args, null, 2)}</pre>
           <div className="approval-actions">
             <button
               type="button"
               className="approval-deny"
-              disabled={busyId === a.tool_call_id}
-              onClick={() => resolve(a.tool_call_id, "deny")}
+              disabled={busyId === callId}
+              onClick={() => resolve(callId, "deny")}
             >
               deny
             </button>
             <button
               type="button"
               className="approval-allow"
-              disabled={busyId === a.tool_call_id}
-              onClick={() => resolve(a.tool_call_id, "allow")}
+              disabled={busyId === callId}
+              onClick={() => resolve(callId, "allow")}
             >
               allow
             </button>
           </div>
         </div>
-      ))}
+        );
+      })}
       {err ? (
         <p className="approval-error" role="alert">
           {err}

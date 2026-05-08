@@ -8,7 +8,8 @@ use crate::agent_message::AssistantMessage;
 pub enum StopReason {
     End,
     Length,
-    Tool,
+    #[serde(rename = "function_call", alias = "tool")]
+    FunctionCall,
     Aborted,
     Error,
 }
@@ -72,14 +73,17 @@ pub enum AssistantMessageEvent {
     ThinkingEnd {
         partial: AssistantMessage,
     },
-    ToolcallStart {
+    #[serde(rename = "functioncall_start", alias = "toolcall_start")]
+    FunctioncallStart {
         partial: AssistantMessage,
     },
-    ToolcallDelta {
+    #[serde(rename = "functioncall_delta", alias = "toolcall_delta")]
+    FunctioncallDelta {
         partial: AssistantMessage,
         delta: String,
     },
-    ToolcallEnd {
+    #[serde(rename = "functioncall_end", alias = "toolcall_end")]
+    FunctioncallEnd {
         partial: AssistantMessage,
     },
     Usage(Usage),

@@ -3,218 +3,155 @@
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
+use crate::agent_call;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
-use crate::tools_catalog;
-
-const SHELL_PREFIX: &str = "shell::";
-
-pub fn requires_sandbox(tools: &Value) -> bool {
-    tools
-        .as_array()
-        .map(|arr| {
-            arr.iter().any(|t| {
-                t.get("name")
-                    .and_then(Value::as_str)
-                    .map_or(false, |n| n.starts_with(SHELL_PREFIX))
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn sandbox_list_contains_id(resp: &Value, sandbox_id: &str) -> bool {
-    let items = resp
-        .as_array()
-        .or_else(|| resp.get("items").and_then(Value::as_array))
-        .or_else(|| resp.get("sandboxes").and_then(Value::as_array));
-
-    items.is_some_and(|items| {
-        items.iter().any(|item| {
-            if item.get("stopped").and_then(Value::as_bool) == Some(true) {
-                return false;
-            }
-
-            item.get("sandbox_id")
-                .or_else(|| item.get("id"))
-                .and_then(Value::as_str)
-                == Some(sandbox_id)
-        })
-    })
-}
-
-async fn sandbox_alive(iii: &III, sandbox_id: &str) -> bool {
-    let Ok(resp) = iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::list".into(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(30_000),
-        })
-        .await
-    else {
-        return false;
-    };
-
-    sandbox_list_contains_id(&resp, sandbox_id)
-}
+use crate::system_prompt;
 
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
 
-    // Build the LLM tool catalog from the engine's own function registry
-    // rather than trusting whatever the client put on `run::start`. The
-    // empty-catalog error surfaces as `agent::error` (per plan-eng-review
-    // D4) so a cold-start race is loud, not silent.
-    let catalog = tools_catalog::load_tool_catalog(iii)
-        .await
-        .map_err(|e| anyhow::anyhow!("load_tool_catalog failed: {e}"))?;
-    let tools = serde_json::to_value(&catalog)
-        .map_err(|e| anyhow::anyhow!("serialize tool catalog: {e}"))?;
+    let tools = json!([agent_call::agent_call_tool()]);
+    persistence::save_function_schemas(iii, &record.session_id, tools.clone()).await;
 
-    persistence::save_tool_schemas(iii, &record.session_id, tools.clone()).await;
+    let override_prompt = request
+        .get("system_prompt")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let cwd = request.get("cwd").and_then(Value::as_str);
+    let skills_index = fetch_skills_bootstrap(iii).await;
+    let prompt = system_prompt::build(skills_index.as_deref(), cwd, override_prompt);
+    let mut updated = request.clone();
+    if let Some(obj) = updated.as_object_mut() {
+        obj.insert("system_prompt".into(), json!(prompt));
+    }
+    persistence::save_run_request(iii, &record.session_id, updated).await;
 
-    let sandbox_id = if requires_sandbox(&tools) {
-        provision_sandbox(iii, &record.session_id, &request).await?
-    } else {
-        None
-    };
-    persistence::save_sandbox_id(iii, &record.session_id, sandbox_id.as_deref()).await;
+    // Sandbox provisioning is the LLM's responsibility, learned from a
+    // skill (registered separately via the skills worker). The dispatcher
+    // does not auto-provision; sessions that need a sandbox follow a
+    // skill recipe to call sandbox::list / sandbox::create themselves.
 
     record.transition_to(TurnState::AwaitingAssistant);
     Ok(())
 }
 
-async fn provision_sandbox(
-    iii: &III,
-    session_id: &str,
-    request: &Value,
-) -> anyhow::Result<Option<String>> {
-    if let Some(existing) = persistence::load_sandbox_id(iii, session_id).await {
-        if sandbox_alive(iii, &existing).await {
-            return Ok(Some(existing));
-        }
-        tracing::warn!(
-            sandbox_id = %existing,
-            session_id = %session_id,
-            "stored sandbox id was not listed during resume; recreating"
-        );
-    }
-
-    let image = request
-        .get("image")
-        .and_then(Value::as_str)
-        .unwrap_or("python");
-    let payload = json!({
-        "image": image,
-        "name": format!("session-{session_id}"),
-        "idle_timeout_secs": request
-            .get("idle_timeout_secs")
-            .and_then(Value::as_u64)
-            .unwrap_or(300),
-    });
-    let resp = match iii
-        .trigger(TriggerRequest {
-            function_id: "sandbox::create".into(),
-            payload,
-            action: None,
-            timeout_ms: Some(300_000),
-        })
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) if is_function_not_found(&e) => {
-            tracing::warn!(
-                %session_id,
-                error = %e,
-                "sandbox::create not registered on the bus; advancing without a sandbox. \
-                 shell::* tool calls will fail with MissingSandbox until a sandbox worker is added."
-            );
-            return Ok(None);
-        }
-        Err(e) => return Err(anyhow::anyhow!("sandbox::create failed: {e}")),
+/// Best-effort bootstrap of the skills surface for the system prompt.
+///
+/// Concatenates:
+///   1. the auto-rendered `iii://skills` index (links to every registered skill), and
+///   2. the bodies of every **root-depth** registered skill (no `/` in the id),
+///      batched in a single `skill::fetch` call.
+///
+/// The agent therefore boots with both the table of contents AND the
+/// router-style bodies the agent normally reaches for first — eliminating
+/// the round-trip to `skill::fetch iii://skills` on the first turn.
+///
+/// Any sub-step that fails returns `None` for that piece; the caller
+/// degrades gracefully (the fallback section in `system_prompt::build`
+/// covers a fully missing skills surface).
+async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
+    let index = fetch_uri(iii, "iii://skills").await;
+    let root_uris = list_root_skill_uris(iii).await;
+    let bodies = if root_uris.is_empty() {
+        None
+    } else {
+        fetch_uris_batched(iii, &root_uris).await
     };
-    let sandbox_id = resp
-        .get("sandbox_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    Ok(sandbox_id)
+
+    match (index, bodies) {
+        (Some(idx), Some(bod)) => Some(format!("{idx}\n\n---\n\n# Root skill bodies\n\n{bod}")),
+        (Some(idx), None) => Some(idx),
+        (None, Some(bod)) => Some(bod),
+        (None, None) => None,
+    }
 }
 
-// Recognize the engine's `function_not_found` error without coupling to a
-// specific IIIError variant. The engine returns a JSON body whose `code`
-// field is `function_not_found`; the SDK surfaces it via `Display` so a
-// substring check is the most portable detector.
-fn is_function_not_found<E: std::fmt::Display>(err: &E) -> bool {
-    let msg = err.to_string();
-    msg.contains("function_not_found") || msg.contains("Function not found")
+/// Fetch a single `iii://` URI via `skill::fetch`. Tolerates either a raw
+/// string response or `{ body: "..." }` envelope.
+async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
+    let resp = iii
+        .trigger(TriggerRequest {
+            function_id: "skill::fetch".into(),
+            payload: json!({ "uri": uri }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .ok()?;
+    response_to_string(&resp)
+}
+
+/// Batch-fetch many URIs in one round trip. `skill::fetch` joins them with
+/// `\n\n---\n\n` already, so the return is a single concatenated body.
+async fn fetch_uris_batched(iii: &III, uris: &[String]) -> Option<String> {
+    let resp = iii
+        .trigger(TriggerRequest {
+            function_id: "skill::fetch".into(),
+            payload: json!({ "uris": uris }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .ok()?;
+    response_to_string(&resp)
+}
+
+/// List every registered skill id and keep only **root-depth** ones (no
+/// `/` in the id). Empty list on any failure.
+async fn list_root_skill_uris(iii: &III) -> Vec<String> {
+    let Ok(resp) = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::list".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    else {
+        return Vec::new();
+    };
+    let Some(arr) = resp.get("skills").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+        .filter(|id| is_root_skill_id(id))
+        .map(|id| format!("iii://{id}"))
+        .collect()
+}
+
+/// `iii` and `harness` are root; `resend/email`, `shell/bash` are not.
+fn is_root_skill_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains('/')
+}
+
+fn response_to_string(resp: &Value) -> Option<String> {
+    if let Some(s) = resp.as_str() {
+        return Some(s.to_string());
+    }
+    resp.get("body").and_then(Value::as_str).map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::is_root_skill_id;
 
     #[test]
-    fn requires_sandbox_when_any_shell_tool_present() {
-        let tools = json!([{ "name": "read" }, { "name": "shell::bash::exec" }]);
-        assert!(requires_sandbox(&tools));
+    fn root_ids_have_no_slash() {
+        assert!(is_root_skill_id("iii"));
+        assert!(is_root_skill_id("harness"));
+        assert!(is_root_skill_id("shell-bash"));
     }
 
     #[test]
-    fn does_not_require_sandbox_for_inline_tools() {
-        let tools = json!([{ "name": "read" }, { "name": "write" }]);
-        assert!(!requires_sandbox(&tools));
+    fn nested_ids_are_not_root() {
+        assert!(!is_root_skill_id("resend/email"));
+        assert!(!is_root_skill_id("shell/bash/exec"));
     }
 
     #[test]
-    fn empty_tools_skips_sandbox() {
-        assert!(!requires_sandbox(&json!([])));
-        assert!(!requires_sandbox(&json!(null)));
-    }
-
-    #[test]
-    fn sandbox_list_contains_id_accepts_bare_array() {
-        let resp = json!([{ "sandbox_id": "s1" }, { "id": "s2" }]);
-        assert!(sandbox_list_contains_id(&resp, "s1"));
-        assert!(sandbox_list_contains_id(&resp, "s2"));
-    }
-
-    #[test]
-    fn sandbox_list_contains_id_accepts_items_envelope() {
-        let resp = json!({ "items": [{ "sandbox_id": "s1" }] });
-        assert!(sandbox_list_contains_id(&resp, "s1"));
-    }
-
-    #[test]
-    fn sandbox_list_contains_id_accepts_sandboxes_envelope() {
-        let resp = json!({ "sandboxes": [{ "sandbox_id": "s1" }] });
-        assert!(sandbox_list_contains_id(&resp, "s1"));
-    }
-
-    #[test]
-    fn sandbox_list_contains_id_rejects_stopped_sandbox() {
-        let resp = json!({ "sandboxes": [{ "sandbox_id": "s1", "stopped": true }] });
-        assert!(!sandbox_list_contains_id(&resp, "s1"));
-    }
-
-    #[test]
-    fn sandbox_list_contains_id_rejects_missing_id() {
-        let resp = json!([{ "sandbox_id": "s1" }]);
-        assert!(!sandbox_list_contains_id(&resp, "s3"));
-    }
-
-    #[test]
-    fn function_not_found_detector_matches_engine_error_codes() {
-        struct E(&'static str);
-        impl std::fmt::Display for E {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.0)
-            }
-        }
-        assert!(is_function_not_found(&E(
-            "remote error (function_not_found): Function sandbox::create not found"
-        )));
-        assert!(is_function_not_found(&E("Function not found")));
-        assert!(!is_function_not_found(&E("timeout waiting for reply")));
-        assert!(!is_function_not_found(&E("invocation_failed: bad payload")));
+    fn empty_id_is_not_root() {
+        assert!(!is_root_skill_id(""));
     }
 }

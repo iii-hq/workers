@@ -4,10 +4,10 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-policy-denylist
-description: Hook subscriber on agent::before_tool_call that blocks calls whose name matches a configured denylist.
+description: Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist.
 config:
-  topic: agent::before_tool_call
-  denied_tools:
+  topic: agent::before_function_call
+  denied_functions:
     - "bash:rm -rf"
     - sudo
     - curl-pipe-bash

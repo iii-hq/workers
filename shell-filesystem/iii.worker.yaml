@@ -1,9 +1,0 @@
-iii: v1
-name: shell-filesystem
-language: rust
-deploy: binary
-manifest: Cargo.toml
-bin: shell-filesystem
-description: Sandboxed filesystem operations under shell::filesystem::* — read, write, list, stat, and related tools.
-config:
-  max_inline_bytes: 262144

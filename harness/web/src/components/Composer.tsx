@@ -20,7 +20,7 @@ import {
   filterCommands,
   skillsIndexToMenuItems,
 } from "../menuItems";
-import type { AgentMessage, ToolResult, FsLsDetails, FsEntry } from "../types";
+import type { AgentMessage, FsLsResponse, FsEntry } from "../types";
 
 // ─── Built-in command callbacks ────────────────────────────────────────────
 // Each /name route the Composer can dispatch. Optional callbacks; the
@@ -45,7 +45,7 @@ interface Props {
   onSend: (prompt: string) => Promise<void>;
   /** Working directory used as the @-mention browse root. Empty = unset. */
   cwd: string;
-  /** Markdown index from useSkillsIndex. Used to populate slash menu skills. */
+  /** Markdown skills index for slash menu (`null` → built-in commands only; full index is loaded server-side for the model). */
   skillsIndex: string | null;
   /** Prior messages of the active session — drives ↑ history walk. */
   sessionMessages: AgentMessage[];
@@ -58,11 +58,11 @@ const AT_PAGE_SIZE = 25;
 interface AtBrowseState {
   /** Directory currently being listed. Empty when no @-mention is active. */
   dir: string;
-  /** Raw entries returned by `shell::filesystem::ls` for `dir`. */
+  /** Raw entries returned by `shell::fs::ls` for `dir`. */
   entries: FsEntry[];
   loading: boolean;
   /** Empty-state reason, mapped to user-visible text. */
-  error: "cwd-unset" | "permission" | "fetch-failed" | "io" | null;
+  error: "cwd-unset" | "permission" | "fetch-failed" | null;
 }
 
 const AT_BROWSE_INITIAL: AtBrowseState = {
@@ -143,24 +143,14 @@ export function Composer({
     if (!atBrowse.dir) return;
     let cancelled = false;
     setAtBrowse((s) => ({ ...s, loading: true, error: null }));
-    bridge<ToolResult<FsLsDetails>>("shell::filesystem::ls", {
+    bridge<FsLsResponse>("shell::fs::ls", {
       path: atBrowse.dir,
     })
       .then((res) => {
         if (cancelled) return;
-        const detailsErr = res.details?.error;
-        if (detailsErr) {
-          setAtBrowse({
-            dir: atBrowse.dir,
-            entries: [],
-            loading: false,
-            error: /permission|denied/i.test(detailsErr) ? "permission" : "io",
-          });
-          return;
-        }
         setAtBrowse({
           dir: atBrowse.dir,
-          entries: res.details?.entries ?? [],
+          entries: res.entries ?? [],
           loading: false,
           error: null,
         });
@@ -648,8 +638,6 @@ function atErrorText(err: AtBrowseState["error"]): string {
       return "permission denied for this directory";
     case "fetch-failed":
       return "couldn't reach the bus to list files";
-    case "io":
-      return "io error listing this directory";
     default:
       return "";
   }

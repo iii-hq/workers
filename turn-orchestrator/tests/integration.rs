@@ -17,7 +17,7 @@ fn state_keys_distinct_per_facet() {
         turn_orchestrator::run_request_key(s),
         turn_orchestrator::cwd_key(s),
         turn_orchestrator::sandbox_id_key(s),
-        turn_orchestrator::tool_schemas_key(s),
+        turn_orchestrator::function_schemas_key(s),
     ];
     let unique: std::collections::HashSet<_> = keys.iter().collect();
     assert_eq!(unique.len(), keys.len(), "every facet has a distinct key");

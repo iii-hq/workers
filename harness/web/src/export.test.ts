@@ -148,7 +148,7 @@ describe("export", () => {
         messages: [{ entry_id: "e1", message: toolResult }],
       });
       await exportMd("s2");
-      expect(captured[0].content).toContain("## Tool result (tc1)");
+      expect(captured[0].content).toContain("## Function result (tc1)");
       expect(captured[0].content).toContain("```json");
     });
   });

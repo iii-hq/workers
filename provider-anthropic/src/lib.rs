@@ -116,11 +116,27 @@ pub fn auth_header_for(cfg: &AnthropicConfig) -> (&'static str, String) {
 
 /// Convert harness AgentMessages into Anthropic wire messages.
 /// Skips Custom messages (filtered at convert_to_llm boundary).
+///
+/// Consecutive `FunctionResult` messages are merged into a single user wire
+/// message containing one `tool_result` content block per result. Anthropic
+/// rejects requests where parallel `tool_use` IDs from the previous assistant
+/// turn are split across multiple user messages with the error
+/// "tool_use ids were found without tool_result blocks immediately after".
 pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
+    let mut pending_results: Vec<serde_json::Value> = Vec::new();
+    let flush_results = |pending: &mut Vec<serde_json::Value>, out: &mut Vec<serde_json::Value>| {
+        if !pending.is_empty() {
+            out.push(serde_json::json!({
+                "role": "user",
+                "content": std::mem::take(pending),
+            }));
+        }
+    };
     for m in messages {
         match m {
             harness_types::AgentMessage::User(u) => {
+                flush_results(&mut pending_results, &mut out);
                 let content = u
                     .content
                     .iter()
@@ -129,6 +145,7 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
                 out.push(serde_json::json!({ "role": "user", "content": content }));
             }
             harness_types::AgentMessage::Assistant(a) => {
+                flush_results(&mut pending_results, &mut out);
                 let content = a
                     .content
                     .iter()
@@ -136,7 +153,7 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
                     .collect::<Vec<_>>();
                 out.push(serde_json::json!({ "role": "assistant", "content": content }));
             }
-            harness_types::AgentMessage::ToolResult(t) => {
+            harness_types::AgentMessage::FunctionResult(t) => {
                 let text = t
                     .content
                     .iter()
@@ -146,33 +163,31 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                out.push(serde_json::json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": t.tool_call_id,
-                        "content": text,
-                        "is_error": t.is_error,
-                    }],
+                pending_results.push(serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": t.function_call_id,
+                    "content": text,
+                    "is_error": t.is_error,
                 }));
             }
             harness_types::AgentMessage::Custom(_) => {}
         }
     }
+    flush_results(&mut pending_results, &mut out);
     out
 }
 
 pub fn content_block_to_wire(b: &ContentBlock) -> Option<serde_json::Value> {
     match b {
         ContentBlock::Text(t) => Some(serde_json::json!({ "type": "text", "text": t.text })),
-        ContentBlock::ToolCall {
+        ContentBlock::FunctionCall {
             id,
-            name,
+            function_id,
             arguments,
         } => Some(serde_json::json!({
             "type": "tool_use",
             "id": id,
-            "name": name,
+            "name": encode_tool_name(function_id),
             "input": arguments,
         })),
         _ => None,
@@ -192,7 +207,7 @@ pub(crate) fn decode_tool_name(name: &str) -> String {
 }
 
 /// Tool definitions in Anthropic wire shape.
-pub fn tools_to_wire(tools: &[harness_types::AgentTool]) -> Vec<serde_json::Value> {
+pub fn functions_to_wire(tools: &[harness_types::AgentFunction]) -> Vec<serde_json::Value> {
     tools
         .iter()
         .map(|t| {
@@ -211,7 +226,7 @@ pub async fn stream(
     cfg: Arc<AnthropicConfig>,
     system_prompt: String,
     messages: Vec<harness_types::AgentMessage>,
-    tools: Vec<harness_types::AgentTool>,
+    tools: Vec<harness_types::AgentFunction>,
 ) -> ReceiverStream<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -240,16 +255,16 @@ pub async fn stream(
 #[derive(Debug, Default)]
 struct PartialState {
     text_blocks: Vec<String>,
-    tool_calls: Vec<PartialToolCall>,
+    function_calls: Vec<PartialFunctionCall>,
     usage: Usage,
     stop_reason: Option<StopReason>,
     error_message: Option<String>,
 }
 
 #[derive(Debug, Default)]
-struct PartialToolCall {
+struct PartialFunctionCall {
     id: String,
-    name: String,
+    function_id: String,
     args_json: String,
 }
 
@@ -257,7 +272,7 @@ async fn stream_inner(
     cfg: Arc<AnthropicConfig>,
     system_prompt: String,
     messages: Vec<harness_types::AgentMessage>,
-    tools: Vec<harness_types::AgentTool>,
+    tools: Vec<harness_types::AgentFunction>,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) -> Result<(), AnthropicError> {
     let body = serde_json::json!({
@@ -265,7 +280,7 @@ async fn stream_inner(
         "max_tokens": cfg.max_tokens,
         "system": system_prompt,
         "messages": to_wire_messages(&messages),
-        "tools": tools_to_wire(&tools),
+        "tools": functions_to_wire(&tools),
         "stream": true,
     });
 
@@ -390,18 +405,18 @@ async fn handle_sse_event(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let name = block
+                    let function_id = block
                         .and_then(|b| b.get("name"))
                         .and_then(|v| v.as_str())
                         .map(decode_tool_name)
                         .unwrap_or_default();
-                    state.tool_calls.push(PartialToolCall {
+                    state.function_calls.push(PartialFunctionCall {
                         id,
-                        name,
+                        function_id,
                         args_json: String::new(),
                     });
                     let _ = tx
-                        .send(AssistantMessageEvent::ToolcallStart {
+                        .send(AssistantMessageEvent::FunctioncallStart {
                             partial: build_partial(state, model),
                         })
                         .await;
@@ -435,11 +450,11 @@ async fn handle_sse_event(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if let Some(last) = state.tool_calls.last_mut() {
+                    if let Some(last) = state.function_calls.last_mut() {
                         last.args_json.push_str(&json);
                     }
                     let _ = tx
-                        .send(AssistantMessageEvent::ToolcallDelta {
+                        .send(AssistantMessageEvent::FunctioncallDelta {
                             partial: build_partial(state, model),
                             delta: json,
                         })
@@ -450,7 +465,8 @@ async fn handle_sse_event(
         }
         "content_block_stop" => {
             // Either text or tool — emit the right end event using the most recent block.
-            if !state.tool_calls.is_empty() && state.text_blocks.last().is_none_or(String::is_empty)
+            if !state.function_calls.is_empty()
+                && state.text_blocks.last().is_none_or(String::is_empty)
             {
                 // tool call just stopped (heuristic; Anthropic guarantees ordering)
             }
@@ -522,7 +538,7 @@ fn map_stop_reason(s: &str) -> StopReason {
     match s {
         "end_turn" => StopReason::End,
         "max_tokens" => StopReason::Length,
-        "tool_use" => StopReason::Tool,
+        "tool_use" => StopReason::FunctionCall,
         "stop_sequence" => StopReason::End,
         _ => StopReason::End,
     }
@@ -556,16 +572,16 @@ pub(crate) fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             }));
         }
     }
-    for tc in &state.tool_calls {
+    for tc in &state.function_calls {
         let args = if tc.args_json.is_empty() {
             serde_json::Value::Object(serde_json::Map::new())
         } else {
             serde_json::from_str::<serde_json::Value>(&tc.args_json)
                 .unwrap_or(serde_json::Value::Null)
         };
-        content.push(ContentBlock::ToolCall {
+        content.push(ContentBlock::FunctionCall {
             id: tc.id.clone(),
-            name: tc.name.clone(),
+            function_id: tc.function_id.clone(),
             arguments: args,
         });
     }
@@ -608,9 +624,9 @@ pub async fn collect(mut stream: ReceiverStream<AssistantMessageEvent>) -> Assis
             | AssistantMessageEvent::TextStart { partial }
             | AssistantMessageEvent::TextDelta { partial, .. }
             | AssistantMessageEvent::TextEnd { partial }
-            | AssistantMessageEvent::ToolcallStart { partial }
-            | AssistantMessageEvent::ToolcallDelta { partial, .. }
-            | AssistantMessageEvent::ToolcallEnd { partial }
+            | AssistantMessageEvent::FunctioncallStart { partial }
+            | AssistantMessageEvent::FunctioncallDelta { partial, .. }
+            | AssistantMessageEvent::FunctioncallEnd { partial }
             | AssistantMessageEvent::ThinkingStart { partial }
             | AssistantMessageEvent::ThinkingDelta { partial, .. }
             | AssistantMessageEvent::ThinkingEnd { partial } => {
@@ -653,25 +669,61 @@ mod tests {
 
     #[test]
     fn tool_result_converts_to_user_with_tool_result_block() {
-        let msgs = vec![AgentMessage::ToolResult(harness_types::ToolResultMessage {
-            tool_call_id: "tc1".into(),
-            tool_name: "read".into(),
-            content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
-            details: serde_json::json!({}),
-            is_error: false,
-            timestamp: 2,
-        })];
+        let msgs = vec![AgentMessage::FunctionResult(
+            harness_types::FunctionResultMessage {
+                function_call_id: "tc1".into(),
+                function_id: "read".into(),
+                content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
+                details: serde_json::json!({}),
+                is_error: false,
+                timestamp: 2,
+            },
+        )];
         let wire = to_wire_messages(&msgs);
         assert_eq!(wire[0]["role"], "user");
         assert_eq!(wire[0]["content"][0]["type"], "tool_result");
         assert_eq!(wire[0]["content"][0]["tool_use_id"], "tc1");
     }
 
+    /// Anthropic requires that all tool_result blocks for an assistant's
+    /// parallel tool_use blocks live in a single immediately-following user
+    /// message. Consecutive FunctionResult AgentMessages must collapse into
+    /// one wire user message. Otherwise the API rejects the request with:
+    ///   "tool_use ids were found without tool_result blocks immediately after"
+    #[test]
+    fn parallel_function_results_collapse_into_one_user_message() {
+        let mk = |id: &str| {
+            AgentMessage::FunctionResult(harness_types::FunctionResultMessage {
+                function_call_id: id.into(),
+                function_id: "read".into(),
+                content: vec![ContentBlock::Text(TextContent { text: id.into() })],
+                details: serde_json::json!({}),
+                is_error: false,
+                timestamp: 0,
+            })
+        };
+        let msgs = vec![mk("a"), mk("b"), mk("c")];
+        let wire = to_wire_messages(&msgs);
+        assert_eq!(
+            wire.len(),
+            1,
+            "three FunctionResults must produce one user message"
+        );
+        assert_eq!(wire[0]["role"], "user");
+        assert_eq!(wire[0]["content"].as_array().unwrap().len(), 3);
+        assert_eq!(wire[0]["content"][0]["tool_use_id"], "a");
+        assert_eq!(wire[0]["content"][1]["tool_use_id"], "b");
+        assert_eq!(wire[0]["content"][2]["tool_use_id"], "c");
+    }
+
     #[test]
     fn map_stop_reason_known_values() {
         assert!(matches!(map_stop_reason("end_turn"), StopReason::End));
         assert!(matches!(map_stop_reason("max_tokens"), StopReason::Length));
-        assert!(matches!(map_stop_reason("tool_use"), StopReason::Tool));
+        assert!(matches!(
+            map_stop_reason("tool_use"),
+            StopReason::FunctionCall
+        ));
     }
 
     #[test]
@@ -744,9 +796,9 @@ mod tests {
     fn build_content_mixed_text_and_tool_partial_state() {
         let state = PartialState {
             text_blocks: vec!["hello".into(), String::new(), "world".into()],
-            tool_calls: vec![PartialToolCall {
+            function_calls: vec![PartialFunctionCall {
                 id: "tc1".into(),
-                name: "read".into(),
+                function_id: "read".into(),
                 args_json: "{\"path\":\"/tmp/x\"}".into(),
             }],
             usage: Usage::default(),
@@ -765,13 +817,13 @@ mod tests {
             other => panic!("expected text, got {other:?}"),
         }
         match &content[2] {
-            ContentBlock::ToolCall {
+            ContentBlock::FunctionCall {
                 id,
-                name,
+                function_id,
                 arguments,
             } => {
                 assert_eq!(id, "tc1");
-                assert_eq!(name, "read");
+                assert_eq!(function_id, "read");
                 assert_eq!(arguments["path"], "/tmp/x");
             }
             other => panic!("expected tool call, got {other:?}"),
@@ -782,9 +834,9 @@ mod tests {
     fn build_content_invalid_args_json_falls_back_to_null() {
         let state = PartialState {
             text_blocks: vec![],
-            tool_calls: vec![PartialToolCall {
+            function_calls: vec![PartialFunctionCall {
                 id: "tc1".into(),
-                name: "read".into(),
+                function_id: "read".into(),
                 args_json: "not-json".into(),
             }],
             usage: Usage::default(),
@@ -794,7 +846,7 @@ mod tests {
         let content = build_content(&state);
         assert_eq!(content.len(), 1);
         match &content[0] {
-            ContentBlock::ToolCall { arguments, .. } => {
+            ContentBlock::FunctionCall { arguments, .. } => {
                 assert!(arguments.is_null());
             }
             other => panic!("expected tool call, got {other:?}"),

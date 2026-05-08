@@ -40,7 +40,7 @@ WORKERS=(
   turn-orchestrator provider-router
   session-tree session-inbox
   models-catalog hook-fanout policy-denylist
-  shell-bash shell-filesystem subagent
+  shell subagent
   provider-anthropic provider-openai
   auth-credentials llm-budget
   skills approval-gate
@@ -52,7 +52,7 @@ ensure_dirs() {
 
 # Binary artifact name comes from each crate’s `iii.worker.yaml` `bin:` field
 # (same value as `[[bin]]` in Cargo.toml). Do not assume `iii-{folder}` — names
-# are mixed historical (`iii-*`) and folder-matched (`shell-bash`, `skills`, …).
+# are mixed historical (`iii-*`) and folder-matched (`shell`, `skills`, …).
 bin_name_for() {
   local w="$1"
   local yaml="$WORKERS_REPO/$w/iii.worker.yaml"
@@ -99,8 +99,26 @@ spawn_one() {
       --config "$WORKERS_REPO/harness/config.yaml"
       --url "$DEMO_ENGINE_WS"
     )
+  elif [[ "$w" == "shell" ]]; then
+    run_args=(
+      --config "$WORKERS_REPO/harness/shell-config.yaml"
+    )
   fi
-  env III_URL="$DEMO_ENGINE_WS" nohup "$bin" "${run_args[@]}" >>"$logfile" 2>&1 &
+
+  # Per-worker env. policy-denylist needs POLICY_DENIED_FUNCTIONS to include
+  # bridge::trigger — without it the LLM can call bridge::trigger to
+  # recursively dispatch any function and bypass name-matched policy
+  # rules (the policy hook fires with name "bridge::trigger", not the
+  # inner function). See plan-eng-review D1 in
+  # docs/superpowers/specs/2026-05-07-tier2-iii-pure-harness-design.md.
+  local -a extra_env=()
+  case "$w" in
+    policy-denylist)
+      extra_env+=(POLICY_DENIED_FUNCTIONS="bridge::trigger")
+      ;;
+  esac
+
+  env III_URL="$DEMO_ENGINE_WS" "${extra_env[@]}" nohup "$bin" "${run_args[@]}" >>"$logfile" 2>&1 &
   echo $! > "$pidfile"
   echo "    [start] $w pid=$! log=$logfile"
 }
@@ -114,8 +132,11 @@ cmd_engine() {
     return 0
   fi
   echo "==> starting iii engine..."
-  (cd "$DEMO_DIR" && nohup iii --use-default-config > engine.log 2>&1 &
-   echo $! > engine.pid)
+  (
+    cd "$DEMO_DIR" || exit 1
+    nohup iii --use-default-config > engine.log 2>&1 &
+    echo $! > "$DEMO_DIR/engine.pid"
+  )
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
     if iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then

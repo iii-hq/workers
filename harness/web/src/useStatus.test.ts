@@ -102,17 +102,17 @@ describe("useStatus", () => {
     await flush();
 
     await fire("ui::approval::requested", {
-      tool_call_id: "tc-1",
-      tool_name: "shell::filesystem::write",
+      function_call_id: "tc-1",
+      function_id: "shell::fs::write",
       args: { path: "/tmp/x" },
       expires_at: 9999,
       session_id: "s1",
     });
     expect(result.current.pendingApprovals).toHaveLength(1);
-    expect(result.current.pendingApprovals[0].tool_call_id).toBe("tc-1");
+    expect(result.current.pendingApprovals[0].function_call_id).toBe("tc-1");
 
     await fire("ui::approval::resolved", {
-      tool_call_id: "tc-1",
+      function_call_id: "tc-1",
       decision: "allow",
     });
     expect(result.current.pendingApprovals).toHaveLength(0);
@@ -123,12 +123,12 @@ describe("useStatus", () => {
     await flush();
 
     await fire("ui::approval::requested", {
-      tool_call_id: "tc-1",
-      tool_name: "x",
+      function_call_id: "tc-1",
+      function_id: "x",
     });
     await fire("ui::approval::requested", {
-      tool_call_id: "tc-1",
-      tool_name: "x",
+      function_call_id: "tc-1",
+      function_id: "x",
     });
     expect(result.current.pendingApprovals).toHaveLength(1);
   });
@@ -198,6 +198,27 @@ describe("useStatus", () => {
       result.current.clearEvents();
     });
     expect(result.current.events).toHaveLength(0);
+  });
+
+  it("still accepts legacy ui::approval fields (tool_call_id / tool_name)", async () => {
+    const { result } = renderHook(() => useStatus());
+    await flush();
+
+    await fire("ui::approval::requested", {
+      tool_call_id: "legacy-1",
+      tool_name: "shell::x",
+    });
+    expect(result.current.pendingApprovals).toHaveLength(1);
+    expect(
+      result.current.pendingApprovals[0].function_call_id ??
+        result.current.pendingApprovals[0].tool_call_id,
+    ).toBe("legacy-1");
+
+    await fire("ui::approval::resolved", {
+      tool_call_id: "legacy-1",
+      decision: "deny",
+    });
+    expect(result.current.pendingApprovals).toHaveLength(0);
   });
 
   it("flips hydrated=true after the first push of any kind", async () => {

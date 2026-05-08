@@ -13,9 +13,9 @@ pub async fn step(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()>
         TurnState::AwaitingAssistant => states::handle_awaiting(iii, record).await?,
         TurnState::AssistantStreaming => states::handle_streaming(iii, record).await?,
         TurnState::AssistantFinished => states::handle_finished(iii, record).await?,
-        TurnState::ToolPrepare => states::handle_prepare(iii, record).await?,
-        TurnState::ToolExecute => states::handle_execute(iii, record).await?,
-        TurnState::ToolFinalize => states::handle_finalize(iii, record).await?,
+        TurnState::FunctionPrepare => states::handle_prepare(iii, record).await?,
+        TurnState::FunctionExecute => states::handle_execute(iii, record).await?,
+        TurnState::FunctionFinalize => states::handle_finalize(iii, record).await?,
         TurnState::SteeringCheck => states::handle_steering(iii, record).await?,
         TurnState::TearingDown => states::handle_tearing_down(iii, record).await?,
         TurnState::Stopped => {

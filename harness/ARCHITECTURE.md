@@ -20,11 +20,11 @@ The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental
             │                  iii bus  (ws://:49134)            │
             │                                                    │
             │  harness::status     bridge::trigger               │◄── iii-harness
-            │  run::start_and_wait turn::*                       │◄── turn-orchestrator
-            │  provider::*         models::*                     │◄── provider-router, …
+            │  run::start          turn::*                       │◄── turn-orchestrator
+            │  agent::call         provider::*                  │◄── turn-orchestrator, …
             │  session::* state::*                               │◄── session-tree
-            │  shell::filesystem::* shell::bash::*               │◄── shell-* workers
-            │  agent::before_tool_call (topic)                   │◄── policy-denylist
+            │  shell::fs::* shell::*                             │◄── shell worker
+            │  agent::before_function_call (topic)               │◄── policy-denylist
             │  auth::* skills::register …                        │◄── auth-credentials, skills
             └────────────────────────────────────────────────────┘
 ```
@@ -46,6 +46,20 @@ Boot sequence (`register_with_iii`, `lib.rs:70`):
 2. Register `bridge::trigger` and bind it to `POST /bridge/trigger` with a 4-minute timeout (`BRIDGE_TIMEOUT_MS`, `lib.rs:16`) — long enough for multi-turn tool-calling to complete before the engine's default 30s 504.
 3. Best-effort fire `skills::register` with the harness's skill descriptor (`build_skills_register_payload`, `lib.rs:45`). A missing `skills` worker does not block boot.
 
+The harness exposes two dispatchers:
+
+- `bridge::trigger` (this worker) — HTTP-bound, browser path. The browser
+  POSTs `{function_id, payload}`; this forwards to `iii.trigger(...)`. Not
+  advertised to the LLM.
+- `agent::call` (turn-orchestrator) — LLM-facing. The provider sees one
+  tool, `agent_call`, with `{function, payload}` arguments. Thin pass-
+  through: validates the `function` field, dispatches via
+  `iii.trigger(...)`, maps errors back to `FunctionResult` envelopes the
+  model can read. No payload validation, no sandbox automation, no
+  registry introspection — the model learns iii contracts from skills
+  registered via the skills worker. Both `bridge::trigger` and
+  `agent::call` appear in `engine::functions::list`.
+
 `bridge::trigger` is **intentionally not advertised as an LLM tool** (`tools: []` in the skill payload). It exists only as the browser's call-anything escape hatch — exposing it to a model would let the model call itself recursively.
 
 ### 2. `harness/web` — React UI (`web/`)
@@ -55,21 +69,25 @@ Vite + React 18 single-page app. All bus calls go through one helper:
 - `web/src/bridge.ts` — `bridge<T>(functionId, payload)` does `POST /bridge/trigger`, returns the result, surfaces engine errors as `BridgeError`.
 - `vite.config.ts:9` — dev server proxies `/bridge` → `http://127.0.0.1:3111` (the engine's HTTP trigger port). Same path works in production behind any reverse proxy that forwards `/bridge`.
 
-The UI advertises a fixed tool surface to the LLM in `App.tsx:30` (`shell::filesystem::ls/read/write/mkdir/...`). Tool *names* map 1:1 to bus function ids — `turn-orchestrator` dispatches `tool_call.name` directly via `iii.trigger`, so adding a tool is just adding a schema entry. Permission is enforced one layer down by `policy-denylist` (see Trust boundary below).
+The UI does not ship tool schemas: `turn-orchestrator` provisions a single
+`agent_call` tool (see `agent_call_tool`) and builds the system prompt
+server-side. The model passes `function` (a bus id such as
+`shell::fs::ls`) and `payload` (arguments). Permission is enforced by
+`policy-denylist` on `agent::before_function_call` (see Trust boundary below).
 
-### 3. The 14 expected workers
+### 3. The 15 expected workers
 
 `EXPECTED_WORKERS` (`lib.rs:18`) is the source of truth for what the harness assumes is on the bus. Grouped by role:
 
 | Group | Workers | Role |
 |---|---|---|
-| Orchestration | `turn-orchestrator`, `provider-router` | Runs a turn end-to-end: fan a request to a provider and dispatch tool calls. |
+| Orchestration | `turn-orchestrator`, `provider-router` | Runs a turn end-to-end: fan a request to a provider and dispatch function calls. |
 | Sessions / state | `session-tree`, `session-inbox` | Persisted message trees and a steering/follow-up inbox queue. |
 | Catalog | `models-catalog` | Model metadata. |
 | Auth | `auth-credentials` | Provider credentials store. |
-| Policy / safety | `policy-denylist`, `llm-budget` | Hook subscriber on `agent::before_tool_call` and budget tracking. |
+| Policy / safety | `policy-denylist`, `llm-budget` | Hook subscriber on `agent::before_function_call` and budget tracking. |
 | Hooks | `hook-fanout` | Generic publish-and-collect primitive. |
-| Tools | `shell-bash`, `shell-filesystem`, `subagent` | LLM-callable tool implementations. |
+| Tools | `shell`, `subagent` | LLM-callable iii function implementations. |
 | Providers | `provider-anthropic`, `provider-openai` | Concrete LLM transport workers behind `provider-router`. |
 
 The harness owns *no* logic from any of these — it only knows their names. Each worker is a separate crate in `workers/<name>/` with its own `iii.worker.yaml`, lifecycle, and tests.
@@ -104,8 +122,8 @@ A user message from the browser:
 3. bridge::trigger handler unwraps {body} → {function_id, payload}
 4. iii.trigger("run::start_and_wait", payload, timeout=240s)
 5. turn-orchestrator picks it up, runs the agent loop:
-     - emits `agent::before_tool_call` (subscribers: policy-denylist, llm-budget)
-     - dispatches tool_call.name via iii.trigger → shell-filesystem / shell-bash / subagent
+     - emits `agent::before_function_call` (subscribers: policy-denylist, llm-budget)
+     - routes each function execution through `agent_call::dispatch` (validate function field, then `iii.trigger` to the inner function — Tier 2 thin pass-through)
      - calls provider-router → provider-anthropic / provider-openai
      - persists transcript via session-tree / state
 6. turn-orchestrator returns full transcript
@@ -124,7 +142,7 @@ Sessions are persisted in two stores that don't merge automatically:
 The harness assumes a layered model and does not enforce policy itself:
 
 1. **SDK wrapper (chat client side)** — workspace allowlist on path arguments before the bus call is dispatched.
-2. **`policy-denylist` (engine side)** — subscriber on `agent::before_tool_call` that blocks by tool name. Configured via `POLICY_DENIED_TOOLS` env var, e.g. `shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv`.
+2. **`policy-denylist` (engine side)** — subscriber on `agent::before_function_call` that blocks by function id. Configured via `POLICY_DENIED_FUNCTIONS` env var (legacy `POLICY_DENIED_TOOLS` still honored). **Must include `bridge::trigger`** to prevent the LLM from calling `agent_call(function="bridge::trigger", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `bridge::trigger`, not the inner function). Recommended denylist for solo local dev: `bridge::trigger,shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv`. The demo script (`harness/scripts/demo.sh`) sets `bridge::trigger` automatically.
 3. **`<ApprovalRow>` (chat UI)** — per-call user approval surfaced inline before any write reaches disk.
 
 `bridge::trigger` is the one bus surface reachable from the browser. It has **no** allowlist — any function id is callable — so the deployment must keep `:3111` private and rely on the three layers above. There is no per-user auth on `bridge::trigger`; the harness assumes a single-tenant local install.
@@ -164,11 +182,10 @@ harness/
     ├── vite.config.ts        # /bridge → 127.0.0.1:3111 proxy
     └── src/
         ├── bridge.ts         # bridge<T>(functionId, payload)
-        ├── App.tsx           # tool schemas, session UI, composer, panels
+        ├── App.tsx           # session UI, composer, panels (no client-side tool catalog)
         ├── components/       # AuthPanel, Composer, ContextMeter, ControlsBar,
         │                     # CostPanel, FilesystemPanel, SessionList,
         │                     # SessionView, StatusPill
-        ├── useSkillsIndex.ts # caches skills::list
         └── types.ts          # AgentMessage, AuthStatus, ModelInfo, SessionRow
 ```
 

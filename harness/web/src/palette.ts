@@ -25,9 +25,9 @@ export interface RecentInvocation {
 const SENSITIVE_PATTERNS: readonly RegExp[] = [
   /^policy::/,
   /^auth::set_/,
-  /^shell::filesystem::write$/,
-  /^shell::filesystem::mkdir$/,
-  /^shell::filesystem::rm$/,
+  /^shell::fs::write$/,
+  /^shell::fs::mkdir$/,
+  /^shell::fs::rm$/,
 ];
 
 /**

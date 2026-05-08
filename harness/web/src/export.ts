@@ -2,8 +2,9 @@
 // bridge and stream the result through a Blob → temporary <a download> click.
 // The browser owns the file dialog; we never round-trip bytes to the server.
 //
-// Markdown: human-readable transcript with role headings; tool results are
-// fenced JSON since their content shape is open-ended.
+// Markdown: human-readable transcript with role headings; function results are
+// fenced JSON since their content shape is open-ended. Assistant blocks may still
+// carry upstream `tool_use` shapes on the wire — we render those as fenced JSON.
 // JSON: structured wrapper { session_id, exported_at, messages, tree } —
 // tree fetch is best-effort (drift case returns null).
 
@@ -60,11 +61,14 @@ export async function exportMd(sessionId: string): Promise<void> {
       lines.push("## Assistant\n");
       lines.push(formatContent(message.content));
     } else {
-      // tool_result and any other roles fall through here. The JSON dump
-      // preserves the full envelope (tool_call_id, is_error, content blocks).
-      const toolId =
-        (message as { tool_call_id?: string }).tool_call_id ?? "unknown";
-      lines.push(`## Tool result (${toolId})\n`);
+      // Legacy `tool_result` role and other roles fall through here. The JSON dump
+      // preserves the full envelope (function_call_id / tool_call_id, is_error, content).
+      const rid =
+        (message as { function_call_id?: string; tool_call_id?: string })
+          .function_call_id ??
+        (message as { tool_call_id?: string }).tool_call_id ??
+        "unknown";
+      lines.push(`## Function result (${rid})\n`);
       lines.push(`\`\`\`json\n${JSON.stringify(message, null, 2)}\n\`\`\`\n`);
     }
   }
