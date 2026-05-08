@@ -297,7 +297,6 @@ async fn read_bounded<R: AsyncReadExt + Unpin>(
 
 #[cfg(test)]
 mod sandbox_path_tests {
-    use super::*;
     use crate::config::ShellConfig;
     use crate::jobs::{self, JobStatus};
     use crate::triggers::TriggerFwd;
