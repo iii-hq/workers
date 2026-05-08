@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::ContentBlock;
 use crate::stream_event::{ErrorKind, StopReason, Usage};
 use crate::thinking::ThinkingLevel;
-use crate::tool::AgentTool;
+use crate::function::AgentFunction;
 
 /// Transcript message. Superset of LLM message types plus app-defined custom entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -11,7 +11,8 @@ use crate::tool::AgentTool;
 pub enum AgentMessage {
     User(UserMessage),
     Assistant(AssistantMessage),
-    ToolResult(ToolResultMessage),
+    #[serde(rename = "function_result", alias = "tool_result")]
+    FunctionResult(FunctionResultMessage),
     Custom(CustomMessage),
 }
 
@@ -37,9 +38,11 @@ pub struct AssistantMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolResultMessage {
-    pub tool_call_id: String,
-    pub tool_name: String,
+pub struct FunctionResultMessage {
+    #[serde(alias = "tool_call_id")]
+    pub function_call_id: String,
+    #[serde(alias = "tool_name")]
+    pub function_id: String,
     pub content: Vec<ContentBlock>,
     pub details: serde_json::Value,
     pub is_error: bool,
@@ -64,8 +67,8 @@ pub struct CustomMessage {
 pub struct AgentContext {
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
-    #[serde(default)]
-    pub tools: Vec<AgentTool>,
+    #[serde(default, alias = "tools")]
+    pub functions: Vec<AgentFunction>,
 }
 
 /// Persisted session state. Lives at `agent::session/<id>/state` on iii state.
@@ -101,5 +104,16 @@ mod tests {
         let json = r#"{"role":"user","content":[],"timestamp":0}"#;
         let m: AgentMessage = serde_json::from_str(json).unwrap();
         assert!(matches!(m, AgentMessage::User(_)));
+    }
+
+    #[test]
+    fn function_result_legacy_tool_result_role() {
+        let json = r#"{"role":"tool_result","function_call_id":"c1","function_id":"x","content":[],"details":{},"is_error":false,"timestamp":0}"#;
+        // Old persisted shape used tool_call_id / tool_name
+        let json_old = r#"{"role":"tool_result","tool_call_id":"c1","tool_name":"x","content":[],"details":{},"is_error":false,"timestamp":0}"#;
+        let m: AgentMessage = serde_json::from_str(json).unwrap();
+        let m_old: AgentMessage = serde_json::from_str(json_old).unwrap();
+        assert!(matches!(m, AgentMessage::FunctionResult(_)));
+        assert!(matches!(m_old, AgentMessage::FunctionResult(_)));
     }
 }

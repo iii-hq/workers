@@ -79,7 +79,7 @@ engine: ensure-dirs
 	  exit 0; \
 	fi
 	@echo "==> starting iii engine..."
-	@( cd "$(DEMO_DIR)" && nohup iii --use-default-config > engine.log 2>&1 & echo $$! > engine.pid )
+	@cd "$(DEMO_DIR)" && { nohup iii --use-default-config > engine.log 2>&1 & echo $$! > "$(DEMO_DIR)/engine.pid"; }
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 	  sleep 1; \
 	  if iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then \
