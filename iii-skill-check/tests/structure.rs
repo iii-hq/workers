@@ -118,6 +118,68 @@ fn flags_cargo_build_block() {
 }
 
 #[test]
+fn flags_manifest_jq_verification_step() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_worker(tmp.path(), "fixture");
+    let mut readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    readme.push_str("\n```bash\nfixture --manifest | jq\n```\n");
+    std::fs::write(tmp.path().join("README.md"), readme).unwrap();
+
+    let violations = iii_skill_check::structure::check(tmp.path()).unwrap();
+    assert!(
+        violations.iter().any(|v| v.message.contains("--manifest")),
+        "expected --manifest | jq violation, got: {violations:?}"
+    );
+}
+
+#[test]
+fn flags_bin_help_verification_step() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_worker(tmp.path(), "fixture");
+    let mut readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    readme.push_str("\n```bash\nfixture --help\n```\n");
+    std::fs::write(tmp.path().join("README.md"), readme).unwrap();
+
+    let violations = iii_skill_check::structure::check(tmp.path()).unwrap();
+    assert!(
+        violations.iter().any(|v| v.message.contains("--help")),
+        "expected --help violation, got: {violations:?}"
+    );
+}
+
+#[test]
+fn flags_bin_manifest_without_jq() {
+    let tmp = TempDir::new().unwrap();
+    write_minimal_worker(tmp.path(), "fixture");
+    let mut readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    readme.push_str("\n```bash\nfixture --manifest\n```\n");
+    std::fs::write(tmp.path().join("README.md"), readme).unwrap();
+
+    let violations = iii_skill_check::structure::check(tmp.path()).unwrap();
+    assert!(
+        violations.iter().any(|v| v.message.contains("--manifest")),
+        "expected --manifest violation, got: {violations:?}"
+    );
+}
+
+#[test]
+fn does_not_flag_help_in_unrelated_context() {
+    // The check is bin-name-scoped: `iii --help` in prose or in a different
+    // command should not trigger a violation against the fixture worker.
+    let tmp = TempDir::new().unwrap();
+    write_minimal_worker(tmp.path(), "fixture");
+    let mut readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    readme.push_str("\nRun `iii --help` to see CLI options.\n");
+    std::fs::write(tmp.path().join("README.md"), readme).unwrap();
+
+    let violations = iii_skill_check::structure::check(tmp.path()).unwrap();
+    assert!(
+        !violations.iter().any(|v| v.message.contains("--help")),
+        "should not flag `iii --help` (different bin name), got: {violations:?}"
+    );
+}
+
+#[test]
 fn flags_iii_link_to_unknown_leaf() {
     let tmp = TempDir::new().unwrap();
     write_minimal_worker(tmp.path(), "fixture");
