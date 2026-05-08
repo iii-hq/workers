@@ -31,7 +31,7 @@ pub fn check(dir: &Path) -> anyhow::Result<Vec<Violation>> {
     let mut violations = Vec::new();
     violations.extend(check_required_sections(&readme));
     violations.extend(check_install_line(&readme, name));
-    violations.extend(check_no_source_build(&readme));
+    violations.extend(check_forbidden_install_patterns(&readme, name));
 
     let known_leaves: HashSet<String> = leaves.iter().map(|(n, _)| n.clone()).collect();
 
@@ -93,21 +93,27 @@ fn check_install_line(readme: &str, name: &str) -> Vec<Violation> {
     }]
 }
 
-fn check_no_source_build(readme: &str) -> Vec<Violation> {
-    let blocked = ["cargo build", "cargo install"];
+fn check_forbidden_install_patterns(readme: &str, name: &str) -> Vec<Violation> {
+    // Order matters: more specific patterns first so a single line gets the
+    // most-informative violation when multiple patterns would match.
+    let blocked: Vec<String> = vec![
+        "cargo build".to_string(),
+        "cargo install".to_string(),
+        "--manifest | jq".to_string(),
+        format!("{name} --help"),
+        format!("{name} --manifest"),
+    ];
     let mut violations = Vec::new();
     for (i, line) in readme.lines().enumerate() {
         let lower = line.to_lowercase();
-        for needle in &blocked {
-            if lower.contains(needle) {
-                violations.push(Violation {
-                    file: "README.md".to_string(),
-                    line: Some(i + 1),
-                    message: format!(
-                        "source-build instruction `{needle}` is forbidden in published README"
-                    ),
-                });
-            }
+        if let Some(needle) = blocked.iter().find(|n| lower.contains(&n.to_lowercase())) {
+            violations.push(Violation {
+                file: "README.md".to_string(),
+                line: Some(i + 1),
+                message: format!(
+                    "forbidden pattern `{needle}` in published README (binary verification or source-build steps belong in contributor docs, not the published README)"
+                ),
+            });
         }
     }
     violations
