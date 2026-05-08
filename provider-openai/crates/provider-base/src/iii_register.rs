@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use auth_credentials::Credential;
 use harness_types::{
-    AgentMessage, AgentTool, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
+    AgentMessage, AgentFunction, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
     StopReason, TextContent,
 };
 use iii_sdk::{FunctionRef, IIIError, RegisterFunctionMessage, III};
@@ -43,9 +43,9 @@ async fn collect_final(
             | AssistantMessageEvent::TextStart { partial }
             | AssistantMessageEvent::TextDelta { partial, .. }
             | AssistantMessageEvent::TextEnd { partial }
-            | AssistantMessageEvent::ToolcallStart { partial }
-            | AssistantMessageEvent::ToolcallDelta { partial, .. }
-            | AssistantMessageEvent::ToolcallEnd { partial }
+            | AssistantMessageEvent::FunctioncallStart { partial }
+            | AssistantMessageEvent::FunctioncallDelta { partial, .. }
+            | AssistantMessageEvent::FunctioncallEnd { partial }
             | AssistantMessageEvent::ThinkingStart { partial }
             | AssistantMessageEvent::ThinkingDelta { partial, .. }
             | AssistantMessageEvent::ThinkingEnd { partial } => {
@@ -92,7 +92,7 @@ where
     C: Send + Sync + 'static,
     B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
-    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentTool>) -> Fut + Copy + Send + Sync + 'static,
+    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut + Copy + Send + Sync + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
 {
     register_provider_with_id(
@@ -115,7 +115,7 @@ where
     C: Send + Sync + 'static,
     B: Fn(&str, &Credential) -> Result<C, BErr> + Clone + Send + Sync + 'static,
     BErr: std::fmt::Display + Send + Sync + 'static,
-    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentTool>) -> Fut + Copy + Send + Sync + 'static,
+    F: Fn(Arc<C>, String, Vec<AgentMessage>, Vec<AgentFunction>) -> Fut + Copy + Send + Sync + 'static,
     Fut: Future<Output = ReceiverStream<AssistantMessageEvent>> + Send + 'static,
 {
     let description = format!(
@@ -147,7 +147,7 @@ where
                     .transpose()
                     .map_err(|e| IIIError::Handler(format!("invalid messages: {e}")))?
                     .unwrap_or_default();
-                let tools: Vec<AgentTool> = payload
+                let tools: Vec<AgentFunction> = payload
                     .get("tools")
                     .cloned()
                     .map(serde_json::from_value)
@@ -237,7 +237,7 @@ mod tests {
         cfg: Arc<DummyConfig>,
         _system_prompt: String,
         _messages: Vec<AgentMessage>,
-        _tools: Vec<AgentTool>,
+        _tools: Vec<AgentFunction>,
     ) -> ReceiverStream<AssistantMessageEvent> {
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {

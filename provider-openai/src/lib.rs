@@ -12,7 +12,7 @@ pub mod config;
 use std::sync::Arc;
 
 use harness_types::{
-    AgentMessage, AgentTool, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
+    AgentFunction, AgentMessage, AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorKind,
     StopReason,
 };
 use provider_base::{stream_chat_completions, ChatCompletionsConfig, OpenAICompatRequest};
@@ -87,7 +87,7 @@ pub async fn stream(
     cfg: Arc<OpenAIConfig>,
     system_prompt: String,
     messages: Vec<AgentMessage>,
-    tools: Vec<AgentTool>,
+    tools: Vec<AgentFunction>,
 ) -> ReceiverStream<AssistantMessageEvent> {
     let base_cfg = Arc::new(
         ChatCompletionsConfig::new(
@@ -141,9 +141,9 @@ pub async fn collect(mut stream: ReceiverStream<AssistantMessageEvent>) -> Assis
             | AssistantMessageEvent::TextStart { partial }
             | AssistantMessageEvent::TextDelta { partial, .. }
             | AssistantMessageEvent::TextEnd { partial }
-            | AssistantMessageEvent::ToolcallStart { partial }
-            | AssistantMessageEvent::ToolcallDelta { partial, .. }
-            | AssistantMessageEvent::ToolcallEnd { partial }
+            | AssistantMessageEvent::FunctioncallStart { partial }
+            | AssistantMessageEvent::FunctioncallDelta { partial, .. }
+            | AssistantMessageEvent::FunctioncallEnd { partial }
             | AssistantMessageEvent::ThinkingStart { partial }
             | AssistantMessageEvent::ThinkingDelta { partial, .. }
             | AssistantMessageEvent::ThinkingEnd { partial } => {

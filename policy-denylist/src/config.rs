@@ -5,28 +5,31 @@ use serde::{Deserialize, Serialize};
 pub struct WorkerConfig {
     #[serde(default = "default_topic")]
     pub topic: String,
-    #[serde(default = "default_denied_tools_vec")]
-    pub denied_tools: Vec<String>,
+    #[serde(
+        default = "default_denied_functions_vec",
+        alias = "denied_tools"
+    )]
+    pub denied_functions: Vec<String>,
 }
 
 fn default_topic() -> String {
     policy_denylist::DEFAULT_TOPIC.to_string()
 }
 
-fn default_denied_tools_vec() -> Vec<String> {
-    policy_denylist::default_denied_tools()
+fn default_denied_functions_vec() -> Vec<String> {
+    policy_denylist::default_denied_functions()
 }
 
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             topic: default_topic(),
-            denied_tools: default_denied_tools_vec(),
+            denied_functions: default_denied_functions_vec(),
         }
     }
 }
 
-/// Load operator config: flat `{ topic, denied_tools }`, or iii-style `{ config: { ... } }`.
+/// Load operator config: flat `{ topic, denied_functions }`, or iii-style `{ config: { ... } }`.
 pub fn load_config(path: &str) -> Result<WorkerConfig> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
     let root: serde_yaml::Value =
@@ -45,7 +48,7 @@ mod tests {
     fn defaults_from_empty_yaml_mapping() {
         let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.topic, policy_denylist::DEFAULT_TOPIC);
-        assert_eq!(cfg.denied_tools, policy_denylist::default_denied_tools());
+        assert_eq!(cfg.denied_functions, policy_denylist::default_denied_functions());
     }
 
     #[test]
@@ -53,13 +56,25 @@ mod tests {
         let cfg: WorkerConfig = serde_yaml::from_str(
             r"
 topic: agent::custom
-denied_tools:
+denied_functions:
   - risky
 ",
         )
         .unwrap();
         assert_eq!(cfg.topic, "agent::custom");
-        assert_eq!(cfg.denied_tools, vec!["risky".to_string()]);
+        assert_eq!(cfg.denied_functions, vec!["risky".to_string()]);
+    }
+
+    #[test]
+    fn denied_tools_field_alias_deserializes_as_denied_functions() {
+        let cfg: WorkerConfig = serde_yaml::from_str(
+            r"
+denied_tools:
+  - legacy-entry
+",
+        )
+        .unwrap();
+        assert_eq!(cfg.denied_functions, vec!["legacy-entry".to_string()]);
     }
 
     #[test]
@@ -71,12 +86,12 @@ denied_tools:
     #[test]
     fn deserialize_nested_config_block() {
         let root: serde_yaml::Value = serde_yaml::from_str(
-            "config:\n  topic: agent::nested\n  denied_tools:\n    - bash:rm -rf",
+            "config:\n  topic: agent::nested\n  denied_functions:\n    - bash:rm -rf",
         )
         .unwrap();
         let node = root.get("config").cloned().unwrap_or(root);
         let cfg: WorkerConfig = serde_yaml::from_value(node).unwrap();
         assert_eq!(cfg.topic, "agent::nested");
-        assert_eq!(cfg.denied_tools, vec!["bash:rm -rf".to_string()]);
+        assert_eq!(cfg.denied_functions, vec!["bash:rm -rf".to_string()]);
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[derive(Parser, Debug)]
 #[command(
     name = "iii-policy-denylist",
-    about = "Denylist subscriber for agent::before_tool_call"
+    about = "Denylist subscriber for agent::before_function_call"
 )]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
@@ -32,15 +32,20 @@ fn apply_runtime_env_overrides(cfg: &mut config::WorkerConfig) {
             cfg.topic = topic.to_string();
         }
     }
-    if let Ok(denied) = std::env::var("POLICY_DENIED_TOOLS") {
-        let denied_tools = parse_denied_tools(&denied);
-        if !denied_tools.is_empty() {
-            cfg.denied_tools = denied_tools;
+    if let Ok(denied) = std::env::var("POLICY_DENIED_FUNCTIONS") {
+        let denied_functions = parse_denied_functions(&denied);
+        if !denied_functions.is_empty() {
+            cfg.denied_functions = denied_functions;
+        }
+    } else if let Ok(denied) = std::env::var("POLICY_DENIED_TOOLS") {
+        let denied_functions = parse_denied_functions(&denied);
+        if !denied_functions.is_empty() {
+            cfg.denied_functions = denied_functions;
         }
     }
 }
 
-fn parse_denied_tools(raw: &str) -> Vec<String> {
+fn parse_denied_functions(raw: &str) -> Vec<String> {
     let raw = raw.trim();
     // Brackets must be balanced. A single unmatched bracket previously
     // leaked into the first/last token (e.g. `[tool1,tool2` parsed as
@@ -52,7 +57,7 @@ fn parse_denied_tools(raw: &str) -> Vec<String> {
         _ => {
             tracing::warn!(
                 input = %raw,
-                "POLICY_DENIED_TOOLS has unmatched bracket; ignoring brackets and parsing as comma-separated"
+                "POLICY_DENIED_FUNCTIONS has unmatched bracket; ignoring brackets and parsing as comma-separated"
             );
             raw.trim_matches(|c| c == '[' || c == ']')
         }
@@ -138,7 +143,7 @@ async fn main() -> Result<()> {
 
     let _sub = subscribe_denylist_with_config(
         &iii,
-        cfg.denied_tools.clone(),
+        cfg.denied_functions.clone(),
         PolicyDenylistConfig {
             topic: cfg.topic.clone(),
         },
@@ -147,7 +152,7 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         topic = %cfg.topic,
-        denied_tools = %cfg.denied_tools.join(","),
+        denied_functions = %cfg.denied_functions.join(","),
         "policy-denylist subscribed (policy::denylist)",
     );
 
@@ -160,35 +165,35 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_denied_tools;
+    use super::parse_denied_functions;
 
     // ── Adversarial unit tests added per plan
     // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
 
     #[test]
-    fn parse_denied_tools_handles_empty_string() {
-        assert!(parse_denied_tools("").is_empty());
+    fn parse_denied_functions_handles_empty_string() {
+        assert!(parse_denied_functions("").is_empty());
     }
 
     #[test]
-    fn parse_denied_tools_strips_whitespace_and_filters_empty() {
+    fn parse_denied_functions_strips_whitespace_and_filters_empty() {
         assert_eq!(
-            parse_denied_tools("  tool1  ,  ,  tool2  "),
+            parse_denied_functions("  tool1  ,  ,  tool2  "),
             vec!["tool1".to_string(), "tool2".to_string()]
         );
     }
 
     #[test]
-    fn parse_denied_tools_accepts_json_array_syntax() {
+    fn parse_denied_functions_accepts_json_array_syntax() {
         // The Tier 2 demo.sh injects `bridge::trigger` as a single-value
         // env, but operators may still pass JSON-array form. This pins
         // the parser's tolerance for both quoting forms.
         assert_eq!(
-            parse_denied_tools(r#"["tool1", "tool2"]"#),
+            parse_denied_functions(r#"["tool1", "tool2"]"#),
             vec!["tool1".to_string(), "tool2".to_string()]
         );
         assert_eq!(
-            parse_denied_tools("['tool1', 'tool2']"),
+            parse_denied_functions("['tool1', 'tool2']"),
             vec!["tool1".to_string(), "tool2".to_string()]
         );
     }
@@ -200,14 +205,14 @@ mod tests {
     /// and falls back to a bracket-tolerant strip + warning when one side
     /// is missing.
     #[test]
-    fn parse_denied_tools_handles_malformed_unclosed_bracket() {
+    fn parse_denied_functions_handles_malformed_unclosed_bracket() {
         assert_eq!(
-            parse_denied_tools("[tool1,tool2"),
+            parse_denied_functions("[tool1,tool2"),
             vec!["tool1".to_string(), "tool2".to_string()],
             "open bracket without close must not leak '[' into the first token"
         );
         assert_eq!(
-            parse_denied_tools("tool1,tool2]"),
+            parse_denied_functions("tool1,tool2]"),
             vec!["tool1".to_string(), "tool2".to_string()],
             "close bracket without open must not leak ']' into the last token"
         );

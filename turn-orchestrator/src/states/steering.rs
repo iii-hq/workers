@@ -25,7 +25,7 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
                 &record.session_id,
                 &AgentEvent::TurnEnd {
                     message: AgentMessage::Assistant(aborted),
-                    tool_results: Vec::new(),
+                    function_results: Vec::new(),
                 },
             )
             .await;
@@ -61,7 +61,7 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
 }
 
 /// Emit `TurnEnd` only when the current turn hasn't already emitted one
-/// (`tools::handle_finalize` and `assistant::handle_awaiting`/`handle_finished`'s
+/// (`functions::handle_finalize` and `assistant::handle_awaiting`/`handle_finished`'s
 /// terminating branches set `turn_end_emitted = true`). For no-tool turns
 /// reaching `steering_check` from `handle_finished` directly, this is the
 /// single emission point. Mirrors legacy `loop_state.rs:194-200`.
@@ -86,7 +86,7 @@ async fn emit_turn_end_once(iii: &III, record: &mut TurnStateRecord) {
         &record.session_id,
         &AgentEvent::TurnEnd {
             message,
-            tool_results: Vec::new(),
+            function_results: Vec::new(),
         },
     )
     .await;

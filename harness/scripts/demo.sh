@@ -101,7 +101,7 @@ spawn_one() {
     )
   fi
 
-  # Per-worker env. policy-denylist needs POLICY_DENIED_TOOLS to include
+  # Per-worker env. policy-denylist needs POLICY_DENIED_FUNCTIONS to include
   # bridge::trigger — without it the LLM can call bridge::trigger to
   # recursively dispatch any function and bypass name-matched policy
   # rules (the policy hook fires with name "bridge::trigger", not the
@@ -110,7 +110,7 @@ spawn_one() {
   local -a extra_env=()
   case "$w" in
     policy-denylist)
-      extra_env+=(POLICY_DENIED_TOOLS="bridge::trigger")
+      extra_env+=(POLICY_DENIED_FUNCTIONS="bridge::trigger")
       ;;
   esac
 
@@ -128,8 +128,11 @@ cmd_engine() {
     return 0
   fi
   echo "==> starting iii engine..."
-  (cd "$DEMO_DIR" && nohup iii --use-default-config > engine.log 2>&1 &
-   echo $! > engine.pid)
+  (
+    cd "$DEMO_DIR" || exit 1
+    nohup iii --use-default-config > engine.log 2>&1 &
+    echo $! > "$DEMO_DIR/engine.pid"
+  )
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
     if iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then

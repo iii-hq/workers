@@ -67,15 +67,16 @@ describe("reducer (entry-id keyed)", () => {
   it("approval_requested + approval_resolved manage pendingApprovals", () => {
     let s = applyEvent(INITIAL_STREAM_STATE, {
       type: "approval_requested",
-      tool_call_id: "t1",
-      tool_name: "shell::filesystem::write",
+      function_call_id: "t1",
+      function_id: "shell::filesystem::write",
       args: {},
       expires_at: 0,
     });
     expect(s.pendingApprovals.length).toBe(1);
+    expect(s.pendingApprovals[0].function_call_id).toBe("t1");
     s = applyEvent(s, {
       type: "approval_resolved",
-      tool_call_id: "t1",
+      function_call_id: "t1",
       decision: "allow",
     });
     expect(s.pendingApprovals.length).toBe(0);

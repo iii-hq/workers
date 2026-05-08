@@ -1,7 +1,7 @@
 import type { AgentMessage } from "../types";
 import { MessageActions } from "./MessageActions";
-import { ToolUseBlock } from "./ToolUseBlock";
-import { ToolResultBlock } from "./ToolResultBlock";
+import { FunctionCallBlock } from "./FunctionCallBlock";
+import { FunctionResultBlock } from "./FunctionResultBlock";
 
 interface Props {
   sessionId: string;
@@ -19,26 +19,44 @@ interface Props {
 function roleLabel(m: AgentMessage): string {
   if (m.role === "user") return "you";
   if (m.role === "assistant") return m.model ? `${m.model}` : "assistant";
-  return "tool";
+  if (m.role === "tool_result" || m.role === "function_result") return "function";
+  return "message";
 }
 
 function renderBlocks(m: AgentMessage) {
   return m.content.map((b: any, i: number) => {
     if (b.type === "text") return <p key={i} className="msg-text">{b.text}</p>;
-    if (b.type === "tool_use" || b.type === "tool_call") {
+    if (
+      b.type === "tool_use" ||
+      b.type === "tool_call" ||
+      b.type === "functionCall" ||
+      b.type === "function_call"
+    ) {
       const args = b.input ?? b.arguments ?? {};
-      return <ToolUseBlock key={i} name={b.name} args={args} />;
+      const fid =
+        typeof b.function_id === "string"
+          ? b.function_id
+          : typeof b.name === "string"
+            ? b.name
+            : "unknown";
+      return <FunctionCallBlock key={i} functionId={fid} args={args} />;
     }
-    if (b.type === "tool_result") {
+    if (b.type === "tool_result" || b.type === "function_result" || b.type === "functionResult") {
       const text = Array.isArray(b.content)
         ? b.content.map((c: any) => (typeof c === "string" ? c : c.text ?? JSON.stringify(c))).join("\n")
         : typeof b.content === "string"
           ? b.content
           : JSON.stringify(b.content);
+      const fid =
+        typeof b.function_id === "string"
+          ? b.function_id
+          : typeof b.tool_name === "string"
+            ? b.tool_name
+            : "function";
       return (
-        <ToolResultBlock
+        <FunctionResultBlock
           key={i}
-          toolName={b.tool_name ?? "tool"}
+          functionId={fid}
           isError={Boolean(b.is_error)}
           output={text}
         />

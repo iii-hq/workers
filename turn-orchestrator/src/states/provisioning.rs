@@ -3,16 +3,16 @@
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
+use crate::agent_call;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 use crate::system_prompt;
-use crate::tools_catalog;
 
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
 
-    let tools = json!([tools_catalog::agent_call_tool()]);
-    persistence::save_tool_schemas(iii, &record.session_id, tools.clone()).await;
+    let tools = json!([agent_call::agent_call_tool()]);
+    persistence::save_function_schemas(iii, &record.session_id, tools.clone()).await;
 
     let override_prompt = request
         .get("system_prompt")

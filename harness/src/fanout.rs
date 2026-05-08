@@ -566,7 +566,11 @@ fn spawn_approval_poll(iii: Arc<III>, fanout: SharedFanout) -> tokio::task::Join
                     continue;
                 };
                 for entry in arr {
-                    let Some(id) = entry.get("tool_call_id").and_then(|v| v.as_str()) else {
+                    let Some(id) = entry
+                        .get("function_call_id")
+                        .or_else(|| entry.get("tool_call_id"))
+                        .and_then(|v| v.as_str())
+                    else {
                         continue;
                     };
                     // Annotate with session_id so the UI can group/filter.
@@ -605,7 +609,7 @@ fn spawn_approval_poll(iii: Arc<III>, fanout: SharedFanout) -> tokio::task::Join
                         &fanout,
                         browser_id,
                         format!("ui::approval::resolved::{browser_id}"),
-                        json!({ "tool_call_id": id }),
+                        json!({ "function_call_id": id, "tool_call_id": id }),
                         PushKind::Standard,
                     );
                 }
@@ -969,7 +973,7 @@ mod tests {
         let mut prev: HashMap<String, Value> = HashMap::new();
         prev.insert(
             "tc-1".into(),
-            json!({ "tool_call_id": "tc-1", "tool_name": "write" }),
+            json!({ "function_call_id": "tc-1", "tool_call_id": "tc-1", "function_id": "write", "tool_name": "write" }),
         );
         let next: HashMap<String, Value> = HashMap::new();
         let (requested, resolved) = diff_approvals(&prev, &next);
@@ -984,7 +988,7 @@ mod tests {
         let mut after_request: HashMap<String, Value> = HashMap::new();
         after_request.insert(
             "tc-1".into(),
-            json!({ "tool_call_id": "tc-1", "tool_name": "rm" }),
+            json!({ "function_call_id": "tc-1", "tool_call_id": "tc-1", "function_id": "rm", "tool_name": "rm" }),
         );
         let (added, removed) = diff_approvals(&initial, &after_request);
         assert_eq!(added.len(), 1);

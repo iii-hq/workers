@@ -43,11 +43,17 @@ export interface WorkersSnapshot {
 
 /** Pending approval as pushed by the fanout's approval poll. */
 export interface PendingApprovalSummary {
-  tool_call_id: string;
+  function_call_id?: string;
+  tool_call_id?: string;
+  function_id?: string;
   tool_name?: string;
   args?: unknown;
   expires_at?: number;
   session_id?: string;
+}
+
+function approvalCallId(p: PendingApprovalSummary): string | undefined {
+  return p.function_call_id ?? p.tool_call_id;
 }
 
 /** A single rolling-buffer entry. Compact on purpose — the StatusTab feed
@@ -89,8 +95,13 @@ export interface UseStatusValue {
 }
 
 interface ResolvedPayload {
-  tool_call_id: string;
+  function_call_id?: string;
+  tool_call_id?: string;
   decision?: "allow" | "deny";
+}
+
+function resolvedCallId(p: ResolvedPayload): string | undefined {
+  return p.function_call_id ?? p.tool_call_id;
 }
 
 export function useStatus(): UseStatusValue {
@@ -144,9 +155,10 @@ export function useStatus(): UseStatusValue {
           client.on<PendingApprovalSummary>(
             "ui::approval::requested",
             (payload) => {
-              if (!payload?.tool_call_id) return;
+              if (!approvalCallId(payload)) return;
               setPendingApprovals((prev) => {
-                if (prev.some((p) => p.tool_call_id === payload.tool_call_id)) {
+                const id = approvalCallId(payload)!;
+                if (prev.some((p) => approvalCallId(p) === id)) {
                   return prev;
                 }
                 return prev.concat(payload);
@@ -159,9 +171,10 @@ export function useStatus(): UseStatusValue {
 
         offs.push(
           client.on<ResolvedPayload>("ui::approval::resolved", (payload) => {
-            if (!payload?.tool_call_id) return;
+            const rid = resolvedCallId(payload);
+            if (!rid) return;
             setPendingApprovals((prev) =>
-              prev.filter((p) => p.tool_call_id !== payload.tool_call_id),
+              prev.filter((p) => approvalCallId(p) !== rid),
             );
             pushEvent("approval", payload);
             setHydrated(true);

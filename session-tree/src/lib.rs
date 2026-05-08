@@ -505,7 +505,7 @@ fn extract_summary(message: &AgentMessage) -> Option<String> {
     let blocks: &[ContentBlock] = match message {
         AgentMessage::User(m) => &m.content,
         AgentMessage::Assistant(m) => &m.content,
-        AgentMessage::ToolResult(_) | AgentMessage::Custom(_) => return None,
+        AgentMessage::FunctionResult(_) | AgentMessage::Custom(_) => return None,
     };
     for block in blocks {
         if let ContentBlock::Text(text) = block {
@@ -527,7 +527,7 @@ pub async fn load_context<S: SessionStore + ?Sized>(
     Ok(AgentContext {
         system_prompt,
         messages,
-        tools: Vec::new(),
+        functions: Vec::new(),
     })
 }
 
@@ -816,11 +816,11 @@ fn render_message_html(message: &AgentMessage) -> String {
                 html_escape(&a.model)
             )
         }
-        AgentMessage::ToolResult(tr) => {
+        AgentMessage::FunctionResult(tr) => {
             let body = render_blocks_html(&tr.content);
-            let name = html_escape(&tr.tool_name);
+            let name = html_escape(&tr.function_id);
             format!(
-                "<div class=\"entry tool-result\"><div class=\"role\">tool result · {name}</div>{body}</div>\n"
+                "<div class=\"entry tool-result\"><div class=\"role\">function result · {name}</div>{body}</div>\n"
             )
         }
         AgentMessage::Custom(c) => {
@@ -855,16 +855,16 @@ fn render_blocks_html(blocks: &[ContentBlock]) -> String {
                 out.push_str(&html_escape(&img.mime));
                 out.push_str("]</pre>");
             }
-            ContentBlock::ToolCall {
-                name, arguments, ..
+            ContentBlock::FunctionCall {
+                function_id, arguments, ..
             } => {
-                out.push_str("<pre>tool call: ");
-                out.push_str(&html_escape(name));
+                out.push_str("<pre>function call: ");
+                out.push_str(&html_escape(function_id));
                 out.push(' ');
                 out.push_str(&html_escape(&arguments.to_string()));
                 out.push_str("</pre>");
             }
-            ContentBlock::ToolResult { content, .. } => {
+            ContentBlock::FunctionResult { content, .. } => {
                 out.push_str(&render_blocks_html(content));
             }
         }

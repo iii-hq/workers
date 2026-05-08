@@ -32,15 +32,16 @@ import type {
 
 type Tab = "chat" | "cost" | "files" | "status";
 
-// Tool catalog: a single `agent_call` tool plus server-built system prompt —
+// Function catalog: a single `agent_call` tool plus server-built system prompt —
 // see turn-orchestrator `agent_call.rs` and `system_prompt.rs`. The client
 // does not send `tools` or `system_prompt` on `run::start` (override still
 // accepted if you pass a non-empty `system_prompt` for experiments).
 //
 // Permission still lives in `policy-denylist`, which subscribes to
-// `agent::before_tool_call` and refuses by name. Set its env var when
+// `agent::before_function_call` and refuses by function id. Set its env var when
 // starting the worker, e.g.:
-//   POLICY_DENIED_TOOLS=shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv
+//   POLICY_DENIED_FUNCTIONS=shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv
+// (Legacy `POLICY_DENIED_TOOLS` is still read if the new name is unset.)
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
 // here — they'd appear in the UI but every send would error with "function

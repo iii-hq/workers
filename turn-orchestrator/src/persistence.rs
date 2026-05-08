@@ -2,13 +2,13 @@
 //! and never panics; missing keys deserialise to defaults so callers can
 //! treat first-time and retry paths the same way.
 
-use harness_types::{AgentMessage, ToolCall, ToolResult};
+use harness_types::{AgentMessage, FunctionCall, FunctionResult};
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::{json, Value as JsonValue};
 
 use crate::state::{
-    cwd_index_key, cwd_key, messages_key, run_request_key, sandbox_id_key, tool_schemas_key,
-    turn_state_key, TurnStateRecord,
+    cwd_index_key, cwd_key, function_schemas_key, messages_key, run_request_key, sandbox_id_key,
+    tool_schemas_key, turn_state_key, TurnStateRecord,
 };
 
 const STATE_SCOPE: &str = "agent";
@@ -189,14 +189,31 @@ pub async fn load_sandbox_id(iii: &III, session_id: &str) -> Option<String> {
         .and_then(|v| v.as_str().map(str::to_string))
 }
 
-pub async fn save_tool_schemas(iii: &III, session_id: &str, schemas: JsonValue) {
-    state_set(iii, &tool_schemas_key(session_id), schemas).await;
+pub async fn save_function_schemas(iii: &III, session_id: &str, schemas: JsonValue) {
+    state_set(iii, &function_schemas_key(session_id), schemas).await;
 }
 
+/// Load function catalog JSON; falls back to legacy `tool_schemas` key when the new key is absent.
+pub async fn load_function_schemas(iii: &III, session_id: &str) -> JsonValue {
+    let new_key = function_schemas_key(session_id);
+    match state_get(iii, &new_key).await {
+        Some(v) => v,
+        None => state_get(iii, &tool_schemas_key(session_id))
+            .await
+            .unwrap_or_else(|| json!([])),
+    }
+}
+
+/// Back-compat name for callers being migrated — prefer [`save_function_schemas`].
+#[inline]
+pub async fn save_tool_schemas(iii: &III, session_id: &str, schemas: JsonValue) {
+    save_function_schemas(iii, session_id, schemas).await;
+}
+
+/// Back-compat — prefer [`load_function_schemas`].
+#[inline]
 pub async fn load_tool_schemas(iii: &III, session_id: &str) -> JsonValue {
-    state_get(iii, &tool_schemas_key(session_id))
-        .await
-        .unwrap_or_else(|| json!([]))
+    load_function_schemas(iii, session_id).await
 }
 
 async fn state_get(iii: &III, key: &str) -> Option<Value> {
@@ -232,22 +249,39 @@ async fn state_set(iii: &III, key: &str, value: Value) {
     }
 }
 
-const PREPARED_KEY: &str = "tool_prepared";
-const EXECUTED_KEY: &str = "tool_executed";
+const PREPARED_KEY: &str = "function_prepared";
+const EXECUTED_KEY: &str = "function_executed";
+const LEGACY_PREPARED_KEY: &str = "tool_prepared";
+const LEGACY_EXECUTED_KEY: &str = "tool_executed";
 
 fn staging_key(session_id: &str, suffix: &str) -> String {
     format!("session/{session_id}/{suffix}")
 }
 
+async fn staging_get_with_legacy(
+    iii: &III,
+    session_id: &str,
+    new_suffix: &str,
+    legacy_suffix: &str,
+) -> JsonValue {
+    let new_k = staging_key(session_id, new_suffix);
+    match state_get(iii, &new_k).await {
+        Some(v) => v,
+        None => state_get(iii, &staging_key(session_id, legacy_suffix))
+            .await
+            .unwrap_or_else(|| json!([])),
+    }
+}
+
 pub async fn save_prepared_calls(
     iii: &III,
     session_id: &str,
-    prepared: &[(ToolCall, Option<ToolResult>)],
+    prepared: &[(FunctionCall, Option<FunctionResult>)],
 ) {
     let payload = serde_json::to_value(
         prepared
             .iter()
-            .map(|(tc, pre)| json!({ "tool_call": tc, "blocked": pre }))
+            .map(|(tc, pre)| json!({ "function_call": tc, "blocked": pre }))
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| json!([]));
@@ -257,21 +291,24 @@ pub async fn save_prepared_calls(
 pub async fn load_prepared_calls(
     iii: &III,
     session_id: &str,
-) -> Vec<(ToolCall, Option<ToolResult>)> {
-    let value = state_get(iii, &staging_key(session_id, PREPARED_KEY))
-        .await
-        .unwrap_or_else(|| json!([]));
+) -> Vec<(FunctionCall, Option<FunctionResult>)> {
+    let value =
+        staging_get_with_legacy(iii, session_id, PREPARED_KEY, LEGACY_PREPARED_KEY).await;
     let Some(arr) = value.as_array() else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|entry| {
-            let tc = serde_json::from_value::<ToolCall>(entry.get("tool_call")?.clone()).ok()?;
+            let fc =
+                entry
+                    .get("function_call")
+                    .or_else(|| entry.get("tool_call"))
+                    .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
             let pre = entry
                 .get("blocked")
-                .and_then(|v| serde_json::from_value::<Option<ToolResult>>(v.clone()).ok())
+                .and_then(|v| serde_json::from_value::<Option<FunctionResult>>(v.clone()).ok())
                 .unwrap_or(None);
-            Some((tc, pre))
+            Some((fc, pre))
         })
         .collect()
 }
@@ -279,50 +316,57 @@ pub async fn load_prepared_calls(
 pub async fn save_executed_calls(
     iii: &III,
     session_id: &str,
-    executed: &[(ToolCall, ToolResult, bool)],
+    executed: &[(FunctionCall, FunctionResult, bool)],
 ) {
     let payload = serde_json::to_value(
         executed
             .iter()
-            .map(|(tc, r, e)| json!({ "tool_call": tc, "result": r, "is_error": e }))
+            .map(|(tc, r, e)| json!({ "function_call": tc, "result": r, "is_error": e }))
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| json!([]));
     state_set(iii, &staging_key(session_id, EXECUTED_KEY), payload).await;
 }
 
-pub async fn load_executed_calls(iii: &III, session_id: &str) -> Vec<(ToolCall, ToolResult, bool)> {
-    let value = state_get(iii, &staging_key(session_id, EXECUTED_KEY))
-        .await
-        .unwrap_or_else(|| json!([]));
+pub async fn load_executed_calls(
+    iii: &III,
+    session_id: &str,
+) -> Vec<(FunctionCall, FunctionResult, bool)> {
+    let value =
+        staging_get_with_legacy(iii, session_id, EXECUTED_KEY, LEGACY_EXECUTED_KEY).await;
     let Some(arr) = value.as_array() else {
         return Vec::new();
     };
     arr.iter()
         .filter_map(|entry| {
-            let tc = serde_json::from_value::<ToolCall>(entry.get("tool_call")?.clone()).ok()?;
-            let r = serde_json::from_value::<ToolResult>(entry.get("result")?.clone()).ok()?;
+            let fc =
+                entry
+                    .get("function_call")
+                    .or_else(|| entry.get("tool_call"))
+                    .and_then(|v| serde_json::from_value::<FunctionCall>(v.clone()).ok())?;
+            let r =
+                serde_json::from_value::<FunctionResult>(entry.get("result")?.clone()).ok()?;
             let e = entry
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            Some((tc, r, e))
+            Some((fc, r, e))
         })
         .collect()
 }
 
 pub fn find_executed_call<'a>(
-    executed: &'a [(ToolCall, ToolResult, bool)],
-    tool_call_id: &str,
-) -> Option<&'a (ToolCall, ToolResult, bool)> {
-    executed.iter().find(|(tc, _, _)| tc.id == tool_call_id)
+    executed: &'a [(FunctionCall, FunctionResult, bool)],
+    function_call_id: &str,
+) -> Option<&'a (FunctionCall, FunctionResult, bool)> {
+    executed.iter().find(|(fc, _, _)| fc.id == function_call_id)
 }
 
 pub fn upsert_executed_call(
-    executed: &mut Vec<(ToolCall, ToolResult, bool)>,
-    entry: (ToolCall, ToolResult, bool),
+    executed: &mut Vec<(FunctionCall, FunctionResult, bool)>,
+    entry: (FunctionCall, FunctionResult, bool),
 ) {
-    if let Some(existing) = executed.iter_mut().find(|(tc, _, _)| tc.id == entry.0.id) {
+    if let Some(existing) = executed.iter_mut().find(|(fc, _, _)| fc.id == entry.0.id) {
         *existing = entry;
     } else {
         executed.push(entry);
@@ -335,16 +379,16 @@ mod tests {
     use crate::state::TurnState;
     use harness_types::{ContentBlock, TextContent};
 
-    fn tool_call(id: &str, name: &str) -> ToolCall {
-        ToolCall {
+    fn fc(id: &str, function_id: &str) -> FunctionCall {
+        FunctionCall {
             id: id.into(),
-            name: name.into(),
+            function_id: function_id.into(),
             arguments: json!({ "id": id }),
         }
     }
 
-    fn tool_result(text: &str) -> ToolResult {
-        ToolResult {
+    fn func_result(text: &str) -> FunctionResult {
+        FunctionResult {
             content: vec![ContentBlock::Text(TextContent { text: text.into() })],
             details: json!({ "text": text }),
             terminate: false,
@@ -363,16 +407,16 @@ mod tests {
     }
 
     #[test]
-    fn find_executed_call_matches_tool_call_id() {
+    fn find_executed_call_matches_function_call_id() {
         let executed = vec![
-            (tool_call("tc-1", "read"), tool_result("one"), false),
-            (tool_call("tc-2", "write"), tool_result("two"), true),
+            (fc("tc-1", "read"), func_result("one"), false),
+            (fc("tc-2", "write"), func_result("two"), true),
         ];
 
         let found = find_executed_call(&executed, "tc-2").expect("expected tc-2");
 
         assert_eq!(found.0.id, "tc-2");
-        assert_eq!(found.0.name, "write");
+        assert_eq!(found.0.function_id, "write");
         assert!(found.2);
         assert!(find_executed_call(&executed, "missing").is_none());
     }
@@ -380,21 +424,21 @@ mod tests {
     #[test]
     fn upsert_executed_call_preserves_order_and_replaces_existing() {
         let mut executed = vec![
-            (tool_call("tc-1", "read"), tool_result("one"), false),
-            (tool_call("tc-2", "write"), tool_result("two"), true),
+            (fc("tc-1", "read"), func_result("one"), false),
+            (fc("tc-2", "write"), func_result("two"), true),
         ];
 
         upsert_executed_call(
             &mut executed,
             (
-                tool_call("tc-2", "write"),
-                tool_result("replacement"),
+                fc("tc-2", "write"),
+                func_result("replacement"),
                 false,
             ),
         );
         upsert_executed_call(
             &mut executed,
-            (tool_call("tc-3", "list"), tool_result("three"), false),
+            (fc("tc-3", "list"), func_result("three"), false),
         );
 
         assert_eq!(executed.len(), 3);

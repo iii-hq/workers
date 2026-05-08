@@ -10,8 +10,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::StreamExt;
 use harness_types::{
-    AgentMessage, AgentTool, AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason,
-    TextContent, ToolCall, Usage,
+    AgentFunction, AgentMessage, AssistantMessage, AssistantMessageEvent, ContentBlock,
+    StopReason, TextContent, Usage,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -108,15 +108,15 @@ pub fn to_openai_messages(
                     .content
                     .iter()
                     .filter_map(|c| match c {
-                        ContentBlock::ToolCall {
+                        ContentBlock::FunctionCall {
                             id,
-                            name,
+                            function_id,
                             arguments,
                         } => Some(serde_json::json!({
                             "id": id,
                             "type": "function",
                             "function": {
-                                "name": name,
+                                "name": function_id,
                                 "arguments": arguments.to_string(),
                             }
                         })),
@@ -132,7 +132,7 @@ pub fn to_openai_messages(
                 }
                 out.push(entry);
             }
-            AgentMessage::ToolResult(t) => {
+            AgentMessage::FunctionResult(t) => {
                 let text: String = t
                     .content
                     .iter()
@@ -144,7 +144,7 @@ pub fn to_openai_messages(
                     .join("\n");
                 out.push(serde_json::json!({
                     "role": "tool",
-                    "tool_call_id": t.tool_call_id,
+                    "tool_call_id": t.function_call_id,
                     "content": text,
                 }));
             }
@@ -154,9 +154,9 @@ pub fn to_openai_messages(
     out
 }
 
-/// Tool definitions in OpenAI wire shape.
-pub fn tools_to_openai(tools: &[AgentTool]) -> Vec<serde_json::Value> {
-    tools
+/// Tool definitions in OpenAI wire shape (HTTP field remains `"tools"`).
+pub fn functions_to_openai(functions: &[AgentFunction]) -> Vec<serde_json::Value> {
+    functions
         .iter()
         .map(|t| {
             serde_json::json!({
@@ -176,7 +176,7 @@ pub fn tools_to_openai(tools: &[AgentTool]) -> Vec<serde_json::Value> {
 pub struct OpenAICompatRequest {
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
-    pub tools: Vec<AgentTool>,
+    pub tools: Vec<AgentFunction>,
 }
 
 /// Stream a Chat Completions response. Implementations of providers using the
@@ -212,7 +212,7 @@ struct PartialState {
 #[derive(Debug, Default)]
 struct PartialToolCall {
     id: String,
-    name: String,
+    function_id: String,
     args_json: String,
 }
 
@@ -229,7 +229,7 @@ async fn stream_inner(
         "stream_options": { "include_usage": true },
     });
     if !request.tools.is_empty() {
-        body["tools"] = serde_json::Value::Array(tools_to_openai(&request.tools));
+        body["tools"] = serde_json::Value::Array(functions_to_openai(&request.tools));
     }
 
     let client = reqwest::Client::builder()
@@ -376,15 +376,15 @@ async fn handle_chunk(
                 }
             }
             if let Some(func) = tc.get("function") {
-                if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
-                    if !name.is_empty() {
-                        entry.name = name.to_string();
+                if let Some(fname) = func.get("name").and_then(|v| v.as_str()) {
+                    if !fname.is_empty() {
+                        entry.function_id = fname.to_string();
                     }
                 }
                 if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
                     entry.args_json.push_str(args);
                     let _ = tx
-                        .send(AssistantMessageEvent::ToolcallDelta {
+                        .send(AssistantMessageEvent::FunctioncallDelta {
                             partial: build_partial(state, &cfg.model, &cfg.provider_name),
                             delta: args.to_string(),
                         })
@@ -426,7 +426,7 @@ fn map_finish_reason(reason: &str) -> StopReason {
     match reason {
         "stop" => StopReason::End,
         "length" => StopReason::Length,
-        "tool_calls" | "function_call" => StopReason::Tool,
+        "tool_calls" | "function_call" => StopReason::FunctionCall,
         _ => StopReason::End,
     }
 }
@@ -439,7 +439,7 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         }));
     }
     for tc in &state.tool_calls {
-        if tc.name.is_empty() {
+        if tc.function_id.is_empty() {
             continue;
         }
         let args = if tc.args_json.is_empty() {
@@ -448,9 +448,9 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             serde_json::from_str::<serde_json::Value>(&tc.args_json)
                 .unwrap_or(serde_json::Value::Null)
         };
-        out.push(ContentBlock::ToolCall {
+        out.push(ContentBlock::FunctionCall {
             id: tc.id.clone(),
-            name: tc.name.clone(),
+            function_id: tc.function_id.clone(),
             arguments: args,
         });
     }
@@ -475,6 +475,6 @@ fn build_final(state: &PartialState, model: &str, provider: &str) -> AssistantMe
 }
 
 #[allow(dead_code)]
-fn _kept(_: ToolCall, _: fn(&str, Option<u16>) -> harness_types::ErrorKind) {
+fn _kept(_: harness_types::FunctionCall, _: fn(&str, Option<u16>) -> harness_types::ErrorKind) {
     let _ = classify_provider_error;
 }
