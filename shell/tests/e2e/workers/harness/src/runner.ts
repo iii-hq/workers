@@ -11,6 +11,7 @@ import { FS_SANDBOX_CASES } from './cases-fs-sandbox.ts';
 import { FS_PROTOCOL_BREAK_CASES } from './cases-fs-protocol-break.ts';
 import { STREAMING_BREAK_CASES } from './cases-streaming-break.ts';
 import { EXEC_BREAK_CASES } from './cases-exec-break.ts';
+import { EXEC_SANDBOX_CASES } from './cases-exec-sandbox.ts';
 import { JOB_BREAK_CASES } from './cases-jobs-break.ts';
 import { FS_ENCODING_CASES } from './cases-fs-encoding.ts';
 import { FS_ERROR_CASES } from './cases-fs-errors.ts';
@@ -128,6 +129,7 @@ export class Runner {
             ...FS_PROTOCOL_BREAK_CASES,
             ...STREAMING_BREAK_CASES,
             ...EXEC_BREAK_CASES,
+            ...EXEC_SANDBOX_CASES,
             ...JOB_BREAK_CASES,
             ...FS_ENCODING_CASES,
             ...FS_ERROR_CASES,

@@ -1,62 +1,65 @@
 use std::sync::Arc;
 
-use serde_json::Value;
-
 use crate::config::ShellConfig;
-use crate::exec::{parse_argv, run_to_completion};
-use crate::functions::types::ExecResponse;
+use crate::exec::host::parse_argv;
+use crate::exec_dispatch::{err_to_string, pick_exec_backend};
+use crate::functions::types::{ExecRequest, ExecResponse};
 
-pub async fn handle(cfg: Arc<ShellConfig>, payload: Value) -> Result<ExecResponse, String> {
-    let command = payload
-        .get("command")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing 'command'".to_string())?;
-    // Reject non-string elements rather than silently filtering: passing
-    // `{"args": ["--count", 5]}` would otherwise drop the `5` and run with
-    // partial arguments, a dangerous-to-debug deviation from caller intent.
-    let args: Option<Vec<String>> = match payload.get("args") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(arr)) => {
-            let mut out = Vec::with_capacity(arr.len());
-            for (i, v) in arr.iter().enumerate() {
-                match v.as_str() {
-                    Some(s) => out.push(s.to_string()),
-                    None => {
-                        return Err(format!("'args[{}]' must be a string (got {})", i, v));
-                    }
-                }
-            }
-            Some(out)
-        }
-        Some(other) => {
-            return Err(format!(
-                "'args' must be an array of strings (got {})",
-                other
-            ));
-        }
-    };
-    // `as_u64()` returns None for negative or float values, so an
-    // unparseable `timeout_ms` silently falls back to the default. This
-    // loose semantic is part of the wire contract (covered by e2e).
-    let timeout_ms = payload.get("timeout_ms").and_then(|v| v.as_u64());
-
-    let argv = parse_argv(command, args.as_ref()).map_err(|e| format!("argv: {}", e))?;
+pub async fn handle(
+    cfg: Arc<ShellConfig>,
+    iii: iii_sdk::III,
+    req: ExecRequest,
+) -> Result<ExecResponse, String> {
+    // Field-level type errors (wrong-type `command`, non-string `args[i]`,
+    // bad `target.kind`) come from the per-field deserializers in
+    // `functions::types`; they surface here as the trigger `Err` carrying
+    // the actionable text the LLM needs to self-correct.
+    let argv = parse_argv(&req.command, Some(&req.args)).map_err(|e| format!("argv: {}", e))?;
 
     cfg.is_command_allowed(&argv)?;
 
-    let timeout = cfg.resolve_timeout(timeout_ms);
+    let timeout = cfg.resolve_timeout(req.timeout_ms);
 
-    let out = run_to_completion(&argv, &cfg, timeout)
-        .await
-        .map_err(|e| format!("exec: {}", e))?;
+    let backend = pick_exec_backend(req.target, cfg, iii);
 
-    Ok(ExecResponse {
-        exit_code: out.exit_code,
-        stdout: out.stdout,
-        stderr: out.stderr,
-        duration_ms: out.duration_ms,
-        timed_out: out.timed_out,
-        stdout_truncated: out.stdout_truncated,
-        stderr_truncated: out.stderr_truncated,
-    })
+    let out = backend.run(&argv, timeout).await.map_err(err_to_string)?;
+
+    Ok(ExecResponse::from(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::target::Target;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn target_defaults_to_host_when_absent() {
+        let payload = json!({ "command": "echo" });
+        let target: Target = match payload.get("target") {
+            None | Some(Value::Null) => Target::default(),
+            Some(v) => serde_json::from_value(v.clone()).unwrap(),
+        };
+        assert_eq!(target, Target::Host);
+    }
+
+    #[test]
+    fn target_field_parses_sandbox_kind() {
+        let id = uuid::Uuid::new_v4();
+        let payload = json!({
+            "command": "ls",
+            "target": { "kind": "sandbox", "sandbox_id": id.to_string() },
+        });
+        let target: Target = serde_json::from_value(payload["target"].clone()).unwrap();
+        assert_eq!(target, Target::Sandbox { sandbox_id: id });
+    }
+
+    #[test]
+    fn malformed_target_returns_error() {
+        let payload = json!({
+            "command": "ls",
+            "target": { "kind": "moon" },
+        });
+        let result: Result<Target, _> = serde_json::from_value(payload["target"].clone());
+        assert!(result.is_err());
+    }
 }

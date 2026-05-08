@@ -41,6 +41,11 @@ Env overrides:
   WORKER_BIN_TARGET   Path to the built worker binary.
   WORKER_BIN_LINK     Path to the symlink the engine reads.
   HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 90).
+                      Bump this on a fresh dev machine: cases-exec-sandbox.ts
+                      drives the real iii-sandbox worker, and the first
+                      sandbox::create cold-pulls the python image. Try
+                      HARNESS_TIMEOUT=300 if you see "did not emit sentinel
+                      within 90s" on initial runs.
 EOF
       exit 0
       ;;
@@ -63,6 +68,29 @@ cleanup() {
   exit "$code"
 }
 trap cleanup EXIT INT TERM
+
+# Reap orphaned processes from previous runs. If a prior engine
+# crashed (e.g., port-conflict panic) the trap above never fired, so
+# its workers stayed alive and re-register against the next engine —
+# which then routes calls to the orphan instead of the freshly-spawned
+# worker, producing baffling test failures (wrong allowlist, wrong
+# sandbox.enabled). Kill them before starting clean.
+reap_orphans() {
+  local port_pid
+  port_pid=$(lsof -tiTCP:49134 -sTCP:LISTEN 2>/dev/null || true)
+  if [[ -n "$port_pid" ]]; then
+    echo "[run-tests] reaping stale engine on port 49134 (pid=$port_pid)"
+    kill -9 $port_pid 2>/dev/null || true
+  fi
+  # Stale shell + iii-worker sandbox-daemon survivors from previous
+  # iii-shell test runs. Match narrowly on the test-config path
+  # signature so we don't touch unrelated iii processes the user has
+  # going. -f matches against the full command line.
+  pkill -f "iii-shell --config /var/folders" 2>/dev/null || true
+  pkill -f "iii-worker sandbox-daemon --config /var/folders" 2>/dev/null || true
+  sleep 0.5
+}
+reap_orphans
 
 mkdir -p "$ROOT_DIR/reports" "$ROOT_DIR/data" "$(dirname "$WORKER_BIN_LINK")"
 

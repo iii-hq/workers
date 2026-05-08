@@ -6,13 +6,16 @@ this worker so allowlists, timeouts, output caps, and jail/denylist enforcement
 live in one place. Filesystem operations are exposed under `shell::fs::*` with
 the same enforcement surface plus optional sandbox-target forwarding.
 
-Current crate version: **0.3.0**. Wire shape last broken in 0.3.0 (channel-based
-`shell::fs::write` / `shell::fs::read`).
+Current crate version: **0.3.1**. Wire shape last broken in 0.3.0 (channel-based
+`shell::fs::write` / `shell::fs::read`). 0.3.1 adds the `target` field on
+`shell::exec` and `shell::exec_bg` for sandbox-backed execution (additive,
+backward-compatible).
 
 ## Contents
 
 - [Quickstart](#quickstart) — go from nothing to a working `shell::exec` in 4 commands.
 - [Functions](#functions) — the 15 function ids and their request/response shapes.
+- [Sandbox-backed exec](#sandbox-backed-exec) — forwarding `shell::exec` / `shell::exec_bg` into a live microVM.
 - [Filesystem operations: `shell::fs::*`](#filesystem-operations-shellfs)
 - [Configuration](#configuration) — full defaults table + `fs` and `sandbox` sections.
 - [Safety](#safety) — what is enforced, what is advisory, what the threat model is.
@@ -41,6 +44,14 @@ ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
 #    start unjailed by default; see Configuration below.
 iii -c ./config.yaml
 ```
+
+> **If you plan to use sandbox targets:** `iii worker add shell` does not
+> currently bring `iii-sandbox` along (the engine resolver doesn't yet
+> short-circuit builtin names in `dependencies:`<!-- TODO: remove this
+> caveat once the resolver supports builtins in iii.worker.yaml `dependencies:` -->),
+> so run `iii worker add iii-sandbox` separately before using
+> `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target
+> path. Plain host-targeted `shell::exec` works without it.
 
 From a separate process (TS shown — Rust caller flow appears in the streaming
 sections below):
@@ -71,8 +82,8 @@ the canonical reference for wire shapes if anything below feels under-specified.
 
 | id | request | response |
 |----|---------|----------|
-| `shell::exec` | `{ command: string, args?: string[], timeout_ms?: number }` | `{ exit_code, stdout, stderr, duration_ms, timed_out, stdout_truncated, stderr_truncated }` |
-| `shell::exec_bg` | `{ command: string, args?: string[] }` | `{ job_id: string, argv: string[] }` |
+| `shell::exec` | `{ command: string, args?: string[], timeout_ms?: number, target?: Target }` | `{ exit_code, stdout, stderr, duration_ms, timed_out, stdout_truncated, stderr_truncated }` |
+| `shell::exec_bg` | `{ command: string, args?: string[], timeout_ms?: number, target?: Target }` | `{ job_id: string, argv: string[] }` |
 | `shell::kill` | `{ job_id: string }` | `{ job_id, killed, status, reason? }` |
 | `shell::status` | `{ job_id: string }` | `{ job: JobRecord }` (full record — argv + captured stdout/stderr) |
 | `shell::list` | `{}` | `{ jobs: JobSummary[], count }` (see redaction note below) |
@@ -106,6 +117,85 @@ process-wide and has no per-caller scope, so any caller could otherwise read
 every other caller's command line and captured output (which may embed
 credentials). The full record stays reachable via `shell::status <job_id>` —
 the random `job_id` UUID acts as an unguessable per-record capability.
+
+## Sandbox-backed exec
+
+Every `shell::exec` and `shell::exec_bg` request accepts an optional
+`target` field. The default (`{ "kind": "host" }`) runs on the host.
+Setting `{ "kind": "sandbox", "sandbox_id": "<uuid>" }` forwards the
+command to a live sandbox via the `sandbox::exec` trigger:
+
+```ts
+import { registerWorker } from 'iii-sdk';
+
+const iii = registerWorker('ws://127.0.0.1:49134');
+
+const { sandbox_id } = await iii.trigger({
+  function_id: 'sandbox::create',
+  payload: { image: 'python', cpus: 1, memory_mb: 512 },
+  // `timeoutMs` is the SDK-level call timeout (camelCase). The
+  // `timeout_ms` field that appears inside `payload` for shell::exec
+  // is a separate, snake_case wire field consumed by the worker.
+  timeoutMs: 300_000,
+});
+
+const out = await iii.trigger({
+  function_id: 'shell::exec',
+  payload: {
+    command: 'python3',
+    args: ['-c', 'print(2 + 2)'],
+    target: { kind: 'sandbox', sandbox_id },
+  },
+});
+console.log(out.stdout); // "4\n"
+
+await iii.trigger({
+  function_id: 'sandbox::stop',
+  payload: { sandbox_id, wait: true },
+});
+```
+
+The shell worker's allowlist still applies to sandbox-targeted calls —
+the same rules that gate host commands gate sandbox commands. If you
+want commands available only inside a sandbox, that's a separate
+deployment decision (extend the allowlist or run a second shell worker
+behind a different name).
+
+### Caveats
+
+- **`shell::kill` on a sandbox job is a status-level cancel, not a
+  process-level cancel.** `sandbox::exec` has no cancel hook, so the
+  in-VM process keeps running until its `timeout_ms` expires. The
+  job's `JobRecord.status` flips to `Killed` immediately and
+  `shell::status` / `shell::list` reflect the cancellation. The late
+  trigger response still captures stdout/stderr into the record but
+  does not overwrite the `Killed` status. If you need hard cancel,
+  use a short `timeout_ms` on the original `exec_bg` request, or
+  call `sandbox::stop` to tear down the whole microVM.
+- **`shell::exec_bg` accepts `timeout_ms` differently per target.**
+  Host: ignored (preserves today's unbounded host-bg behavior).
+  Sandbox: clamped to `cfg.max_timeout_ms` and forwarded; defaults
+  to `cfg.max_timeout_ms` (30s) when absent.
+- **Host virtualization is required for the sandbox path.** Apple
+  Silicon (macOS) or `/dev/kvm` (Linux). Intel Macs and Windows are
+  unsupported. When the host can't boot microVMs,
+  `shell::exec { target: sandbox }` returns `S300` (`VM boot
+  failed`); shell does **not** silently fall back to host
+  execution. See
+  [`docs/api-reference/sandbox.mdx`](https://github.com/iii-hq/iii/blob/main/docs/api-reference/sandbox.mdx)
+  for the full S-code matrix.
+- **`shell::exec` host-side errors return `S216`, not `S300`.**
+  S300 is reserved for sandbox VM-boot failures. A "command not
+  found" or spawn error on the host returns S216 with a `host exec:`
+  message prefix so callers can distinguish the two failure modes.
+
+### `Target` shape
+
+```ts
+type Target =
+  | { kind: 'host' }
+  | { kind: 'sandbox'; sandbox_id: string /* uuid */ };
+```
 
 ## Filesystem operations: `shell::fs::*`
 
@@ -340,7 +430,7 @@ trusted caller pipelines; for untrusted input, use the sandbox backend.
 ## What this is NOT
 
 - **Not a PTY.** Interactive shells, TUIs, password prompts all break.
-- **Not a sandbox.** For isolation use `sandbox-docker` / `sandbox-firecracker` and call through `shell` only for trusted commands.
+- **Not an isolation boundary itself.** Host-targeted calls (`target` omitted or `{ kind: 'host' }`) run with the shell worker's OS permissions. For process isolation, set `target: { kind: 'sandbox', sandbox_id }` on `shell::exec` / `shell::exec_bg` (see [Sandbox-backed exec](#sandbox-backed-exec)) — that path forwards through `iii-sandbox`'s microVM. The allowlist + denylist still apply on top of either backend.
 - **Not a streaming surface.** Foreground `shell::exec` returns once the process exits and stdout/stderr are captured whole. Live streaming is `shell::exec_stream` (deferred).
 - **Not per-caller-isolated.** The JOBS registry is a process-wide singleton. `shell::list` redacts argv/stdout/stderr to limit the blast radius; full records are cap-gated by `job_id`.
 

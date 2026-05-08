@@ -104,6 +104,13 @@ export function setupSandboxMocks(iii: ISdk): void {
       }
     );
   });
+  // NOTE: we deliberately do NOT mock `sandbox::exec` here. The
+  // exec-side e2e cases (cases-exec-sandbox.ts) drive the *real*
+  // iii-sandbox worker so the test exercises the full
+  // shell -> sandbox::exec -> microVM -> response path, not just
+  // shell's wire shape. The fs::* mocks above remain because the
+  // fs-sandbox cases test wire-level forwarding shape only and would
+  // otherwise need a real sandbox per case (slow cold-boot churn).
 }
 
 export const FS_SANDBOX_CASES: TestCase[] = [

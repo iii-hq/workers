@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use iii_shell::config::ShellConfig;
 use iii_shell::functions;
-use iii_shell::functions::types::{KillRequest, StatusRequest};
+use iii_shell::functions::types::{ExecBgRequest, ExecRequest, KillRequest, StatusRequest};
 use iii_shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
 
 async fn seed(handle: JobHandle) -> String {
@@ -47,44 +47,92 @@ fn resp<T: serde::Serialize>(t: T) -> Value {
     serde_json::to_value(t).expect("typed response must serialize")
 }
 
+/// Run a payload through the same deserialize path the SDK uses at the engine
+/// boundary, returning the error string a caller (e.g. an LLM) would actually
+/// see. Mirrors `IntoAsyncHandler::into_handler` in `iii-sdk`.
+fn parse_err<T: serde::de::DeserializeOwned>(v: Value) -> String {
+    match serde_json::from_value::<T>(v) {
+        Ok(_) => panic!("expected deserialization to fail"),
+        Err(e) => e.to_string(),
+    }
+}
+
 #[tokio::test]
 async fn exec_handler_runs_allowlisted_command() {
     let cfg = cfg_with_allow(&["echo"]);
     let r = resp(
-        functions::exec::handle(cfg, json!({"command": "echo", "args": ["ok"]}))
-            .await
-            .unwrap(),
+        functions::exec::handle(
+            cfg,
+            fresh_iii(),
+            typed::<ExecRequest>(json!({"command": "echo", "args": ["ok"]})),
+        )
+        .await
+        .unwrap(),
     );
     assert_eq!(r["exit_code"], 0);
     assert_eq!(r["stdout"], "ok\n");
     assert_eq!(r["timed_out"], false);
 }
 
-#[tokio::test]
-async fn exec_handler_rejects_missing_command() {
-    let cfg = cfg_with_allow(&["echo"]);
-    let err = functions::exec::handle(cfg, json!({"args": ["ok"]}))
-        .await
-        .unwrap_err();
-    assert!(err.contains("missing 'command'"), "got: {err}");
+/// `command` is a required field — serde produces "missing field `command`"
+/// when absent. The SDK forwards that string verbatim as the trigger error.
+#[test]
+fn exec_request_rejects_missing_command() {
+    let err = parse_err::<ExecRequest>(json!({"args": ["ok"]}));
+    assert!(err.contains("missing"), "got: {err}");
+    assert!(err.contains("command"), "got: {err}");
+}
+
+/// Regression: LLMs commonly send the subprocess-style argv array
+/// `{"command": ["sh", "-lc", "..."]}` here. The error message MUST distinguish
+/// "wrong type" from "missing" so the LLM can self-correct on its next turn,
+/// and MUST hint at the right shape (split program/args across two fields).
+#[test]
+fn exec_request_rejects_array_command_with_helpful_error() {
+    let err = parse_err::<ExecRequest>(json!({"command": ["sh", "-lc", "ls -la"]}));
+    assert!(!err.contains("missing"), "got: {err}");
+    assert!(
+        err.contains("'command'") && err.contains("string"),
+        "got: {err}"
+    );
+    assert!(
+        err.contains("args"),
+        "error must hint at 'args' field, got: {err}"
+    );
 }
 
 #[tokio::test]
 async fn exec_handler_rejects_unlisted_command() {
     let cfg = cfg_with_allow(&["echo"]);
-    let err = functions::exec::handle(cfg, json!({"command": "nmap", "args": ["-v"]}))
-        .await
-        .unwrap_err();
+    let err = functions::exec::handle(
+        cfg,
+        fresh_iii(),
+        typed::<ExecRequest>(json!({"command": "nmap", "args": ["-v"]})),
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("allowlist"));
 }
 
-#[tokio::test]
-async fn exec_handler_rejects_non_string_arg() {
-    let cfg = cfg_with_allow(&["echo"]);
-    let err = functions::exec::handle(cfg, json!({"command": "echo", "args": ["a", 5]}))
-        .await
-        .unwrap_err();
+/// `args[i]` validation is per-index; a non-string element must be rejected
+/// with a message that names which index failed and what it actually was.
+#[test]
+fn exec_request_rejects_non_string_arg() {
+    let err = parse_err::<ExecRequest>(json!({"command": "echo", "args": ["a", 5]}));
     assert!(err.contains("must be a string"), "got: {err}");
+    assert!(err.contains("args[1]"), "got: {err}");
+}
+
+/// `timeout_ms: -1` and `timeout_ms: 1.5` were the original silent-fallback
+/// cases on the loose `Value` handler. The custom `deserialize_timeout_ms`
+/// preserves that semantic on the typed struct: bad values become None and
+/// the call falls through to `cfg.default_timeout_ms`.
+#[test]
+fn exec_request_silently_drops_negative_or_float_timeout() {
+    let req: ExecRequest = typed(json!({"command": "echo", "args": [], "timeout_ms": -1}));
+    assert!(req.timeout_ms.is_none());
+    let req: ExecRequest = typed(json!({"command": "echo", "args": [], "timeout_ms": 1.5}));
+    assert!(req.timeout_ms.is_none());
 }
 
 #[tokio::test]
@@ -93,10 +141,11 @@ async fn exec_handler_returns_truncated_flag_at_max_output_bytes() {
     let r = resp(
         functions::exec::handle(
             cfg,
-            json!({
+            fresh_iii(),
+            typed::<ExecRequest>(json!({
                 "command": "sh",
                 "args": ["-c", "printf 'x%.0s' $(seq 1 8000)"],
-            }),
+            })),
         )
         .await
         .unwrap(),
@@ -110,22 +159,40 @@ async fn exec_handler_returns_truncated_flag_at_max_output_bytes() {
 async fn exec_bg_handler_spawns_returns_job_id_and_argv() {
     let cfg = cfg_with_allow(&["sleep"]);
     let r = resp(
-        functions::exec_bg::handle(cfg, json!({"command": "sleep", "args": ["0.1"]}))
-            .await
-            .unwrap(),
+        functions::exec_bg::handle(
+            cfg,
+            fresh_iii(),
+            typed::<ExecBgRequest>(json!({"command": "sleep", "args": ["0.1"]})),
+        )
+        .await
+        .unwrap(),
     );
     assert!(r["job_id"].is_string());
     assert_eq!(r["argv"], json!(["sleep", "0.1"]));
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 }
 
-#[tokio::test]
-async fn exec_bg_handler_rejects_non_string_arg() {
-    let cfg = cfg_with_allow(&["echo"]);
-    let err = functions::exec_bg::handle(cfg, json!({"command": "echo", "args": [42]}))
-        .await
-        .unwrap_err();
+/// Regression: same as `exec_request_rejects_array_command_with_helpful_error`,
+/// for the background variant.
+#[test]
+fn exec_bg_request_rejects_array_command_with_helpful_error() {
+    let err = parse_err::<ExecBgRequest>(json!({"command": ["sh", "-lc", "ls -la"]}));
+    assert!(!err.contains("missing"), "got: {err}");
+    assert!(
+        err.contains("'command'") && err.contains("string"),
+        "got: {err}"
+    );
+    assert!(
+        err.contains("args"),
+        "error must hint at 'args' field, got: {err}"
+    );
+}
+
+#[test]
+fn exec_bg_request_rejects_non_string_arg() {
+    let err = parse_err::<ExecBgRequest>(json!({"command": "echo", "args": [42]}));
     assert!(err.contains("must be a string"), "got: {err}");
+    assert!(err.contains("args[0]"), "got: {err}");
 }
 
 #[tokio::test]

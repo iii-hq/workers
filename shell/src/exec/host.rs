@@ -1,19 +1,17 @@
-use crate::config::ShellConfig;
-use anyhow::Result;
+//! Host-process exec backend. Wraps `tokio::process::Command` with the
+//! existing env-scrubbing, bounded-output, and timeout-watchdog logic
+//! that lived in the flat `src/exec.rs` before the trait split.
+
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-pub struct ExecOutcome {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<i32>,
-    pub duration_ms: u64,
-    pub timed_out: bool,
-    pub stdout_truncated: bool,
-    pub stderr_truncated: bool,
-}
+use crate::config::ShellConfig;
+use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
 
 pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<String>, String> {
     if let Some(args) = args {
@@ -124,6 +122,33 @@ async fn read_bounded<R: AsyncReadExt + Unpin>(reader: &mut R, limit: usize) -> 
     (buf, truncated)
 }
 
+pub struct HostExecBackend {
+    cfg: Arc<ShellConfig>,
+}
+
+impl HostExecBackend {
+    pub fn new(cfg: Arc<ShellConfig>) -> Self {
+        Self { cfg }
+    }
+}
+
+#[async_trait]
+impl ExecBackend for HostExecBackend {
+    async fn run(&self, argv: &[String], timeout_ms: u64) -> ExecCallResult<ExecOutcome> {
+        // S216 is the generic "shell-internal error" code in the
+        // S2xx range. We deliberately do NOT use S300 here even
+        // though it visually parallels SandboxExecBackend's S300
+        // path: in iii's S-code taxonomy, S300 is reserved for "VM
+        // boot failed" (no virt host). Wrapping host-side spawn or
+        // wait failures as S300 would make a "command not found" on
+        // the host indistinguishable from a missing /dev/kvm to
+        // callers that branch on the code.
+        run_to_completion(argv, &self.cfg, timeout_ms)
+            .await
+            .map_err(|e| ExecError::new("S216", format!("host exec: {e}")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +225,17 @@ mod tests {
         .unwrap();
         assert!(out.stdout_truncated);
         assert_eq!(out.stdout.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn host_backend_runs_via_trait() {
+        let cfg = Arc::new(test_cfg());
+        let backend = HostExecBackend::new(cfg);
+        let out = backend
+            .run(&["echo".into(), "via-trait".into()], 5000)
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(out.stdout.trim(), "via-trait");
     }
 }

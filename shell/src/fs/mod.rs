@@ -6,22 +6,15 @@ pub mod wire;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::fs::error::FsError;
 use crate::fs::wire::{FsEntry, FsMatch, FsSedFileResult};
 
-/// Per-call target selector carried at the top level of each
-/// `shell::fs::*` request body. Defaults to host when omitted.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Target {
-    #[default]
-    Host,
-    Sandbox {
-        sandbox_id: Uuid,
-    },
-}
+// `Target` lives in `crate::target`; re-exported here so existing
+// `use crate::fs::Target` call sites inside the crate keep compiling
+// without mechanical churn while the type's home is neutral between
+// `fs` and `exec` consumers.
+pub use crate::target::Target;
 
 /// Wire-identical mirror of `iii_sdk::channels::StreamChannelRef`. The SDK
 /// type lacks `JsonSchema` in 0.11.3, which would block typed registration
@@ -510,6 +503,7 @@ pub trait FsBackend: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn target_defaults_to_host_when_field_missing() {
