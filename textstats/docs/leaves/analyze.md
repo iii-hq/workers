@@ -1,4 +1,4 @@
-`({ text }) → { words, chars, lines }` — splits on whitespace for words, counts unicode scalar values for chars, counts lines via standard line-break detection.
+# Sizing text before provider calls
 
 ## When to use
 

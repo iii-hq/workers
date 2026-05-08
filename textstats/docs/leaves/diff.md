@@ -1,4 +1,4 @@
-`({ before, after }) → { added: [string], removed: [string] }` — tokenizes both inputs on whitespace and returns the word-level set difference.
+# Comparing two text drafts
 
 ## When to use
 

@@ -1,4 +1,4 @@
-`({}) → { analyses: int, avg_words: float }` — returns a rolling summary across the most recent `recent_window` analyses (default 100, configured in `config.yaml`).
+# Reading rolling text-stat summaries
 
 ## When to use
 
