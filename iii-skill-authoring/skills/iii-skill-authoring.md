@@ -4,8 +4,10 @@ How to write the partials that `iii-skill-check` renders into the README, top-le
 
 - [`iii://iii-skill-authoring/structure`](iii://iii-skill-authoring/structure) — directory layout, slot order, what each file feeds.
 - [`iii://iii-skill-authoring/voice`](iii://iii-skill-authoring/voice) — voice rules distilled from `project-rules/voice.md` and the slop-token lists.
+- [`iii://iii-skill-authoring/quickstart`](iii://iii-skill-authoring/quickstart) — what makes a good `## Quickstart` section.
 - [`iii://iii-skill-authoring/leaves`](iii://iii-skill-authoring/leaves) — what goes in `docs/leaves/<leaf>.md`.
 - [`iii://iii-skill-authoring/llm-only-blocks`](iii://iii-skill-authoring/llm-only-blocks) — when to wrap content in llm-only comment markers.
+- [`iii://iii-skill-authoring/skeleton`](iii://iii-skill-authoring/skeleton) — copy-paste starter for a brand-new worker.
 - [`iii://iii-skill-authoring/check`](iii://iii-skill-authoring/check) — running `iii-skill-check` locally and reading its output.
 - [`iii://iii-skill-authoring/ideal-docs`](iii://iii-skill-authoring/ideal-docs) — `ideal-docs/project-rules` is canonical; never pattern off a sibling worker.
 
