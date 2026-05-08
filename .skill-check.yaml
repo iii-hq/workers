@@ -1,0 +1,9 @@
+rules:
+  path: ./project-rules
+styles:
+  path: ./styles
+ai_check:
+  provider: anthropic
+  model: claude-opus-4-7
+  api_key_env: ANTHROPIC_API_KEY
+  max_tokens: 4000
