@@ -704,7 +704,11 @@ mod tests {
         };
         let msgs = vec![mk("a"), mk("b"), mk("c")];
         let wire = to_wire_messages(&msgs);
-        assert_eq!(wire.len(), 1, "three FunctionResults must produce one user message");
+        assert_eq!(
+            wire.len(),
+            1,
+            "three FunctionResults must produce one user message"
+        );
         assert_eq!(wire[0]["role"], "user");
         assert_eq!(wire[0]["content"].as_array().unwrap().len(), 3);
         assert_eq!(wire[0]["content"][0]["tool_use_id"], "a");
