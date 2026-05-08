@@ -11,6 +11,7 @@ A worker that uses `iii-skill-check` keeps narrative source under `docs/`. The r
 ├── docs/
 │   ├── intro.md             # paragraph(s) shown after the H1 in README and skill.md
 │   ├── quickstart.md        # body of ## Quickstart in README only
+│   ├── companions.md        # appended inside ## Install when this worker pairs with a sibling (optional, README only)
 │   ├── migration.md         # body of ## Migration notes (optional, README only)
 │   └── leaves/
 │       └── <leaf>.md        # body of skills/<leaf>.md
@@ -33,7 +34,7 @@ Always run `iii-skill-check render --write <worker>` before committing — the r
 1. Generated banner.
 2. `# <name>` (from `iii.worker.yaml.name`).
 3. `intro.md` (llm-only blocks kept as HTML comments).
-4. `## Install` + `iii worker add <name>` boilerplate.
+4. `## Install` + `iii worker add <name>` boilerplate, optionally followed by `companions.md` (no new H2).
 5. `## Quickstart` + `quickstart.md`.
 6. `## Configuration` + fenced `config.yaml`.
 7. `## Migration notes` + `migration.md` (only if present).
