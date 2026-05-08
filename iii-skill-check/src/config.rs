@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,10 @@ pub struct AiCheck {
 }
 
 /// Load `.skill-check.yaml` from a path.
-pub fn load(_path: &Path) -> anyhow::Result<Config> {
-    anyhow::bail!("config::load not yet implemented")
+pub fn load(path: &Path) -> anyhow::Result<Config> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let config: Config = serde_yaml::from_str(&content)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok(config)
 }
