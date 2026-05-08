@@ -23,8 +23,8 @@ The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental
             │  run::start          turn::*                       │◄── turn-orchestrator
             │  agent::call         provider::*                  │◄── turn-orchestrator, …
             │  session::* state::*                               │◄── session-tree
-            │  shell::filesystem::* shell::bash::*               │◄── shell-* workers
-            │  agent::before_function_call (topic)                   │◄── policy-denylist
+            │  shell::fs::* shell::*                             │◄── shell worker
+            │  agent::before_function_call (topic)               │◄── policy-denylist
             │  auth::* skills::register …                        │◄── auth-credentials, skills
             └────────────────────────────────────────────────────┘
 ```
@@ -72,10 +72,10 @@ Vite + React 18 single-page app. All bus calls go through one helper:
 The UI does not ship tool schemas: `turn-orchestrator` provisions a single
 `agent_call` tool (see `agent_call_tool`) and builds the system prompt
 server-side. The model passes `function` (a bus id such as
-`shell::filesystem::ls`) and `payload` (arguments). Permission is enforced by
+`shell::fs::ls`) and `payload` (arguments). Permission is enforced by
 `policy-denylist` on `agent::before_function_call` (see Trust boundary below).
 
-### 3. The 14 expected workers
+### 3. The 15 expected workers
 
 `EXPECTED_WORKERS` (`lib.rs:18`) is the source of truth for what the harness assumes is on the bus. Grouped by role:
 
@@ -87,7 +87,7 @@ server-side. The model passes `function` (a bus id such as
 | Auth | `auth-credentials` | Provider credentials store. |
 | Policy / safety | `policy-denylist`, `llm-budget` | Hook subscriber on `agent::before_function_call` and budget tracking. |
 | Hooks | `hook-fanout` | Generic publish-and-collect primitive. |
-| Tools | `shell-bash`, `shell-filesystem`, `subagent` | LLM-callable iii function implementations. |
+| Tools | `shell`, `subagent` | LLM-callable iii function implementations. |
 | Providers | `provider-anthropic`, `provider-openai` | Concrete LLM transport workers behind `provider-router`. |
 
 The harness owns *no* logic from any of these — it only knows their names. Each worker is a separate crate in `workers/<name>/` with its own `iii.worker.yaml`, lifecycle, and tests.
@@ -142,7 +142,7 @@ Sessions are persisted in two stores that don't merge automatically:
 The harness assumes a layered model and does not enforce policy itself:
 
 1. **SDK wrapper (chat client side)** — workspace allowlist on path arguments before the bus call is dispatched.
-2. **`policy-denylist` (engine side)** — subscriber on `agent::before_function_call` that blocks by function id. Configured via `POLICY_DENIED_FUNCTIONS` env var (legacy `POLICY_DENIED_TOOLS` still honored). **Must include `bridge::trigger`** to prevent the LLM from calling `agent_call(function="bridge::trigger", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `bridge::trigger`, not the inner function). Recommended denylist for solo local dev: `bridge::trigger,shell::filesystem::rm,shell::filesystem::sed,shell::filesystem::edit,shell::filesystem::chmod,shell::filesystem::mv`. The demo script (`harness/scripts/demo.sh`) sets `bridge::trigger` automatically.
+2. **`policy-denylist` (engine side)** — subscriber on `agent::before_function_call` that blocks by function id. Configured via `POLICY_DENIED_FUNCTIONS` env var (legacy `POLICY_DENIED_TOOLS` still honored). **Must include `bridge::trigger`** to prevent the LLM from calling `agent_call(function="bridge::trigger", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `bridge::trigger`, not the inner function). Recommended denylist for solo local dev: `bridge::trigger,shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv`. The demo script (`harness/scripts/demo.sh`) sets `bridge::trigger` automatically.
 3. **`<ApprovalRow>` (chat UI)** — per-call user approval surfaced inline before any write reaches disk.
 
 `bridge::trigger` is the one bus surface reachable from the browser. It has **no** allowlist — any function id is callable — so the deployment must keep `:3111` private and rely on the three layers above. There is no per-user auth on `bridge::trigger`; the harness assumes a single-tenant local install.

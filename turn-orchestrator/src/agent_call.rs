@@ -29,13 +29,13 @@ pub(crate) const DEFAULT_DISPATCH_TIMEOUT_MS: Option<u64> = None;
 pub fn agent_call_tool() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::filesystem::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.",
+        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.",
         "parameters": {
             "type": "object",
             "properties": {
                 "function": {
                     "type": "string",
-                    "description": "iii function id to dispatch, e.g. 'shell::filesystem::ls'."
+                    "description": "iii function id to dispatch, e.g. 'shell::fs::ls'."
                 },
                 "payload": {
                     "type": "object",
@@ -97,14 +97,22 @@ pub(crate) fn is_timeout(err: &IIIError) -> bool {
 /// If the inner function returned a `FunctionResult`-shaped value, deserialize
 /// it. Otherwise wrap the value as the tool's `details` so function-level
 /// envelopes (`{ok: false, error}`) pass through verbatim per the spec.
-fn decode_or_passthrough(value: Value) -> FunctionResult {
+///
+/// For a JSON `String` value (e.g. `skill::fetch` returning markdown), use
+/// the inner string content as `text`. `serde_json::Value::to_string()`
+/// emits the JSON-encoded form — surrounding quotes and `\n` literals —
+/// which the harness web's `<pre>` then renders verbatim and looks like
+/// "raw JSON in chat" (turn-orchestrator/agent_call.rs regression).
+pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
     if let Ok(tr) = serde_json::from_value::<FunctionResult>(value.clone()) {
         return tr;
     }
+    let text = match &value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
     FunctionResult {
-        content: vec![ContentBlock::Text(TextContent {
-            text: value.to_string(),
-        })],
+        content: vec![ContentBlock::Text(TextContent { text })],
         details: value,
         terminate: false,
     }
@@ -243,8 +251,8 @@ mod dispatch_tests {
 
     #[test]
     fn valid_function_returns_owned_string() {
-        let result = validate_function_field(&json!("shell::filesystem::ls")).unwrap();
-        assert_eq!(result, "shell::filesystem::ls");
+        let result = validate_function_field(&json!("shell::fs::ls")).unwrap();
+        assert_eq!(result, "shell::fs::ls");
     }
 
     #[test]
@@ -253,6 +261,32 @@ mod dispatch_tests {
         let tr = decode_or_passthrough(inner.clone());
         assert_eq!(tr.details, inner);
         assert!(!tr.terminate);
+    }
+
+    /// Regression: `skill::fetch` and any other function returning a JSON
+    /// String must produce a content block whose `text` is the inner
+    /// string content (real newlines), not the JSON-encoded form (literal
+    /// `\n` + surrounding quotes). The latter renders as "raw JSON in chat"
+    /// because the harness web wraps `text` in a `<pre>` verbatim.
+    #[test]
+    fn decode_or_passthrough_unwraps_string_value_into_text() {
+        let body = "# shell/fs_read\n\nObserve-only filesystem ops.";
+        let tr = decode_or_passthrough(Value::String(body.to_string()));
+        let harness_types::ContentBlock::Text(text_block) = &tr.content[0] else {
+            panic!("expected a Text content block, got {:?}", tr.content[0]);
+        };
+        assert_eq!(
+            text_block.text, body,
+            "string value must be unwrapped, not JSON-stringified"
+        );
+        assert!(
+            !text_block.text.starts_with('"'),
+            "text must not be wrapped in JSON quotes"
+        );
+        assert!(
+            !text_block.text.contains("\\n"),
+            "text must contain real newlines, not literal \\n"
+        );
     }
 
     fn remote_err(code: &str, message: &str) -> IIIError {
@@ -329,8 +363,9 @@ mod dispatch_tests {
         assert_eq!(tr.details, inner);
         match tr.content.first() {
             Some(harness_types::ContentBlock::Text(t)) => {
-                // serde_json::Value::to_string on a string adds quotes.
-                assert_eq!(t.text, "\"just a string\"");
+                // JSON String values are unwrapped to their inner content
+                // (see decode_or_passthrough_unwraps_string_value_into_text).
+                assert_eq!(t.text, "just a string");
             }
             other => panic!("expected Text content block, got {other:?}"),
         }

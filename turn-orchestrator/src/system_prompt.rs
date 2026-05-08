@@ -5,7 +5,7 @@
 //! Snapshot tests pin the wording so the move from client to server doesn't
 //! drop a section. Plan-eng-review §3 flagged this as a regression risk.
 
-const BASE_BODY: &str = "You can call any iii function on the bus through the single tool `agent_call`.\nPass `function` (e.g. \"shell::filesystem::ls\") and `payload` (its arguments).\n\nThe skills loaded into your context describe which functions exist, when to\nuse them, and what arguments they take. Read skills before you call functions\nyou haven't used yet — calling an id that doesn't exist returns\n`{error: \"function_not_found\", ...}`. Do not retry the same id; load the\nrelevant skill or ask the user.\n\nPaths must be absolute. If a tool result contains `blocked: true`, a policy\nrefused it — explain which policy and stop, do not retry.";
+const BASE_BODY: &str = "You can call any iii function on the bus through the single tool `agent_call`.\nPass `function` (e.g. \"shell::fs::ls\") and `payload` (its arguments).\n\nThe skills loaded into your context describe which functions exist, when to\nuse them, and what arguments they take. Read skills before you call functions\nyou haven't used yet — calling an id that doesn't exist returns\n`{error: \"function_not_found\", ...}`. Do not retry the same id; load the\nrelevant skill or ask the user.\n\nPaths must be absolute. If a tool result contains `blocked: true`, a policy\nrefused it — explain which policy and stop, do not retry.";
 
 /// Build the canonical system prompt. Override → verbatim. Otherwise:
 /// `BASE_BODY` + working-directory section + skills index section.

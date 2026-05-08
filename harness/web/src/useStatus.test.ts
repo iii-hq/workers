@@ -103,7 +103,7 @@ describe("useStatus", () => {
 
     await fire("ui::approval::requested", {
       function_call_id: "tc-1",
-      function_id: "shell::filesystem::write",
+      function_id: "shell::fs::write",
       args: { path: "/tmp/x" },
       expires_at: 9999,
       session_id: "s1",

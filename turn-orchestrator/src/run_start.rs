@@ -240,12 +240,9 @@ mod tests {
     #[test]
     fn build_run_request_propagates_approval_required() {
         let request = build_run_request(&json!({
-            "approval_required": ["shell::filesystem::write"],
+            "approval_required": ["shell::fs::write"],
         }));
-        assert_eq!(
-            request["approval_required"],
-            json!(["shell::filesystem::write"]),
-        );
+        assert_eq!(request["approval_required"], json!(["shell::fs::write"]),);
     }
 
     #[test]

@@ -68,7 +68,7 @@ describe("reducer (entry-id keyed)", () => {
     let s = applyEvent(INITIAL_STREAM_STATE, {
       type: "approval_requested",
       function_call_id: "t1",
-      function_id: "shell::filesystem::write",
+      function_id: "shell::fs::write",
       args: {},
       expires_at: 0,
     });

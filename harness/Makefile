@@ -35,7 +35,7 @@ WORKERS := \
   turn-orchestrator provider-router \
   session-tree session-inbox \
   models-catalog hook-fanout policy-denylist \
-  shell-bash shell-filesystem subagent \
+  shell subagent \
   provider-anthropic provider-openai \
   auth-credentials llm-budget \
   skills approval-gate
@@ -121,6 +121,9 @@ _spawn-one:
 	: > "$$logfile"; \
 	if [[ "$$w" == "harness" ]]; then \
 	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" --config "$(WORKERS_REPO)/harness/config.yaml" --url "$(DEMO_ENGINE_WS)" >> "$$logfile" 2>&1 & \
+	  echo $$! > "$$pidfile"; \
+	elif [[ "$$w" == "shell" ]]; then \
+	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" --config "$(WORKERS_REPO)/harness/shell-config.yaml" >> "$$logfile" 2>&1 & \
 	  echo $$! > "$$pidfile"; \
 	else \
 	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" >> "$$logfile" 2>&1 & \

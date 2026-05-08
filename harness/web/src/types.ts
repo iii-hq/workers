@@ -129,7 +129,9 @@ export interface BudgetForecast {
   on_track: boolean;
 }
 
-// shell-filesystem shapes — ToolResult envelope, payload in `details`.
+// shell::fs::* shapes — `ls` returns `{ entries }` flat (no envelope);
+// the harness::fs::read_inline adapter keeps the legacy
+// ToolResult<FsReadDetails> shape so FilesystemPanel renders unchanged.
 export interface ToolResult<D = unknown> {
   content: Array<{ type: string; text?: string }>;
   details: D;
@@ -138,12 +140,23 @@ export interface ToolResult<D = unknown> {
 
 export interface FsEntry {
   name: string;
+  /** Old shell-filesystem worker emitted `kind`. The new shell::fs::ls
+   * returns `is_dir` instead; consumers should prefer `is_dir` when set. */
   kind?: "file" | "dir" | "symlink" | string;
+  is_dir?: boolean;
+  is_symlink?: boolean;
   size?: number;
   mode?: string;
   mtime?: string | number;
 }
 
+/** Flat response shape from `shell::fs::ls`. */
+export interface FsLsResponse {
+  entries: FsEntry[];
+}
+
+/** @deprecated kept temporarily for diff-friendliness while call-sites
+ * migrate to FsLsResponse. Remove once no caller imports it. */
 export interface FsLsDetails {
   entries?: FsEntry[];
   error?: string;
