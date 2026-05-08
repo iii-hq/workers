@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -14,6 +15,11 @@ pub struct WorkerManifest {
 }
 
 /// Parse `<dir>/iii.worker.yaml` into the narrative subset.
-pub fn read_manifest(_dir: &Path) -> anyhow::Result<WorkerManifest> {
-    anyhow::bail!("introspect::read_manifest not yet implemented")
+pub fn read_manifest(dir: &Path) -> anyhow::Result<WorkerManifest> {
+    let path = dir.join("iii.worker.yaml");
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let manifest: WorkerManifest = serde_yaml::from_str(&content)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    Ok(manifest)
 }
