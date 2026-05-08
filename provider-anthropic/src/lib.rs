@@ -116,11 +116,27 @@ pub fn auth_header_for(cfg: &AnthropicConfig) -> (&'static str, String) {
 
 /// Convert harness AgentMessages into Anthropic wire messages.
 /// Skips Custom messages (filtered at convert_to_llm boundary).
+///
+/// Consecutive `FunctionResult` messages are merged into a single user wire
+/// message containing one `tool_result` content block per result. Anthropic
+/// rejects requests where parallel `tool_use` IDs from the previous assistant
+/// turn are split across multiple user messages with the error
+/// "tool_use ids were found without tool_result blocks immediately after".
 pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
+    let mut pending_results: Vec<serde_json::Value> = Vec::new();
+    let flush_results = |pending: &mut Vec<serde_json::Value>, out: &mut Vec<serde_json::Value>| {
+        if !pending.is_empty() {
+            out.push(serde_json::json!({
+                "role": "user",
+                "content": std::mem::take(pending),
+            }));
+        }
+    };
     for m in messages {
         match m {
             harness_types::AgentMessage::User(u) => {
+                flush_results(&mut pending_results, &mut out);
                 let content = u
                     .content
                     .iter()
@@ -129,6 +145,7 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
                 out.push(serde_json::json!({ "role": "user", "content": content }));
             }
             harness_types::AgentMessage::Assistant(a) => {
+                flush_results(&mut pending_results, &mut out);
                 let content = a
                     .content
                     .iter()
@@ -146,19 +163,17 @@ pub fn to_wire_messages(messages: &[harness_types::AgentMessage]) -> Vec<serde_j
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                out.push(serde_json::json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": t.function_call_id,
-                        "content": text,
-                        "is_error": t.is_error,
-                    }],
+                pending_results.push(serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": t.function_call_id,
+                    "content": text,
+                    "is_error": t.is_error,
                 }));
             }
             harness_types::AgentMessage::Custom(_) => {}
         }
     }
+    flush_results(&mut pending_results, &mut out);
     out
 }
 
@@ -668,6 +683,33 @@ mod tests {
         assert_eq!(wire[0]["role"], "user");
         assert_eq!(wire[0]["content"][0]["type"], "tool_result");
         assert_eq!(wire[0]["content"][0]["tool_use_id"], "tc1");
+    }
+
+    /// Anthropic requires that all tool_result blocks for an assistant's
+    /// parallel tool_use blocks live in a single immediately-following user
+    /// message. Consecutive FunctionResult AgentMessages must collapse into
+    /// one wire user message. Otherwise the API rejects the request with:
+    ///   "tool_use ids were found without tool_result blocks immediately after"
+    #[test]
+    fn parallel_function_results_collapse_into_one_user_message() {
+        let mk = |id: &str| {
+            AgentMessage::FunctionResult(harness_types::FunctionResultMessage {
+                function_call_id: id.into(),
+                function_id: "read".into(),
+                content: vec![ContentBlock::Text(TextContent { text: id.into() })],
+                details: serde_json::json!({}),
+                is_error: false,
+                timestamp: 0,
+            })
+        };
+        let msgs = vec![mk("a"), mk("b"), mk("c")];
+        let wire = to_wire_messages(&msgs);
+        assert_eq!(wire.len(), 1, "three FunctionResults must produce one user message");
+        assert_eq!(wire[0]["role"], "user");
+        assert_eq!(wire[0]["content"].as_array().unwrap().len(), 3);
+        assert_eq!(wire[0]["content"][0]["tool_use_id"], "a");
+        assert_eq!(wire[0]["content"][1]["tool_use_id"], "b");
+        assert_eq!(wire[0]["content"][2]["tool_use_id"], "c");
     }
 
     #[test]
