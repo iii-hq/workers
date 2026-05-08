@@ -42,11 +42,23 @@ fn apply_runtime_env_overrides(cfg: &mut config::WorkerConfig) {
 
 fn parse_denied_tools(raw: &str) -> Vec<String> {
     let raw = raw.trim();
-    let raw = raw
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(raw);
-    raw.split(',')
+    // Brackets must be balanced. A single unmatched bracket previously
+    // leaked into the first/last token (e.g. `[tool1,tool2` parsed as
+    // `["[tool1", "tool2"]`), silently breaking the operator's intended
+    // denial. Strip both, or strip neither.
+    let stripped = match (raw.strip_prefix('['), raw.strip_suffix(']')) {
+        (Some(inner), Some(_)) => inner.strip_suffix(']').unwrap_or(inner),
+        (None, None) => raw,
+        _ => {
+            tracing::warn!(
+                input = %raw,
+                "POLICY_DENIED_TOOLS has unmatched bracket; ignoring brackets and parsing as comma-separated"
+            );
+            raw.trim_matches(|c| c == '[' || c == ']')
+        }
+    };
+    stripped
+        .split(',')
         .map(str::trim)
         .map(|s| s.trim_matches('"').trim_matches('\'').trim())
         .filter(|s| !s.is_empty())
@@ -181,27 +193,23 @@ mod tests {
         );
     }
 
-    // TODO(test-harden): the parser strips '[' prefix and ']' suffix
-    // jointly via `.and_then(strip_suffix)`. If either bracket is missing,
-    // the .and_then chain returns None and the raw input falls through to
-    // .split(','), leaking the unmatched bracket into the first or last
-    // element ("[tool1" or "tool2]"). The trim-quotes step doesn't strip
-    // brackets. The operator's intended denial silently never matches the
-    // real tool name. Fix: either accept both bracket forms strictly
-    // (require both or neither) or reject malformed input and log a
-    // warning.
-    #[ignore]
+    /// Malformed bracket inputs must not leak the bracket character into
+    /// the parsed tool name. A leaked bracket would silently break the
+    /// operator's intended denial: `bridge::trigger` would never match
+    /// `[bridge::trigger`. The parser strips bracket pairs symmetrically
+    /// and falls back to a bracket-tolerant strip + warning when one side
+    /// is missing.
     #[test]
     fn parse_denied_tools_handles_malformed_unclosed_bracket() {
         assert_eq!(
             parse_denied_tools("[tool1,tool2"),
             vec!["tool1".to_string(), "tool2".to_string()],
-            "open bracket without close should still parse cleanly"
+            "open bracket without close must not leak '[' into the first token"
         );
         assert_eq!(
             parse_denied_tools("tool1,tool2]"),
             vec!["tool1".to_string(), "tool2".to_string()],
-            "close bracket without open should still parse cleanly"
+            "close bracket without open must not leak ']' into the last token"
         );
     }
 }
