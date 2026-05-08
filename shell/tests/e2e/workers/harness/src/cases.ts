@@ -3,7 +3,7 @@ import type { ISdk } from 'iii-sdk';
 export interface CaseContext {
   call: (functionId: string, payload: unknown) => Promise<any>;
   sleep: (ms: number) => Promise<void>;
-  expectError: (fn: () => Promise<unknown>, substring: string) => Promise<void>;
+  expectError: (fn: () => Promise<unknown>, pattern: string | RegExp) => Promise<void>;
   iii: ISdk;
 }
 

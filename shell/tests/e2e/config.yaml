@@ -19,6 +19,22 @@ workers:
       logs_console_output: true
       sampling_ratio: 1.0
 
+  # Real iii-sandbox so cases-exec-sandbox.ts can drive the full
+  # shell -> sandbox::exec -> microVM round-trip end-to-end. Requires
+  # hardware virtualization on the test host (Apple Silicon on macOS
+  # or /dev/kvm on Linux); on unsupported hosts every case in
+  # EXEC_SANDBOX_CASES short-circuits with a SKIP log message after
+  # sandbox::create returns S300.
+  - name: iii-sandbox
+    config:
+      auto_install: true
+      image_allowlist:
+        - python
+      default_idle_timeout_secs: 60
+      max_concurrent_sandboxes: 4
+      default_cpus: 1
+      default_memory_mb: 256
+
   - name: shell
     config:
       max_timeout_ms: 5000

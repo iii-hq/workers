@@ -4,7 +4,7 @@
 //! passthroughs.
 
 use async_trait::async_trait;
-use iii_sdk::{IIIError, TriggerRequest};
+use iii_sdk::IIIError;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -16,35 +16,12 @@ use crate::fs::{
     SedArgs, SedResponse, StatArgs, StatResponse, WriteArgs, WriteResponse,
 };
 
-/// Test seam: lets tests swap `iii.trigger` for a mock.
-#[async_trait]
-pub trait TriggerFwd: Send + Sync {
-    async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, IIIError>;
-}
-
-pub struct IiiTriggerFwd {
-    iii: iii_sdk::III,
-}
-
-impl IiiTriggerFwd {
-    pub fn new(iii: iii_sdk::III) -> Self {
-        Self { iii }
-    }
-}
-
-#[async_trait]
-impl TriggerFwd for IiiTriggerFwd {
-    async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, IIIError> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-    }
-}
+// TriggerFwd + IiiTriggerFwd live in `crate::triggers`; re-exported
+// here so existing `use crate::fs::sandbox::{TriggerFwd, IiiTriggerFwd}`
+// call sites inside the crate, plus the public
+// `iii_shell::fs::sandbox::TriggerFwd` surface consumed by
+// `tests/sandbox_dispatch.rs`, keep compiling without mechanical churn.
+pub use crate::triggers::{IiiTriggerFwd, TriggerFwd};
 
 pub struct SandboxFsBackend {
     fwd: Arc<dyn TriggerFwd>,
@@ -131,6 +108,10 @@ fn map_iii_err(err: IIIError) -> FsError {
 
 fn scan_s_code(s: &str) -> Option<&str> {
     let bytes = s.as_bytes();
+    // The window is 4 bytes (`bytes[i..=i+3]`), so the last valid `i` is
+    // `len - 4`. The loop bound `< len - 3` gives `i <= len - 4`.
+    // `saturating_sub(3)` collapses to 0 when `len < 4`, which yields an
+    // empty range (no false access) on too-short inputs.
     for i in 0..bytes.len().saturating_sub(3) {
         if bytes[i] == b'S'
             && bytes[i + 1].is_ascii_digit()

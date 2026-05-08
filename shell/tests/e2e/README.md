@@ -17,6 +17,14 @@ Modeled on `iii-database/tests/e2e/`.
   ```
   The script drops the binary at `$HOME/.local/bin/iii` (override with
   `BIN_DIR=...` or `PREFIX=...`).
+- **For the sandbox-target cases**: hardware virtualization on the host
+  (Apple Silicon on macOS or `/dev/kvm` on Linux). The harness boots a
+  real iii-sandbox microVM via `sandbox::create` and drives
+  `shell::exec { target: { kind: "sandbox", ... } }` against it. On
+  unsupported hosts, every case in `EXEC_SANDBOX_CASES` short-circuits
+  with a `SKIP` log line — the rest of the suite still runs. First
+  invocation cold-pulls the `python` image; bump `HARNESS_TIMEOUT=300`
+  if the default 90s budget is too tight on a fresh machine.
 
 ## Run
 

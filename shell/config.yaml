@@ -79,5 +79,10 @@ fs:
     - /etc/passwd
     - /etc/shadow
 
+# When enabled is true, callers can target a live sandbox via the
+# top-level `target` field on shell::exec, shell::exec_bg, and every
+# shell::fs::* request. When false, every sandbox-targeted call
+# returns S210 ("sandbox target disabled in config") regardless of
+# whether iii-sandbox itself is running.
 sandbox:
   enabled: true

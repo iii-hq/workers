@@ -11,6 +11,7 @@ import { FS_SANDBOX_CASES } from './cases-fs-sandbox.ts';
 import { FS_PROTOCOL_BREAK_CASES } from './cases-fs-protocol-break.ts';
 import { STREAMING_BREAK_CASES } from './cases-streaming-break.ts';
 import { EXEC_BREAK_CASES } from './cases-exec-break.ts';
+import { EXEC_SANDBOX_CASES } from './cases-exec-sandbox.ts';
 import { JOB_BREAK_CASES } from './cases-jobs-break.ts';
 import { FS_ENCODING_CASES } from './cases-fs-encoding.ts';
 import { FS_ERROR_CASES } from './cases-fs-errors.ts';
@@ -42,17 +43,23 @@ export class Runner {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  private async expectError(fn: () => Promise<unknown>, substring: string): Promise<void> {
+  private async expectError(
+    fn: () => Promise<unknown>,
+    pattern: string | RegExp,
+  ): Promise<void> {
+    const matches = (msg: string): boolean =>
+      typeof pattern === 'string' ? msg.includes(pattern) : pattern.test(msg);
+    const display = typeof pattern === 'string' ? `"${pattern}"` : pattern.toString();
     try {
       await fn();
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      if (!msg.includes(substring)) {
-        throw new Error(`expected error containing "${substring}", got: ${msg}`);
+      if (!matches(msg)) {
+        throw new Error(`expected error matching ${display}, got: ${msg}`);
       }
       return;
     }
-    throw new Error(`expected throw containing "${substring}", but call resolved`);
+    throw new Error(`expected throw matching ${display}, but call resolved`);
   }
 
   private async runCase(c: TestCase): Promise<CaseResult> {
@@ -128,6 +135,7 @@ export class Runner {
             ...FS_PROTOCOL_BREAK_CASES,
             ...STREAMING_BREAK_CASES,
             ...EXEC_BREAK_CASES,
+            ...EXEC_SANDBOX_CASES,
             ...JOB_BREAK_CASES,
             ...FS_ENCODING_CASES,
             ...FS_ERROR_CASES,

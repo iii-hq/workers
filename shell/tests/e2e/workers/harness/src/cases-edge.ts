@@ -5,9 +5,13 @@ export const EDGE_CASES: TestCase[] = [
   {
     name: 'missing command field rejects',
     async run({ call, expectError }) {
+      // serde's missing-field wording uses backticks (`missing field
+      // `command``) on the typed schema path; older deployments produced
+      // `"missing 'command'"`. Match either by checking "missing" + "command"
+      // separately so the test pins behavior, not exact phrasing.
       await expectError(
         () => call('shell::exec', { args: ['hi'] }),
-        "missing 'command'",
+        /missing[\s\S]*command|command[\s\S]*missing/,
       );
     },
   },

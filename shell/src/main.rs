@@ -1,15 +1,19 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
-use serde_json::Value;
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction, TriggerRequest, III};
+use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 mod config;
 mod exec;
+mod exec_dispatch;
 mod fs;
 mod functions;
 mod jobs;
 mod manifest;
+mod target;
+mod triggers;
 
 use functions::types::{KillRequest, StatusRequest};
 
@@ -88,23 +92,48 @@ async fn main() -> Result<()> {
 
     {
         let cfg = shared.clone();
+        let iii_for_exec = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::exec", move |req: Value| {
-                let cfg = cfg.clone();
-                async move { functions::exec::handle(cfg, req).await }
-            })
-            .description("Execute a command and return full output"),
+            RegisterFunction::new_async(
+                "shell::exec",
+                move |req: functions::types::ExecRequest| {
+                    let cfg = cfg.clone();
+                    let iii_clone = iii_for_exec.clone();
+                    async move { functions::exec::handle(cfg, iii_clone, req).await }
+                },
+            )
+            .description(
+                "Run an allowlisted command in the foreground and return its \
+                 full output. Payload: { command: string (program name), \
+                 args?: string[], timeout_ms?: number, target?: { kind: \
+                 'host'|'sandbox', sandbox_id?: string } }. Returns { stdout, \
+                 stderr, exit_code, duration_ms, timed_out, stdout_truncated, \
+                 stderr_truncated }. Do NOT pass argv as an array in 'command' \
+                 — split program and arguments across the two fields.",
+            ),
         );
     }
 
     {
         let cfg = shared.clone();
+        let iii_for_bg = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::exec_bg", move |req: Value| {
-                let cfg = cfg.clone();
-                async move { functions::exec_bg::handle(cfg, req).await }
-            })
-            .description("Spawn a command in background, return job_id"),
+            RegisterFunction::new_async(
+                "shell::exec_bg",
+                move |req: functions::types::ExecBgRequest| {
+                    let cfg = cfg.clone();
+                    let iii_clone = iii_for_bg.clone();
+                    async move { functions::exec_bg::handle(cfg, iii_clone, req).await }
+                },
+            )
+            .description(
+                "Spawn an allowlisted command as a background job. Same \
+                 payload shape as shell::exec; returns { job_id, argv } \
+                 immediately. Poll with shell::status, terminate with \
+                 shell::kill, list with shell::list. Do NOT pass argv as an \
+                 array in 'command' — use 'command' (string) + 'args' \
+                 (string[]).",
+            ),
         );
     }
 
@@ -284,8 +313,89 @@ async fn main() -> Result<()> {
 
     tracing::info!("iii-shell registered 15 functions, ready");
 
+    spawn_skill_register(iii.clone());
+
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-shell shutting down");
+    unregister_skill(&iii).await;
     iii.shutdown_async().await;
     Ok(())
+}
+
+/// Best-effort `skills::register` with capped exponential backoff.
+/// `skills` may come up after us (or be absent in minimal deployments);
+/// give up quietly after 3 minutes so the worker keeps running without it.
+async fn register_skill_with_retry(iii: &III, id: &str, body: &str) {
+    let mut backoff = Duration::from_secs(5);
+    let started = Instant::now();
+    loop {
+        let res = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::register".into(),
+                payload: json!({ "id": id, "skill": body }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        match res {
+            Ok(_) => {
+                tracing::info!(skill_id = id, "registered skill");
+                return;
+            }
+            Err(e) => {
+                if started.elapsed() > Duration::from_secs(180) {
+                    tracing::warn!(
+                        skill_id = id,
+                        error = %e,
+                        "skills handshake gave up; install/start the skills worker and restart"
+                    );
+                    return;
+                }
+                tracing::debug!(
+                    skill_id = id,
+                    error = %e,
+                    wait = ?backoff,
+                    "skills::register failed; retrying"
+                );
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(60));
+    }
+}
+
+/// Spawn the boot-time registration loop in the background. Non-blocking
+/// so a missing `skills` worker never delays shell's readiness.
+fn spawn_skill_register(iii: III) {
+    tokio::spawn(async move {
+        register_skill_with_retry(&iii, iii_shell::SKILL_ID, iii_shell::SKILL_MD).await;
+        for (id, body) in iii_shell::SUB_SKILLS {
+            register_skill_with_retry(&iii, id, body).await;
+        }
+    });
+}
+
+/// Best-effort `skills::unregister` on graceful shutdown so a stopped
+/// worker doesn't leave dangling entries in the registry. Crashes
+/// inevitably skip this path; an operator can clean up via
+/// `skills::list` + `skills::unregister` manually.
+async fn unregister_skill(iii: &III) {
+    for (id, _) in iii_shell::SUB_SKILLS {
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::unregister".into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(2_000),
+            })
+            .await;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::unregister".into(),
+            payload: json!({ "id": iii_shell::SKILL_ID }),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await;
 }
