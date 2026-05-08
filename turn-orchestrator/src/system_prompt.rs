@@ -34,9 +34,9 @@ pub fn build(
 
     let skills_section = match skills_index {
         Some(s) if !s.is_empty() => format!(
-            "## Available skills\n\n{s}\n\nCall `skill::fetch` via `agent_call` to load any `iii://` URI you see above when you need its full content."
+            "## Available skills\n\n{s}\n\nThe section above already contains the skills index AND the bodies of every root-level skill — do NOT call `skill::fetch` for any `iii://<root>` URI listed above; you already have its content. Use `skill::fetch` ONLY to load deeper sub-skill URIs (e.g. `iii://resend/email/send`) that are referenced from a root body but not inlined here. If a function id isn't covered by what's loaded, call `engine::functions::list` via `agent_call` to confirm it exists and read its `request_format`. Never invent function ids."
         ),
-        _ => "## Available skills\n\n(Skills index not loaded — call `skill::fetch` via `agent_call` with `uri: \"iii://skills\"` to discover what's registered.)".to_string(),
+        _ => "## Available skills\n\n(Skills index not loaded — call `skill::fetch` via `agent_call` with `uri: \"iii://skills\"` to discover what's registered. For the live function set + schemas, use `engine::functions::list`.)".to_string(),
     };
 
     format!("{BASE_BODY}\n\n{cwd_section}{skills_section}")
@@ -69,7 +69,31 @@ mod tests {
         assert!(out.contains("/work/proj"));
         assert!(out.contains("## Available skills"));
         assert!(out.contains("iii://skills/echo"));
-        assert!(out.contains("`skill::fetch` via `agent_call`"));
+        assert!(
+            out.contains("do NOT call `skill::fetch`"),
+            "must instruct against re-fetching root URIs already inlined"
+        );
+        assert!(
+            out.contains("`skill::fetch`"),
+            "must still mention `skill::fetch` for deeper sub-skill loads"
+        );
+    }
+
+    /// Pins the reconciliation with `harness/docs/iii-skill.md`: skills are
+    /// curated docs *over* the live function set; `engine::functions::list`
+    /// is the source of truth for existence + schemas. A revert to
+    /// "skills index = source of truth" would drop these substrings.
+    #[test]
+    fn skills_section_points_at_engine_functions_list_for_uncovered_ids() {
+        let out = build(Some("- iii://skills/echo"), None, None);
+        assert!(
+            out.contains("engine::functions::list"),
+            "skills section must direct the agent to the live function set"
+        );
+        assert!(
+            out.contains("Never invent function ids"),
+            "skills section must keep the no-invention rule"
+        );
     }
 
     #[test]
@@ -77,6 +101,10 @@ mod tests {
         let out = build(None, Some("/tmp"), None);
         assert!(out.contains("Skills index not loaded"));
         assert!(out.contains("iii://skills"));
+        assert!(
+            out.contains("engine::functions::list"),
+            "fallback must still point at the live function set"
+        );
     }
 
     #[test]

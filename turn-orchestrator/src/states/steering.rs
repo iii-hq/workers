@@ -8,55 +8,119 @@ use crate::events;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 
+/// Pure routing decision for `steering_check`. Lifted out of `handle` so
+/// every branch is unit-testable without an `III` instance.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SteeringRoute {
+    /// Abort flag was set: synthesize an aborted assistant message and tear down.
+    Abort,
+    /// External `steering` inbox had messages: append them and run another assistant turn.
+    Steering,
+    /// External `followup` inbox had messages: append them and run another assistant turn.
+    Followup,
+    /// No external messages but a function-call batch just finished — feed
+    /// the function results back to the assistant for a follow-up turn.
+    /// **This is the branch that was missing pre-fix.**
+    ContinueAfterFunction,
+    /// Nothing more to do — emit `TurnEnd` and tear down.
+    EndTurn,
+}
+
+pub(crate) fn route(
+    abort: bool,
+    has_steering: bool,
+    has_followup: bool,
+    has_function_results: bool,
+) -> SteeringRoute {
+    if abort {
+        SteeringRoute::Abort
+    } else if has_steering {
+        SteeringRoute::Steering
+    } else if has_followup {
+        SteeringRoute::Followup
+    } else if has_function_results {
+        SteeringRoute::ContinueAfterFunction
+    } else {
+        SteeringRoute::EndTurn
+    }
+}
+
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
-    if abort_set(iii, &record.session_id).await {
-        // Abort: build a legacy-shaped aborted message, persist it onto
-        // the transcript, then emit TurnEnd carrying it. Mirror of
-        // `provider-router/src/loop_state.rs:139-148` and
-        // `loop_state.rs:321-332`.
-        let aborted = aborted_message();
-        let mut messages = persistence::load_messages(iii, &record.session_id).await;
-        messages.push(AgentMessage::Assistant(aborted.clone()));
-        persistence::save_messages(iii, &record.session_id, &messages).await;
-        record.last_assistant = Some(aborted.clone());
-        if !record.turn_end_emitted {
-            events::emit(
-                iii,
-                &record.session_id,
-                &AgentEvent::TurnEnd {
-                    message: AgentMessage::Assistant(aborted),
-                    function_results: Vec::new(),
-                },
-            )
-            .await;
-            record.turn_end_emitted = true;
+    let abort = abort_set(iii, &record.session_id).await;
+    let steering = if abort {
+        Vec::new()
+    } else {
+        drain_queue(iii, "steering", &record.session_id).await
+    };
+    let followup = if abort || !steering.is_empty() {
+        Vec::new()
+    } else {
+        drain_queue(iii, "followup", &record.session_id).await
+    };
+
+    match route(
+        abort,
+        !steering.is_empty(),
+        !followup.is_empty(),
+        !record.function_results.is_empty(),
+    ) {
+        SteeringRoute::Abort => {
+            // Abort: build a legacy-shaped aborted message, persist it onto
+            // the transcript, then emit TurnEnd carrying it. Mirror of
+            // `provider-router/src/loop_state.rs:139-148` and
+            // `loop_state.rs:321-332`.
+            let aborted = aborted_message();
+            let mut messages = persistence::load_messages(iii, &record.session_id).await;
+            messages.push(AgentMessage::Assistant(aborted.clone()));
+            persistence::save_messages(iii, &record.session_id, &messages).await;
+            record.last_assistant = Some(aborted.clone());
+            if !record.turn_end_emitted {
+                events::emit(
+                    iii,
+                    &record.session_id,
+                    &AgentEvent::TurnEnd {
+                        message: AgentMessage::Assistant(aborted),
+                        function_results: Vec::new(),
+                    },
+                )
+                .await;
+                record.turn_end_emitted = true;
+            }
+            record.transition_to(TurnState::TearingDown);
         }
-        record.transition_to(TurnState::TearingDown);
-        return Ok(());
+        SteeringRoute::Steering => {
+            emit_turn_end_once(iii, record).await;
+            let mut messages = persistence::load_messages(iii, &record.session_id).await;
+            messages.extend(steering);
+            persistence::save_messages(iii, &record.session_id, &messages).await;
+            // Function results (if any) are already in `messages`; clear the
+            // transient signal so the next SteeringCheck doesn't re-loop.
+            record.function_results.clear();
+            record.transition_to(TurnState::AwaitingAssistant);
+        }
+        SteeringRoute::Followup => {
+            emit_turn_end_once(iii, record).await;
+            let mut messages = persistence::load_messages(iii, &record.session_id).await;
+            messages.extend(followup);
+            persistence::save_messages(iii, &record.session_id, &messages).await;
+            record.function_results.clear();
+            record.transition_to(TurnState::AwaitingAssistant);
+        }
+        SteeringRoute::ContinueAfterFunction => {
+            // The previous turn already emitted TurnEnd in `function_finalize`
+            // (see `states/functions.rs::handle_finalize` — `turn_end_emitted = true`).
+            // The next turn will emit its own TurnStart in `handle_awaiting`.
+            // Function results are already persisted into `messages` by
+            // finalize, so the next assistant turn picks them up via
+            // `persistence::load_messages`. Just clear the transient signal.
+            record.function_results.clear();
+            record.transition_to(TurnState::AwaitingAssistant);
+        }
+        SteeringRoute::EndTurn => {
+            emit_turn_end_once(iii, record).await;
+            record.transition_to(TurnState::TearingDown);
+        }
     }
-
-    let steering = drain_queue(iii, "steering", &record.session_id).await;
-    if !steering.is_empty() {
-        emit_turn_end_once(iii, record).await;
-        let mut messages = persistence::load_messages(iii, &record.session_id).await;
-        messages.extend(steering);
-        persistence::save_messages(iii, &record.session_id, &messages).await;
-        record.transition_to(TurnState::AwaitingAssistant);
-        return Ok(());
-    }
-
-    let followup = drain_queue(iii, "followup", &record.session_id).await;
-    if !followup.is_empty() {
-        emit_turn_end_once(iii, record).await;
-        let mut messages = persistence::load_messages(iii, &record.session_id).await;
-        messages.extend(followup);
-        persistence::save_messages(iii, &record.session_id, &messages).await;
-        record.transition_to(TurnState::AwaitingAssistant);
-        return Ok(());
-    }
-
-    emit_turn_end_once(iii, record).await;
-    record.transition_to(TurnState::TearingDown);
     Ok(())
 }
 
@@ -165,5 +229,61 @@ mod tests {
         assert!(matches!(m.error_kind, Some(ErrorKind::Transient)));
         assert_eq!(m.error_message.as_deref(), Some("aborted"));
         assert!(m.content.is_empty());
+    }
+
+    // ── route() coverage ──────────────────────────────────────────────
+    // Pins every branch of the steering-check routing decision so a
+    // future refactor can't silently drop a transition. Writing these as
+    // pure-fn assertions instead of integration tests keeps them fast
+    // and removes the III dependency.
+
+    #[test]
+    fn route_abort_wins_over_everything() {
+        // Abort flag dominates even when queues and function_results are present.
+        assert_eq!(route(true, true, true, true), SteeringRoute::Abort);
+        assert_eq!(route(true, false, false, false), SteeringRoute::Abort);
+    }
+
+    #[test]
+    fn route_steering_takes_precedence_over_followup_and_function_results() {
+        assert_eq!(
+            route(false, true, true, true),
+            SteeringRoute::Steering,
+            "steering inbox messages must be drained before followup or function-results continuation"
+        );
+    }
+
+    #[test]
+    fn route_followup_takes_precedence_over_function_results() {
+        assert_eq!(
+            route(false, false, true, true),
+            SteeringRoute::Followup,
+            "followup inbox messages must be drained before function-results continuation"
+        );
+    }
+
+    /// **Regression pin: the bug that caused the agent to stop after a function call.**
+    ///
+    /// Before the fix, `SteeringCheck` reached from `FunctionFinalize` with
+    /// no external messages fell through to `EndTurn`, so the model never
+    /// saw the function result. This test asserts the new branch routes
+    /// the loop back to `AwaitingAssistant` instead.
+    #[test]
+    fn route_continues_to_assistant_when_function_results_present() {
+        assert_eq!(
+            route(false, false, false, true),
+            SteeringRoute::ContinueAfterFunction,
+            "post-function SteeringCheck must continue to AwaitingAssistant so the model sees the result"
+        );
+    }
+
+    #[test]
+    fn route_ends_turn_when_nothing_pending() {
+        // No function call, no inbox messages, no abort — this is a clean
+        // text-only assistant response: the turn legitimately ends here.
+        assert_eq!(
+            route(false, false, false, false),
+            SteeringRoute::EndTurn
+        );
     }
 }

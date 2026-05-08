@@ -33,6 +33,18 @@ use serde_json::{json, Value};
 /// Identity of a connected browser worker. Caller-supplied; we don't mint it.
 pub type BrowserId = String;
 
+/// True if `e` is the engine's "no worker has registered this function" error.
+/// We match both the structured `Remote { code: "function_not_found", .. }`
+/// shape and the `Display` form, since some SDK paths surface it as a flat
+/// runtime/handler error string.
+pub(crate) fn is_function_not_found(e: &IIIError) -> bool {
+    match e {
+        IIIError::Remote { code, .. } => code == "function_not_found",
+        IIIError::Runtime(s) | IIIError::Handler(s) => s.contains("function_not_found"),
+        _ => false,
+    }
+}
+
 /// `None` means "subscribe to all sessions / non-session topics".
 pub type Subscription = Option<String>;
 
@@ -125,6 +137,16 @@ impl FanoutState {
                 self.outbound.remove(browser);
             }
         }
+    }
+
+    /// Drop a browser entirely (all sessions, all outbound budget). Used when
+    /// the browser's per-browser handler `ui::session::event::<id>` no longer
+    /// exists on the engine — the browser closed without calling
+    /// `ui::unsubscribe`. Returns `true` if anything was evicted.
+    pub fn evict_browser(&mut self, browser: &str) -> bool {
+        let removed = self.subs.remove(browser).is_some();
+        self.outbound.remove(browser);
+        removed
     }
 
     /// Get-or-insert the per-browser outbound budget. Used by every push
@@ -249,9 +271,14 @@ fn register_agent_event_pump(iii: &III, fanout: SharedFanout) -> FunctionRef {
                         let function_id = format!("ui::session::event::{browser_id}");
                         let frame = frame.clone();
                         let iii_for_push = iii.clone();
+                        let fanout_for_gc = Arc::clone(&fanout);
+                        let browser_for_gc = browser_id.clone();
                         // Fire-and-forget. The browser is allowed to be slow
                         // or absent; we don't want one stale browser to
-                        // back up the whole pump.
+                        // back up the whole pump. If the per-browser handler
+                        // is gone (browser closed without `ui::unsubscribe`),
+                        // garbage-collect its subscription so the engine
+                        // stops logging `function_not_found` on every event.
                         tokio::spawn(async move {
                             if let Err(e) = iii_for_push
                                 .trigger(TriggerRequest {
@@ -262,7 +289,20 @@ fn register_agent_event_pump(iii: &III, fanout: SharedFanout) -> FunctionRef {
                                 })
                                 .await
                             {
-                                tracing::trace!(error = %e, "ui push failed (browser likely gone)");
+                                if is_function_not_found(&e) {
+                                    let evicted = {
+                                        let mut state = fanout_for_gc.write().await;
+                                        state.evict_browser(&browser_for_gc)
+                                    };
+                                    if evicted {
+                                        tracing::debug!(
+                                            browser_id = %browser_for_gc,
+                                            "evicted stale browser subscription (handler gone)"
+                                        );
+                                    }
+                                } else {
+                                    tracing::trace!(error = %e, "ui push failed (browser likely slow)");
+                                }
                             }
                         });
                     }
@@ -831,6 +871,60 @@ mod tests {
         s.subscribe("browser-a".into(), Some("sess-1".into()));
         s.unsubscribe("browser-a", Some("sess-1".into()));
         assert_eq!(s.browser_count(), 0);
+    }
+
+    #[test]
+    fn evict_browser_drops_all_sessions_at_once() {
+        let mut s = FanoutState::default();
+        s.subscribe("browser-a".into(), Some("sess-1".into()));
+        s.subscribe("browser-a".into(), Some("sess-2".into()));
+        s.subscribe("browser-a".into(), None);
+        // Touch outbound so the eviction path has something to clean up.
+        let _ = s.outbound_for("browser-a");
+        assert_eq!(s.browser_count(), 1);
+
+        let removed = s.evict_browser("browser-a");
+        assert!(removed, "evict must report success when the browser was present");
+        assert_eq!(s.browser_count(), 0);
+        assert!(
+            s.subscribers_for("sess-1").is_empty(),
+            "evicted browser must not appear in subscribers_for"
+        );
+    }
+
+    #[test]
+    fn evict_browser_is_noop_when_unknown() {
+        let mut s = FanoutState::default();
+        let removed = s.evict_browser("ghost");
+        assert!(!removed);
+        assert_eq!(s.browser_count(), 0);
+    }
+
+    #[test]
+    fn is_function_not_found_matches_remote_code() {
+        let e = IIIError::Remote {
+            code: "function_not_found".into(),
+            message: "Function not found".into(),
+            stacktrace: None,
+        };
+        assert!(super::is_function_not_found(&e));
+    }
+
+    #[test]
+    fn is_function_not_found_matches_runtime_string_form() {
+        let e = IIIError::Runtime("function_not_found: ui::session::event::xyz".into());
+        assert!(super::is_function_not_found(&e));
+    }
+
+    #[test]
+    fn is_function_not_found_rejects_unrelated_errors() {
+        assert!(!super::is_function_not_found(&IIIError::Timeout));
+        assert!(!super::is_function_not_found(&IIIError::NotConnected));
+        assert!(!super::is_function_not_found(&IIIError::Remote {
+            code: "internal_error".into(),
+            message: "boom".into(),
+            stacktrace: None,
+        }));
     }
 
     #[test]
