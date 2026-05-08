@@ -363,8 +363,9 @@ mod dispatch_tests {
         assert_eq!(tr.details, inner);
         match tr.content.first() {
             Some(harness_types::ContentBlock::Text(t)) => {
-                // serde_json::Value::to_string on a string adds quotes.
-                assert_eq!(t.text, "\"just a string\"");
+                // JSON String values are unwrapped to their inner content
+                // (see decode_or_passthrough_unwraps_string_value_into_text).
+                assert_eq!(t.text, "just a string");
             }
             other => panic!("expected Text content block, got {other:?}"),
         }
