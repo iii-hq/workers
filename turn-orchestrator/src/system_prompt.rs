@@ -84,4 +84,43 @@ mod tests {
         let out = build(None, None, None);
         assert!(!out.contains("## Working directory"));
     }
+
+    // ── Adversarial unit tests added per plan
+    // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
+    //
+    // The builder is intentionally a verbatim concatenator — input
+    // sanitization is the caller's job. These tests pin that contract so
+    // a future change that adds escaping/sanitization here is a deliberate
+    // decision, not a silent drift.
+
+    #[test]
+    fn cwd_with_newlines_passes_through_verbatim() {
+        let out = build(None, Some("/tmp/path\nmore"), None);
+        assert!(
+            out.contains("/tmp/path\nmore"),
+            "embedded newline should reach the assembled prompt verbatim"
+        );
+    }
+
+    #[test]
+    fn skills_index_with_markdown_passes_through_verbatim() {
+        let weird = "- iii://skills/foo\n\n```rust\nbad\n```\n";
+        let out = build(Some(weird), None, None);
+        assert!(
+            out.contains(weird),
+            "skills_index markdown should reach the prompt unchanged"
+        );
+    }
+
+    #[test]
+    fn large_override_prompt_returns_same_length() {
+        let huge = "a".repeat(1_000_000);
+        let out = build(Some("idx"), Some("/tmp"), Some(&huge));
+        assert_eq!(
+            out.len(),
+            1_000_000,
+            "override is verbatim — no implicit truncation"
+        );
+        assert_eq!(out, huge);
+    }
 }

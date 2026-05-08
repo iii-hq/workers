@@ -100,7 +100,21 @@ spawn_one() {
       --url "$DEMO_ENGINE_WS"
     )
   fi
-  env III_URL="$DEMO_ENGINE_WS" nohup "$bin" "${run_args[@]}" >>"$logfile" 2>&1 &
+
+  # Per-worker env. policy-denylist needs POLICY_DENIED_TOOLS to include
+  # bridge::trigger — without it the LLM can call bridge::trigger to
+  # recursively dispatch any function and bypass name-matched policy
+  # rules (the policy hook fires with name "bridge::trigger", not the
+  # inner function). See plan-eng-review D1 in
+  # docs/superpowers/specs/2026-05-07-tier2-iii-pure-harness-design.md.
+  local -a extra_env=()
+  case "$w" in
+    policy-denylist)
+      extra_env+=(POLICY_DENIED_TOOLS="bridge::trigger")
+      ;;
+  esac
+
+  env III_URL="$DEMO_ENGINE_WS" "${extra_env[@]}" nohup "$bin" "${run_args[@]}" >>"$logfile" 2>&1 &
   echo $! > "$pidfile"
   echo "    [start] $w pid=$! log=$logfile"
 }

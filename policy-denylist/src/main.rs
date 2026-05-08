@@ -42,11 +42,23 @@ fn apply_runtime_env_overrides(cfg: &mut config::WorkerConfig) {
 
 fn parse_denied_tools(raw: &str) -> Vec<String> {
     let raw = raw.trim();
-    let raw = raw
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(raw);
-    raw.split(',')
+    // Brackets must be balanced. A single unmatched bracket previously
+    // leaked into the first/last token (e.g. `[tool1,tool2` parsed as
+    // `["[tool1", "tool2"]`), silently breaking the operator's intended
+    // denial. Strip both, or strip neither.
+    let stripped = match (raw.strip_prefix('['), raw.strip_suffix(']')) {
+        (Some(inner), Some(_)) => inner.strip_suffix(']').unwrap_or(inner),
+        (None, None) => raw,
+        _ => {
+            tracing::warn!(
+                input = %raw,
+                "POLICY_DENIED_TOOLS has unmatched bracket; ignoring brackets and parsing as comma-separated"
+            );
+            raw.trim_matches(|c| c == '[' || c == ']')
+        }
+    };
+    stripped
+        .split(',')
         .map(str::trim)
         .map(|s| s.trim_matches('"').trim_matches('\'').trim())
         .filter(|s| !s.is_empty())
@@ -144,4 +156,60 @@ async fn main() -> Result<()> {
     tracing::info!("policy-denylist shutting down");
     iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_denied_tools;
+
+    // ── Adversarial unit tests added per plan
+    // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
+
+    #[test]
+    fn parse_denied_tools_handles_empty_string() {
+        assert!(parse_denied_tools("").is_empty());
+    }
+
+    #[test]
+    fn parse_denied_tools_strips_whitespace_and_filters_empty() {
+        assert_eq!(
+            parse_denied_tools("  tool1  ,  ,  tool2  "),
+            vec!["tool1".to_string(), "tool2".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_denied_tools_accepts_json_array_syntax() {
+        // The Tier 2 demo.sh injects `bridge::trigger` as a single-value
+        // env, but operators may still pass JSON-array form. This pins
+        // the parser's tolerance for both quoting forms.
+        assert_eq!(
+            parse_denied_tools(r#"["tool1", "tool2"]"#),
+            vec!["tool1".to_string(), "tool2".to_string()]
+        );
+        assert_eq!(
+            parse_denied_tools("['tool1', 'tool2']"),
+            vec!["tool1".to_string(), "tool2".to_string()]
+        );
+    }
+
+    /// Malformed bracket inputs must not leak the bracket character into
+    /// the parsed tool name. A leaked bracket would silently break the
+    /// operator's intended denial: `bridge::trigger` would never match
+    /// `[bridge::trigger`. The parser strips bracket pairs symmetrically
+    /// and falls back to a bracket-tolerant strip + warning when one side
+    /// is missing.
+    #[test]
+    fn parse_denied_tools_handles_malformed_unclosed_bracket() {
+        assert_eq!(
+            parse_denied_tools("[tool1,tool2"),
+            vec!["tool1".to_string(), "tool2".to_string()],
+            "open bracket without close must not leak '[' into the first token"
+        );
+        assert_eq!(
+            parse_denied_tools("tool1,tool2]"),
+            vec!["tool1".to_string(), "tool2".to_string()],
+            "close bracket without open must not leak ']' into the last token"
+        );
+    }
 }
