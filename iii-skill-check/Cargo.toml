@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "iii-skill-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "iii-skill-check"
+path = "src/main.rs"
+
+[lib]
+name = "iii_skill_check"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+syn = { version = "2", features = ["full", "extra-traits", "parsing"] }
+proc-macro2 = "1"
+walkdir = "2"
+glob = "0.3"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+[dev-dependencies]
+tempfile = "3"
+similar-asserts = "1"
