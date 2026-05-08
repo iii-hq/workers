@@ -207,10 +207,22 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     }
     persistence::save_messages(iii, &record.session_id, &messages).await;
 
-    let last_assistant = record
-        .last_assistant
-        .clone()
-        .expect("tools state requires last_assistant; only assistant_finished transitions in");
+    let Some(last_assistant) = record.last_assistant.clone() else {
+        // The state machine should only transition to ToolFinalize from
+        // AssistantFinished, which always populates last_assistant. If we
+        // ever land here (resume after crash mid-turn, persistence
+        // corruption, or a bug elsewhere), end the turn cleanly instead of
+        // panicking. The lifecycle events tied to last_assistant are
+        // skipped; the tool_results are still persisted above.
+        tracing::warn!(
+            session_id = %record.session_id,
+            "ToolFinalize reached without last_assistant; tearing down without lifecycle emit"
+        );
+        record.tool_results = tool_results;
+        record.pending_tool_calls.clear();
+        record.transition_to(TurnState::TearingDown);
+        return Ok(());
+    };
     for evt in build_finalize_lifecycle(&last_assistant, &tool_results) {
         events::emit(iii, &record.session_id, &evt).await;
     }
@@ -577,15 +589,10 @@ mod tests {
     // Real fix: replace .expect() with a graceful transition to
     // TearingDown + AgentError event.
     //
-    // Real test (deferred): construct a TurnStateRecord with
-    // last_assistant=None and call handle_finalize, asserting it returns
-    // Ok(()) with state == TearingDown. Needs a stub iii::III which
-    // doesn't exist in this repo yet. Until then, this source-grep test
-    // documents the issue and fails as a regression guard once the fix
-    // lands (mirrors the
-    // `handle_execute_does_not_call_iii_trigger_with_tc_name_directly`
-    // pattern earlier in this file).
-    #[ignore = "documents bug; needs stub iii::III for full reproduction"]
+    /// Source-grep regression guard: the panic path
+    /// `.expect("tools state requires last_assistant…")` in
+    /// `handle_finalize` must stay removed. A full functional test would
+    /// need a stub `iii::III`; until that lands, this prevents reverts.
     #[test]
     fn handle_finalize_does_not_expect_last_assistant() {
         let src = include_str!("tools.rs");
@@ -595,10 +602,8 @@ mod tests {
         let window = &src[start..start + src[start..].len().min(3000)];
         assert!(
             !window.contains(".expect(\"tools state requires last_assistant"),
-            "handle_finalize still .expect()s last_assistant; \
-             panics if the state machine ever transitions to ToolFinalize \
-             without an assistant message. Replace with a graceful \
-             transition to TearingDown + AgentError event."
+            "handle_finalize must not .expect() last_assistant; \
+             use a let-else that gracefully transitions to TearingDown."
         );
     }
 }
