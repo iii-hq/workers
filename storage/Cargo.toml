@@ -1,0 +1,58 @@
+[workspace]
+
+[package]
+name = "storage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "storage"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.12.0-next.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = { version = "0.8", features = ["chrono"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+url = "2"
+percent-encoding = "2"
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+rand = "0.8"
+hex = "0.4"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-sdk-sqs = "1"
+aws-credential-types = "1"
+aws-sigv4 = "1"
+aws-smithy-runtime-api = "1"
+aws-smithy-types = "1"
+# GCS: yoshidan's google-cloud-rust crates were renamed to gcloud-* in their
+# 1.x line. The plan referenced the older 0.21 names; we use the renamed 1.x.
+gcloud-storage = "1"
+gcloud-auth = "1"
+gcloud-pubsub = "1"
+which = "6"
+libc = "0.2"
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+axum = "0.7"
+tower = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

@@ -1,0 +1,16 @@
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Records": [
+    {
+      "eventTime": "2026-05-05T12:00:00.000Z",
+      "s3": {
+        "bucket": { "name": "scratch" },
+        "object": {
+          "key": "test.txt",
+          "size": 13,
+          "eTag": "deadbeef"
+        }
+      }
+    }
+  ]
+}

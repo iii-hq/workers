@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
     // capture the subscriber sets they'll fan out to.
     let registered = trigger_types::register_all(&iii);
     functions::register_all(&iii, &cfg, &registered);
+    functions::log_fs_health(&cfg);
 
     tracing::info!("skills ready: 13 functions + 2 custom trigger types");
 

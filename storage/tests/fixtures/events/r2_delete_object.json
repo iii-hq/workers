@@ -1,0 +1,8 @@
+{
+  "account": "abcd1234",
+  "action": "DeleteObject",
+  "bucket": "avatars",
+  "object": { "key": "u/1/avatar.png" },
+  "eventTime": "2026-05-05T12:30:00.000Z",
+  "messageId": "cf-msg-2"
+}

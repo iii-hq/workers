@@ -425,6 +425,7 @@ pub async fn register_with_iii_with_engine_url(
         })
         .await;
 
+
     // Wire the upstream fanout pumps:
     //   - agent::events stream subscriber → ui::session::event::<browser_id>
     //   - state::list poll                → ui::sessions::changed::<browser_id>

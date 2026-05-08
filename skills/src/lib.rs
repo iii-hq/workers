@@ -20,6 +20,7 @@
 //! `notifications/*_list_changed` to its clients.
 
 pub mod config;
+pub mod fs_source;
 pub mod functions;
 pub mod manifest;
 pub mod state;
