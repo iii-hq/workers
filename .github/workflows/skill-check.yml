@@ -1,0 +1,87 @@
+name: skill-check
+
+on:
+  pull_request:
+    paths:
+      - "**/docs/**"
+      - "**/iii.worker.yaml"
+      - "**/config.yaml"
+      - "**/README.md"
+      - "**/skill.md"
+      - "**/skills/**"
+      - "iii-skill-check/**"
+      - "project-rules/**"
+      - "styles/**"
+      - ".vale.ini"
+      - ".skill-check.yaml"
+      - ".github/workflows/skill-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: skill-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  VALE_VERSION: "3.14.1"
+
+jobs:
+  validator-tests:
+    name: iii-skill-check tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install Vale ${{ env.VALE_VERSION }}
+        run: |
+          curl -sL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin vale
+          vale --version
+      - name: cargo test
+        working-directory: iii-skill-check
+        run: cargo test --no-fail-fast
+
+  verify-workers:
+    name: verify all workers
+    runs-on: ubuntu-latest
+    needs: validator-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install Vale ${{ env.VALE_VERSION }}
+        run: |
+          curl -sL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin vale
+      - name: Build iii-skill-check
+        working-directory: iii-skill-check
+        run: cargo build --release
+      - name: Verify every worker (structure, vale, ai)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          bin="iii-skill-check/target/release/iii-skill-check"
+          fail=0
+          for manifest in */iii.worker.yaml; do
+            dir=$(dirname "$manifest")
+            # Only run skill-check on workers that have adopted the docs/ partials layout.
+            if [ ! -d "$dir/docs" ]; then
+              echo "::notice::skipping $dir (no docs/ partials yet)"
+              continue
+            fi
+            echo "::group::$dir"
+            if ! "$bin" verify-rendered "$dir"; then
+              fail=1
+            fi
+            layers="structure,vale"
+            if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+              layers="structure,vale,ai"
+            else
+              echo "::warning::ANTHROPIC_API_KEY not set; skipping AI layer"
+            fi
+            if ! "$bin" verify "$dir" --layers "$layers"; then
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
