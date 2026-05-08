@@ -4,6 +4,8 @@ target/
 .idea/
 .DS_Store
 docs
+!textstats/docs/
+!iii-skill-authoring/docs/
 .worktrees
 node_modules
 package-lock.json
@@ -22,6 +24,7 @@ WORKERS-PR-REVIEW.md
 config.yaml
 !llm-budget/config.yaml
 !provider-anthropic/config.yaml
+!textstats/config.yaml
 iii.lock
 harness/.omx/
 harness/web/.vite/

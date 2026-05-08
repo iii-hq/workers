@@ -1,0 +1,12 @@
+# textstats runtime config.
+
+# Number of recent analyses retained for textstats::summarize rollups.
+recent_window: 100
+
+# ISO 639-1 language codes used as tokenization hints.
+language_hints:
+  - en
+  - es
+
+# Where the worker persists rolling analysis state on disk.
+data_dir: "${WORKER_DATA:~/.iii/data/textstats}"

@@ -1,0 +1,11 @@
+iii: v1
+name: textstats
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: textstats
+description: Text analysis on the iii bus — word and character counts, word-level diffs, and recent-analysis rollups under textstats::*.
+trigger_types:
+  - name: textstats::on-analyze
+    fires_when: After every successful textstats::analyze call.
+    payload: '{ "words": int, "chars": int, "lines": int, "ts_ms": int }'
