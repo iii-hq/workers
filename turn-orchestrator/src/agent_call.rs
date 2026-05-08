@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use harness_types::{ContentBlock, TextContent, ToolResult};
-use iii_sdk::{RegisterFunctionMessage, TriggerRequest, Value, III};
+use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 
 /// LLM-facing tool name (regex-safe, no `::`).
@@ -76,16 +76,22 @@ fn validate_function_field(function: &Value) -> Result<String, ToolResult> {
     }
 }
 
+/// True only for the engine's canonical "no such function" remote error.
+/// Matches on `IIIError::Remote` with the exact `function_not_found` code
+/// the engine emits in `iii.rs:1701`. Substring matching on `Display` was
+/// previously used; that misclassified inner errors whose message text
+/// happened to contain the magic substring.
 #[must_use]
-fn is_function_not_found<E: std::fmt::Display>(err: &E) -> bool {
-    let msg = err.to_string();
-    msg.contains("function_not_found") || msg.contains("Function not found")
+fn is_function_not_found(err: &IIIError) -> bool {
+    matches!(err, IIIError::Remote { code, .. } if code == "function_not_found")
 }
 
+/// True only for the SDK's structured `Timeout` variant (see
+/// `iii.rs:1155`). Substring matching on `Display` was previously used and
+/// misclassified inner errors mentioning "timeout" / "timed out".
 #[must_use]
-pub(crate) fn is_timeout<E: std::fmt::Display>(err: &E) -> bool {
-    let s = err.to_string().to_ascii_lowercase();
-    s.contains("timeout") || s.contains("timed out")
+pub(crate) fn is_timeout(err: &IIIError) -> bool {
+    matches!(err, IIIError::Timeout)
 }
 
 /// If the inner function returned a `ToolResult`-shaped value, deserialize
@@ -252,33 +258,32 @@ mod dispatch_tests {
         assert!(!tr.terminate);
     }
 
-    #[test]
-    fn is_timeout_recognizes_engine_timeout_strings() {
-        struct E(&'static str);
-        impl std::fmt::Display for E {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.0)
-            }
+    fn remote_err(code: &str, message: &str) -> IIIError {
+        IIIError::Remote {
+            code: code.to_string(),
+            message: message.to_string(),
+            stacktrace: None,
         }
-        assert!(is_timeout(&E("trigger timed out after 240s")));
-        assert!(is_timeout(&E("Timeout waiting for reply")));
-        assert!(!is_timeout(&E("function_not_found")));
     }
 
     #[test]
-    fn function_not_found_detector_matches_engine_error_codes() {
-        struct E(&'static str);
-        impl std::fmt::Display for E {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.0)
-            }
-        }
-        assert!(is_function_not_found(&E(
-            "remote error (function_not_found): Function sandbox::create not found"
+    fn is_timeout_recognizes_structured_timeout_variant() {
+        assert!(is_timeout(&IIIError::Timeout));
+        assert!(!is_timeout(&remote_err("function_not_found", "")));
+        assert!(!is_timeout(&IIIError::Runtime("timed out".into())));
+    }
+
+    #[test]
+    fn function_not_found_detector_matches_engine_error_code() {
+        assert!(is_function_not_found(&remote_err(
+            "function_not_found",
+            "Function sandbox::create not found"
         )));
-        assert!(is_function_not_found(&E("Function not found")));
-        assert!(!is_function_not_found(&E("timeout waiting for reply")));
-        assert!(!is_function_not_found(&E("invocation_failed: bad payload")));
+        assert!(!is_function_not_found(&IIIError::Timeout));
+        assert!(!is_function_not_found(&remote_err(
+            "invocation_failed",
+            "bad payload"
+        )));
     }
 
     // ── Adversarial unit tests added per plan
@@ -352,43 +357,35 @@ mod dispatch_tests {
         assert_eq!(FUNCTION_ID, "agent::call");
     }
 
-    // TODO(test-harden): is_function_not_found uses substring matching on
-    // the error message. An inner function whose error message *contains*
-    // the literal "function_not_found" (e.g. it's logging a path that
-    // mentions the term, or reflecting a sub-call's error verbatim) gets
-    // misclassified as the dispatcher's function_not_found envelope.
-    // Tighten the heuristic to anchor on prefix ("remote error
-    // (function_not_found)"...) or use a structured error code instead of
-    // substring match.
-    #[ignore]
+    /// Inner-function errors whose payload mentions "function_not_found"
+    /// must not be reclassified as the dispatcher's function_not_found
+    /// envelope. Only the engine's canonical Remote{code} signals it.
     #[test]
-    fn is_function_not_found_misclassifies_user_content() {
-        struct E(&'static str);
-        impl std::fmt::Display for E {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.0)
-            }
-        }
-        assert!(!is_function_not_found(&E(
-            "tool wrote log line: 'function_not_found in user data'"
+    fn is_function_not_found_ignores_substring_in_other_variants() {
+        assert!(!is_function_not_found(&IIIError::Handler(
+            "tool wrote log line: 'function_not_found in user data'".into()
+        )));
+        assert!(!is_function_not_found(&IIIError::Runtime(
+            "function_not_found in user data".into()
+        )));
+        assert!(!is_function_not_found(&remote_err(
+            "invocation_failed",
+            "function_not_found mentioned in inner message"
         )));
     }
 
-    // TODO(test-harden): is_timeout uses lowercased substring match on
-    // "timeout" / "timed out". An inner function whose error message
-    // contains the term unrelated to a bus timeout (e.g. "scheduled
-    // timeout in 30 days") gets misclassified. Same fix as above.
-    #[ignore]
+    /// Inner-function errors whose payload mentions "timeout" / "timed out"
+    /// must not be reclassified as a bus timeout. Only IIIError::Timeout
+    /// signals the SDK timeout path.
     #[test]
-    fn is_timeout_misclassifies_user_content() {
-        struct E(&'static str);
-        impl std::fmt::Display for E {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.0)
-            }
-        }
-        assert!(!is_timeout(&E(
-            "user input: scheduled timeout in 30 days from now"
+    fn is_timeout_ignores_substring_in_other_variants() {
+        assert!(!is_timeout(&IIIError::Handler(
+            "user input: scheduled timeout in 30 days from now".into()
+        )));
+        assert!(!is_timeout(&IIIError::Runtime("timed out parsing".into())));
+        assert!(!is_timeout(&remote_err(
+            "invocation_failed",
+            "timed out reading file"
         )));
     }
 }
