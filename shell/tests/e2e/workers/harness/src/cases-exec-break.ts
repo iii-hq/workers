@@ -11,20 +11,24 @@ export const EXEC_BREAK_CASES: TestCase[] = [
     },
   },
   {
-    name: 'exec_command_wrong_type_reports_as_missing',
+    // Renamed from `_reports_as_missing` — that name encoded a legacy bug
+    // where the loose Value handler conflated wrong-type with absent. The
+    // typed schema (ExecRequest) now produces a field-aware error so the
+    // LLM can distinguish the two cases.
+    name: 'exec_command_number_reports_wrong_type',
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', { command: 42 }),
-        "missing 'command'",
+        /'command'.+string/,
       );
     },
   },
   {
-    name: 'exec_command_boolean_reports_as_missing',
+    name: 'exec_command_boolean_reports_wrong_type',
     async run({ call, expectError }) {
       await expectError(
         () => call('shell::exec', { command: true }),
-        "missing 'command'",
+        /'command'.+string/,
       );
     },
   },

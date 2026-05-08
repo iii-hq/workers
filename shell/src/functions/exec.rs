@@ -14,7 +14,12 @@ pub async fn handle(
     // bad `target.kind`) come from the per-field deserializers in
     // `functions::types`; they surface here as the trigger `Err` carrying
     // the actionable text the LLM needs to self-correct.
-    let argv = parse_argv(&req.command, Some(&req.args)).map_err(|e| format!("argv: {}", e))?;
+    // `args.as_ref()` preserves the legacy two-mode contract on `parse_argv`:
+    //   None → tokenize `command` via shell-words (single-string path)
+    //   Some(_) → use args verbatim, even if empty
+    // The typed-schema migration must NOT collapse "absent args" into
+    // "args: []" or callers lose the shell-words path.
+    let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
 
     cfg.is_command_allowed(&argv)?;
 

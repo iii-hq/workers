@@ -40,12 +40,16 @@ fn deserialize_command<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Err
     }
 }
 
-/// Validate every element is a string with a per-index error. Mirrors the
-/// hand-rolled validation that lived inside the loose handlers.
-fn deserialize_args<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+/// Validate every element is a string with a per-index error. Returns
+/// `Option<Vec<String>>` so the handler can distinguish `args: null` /
+/// absent (`None`) from an empty array (`Some(vec![])`) — `parse_argv` uses
+/// that distinction to decide whether to tokenize `command` via shell-words
+/// (the legacy single-string path).
+fn deserialize_args<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
     use serde::de::Error;
     let v = serde_json::Value::deserialize(d)?;
     match v {
+        serde_json::Value::Null => Ok(None),
         serde_json::Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for (i, el) in arr.into_iter().enumerate() {
@@ -59,7 +63,7 @@ fn deserialize_args<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::E
                     }
                 }
             }
-            Ok(out)
+            Ok(Some(out))
         }
         other => Err(D::Error::custom(format!(
             "'args' must be an array of strings (got {})",
@@ -89,8 +93,11 @@ pub struct ExecRequest {
     pub command: String,
     /// Arguments passed to the program, in order. Every element must be a
     /// string; non-string elements are rejected by index.
+    /// `None` (or `args: null` / absent) means "tokenize `command` via
+    /// shell-words"; `Some(_)` (including the empty vec) means "use args
+    /// verbatim, no shell-words." See `parse_argv` in `crate::exec::host`.
     #[serde(default, deserialize_with = "deserialize_args")]
-    pub args: Vec<String>,
+    pub args: Option<Vec<String>>,
     /// Per-call timeout override, milliseconds. Capped at `cfg.max_timeout_ms`.
     /// Negative or fractional values silently fall back to
     /// `cfg.default_timeout_ms` (loose wire semantic, preserved on purpose).
@@ -110,8 +117,11 @@ pub struct ExecBgRequest {
     #[serde(deserialize_with = "deserialize_command")]
     pub command: String,
     /// Arguments passed to the program. See [`ExecRequest::args`].
+    /// `None` (or `args: null` / absent) means "tokenize `command` via
+    /// shell-words"; `Some(_)` (including the empty vec) means "use args
+    /// verbatim, no shell-words." See `parse_argv` in `crate::exec::host`.
     #[serde(default, deserialize_with = "deserialize_args")]
-    pub args: Vec<String>,
+    pub args: Option<Vec<String>>,
     /// Per-call timeout. Host-targeted background jobs IGNORE `timeout_ms`;
     /// sandbox-targeted ones forward it through `cfg.resolve_timeout`.
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
