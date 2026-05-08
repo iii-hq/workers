@@ -182,10 +182,7 @@ pub fn register(iii: &Arc<III>) {
                     .unwrap_or("")
                     .to_string();
                 let function = payload.get("function").cloned().unwrap_or(Value::Null);
-                let inner_payload = payload
-                    .get("payload")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
+                let inner_payload = payload.get("payload").cloned().unwrap_or_else(|| json!({}));
                 let result = dispatch(&iii, &session_id, &function, inner_payload).await;
                 serde_json::to_value(&result).map_err(|e| iii_sdk::IIIError::Handler(e.to_string()))
             }

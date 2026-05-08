@@ -20,8 +20,7 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
         .filter(|s| !s.is_empty());
     let cwd = request.get("cwd").and_then(Value::as_str);
     let skills_index = fetch_skills_index(iii).await;
-    let prompt =
-        system_prompt::build(skills_index.as_deref(), cwd, override_prompt);
+    let prompt = system_prompt::build(skills_index.as_deref(), cwd, override_prompt);
     let mut updated = request.clone();
     if let Some(obj) = updated.as_object_mut() {
         obj.insert("system_prompt".into(), json!(prompt));

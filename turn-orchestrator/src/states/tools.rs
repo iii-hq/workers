@@ -340,7 +340,11 @@ mod tests {
 
     #[test]
     fn missing_payload_defaults_to_empty_object() {
-        let input = tc("call_2", "agent_call", json!({ "function": "skills::list" }));
+        let input = tc(
+            "call_2",
+            "agent_call",
+            json!({ "function": "skills::list" }),
+        );
         let out = unwrap_agent_call(input);
         assert_eq!(out.name, "skills::list");
         assert_eq!(out.arguments, json!({}));
