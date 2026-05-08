@@ -5,5 +5,5 @@ styles:
 ai_check:
   provider: anthropic
   model: claude-opus-4-7
-  api_key_env: ANTHROPIC_API_KEY
+  api_key_env_var: ANTHROPIC_API_KEY
   max_tokens: 4000
