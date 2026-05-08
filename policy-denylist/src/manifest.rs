@@ -14,7 +14,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Hook subscriber on agent::before_tool_call that blocks calls whose name matches a configured denylist."
+            "Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist."
                 .to_string(),
         default_config: serde_json::to_value(crate::config::WorkerConfig::default()).unwrap_or_else(|_| serde_json::json!({})),
         supported_targets: vec![env!("TARGET").to_string()],

@@ -29,8 +29,8 @@ pub const EVENTS_STREAM: &str = "agent::events";
 pub const STATE_SCOPE: &str = "agent";
 
 /// Hook topic ids.
-pub const TOPIC_BEFORE: &str = "agent::before_tool_call";
-pub const TOPIC_AFTER: &str = "agent::after_tool_call";
+pub const TOPIC_BEFORE: &str = "agent::before_function_call";
+pub const TOPIC_AFTER: &str = "agent::after_function_call";
 
 async fn list_function_infos(iii: &III) -> Result<Vec<iii_sdk::FunctionInfo>, String> {
     let value = iii
@@ -58,7 +58,7 @@ async fn list_function_infos(iii: &III) -> Result<Vec<iii_sdk::FunctionInfo>, St
 /// conventions for grep, not categories; the engine treats every id the
 /// same. The eight LLM-callable builtins (`read`, `write`, `edit`, `ls`,
 /// `grep`, `find`, `bash`, `run_subagent`) register under the same name
-/// the LLM emits in `ContentBlock::ToolCall { name }`. The agent loop
+/// the LLM emits in `ContentBlock::FunctionCall { function_id }`. The agent loop
 /// dispatches via `iii.trigger(name, payload)` directly; no prefix
 /// mapping, no wrapper.
 ///
@@ -502,8 +502,8 @@ mod tests {
     #[test]
     fn constants_match_architecture_spec() {
         assert_eq!(STATE_SCOPE, "agent");
-        assert_eq!(TOPIC_BEFORE, "agent::before_tool_call");
-        assert_eq!(TOPIC_AFTER, "agent::after_tool_call");
+        assert_eq!(TOPIC_BEFORE, "agent::before_function_call");
+        assert_eq!(TOPIC_AFTER, "agent::after_function_call");
         assert_eq!(EVENTS_STREAM, "agent::events");
     }
 

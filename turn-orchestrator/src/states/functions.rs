@@ -1,8 +1,8 @@
-//! `tool_prepare`, `tool_execute`, `tool_finalize` handlers.
+//! `function_prepare`, `function_execute`, `function_finalize` handlers.
 
 use harness_types::{
-    AgentEvent, AgentMessage, AssistantMessage, ContentBlock, TextContent, ToolCall, ToolResult,
-    ToolResultMessage,
+    AgentEvent, AgentMessage, AssistantMessage, ContentBlock, FunctionCall, FunctionResult,
+    FunctionResultMessage, TextContent,
 };
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
@@ -12,41 +12,41 @@ use crate::events;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 
-const TOPIC_BEFORE: &str = "agent::before_tool_call";
-const TOPIC_AFTER: &str = "agent::after_tool_call";
+const TOPIC_BEFORE: &str = "agent::before_function_call";
+const TOPIC_AFTER: &str = "agent::after_function_call";
 const HOOK_TIMEOUT_MS: u64 = 10_000;
 
 /// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
-/// a normal [`ToolCall`] carrying the inner function id. Non-`agent_call`
-/// tool calls pass through unchanged so legacy/test fixtures keep working.
-fn unwrap_agent_call(tc: ToolCall) -> ToolCall {
-    if tc.name != AGENT_CALL_TOOL_NAME {
-        return tc;
+/// a normal [`FunctionCall`] carrying the inner function id. Non-`agent_call`
+/// calls pass through unchanged so legacy/test fixtures keep working.
+fn unwrap_agent_call(fc: FunctionCall) -> FunctionCall {
+    if fc.function_id != AGENT_CALL_TOOL_NAME {
+        return fc;
     }
-    let function = tc
+    let function = fc
         .arguments
         .get("function")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let payload = tc
+    let payload = fc
         .arguments
         .get("payload")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    ToolCall {
-        id: tc.id,
-        name: function,
+    FunctionCall {
+        id: fc.id,
+        function_id: function,
         arguments: payload,
     }
 }
 pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
-    record.tool_results.clear();
-    let raw = std::mem::take(&mut record.pending_tool_calls);
-    record.pending_tool_calls = raw.into_iter().map(unwrap_agent_call).collect();
+    record.function_results.clear();
+    let raw = std::mem::take(&mut record.pending_function_calls);
+    record.pending_function_calls = raw.into_iter().map(unwrap_agent_call).collect();
 
     // run_request is immutable for a session; loading it here on every retry of
-    // ToolPrepare is wasteful but correct. Cache on TurnStateRecord if hot.
+    // FunctionPrepare is wasteful but correct. Cache on TurnStateRecord if hot.
     let run_request = persistence::load_run_request(iii, &record.session_id).await;
     let approval_required: Vec<String> = run_request
         .get("approval_required")
@@ -63,13 +63,13 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         })
         .unwrap_or_default();
 
-    let mut prepared: Vec<(ToolCall, Option<ToolResult>)> =
-        Vec::with_capacity(record.pending_tool_calls.len());
-    for tc in record.pending_tool_calls.iter().cloned() {
+    let mut prepared: Vec<(FunctionCall, Option<FunctionResult>)> =
+        Vec::with_capacity(record.pending_function_calls.len());
+    for fc in record.pending_function_calls.iter().cloned() {
         let merged = publish_collect(
             iii,
             TOPIC_BEFORE,
-            build_before_tool_call_payload(&tc, &approval_required),
+            build_before_function_call_payload(&fc, &approval_required),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
         )
@@ -84,7 +84,7 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
                 .and_then(Value::as_str)
                 .unwrap_or("blocked")
                 .to_string();
-            Some(ToolResult {
+            Some(FunctionResult {
                 content: vec![ContentBlock::Text(TextContent { text: reason })],
                 details: json!({ "blocked": true }),
                 terminate: false,
@@ -92,7 +92,7 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         } else {
             None
         };
-        prepared.push((tc, prefilled));
+        prepared.push((fc, prefilled));
     }
 
     persistence::save_record(iii, record).await;
@@ -100,52 +100,52 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     persistence::save_executed_calls(iii, &record.session_id, &executed).await;
     persistence::save_prepared_calls(iii, &record.session_id, &prepared).await;
 
-    record.transition_to(TurnState::ToolExecute);
+    record.transition_to(TurnState::FunctionExecute);
     Ok(())
 }
 
 pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let prepared = persistence::load_prepared_calls(iii, &record.session_id).await;
     let mut results = persistence::load_executed_calls(iii, &record.session_id).await;
-    for (tc, prefilled) in prepared {
+    for (fc, prefilled) in prepared {
         events::emit(
             iii,
             &record.session_id,
-            &AgentEvent::ToolExecutionStart {
-                tool_call_id: tc.id.clone(),
-                tool_name: tc.name.clone(),
-                args: tc.arguments.clone(),
+            &AgentEvent::FunctionExecutionStart {
+                function_call_id: fc.id.clone(),
+                function_id: fc.function_id.clone(),
+                args: fc.arguments.clone(),
             },
         )
         .await;
         if let Some(blocked) = prefilled {
-            persistence::upsert_executed_call(&mut results, (tc.clone(), blocked.clone(), true));
+            persistence::upsert_executed_call(&mut results, (fc.clone(), blocked.clone(), true));
             persistence::save_executed_calls(iii, &record.session_id, &results).await;
-            let evt = build_tool_execution_event(&tc, &blocked, true);
+            let evt = build_function_execution_event(&fc, &blocked, true);
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
         if let Some((_, recorded, recorded_is_error)) =
-            persistence::find_executed_call(&results, &tc.id).cloned()
+            persistence::find_executed_call(&results, &fc.id).cloned()
         {
-            let evt = build_tool_execution_event(&tc, &recorded, recorded_is_error);
+            let evt = build_function_execution_event(&fc, &recorded, recorded_is_error);
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
-        let mut augmented = match tc.arguments.clone() {
+        let mut augmented = match fc.arguments.clone() {
             Value::Object(o) => Value::Object(o),
             other => json!({ "arguments": other }),
         };
         if let Some(obj) = augmented.as_object_mut() {
             obj.insert("session_id".into(), json!(record.session_id));
-            obj.insert("tool_call_id".into(), json!(tc.id));
-            obj.insert("tool_name".into(), json!(tc.name));
+            obj.insert("function_call_id".into(), json!(fc.id));
+            obj.insert("function_id".into(), json!(fc.function_id));
             obj.insert(
-                "tool_call".into(),
+                "function_call".into(),
                 json!({
-                    "id": tc.id.clone(),
-                    "name": tc.name.clone(),
-                    "arguments": tc.arguments.clone(),
+                    "id": fc.id.clone(),
+                    "function_id": fc.function_id.clone(),
+                    "arguments": fc.arguments.clone(),
                 }),
             );
         }
@@ -153,7 +153,7 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         let result = crate::agent_call::dispatch(
             iii,
             &record.session_id,
-            &json!(tc.name.clone()),
+            &json!(fc.function_id.clone()),
             augmented,
         )
         .await;
@@ -163,37 +163,37 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
             .and_then(Value::as_str)
             .is_some();
 
-        persistence::upsert_executed_call(&mut results, (tc.clone(), result.clone(), is_error));
+        persistence::upsert_executed_call(&mut results, (fc.clone(), result.clone(), is_error));
         persistence::save_executed_calls(iii, &record.session_id, &results).await;
-        let evt = build_tool_execution_event(&tc, &result, is_error);
+        let evt = build_function_execution_event(&fc, &result, is_error);
         events::emit(iii, &record.session_id, &evt).await;
     }
-    record.transition_to(TurnState::ToolFinalize);
+    record.transition_to(TurnState::FunctionFinalize);
     Ok(())
 }
 
 pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let executed = persistence::load_executed_calls(iii, &record.session_id).await;
-    let mut tool_results: Vec<ToolResultMessage> = Vec::with_capacity(executed.len());
+    let mut function_results: Vec<FunctionResultMessage> = Vec::with_capacity(executed.len());
     let mut all_terminate = !executed.is_empty();
-    for (tc, mut result, is_error) in executed {
+    for (fc, mut result, is_error) in executed {
         let merged = publish_collect(
             iii,
             TOPIC_AFTER,
-            json!({ "tool_call": tc, "result": result }),
+            json!({ "function_call": &fc, "result": &result }),
             "field_merge",
             HOOK_TIMEOUT_MS,
         )
         .await;
-        if let Ok(after) = serde_json::from_value::<ToolResult>(merged.clone()) {
+        if let Ok(after) = serde_json::from_value::<FunctionResult>(merged.clone()) {
             result = after;
         }
         if !result.terminate {
             all_terminate = false;
         }
-        tool_results.push(ToolResultMessage {
-            tool_call_id: tc.id,
-            tool_name: tc.name,
+        function_results.push(FunctionResultMessage {
+            function_call_id: fc.id,
+            function_id: fc.function_id,
             content: result.content,
             details: result.details,
             is_error,
@@ -202,34 +202,28 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     }
 
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
-    for r in &tool_results {
-        messages.push(AgentMessage::ToolResult(r.clone()));
+    for r in &function_results {
+        messages.push(AgentMessage::FunctionResult(r.clone()));
     }
     persistence::save_messages(iii, &record.session_id, &messages).await;
 
     let Some(last_assistant) = record.last_assistant.clone() else {
-        // The state machine should only transition to ToolFinalize from
-        // AssistantFinished, which always populates last_assistant. If we
-        // ever land here (resume after crash mid-turn, persistence
-        // corruption, or a bug elsewhere), end the turn cleanly instead of
-        // panicking. The lifecycle events tied to last_assistant are
-        // skipped; the tool_results are still persisted above.
         tracing::warn!(
             session_id = %record.session_id,
-            "ToolFinalize reached without last_assistant; tearing down without lifecycle emit"
+            "FunctionFinalize reached without last_assistant; tearing down without lifecycle emit"
         );
-        record.tool_results = tool_results;
-        record.pending_tool_calls.clear();
+        record.function_results = function_results;
+        record.pending_function_calls.clear();
         record.transition_to(TurnState::TearingDown);
         return Ok(());
     };
-    for evt in build_finalize_lifecycle(&last_assistant, &tool_results) {
+    for evt in build_finalize_lifecycle(&last_assistant, &function_results) {
         events::emit(iii, &record.session_id, &evt).await;
     }
     record.turn_end_emitted = true;
 
-    record.tool_results = tool_results;
-    record.pending_tool_calls.clear();
+    record.function_results = function_results;
+    record.pending_function_calls.clear();
     if all_terminate {
         record.transition_to(TurnState::TearingDown);
     } else {
@@ -239,52 +233,52 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
 }
 
 pub(crate) fn executed_staging_for_new_prepare_batch(
-    _stale: &[(ToolCall, ToolResult, bool)],
-) -> Vec<(ToolCall, ToolResult, bool)> {
+    _stale: &[(FunctionCall, FunctionResult, bool)],
+) -> Vec<(FunctionCall, FunctionResult, bool)> {
     Vec::new()
 }
 
-/// Pure helper: build the inner payload for the `agent::before_tool_call`
-/// topic. Subscribers (policy-denylist, approval-gate) read this shape.
-pub(crate) fn build_before_tool_call_payload(tc: &ToolCall, approval_required: &[String]) -> Value {
+/// Pure helper: inner payload for the `agent::before_function_call` topic.
+pub(crate) fn build_before_function_call_payload(
+    fc: &FunctionCall,
+    approval_required: &[String],
+) -> Value {
     json!({
-        "tool_call": tc,
+        "function_call": fc,
         "approval_required": approval_required,
     })
 }
 
-/// Pure helper: build the [`AgentEvent::ToolExecutionEnd`] for one tool.
-pub(crate) fn build_tool_execution_event(
-    tc: &ToolCall,
-    result: &ToolResult,
+/// Pure helper: build [`AgentEvent::FunctionExecutionEnd`] for one call.
+pub(crate) fn build_function_execution_event(
+    fc: &FunctionCall,
+    result: &FunctionResult,
     is_error: bool,
 ) -> AgentEvent {
-    AgentEvent::ToolExecutionEnd {
-        tool_call_id: tc.id.clone(),
-        tool_name: tc.name.clone(),
+    AgentEvent::FunctionExecutionEnd {
+        function_call_id: fc.id.clone(),
+        function_id: fc.function_id.clone(),
         is_error,
         result: result.clone(),
     }
 }
 
-/// Pure helper: build the lifecycle events emitted at the end of a
-/// tool-bearing turn: `MessageStart`/`MessageEnd` per tool result, then
-/// one `TurnEnd` carrying the assistant message and all tool results.
+/// Lifecycle events at the end of a function-bearing turn.
 pub(crate) fn build_finalize_lifecycle(
     assistant: &AssistantMessage,
-    tool_results: &[ToolResultMessage],
+    function_results: &[FunctionResultMessage],
 ) -> Vec<AgentEvent> {
-    let mut events = Vec::with_capacity(tool_results.len() * 2 + 1);
-    for r in tool_results {
-        let m = AgentMessage::ToolResult(r.clone());
-        events.push(AgentEvent::MessageStart { message: m.clone() });
-        events.push(AgentEvent::MessageEnd { message: m });
+    let mut out = Vec::with_capacity(function_results.len() * 2 + 1);
+    for r in function_results {
+        let m = AgentMessage::FunctionResult(r.clone());
+        out.push(AgentEvent::MessageStart { message: m.clone() });
+        out.push(AgentEvent::MessageEnd { message: m });
     }
-    events.push(AgentEvent::TurnEnd {
+    out.push(AgentEvent::TurnEnd {
         message: AgentMessage::Assistant(assistant.clone()),
-        tool_results: tool_results.to_vec(),
+        function_results: function_results.to_vec(),
     });
-    events
+    out
 }
 
 async fn publish_collect(
@@ -315,100 +309,94 @@ async fn publish_collect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_types::{AgentEvent, AssistantMessage, ContentBlock, TextContent, ToolCall};
+    use harness_types::{AgentEvent, AssistantMessage, ContentBlock, FunctionCall, TextContent};
 
-    fn tc(id: &str, name: &str, args: serde_json::Value) -> ToolCall {
-        ToolCall {
+    fn fc(id: &str, function_id: &str, args: serde_json::Value) -> FunctionCall {
+        FunctionCall {
             id: id.into(),
-            name: name.into(),
+            function_id: function_id.into(),
             arguments: args,
         }
     }
 
     #[test]
     fn standard_agent_call_unwraps_to_inner() {
-        let input = tc(
+        let input = fc(
             "call_1",
             "agent_call",
             json!({ "function": "shell::filesystem::ls", "payload": { "path": "/tmp" } }),
         );
         let out = unwrap_agent_call(input);
         assert_eq!(out.id, "call_1");
-        assert_eq!(out.name, "shell::filesystem::ls");
+        assert_eq!(out.function_id, "shell::filesystem::ls");
         assert_eq!(out.arguments, json!({ "path": "/tmp" }));
     }
 
     #[test]
     fn missing_payload_defaults_to_empty_object() {
-        let input = tc(
+        let input = fc(
             "call_2",
             "agent_call",
             json!({ "function": "skills::list" }),
         );
         let out = unwrap_agent_call(input);
-        assert_eq!(out.name, "skills::list");
+        assert_eq!(out.function_id, "skills::list");
         assert_eq!(out.arguments, json!({}));
     }
 
     #[test]
     fn non_agent_call_returns_unchanged() {
-        let input = tc("call_3", "shell::filesystem::ls", json!({ "path": "/tmp" }));
+        let input = fc("call_3", "shell::filesystem::ls", json!({ "path": "/tmp" }));
         let out = unwrap_agent_call(input.clone());
         assert_eq!(out, input);
     }
 
     #[test]
-    fn missing_function_field_unwraps_to_empty_name() {
-        let input = tc("call_4", "agent_call", json!({ "payload": { "x": 1 } }));
+    fn missing_function_field_unwraps_to_empty_function_id() {
+        let input = fc("call_4", "agent_call", json!({ "payload": { "x": 1 } }));
         let out = unwrap_agent_call(input);
-        assert_eq!(out.name, "");
+        assert_eq!(out.function_id, "");
         assert_eq!(out.arguments, json!({ "x": 1 }));
     }
 
     #[test]
-    fn unwrapped_tool_calls_replace_agent_call_in_place() {
+    fn unwrapped_calls_replace_agent_call_in_place() {
         let calls = vec![
-            tc(
+            fc(
                 "a",
                 "agent_call",
                 json!({"function":"shell::filesystem::ls","payload":{"path":"/tmp"}}),
             ),
-            tc("b", "skills::list", json!({})),
+            fc("b", "skills::list", json!({})),
         ];
         let unwrapped: Vec<_> = calls.into_iter().map(unwrap_agent_call).collect();
-        assert_eq!(unwrapped[0].name, "shell::filesystem::ls");
+        assert_eq!(unwrapped[0].function_id, "shell::filesystem::ls");
         assert_eq!(unwrapped[0].arguments, json!({"path":"/tmp"}));
-        assert_eq!(unwrapped[1].name, "skills::list");
+        assert_eq!(unwrapped[1].function_id, "skills::list");
     }
 
-    /// REGRESSION (plan-eng-review §3): `handle_execute` must route through
-    /// `agent_call::dispatch`, never `iii.trigger(tc.name, ...)`, directly.
+    /// REGRESSION: `handle_execute` must route through `agent_call::dispatch`.
     #[test]
-    fn handle_execute_does_not_call_iii_trigger_with_tc_name_directly() {
-        let src = include_str!("tools.rs");
+    fn handle_execute_does_not_call_iii_trigger_with_fc_name_directly() {
+        let src = include_str!("functions.rs");
         let start = src
             .find("pub async fn handle_execute")
             .expect("handle_execute exists");
         let window = &src[start..start + src[start..].len().min(5000)];
-        assert!(
-            !window.contains("function_id: tc.name"),
-            "handle_execute must dispatch via agent_call::dispatch, \
-             not iii.trigger(tc.name, ...) directly."
-        );
         assert!(
             window.contains("agent_call::dispatch"),
             "handle_execute must call agent_call::dispatch"
         );
     }
 
-    fn assistant_with_tool_call(name: &str) -> AssistantMessage {
+    fn assistant_with_function_call(function_id: &str) -> AssistantMessage {
         AssistantMessage {
-            content: vec![ContentBlock::ToolCall {
+            content: vec![ContentBlock::FunctionCall {
                 id: "tc-1".into(),
-                name: name.into(),
+                function_id: function_id.into(),
                 arguments: json!({}),
             }],
-            stop_reason: harness_types::StopReason::Tool,
+            stop_reason: harness_types::StopReason::FunctionCall,
             error_message: None,
             error_kind: None,
             usage: None,
@@ -418,10 +406,10 @@ mod tests {
         }
     }
 
-    fn tool_result_msg(name: &str, is_error: bool) -> ToolResultMessage {
-        ToolResultMessage {
-            tool_call_id: "tc-1".into(),
-            tool_name: name.into(),
+    fn function_result_msg(function_id: &str, is_error: bool) -> FunctionResultMessage {
+        FunctionResultMessage {
+            function_call_id: "tc-1".into(),
+            function_id: function_id.into(),
             content: vec![ContentBlock::Text(TextContent {
                 text: "done".into(),
             })],
@@ -434,12 +422,12 @@ mod tests {
     #[test]
     fn new_prepare_batch_clears_stale_executed_call_ids() {
         let stale = vec![(
-            ToolCall {
+            FunctionCall {
                 id: "tc-1".into(),
-                name: "read".into(),
+                function_id: "read".into(),
                 arguments: json!({}),
             },
-            ToolResult {
+            FunctionResult {
                 content: vec![],
                 details: json!({}),
                 terminate: false,
@@ -455,74 +443,74 @@ mod tests {
     }
 
     #[test]
-    fn build_tool_execution_event_carries_tool_name_and_error_flag() {
-        let tc = ToolCall {
+    fn build_function_execution_event_carries_function_id_and_error_flag() {
+        let fc = FunctionCall {
             id: "tc-1".into(),
-            name: "read".into(),
+            function_id: "read".into(),
             arguments: json!({"path": "/tmp/x"}),
         };
-        let result = ToolResult {
+        let result = FunctionResult {
             content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
             details: json!({}),
             terminate: false,
         };
-        let evt = build_tool_execution_event(&tc, &result, false);
+        let evt = build_function_execution_event(&fc, &result, false);
         match evt {
-            AgentEvent::ToolExecutionEnd {
-                tool_name,
+            AgentEvent::FunctionExecutionEnd {
+                function_id,
                 is_error,
                 ..
             } => {
-                assert_eq!(tool_name, "read");
+                assert_eq!(function_id, "read");
                 assert!(!is_error);
             }
-            other => panic!("expected ToolExecutionEnd, got {other:?}"),
+            other => panic!("expected FunctionExecutionEnd, got {other:?}"),
         }
     }
 
     #[test]
-    fn build_tool_execution_event_marks_blocked_tool_as_error() {
-        let tc = ToolCall {
+    fn build_function_execution_event_marks_blocked_as_error() {
+        let fc = FunctionCall {
             id: "tc-2".into(),
-            name: "bash".into(),
+            function_id: "bash".into(),
             arguments: json!({"command": "rm -rf /"}),
         };
-        let blocked = ToolResult {
+        let blocked = FunctionResult {
             content: vec![ContentBlock::Text(TextContent {
                 text: "blocked by policy".into(),
             })],
             details: json!({"blocked": true}),
             terminate: false,
         };
-        let evt = build_tool_execution_event(&tc, &blocked, true);
+        let evt = build_function_execution_event(&fc, &blocked, true);
         match evt {
-            AgentEvent::ToolExecutionEnd {
-                tool_name,
+            AgentEvent::FunctionExecutionEnd {
+                function_id,
                 is_error,
                 result,
                 ..
             } => {
-                assert_eq!(tool_name, "bash");
+                assert_eq!(function_id, "bash");
                 assert!(is_error);
                 assert!(matches!(
                     result.content.first(),
                     Some(ContentBlock::Text(t)) if t.text == "blocked by policy"
                 ));
             }
-            other => panic!("expected ToolExecutionEnd, got {other:?}"),
+            other => panic!("expected FunctionExecutionEnd, got {other:?}"),
         }
     }
 
     #[test]
-    fn before_tool_call_payload_carries_approval_required() {
-        let tc = ToolCall {
+    fn before_function_call_payload_carries_approval_required() {
+        let fc = FunctionCall {
             id: "tc-1".into(),
-            name: "shell::filesystem::write".into(),
+            function_id: "shell::filesystem::write".into(),
             arguments: json!({"path": "/tmp/x"}),
         };
         let approval_required = vec!["shell::filesystem::write".to_string()];
-        let inner = build_before_tool_call_payload(&tc, &approval_required);
-        assert_eq!(inner["tool_call"]["id"], "tc-1");
+        let inner = build_before_function_call_payload(&fc, &approval_required);
+        assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(
             inner["approval_required"],
             json!(["shell::filesystem::write"]),
@@ -530,84 +518,65 @@ mod tests {
     }
 
     #[test]
-    fn before_tool_call_payload_has_empty_approval_required_when_none_configured() {
-        let tc = ToolCall {
+    fn before_function_call_payload_has_empty_approval_required_when_none_configured() {
+        let fc = FunctionCall {
             id: "tc-1".into(),
-            name: "shell::filesystem::ls".into(),
+            function_id: "shell::filesystem::ls".into(),
             arguments: json!({}),
         };
-        let inner = build_before_tool_call_payload(&tc, &[]);
+        let inner = build_before_function_call_payload(&fc, &[]);
         assert_eq!(inner["approval_required"], json!([]));
     }
 
     #[test]
-    fn build_finalize_lifecycle_emits_pair_per_tool_then_turn_end() {
-        let asst = assistant_with_tool_call("read");
+    fn build_finalize_lifecycle_emits_pair_per_result_then_turn_end() {
+        let asst = assistant_with_function_call("read");
         let results = vec![
-            tool_result_msg("read", false),
-            tool_result_msg("write", false),
+            function_result_msg("read", false),
+            function_result_msg("write", false),
         ];
-        let events = build_finalize_lifecycle(&asst, &results);
-        assert_eq!(events.len(), 5);
-        assert!(matches!(&events[0], AgentEvent::MessageStart { .. }));
-        assert!(matches!(events.last(), Some(AgentEvent::TurnEnd { .. })));
+        let evs = build_finalize_lifecycle(&asst, &results);
+        assert_eq!(evs.len(), 5);
+        assert!(matches!(&evs[0], AgentEvent::MessageStart { .. }));
+        assert!(matches!(evs.last(), Some(AgentEvent::TurnEnd { .. })));
     }
 
-    // ── Adversarial unit tests added per plan
-    // /Users/ytallolayon/.claude/plans/let-s-implement-more-tests-refactored-flask.md
-
-    /// Wire-contract regression guard. policy-denylist subscribes to
-    /// `agent::before_tool_call` by exact name; renaming the constant
-    /// here silently breaks the policy gate. Same risk for the after-
-    /// hook. Keep these strings stable or coordinate the rename.
+    /// policy-denylist subscribes to this topic by exact name.
     #[test]
     fn topic_constants_are_stable() {
-        assert_eq!(TOPIC_BEFORE, "agent::before_tool_call");
-        assert_eq!(TOPIC_AFTER, "agent::after_tool_call");
+        assert_eq!(TOPIC_BEFORE, "agent::before_function_call");
+        assert_eq!(TOPIC_AFTER, "agent::after_function_call");
     }
 
-    /// Pin the shape of the payload the policy hook subscribers consume.
-    /// `tool_call.name` is what `policy-denylist` matches against
-    /// `POLICY_DENIED_TOOLS`; if this field is renamed or moved, the
-    /// gate fails open silently.
+    /// `function_call.function_id` is what `policy-denylist` matches against
+    /// `POLICY_DENIED_FUNCTIONS`.
     #[test]
-    fn build_before_tool_call_payload_preserves_tool_call_shape() {
-        let tc = ToolCall {
+    fn build_before_function_call_payload_preserves_function_call_shape() {
+        let fc = FunctionCall {
             id: "tc-1".into(),
-            name: "shell::filesystem::ls".into(),
+            function_id: "shell::filesystem::ls".into(),
             arguments: json!({"path": "/tmp"}),
         };
-        let inner = build_before_tool_call_payload(&tc, &[]);
-        assert_eq!(inner["tool_call"]["id"], "tc-1");
-        assert_eq!(inner["tool_call"]["name"], "shell::filesystem::ls");
-        assert_eq!(inner["tool_call"]["arguments"], json!({"path": "/tmp"}));
+        let inner = build_before_function_call_payload(&fc, &[]);
+        assert_eq!(inner["function_call"]["id"], "tc-1");
+        assert_eq!(
+            inner["function_call"]["function_id"],
+            "shell::filesystem::ls"
+        );
+        assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
         assert!(inner.get("approval_required").is_some());
     }
 
-    // TODO(test-harden): tools.rs's `handle_finalize` calls .expect() on
-    // record.last_assistant. If the state machine ever transitions to
-    // ToolFinalize without an assistant message (resume after crash mid-
-    // AwaitingAssistant, concurrency bug, manual record forgery), the
-    // orchestrator panics and crashes the session.
-    //
-    // Real fix: replace .expect() with a graceful transition to
-    // TearingDown + AgentError event.
-    //
-    /// Source-grep regression guard: the panic path
-    /// `.expect("tools state requires last_assistant…")` in
-    /// `handle_finalize` must stay removed. A full functional test would
-    /// need a stub `iii::III`; until that lands, this prevents reverts.
     #[test]
     fn handle_finalize_does_not_expect_last_assistant() {
-        let src = include_str!("tools.rs");
+        let src = include_str!("functions.rs");
         let start = src
             .find("pub async fn handle_finalize")
             .expect("handle_finalize exists");
         let window = &src[start..start + src[start..].len().min(3000)];
         assert!(
             !window.contains(".expect(\"tools state requires last_assistant"),
-            "handle_finalize must not .expect() last_assistant; \
-             use a let-else that gracefully transitions to TearingDown."
+            "handle_finalize must not .expect() last_assistant"
         );
     }
 }

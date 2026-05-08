@@ -1,7 +1,7 @@
 # turn-orchestrator
 
 Durable `run::start` state machine on the iii bus. Drives each agent
-turn through provisioning → assistant → tools → steering → tearing-down,
+turn through provisioning → assistant → functions → steering → tearing-down,
 checkpointing the session record on every step so a process crash or
 restart resumes from the last persisted node rather than restarting the
 run from scratch. Most users install this worker via the

@@ -164,7 +164,7 @@
     },
     "policy-denylist": {
       "type": "binary",
-      "description": "Hook subscriber on agent::before_tool_call that blocks calls whose name is on a configured denylist",
+      "description": "Hook subscriber on agent::before_function_call that blocks calls whose function id is on a configured denylist",
       "repo": "iii-hq/workers",
       "tag_prefix": "policy-denylist",
       "supported_targets": [

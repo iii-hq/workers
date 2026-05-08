@@ -3,12 +3,12 @@
 //! The model emits exactly one tool name, `agent_call`, with `{function,
 //! payload}` arguments. This module owns the LLM-facing tool descriptor
 //! (`agent_call_tool`), the shared dispatch helper (`dispatch`) that
-//! `states::tools::handle_execute` calls into, and the iii function
+//! `states::functions::handle_execute` calls into, and the iii function
 //! registration (`register`) that surfaces the dispatcher on the bus.
 
 use std::sync::Arc;
 
-use harness_types::{ContentBlock, TextContent, ToolResult};
+use harness_types::{ContentBlock, FunctionResult, TextContent};
 use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 
@@ -50,11 +50,11 @@ pub fn agent_call_tool() -> Value {
     })
 }
 
-/// Build a `ToolResult` carrying a structured error envelope. The agent
+/// Build a `FunctionResult` carrying a structured error envelope. The agent
 /// loop must continue regardless of failure class — never throw from the
 /// dispatcher.
-fn error_result(envelope: Value) -> ToolResult {
-    ToolResult {
+fn error_result(envelope: Value) -> FunctionResult {
+    FunctionResult {
         content: vec![ContentBlock::Text(TextContent {
             text: envelope.to_string(),
         })],
@@ -63,10 +63,10 @@ fn error_result(envelope: Value) -> ToolResult {
     }
 }
 
-/// Validate the `function` field. Returns `Err(ToolResult)` when the field
+/// Validate the `function` field. Returns `Err(FunctionResult)` when the field
 /// is missing, empty, or not a string. The caller short-circuits without
 /// touching `iii.trigger`.
-fn validate_function_field(function: &Value) -> Result<String, ToolResult> {
+fn validate_function_field(function: &Value) -> Result<String, FunctionResult> {
     match function.as_str() {
         Some(s) if !s.is_empty() => Ok(s.to_string()),
         _ => Err(error_result(json!({
@@ -94,14 +94,14 @@ pub(crate) fn is_timeout(err: &IIIError) -> bool {
     matches!(err, IIIError::Timeout)
 }
 
-/// If the inner function returned a `ToolResult`-shaped value, deserialize
+/// If the inner function returned a `FunctionResult`-shaped value, deserialize
 /// it. Otherwise wrap the value as the tool's `details` so function-level
 /// envelopes (`{ok: false, error}`) pass through verbatim per the spec.
-fn decode_or_passthrough(value: Value) -> ToolResult {
-    if let Ok(tr) = serde_json::from_value::<ToolResult>(value.clone()) {
+fn decode_or_passthrough(value: Value) -> FunctionResult {
+    if let Ok(tr) = serde_json::from_value::<FunctionResult>(value.clone()) {
         return tr;
     }
-    ToolResult {
+    FunctionResult {
         content: vec![ContentBlock::Text(TextContent {
             text: value.to_string(),
         })],
@@ -111,7 +111,7 @@ fn decode_or_passthrough(value: Value) -> ToolResult {
 }
 
 /// Shared dispatch helper. Both `agent::call`'s registered iii handler and
-/// `states::tools::handle_execute` call this so policy → trigger → error
+/// `states::functions::handle_execute` call this so policy → trigger → error
 /// mapping has one source of truth.
 ///
 /// Tier 2: no schema lookup, no payload validation, no sandbox automation.
@@ -127,7 +127,7 @@ pub async fn dispatch(
     _session_id: &str,
     function: &Value,
     payload: Value,
-) -> ToolResult {
+) -> FunctionResult {
     let function_id = match validate_function_field(function) {
         Ok(id) => id,
         Err(result) => return result,
@@ -170,7 +170,7 @@ pub fn register(iii: &Arc<III>) {
     let iii_clone = iii.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string()).with_description(
-            "LLM-facing dispatcher: dispatches an iii function and returns a ToolResult."
+            "LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult."
                 .to_string(),
         ),
         move |payload: Value| {
@@ -339,7 +339,7 @@ mod dispatch_tests {
     #[test]
     fn decode_or_passthrough_handles_partial_tool_result() {
         // `terminate` has #[serde(default)]; partial input still
-        // deserializes as a ToolResult. If a future change drops the
+        // deserializes as a FunctionResult. If a future change drops the
         // default, this test fails and forces an explicit decision.
         let inner = json!({"content": [], "details": {"k": "v"}});
         let tr = decode_or_passthrough(inner.clone());

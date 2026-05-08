@@ -26,16 +26,21 @@ export interface AssistantMessage {
   };
 }
 
-export interface ToolResultMessage {
-  role: "tool_result";
+/** Function result row on the transcript (`role` stays `tool_result` on the wire). */
+export interface FunctionResultMessage {
+  role: "tool_result" | "function_result";
   content: ContentBlock[];
-  tool_call_id: string;
-  tool_name: string;
+  /** New field names — prefer these when present. */
+  function_call_id?: string;
+  function_id?: string;
+  /** Legacy field names (one release of stream replay). */
+  tool_call_id?: string;
+  tool_name?: string;
   is_error: boolean;
   timestamp: number;
 }
 
-export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage;
+export type AgentMessage = UserMessage | AssistantMessage | FunctionResultMessage;
 
 export interface SessionRow {
   session_id: string;
@@ -163,7 +168,7 @@ export type AgentEvent =
   // backend that threads entry_ids through.
   | { type: "agent_end"; messages: (AgentMessage | { entry_id?: EntryId; message: AgentMessage })[] }
   | { type: "turn_start" }
-  | { type: "turn_end"; message: AgentMessage; tool_results: unknown[]; entry_id?: EntryId }
+  | { type: "turn_end"; message: AgentMessage; tool_results?: unknown[]; function_results?: unknown[]; entry_id?: EntryId }
   | { type: "message_start"; message: AgentMessage; entry_id?: EntryId }
   | { type: "message_update"; message: AgentMessage; llm_event: unknown; entry_id?: EntryId }
   | { type: "message_end"; message: AgentMessage; entry_id?: EntryId }
@@ -188,24 +193,50 @@ export type AgentEvent =
       is_error: boolean;
     }
   | {
+      type: "function_execution_start";
+      function_call_id: string;
+      function_id: string;
+      args: unknown;
+    }
+  | {
+      type: "function_execution_update";
+      function_call_id: string;
+      function_id: string;
+      args: unknown;
+      partial_result: unknown;
+    }
+  | {
+      type: "function_execution_end";
+      function_call_id: string;
+      function_id: string;
+      result: unknown;
+      is_error: boolean;
+    }
+  | {
       type: "approval_requested";
-      tool_call_id: string;
-      tool_name: string;
+      function_call_id: string;
+      function_id: string;
       args: unknown;
       expires_at: number;
+      /** Legacy keys — optional for one release of mixed clients. */
+      tool_call_id?: string;
+      tool_name?: string;
     }
   | {
       type: "approval_resolved";
-      tool_call_id: string;
+      function_call_id: string;
       decision: "allow" | "deny";
       reason?: string | null;
+      tool_call_id?: string;
     };
 
 export interface PendingApproval {
-  tool_call_id: string;
-  tool_name: string;
-  args: unknown;
-  expires_at: number;
+  function_call_id?: string;
+  tool_call_id?: string;
+  function_id?: string;
+  tool_name?: string;
+  args?: unknown;
+  expires_at?: number;
 }
 
 export interface StreamState {

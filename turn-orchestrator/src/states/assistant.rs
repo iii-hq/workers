@@ -1,7 +1,7 @@
 //! `awaiting_assistant`, `assistant_streaming`, `assistant_finished` handlers.
 
 use harness_types::{
-    AgentEvent, AgentMessage, AssistantMessage, ContentBlock, StopReason, ToolCall,
+    AgentEvent, AgentMessage, AssistantMessage, ContentBlock, FunctionCall, StopReason,
 };
 use iii_sdk::{TriggerRequest, III};
 use serde_json::json;
@@ -55,7 +55,7 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
             &record.session_id,
             &AgentEvent::TurnEnd {
                 message: exhausted_msg,
-                tool_results: Vec::new(),
+                function_results: Vec::new(),
             },
         )
         .await;
@@ -77,7 +77,7 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
     let messages = persistence::load_messages(iii, &record.session_id).await;
-    let tools = persistence::load_tool_schemas(iii, &record.session_id).await;
+    let schemas = persistence::load_function_schemas(iii, &record.session_id).await;
 
     let payload = json!({
         "session_id": record.session_id,
@@ -85,7 +85,7 @@ pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow
         "model": request.get("model").cloned().unwrap_or_else(|| json!("")),
         "system_prompt": request.get("system_prompt").cloned().unwrap_or_else(|| json!("")),
         "messages": messages,
-        "tools": tools,
+        "tools": schemas,
     });
     let response = iii
         .trigger(TriggerRequest {
@@ -128,7 +128,7 @@ pub async fn handle_finished(iii: &III, record: &mut TurnStateRecord) -> anyhow:
             &record.session_id,
             &AgentEvent::TurnEnd {
                 message: AgentMessage::Assistant(assistant),
-                tool_results: Vec::new(),
+                function_results: Vec::new(),
             },
         )
         .await;
@@ -137,12 +137,12 @@ pub async fn handle_finished(iii: &III, record: &mut TurnStateRecord) -> anyhow:
         return Ok(());
     }
 
-    let tool_calls = extract_tool_calls(&assistant);
-    if tool_calls.is_empty() {
+    let calls = extract_function_calls(&assistant);
+    if calls.is_empty() {
         record.transition_to(TurnState::SteeringCheck);
     } else {
-        record.pending_tool_calls = tool_calls;
-        record.transition_to(TurnState::ToolPrepare);
+        record.pending_function_calls = calls;
+        record.transition_to(TurnState::FunctionPrepare);
     }
     Ok(())
 }
@@ -159,18 +159,18 @@ pub(crate) fn assistant_lifecycle_events(assistant: &AssistantMessage) -> Vec<Ag
     ]
 }
 
-fn extract_tool_calls(assistant: &AssistantMessage) -> Vec<ToolCall> {
+fn extract_function_calls(assistant: &AssistantMessage) -> Vec<FunctionCall> {
     assistant
         .content
         .iter()
         .filter_map(|c| match c {
-            ContentBlock::ToolCall {
+            ContentBlock::FunctionCall {
                 id,
-                name,
+                function_id,
                 arguments,
-            } => Some(ToolCall {
+            } => Some(FunctionCall {
                 id: id.clone(),
-                name: name.clone(),
+                function_id: function_id.clone(),
                 arguments: arguments.clone(),
             }),
             _ => None,
@@ -198,12 +198,12 @@ mod tests {
 
     fn assistant_tool() -> AssistantMessage {
         AssistantMessage {
-            content: vec![ContentBlock::ToolCall {
+            content: vec![ContentBlock::FunctionCall {
                 id: "x".into(),
-                name: "read".into(),
+                function_id: "read".into(),
                 arguments: json!({}),
             }],
-            stop_reason: StopReason::Tool,
+            stop_reason: StopReason::FunctionCall,
             error_message: None,
             error_kind: None,
             usage: None,
@@ -214,11 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn extract_tool_calls_collects_tool_blocks_only() {
-        assert!(extract_tool_calls(&assistant_text()).is_empty());
-        let calls = extract_tool_calls(&assistant_tool());
+    fn extract_function_calls_collects_function_blocks_only() {
+        assert!(extract_function_calls(&assistant_text()).is_empty());
+        let calls = extract_function_calls(&assistant_tool());
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "read");
+        assert_eq!(calls[0].function_id, "read");
     }
 
     #[test]

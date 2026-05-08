@@ -1,5 +1,5 @@
-//! Denylist subscriber for `agent::before_tool_call`. Blocks any call whose
-//! `tool_call.name` is on a configured denylist.
+//! Denylist subscriber for `agent::before_function_call`. Blocks any call whose
+//! `function_call.function_id` is on a configured denylist.
 
 use std::sync::Arc;
 
@@ -11,8 +11,8 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 const FN_DENYLIST: &str = "policy::denylist";
-pub const DEFAULT_TOPIC: &str = "agent::before_tool_call";
-pub const DEFAULT_DENIED_TOOLS: &[&str] = &["bash:rm -rf", "sudo", "curl-pipe-bash"];
+pub const DEFAULT_TOPIC: &str = "agent::before_function_call";
+pub const DEFAULT_DENIED_FUNCTIONS: &[&str] = &["bash:rm -rf", "sudo", "curl-pipe-bash"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyDenylistConfig {
@@ -27,8 +27,8 @@ impl Default for PolicyDenylistConfig {
     }
 }
 
-pub fn default_denied_tools() -> Vec<String> {
-    DEFAULT_DENIED_TOOLS
+pub fn default_denied_functions() -> Vec<String> {
+    DEFAULT_DENIED_FUNCTIONS
         .iter()
         .map(ToString::to_string)
         .collect()
@@ -88,7 +88,7 @@ impl ReplyBus for IiiSdkBus {
 /// Build the canonical [`RegisterFunctionMessage`] for the denylist function.
 pub(crate) fn denylist_function_message() -> RegisterFunctionMessage {
     RegisterFunctionMessage::with_id(FN_DENYLIST.into())
-        .with_description("Block tool calls whose name is on a configured denylist.".into())
+        .with_description("Block function calls whose id is on a configured denylist.".into())
 }
 
 /// Build the canonical [`RegisterTriggerInput`] for the denylist subscriber.
@@ -120,9 +120,9 @@ pub(crate) fn unwrap_envelope(payload: &Value) -> (String, String, Value) {
     (event_id, reply_stream, inner)
 }
 
-/// Pure check: is `tool_name` on the denylist?
-pub(crate) fn check_denylist(tool_name: &str, denied: &[String]) -> bool {
-    denied.iter().any(|d| d == tool_name)
+/// Pure check: is `function_id` on the denylist?
+pub(crate) fn check_denylist(function_id: &str, denied: &[String]) -> bool {
+    denied.iter().any(|d| d == function_id)
 }
 
 /// Run the denylist handler logic against an arbitrary [`ReplyBus`]. Used by
@@ -130,16 +130,18 @@ pub(crate) fn check_denylist(tool_name: &str, denied: &[String]) -> bool {
 /// in-memory bus).
 pub(crate) async fn handle_event(bus: &dyn ReplyBus, denied: &[String], payload: Value) -> Value {
     let (event_id, reply_stream, inner) = unwrap_envelope(&payload);
-    let tool_name = inner
-        .get("tool_call")
-        .and_then(|tc| tc.get("name"))
+    let fc = inner
+        .get("function_call")
+        .or_else(|| inner.get("tool_call"));
+    let function_id = fc
+        .and_then(|v| v.get("function_id").or_else(|| v.get("name")))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let reply = if check_denylist(&tool_name, denied) {
+    let reply = if check_denylist(&function_id, denied) {
         json!({
             "block": true,
-            "reason": format!("policy::denylist blocked '{tool_name}'"),
+            "reason": format!("policy::denylist blocked '{function_id}'"),
         })
     } else {
         json!({ "block": false })
@@ -148,17 +150,20 @@ pub(crate) async fn handle_event(bus: &dyn ReplyBus, denied: &[String], payload:
     reply
 }
 
-pub fn subscribe_denylist(iii: &III, denied_tools: Vec<String>) -> Result<Subscriber, IIIError> {
-    subscribe_denylist_with_config(iii, denied_tools, PolicyDenylistConfig::default())
+pub fn subscribe_denylist(
+    iii: &III,
+    denied_functions: Vec<String>,
+) -> Result<Subscriber, IIIError> {
+    subscribe_denylist_with_config(iii, denied_functions, PolicyDenylistConfig::default())
 }
 
 pub fn subscribe_denylist_with_config(
     iii: &III,
-    denied_tools: Vec<String>,
+    denied_functions: Vec<String>,
     config: PolicyDenylistConfig,
 ) -> Result<Subscriber, IIIError> {
     let bus: Arc<dyn ReplyBus> = Arc::new(IiiSdkBus(iii.clone()));
-    let denied: Arc<Vec<String>> = Arc::new(denied_tools);
+    let denied: Arc<Vec<String>> = Arc::new(denied_functions);
 
     let fn_msg = denylist_function_message();
     bus.record_function(&fn_msg);
@@ -308,7 +313,7 @@ mod tests {
     async fn wiring_uses_configured_trigger_topic() {
         let bus = InMemoryBus::new();
         let config = PolicyDenylistConfig {
-            topic: "agent::custom_before_tool_call".into(),
+            topic: "agent::custom_before_function_call".into(),
         };
         record_wiring_with_config(&bus, &config);
 
@@ -316,7 +321,7 @@ mod tests {
         assert_eq!(trigs.len(), 1);
         assert_eq!(
             trigs[0].config.get("topic").and_then(Value::as_str),
-            Some("agent::custom_before_tool_call")
+            Some("agent::custom_before_function_call")
         );
     }
 
@@ -327,7 +332,7 @@ mod tests {
         let payload = envelope(
             "e1",
             "rs",
-            json!({ "tool_call": { "name": "dangerous_tool" } }),
+            json!({ "function_call": { "function_id": "dangerous_tool" } }),
         );
         let reply = handle_event(&bus, &denied, payload).await;
 
@@ -349,7 +354,11 @@ mod tests {
     async fn handler_allows_unlisted_tool_name() {
         let bus = InMemoryBus::new();
         let denied = vec!["dangerous_tool".to_string()];
-        let payload = envelope("e1", "rs", json!({ "tool_call": { "name": "safe_tool" } }));
+        let payload = envelope(
+            "e1",
+            "rs",
+            json!({ "function_call": { "function_id": "safe_tool" } }),
+        );
         let reply = handle_event(&bus, &denied, payload).await;
 
         assert_eq!(reply, json!({ "block": false }));
@@ -362,7 +371,7 @@ mod tests {
     async fn handler_treats_missing_tool_name_as_allowed() {
         let bus = InMemoryBus::new();
         let denied = vec!["dangerous_tool".to_string()];
-        let payload = envelope("e1", "rs", json!({ "tool_call": {} }));
+        let payload = envelope("e1", "rs", json!({ "function_call": {} }));
         let reply = handle_event(&bus, &denied, payload).await;
 
         assert_eq!(reply, json!({ "block": false }));
@@ -374,12 +383,21 @@ mod tests {
         let denied = vec!["dangerous_tool".to_string()];
         let payload = json!({
             "reply_stream": "rs",
-            "payload": { "tool_call": { "name": "dangerous_tool" } },
+            "payload": { "function_call": { "function_id": "dangerous_tool" } },
         });
         let reply = handle_event(&bus, &denied, payload).await;
 
         assert_eq!(reply.get("block"), Some(&Value::Bool(true)));
         assert!(bus.recorded_replies().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handler_reads_legacy_tool_call_envelope_name_field() {
+        let bus = InMemoryBus::new();
+        let denied = vec!["legacy_id".to_string()];
+        let payload = envelope("e1", "rs", json!({ "tool_call": { "name": "legacy_id" } }));
+        let reply = handle_event(&bus, &denied, payload).await;
+        assert_eq!(reply.get("block"), Some(&Value::Bool(true)));
     }
 
     #[test]

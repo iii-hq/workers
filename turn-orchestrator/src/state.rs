@@ -1,7 +1,7 @@
 //! Persisted turn state. Loaded and saved on every `turn::step_requested`
 //! transition. See `docs/plans/2026-04-30-durable-harness-p2.md` § "TurnStateRecord".
 
-use harness_types::{AgentMessage, AssistantMessage, ToolCall, ToolResultMessage};
+use harness_types::{AgentMessage, AssistantMessage, FunctionCall, FunctionResultMessage};
 use serde::{Deserialize, Serialize};
 
 /// Each state corresponds to a node in the durable state machine.
@@ -12,9 +12,12 @@ pub enum TurnState {
     AwaitingAssistant,
     AssistantStreaming,
     AssistantFinished,
-    ToolPrepare,
-    ToolExecute,
-    ToolFinalize,
+    #[serde(rename = "function_prepare", alias = "tool_prepare")]
+    FunctionPrepare,
+    #[serde(rename = "function_execute", alias = "tool_execute")]
+    FunctionExecute,
+    #[serde(rename = "function_finalize", alias = "tool_finalize")]
+    FunctionFinalize,
     SteeringCheck,
     TearingDown,
     Stopped,
@@ -27,9 +30,9 @@ impl TurnState {
             Self::AwaitingAssistant => "awaiting_assistant",
             Self::AssistantStreaming => "assistant_streaming",
             Self::AssistantFinished => "assistant_finished",
-            Self::ToolPrepare => "tool_prepare",
-            Self::ToolExecute => "tool_execute",
-            Self::ToolFinalize => "tool_finalize",
+            Self::FunctionPrepare => "function_prepare",
+            Self::FunctionExecute => "function_execute",
+            Self::FunctionFinalize => "function_finalize",
             Self::SteeringCheck => "steering_check",
             Self::TearingDown => "tearing_down",
             Self::Stopped => "stopped",
@@ -46,8 +49,10 @@ pub struct TurnStateRecord {
     pub turn_count: u32,
     pub max_turns: Option<u32>,
     pub last_assistant: Option<AssistantMessage>,
-    pub pending_tool_calls: Vec<ToolCall>,
-    pub tool_results: Vec<ToolResultMessage>,
+    #[serde(alias = "pending_tool_calls")]
+    pub pending_function_calls: Vec<FunctionCall>,
+    #[serde(alias = "tool_results")]
+    pub function_results: Vec<FunctionResultMessage>,
     /// Set true at any point a `TurnEnd` is emitted; reset false at the
     /// next `TurnStart`. Coordinates emission across handlers so the
     /// stream mirrors legacy `run_loop` (one TurnEnd per turn). See
@@ -67,8 +72,8 @@ impl TurnStateRecord {
             turn_count: 0,
             max_turns,
             last_assistant: None,
-            pending_tool_calls: Vec::new(),
-            tool_results: Vec::new(),
+            pending_function_calls: Vec::new(),
+            function_results: Vec::new(),
             turn_end_emitted: false,
             started_at_ms: now,
             updated_at_ms: now,
@@ -110,6 +115,11 @@ pub fn sandbox_id_key(session_id: &str) -> String {
     format!("session/{session_id}/sandbox_id")
 }
 
+pub fn function_schemas_key(session_id: &str) -> String {
+    format!("session/{session_id}/function_schemas")
+}
+
+/// Legacy persistence path; readers fall back when `function_schemas` is absent.
 pub fn tool_schemas_key(session_id: &str) -> String {
     format!("session/{session_id}/tool_schemas")
 }
@@ -151,11 +161,18 @@ mod tests {
     }
 
     #[test]
+    fn turn_state_legacy_tool_prepare_alias() {
+        let v = serde_json::json!("tool_prepare");
+        let t: TurnState = serde_json::from_value(v).unwrap();
+        assert_eq!(t, TurnState::FunctionPrepare);
+    }
+
+    #[test]
     fn keys_use_session_namespace() {
         assert_eq!(turn_state_key("abc"), "session/abc/turn_state");
         assert_eq!(messages_key("abc"), "session/abc/messages");
         assert_eq!(sandbox_id_key("abc"), "session/abc/sandbox_id");
-        assert_eq!(tool_schemas_key("abc"), "session/abc/tool_schemas");
+        assert_eq!(function_schemas_key("abc"), "session/abc/function_schemas");
         assert_eq!(run_request_key("abc"), "session/abc/run_request");
         assert_eq!(cwd_key("abc"), "session/abc/cwd");
     }
@@ -166,5 +183,13 @@ mod tests {
             cwd_index_key("abc123"),
             "harness/cwd/abc123/last_session_id"
         );
+    }
+
+    #[test]
+    fn turn_state_record_legacy_field_names_deserialize() {
+        let json = r#"{"session_id":"s","state":"assistant_finished","turn_count":0,"max_turns":null,"last_assistant":null,"pending_tool_calls":[],"tool_results":[],"turn_end_emitted":false,"started_at_ms":0,"updated_at_ms":0}"#;
+        let r: TurnStateRecord = serde_json::from_str(json).unwrap();
+        assert!(r.pending_function_calls.is_empty());
+        assert!(r.function_results.is_empty());
     }
 }

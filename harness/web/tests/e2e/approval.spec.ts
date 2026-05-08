@@ -7,7 +7,7 @@ test.describe("approval flow", () => {
     await page.goto("/");
   });
 
-  test("allow path writes the file and renders ToolResultBlock", async ({ page }) => {
+  test("allow path writes the file and renders function result block", async ({ page }) => {
     await page.getByPlaceholder(/say something/i).fill(PROMPT);
     await page.getByRole("button", { name: /send/i }).click();
     const approval = page.locator(".approval");

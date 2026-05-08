@@ -1,5 +1,5 @@
 //! Engine-backed test for approval-gate. Connects to an in-process /
-//! local iii engine, registers the gate, fires a `before_tool_call`
+//! local iii engine, registers the gate, fires a `before_function_call`
 //! envelope on a per-test topic, posts `approval::resolve`, and asserts
 //! the subscriber unblocks under 1 s.
 //!
@@ -42,9 +42,9 @@ async fn round_trip_allow_unblocks_under_one_second() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let topic = format!("agent::before_tool_call::it_{nonce}");
+    let topic = format!("agent::before_function_call::it_{nonce}");
     let session_id = format!("approval-it-{nonce}");
-    let tool_call_id = format!("tc-it-{nonce}");
+    let function_call_id = format!("tc-it-{nonce}");
     let event_id = format!("evt-it-{nonce}");
     let reply_stream = format!("rs-it-{nonce}");
 
@@ -62,9 +62,9 @@ async fn round_trip_allow_unblocks_under_one_second() {
         "reply_stream": reply_stream,
         "payload": {
             "session_id": session_id,
-            "tool_call": {
-                "id": tool_call_id,
-                "name": "shell::filesystem::write",
+            "function_call": {
+                "id": function_call_id,
+                "function_id": "shell::filesystem::write",
                 "arguments": {},
             },
             "approval_required": ["shell::filesystem::write"],
@@ -86,7 +86,7 @@ async fn round_trip_allow_unblocks_under_one_second() {
     });
 
     // Wait for the gate to write the pending record before we resolve.
-    let key = format!("{session_id}/{tool_call_id}");
+    let key = format!("{session_id}/{function_call_id}");
     let mut tries = 0;
     loop {
         let v = iii
@@ -113,7 +113,7 @@ async fn round_trip_allow_unblocks_under_one_second() {
             function_id: FN_RESOLVE.into(),
             payload: json!({
                 "session_id": session_id,
-                "tool_call_id": tool_call_id,
+                "function_call_id": function_call_id,
                 "decision": "allow",
             }),
             action: None,

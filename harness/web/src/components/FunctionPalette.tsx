@@ -41,8 +41,8 @@ interface Props {
 
 type View = { kind: "list" } | { kind: "drill"; entry: FunctionEntry };
 
-// Same denylist semantics the harness uses server-side for the LLM tool
-// catalog (see turn-orchestrator/src/tools_catalog.rs). The palette is a
+// Same denylist semantics the harness uses server-side for the LLM `agent_call`
+// surface (see turn-orchestrator/src/agent_call.rs). The palette is a
 // power-user surface, so we show ONE more layer than the LLM gets:
 // `auth::*`, `policy::*`, `shell::*` ARE shown here (with sensitive-call
 // gating). Only pure engine plumbing is hidden.
@@ -59,7 +59,7 @@ function isHidden(fnId: string): boolean {
 
 /**
  * engine::functions::list returns either an array directly or a
- * `{functions: [...]}` envelope (see tools_catalog.rs::unwrap_function_list).
+ * `{functions: [...]}` envelope (see agent_call.rs / engine list helpers).
  * Normalize to a plain array of FunctionEntry, dropping anything without a
  * function_id string and any hidden plumbing prefixes.
  */

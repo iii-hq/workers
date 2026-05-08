@@ -108,30 +108,43 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
     }
 
     case "approval_requested": {
+      const id =
+        event.function_call_id ||
+        ("tool_call_id" in event && event.tool_call_id ? event.tool_call_id : "");
+      const name =
+        event.function_id ||
+        ("tool_name" in event && event.tool_name ? event.tool_name : "");
+      if (!id) return state;
       const entry: PendingApproval = {
-        tool_call_id: event.tool_call_id,
-        tool_name: event.tool_name,
+        function_call_id: id,
+        function_id: name,
         args: event.args,
         expires_at: event.expires_at,
       };
-      if (state.pendingApprovals.some((a) => a.tool_call_id === entry.tool_call_id)) {
+      if (state.pendingApprovals.some((a) => a.function_call_id === entry.function_call_id)) {
         return state;
       }
       return { ...state, pendingApprovals: [...state.pendingApprovals, entry] };
     }
 
-    case "approval_resolved":
+    case "approval_resolved": {
+      const rid =
+        event.function_call_id ||
+        ("tool_call_id" in event && event.tool_call_id ? event.tool_call_id : "");
+      if (!rid) return state;
       return {
         ...state,
-        pendingApprovals: state.pendingApprovals.filter(
-          (a) => a.tool_call_id !== event.tool_call_id,
-        ),
+        pendingApprovals: state.pendingApprovals.filter((a) => a.function_call_id !== rid),
       };
+    }
 
     case "turn_start":
     case "tool_execution_start":
     case "tool_execution_update":
     case "tool_execution_end":
+    case "function_execution_start":
+    case "function_execution_update":
+    case "function_execution_end":
       return state;
 
     default:

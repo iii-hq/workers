@@ -28,8 +28,8 @@ async fn main() -> anyhow::Result<()> {
         .trigger(TriggerRequest {
             function_id: "hook-fanout::publish_collect".into(),
             payload: json!({
-                "topic": "agent::before_tool_call",
-                "payload": { "tool_call": { "id": "t1" } },
+                "topic": "agent::before_function_call",
+                "payload": { "function_call": { "id": "t1" } },
                 "merge_rule": "first_block_wins",
                 "timeout_ms": 5000,
             }),

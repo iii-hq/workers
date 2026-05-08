@@ -36,13 +36,13 @@ fn content_block_to_wire_text_round_trips() {
 }
 
 #[test]
-fn content_block_to_wire_tool_call_round_trips() {
-    let block = ContentBlock::ToolCall {
+fn content_block_to_wire_function_call_round_trips() {
+    let block = ContentBlock::FunctionCall {
         id: "tc1".into(),
-        name: "read".into(),
+        function_id: "read".into(),
         arguments: serde_json::json!({"path": "/tmp/x"}),
     };
-    let wire = content_block_to_wire(&block).expect("tool_call serializes");
+    let wire = content_block_to_wire(&block).expect("function_call serializes");
     assert_eq!(wire["type"], "tool_use");
     assert_eq!(wire["id"], "tc1");
     assert_eq!(wire["name"], "read");
