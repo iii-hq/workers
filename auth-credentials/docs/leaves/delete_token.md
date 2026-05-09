@@ -1,0 +1,12 @@
+# Removing a provider credential
+
+## When to use
+
+- A user revokes their API key.
+- An OAuth refresh has been failing repeatedly and the credential should be cleared so the next call forces re-authentication.
+- Cleaning up after a test run that wrote a temporary credential.
+
+## Notes
+
+- Deletes are idempotent — removing a credential that was never stored is not an error.
+- Only the stored credential is removed; an environment fallback (e.g. `ANTHROPIC_API_KEY`) still resolves on the next `auth::get_token` call until it is unset in the shell.

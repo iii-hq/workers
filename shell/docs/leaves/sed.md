@@ -1,0 +1,17 @@
+# Find-and-replace across files
+
+## When to use
+
+- Multi-file rewrite where `shell::fs::grep` is the read-side preview.
+- Single-file regex replace that would otherwise reach for `sed -i`.
+- Templating step over a generated tree.
+
+## Notes
+
+- Supply either `files: ["/abs/a", …]` for an explicit list or `path` (a directory) for a recursive walk; or `path` to a single file for a one-off rewrite.
+- `pattern` is a regex when `regex: true` (default). `replacement` supports `$1`, `$2`, … capture-group backreferences. Set `regex: false` for a literal pattern.
+- `first_only: true` rewrites only the first match per file; the default rewrites every match.
+- There is no line-anchor flag — encode it inside the pattern (`(?m)^…`).
+- Per-file results carry `success: false` plus an `error` string for files that failed to rewrite (permission denied, regex compilation error). `total_replacements` sums across files.
+- Approval policy mirrors `shell::fs::write` — set per-run by the orchestrator's `approval_required` array, not hardcoded into the function.
+- When unsure about the regex, run `shell::fs::grep` with the same pattern first.

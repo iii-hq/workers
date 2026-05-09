@@ -1,0 +1,12 @@
+# Listing providers with stored credentials
+
+## When to use
+
+- Building a settings surface that shows which providers a workspace has authenticated with.
+- Auditing connected providers without revealing token bytes.
+- Pre-flight: detecting which providers are usable without trying each in turn.
+
+## Notes
+
+- Returns provider names only — token bytes are never exposed by this function.
+- The list reflects stored credentials only. Providers backed by an environment variable do not appear here; use `auth::status` to detect those.
