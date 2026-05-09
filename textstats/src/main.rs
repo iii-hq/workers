@@ -1,3 +1,7 @@
+// Worker entry point. Registers the worker's functions with the iii engine
+// over the SDK. iii-skill-check does NOT parse this file — function ids,
+// signatures, and descriptions are surfaced by the API-surface auto-gen
+// system, not by the renderer.
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

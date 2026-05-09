@@ -1,3 +1,6 @@
+# Rust crate machinery for the worker binary. iii-skill-check does NOT consume
+# this file — the validator is purely narrative-aware. The crate exists so the
+# worker has a buildable Rust target like every other Rust-deployed worker.
 [workspace]
 
 [package]

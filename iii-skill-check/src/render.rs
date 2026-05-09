@@ -147,39 +147,52 @@ fn join_or(items: &[&str]) -> String {
 fn read_partial(path: &Path) -> anyhow::Result<String> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
+    // trim_matches: strip leading + trailing \n. The leading trim handles the
+    // common authoring pattern of separating a `<!-- partial-info: ... -->`
+    // header from the body with a blank line.
     Ok(strip_partial_info(&content)
-        .trim_end_matches('\n')
+        .trim_matches('\n')
         .to_string())
 }
 
 fn read_optional_partial(path: &Path) -> anyhow::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(Some(
-            strip_partial_info(&content)
-                .trim_end_matches('\n')
-                .to_string(),
+            strip_partial_info(&content).trim_matches('\n').to_string(),
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", path.display()))),
     }
 }
 
-/// Strip `<!-- partial-info: ... -->` lines from a partial. Use at read time so
-/// per-file author-pedagogy comments never leak into rendered artifacts. The
-/// marker is single-line; multi-line variants are not parsed in v1.
+/// Strip partial-info marker lines from a partial. Use at read time so per-file
+/// author-pedagogy comments never leak into rendered artifacts. Two forms:
+///
+///   - HTML: `<!-- partial-info: ... -->` (used in markdown partials).
+///   - Hash: `# partial-info: ...` (used in YAML / shell-comment partials such
+///     as `config.yaml`, where HTML comments would be invalid syntax).
+///
+/// Both forms are single-line; multi-line variants are not parsed in v1.
 fn strip_partial_info(content: &str) -> String {
-    let kept: Vec<&str> = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !(trimmed.starts_with("<!-- partial-info:") && trimmed.ends_with("-->"))
-        })
-        .collect();
+    let kept: Vec<&str> = content.lines().filter(|line| !is_partial_info(line)).collect();
     let mut result = kept.join("\n");
     if content.ends_with('\n') {
         result.push('\n');
     }
     result
+}
+
+fn is_partial_info(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.starts_with("<!-- partial-info:") && trimmed.ends_with("-->") {
+        return true;
+    }
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        if rest.trim_start().starts_with("partial-info:") {
+            return true;
+        }
+    }
+    false
 }
 
 fn list_leaves(dir: &Path) -> anyhow::Result<Vec<(String, PathBuf)>> {
@@ -293,6 +306,18 @@ mod tests {
     #[test]
     fn strip_partial_info_idempotent_when_no_markers() {
         let input = "plain content\nno markers\n";
+        assert_eq!(strip_partial_info(input), input);
+    }
+
+    #[test]
+    fn strip_partial_info_drops_yaml_hash_form() {
+        let input = "# partial-info: worker runtime config\nkey: value\n";
+        assert_eq!(strip_partial_info(input), "key: value\n");
+    }
+
+    #[test]
+    fn strip_partial_info_does_not_drop_unrelated_hash_comments() {
+        let input = "# regular YAML comment\nkey: value\n";
         assert_eq!(strip_partial_info(input), input);
     }
 }

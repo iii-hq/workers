@@ -1,3 +1,5 @@
+<!-- partial-info: Body of the rendered README's `## Quickstart` section. README only — not used in skill.md. Aim for ≤30 lines of code; show one to three functions chosen for introductory value. -->
+
 ```rust
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
 use serde_json::json;

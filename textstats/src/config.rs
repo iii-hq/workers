@@ -1,3 +1,6 @@
+// Runtime config struct, deserialized from `config.yaml`. Not consumed by
+// iii-skill-check; the renderer inlines `config.yaml` verbatim under
+// `## Configuration` rather than introspecting the schema here.
 use serde::Deserialize;
 
 /// Runtime config for the textstats worker.

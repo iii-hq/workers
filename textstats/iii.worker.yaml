@@ -1,3 +1,6 @@
+# Worker manifest. iii-skill-check reads `name` to drive the H1 and the
+# `iii worker add` line in the rendered README; the rest of the fields are
+# metadata for the registry publish pipeline.
 iii: v1
 name: textstats
 language: rust

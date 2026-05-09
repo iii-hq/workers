@@ -1,3 +1,5 @@
+# partial-info: Worker runtime config. Inlined verbatim under the rendered README's `## Configuration` section, including any non-marker `#` comments — annotate per-line to document each field for human readers.
+
 # textstats runtime config.
 
 # Number of recent analyses retained for textstats::summarize rollups.

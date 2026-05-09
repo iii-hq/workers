@@ -1,3 +1,5 @@
+<!-- partial-info: Per-skill body for `iii://<worker>/<leaf>` (where `<leaf>` is this file's stem). Author-chosen topical H1 (not the function id), `## When to use`, `## Notes`, and optional llm-only blocks. -->
+
 # Reading rolling text-stat summaries
 
 ## When to use
