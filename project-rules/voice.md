@@ -2,6 +2,21 @@
 
 Rules for the prose voice across iii docs pages.
 
+## Scope
+
+The "Manifesto-aligned voice" and "Recurring theme: compose from the registry" sections below
+apply to the **main docs** — pages under `using-iii/`, `understanding-iii/`, `expanding-iii/`,
+`tutorials/`, `how-to/`, `patterns/`, `sdk-reference/`, the changelog, and landing pages on
+iii.dev.
+
+They do **not** govern per-worker `README.md`, `skill.md`, or `skills/<leaf>.md` rendered by
+`iii-skill-check` from a worker's `docs/` partials. Worker-specific docs follow a tighter,
+technical voice that prioritizes precise mechanism over manifesto framing — see the
+`iii-skill-authoring` skill bundle (in `iii-hq/workers`) for the voice rules that apply there.
+
+The "What to avoid" rules at the bottom apply **everywhere** — Vale enforces the slop and
+terminology lists on every markdown artifact regardless of surface.
+
 ## Manifesto-aligned voice
 
 iii's docs voice should match the website's hero framing — declarative, confident,
