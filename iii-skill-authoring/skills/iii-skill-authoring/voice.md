@@ -19,3 +19,14 @@ Skill content reaches both human readers (via the published README on iii.dev) a
 - The bare term `telemetry`. Disambiguate: `OpenTelemetry` or `observability` for traces, metrics, and logs (the iii-observability worker), or `iii-telemetry` for anonymous-usage analytics.
 
 The full slop and terminology lists are in `styles/Terminology/`. Vale enforces them on every rendered artifact.
+
+## Stay in your lane
+
+When narrative would document a surface owned by another worker, point at the canonical worker docs and stop. Common boundaries:
+
+- Channels (`ChannelReader`, `ChannelWriter`, `StreamChannelRef`, `createChannel`) → iii-worker-manager.
+- Logging, traces, metrics, custom spans, anything governed by `OTEL_*` → iii-observability.
+- Anonymous-usage analytics, anything governed by `III_TELEMETRY_ENABLED` → iii-telemetry.
+- Sandbox VMs, ephemeral execution of untrusted code → iii-sandbox.
+
+Duplication drifts. Gesture at the surface, link to it, move on.

@@ -17,3 +17,7 @@ Each registered function gets one file at `docs/leaves/<leaf>.md`. The leaf name
 - Cross-references between functions in tabular form. Use prose links.
 
 The renderer prepends a generated banner comment to each leaf and unwraps any llm-only blocks before writing `skills/<leaf>.md`. Beyond that, the file is copied verbatim — what you write is what the agent reads.
+
+## When you remove a function
+
+Delete the corresponding `docs/leaves/<leaf>.md` and re-render. Orphan partials are dead code per `project-rules/general.md` — they leak old behaviour into `iii://<worker>/<leaf>` and clutter the source tree. Same rule applies to any other partial whose referent has been removed (`docs/migration.md` after a release where the migration is no longer load-bearing, `docs/companions.md` if the sibling worker is retired, …).
