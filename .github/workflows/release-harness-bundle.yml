@@ -1,0 +1,216 @@
+name: Release harness bundle
+
+# Single-dispatch fan-out for the harness meta-worker. A `harness/v*` tag
+# triggers one CI run that builds + publishes harness plus every in-repo
+# dependency listed in harness/iii.worker.yaml whose local manifest version
+# is greater than the version currently registered on https://workers.iii.dev/.
+#
+# Skips:
+#   - dependencies not present as folders in this repo (e.g. iii-sandbox)
+#   - dependencies whose local version <= registered version
+#   - the `skills` worker (held by maintainers; bump + tag separately)
+#
+# Reuses _rust-binary.yml and _publish-registry.yml exactly as the
+# per-worker release.yml does.
+
+on:
+  push:
+    tags:
+      - 'harness/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing harness tag to release (e.g. harness/v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-harness-bundle-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Compute publish set
+    runs-on: ubuntu-latest
+    outputs:
+      publish_set: ${{ steps.compute.outputs.publish_set }}
+      registry_tag: ${{ steps.compute.outputs.registry_tag }}
+      harness_version: ${{ steps.compute.outputs.harness_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Refetch annotated tag
+        env:
+          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}" || true
+
+      - name: Install python deps
+        run: pip install --quiet pyyaml requests
+
+      - name: Compute publish set
+        id: compute
+        env:
+          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          REGISTRY_API: https://api.workers.iii.dev
+          # Workers excluded from the bundle even when they're in harness deps.
+          # `iii-sandbox` is an external engine worker. `skills` is held by maintainers.
+          BUNDLE_EXCLUDE: iii-sandbox,skills
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys, urllib.parse, urllib.request, yaml
+
+          raw = os.environ["RAW_TAG"].strip()
+          m = re.match(r"^harness/v(.+)$", raw)
+          if not m:
+              print(f"::error::tag must match harness/v<X.Y.Z>, got {raw!r}")
+              sys.exit(1)
+          harness_version = m.group(1)
+
+          excluded = {x.strip() for x in os.environ["BUNDLE_EXCLUDE"].split(",") if x.strip()}
+          api = os.environ["REGISTRY_API"].rstrip("/")
+
+          def read_meta(worker: str) -> dict:
+              with open(f"{worker}/iii.worker.yaml") as f:
+                  return yaml.safe_load(f) or {}
+
+          def read_cargo_version(path: str) -> str | None:
+              with open(path) as f:
+                  for line in f:
+                      mm = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
+                      if mm:
+                          return mm.group(1)
+              return None
+
+          def parse_semver(v: str) -> tuple:
+              core = v.split("-", 1)[0]
+              parts = [int(x) for x in core.split(".")]
+              while len(parts) < 3:
+                  parts.append(0)
+              return tuple(parts)
+
+          def registered_version(worker: str) -> str | None:
+              url = f"{api}/workers/{urllib.parse.quote(worker)}"
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as resp:
+                      data = json.loads(resp.read())
+                  return data.get("version") or data.get("latest")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"::notice::registry lookup failed for {worker}: {exc}")
+                  return None
+
+          harness_meta = read_meta("harness")
+          deps = harness_meta.get("dependencies") or {}
+          if not isinstance(deps, dict):
+              print("::error::harness/iii.worker.yaml dependencies must be a mapping")
+              sys.exit(1)
+
+          publish_set: list[dict] = []
+
+          # Always include harness itself at the tagged version.
+          h_manifest = harness_meta.get("manifest", "Cargo.toml")
+          h_bin = harness_meta.get("bin") or harness_meta.get("name") or "harness"
+          publish_set.append({
+              "worker": "harness",
+              "version": harness_version,
+              "manifest": h_manifest,
+              "bin": h_bin,
+          })
+
+          for dep_name in sorted(deps):
+              if dep_name in excluded:
+                  print(f"::notice::{dep_name}: excluded from bundle")
+                  continue
+              if not os.path.isdir(dep_name):
+                  print(f"::notice::{dep_name}: not an in-repo folder; skipping")
+                  continue
+              try:
+                  meta = read_meta(dep_name)
+              except FileNotFoundError:
+                  print(f"::notice::{dep_name}/iii.worker.yaml missing; skipping")
+                  continue
+              if meta.get("deploy") != "binary":
+                  print(f"::notice::{dep_name}: deploy={meta.get('deploy')!r}; bundle only handles binary")
+                  continue
+              manifest = meta.get("manifest", "Cargo.toml")
+              local_ver = read_cargo_version(f"{dep_name}/{manifest}")
+              if not local_ver:
+                  print(f"::warning::{dep_name}: cannot read version from {manifest}; skipping")
+                  continue
+              reg_ver = registered_version(dep_name)
+              if reg_ver and parse_semver(local_ver) <= parse_semver(reg_ver):
+                  print(f"::notice::{dep_name}: local v{local_ver} <= registered v{reg_ver}; skipping")
+                  continue
+              bin_name = meta.get("bin") or meta.get("name") or dep_name
+              publish_set.append({
+                  "worker": dep_name,
+                  "version": local_ver,
+                  "manifest": manifest,
+                  "bin": bin_name,
+              })
+              print(f"::notice::{dep_name}: queued v{local_ver} (registry v{reg_ver or 'none'})")
+
+          # Pull registry-tag (latest|next) from the annotated harness tag message.
+          registry_tag = "latest"
+          try:
+              msg = subprocess.check_output(
+                  ["git", "tag", "-l", "--format=%(contents)", raw], text=True
+              )
+              for line in msg.splitlines():
+                  s = line.strip()
+                  if s.startswith("registry-tag:"):
+                      registry_tag = s.split(":", 1)[1].strip() or "latest"
+                      break
+          except subprocess.CalledProcessError:
+              pass
+
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          out.write(f"publish_set={json.dumps(publish_set)}\n")
+          out.write(f"registry_tag={registry_tag}\n")
+          out.write(f"harness_version={harness_version}\n")
+          out.close()
+
+          print(f"::notice::bundle: harness v{harness_version} + {len(publish_set) - 1} deps; registry-tag={registry_tag}")
+          PY
+
+  build:
+    name: Build ${{ matrix.entry.worker }} v${{ matrix.entry.version }}
+    needs: [setup]
+    if: ${{ needs.setup.outputs.publish_set != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.setup.outputs.publish_set) }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: ${{ matrix.entry.bin }}
+      manifest_path: ${{ matrix.entry.worker }}/${{ matrix.entry.manifest }}
+      tag_name: ${{ matrix.entry.worker }}/v${{ matrix.entry.version }}
+    secrets: inherit
+
+  publish:
+    name: Publish ${{ matrix.entry.worker }} v${{ matrix.entry.version }}
+    needs: [setup, build]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.publish_set != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        entry: ${{ fromJSON(needs.setup.outputs.publish_set) }}
+    uses: ./.github/workflows/_publish-registry.yml
+    with:
+      worker: ${{ matrix.entry.worker }}
+      version: ${{ matrix.entry.version }}
+      deploy: binary
+      registry_tag: ${{ needs.setup.outputs.registry_tag }}
+      tag: ${{ matrix.entry.worker }}/v${{ matrix.entry.version }}
+      bin: ${{ matrix.entry.bin }}
+    secrets: inherit

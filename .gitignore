@@ -25,6 +25,7 @@ config.yaml
 !provider-anthropic/config.yaml
 iii.lock
 harness/.omx/
+harness/data/
 harness/web/.vite/
 harness/web/dist/
 CLAUDE.md

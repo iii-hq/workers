@@ -4,7 +4,7 @@ members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-cred
 
 [package]
 name = "iii-provider-openai"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenAI Chat Completions; registers provider::openai::complete on the iii bus."
 edition = "2021"
 license = "Apache-2.0"
