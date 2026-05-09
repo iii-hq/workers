@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 /// Reasoning effort level requested from a model. Providers map these to native
 /// shapes (token budget for budget-based models, effort tier for tier-based, ignored
 /// for unsupported providers).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    #[default]
     Off,
     Minimal,
     Low,
@@ -13,12 +14,6 @@ pub enum ThinkingLevel {
     High,
     /// Highest tier; only supported by selected model families.
     Xhigh,
-}
-
-impl Default for ThinkingLevel {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 /// Per-level token budgets for token-budget-based providers.
