@@ -1,5 +1,6 @@
 target/
 .planning/
+.skill-check/
 .claude/
 .idea/
 .DS_Store
