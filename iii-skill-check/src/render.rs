@@ -210,4 +210,29 @@ mod tests {
         let expected = "A\nmid\nB";
         assert_eq!(unwrap_llm_only(input), expected);
     }
+
+    #[test]
+    fn strip_partial_info_drops_single_marker() {
+        let input = "<!-- partial-info: body shown after the H1 -->\nactual content\n";
+        assert_eq!(strip_partial_info(input), "actual content\n");
+    }
+
+    #[test]
+    fn strip_partial_info_drops_indented_marker() {
+        let input = "  <!-- partial-info: leading whitespace tolerated -->\nbody\n";
+        assert_eq!(strip_partial_info(input), "body\n");
+    }
+
+    #[test]
+    fn strip_partial_info_leaves_unrelated_comments_alone() {
+        let input = "<!-- llm-only:start -->\nA\n<!-- partial-info: foo -->\nB\n<!-- llm-only:end -->\n";
+        let expected = "<!-- llm-only:start -->\nA\nB\n<!-- llm-only:end -->\n";
+        assert_eq!(strip_partial_info(input), expected);
+    }
+
+    #[test]
+    fn strip_partial_info_idempotent_when_no_markers() {
+        let input = "plain content\nno markers\n";
+        assert_eq!(strip_partial_info(input), input);
+    }
 }
