@@ -1,8 +1,10 @@
 [workspace]
+members = ["crates/harness-types"]
 
 [package]
 name = "iii-harness"
 version = "0.2.0"
+description = "Meta-worker that composes the modular workers backing the iii chat surface."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -30,8 +32,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
-turn-orchestrator = { path = "../turn-orchestrator", package = "iii-turn-orchestrator" }
-harness-types = { path = "../turn-orchestrator/crates/harness-types" }
+harness-types = { path = "crates/harness-types" }
 serial_test = "3"
 which = "8"
 

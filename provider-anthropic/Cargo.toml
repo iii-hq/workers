@@ -5,6 +5,7 @@ members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-cred
 [package]
 name = "iii-provider-anthropic"
 version = "0.1.0"
+description = "Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -38,7 +39,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]

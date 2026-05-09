@@ -2,6 +2,11 @@
 //! whose `function_call.function_id` appears in the run's `approval_required` list,
 //! waiting for the UI to call `approval::resolve` (or for a timeout).
 
+pub mod config;
+pub mod manifest;
+
+pub use config::WorkerConfig;
+
 use std::sync::Arc;
 
 use iii_sdk::{
@@ -9,41 +14,27 @@ use iii_sdk::{
 };
 use serde_json::{json, Value};
 
+pub const SKILL_ID: &str = "approval-gate";
+pub const SKILL_MD: &str = include_str!("../skill.md");
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    (
+        "approval-gate/resolve",
+        include_str!("../skills/resolve.md"),
+    ),
+    (
+        "approval-gate/list_pending",
+        include_str!("../skills/list_pending.md"),
+    ),
+    (
+        "approval-gate/policy_approval_gate",
+        include_str!("../skills/policy_approval_gate.md"),
+    ),
+];
+
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
+/// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
-pub const DEFAULT_TIMEOUT_MS: u64 = 300_000;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Config {
-    pub topic: String,
-    pub timeout_ms: u64,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            topic: "agent::before_function_call".into(),
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-        }
-    }
-}
-
-impl Config {
-    pub fn from_env() -> Self {
-        let mut cfg = Self::default();
-        if let Ok(t) = std::env::var("APPROVAL_GATE_TIMEOUT_MS") {
-            match t.parse::<u64>() {
-                Ok(n) => cfg.timeout_ms = n,
-                Err(err) => log::warn!(
-                    "APPROVAL_GATE_TIMEOUT_MS={t:?} is not a valid u64 ({err}); \
-                     using default {DEFAULT_TIMEOUT_MS}ms"
-                ),
-            }
-        }
-        cfg
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncomingCall {
@@ -167,7 +158,7 @@ pub trait StateBus: Send + Sync {
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
 }
 
-pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
+pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -188,7 +179,7 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
         return json!({ "ok": false, "error": "bad_decision" });
     };
     let key = pending_key(session_id, function_call_id);
-    let Some(mut existing) = bus.get(STATE_SCOPE, &key).await else {
+    let Some(mut existing) = bus.get(state_scope, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
     };
     if existing.get("status").and_then(Value::as_str) != Some("pending") {
@@ -199,14 +190,14 @@ pub async fn handle_resolve(bus: &dyn StateBus, payload: Value) -> Value {
     if let Some(reason) = payload.get("reason").cloned() {
         existing["reason"] = reason;
     }
-    if let Err(err) = bus.set(STATE_SCOPE, &key, existing).await {
-        log::error!("approval-gate: failed to write resolved state: {err}");
+    if let Err(err) = bus.set(state_scope, &key, existing).await {
+        tracing::error!("approval-gate: failed to write resolved state: {err}");
         return json!({ "ok": false, "error": "state_write_failed" });
     }
     json!({ "ok": true })
 }
 
-pub async fn handle_list_pending(bus: &dyn StateBus, payload: Value) -> Value {
+pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -215,7 +206,7 @@ pub async fn handle_list_pending(bus: &dyn StateBus, payload: Value) -> Value {
         return json!({ "pending": [] });
     }
     let prefix = format!("{session_id}/");
-    let all = bus.list_prefix(STATE_SCOPE, &prefix).await;
+    let all = bus.list_prefix(state_scope, &prefix).await;
     let pending: Vec<Value> = all
         .into_iter()
         .filter(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
@@ -227,13 +218,14 @@ const POLL_INTERVAL_MS: u64 = 250;
 
 pub async fn await_decision(
     bus: &dyn StateBus,
+    state_scope: &str,
     session_id: &str,
     function_call_id: &str,
     expires_at: u64,
 ) -> Decision {
     let key = pending_key(session_id, function_call_id);
     loop {
-        let Some(rec) = bus.get(STATE_SCOPE, &key).await else {
+        let Some(rec) = bus.get(state_scope, &key).await else {
             return Decision::Deny {
                 reason: "state_unavailable".into(),
             };
@@ -358,39 +350,51 @@ async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &
         .await;
 }
 
-pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
+pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let bus: Arc<dyn StateBus> = Arc::new(IiiStateBus(iii.clone()));
+    let timeout_ms = cfg.default_timeout_ms;
+    let topic = cfg.topic.clone();
+    let state_scope = cfg.approval_state_scope.clone();
 
     let bus_for_resolve = bus.clone();
-    let resolve = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_RESOLVE.into())
-            .with_description("Flip a pending approval entry to allow or deny.".into()),
-        move |payload: Value| {
-            let bus = bus_for_resolve.clone();
-            async move { Ok::<_, IIIError>(handle_resolve(bus.as_ref(), payload).await) }
-        },
-    ));
+    let scope_resolve = state_scope.clone();
+    let resolve =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_RESOLVE.into())
+                .with_description("Flip a pending approval entry to allow or deny.".into()),
+            move |payload: Value| {
+                let bus = bus_for_resolve.clone();
+                let scope_resolve = scope_resolve.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_resolve(bus.as_ref(), &scope_resolve, payload).await)
+                }
+            },
+        ));
 
     let bus_for_list = bus.clone();
+    let scope_list = state_scope.clone();
     let list_pending = iii.register_function((
         RegisterFunctionMessage::with_id(FN_LIST_PENDING.into())
             .with_description("Return pending approvals for a session.".into()),
         move |payload: Value| {
             let bus = bus_for_list.clone();
-            async move { Ok::<_, IIIError>(handle_list_pending(bus.as_ref(), payload).await) }
+            let scope_list = scope_list.clone();
+            async move {
+                Ok::<_, IIIError>(handle_list_pending(bus.as_ref(), &scope_list, payload).await)
+            }
         },
     ));
 
-    let timeout_ms = config.timeout_ms;
-    let topic = config.topic.clone();
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
+    let subscriber_scope = state_scope.clone();
     let subscriber_fn = iii.register_function((
         RegisterFunctionMessage::with_id("policy::approval_gate".into())
             .with_description("Pause function calls listed in approval_required.".into()),
         move |envelope: Value| {
             let iii = iii_for_sub.clone();
             let bus = bus_for_sub.clone();
+            let sc = subscriber_scope.clone();
             async move {
                 let Some(call) = extract_call(&envelope) else {
                     return Ok::<_, IIIError>(json!({ "block": false }));
@@ -414,13 +418,13 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 );
                 if let Err(err) = bus
                     .set(
-                        STATE_SCOPE,
+                        &sc,
                         &pending_key(&call.session_id, &call.function_call_id),
                         record,
                     )
                     .await
                 {
-                    log::error!(
+                    tracing::error!(
                         "approval-gate: failed to write pending record for {}/{}: {err}",
                         call.session_id,
                         call.function_call_id
@@ -445,6 +449,7 @@ pub fn register(iii: &III, config: Config) -> anyhow::Result<Refs> {
                 .await;
                 let decision = await_decision(
                     bus.as_ref(),
+                    &sc,
                     &call.session_id,
                     &call.function_call_id,
                     expires_at,
@@ -664,6 +669,7 @@ mod tests {
 
         let out = handle_resolve(
             &bus,
+            STATE_SCOPE,
             json!({
                 "function_call_id": "tc-1",
                 "session_id": "s1",
@@ -693,6 +699,7 @@ mod tests {
 
         let out = handle_resolve(
             &bus,
+            STATE_SCOPE,
             json!({
                 "tool_call_id": "tc-1",
                 "session_id": "s1",
@@ -715,6 +722,7 @@ mod tests {
 
         let out = handle_resolve(
             &bus,
+            STATE_SCOPE,
             json!({"function_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
         )
         .await;
@@ -745,7 +753,7 @@ mod tests {
         .await
         .unwrap();
 
-        let out = handle_list_pending(&bus, json!({ "session_id": "s1" })).await;
+        let out = handle_list_pending(&bus, STATE_SCOPE, json!({ "session_id": "s1" })).await;
         let items = out["pending"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["function_call_id"], "tc-1");
@@ -781,7 +789,7 @@ mod tests {
             bus2.set(STATE_SCOPE, &key, rec).await.unwrap();
         });
 
-        let decision = await_decision(&*bus, "s1", "tc-1", now_ms() + 5_000).await;
+        let decision = await_decision(&*bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 5_000).await;
         writer.await.unwrap();
         assert_eq!(decision, Decision::Allow);
     }
@@ -797,7 +805,7 @@ mod tests {
                 build_pending_record("tc-1", "write", &json!({}), 0, 0),
             )
             .await;
-        let decision = await_decision(&bus, "s1", "tc-1", now_ms() - 10).await;
+        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() - 10).await;
         match decision {
             Decision::Deny { reason } => assert_eq!(reason, "timeout"),
             other => panic!("expected Deny(timeout), got {other:?}"),
@@ -807,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn await_decision_fail_closed_on_missing_record() {
         let bus = InMemoryStateBus::new();
-        let decision = await_decision(&bus, "s1", "tc-1", now_ms() + 1_000).await;
+        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 1_000).await;
         match decision {
             Decision::Deny { reason } => assert_eq!(reason, "state_unavailable"),
             other => panic!("expected Deny(state_unavailable), got {other:?}"),
@@ -827,6 +835,7 @@ mod tests {
 
         let out = handle_resolve(
             &bus,
+            STATE_SCOPE,
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",

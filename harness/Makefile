@@ -4,12 +4,13 @@
 # harness/ dir; targets that need the workspace root resolve it automatically.
 #
 # Usage:
-#   make             # help
-#   make all         # build + engine + start + verify
-#   make build       # cargo build --release for harness + 16 dep workers
-#   make engine      # start `iii --use-default-config` in background
-#   make start       # spawn each worker as a background process
-#   make verify      # call harness::status + models::list
+#   make                   # help
+#   make all               # build + engine + start + verify
+#   make build             # cargo build --release for harness + local dep workers
+#   make remote-install    # `iii worker add` each REMOTE_WORKERS entry (idempotent)
+#   make engine            # remote-install + start `iii` in background
+#   make start             # spawn each local worker as a background process
+#   make verify            # call harness::status + models::list
 #   make web         # vite dev server in tmux
 #   make stop        # kill every spawned process + engine + tmux
 #   make restart     # stop + engine + start + verify (no rebuild)
@@ -35,10 +36,18 @@ WORKERS := \
   turn-orchestrator provider-router \
   session-tree session-inbox \
   models-catalog hook-fanout policy-denylist \
-  shell subagent \
+  shell \
   provider-anthropic provider-openai \
   auth-credentials llm-budget \
   skills approval-gate
+
+# Remote / registry-fetched workers. Declared in harness/iii.worker.yaml
+# (which is also where EXPECTED_WORKERS is generated from), but NOT built
+# locally — the iii engine fetches them on `iii worker add`. The
+# `remote-install` target below registers each one (idempotent: re-adding
+# is a no-op) and is chained into `engine`, so `make all` / `make engine`
+# Just Works™ without a separate manual step.
+REMOTE_WORKERS := iii-sandbox
 
 # Resolve the binary name for a worker. Reads `bin:` from each crate's
 # iii.worker.yaml (mixed: iii-* historical + folder-matched names). Falls
@@ -47,7 +56,7 @@ define BIN_NAME_FOR
 $$(awk '/^bin:/{sub(/^bin:[ \t]*/, ""); sub(/[ \t]+$$/, ""); print; exit}' "$(WORKERS_REPO)/$(1)/iii.worker.yaml" 2>/dev/null || echo "$(1)")
 endef
 
-.PHONY: help all build engine start verify web stop restart logs ensure-dirs
+.PHONY: help all build engine start verify web stop restart logs ensure-dirs remote-install
 # logs-% is a pattern rule below; declaring each variant in .PHONY would
 # block the pattern from firing.
 
@@ -70,19 +79,31 @@ build: ensure-dirs
 	done
 	@echo "==> all binaries built."
 
+# ─── remote workers ──────────────────────────────────────────────────────────
+
+# Register each remote worker with the iii CLI. `iii worker add` is
+# idempotent — re-running on an already-installed worker is a no-op —
+# so this is safe to call on every `make engine`.
+remote-install:
+	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
+	@for w in $(REMOTE_WORKERS); do \
+	  echo "==> iii worker add $$w (idempotent)"; \
+	  iii worker add "$$w" || { echo "    [error] failed to add $$w; check the registry / iii CLI version"; exit 1; }; \
+	done
+
 # ─── engine ──────────────────────────────────────────────────────────────────
 
-engine: ensure-dirs
+engine: ensure-dirs remote-install
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@if [[ -f "$(DEMO_DIR)/engine.pid" ]] && kill -0 "$$(cat $(DEMO_DIR)/engine.pid)" 2>/dev/null; then \
 	  echo "==> engine already running (pid $$(cat $(DEMO_DIR)/engine.pid))"; \
 	  exit 0; \
 	fi
 	@echo "==> starting iii engine..."
-	@cd "$(DEMO_DIR)" && { nohup iii --use-default-config > engine.log 2>&1 & echo $$! > "$(DEMO_DIR)/engine.pid"; }
+	@cd "$(DEMO_DIR)" && { nohup iii > engine.log 2>&1 & echo $$! > "$(DEMO_DIR)/engine.pid"; }
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 	  sleep 1; \
-	  if iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then \
+	  if iii trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then \
 	    echo "==> engine ready after $${i}s (pid $$(cat $(DEMO_DIR)/engine.pid))"; \
 	    exit 0; \
 	  fi; \
@@ -94,7 +115,7 @@ engine: ensure-dirs
 start: ensure-dirs
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> engine reachability check..."
-	@iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1 \
+	@iii trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1 \
 	  || { echo "    engine not reachable — run \`make engine\` first (or use \`make all\`)"; exit 1; }
 	@echo "==> spawning $(words $(WORKERS)) dep workers..."
 	@for w in $(WORKERS); do $(MAKE) --no-print-directory _spawn-one W=$$w; sleep 0.1; done
@@ -136,10 +157,10 @@ _spawn-one:
 verify:
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> harness::status"
-	@iii --use-default-config trigger --function-id harness::status
+	@iii trigger --function-id harness::status
 	@echo
 	@echo "==> models::list (proves models-catalog connected)"
-	@iii --use-default-config trigger --function-id models::list || true
+	@iii trigger --function-id models::list || true
 
 # ─── logs ────────────────────────────────────────────────────────────────────
 

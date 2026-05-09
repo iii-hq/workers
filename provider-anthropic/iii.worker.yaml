@@ -5,5 +5,13 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-provider-anthropic
 description: Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run
+
 dependencies:
   auth-credentials: "^0.1.0"

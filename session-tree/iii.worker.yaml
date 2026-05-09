@@ -5,3 +5,10 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-session-tree
 description: Session storage as a parent-id tree of typed entries under session-tree::*.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run

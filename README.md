@@ -31,7 +31,6 @@ matching GitHub Release asset for the host's target triple.
 | [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
 | [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
-| [`subagent`](subagent/) | Rust | Spawn child agent sessions under `subagent::*` via `run::start_and_wait`. |
 | [`turn-orchestrator`](turn-orchestrator/) | Rust | Durable `run::start` state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down. |
 | [`todo-worker`](todo-worker/) | Node | Quickstart CRUD todo worker using the Node iii SDK. |
 | [`todo-worker-python`](todo-worker-python/) | Python | Quickstart CRUD todo worker using the Python iii SDK. |
@@ -87,6 +86,11 @@ armv7-unknown-linux-gnueabihf
 entry declares the worker kind (`binary` / container image), the release tag
 prefix, supported targets, and a default config. `iii worker add <name>`
 reads this file to locate the right asset for the host.
+
+The [harness](harness/) is a meta-worker whose `iii.worker.yaml` `dependencies:`
+block lists all fifteen workers it composes. Installing it via
+`iii worker add harness` resolves and fetches all dependencies automatically,
+giving a ready-to-run iii chat surface in one command.
 
 ## Add a new worker
 

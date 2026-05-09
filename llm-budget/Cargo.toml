@@ -3,10 +3,11 @@
 [package]
 name = "llm-budget"
 version = "0.1.0"
+description = "Workspace + agent LLM spend caps with alerts, forecast, and period rollover under budget::*."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
-authors = ["iii contributors"]
+authors = ["iii"]
 publish = false
 
 [lib]
@@ -26,7 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signa
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 

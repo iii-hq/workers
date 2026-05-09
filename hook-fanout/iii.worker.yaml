@@ -5,3 +5,10 @@ deploy: binary
 manifest: Cargo.toml
 bin: hook-fanout
 description: Reusable publish-collect primitive (hook-fanout::publish_collect) — fans an event to subscribers and collects merged replies.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run
