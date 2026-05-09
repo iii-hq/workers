@@ -12,6 +12,8 @@ on:
       - 'todo-worker/v*'
       - 'skills/v*'
       - 'todo-worker-python/v*'
+      - 'iii-skill-check/v*'
+      - 'iii-skill-authoring/v*'
   workflow_dispatch:
     inputs:
       tag:
