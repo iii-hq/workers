@@ -4,9 +4,8 @@
 
 ## When to use
 
-- A provider adapter (e.g. `provider-anthropic`) is about to make an upstream call and needs the current credential.
-- Pre-flight resolution before issuing a request that requires a token.
-- One-off debugging where a stored credential needs to be inspected directly.
+- A provider adapter (e.g. `provider-anthropic`) is about to make an API call and needs the current credential.
+- Pre-flight check before issuing a request that requires a credential.
 
 ## Notes
 

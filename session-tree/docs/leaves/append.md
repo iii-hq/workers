@@ -9,6 +9,6 @@
 ## Notes
 
 - `message` must be a valid `AgentMessage` from `harness-types`. Variants: `user`, `assistant`, `tool_result`, `custom`.
-- `parent_id` is optional, but in a linear thread every entry except the first should pass the previous `entry_id`. Omitting it on a non-root entry creates a parent-less node and breaks `session-tree::messages` reconstruction.
+- `parent_id` is optional. In a linear conversation thread every entry except the first should supply the previous `entry_id` as `parent_id`.
 - Entry ids are generated server-side; a caller-supplied id is ignored.
 - The call is not idempotent — invoking it twice with the same payload writes two distinct entries.
