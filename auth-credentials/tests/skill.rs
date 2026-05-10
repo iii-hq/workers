@@ -20,7 +20,7 @@ fn well_formed(label: &str, body: &str, require_summary: bool) {
     // itself is unchanged.
     let mut lines = body.lines().filter(|l| {
         let t = l.trim();
-        !t.is_empty() && !(t.starts_with("<!--") && t.ends_with("-->"))
+        !(t.is_empty() || t.starts_with("<!--") && t.ends_with("-->"))
     });
     let h1 = lines.next().unwrap_or("");
     assert!(
