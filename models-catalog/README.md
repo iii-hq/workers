@@ -14,7 +14,7 @@ Prefer `models::supports` for capability gates over `models::get` followed by a 
 iii worker add models-catalog
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
+`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii worker start`.
 
 For per-model cost tracking and spend caps that consume the catalog's pricing fields, pair with the [`llm-budget`](../llm-budget) worker. For surfacing `models::*` to LLM agents, pair with [`skills`](../skills):
 

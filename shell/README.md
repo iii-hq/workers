@@ -14,7 +14,7 @@ Host-targeted `shell::exec` is not an isolation boundary. The denylist is a rege
 iii worker add shell
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
+`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii worker start`.
 
 For sandbox-targeted execution and `shell::fs::*` forwarding, install [`iii-sandbox`](../iii-sandbox) — `iii worker add shell` does not currently pull it in. For surfacing `shell::*` to LLM agents, pair with [`skills`](../skills):
 

@@ -14,7 +14,7 @@ The child run rebuilds its tool catalog from `engine::functions::list` during pr
 iii worker add subagent
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii start`.
+`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii worker start`.
 
 `subagent` depends on [`turn-orchestrator`](../turn-orchestrator) for `run::*` — `iii worker add subagent` already pulls it in via the `dependencies` block in `iii.worker.yaml`. For surfacing `subagent::*` to LLM agents, pair with [`skills`](../skills):
 
