@@ -18,12 +18,5 @@ jobs:
           ref: ${{ github.head_ref }}    # check out the PR branch directly
       - uses: iii-hq/skills-and-validation@v0.2
         with:
-          # TEMPORARY: scoped to the 7 workers migrated to the canonical
-          # docs/ layout. The default `*/iii.worker.yaml` would invoke the
-          # renderer against every worker, and the 20 unmigrated workers
-          # have no `docs/intro.md` and fail immediately. Add to this list
-          # as each remaining worker is migrated; remove the override
-          # entirely once all workers conform.
-          workers-glob: "{auth-credentials,llm-budget,models-catalog,session-tree,shell,subagent,turn-orchestrator}/iii.worker.yaml"
           write: true
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
