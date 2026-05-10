@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}    # check out the PR branch directly
-      - uses: iii-hq/skills-and-validation@v0.1
+      - uses: iii-hq/skills-and-validation@v0.2
         with:
           # TEMPORARY: scoped to the 7 workers migrated to the canonical
           # docs/ layout. The default `*/iii.worker.yaml` would invoke the
