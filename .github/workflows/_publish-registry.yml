@@ -209,12 +209,9 @@ jobs:
 
       - name: Assert worker interface was collected
         run: |
-          python3 - <<'PY'
-          import json
-          data = json.load(open("worker-interface.json"))
-          if not data.get("functions"):
-              raise SystemExit("no worker functions were collected")
-          PY
+          set -euo pipefail
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty --assert-file worker-interface.json
 
       - name: Resolve binary artifacts
         if: inputs.deploy == 'binary'
