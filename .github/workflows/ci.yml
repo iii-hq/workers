@@ -12,6 +12,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  scripts-tests:
+    name: .github/scripts tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet pytest pyyaml
+      - run: pytest .github/scripts/tests/ -v
+
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed workers, read their iii.worker.yaml,
   # bucket them per language for the matrix jobs below.
