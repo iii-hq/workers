@@ -15,7 +15,7 @@ fn provider_router_executable() -> PathBuf {
         }
     }
     panic!(
-        "iii-provider-router binary not found under target/{{debug,release}}/; run `cargo build --bin iii-provider-router` first"
+        "provider-router binary not found under target/{{debug,release}}/; run `cargo build --bin provider-router` first"
     );
 }
 

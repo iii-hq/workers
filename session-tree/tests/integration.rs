@@ -1,13 +1,13 @@
 //! Smoke + bus-level integration tests for `session-tree::list` and
 //! `session-tree::messages`.
 //!
-//! The bus tests boot a real `iii` engine and the `iii-session-tree` worker
+//! The bus tests boot a real `iii` engine and the `session-tree` worker
 //! against a transient in-memory store, then drive each function through
 //! `iii.trigger`. They skip silently when the `iii` CLI is not on PATH so
 //! `cargo test` stays green in plain dev environments.
 //!
 //! To run them locally:
-//!   cargo build --bin iii-session-tree
+//!   cargo build --bin session-tree
 //!   cargo test --test integration
 
 mod common;

@@ -14,7 +14,7 @@ fn session_tree_executable() -> PathBuf {
             return candidate;
         }
     }
-    panic!("iii-session-tree binary not found; run `cargo build --bin iii-session-tree` first");
+    panic!("session-tree binary not found; run `cargo build --bin session-tree` first");
 }
 
 #[test]

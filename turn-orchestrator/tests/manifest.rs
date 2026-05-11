@@ -11,7 +11,7 @@ fn binary_path() -> String {
         return path.to_string();
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/target/debug/iii-turn-orchestrator")
+    format!("{manifest_dir}/target/debug/turn-orchestrator")
 }
 
 #[test]

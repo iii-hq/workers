@@ -6,12 +6,12 @@ pub fn session_inbox_executable() -> PathBuf {
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir.join("target").join(profile).join("iii-session-inbox");
+        let candidate = dir.join("target").join(profile).join("session-inbox");
         if candidate.is_file() {
             return candidate;
         }
     }
     panic!(
-        "iii-session-inbox binary not found under target/{{debug,release}}/; run `cargo build --bin iii-session-inbox` first"
+        "session-inbox binary not found under target/{{debug,release}}/; run `cargo build --bin session-inbox` first"
     );
 }

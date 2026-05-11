@@ -10,7 +10,7 @@ fn binary_path() -> String {
         return path.to_string();
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/target/debug/iii-policy-denylist")
+    format!("{manifest_dir}/target/debug/policy-denylist")
 }
 
 #[test]

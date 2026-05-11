@@ -34,7 +34,7 @@ fn fresh_iii() -> III {
 }
 
 fn tmpdir(prefix: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("iii-shell-fn-{}-{}", prefix, uuid::Uuid::new_v4()));
+    let d = std::env::temp_dir().join(format!("shell-fn-{}-{}", prefix, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

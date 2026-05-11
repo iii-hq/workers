@@ -9,16 +9,13 @@ fn auth_credentials_executable() -> PathBuf {
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir
-            .join("target")
-            .join(profile)
-            .join("auth-credentials");
+        let candidate = dir.join("target").join(profile).join("auth-credentials");
         if candidate.is_file() {
             return candidate;
         }
     }
     panic!(
-        "iii-auth-credentials binary not found under target/{{debug,release}}/; run `cargo build --bin iii-auth-credentials` first"
+        "auth-credentials binary not found under target/{{debug,release}}/; run `cargo build --bin auth-credentials` first"
     );
 }
 

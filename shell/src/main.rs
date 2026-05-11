@@ -18,10 +18,7 @@ mod triggers;
 use functions::types::{KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "shell",
-    about = "Unix shell execution worker for iii agents"
-)]
+#[command(name = "shell", about = "Unix shell execution worker for iii agents")]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -311,12 +308,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    tracing::info!("iii-shell registered 15 functions, ready");
+    tracing::info!("shell registered 15 functions, ready");
 
     spawn_skill_register(iii.clone());
 
     tokio::signal::ctrl_c().await?;
-    tracing::info!("iii-shell shutting down");
+    tracing::info!("shell shutting down");
     unregister_skill(&iii).await;
     iii.shutdown_async().await;
     Ok(())

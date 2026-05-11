@@ -15,7 +15,7 @@ fn models_catalog_executable() -> PathBuf {
         }
     }
     panic!(
-        "iii-models-catalog binary not found under target/{{debug,release}}/; run `cargo build --bin iii-models-catalog` first"
+        "models-catalog binary not found under target/{{debug,release}}/; run `cargo build --bin models-catalog` first"
     );
 }
 

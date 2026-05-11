@@ -15,7 +15,7 @@ fn harness_executable() -> PathBuf {
         }
     }
     panic!(
-        "iii-harness binary not found under target/{{debug,release}}/; run `cargo build --bin iii-harness` first"
+        "harness binary not found under target/{{debug,release}}/; run `cargo build --bin harness` first"
     );
 }
 
