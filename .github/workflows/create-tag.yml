@@ -121,103 +121,20 @@ jobs:
             *) echo "::error::Unsupported manifest: $MANIFEST"; exit 1 ;;
           esac
 
-      - name: Calculate next version
+      - name: Calculate and write next version
         id: versions
         env:
           WORKER: ${{ inputs.worker }}
           BUMP: ${{ inputs.bump }}
-          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
           MANIFEST: ${{ steps.meta.outputs.manifest }}
         run: |
-          read_version() {
-            case "$MANIFEST_TYPE" in
-              cargo)
-                grep '^version = ' "$1" | head -n1 | cut -d'"' -f2
-                ;;
-              node)
-                jq -r '.version' "$1"
-                ;;
-              python)
-                # PEP 621 [project] version = "..."
-                python3 -c "
-          import re, sys
-          text = open(sys.argv[1]).read()
-          in_proj = False
-          for line in text.splitlines():
-              s = line.strip()
-              if s.startswith('['):
-                  in_proj = (s == '[project]')
-                  continue
-              if in_proj:
-                  m = re.match(r'version\s*=\s*\"([^\"]+)\"', s)
-                  if m:
-                      print(m.group(1))
-                      sys.exit(0)
-          " "$1"
-                ;;
-            esac
-          }
-
-          bump_version() {
-            local current="$1"
-            local base="${current%%-*}"
-            IFS='.' read -r major minor patch <<< "$base"
-            case "$BUMP" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-            esac
-            echo "${major}.${minor}.${patch}"
-          }
-
-          current=$(read_version "$WORKER/$MANIFEST")
-          if [[ -z "$current" ]]; then
-            echo "::error::Could not read version from $WORKER/$MANIFEST"
-            exit 1
-          fi
-          new_ver=$(bump_version "$current")
+          set -euo pipefail
+          current=$(python3 .github/scripts/manifest_version.py read "$WORKER/$MANIFEST")
+          new_ver=$(python3 .github/scripts/manifest_version.py bump "$WORKER/$MANIFEST" --kind "$BUMP")
           echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "version=$new_ver" >> "$GITHUB_OUTPUT"
           echo "tag=${WORKER}/v${new_ver}" >> "$GITHUB_OUTPUT"
           echo "::notice::${WORKER}: ${current} -> ${new_ver}"
-
-      - name: Update manifest
-        env:
-          WORKER: ${{ inputs.worker }}
-          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
-          MANIFEST: ${{ steps.meta.outputs.manifest }}
-          NEW_VERSION: ${{ steps.versions.outputs.version }}
-        run: |
-          path="$WORKER/$MANIFEST"
-          case "$MANIFEST_TYPE" in
-            cargo)
-              sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" "$path"
-              ;;
-            node)
-              jq --arg v "$NEW_VERSION" '.version = $v' "$path" > "${path}.tmp"
-              mv "${path}.tmp" "$path"
-              ;;
-            python)
-              python3 - <<PY
-          import re, pathlib
-          p = pathlib.Path("$path")
-          text = p.read_text()
-          out, in_proj, replaced = [], False, False
-          for line in text.splitlines():
-              s = line.strip()
-              if s.startswith("["):
-                  in_proj = (s == "[project]")
-              if in_proj and not replaced and re.match(r'version\s*=\s*"[^"]+"', s):
-                  line = re.sub(r'version\s*=\s*"[^"]+"', 'version = "${NEW_VERSION}"', line)
-                  replaced = True
-              out.append(line)
-          if not replaced:
-              raise SystemExit("could not find version in [project]")
-          p.write_text("\n".join(out) + ("\n" if text.endswith("\n") else ""))
-          PY
-              ;;
-          esac
-          echo "Updated $path to ${NEW_VERSION}"
 
       - name: Validate manifest update
         env:
