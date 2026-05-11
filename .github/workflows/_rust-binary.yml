@@ -35,6 +35,11 @@ on:
         required: false
         type: string
         default: ''
+      version_override:
+        description: 'When set, rewrite [package].version in manifest_path to this value before building. Used by the harness bundle to force coordinated versions across deps.'
+        required: false
+        type: string
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -149,6 +154,42 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ inputs.bin_name }}-${{ matrix.target }}
+
+      - name: Rewrite [package].version (bundle coordinated release)
+        if: inputs.version_override != ''
+        shell: bash
+        env:
+          MANIFEST: ${{ inputs.manifest_path }}
+          VERSION: ${{ inputs.version_override }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+          path = pathlib.Path(os.environ["MANIFEST"])
+          version = os.environ["VERSION"]
+          if not path.is_file():
+              print(f"::error::manifest not found: {path}")
+              sys.exit(1)
+          lines = path.read_text().splitlines(keepends=True)
+          out, in_package, rewrote = [], False, False
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith("["):
+                  in_package = stripped == "[package]"
+                  out.append(line)
+                  continue
+              if in_package and not rewrote:
+                  m = re.match(r'(\s*version\s*=\s*)"[^"]*"(.*)', line)
+                  if m:
+                      out.append(f'{m.group(1)}"{version}"{m.group(2)}\n')
+                      rewrote = True
+                      continue
+              out.append(line)
+          if not rewrote:
+              print(f"::error::[package].version not found in {path}")
+              sys.exit(1)
+          path.write_text("".join(out))
+          print(f"::notice::set [package].version to {version} in {path}")
+          PY
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
