@@ -2,7 +2,7 @@
 
 [package]
 name = "llm-budget"
-version = "0.1.1"
+version = "0.1.0"
 description = "Workspace + agent LLM spend caps with alerts, forecast, and period rollover under budget::*."
 edition = "2021"
 license = "Apache-2.0"

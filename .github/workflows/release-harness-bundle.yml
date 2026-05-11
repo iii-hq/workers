@@ -63,7 +63,8 @@ jobs:
           REGISTRY_API: https://api.workers.iii.dev
           # Workers excluded from the bundle even when they're in harness deps.
           # `iii-sandbox` is an external engine worker. `skills` is held by maintainers.
-          BUNDLE_EXCLUDE: iii-sandbox,skills
+          # `shell` releases on its own `shell/v*` tag via release.yml.
+          BUNDLE_EXCLUDE: iii-sandbox,skills,shell
         run: |
           python3 - <<'PY'
           import json, os, re, subprocess, sys, urllib.parse, urllib.request, yaml
@@ -113,6 +114,14 @@ jobs:
               print("::error::harness/iii.worker.yaml dependencies must be a mapping")
               sys.exit(1)
 
+          def normalize_targets(meta: dict) -> str:
+              raw = meta.get("targets")
+              if isinstance(raw, list):
+                  return ",".join(str(t).strip() for t in raw if str(t).strip())
+              if isinstance(raw, str):
+                  return raw.strip()
+              return ""
+
           publish_set: list[dict] = []
 
           # Always include harness itself at the tagged version.
@@ -123,6 +132,7 @@ jobs:
               "version": harness_version,
               "manifest": h_manifest,
               "bin": h_bin,
+              "targets": normalize_targets(harness_meta),
           })
 
           for dep_name in sorted(deps):
@@ -155,6 +165,7 @@ jobs:
                   "version": local_ver,
                   "manifest": manifest,
                   "bin": bin_name,
+                  "targets": normalize_targets(meta),
               })
               print(f"::notice::{dep_name}: queued v{local_ver} (registry v{reg_ver or 'none'})")
 
@@ -194,6 +205,7 @@ jobs:
       bin_name: ${{ matrix.entry.bin }}
       manifest_path: ${{ matrix.entry.worker }}/${{ matrix.entry.manifest }}
       tag_name: ${{ matrix.entry.worker }}/v${{ matrix.entry.version }}
+      targets: ${{ matrix.entry.targets }}
     secrets: inherit
 
   publish:

@@ -4,7 +4,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "iii-session-tree"
-version = "0.1.1"
+version = "0.1.0"
 description = "Session storage as a parent-id tree of typed entries under session-tree::*."
 edition = "2021"
 license = "Apache-2.0"
