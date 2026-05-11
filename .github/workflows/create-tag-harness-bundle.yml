@@ -1,0 +1,245 @@
+name: Create harness bundle tag
+
+# One-click "release the harness bundle" entry point.
+#
+# Bumps the harness manifest by the requested amount, then walks the
+# in-repo deps listed in harness/iii.worker.yaml and pre-bumps any whose
+# tracked source files have changed since their currently-published
+# version (manifest-only changes are skipped — they don't need a bump
+# under the relaxed pr-checks rules).
+#
+# Commits the bumps in one chore commit and pushes the umbrella
+# `harness/v<X.Y.Z>` annotated tag, which triggers
+# release-harness-bundle.yml. The annotated tag carries the
+# `registry-tag:` line that the bundle workflow reads.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_harness:
+        description: 'Harness version bump'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: minor
+      registry_tag:
+        description: 'Registry tag (passed to POST /publish)'
+        required: true
+        type: choice
+        options:
+          - latest
+          - next
+        default: latest
+      force_deps:
+        description: 'Comma-separated deps to force-bump even without source changes (rarely needed)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-tag-harness-bundle
+  cancel-in-progress: false
+
+jobs:
+  bundle-tag:
+    name: Bump bundle & push tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Pre-flight checks
+        run: |
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          if [[ "$BRANCH" != "main" ]]; then
+            echo "::error::Must be on main branch (currently on $BRANCH)"
+            exit 1
+          fi
+
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Compute bumps & rewrite manifests
+        id: compute
+        env:
+          BUMP_HARNESS: ${{ inputs.bump_harness }}
+          FORCE_DEPS: ${{ inputs.force_deps }}
+          BUNDLE_EXCLUDE: iii-sandbox,skills
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, sys, yaml
+
+          bump_harness = os.environ["BUMP_HARNESS"]
+          force_deps = {x.strip() for x in os.environ["FORCE_DEPS"].split(",") if x.strip()}
+          excluded = {x.strip() for x in os.environ["BUNDLE_EXCLUDE"].split(",") if x.strip()}
+
+          METADATA_GLOBS = (
+              "iii.worker.yaml", "README.md", "AGENTS.md", "AGENTS-*.md",
+              "Cargo.lock", "Cargo.toml",
+          )
+          import fnmatch
+          def is_metadata(rel: str) -> bool:
+              return any(fnmatch.fnmatch(rel, g) for g in METADATA_GLOBS)
+
+          def read_meta(worker: str) -> dict:
+              return yaml.safe_load(pathlib.Path(f"{worker}/iii.worker.yaml").read_text()) or {}
+
+          def read_cargo_version(path: pathlib.Path) -> str | None:
+              for line in path.read_text().splitlines():
+                  m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
+                  if m:
+                      return m.group(1)
+              return None
+
+          def write_cargo_version(path: pathlib.Path, new_version: str) -> None:
+              text = path.read_text()
+              # Replace only the first [package] version line
+              new_text, count = re.subn(
+                  r'^(version\s*=\s*")[^"]+(")', rf'\g<1>{new_version}\g<2>',
+                  text, count=1, flags=re.MULTILINE,
+              )
+              if count == 0:
+                  raise RuntimeError(f"no version line in {path}")
+              path.write_text(new_text)
+
+          def parse_semver(v: str) -> tuple:
+              return tuple(int(x) for x in v.split("-", 1)[0].split("."))
+
+          def bump(version: str, kind: str) -> str:
+              maj, mn, pa = parse_semver(version)
+              if kind == "major":
+                  return f"{maj+1}.0.0"
+              if kind == "minor":
+                  return f"{maj}.{mn+1}.0"
+              return f"{maj}.{mn}.{pa+1}"
+
+          def find_last_release_tag(worker: str) -> str | None:
+              try:
+                  out = subprocess.check_output(
+                      ["git", "tag", "--list", f"{worker}/v*", "--sort=-v:refname"],
+                      text=True,
+                  ).strip().splitlines()
+                  return out[0] if out else None
+              except subprocess.CalledProcessError:
+                  return None
+
+          def has_source_changes_since(worker: str, since_ref: str) -> bool:
+              try:
+                  out = subprocess.check_output(
+                      ["git", "diff", "--name-only", f"{since_ref}..HEAD", "--", f"{worker}/"],
+                      text=True,
+                  ).splitlines()
+              except subprocess.CalledProcessError:
+                  return True  # Be conservative if the diff fails.
+              for f in out:
+                  parts = f.split("/", 1)
+                  if len(parts) < 2:
+                      continue
+                  if not is_metadata(parts[1]):
+                      return True
+              return False
+
+          # 1. Bump harness.
+          harness_path = pathlib.Path("harness/Cargo.toml")
+          harness_old = read_cargo_version(harness_path)
+          if not harness_old:
+              print("::error::cannot read harness version")
+              sys.exit(1)
+          harness_new = bump(harness_old, bump_harness)
+          write_cargo_version(harness_path, harness_new)
+          print(f"::notice::harness: {harness_old} -> {harness_new}")
+
+          # 2. Walk deps. Bump (patch) any whose source has changed since the last tag.
+          harness_meta = read_meta("harness")
+          deps = harness_meta.get("dependencies") or {}
+          bumped: list[tuple[str, str, str]] = []  # (worker, old, new)
+
+          for dep in sorted(deps):
+              if dep in excluded or not pathlib.Path(dep).is_dir():
+                  continue
+              dep_meta_path = pathlib.Path(dep) / "iii.worker.yaml"
+              if not dep_meta_path.exists():
+                  continue
+              dep_meta = read_meta(dep)
+              if dep_meta.get("deploy") != "binary":
+                  continue
+              dep_manifest = pathlib.Path(dep) / dep_meta.get("manifest", "Cargo.toml")
+              old = read_cargo_version(dep_manifest)
+              if not old:
+                  continue
+              last_tag = find_last_release_tag(dep)
+              should_bump = dep in force_deps or last_tag is None or \
+                  has_source_changes_since(dep, last_tag)
+              if not should_bump:
+                  print(f"::notice::{dep}: no source changes since {last_tag}; keep v{old}")
+                  continue
+              new = bump(old, "patch")
+              if new == old:
+                  continue
+              write_cargo_version(dep_manifest, new)
+              bumped.append((dep, old, new))
+              print(f"::notice::{dep}: {old} -> {new}")
+
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          out.write(f"harness_version={harness_new}\n")
+          out.write(f"bumped={json.dumps([{'worker': w, 'old': o, 'new': n} for w, o, n in bumped])}\n")
+          out.write(f"bumped_count={len(bumped)}\n")
+          out.close()
+          PY
+
+      - name: Configure git identity
+        run: |
+          git config user.name "workers-ci[bot]"
+          git config user.email "workers-ci[bot]@users.noreply.github.com"
+
+      - name: Commit bundle bumps
+        env:
+          HARNESS_VERSION: ${{ steps.compute.outputs.harness_version }}
+          BUMPED_COUNT: ${{ steps.compute.outputs.bumped_count }}
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::no changes to commit"
+            exit 1
+          fi
+          git commit -m "chore(harness-bundle): release harness v${HARNESS_VERSION} (+${BUMPED_COUNT} deps)"
+          git push origin main
+
+      - name: Tag and push
+        env:
+          HARNESS_VERSION: ${{ steps.compute.outputs.harness_version }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          BUMPED: ${{ steps.compute.outputs.bumped }}
+        run: |
+          TAG="harness/v${HARNESS_VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG already exists"
+            exit 1
+          fi
+          git tag -a "$TAG" -m "Release harness bundle ${TAG}
+
+          worker: harness
+          version: ${HARNESS_VERSION}
+          registry-tag: ${REGISTRY_TAG}
+          bumped-deps: ${BUMPED}
+          "
+          git push origin "$TAG"
+          echo "::notice::pushed $TAG (registry-tag=$REGISTRY_TAG)"

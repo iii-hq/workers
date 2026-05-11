@@ -10,17 +10,13 @@ pub struct ModuleManifest {
 }
 
 pub fn build_manifest() -> ModuleManifest {
-    let cfg = crate::config::SubagentConfig::default();
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Spawn child agent sessions under subagent::start via run::start_and_wait."
+        description: "Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve."
             .to_string(),
-        default_config: serde_json::json!({
-            "default_system_prompt": cfg.default_system_prompt,
-            "trigger_timeout_ms": cfg.trigger_timeout_ms,
-            "default_max_subagent_depth": cfg.default_max_subagent_depth,
-        }),
+        default_config: serde_json::to_value(crate::config::WorkerConfig::default())
+            .unwrap_or_else(|_| serde_json::json!({})),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -36,8 +32,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
         assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+        assert!(parsed["description"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
         assert!(parsed["default_config"].is_object());
-        let targets = parsed["supported_targets"].as_array().expect("array");
-        assert!(!targets.is_empty());
+        assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }
 }

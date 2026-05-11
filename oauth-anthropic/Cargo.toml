@@ -5,6 +5,7 @@ members = ["crates/auth-credentials"]
 [package]
 name = "iii-oauth-anthropic"
 version = "0.1.0"
+description = "Anthropic Claude Pro/Max OAuth (PKCE localhost flow) under oauth::anthropic::*."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

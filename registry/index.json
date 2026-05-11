@@ -1,9 +1,39 @@
 {
   "version": 1,
   "workers": {
+    "acp": {
+      "type": "binary",
+      "description": "Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "acp",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "approval-gate": {
+      "type": "binary",
+      "description": "Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "approval-gate",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {
+        "topic": "agent::before_function_call",
+        "approval_state_scope": "approvals",
+        "default_timeout_ms": 300000
+      },
+      "version": "0.1.0"
+    },
     "auth-credentials": {
       "type": "binary",
-      "description": "Provider credential vault under auth::* \u2014 API keys and OAuth tokens",
+      "description": "Provider credential vault under auth::* — API keys and OAuth tokens.",
       "repo": "iii-hq/workers",
       "tag_prefix": "auth-credentials",
       "supported_targets": [
@@ -17,37 +47,24 @@
       },
       "version": "0.1.0"
     },
-    "session-inbox": {
+    "harness": {
       "type": "binary",
-      "description": "Per-session inbox (session-inbox::push, drain, peek) backed by iii state",
+      "description": "Meta-worker that composes the modular workers backing the iii chat surface.",
       "repo": "iii-hq/workers",
-      "tag_prefix": "session-inbox",
+      "tag_prefix": "harness",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
       "default_config": {
-        "max_inline_bytes": 262144
+        "engine_url": "ws://127.0.0.1:49134"
       },
-      "version": "0.1.0"
-    },
-    "provider-router": {
-      "type": "binary",
-      "description": "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "provider-router",
-      "supported_targets": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
-      ],
-      "has_checksum": true,
-      "default_config": {},
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "hook-fanout": {
       "type": "binary",
-      "description": "Reusable publish-collect primitive (hook-fanout::publish_collect) with subscriber reply merging",
+      "description": "Reusable publish-collect primitive (hook-fanout::publish_collect) — fans an event to subscribers and collects merged replies.",
       "repo": "iii-hq/workers",
       "tag_prefix": "hook-fanout",
       "supported_targets": [
@@ -58,9 +75,22 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "iii-database": {
+      "type": "binary",
+      "description": "Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and change feeds.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "iii-database",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.0.4"
+    },
     "iii-lsp": {
       "type": "binary",
-      "description": "III Language Server \u2014 autocompletion and hover for III engine functions and triggers",
+      "description": "III Language Server — autocompletion and hover for III engine functions and triggers",
       "repo": "iii-hq/workers",
       "tag_prefix": "iii-lsp",
       "supported_targets": [
@@ -69,11 +99,11 @@
       ],
       "has_checksum": true,
       "default_config": {},
-      "version": "0.1.0"
+      "version": "0.1.1"
     },
     "image-resize": {
       "type": "binary",
-      "description": "III engine image resize worker",
+      "description": "III engine image resize worker (JPEG/PNG/WebP, EXIF orient, scale-to-fit / crop-to-fit)",
       "repo": "iii-hq/workers",
       "tag_prefix": "image-resize",
       "supported_targets": [
@@ -93,11 +123,11 @@
           }
         }
       },
-      "version": "0.1.2"
+      "version": "0.1.9"
     },
     "llm-budget": {
       "type": "binary",
-      "description": "Workspace and agent LLM spend caps with alerts, forecast, and period rollover under budget::*",
+      "description": "Workspace + agent LLM spend caps with alerts, forecast, and period rollover under budget::*.",
       "repo": "iii-hq/workers",
       "tag_prefix": "llm-budget",
       "supported_targets": [
@@ -110,7 +140,7 @@
     },
     "mcp": {
       "type": "binary",
-      "description": "Model Context Protocol surface \u2014 stdio + HTTP JSON-RPC, exposes iii functions as MCP tools",
+      "description": "MCP 2025-06-18 Streamable HTTP bridge for the iii engine.",
       "repo": "iii-hq/workers",
       "tag_prefix": "mcp",
       "supported_targets": [
@@ -121,11 +151,11 @@
       "default_config": {
         "expose_all": false
       },
-      "version": "0.3.0"
+      "version": "0.5.5"
     },
     "models-catalog": {
       "type": "binary",
-      "description": "Model capabilities knowledge base under models::* (list/get/supports/register)",
+      "description": "Model capabilities knowledge base under models::* (list/get/supports/register).",
       "repo": "iii-hq/workers",
       "tag_prefix": "models-catalog",
       "supported_targets": [
@@ -164,7 +194,7 @@
     },
     "policy-denylist": {
       "type": "binary",
-      "description": "Hook subscriber on agent::before_function_call that blocks calls whose function id is on a configured denylist",
+      "description": "Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist.",
       "repo": "iii-hq/workers",
       "tag_prefix": "policy-denylist",
       "supported_targets": [
@@ -175,9 +205,16 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "proof": {
+      "description": "AI-powered browser testing worker for iii — scans code changes, generates test plans, runs them in a real browser",
+      "image": "ghcr.io/iii-hq/workers/proof",
+      "repo": "iii-hq/workers",
+      "version": "0.1.4",
+      "latest": "latest"
+    },
     "provider-anthropic": {
       "type": "binary",
-      "description": "Native Anthropic Messages API streaming provider under provider::anthropic::*.",
+      "description": "Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus.",
       "repo": "iii-hq/workers",
       "tag_prefix": "provider-anthropic",
       "supported_targets": [
@@ -190,7 +227,7 @@
     },
     "provider-openai": {
       "type": "binary",
-      "description": "OpenAI Chat Completions provider under provider::openai::*.",
+      "description": "OpenAI Chat Completions; registers provider::openai::complete on the iii bus.",
       "repo": "iii-hq/workers",
       "tag_prefix": "provider-openai",
       "supported_targets": [
@@ -201,9 +238,37 @@
       "default_config": {},
       "version": "0.1.0"
     },
+    "provider-router": {
+      "type": "binary",
+      "description": "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "provider-router",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.1.0"
+    },
+    "session-inbox": {
+      "type": "binary",
+      "description": "Per-session inbox (session-inbox::push, drain, peek) backed by iii state.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "session-inbox",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {
+        "max_inline_bytes": 262144
+      },
+      "version": "0.1.0"
+    },
     "session-tree": {
       "type": "binary",
-      "description": "Session storage as a parent-id tree of typed entries under session::*",
+      "description": "Session storage as a parent-id tree of typed entries under session-tree::*.",
       "repo": "iii-hq/workers",
       "tag_prefix": "session-tree",
       "supported_targets": [
@@ -214,24 +279,37 @@
       "default_config": {},
       "version": "0.1.0"
     },
-    "shell-bash": {
+    "shell": {
       "type": "binary",
-      "description": "Sandboxed shell execution under shell::bash::* \u2014 wraps the engine sandbox::exec primitive",
+      "description": "Unix shell + filesystem worker — exec with allowlist/denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write with host jail, denylist, size caps, and sandbox-target forwarding",
       "repo": "iii-hq/workers",
-      "tag_prefix": "shell-bash",
+      "tag_prefix": "shell",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
       "default_config": {},
-      "version": "0.1.0"
+      "version": "0.3.0"
     },
-    "shell-filesystem": {
+    "skills": {
       "type": "binary",
-      "description": "Sandboxed filesystem operations under shell::fs::* \u2014 read, write, list, stat, glob",
+      "description": "Agentic content registry worker. Hosts skills + prompts + the iii:// resource resolver that the mcp worker serves to harnesses.",
       "repo": "iii-hq/workers",
-      "tag_prefix": "shell-filesystem",
+      "tag_prefix": "skills",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {},
+      "version": "0.2.4"
+    },
+    "storage": {
+      "type": "binary",
+      "description": "S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "storage",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
@@ -256,22 +334,9 @@
     },
     "turn-orchestrator": {
       "type": "binary",
-      "description": "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down",
+      "description": "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down.",
       "repo": "iii-hq/workers",
       "tag_prefix": "turn-orchestrator",
-      "supported_targets": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
-      ],
-      "has_checksum": true,
-      "default_config": {},
-      "version": "0.1.0"
-    },
-    "subagent": {
-      "type": "binary",
-      "description": "Spawn child agent sessions under subagent::* via run::start_and_wait",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "subagent",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"

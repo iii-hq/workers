@@ -5,6 +5,7 @@ members = ["crates/auth-credentials"]
 [package]
 name = "iii-oauth-openai-codex"
 version = "0.1.0"
+description = "OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

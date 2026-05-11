@@ -3,6 +3,7 @@
 [package]
 name = "iii-auth-credentials"
 version = "0.1.0"
+description = "Provider credential vault under auth::* — API keys and OAuth tokens."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

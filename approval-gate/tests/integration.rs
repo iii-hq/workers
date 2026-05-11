@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use approval_gate::{register, Config, FN_RESOLVE, STATE_SCOPE};
+use approval_gate::{register, WorkerConfig, FN_RESOLVE, STATE_SCOPE};
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
 use serde_json::json;
 
@@ -50,9 +50,10 @@ async fn round_trip_allow_unblocks_under_one_second() {
 
     let _refs = register(
         &iii,
-        Config {
+        &WorkerConfig {
             topic: topic.clone(),
-            timeout_ms: 5_000,
+            default_timeout_ms: 5_000,
+            ..WorkerConfig::default()
         },
     )
     .expect("register approval-gate");

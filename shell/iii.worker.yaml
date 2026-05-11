@@ -5,3 +5,10 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-shell
 description: Unix shell + filesystem worker — exec with allowlist/denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write with host jail, denylist, size caps, and sandbox-target forwarding
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run
