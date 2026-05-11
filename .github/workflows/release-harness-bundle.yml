@@ -2,16 +2,18 @@ name: Release harness bundle
 
 # Single-dispatch fan-out for the harness meta-worker. A `harness/v*` tag
 # triggers one CI run that builds + publishes harness plus every in-repo
-# dependency listed in harness/iii.worker.yaml whose local manifest version
-# is greater than the version currently registered on https://workers.iii.dev/.
+# dependency listed in harness/iii.worker.yaml, all at the harness version.
+# The workflow rewrites each dep's [package].version to the harness version
+# before building, so the published binary embeds the coordinated version
+# regardless of what's checked into Cargo.toml.
 #
 # Skips:
 #   - dependencies not present as folders in this repo (e.g. iii-sandbox)
-#   - dependencies whose local version <= registered version
+#   - dependencies already registered at >= the harness version
 #   - the `skills` worker (held by maintainers; bump + tag separately)
+#   - the `shell` worker (releases on its own tag via release.yml)
 #
-# Reuses _rust-binary.yml and _publish-registry.yml exactly as the
-# per-worker release.yml does.
+# Reuses _rust-binary.yml (with version_override) and _publish-registry.yml.
 
 on:
   push:
@@ -99,9 +101,14 @@ jobs:
               return tuple(parts)
 
           def registered_version(worker: str) -> str | None:
-              url = f"{api}/workers/{urllib.parse.quote(worker)}"
+              # /download/<name> is the public lookup endpoint; it returns
+              # {"version": "...", "binaries": {...}, ...} for binary workers.
+              url = f"{api}/download/{urllib.parse.quote(worker)}"
               try:
                   with urllib.request.urlopen(url, timeout=15) as resp:
+                      if resp.status == 204:
+                          # Engine-baked worker: no artefact, no version info.
+                          return None
                       data = json.loads(resp.read())
                   return data.get("version") or data.get("latest")
               except Exception as exc:  # noqa: BLE001
@@ -135,6 +142,10 @@ jobs:
               "targets": normalize_targets(harness_meta),
           })
 
+          # Every bundled dep ships at the harness version. The workflow
+          # rewrites each dep's [package].version at build time so the binary
+          # embeds the same version we publish, regardless of what's in the
+          # checked-out Cargo.toml.
           for dep_name in sorted(deps):
               if dep_name in excluded:
                   print(f"::notice::{dep_name}: excluded from bundle")
@@ -156,18 +167,18 @@ jobs:
                   print(f"::warning::{dep_name}: cannot read version from {manifest}; skipping")
                   continue
               reg_ver = registered_version(dep_name)
-              if reg_ver and parse_semver(local_ver) <= parse_semver(reg_ver):
-                  print(f"::notice::{dep_name}: local v{local_ver} <= registered v{reg_ver}; skipping")
+              if reg_ver and parse_semver(harness_version) <= parse_semver(reg_ver):
+                  print(f"::notice::{dep_name}: harness v{harness_version} <= registered v{reg_ver}; skipping")
                   continue
               bin_name = meta.get("bin") or meta.get("name") or dep_name
               publish_set.append({
                   "worker": dep_name,
-                  "version": local_ver,
+                  "version": harness_version,
                   "manifest": manifest,
                   "bin": bin_name,
                   "targets": normalize_targets(meta),
               })
-              print(f"::notice::{dep_name}: queued v{local_ver} (registry v{reg_ver or 'none'})")
+              print(f"::notice::{dep_name}: queued v{harness_version} (local v{local_ver}, registry v{reg_ver or 'none'})")
 
           # Pull registry-tag (latest|next) from the annotated harness tag message.
           registry_tag = "latest"
@@ -206,6 +217,7 @@ jobs:
       manifest_path: ${{ matrix.entry.worker }}/${{ matrix.entry.manifest }}
       tag_name: ${{ matrix.entry.worker }}/v${{ matrix.entry.version }}
       targets: ${{ matrix.entry.targets }}
+      version_override: ${{ matrix.entry.version }}
     secrets: inherit
 
   publish:
