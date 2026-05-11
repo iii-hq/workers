@@ -64,69 +64,41 @@ def detect_kind(manifest_path: Path) -> ManifestKind:
     raise ValueError(f"unsupported manifest filename: {name!r}")
 
 
-def _read_cargo_version(text: str) -> str:
-    # Anchor on the [package] section to avoid matching dependency versions.
-    in_package = False
+def _read_toml_section_version(text: str, section: str) -> str:
+    """Read `version = "X"` inside a top-level TOML section like `[package]`.
+
+    Subsections like `[package.metadata]` correctly exit the section because
+    matching is strict equality on the bracket-stripped header.
+    """
+    in_section = False
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("["):
-            in_package = (s == "[package]")
+            in_section = (s == section)
             continue
-        if in_package:
+        if in_section:
             m = re.match(r'^version\s*=\s*"([^"]+)"', s)
             if m:
                 return m.group(1)
-    raise ValueError("no version field in [package] section")
+    raise ValueError(f"no version field in {section} section")
 
 
-def _write_cargo_version(path: Path, new_version: str) -> None:
+def _write_toml_section_version(path: Path, section: str, new_version: str) -> None:
+    """Replace `version = "X"` inside a top-level TOML section (first match)."""
     text = path.read_text()
     out: list[str] = []
-    in_package = False
+    in_section = False
     replaced = False
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("["):
-            in_package = (s == "[package]")
-        if in_package and not replaced and re.match(r'^version\s*=\s*"[^"]+"', s):
+            in_section = (s == section)
+        if in_section and not replaced and re.match(r'^version\s*=\s*"[^"]+"', s):
             line = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new_version}"', line)
             replaced = True
         out.append(line)
     if not replaced:
-        raise ValueError("could not find version in [package]")
-    trailing = "\n" if text.endswith("\n") else ""
-    path.write_text("\n".join(out) + trailing)
-
-
-def _read_python_version(text: str) -> str:
-    in_project = False
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("["):
-            in_project = (s == "[project]")
-            continue
-        if in_project:
-            m = re.match(r'^version\s*=\s*"([^"]+)"', s)
-            if m:
-                return m.group(1)
-    raise ValueError("no version field in [project] section")
-
-
-def _write_python_version(path: Path, new_version: str) -> None:
-    text = path.read_text()
-    out: list[str] = []
-    in_project = False
-    replaced = False
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("["):
-            in_project = (s == "[project]")
-        if in_project and not replaced and re.match(r'^version\s*=\s*"[^"]+"', s):
-            line = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new_version}"', line)
-            replaced = True
-        out.append(line)
-    if not replaced:
-        raise ValueError("could not find version in [project]")
+        raise ValueError(f"could not find version in {section}")
     trailing = "\n" if text.endswith("\n") else ""
     path.write_text("\n".join(out) + trailing)
 
@@ -149,11 +121,11 @@ def read_version(manifest_path: Path) -> str:
     kind = detect_kind(manifest_path)
     text = manifest_path.read_text()
     if kind == "cargo":
-        return _read_cargo_version(text)
+        return _read_toml_section_version(text, "[package]")
     if kind == "node":
         return _read_node_version(text)
     if kind == "python":
-        return _read_python_version(text)
+        return _read_toml_section_version(text, "[project]")
     raise ValueError(f"unhandled manifest kind: {kind}")
 
 
@@ -161,13 +133,13 @@ def write_version(manifest_path: Path, new_version: str) -> None:
     """Writes a new version to the manifest. Dispatches on filename."""
     kind = detect_kind(manifest_path)
     if kind == "cargo":
-        _write_cargo_version(manifest_path, new_version)
+        _write_toml_section_version(manifest_path, "[package]", new_version)
         return
     if kind == "node":
         _write_node_version(manifest_path, new_version)
         return
     if kind == "python":
-        _write_python_version(manifest_path, new_version)
+        _write_toml_section_version(manifest_path, "[project]", new_version)
         return
     raise ValueError(f"unhandled manifest kind: {kind}")
 
@@ -181,7 +153,7 @@ class WorkerManifest:
     deploy: str | None
     manifest: str | None
     bin: str | None
-    raw: dict
+    raw: dict[str, object]
 
 
 def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:

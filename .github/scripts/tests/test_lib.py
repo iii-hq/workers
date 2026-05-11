@@ -211,8 +211,7 @@ class TestReadTagAnnotation:
 
     def test_skips_comments_and_blank_lines(self, tmp_path, monkeypatch):
         import subprocess
-        import os
-        GIT_HERMETIC_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        from _test_helpers import GIT_HERMETIC_ENV
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
         subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
         subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)

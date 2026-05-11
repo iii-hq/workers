@@ -1,27 +1,27 @@
 """Shared fixtures for .github/scripts/ test suite."""
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-# Make `.github/scripts/*.py` importable as top-level modules.
+# Make `.github/scripts/*.py` importable as top-level modules, and ensure
+# the tests dir itself is on sys.path so sibling helper modules like
+# `_test_helpers` are importable from both conftest and test_*.py.
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+TESTS_DIR = Path(__file__).resolve().parent
+for _p in (SCRIPTS_DIR, TESTS_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 # Reuse this env in every fixture that shells out to `git`. Neutralising
 # global/system config keeps `git tag -a` and `git commit` working on
 # developer machines that have `commit.gpgsign=true` or other surprises in
-# global config.
-GIT_HERMETIC_ENV = {
-    **os.environ,
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_CONFIG_SYSTEM": "/dev/null",
-}
+# global config. Source-of-truth lives in `_test_helpers` so test modules
+# can import the same constant without re-importing conftest.
+from _test_helpers import GIT_HERMETIC_ENV  # noqa: E402
 
 
 @pytest.fixture
