@@ -79,3 +79,43 @@ class TestVerifySubcommand:
         assert r.returncode != 0
         assert "0.1.0" in (r.stderr + r.stdout)
         assert "9.9.9" in (r.stderr + r.stdout)
+
+
+class TestDeployModeSubcommand:
+    def test_binary_yields_release_binary(self, tmp_path):
+        (tmp_path / "iii.worker.yaml").write_text(
+            'iii: v1\nname: x\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+        )
+        r = run_script("deploy-mode", str(tmp_path))
+        assert r.returncode == 0
+        assert r.stdout.strip() == "release-binary"
+
+    def test_image_with_runtime_yields_iii_add(self, tmp_path):
+        (tmp_path / "iii.worker.yaml").write_text(
+            'iii: v1\nname: x\nlanguage: node\ndeploy: image\nmanifest: package.json\n'
+            'runtime:\n  kind: node\n'
+        )
+        r = run_script("deploy-mode", str(tmp_path))
+        assert r.returncode == 0
+        assert r.stdout.strip() == "iii-add"
+
+    def test_image_with_scripts_start_yields_iii_add(self, tmp_path):
+        (tmp_path / "iii.worker.yaml").write_text(
+            'iii: v1\nname: x\nlanguage: python\ndeploy: image\nmanifest: pyproject.toml\n'
+            'scripts:\n  start: python -m smoke\n'
+        )
+        r = run_script("deploy-mode", str(tmp_path))
+        assert r.returncode == 0
+        assert r.stdout.strip() == "iii-add"
+
+    def test_rust_no_runtime_yields_cargo_run(self, tmp_path):
+        (tmp_path / "iii.worker.yaml").write_text(
+            'iii: v1\nname: x\nlanguage: rust\ndeploy: image\nmanifest: Cargo.toml\n'
+        )
+        r = run_script("deploy-mode", str(tmp_path))
+        assert r.returncode == 0
+        assert r.stdout.strip() == "cargo-run"
+
+    def test_missing_iii_worker_yaml(self, tmp_path):
+        r = run_script("deploy-mode", str(tmp_path))
+        assert r.returncode != 0

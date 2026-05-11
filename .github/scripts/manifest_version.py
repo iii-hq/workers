@@ -60,6 +60,40 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_deploy_mode(args: argparse.Namespace) -> int:
+    """Mirrors the historic _publish-registry.yml heredoc.
+
+    Decides how _publish-registry should start a local copy of the worker
+    for interface collection. Output is one of:
+      release-binary  -> download from GitHub Release
+      iii-add         -> `iii worker add ./<dir>` (worker is self-bootstrapping)
+      cargo-run       -> `cargo run` from source
+      unsupported     -> can't collect locally
+    """
+    worker_dir = Path(args.worker_dir)
+    try:
+        m = _lib.read_iii_worker_yaml(worker_dir)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    raw = m.raw
+    scripts = raw.get("scripts") or {}
+    runtime = raw.get("runtime") or {}
+    has_scripts_start = bool(str(scripts.get("start") or "").strip())
+    has_runtime = bool(runtime.get("kind") or runtime.get("language"))
+
+    if m.deploy == "binary":
+        print("release-binary")
+    elif has_scripts_start or has_runtime:
+        print("iii-add")
+    elif (m.language or "").lower() == "rust":
+        print("cargo-run")
+    else:
+        print("unsupported")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="manifest_version.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -77,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("manifest")
     p_verify.add_argument("--expected", required=True)
     p_verify.set_defaults(func=cmd_verify)
+
+    p_dm = sub.add_parser("deploy-mode", help="print the interface-collection mode")
+    p_dm.add_argument("worker_dir")
+    p_dm.set_defaults(func=cmd_deploy_mode)
 
     args = p.parse_args(argv)
     return args.func(args)
