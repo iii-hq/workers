@@ -142,16 +142,8 @@ pub async fn bootstrap(iii: Arc<III>, _payload: Value) -> Result<Value, IIIError
 }
 
 fn is_anonymous_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    if let Some(pos) = name.rfind(':') {
-        let after = &name[pos + 1..];
-        if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) {
-            if pos == 0 || bytes[pos - 1] != b':' {
-                return true;
-            }
-        }
-    }
-    false
+    // delegate to the shared helper now that mod.rs exposes it
+    super::is_anonymous_name(name)
 }
 
 pub async fn worker_status(iii: Arc<III>, payload: Value) -> Result<Value, IIIError> {
