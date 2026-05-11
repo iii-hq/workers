@@ -1,4 +1,4 @@
-//! Handler closures for every `sandbox::daytona::*` function. Each closure parses
+//! Handler closures for every `sandbox::provider::daytona::*` function. Each closure parses
 //! its input as untyped JSON, does config-side validation (allowlist,
 //! concurrency cap), then delegates to the narrow Daytona REST client. Failures
 //! surface as `IIIError::Handler("[Sxxx] ...")` so callers can pattern-match

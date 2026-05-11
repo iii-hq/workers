@@ -77,38 +77,38 @@ fn register_all(iii: &iii_sdk::III, ctx: HandlerCtx) {
     }
 
     reg!(
-        "sandbox::daytona::create",
+        "sandbox::provider::daytona::create",
         "Boot an Daytona sandbox; returns {sandbox_id, image, capabilities}",
         do_create
     );
     reg!(
-        "sandbox::daytona::exec",
+        "sandbox::provider::daytona::exec",
         "Run a command inside a live sandbox",
         do_exec
     );
-    reg!("sandbox::daytona::stop", "Tear down a sandbox", do_stop);
+    reg!("sandbox::provider::daytona::stop", "Tear down a sandbox", do_stop);
     reg!(
-        "sandbox::daytona::list",
+        "sandbox::provider::daytona::list",
         "List live sandboxes plus concurrency status",
         do_list
     );
     reg!(
-        "sandbox::daytona::snapshot",
+        "sandbox::provider::daytona::snapshot",
         "Pause a sandbox into a resumable snapshot",
         do_snapshot
     );
     reg!(
-        "sandbox::daytona::expose_port",
+        "sandbox::provider::daytona::expose_port",
         "Return a public URL for a port inside the sandbox",
         do_expose_port
     );
     reg!(
-        "sandbox::daytona::fs::read",
+        "sandbox::provider::daytona::fs::read",
         "Read a file out of a sandbox; returns base64-encoded bytes",
         do_fs_read
     );
     reg!(
-        "sandbox::daytona::fs::write",
+        "sandbox::provider::daytona::fs::write",
         "Write a file into a sandbox; payload carries base64-encoded bytes",
         do_fs_write
     );

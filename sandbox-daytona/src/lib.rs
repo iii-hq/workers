@@ -1,5 +1,5 @@
 //! Library entry for `sandbox-daytona`. Holds shared types, error codes, and the
-//! capability set advertised by `sandbox::daytona::create`.
+//! capability set advertised by `sandbox::provider::daytona::create`.
 
 pub mod client;
 pub mod config;
@@ -7,7 +7,7 @@ pub mod handler;
 
 use serde::{Deserialize, Serialize};
 
-/// Capability tags advertised by `sandbox::daytona::create`. Callers inspect this
+/// Capability tags advertised by `sandbox::provider::daytona::create`. Callers inspect this
 /// list to decide whether optional functions like `branch` are available.
 pub const CAPABILITIES: &[&str] = &["snapshot", "expose_port", "fs"];
 

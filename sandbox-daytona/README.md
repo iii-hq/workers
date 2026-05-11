@@ -1,6 +1,6 @@
 # sandbox-daytona
 
-Narrow iii worker that wraps [Daytona](https://daytona.io) sandboxes via Daytona's REST API. Daytona ships sub-90 ms container starts (Docker-class isolation by default; Kata or Sysbox when configured). Registers the canonical `sandbox::*` ABI under the `sandbox::daytona::*` namespace so callers can spawn and drive Daytona sandboxes through `iii.trigger(...)` without depending on Daytona's SDK.
+Narrow iii worker that wraps [Daytona](https://daytona.io) sandboxes via Daytona's REST API. Daytona ships sub-90 ms container starts (Docker-class isolation by default; Kata or Sysbox when configured). Registers the canonical `sandbox::*` ABI under the `sandbox::provider::daytona::*` namespace so callers can spawn and drive Daytona sandboxes through `iii.trigger(...)` without depending on Daytona's SDK.
 
 The same ABI is implemented by every sandbox provider worker in this repo (`sandbox-e2b`, `sandbox-morph`, `sandbox-vercel`, `sandbox-modal`, `sandbox-cf`, ...). Callers swap providers by changing the function-id prefix; capability negotiation tells callers which optional functions a given provider supports.
 
@@ -8,14 +8,14 @@ The same ABI is implemented by every sandbox provider worker in this repo (`sand
 
 | Function id | Purpose |
 |---|---|
-| `sandbox::daytona::create` | Boot a sandbox and return `{sandbox_id, image, capabilities}` |
-| `sandbox::daytona::exec` | Run a command inside a live sandbox |
-| `sandbox::daytona::stop` | Tear down a sandbox |
-| `sandbox::daytona::list` | Enumerate live sandboxes plus concurrency status |
-| `sandbox::daytona::snapshot` | Pause a sandbox into a resumable snapshot |
-| `sandbox::daytona::expose_port` | Return a public URL for a port inside the sandbox |
-| `sandbox::daytona::fs::read` | Read a file out of the sandbox |
-| `sandbox::daytona::fs::write` | Write a file into the sandbox |
+| `sandbox::provider::daytona::create` | Boot a sandbox and return `{sandbox_id, image, capabilities}` |
+| `sandbox::provider::daytona::exec` | Run a command inside a live sandbox |
+| `sandbox::provider::daytona::stop` | Tear down a sandbox |
+| `sandbox::provider::daytona::list` | Enumerate live sandboxes plus concurrency status |
+| `sandbox::provider::daytona::snapshot` | Pause a sandbox into a resumable snapshot |
+| `sandbox::provider::daytona::expose_port` | Return a public URL for a port inside the sandbox |
+| `sandbox::provider::daytona::fs::read` | Read a file out of the sandbox |
+| `sandbox::provider::daytona::fs::write` | Write a file into the sandbox |
 
 `create` advertises capabilities `["snapshot", "expose_port", "fs"]`. `branch` is not registered — callers that depend on branching should prefer `sandbox-morph`.
 

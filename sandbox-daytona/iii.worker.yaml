@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-sandbox-daytona
-description: Narrow iii worker that exposes Daytona microVM sandboxes via the sandbox::daytona::* trigger family.
+description: Narrow iii worker that exposes Daytona microVM sandboxes via the sandbox::provider::daytona::* trigger family.
 config:
   api_base: "https://app.daytona.io/api"
   api_key_env: DAYTONA_API_KEY
