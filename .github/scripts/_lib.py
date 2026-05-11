@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -168,3 +169,36 @@ def write_version(manifest_path: Path, new_version: str) -> None:
         _write_python_version(manifest_path, new_version)
         return
     raise ValueError(f"unhandled manifest kind: {kind}")
+
+
+@dataclass(frozen=True)
+class WorkerManifest:
+    """Parsed view of a `<worker>/iii.worker.yaml` file."""
+
+    name: str
+    language: str | None
+    deploy: str | None
+    manifest: str | None
+    bin: str | None
+    raw: dict
+
+
+def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
+    """Loads `<worker_dir>/iii.worker.yaml` and returns a `WorkerManifest`."""
+    import yaml  # imported here so `_lib` is usable without pyyaml at import time
+
+    path = worker_dir / "iii.worker.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} does not exist")
+    raw = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: expected a mapping at top level")
+    name = raw.get("name") or worker_dir.name
+    return WorkerManifest(
+        name=str(name),
+        language=raw.get("language"),
+        deploy=raw.get("deploy"),
+        manifest=raw.get("manifest"),
+        bin=raw.get("bin"),
+        raw=raw,
+    )

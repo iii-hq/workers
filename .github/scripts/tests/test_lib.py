@@ -166,3 +166,32 @@ class TestWriteVersionPython:
         text = p.read_text()
         assert 'version = "9.9.9"' in text
         assert 'version = "0.0.1"' in text  # untouched
+
+
+class TestReadIIIWorkerYaml:
+    def test_well_formed_rust_binary(self, iii_worker_yaml_dir):
+        m = _lib.read_iii_worker_yaml(iii_worker_yaml_dir)
+        assert m.name == "smoke"
+        assert m.language == "rust"
+        assert m.deploy == "binary"
+        assert m.manifest == "Cargo.toml"
+        assert m.bin == "smoke-bin"
+        assert isinstance(m.raw, dict)
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            _lib.read_iii_worker_yaml(tmp_path)
+
+    def test_falls_back_name_to_folder_name(self, tmp_path):
+        (tmp_path / "iii.worker.yaml").write_text(
+            'iii: v1\nlanguage: node\ndeploy: image\nmanifest: package.json\n'
+        )
+        m = _lib.read_iii_worker_yaml(tmp_path)
+        assert m.name == tmp_path.name
+        assert m.language == "node"
+        assert m.bin is None
+
+    def test_is_frozen(self, iii_worker_yaml_dir):
+        m = _lib.read_iii_worker_yaml(iii_worker_yaml_dir)
+        with pytest.raises(Exception):  # FrozenInstanceError
+            m.name = "other"  # type: ignore[misc]
