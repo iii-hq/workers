@@ -77,38 +77,38 @@ fn register_all(iii: &iii_sdk::III, ctx: HandlerCtx) {
     }
 
     reg!(
-        "sandbox::e2b::create",
+        "sandbox::provider::e2b::create",
         "Boot an E2B sandbox; returns {sandbox_id, image, capabilities}",
         do_create
     );
     reg!(
-        "sandbox::e2b::exec",
+        "sandbox::provider::e2b::exec",
         "Run a command inside a live sandbox",
         do_exec
     );
-    reg!("sandbox::e2b::stop", "Tear down a sandbox", do_stop);
+    reg!("sandbox::provider::e2b::stop", "Tear down a sandbox", do_stop);
     reg!(
-        "sandbox::e2b::list",
+        "sandbox::provider::e2b::list",
         "List live sandboxes plus concurrency status",
         do_list
     );
     reg!(
-        "sandbox::e2b::snapshot",
+        "sandbox::provider::e2b::snapshot",
         "Pause a sandbox into a resumable snapshot",
         do_snapshot
     );
     reg!(
-        "sandbox::e2b::expose_port",
+        "sandbox::provider::e2b::expose_port",
         "Return a public URL for a port inside the sandbox",
         do_expose_port
     );
     reg!(
-        "sandbox::e2b::fs::read",
+        "sandbox::provider::e2b::fs::read",
         "Read a file out of a sandbox; returns base64-encoded bytes",
         do_fs_read
     );
     reg!(
-        "sandbox::e2b::fs::write",
+        "sandbox::provider::e2b::fs::write",
         "Write a file into a sandbox; payload carries base64-encoded bytes",
         do_fs_write
     );

@@ -1,5 +1,5 @@
 //! Library entry for `sandbox-e2b`. Holds shared types, error codes, and the
-//! capability set advertised by `sandbox::e2b::create`.
+//! capability set advertised by `sandbox::provider::e2b::create`.
 
 pub mod client;
 pub mod config;
@@ -7,7 +7,7 @@ pub mod handler;
 
 use serde::{Deserialize, Serialize};
 
-/// Capability tags advertised by `sandbox::e2b::create`. Callers inspect this
+/// Capability tags advertised by `sandbox::provider::e2b::create`. Callers inspect this
 /// list to decide whether optional functions like `branch` are available.
 pub const CAPABILITIES: &[&str] = &["snapshot", "expose_port", "fs"];
 

@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-sandbox-e2b
-description: Narrow iii worker that exposes E2B microVM sandboxes via the sandbox::e2b::* trigger family.
+description: E2B microVM adapter for the sandbox::* family. Registers sandbox::provider::e2b::*; reach it via the sandbox router with provider="e2b".
 config:
   api_base: "https://api.e2b.dev"
   api_key_env: E2B_API_KEY

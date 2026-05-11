@@ -1,21 +1,34 @@
 # sandbox-e2b
 
-Narrow iii worker that wraps [E2B](https://e2b.dev) microVM sandboxes via E2B's REST API. Registers the canonical `sandbox::*` ABI under the `sandbox::e2b::*` namespace so callers can spawn and drive E2B sandboxes through `iii.trigger(...)` without depending on E2B's TypeScript or Python SDK.
+E2B microVM adapter for the `sandbox::*` family. Wraps [E2B](https://e2b.dev) sandboxes via E2B's REST API and registers the canonical lifecycle under `sandbox::provider::e2b::*`.
 
-The same ABI is implemented by every sandbox provider worker in this repo (`sandbox-daytona`, `sandbox-morph`, `sandbox-vercel`, `sandbox-modal`, `sandbox-cf`, ...). Callers swap providers by changing the function-id prefix; capability negotiation tells callers which optional functions a given provider supports.
+This worker is an **adapter**. Most callers should not invoke it directly — install the `sandbox` router and route by the `provider` field:
+
+```bash
+iii worker add sandbox
+iii worker add sandbox-e2b
+```
+
+```rust
+iii.trigger("sandbox::create", json!({ "provider": "e2b", "image": "base" })).await?;
+```
+
+The router forwards to `sandbox::provider::e2b::create` and strips the `provider` field. Direct invocation of `sandbox::provider::e2b::*` is supported and stable, but you give up the ability to swap providers via config.
+
+The same ABI is implemented by every sandbox adapter in this repo (`sandbox-daytona`, `sandbox-morph`, `sandbox-vercel`, `sandbox-modal`, `sandbox-cloudflare`). Capability negotiation tells callers which optional functions a given provider supports.
 
 ## Functions
 
 | Function id | Purpose |
 |---|---|
-| `sandbox::e2b::create` | Boot a sandbox and return `{sandbox_id, image, capabilities}` |
-| `sandbox::e2b::exec` | Run a command inside a live sandbox |
-| `sandbox::e2b::stop` | Tear down a sandbox |
-| `sandbox::e2b::list` | Enumerate live sandboxes plus concurrency status |
-| `sandbox::e2b::snapshot` | Pause a sandbox into a resumable snapshot |
-| `sandbox::e2b::expose_port` | Return a public URL for a port inside the sandbox |
-| `sandbox::e2b::fs::read` | Read a file out of the sandbox |
-| `sandbox::e2b::fs::write` | Write a file into the sandbox |
+| `sandbox::provider::e2b::create` | Boot a sandbox and return `{sandbox_id, image, capabilities}` |
+| `sandbox::provider::e2b::exec` | Run a command inside a live sandbox |
+| `sandbox::provider::e2b::stop` | Tear down a sandbox |
+| `sandbox::provider::e2b::list` | Enumerate live sandboxes plus concurrency status |
+| `sandbox::provider::e2b::snapshot` | Pause a sandbox into a resumable snapshot |
+| `sandbox::provider::e2b::expose_port` | Return a public URL for a port inside the sandbox |
+| `sandbox::provider::e2b::fs::read` | Read a file out of the sandbox |
+| `sandbox::provider::e2b::fs::write` | Write a file into the sandbox |
 
 `create` advertises capabilities `["snapshot", "expose_port", "fs"]`. `branch` is not registered — callers that depend on branching should prefer `sandbox-morph`.
 

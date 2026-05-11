@@ -1,4 +1,4 @@
-//! Handler closures for every `sandbox::e2b::*` function. Each closure parses
+//! Handler closures for every `sandbox::provider::e2b::*` function. Each closure parses
 //! its input as untyped JSON, does config-side validation (allowlist,
 //! concurrency cap), then delegates to the narrow E2B REST client. Failures
 //! surface as `IIIError::Handler("[Sxxx] ...")` so callers can pattern-match
