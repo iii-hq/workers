@@ -25,7 +25,9 @@ pub fn register_all(
     skills::register(iii, cfg, &trigger_types.skills);
     prompts::register(iii, cfg, &trigger_types.prompts);
     roots::register(iii);
-    tracing::info!("skills registered 7 skills::*, 1 skill::*, 3 skills::roots::* and 5 prompts::* functions");
+    tracing::info!(
+        "skills registered 7 skills::*, 1 skill::*, 3 skills::roots::* and 5 prompts::* functions"
+    );
 }
 
 /// One-shot diagnostic of the configured filesystem-backed sources.
