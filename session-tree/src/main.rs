@@ -10,7 +10,7 @@ mod config;
 mod manifest;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-session-tree", about = "Session tree worker for iii")]
+#[command(name = "session-tree", about = "Session tree worker for iii")]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,

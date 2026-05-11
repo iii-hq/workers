@@ -9,7 +9,7 @@ mod manifest;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-provider-anthropic",
+    name = "provider-anthropic",
     about = "Anthropic Messages API streaming provider for the iii bus (provider::anthropic::complete)."
 )]
 struct Cli {

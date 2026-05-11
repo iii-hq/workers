@@ -3,7 +3,7 @@ name: oauth-openai-codex
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-oauth-openai-codex
+bin: oauth-openai-codex
 description: OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*.
 
 runtime:

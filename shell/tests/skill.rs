@@ -71,14 +71,14 @@ fn id_is_valid(label: &str, id: &str) {
 
 #[test]
 fn router_well_formed() {
-    well_formed("router", iii_shell::SKILL_MD, true);
-    id_is_valid("router", iii_shell::SKILL_ID);
+    well_formed("router", shell::SKILL_MD, true);
+    id_is_valid("router", shell::SKILL_ID);
 }
 
 #[test]
 fn sub_skills_well_formed() {
-    let prefix = format!("{}/", iii_shell::SKILL_ID);
-    for (id, body) in iii_shell::SUB_SKILLS {
+    let prefix = format!("{}/", shell::SKILL_ID);
+    for (id, body) in shell::SUB_SKILLS {
         // Canonical leaves go directly from the topical H1 to ## When to use,
         // so the summary-paragraph assertion only applies to the router skill.
         well_formed(id, body, false);
@@ -86,7 +86,7 @@ fn sub_skills_well_formed() {
         assert!(
             id.starts_with(&prefix),
             "sub-skill id {id:?} must be nested under the worker id ({}/)",
-            iii_shell::SKILL_ID
+            shell::SKILL_ID
         );
     }
 }

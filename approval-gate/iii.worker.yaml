@@ -3,7 +3,7 @@ name: approval-gate
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-approval-gate
+bin: approval-gate
 description: Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve.
 
 runtime:

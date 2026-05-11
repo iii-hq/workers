@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub fn session_inbox_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_session_inbox") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_session_inbox") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_sdk::{Channel, IIIError};
 
-use iii_shell::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
-use iii_shell::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
+use shell::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
+use shell::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
 
 #[derive(Debug)]
 struct StubChan;

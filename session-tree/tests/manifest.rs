@@ -4,12 +4,12 @@ use std::process::Command;
 use serde_json::Value;
 
 fn session_tree_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_session_tree") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_session_tree") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir.join("target").join(profile).join("iii-session-tree");
+        let candidate = dir.join("target").join(profile).join("session-tree");
         if candidate.is_file() {
             return candidate;
         }
@@ -23,7 +23,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(&bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-session-tree --manifest");
+        .expect("spawn session-tree --manifest");
 
     assert!(
         output.status.success(),

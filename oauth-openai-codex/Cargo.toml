@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/auth-credentials"]
 
 [package]
-name = "iii-oauth-openai-codex"
+name = "oauth-openai-codex"
 version = "0.1.0"
 description = "OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*."
 edition = "2021"
@@ -17,7 +17,7 @@ name = "oauth_openai_codex"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-oauth-openai-codex"
+name = "oauth-openai-codex"
 path = "src/main.rs"
 
 [dependencies]

@@ -4,7 +4,7 @@ use std::process::Command;
 use serde_json::Value;
 
 fn auth_credentials_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_auth_credentials") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_auth_credentials") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -12,7 +12,7 @@ fn auth_credentials_executable() -> PathBuf {
         let candidate = dir
             .join("target")
             .join(profile)
-            .join("iii-auth-credentials");
+            .join("auth-credentials");
         if candidate.is_file() {
             return candidate;
         }
@@ -28,7 +28,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(&bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-auth-credentials --manifest");
+        .expect("spawn auth-credentials --manifest");
 
     assert!(
         output.status.success(),

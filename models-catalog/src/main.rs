@@ -9,7 +9,7 @@ mod manifest;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-models-catalog",
+    name = "models-catalog",
     about = "Model capabilities knowledge base (models::*) on the iii bus."
 )]
 struct Cli {

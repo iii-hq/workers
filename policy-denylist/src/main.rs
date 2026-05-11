@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-policy-denylist",
+    name = "policy-denylist",
     about = "Denylist subscriber for agent::before_function_call"
 )]
 struct Cli {

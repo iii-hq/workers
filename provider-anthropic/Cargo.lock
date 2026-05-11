@@ -803,31 +803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-provider-anthropic"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "auth-credentials",
- "bytes",
- "chrono",
- "clap",
- "futures",
- "harness-types",
- "iii-sdk",
- "overflow-classify",
- "provider-base",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "iii-sdk"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1253,6 +1228,31 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "provider-anthropic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "auth-credentials",
+ "bytes",
+ "chrono",
+ "clap",
+ "futures",
+ "harness-types",
+ "iii-sdk",
+ "overflow-classify",
+ "provider-base",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

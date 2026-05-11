@@ -10,7 +10,7 @@ use turn_orchestrator::{config, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-turn-orchestrator",
+    name = "turn-orchestrator",
     about = "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down."
 )]
 struct Cli {

@@ -9,7 +9,7 @@ mod manifest;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-harness",
+    name = "harness",
     about = "Meta-worker that composes the modular workers backing the iii chat surface."
 )]
 struct Cli {

@@ -3,7 +3,7 @@ name: session-inbox
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-session-inbox
+bin: session-inbox
 description: Per-session inbox (session-inbox::push, drain, peek) backed by iii state.
 
 runtime:

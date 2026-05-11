@@ -2,7 +2,7 @@
 //! `remove_old`). Each test uses a unique ID prefix to avoid collisions in
 //! the global `JOBS` map shared across the integration-test binary.
 
-use iii_shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
+use shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {

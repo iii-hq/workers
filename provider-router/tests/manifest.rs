@@ -4,12 +4,12 @@ use std::process::Command;
 use serde_json::Value;
 
 fn provider_router_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_provider_router") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_provider_router") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir.join("target").join(profile).join("iii-provider-router");
+        let candidate = dir.join("target").join(profile).join("provider-router");
         if candidate.is_file() {
             return candidate;
         }
@@ -25,7 +25,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(&bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-provider-router --manifest");
+        .expect("spawn provider-router --manifest");
 
     assert!(
         output.status.success(),

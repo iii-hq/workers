@@ -3,7 +3,7 @@ name: policy-denylist
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-policy-denylist
+bin: policy-denylist
 description: Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist.
 
 runtime:

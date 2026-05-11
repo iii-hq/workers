@@ -787,26 +787,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-turn-orchestrator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "harness-types",
- "iii-sdk",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "which",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2061,6 +2041,26 @@ dependencies = [
  "sha1",
  "thiserror",
  "utf-8",
+]
+
+[[package]]
+name = "turn-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "harness-types",
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "which",
 ]
 
 [[package]]

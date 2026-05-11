@@ -5,10 +5,10 @@ use std::sync::Arc;
 use iii_sdk::III;
 use serde_json::{json, Value};
 
-use iii_shell::config::ShellConfig;
-use iii_shell::functions;
-use iii_shell::functions::types::{ExecBgRequest, ExecRequest, KillRequest, StatusRequest};
-use iii_shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
+use shell::config::ShellConfig;
+use shell::functions;
+use shell::functions::types::{ExecBgRequest, ExecRequest, KillRequest, StatusRequest};
+use shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {
@@ -310,13 +310,13 @@ async fn list_handler_returns_jobs_array_and_count() {
     assert!(r["count"].is_number());
 }
 
-fn fs_host_backend() -> Arc<dyn iii_shell::fs::FsBackend> {
+fn fs_host_backend() -> Arc<dyn shell::fs::FsBackend> {
     use std::fmt;
 
     #[derive(Debug)]
     struct StubChan;
     #[async_trait::async_trait]
-    impl iii_shell::fs::host::ChannelMaker for StubChan {
+    impl shell::fs::host::ChannelMaker for StubChan {
         async fn create_channel(&self, _: usize) -> Result<iii_sdk::Channel, iii_sdk::IIIError> {
             Err(iii_sdk::IIIError::Handler("stub channel".into()))
         }
@@ -330,8 +330,8 @@ fn fs_host_backend() -> Arc<dyn iii_shell::fs::FsBackend> {
         }
     }
 
-    Arc::new(iii_shell::fs::host::HostFsBackend::new(
-        Arc::new(iii_shell::fs::host::HostFsConfig::default()),
+    Arc::new(shell::fs::host::HostFsBackend::new(
+        Arc::new(shell::fs::host::HostFsConfig::default()),
         Arc::new(StubChan),
     ))
 }

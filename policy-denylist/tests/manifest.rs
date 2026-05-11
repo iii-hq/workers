@@ -6,7 +6,7 @@ fn binary_path() -> String {
     // Prefer the Cargo-injected path when available (standard cargo test builds).
     // Fall back to constructing it from CARGO_MANIFEST_DIR so the test works in
     // environments where CARGO_BIN_EXE_* is not injected.
-    if let Some(path) = option_env!("CARGO_BIN_EXE_iii_policy_denylist") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_policy_denylist") {
         return path.to_string();
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
