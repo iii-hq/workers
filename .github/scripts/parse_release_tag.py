@@ -57,6 +57,17 @@ def main(argv: list[str] | None = None) -> int:
 
     registry_tag = _lib.read_tag_annotation(raw).get("registry-tag", "latest") or "latest"
 
+    # `targets` is an optional iii.worker.yaml field that can be either a
+    # list (`- aarch64-apple-darwin\n- x86_64-unknown-linux-gnu`) or a comma
+    # string. Normalise to a single comma-joined string for the workflow.
+    targets_raw = wm.raw.get("targets")
+    if isinstance(targets_raw, list):
+        targets = ",".join(str(t).strip() for t in targets_raw if str(t).strip())
+    elif isinstance(targets_raw, str):
+        targets = targets_raw.strip()
+    else:
+        targets = ""
+
     pairs = [
         ("tag", raw),
         ("worker", worker),
@@ -68,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         ("registry_tag", registry_tag),
         ("is_prerelease", is_pre),
         ("dry_run", dry_run),
+        ("targets", targets),
     ]
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
