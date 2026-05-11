@@ -1,6 +1,6 @@
 # sandbox-modal
 
-Narrow iii worker that wraps [Modal](https://modal.com) sandboxes. Modal is gRPC-only — there is no public REST API — so this worker imports the official Modal Python SDK as its transport. The SDK is an implementation detail; callers see only the canonical `sandbox::modal::*` ABI.
+Narrow iii worker that wraps [Modal](https://modal.com) sandboxes. Modal is gRPC-only — there is no public REST API — so this worker imports the official Modal Python SDK as its transport. The SDK is an implementation detail; callers see only the canonical `sandbox::provider::modal::*` ABI.
 
 The same ABI is implemented by every sandbox provider worker in this repo (`sandbox-e2b`, `sandbox-daytona`, `sandbox-morph`, `sandbox-vercel`, `sandbox-cf`, ...). Callers swap providers by changing the function-id prefix.
 
@@ -8,12 +8,12 @@ The same ABI is implemented by every sandbox provider worker in this repo (`sand
 
 | Function id | Purpose |
 |---|---|
-| `sandbox::modal::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
-| `sandbox::modal::exec` | Run a command inside a live sandbox |
-| `sandbox::modal::stop` | Tear down a sandbox |
-| `sandbox::modal::list` | Enumerate live sandboxes plus concurrency status |
-| `sandbox::modal::snapshot` | Snapshot the sandbox filesystem for fan-out |
-| `sandbox::modal::expose_port` | Public URL for a port via Modal's Tunnel |
+| `sandbox::provider::modal::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
+| `sandbox::provider::modal::exec` | Run a command inside a live sandbox |
+| `sandbox::provider::modal::stop` | Tear down a sandbox |
+| `sandbox::provider::modal::list` | Enumerate live sandboxes plus concurrency status |
+| `sandbox::provider::modal::snapshot` | Snapshot the sandbox filesystem for fan-out |
+| `sandbox::provider::modal::expose_port` | Public URL for a port via Modal's Tunnel |
 
 `create` advertises capabilities `["snapshot", "expose_port"]`. `branch` and `fs::*` are not registered for v0 — Modal's filesystem ops use the `Sandbox.open()` file-handle API which doesn't map cleanly to the channel-based FS surface used by the rest of the family. Revisit when consensus emerges.
 

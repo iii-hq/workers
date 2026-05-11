@@ -3,7 +3,7 @@ name: sandbox-modal
 language: python
 deploy: image
 manifest: pyproject.toml
-description: Narrow iii worker that exposes Modal sandboxes (gVisor isolation, Python-first, GPU available) via the sandbox::modal::* trigger family.
+description: Narrow iii worker that exposes Modal sandboxes (gVisor isolation, Python-first, GPU available) via the sandbox::provider::modal::* trigger family.
 config:
   max_concurrent_sandboxes: 10
   default_idle_timeout_secs: 300

@@ -1,4 +1,4 @@
-"""Handler coroutines for every `sandbox::modal::*` function.
+"""Handler coroutines for every `sandbox::provider::modal::*` function.
 
 Each coroutine parses untyped JSON, does config-side validation
 (allowlist, concurrency cap), then delegates to `ModalClient`. Failures

@@ -21,7 +21,7 @@ CAPABILITIES = ["snapshot", "expose_port"]
 
 
 class SandboxError(Exception):
-    """Stable error type for sandbox::modal::* failures.
+    """Stable error type for sandbox::provider::modal::* failures.
 
     The S-code is embedded at the start of the message so callers that
     pattern-match on `[Sxxx]` see the same surface every other sandbox

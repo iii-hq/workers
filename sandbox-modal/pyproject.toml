@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sandbox-modal"
 version = "0.1.0"
-description = "Narrow iii worker that exposes Modal sandboxes via the sandbox::modal::* trigger family. Uses the modal Python SDK as transport (Modal has no public REST surface)."
+description = "Narrow iii worker that exposes Modal sandboxes via the sandbox::provider::modal::* trigger family. Uses the modal Python SDK as transport (Modal has no public REST surface)."
 authors = [{ name = "iii contributors" }]
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

@@ -1,4 +1,4 @@
-"""Entry point for sandbox-modal. Registers the seven `sandbox::modal::*`
+"""Entry point for sandbox-modal. Registers the seven `sandbox::provider::modal::*`
 functions on the iii engine, then waits on SIGTERM/SIGINT.
 """
 
@@ -47,12 +47,12 @@ def main() -> None:
 
         iii.register_function(function_id, wrapped)
 
-    reg("sandbox::modal::create", do_create)
-    reg("sandbox::modal::exec", do_exec)
-    reg("sandbox::modal::stop", do_stop)
-    reg("sandbox::modal::list", do_list)
-    reg("sandbox::modal::snapshot", do_snapshot)
-    reg("sandbox::modal::expose_port", do_expose_port)
+    reg("sandbox::provider::modal::create", do_create)
+    reg("sandbox::provider::modal::exec", do_exec)
+    reg("sandbox::provider::modal::stop", do_stop)
+    reg("sandbox::provider::modal::list", do_list)
+    reg("sandbox::provider::modal::snapshot", do_snapshot)
+    reg("sandbox::provider::modal::expose_port", do_expose_port)
 
     print("sandbox-modal registered, awaiting invocations")
 
