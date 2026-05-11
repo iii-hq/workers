@@ -2,7 +2,7 @@
 
 Slim, streamable, just-in-time engine introspection worker.
 
-Wraps `engine::workers::list` with progressive disclosure: slim by default, full schema only on `describe`. Solves Mike's "context bloat from dumping every function schema" gripe (May 8 sync).
+Wraps `engine::workers::list` and `engine::functions::list` with progressive disclosure: slim by default, full schema only on `describe`. Avoids the per-turn context bloat from dumping every function schema.
 
 ## Functions
 
@@ -17,9 +17,9 @@ Wraps `engine::workers::list` with progressive disclosure: slim by default, full
 
 ## Why this worker
 
-Mike (May 8 sync): *"introspection is tell me everything static about my engine and stream new things about my engine"*.
+The goal: tell the agent everything static about the engine and stream new things as they register.
 
-Today the agent calls `engine::workers::list` → response includes every function's full request/response schema. Context bloat. Mike's gripe: *"only the function names and descriptions is necessary, and then it dives deeper if we find the right function"*.
+Today the agent calls `engine::workers::list` → response includes every function's full request/response schema. Context bloat. The agent only needs function names and descriptions until it picks one; the full schema can wait.
 
 This worker enforces progressive disclosure at the introspection boundary:
 
