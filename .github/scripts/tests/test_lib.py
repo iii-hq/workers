@@ -123,3 +123,46 @@ class TestWriteVersionNode:
         _lib.write_version(p, "9.9.9")
         data = json.loads(p.read_text())
         assert data == {"name": "smoke", "version": "9.9.9", "private": True}
+
+
+class TestReadVersionPython:
+    def test_reads_project_version(self, pyproject_manifest):
+        assert _lib.read_version(pyproject_manifest) == "0.1.0"
+
+    def test_ignores_non_project_sections(self, tmp_path):
+        p = tmp_path / "pyproject.toml"
+        p.write_text(
+            '[build-system]\nrequires = ["hatchling"]\n'
+            '[project]\nname = "x"\nversion = "1.0.0"\n'
+            '[tool.foo]\nversion = "9.9.9"\n'
+        )
+        assert _lib.read_version(p) == "1.0.0"
+
+    def test_missing_version_raises(self, tmp_path):
+        p = tmp_path / "pyproject.toml"
+        p.write_text('[project]\nname = "x"\n')
+        with pytest.raises(ValueError):
+            _lib.read_version(p)
+
+
+class TestWriteVersionPython:
+    def test_writes_and_round_trips(self, pyproject_manifest):
+        _lib.write_version(pyproject_manifest, "9.9.9")
+        assert _lib.read_version(pyproject_manifest) == "9.9.9"
+
+    def test_preserves_trailing_newline(self, tmp_path):
+        p = tmp_path / "pyproject.toml"
+        p.write_text('[project]\nname = "x"\nversion = "1.0.0"\n')
+        _lib.write_version(p, "9.9.9")
+        assert p.read_text().endswith("\n")
+
+    def test_only_replaces_project_version(self, tmp_path):
+        p = tmp_path / "pyproject.toml"
+        p.write_text(
+            '[project]\nname = "x"\nversion = "1.0.0"\n'
+            '[tool.foo]\nversion = "0.0.1"\n'
+        )
+        _lib.write_version(p, "9.9.9")
+        text = p.read_text()
+        assert 'version = "9.9.9"' in text
+        assert 'version = "0.0.1"' in text  # untouched

@@ -96,6 +96,39 @@ def _write_cargo_version(path: Path, new_version: str) -> None:
     path.write_text("\n".join(out) + trailing)
 
 
+def _read_python_version(text: str) -> str:
+    in_project = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_project = (s == "[project]")
+            continue
+        if in_project:
+            m = re.match(r'^version\s*=\s*"([^"]+)"', s)
+            if m:
+                return m.group(1)
+    raise ValueError("no version field in [project] section")
+
+
+def _write_python_version(path: Path, new_version: str) -> None:
+    text = path.read_text()
+    out: list[str] = []
+    in_project = False
+    replaced = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_project = (s == "[project]")
+        if in_project and not replaced and re.match(r'^version\s*=\s*"[^"]+"', s):
+            line = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{new_version}"', line)
+            replaced = True
+        out.append(line)
+    if not replaced:
+        raise ValueError("could not find version in [project]")
+    trailing = "\n" if text.endswith("\n") else ""
+    path.write_text("\n".join(out) + trailing)
+
+
 def _read_node_version(text: str) -> str:
     data = json.loads(text)
     if "version" not in data:
@@ -117,7 +150,9 @@ def read_version(manifest_path: Path) -> str:
         return _read_cargo_version(text)
     if kind == "node":
         return _read_node_version(text)
-    raise NotImplementedError(f"read_version not yet implemented for {kind}")
+    if kind == "python":
+        return _read_python_version(text)
+    raise ValueError(f"unhandled manifest kind: {kind}")
 
 
 def write_version(manifest_path: Path, new_version: str) -> None:
@@ -129,4 +164,7 @@ def write_version(manifest_path: Path, new_version: str) -> None:
     if kind == "node":
         _write_node_version(manifest_path, new_version)
         return
-    raise NotImplementedError(f"write_version not yet implemented for {kind}")
+    if kind == "python":
+        _write_python_version(manifest_path, new_version)
+        return
+    raise ValueError(f"unhandled manifest kind: {kind}")
