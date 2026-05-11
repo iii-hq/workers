@@ -2,7 +2,7 @@
 
 [package]
 name = "skills"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2021"
 publish = false
 
@@ -30,6 +30,7 @@ schemars = { version = "0.8", features = ["chrono", "uuid1"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 glob = "0.3"
+walkdir = "2"
 
 [dev-dependencies]
 serde_json = "1"
