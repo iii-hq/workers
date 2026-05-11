@@ -14,7 +14,7 @@ For resuming an agent, prefer `session-tree::messages` over `session-tree::tree`
 iii worker add session-tree
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii worker start`.
+`iii worker add` fetches the binary, writes a config block into the engine's `config.yaml`, and the engine starts the worker on the next `iii worker start`.
 
 For surfacing `session-tree::*` to LLM agents, pair with the [`skills`](../skills) worker:
 

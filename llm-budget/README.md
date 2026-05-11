@@ -14,7 +14,7 @@ Always pair `budget::check` (read with side-effects: rollover, exemption pruning
 iii worker add llm-budget
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker on the next `iii worker start`.
+`iii worker add` fetches the binary, writes a config block into the engine's `config.yaml`, and the engine starts the worker on the next `iii worker start`.
 
 For cost-per-token data used to estimate LLM call costs before `budget::check`, pair with the [`models-catalog`](../models-catalog) worker. For surfacing `budget::*` to LLM agents, pair with [`skills`](../skills):
 
