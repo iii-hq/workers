@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -202,3 +203,30 @@ def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
         bin=raw.get("bin"),
         raw=raw,
     )
+
+
+def read_tag_annotation(tag: str) -> dict[str, str]:
+    """Parses 'key: value' lines from an annotated tag's body.
+
+    Returns {} on lightweight tags, missing tags, or git failures. Lines that
+    start with `#` (subject lines like the release name) or are blank are
+    skipped. Only top-level lines containing a single `:` separator count.
+    """
+    try:
+        msg = subprocess.check_output(
+            ["git", "tag", "-l", "--format=%(contents)", tag],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return {}
+    out: dict[str, str] = {}
+    for line in msg.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if ":" not in s:
+            continue
+        k, _, v = s.partition(":")
+        out[k.strip()] = v.strip()
+    return out

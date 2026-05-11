@@ -195,3 +195,34 @@ class TestReadIIIWorkerYaml:
         m = _lib.read_iii_worker_yaml(iii_worker_yaml_dir)
         with pytest.raises(Exception):  # FrozenInstanceError
             m.name = "other"  # type: ignore[misc]
+
+
+class TestReadTagAnnotation:
+    def test_parses_key_value_lines(self, tmp_git_repo_with_tag, monkeypatch):
+        monkeypatch.chdir(tmp_git_repo_with_tag)
+        ann = _lib.read_tag_annotation("smoke/v0.1.0")
+        assert ann["registry-tag"] == "next"
+        assert ann["other"] == "value"
+
+    def test_missing_tag_returns_empty_dict(self, tmp_git_repo_with_tag, monkeypatch):
+        monkeypatch.chdir(tmp_git_repo_with_tag)
+        ann = _lib.read_tag_annotation("does/not/exist")
+        assert ann == {}
+
+    def test_skips_comments_and_blank_lines(self, tmp_path, monkeypatch):
+        import subprocess
+        import os
+        GIT_HERMETIC_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+        (tmp_path / "x").write_text("x")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(
+            ["git", "tag", "-a", "v0", "-m", "# comment\nkey: val\n\nother: more\n"],
+            cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV,
+        )
+        monkeypatch.chdir(tmp_path)
+        ann = _lib.read_tag_annotation("v0")
+        assert ann == {"key": "val", "other": "more"}
