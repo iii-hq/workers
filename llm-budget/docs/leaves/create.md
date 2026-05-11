@@ -1,0 +1,14 @@
+# Establishing a spend ceiling for a workspace or agent
+
+## When to use
+
+- Setting up a spend cap for a workspace or individual agent before routing traffic through it.
+- Allocating separate daily, weekly, or monthly budgets to different teams or cost centres.
+- Standing up a low-ceiling trial budget to gate access until billing is confirmed.
+
+## Notes
+
+- The returned `budget_id` is the stable handle for every subsequent `budget::*` call.
+- New budgets are created with `enforced = true` and `paused = false` — calls to `budget::check` start respecting the ceiling immediately.
+- `period` accepts `"day"`, `"week"`, or `"month"`. The first window is anchored to the current period boundary, not to wall-clock creation time.
+- `workspace_id` and `agent_id` are free-form labels; `budget::list` can filter by `workspace_id`.

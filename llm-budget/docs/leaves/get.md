@@ -1,0 +1,13 @@
+# Inspecting the current state of one budget
+
+## When to use
+
+- Reading the current state of a specific budget before making a routing or enforcement decision.
+- Reading the alert and exemption lists for a known budget id.
+- Verifying that a recent `budget::create` or `budget::update` took effect as expected.
+
+## Notes
+
+- This is a pure read — the period is not rolled forward and no state mutates.
+- For spend totals aggregated across the current and archived periods, use `budget::usage`.
+- The `alerts` array carries threshold percentages and callback function ids; `exemptions` carry principal ids and expiry timestamps.

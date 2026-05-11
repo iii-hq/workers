@@ -29,14 +29,17 @@ pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("shell/status", include_str!("../skills/status.md")),
     ("shell/kill", include_str!("../skills/kill.md")),
     ("shell/list", include_str!("../skills/list.md")),
-    ("shell/fs/ls", include_str!("../skills/fs/ls.md")),
-    ("shell/fs/stat", include_str!("../skills/fs/stat.md")),
-    ("shell/fs/read", include_str!("../skills/fs/read.md")),
-    ("shell/fs/grep", include_str!("../skills/fs/grep.md")),
-    ("shell/fs/write", include_str!("../skills/fs/write.md")),
-    ("shell/fs/sed", include_str!("../skills/fs/sed.md")),
-    ("shell/fs/mkdir", include_str!("../skills/fs/mkdir.md")),
-    ("shell/fs/rm", include_str!("../skills/fs/rm.md")),
-    ("shell/fs/chmod", include_str!("../skills/fs/chmod.md")),
-    ("shell/fs/mv", include_str!("../skills/fs/mv.md")),
+    // The renderer flattens leaf files under skills/. The path-style ids
+    // ("shell/fs/ls", …) preserve the iii://skills namespace registered
+    // with the skills worker; the file layout is separate.
+    ("shell/fs/ls", include_str!("../skills/ls.md")),
+    ("shell/fs/stat", include_str!("../skills/stat.md")),
+    ("shell/fs/read", include_str!("../skills/read.md")),
+    ("shell/fs/grep", include_str!("../skills/grep.md")),
+    ("shell/fs/write", include_str!("../skills/write.md")),
+    ("shell/fs/sed", include_str!("../skills/sed.md")),
+    ("shell/fs/mkdir", include_str!("../skills/mkdir.md")),
+    ("shell/fs/rm", include_str!("../skills/rm.md")),
+    ("shell/fs/chmod", include_str!("../skills/chmod.md")),
+    ("shell/fs/mv", include_str!("../skills/mv.md")),
 ];

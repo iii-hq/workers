@@ -1,0 +1,22 @@
+name: skill-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write          # for auto-fix mode (commits the rendered diff back)
+  pull-requests: write     # for the sticky PR comment
+
+jobs:
+  skill-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}    # check out the PR branch directly
+      - uses: iii-hq/skills-and-validation@v0.2
+        with:
+          write: true
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

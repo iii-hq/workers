@@ -1,0 +1,7 @@
+# turn-orchestrator runtime config.
+
+# How long `run::start_and_wait` polls before timing out (milliseconds).
+sync_default_timeout_ms: 120000
+
+# How frequently `run::start_and_wait` checks for a terminal state (milliseconds).
+sync_poll_interval_ms: 50

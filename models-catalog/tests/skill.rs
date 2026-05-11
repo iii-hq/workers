@@ -7,7 +7,7 @@
 //! follow folder-name-equals-skill-id; if a future worker uses different
 //! naming, adjust id_is_valid accordingly.
 
-fn well_formed(label: &str, body: &str) {
+fn well_formed(label: &str, body: &str, require_summary: bool) {
     assert!(!body.trim().is_empty(), "{label}: skill is empty");
     assert!(
         body.len() <= 256 * 1024,
@@ -15,17 +15,25 @@ fn well_formed(label: &str, body: &str) {
         body.len()
     );
 
-    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
+    // Skip blank lines and single-line HTML comments (e.g., the renderer's
+    // generated banner). The check is in-memory only; the rendered file
+    // itself is unchanged.
+    let mut lines = body.lines().filter(|l| {
+        let t = l.trim();
+        !(t.is_empty() || t.starts_with("<!--") && t.ends_with("-->"))
+    });
     let h1 = lines.next().unwrap_or("");
     assert!(
         h1.starts_with("# "),
         "{label}: skill must start with an H1, got: {h1:?}"
     );
-    let summary = lines.next().unwrap_or("");
-    assert!(
-        !summary.starts_with('#'),
-        "{label}: expected a summary paragraph after the H1, got another heading: {summary:?}"
-    );
+    if require_summary {
+        let summary = lines.next().unwrap_or("");
+        assert!(
+            !summary.starts_with('#'),
+            "{label}: expected a summary paragraph after the H1, got another heading: {summary:?}"
+        );
+    }
 }
 
 fn id_is_valid(label: &str, id: &str) {
@@ -64,7 +72,7 @@ fn id_is_valid(label: &str, id: &str) {
 
 #[test]
 fn router_well_formed() {
-    well_formed("router", models_catalog::SKILL_MD);
+    well_formed("router", models_catalog::SKILL_MD, true);
     id_is_valid("router", models_catalog::SKILL_ID);
 }
 
@@ -72,7 +80,9 @@ fn router_well_formed() {
 fn sub_skills_well_formed() {
     let prefix = format!("{}/", models_catalog::SKILL_ID);
     for (id, body) in models_catalog::SUB_SKILLS {
-        well_formed(id, body);
+        // Canonical leaves go directly from the topical H1 to ## When to use,
+        // so the summary-paragraph assertion only applies to the router skill.
+        well_formed(id, body, false);
         id_is_valid(id, id);
         assert!(
             id.starts_with(&prefix),

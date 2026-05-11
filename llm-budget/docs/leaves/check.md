@@ -1,0 +1,14 @@
+# Gating an LLM call against a budget
+
+## When to use
+
+- Pre-flight check before an LLM call: when `allowed` is `false`, abort and surface an over-budget error to the user.
+- Estimating headroom before committing to a long multi-turn conversation.
+- Confirming whether a specific principal is exempt before applying the cap.
+
+## Notes
+
+- `check` does not record spend — it is a read with side-effects (period rollover, exemption pruning). Always follow a successful check with `budget::record` once the actual cost is known.
+- `reason` values when `allowed = true`: `"paused"` (budget paused), `"not_enforced"` (enforcement disabled), `"exempt"` (principal matches an active exemption), or absent (normal headroom).
+- `reason` when `allowed = false`: `"ceiling_exceeded"` — the estimated cost would push spend past the ceiling.
+- `estimated_cost_usd` defaults to zero, which makes the call an existence check.

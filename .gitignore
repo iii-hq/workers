@@ -1,10 +1,9 @@
 target/
 .planning/
+.skill-check/
 .claude/
 .idea/
 .DS_Store
-docs
-!harness/docs/
 .worktrees
 node_modules
 package-lock.json
@@ -20,9 +19,6 @@ WORKERS-PR-REVIEW.md
 .gstack/
 *.pid
 *.zip
-config.yaml
-!llm-budget/config.yaml
-!provider-anthropic/config.yaml
 iii.lock
 harness/.omx/
 harness/data/

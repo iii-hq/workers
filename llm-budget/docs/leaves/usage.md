@@ -1,0 +1,14 @@
+# Aggregating historical spend across periods
+
+## When to use
+
+- Generating a spend report for a workspace or agent across the current and prior periods.
+- Reading cumulative spend across all time before deciding whether to renew or recap a budget.
+- Comparing period-by-period spend to identify usage spikes.
+
+## Notes
+
+- `window` defaults to `"all"`. The non-`all` values must match the budget's configured `period` — passing a mismatched window returns an error with a suggestion.
+- `by_period` is sorted ascending by period start. The live (current) period is always appended last so a UI can render it differently if needed.
+- The live period's spend is read from the budget record itself; archived periods are read from spend log entries. The current period is excluded from the log query to prevent double-counting after a reset or rollover.
+- For cost-per-token data needed to estimate future spend before a call, pair with `models-catalog`.

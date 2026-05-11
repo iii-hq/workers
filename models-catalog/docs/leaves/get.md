@@ -1,0 +1,13 @@
+# Reading full metadata for one model
+
+## When to use
+
+- Fetching context window, pricing, and capability flags before constructing a request.
+- Verifying a model exists in the catalog before passing it to a provider adapter.
+- Retrieving thinking budget tiers or transport preferences for a known model.
+
+## Notes
+
+- Both `provider` and `model_id` are required.
+- The catalog is state-first: an entry written via `models::register` shadows the compiled-in seed for the same key.
+- A `null` return means the model is in neither state nor seed — distinguish from "registered but missing fields" by inspecting the returned object.
