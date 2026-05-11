@@ -111,30 +111,7 @@ jobs:
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
         run: |
           set -euo pipefail
-          mode=$(python3 - <<'PY'
-          import os
-          import yaml
-
-          worker = os.environ["WORKER"]
-          deploy = os.environ.get("DEPLOY", "")
-          manifest_path = f"{worker}/iii.worker.yaml"
-          manifest = yaml.safe_load(open(manifest_path, encoding="utf-8").read()) or {}
-          scripts = manifest.get("scripts") or {}
-          runtime = manifest.get("runtime") or {}
-          has_scripts_start = bool(str(scripts.get("start") or "").strip())
-          has_runtime = bool(runtime.get("kind") or runtime.get("language"))
-          language = str(manifest.get("language") or "").strip().lower()
-
-          if deploy == "binary":
-              print("release-binary")
-          elif has_scripts_start or has_runtime:
-              print("iii-add")
-          elif language == "rust":
-              print("cargo-run")
-          else:
-              print("unsupported")
-          PY
-          )
+          mode=$(python3 .github/scripts/manifest_version.py deploy-mode "$WORKER")
 
           case "$mode" in
             iii-add)
