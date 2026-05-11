@@ -122,10 +122,11 @@ pub fn is_anonymous_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     if let Some(pos) = name.rfind(':') {
         let after = &name[pos + 1..];
-        if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) {
-            if pos == 0 || bytes[pos - 1] != b':' {
-                return true;
-            }
+        if !after.is_empty()
+            && after.chars().all(|c| c.is_ascii_digit())
+            && (pos == 0 || bytes[pos - 1] != b':')
+        {
+            return true;
         }
     }
     false
