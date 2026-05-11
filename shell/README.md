@@ -154,7 +154,11 @@ fs:
   # When unset, the worker refuses to start unless allow_unjailed is true
   # (because the alternative is "the entire filesystem is reachable
   # behind only the advisory denylist", which is rarely intended).
-  host_root: null
+  #
+  # Default is /tmp: exists on every Unix host, is writable, and contains
+  # only ephemeral data. Operators should point this at the workspace
+  # they actually intend the shell worker to manage.
+  host_root: /tmp
   allow_unjailed: false
   max_read_bytes: 16777216
   max_write_bytes: 16777216
