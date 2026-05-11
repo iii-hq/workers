@@ -2,7 +2,7 @@
 
 [package]
 name = "approval-gate"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve."
 edition = "2021"
 license = "Apache-2.0"

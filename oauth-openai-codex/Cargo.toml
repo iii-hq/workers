@@ -4,7 +4,7 @@ members = ["crates/auth-credentials"]
 
 [package]
 name = "oauth-openai-codex"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*."
 edition = "2021"
 license = "Apache-2.0"
@@ -38,7 +38,7 @@ log = "0.4"
 env_logger = "0.11"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

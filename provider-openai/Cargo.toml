@@ -4,7 +4,7 @@ members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-cred
 
 [package]
 name = "provider-openai"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenAI Chat Completions; registers provider::openai::complete on the iii bus."
 edition = "2021"
 license = "Apache-2.0"
@@ -41,7 +41,7 @@ tokio-stream = "0.1"
 serde_json = { workspace = true }
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
