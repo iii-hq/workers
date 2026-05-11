@@ -4,7 +4,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "iii-turn-orchestrator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down."
 edition = "2021"
 license = "Apache-2.0"

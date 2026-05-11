@@ -4,7 +4,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "iii-provider-router"
-version = "0.1.0"
+version = "0.1.1"
 description = "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers."
 edition = "2021"
 license = "Apache-2.0"

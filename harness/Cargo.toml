@@ -3,7 +3,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "iii-harness"
-version = "0.2.0"
+version = "0.3.0"
 description = "Meta-worker that composes the modular workers backing the iii chat surface."
 edition = "2021"
 license = "Apache-2.0"
