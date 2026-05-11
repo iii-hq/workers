@@ -29,3 +29,22 @@ class TestParseSemver:
         # SemVer 2.0.0 §10: build metadata after `+` MUST NOT affect precedence.
         assert _lib.parse_semver("1.0.0+build.5") == ((1, 0, 0), 1, "")
         assert _lib.parse_semver("1.0.0+a") == _lib.parse_semver("1.0.0+b")
+
+
+class TestBump:
+    def test_patch(self):
+        assert _lib.bump("1.2.3", "patch") == "1.2.4"
+
+    def test_minor_resets_patch(self):
+        assert _lib.bump("1.2.3", "minor") == "1.3.0"
+
+    def test_major_resets_minor_and_patch(self):
+        assert _lib.bump("1.2.3", "major") == "2.0.0"
+
+    def test_strips_prerelease_suffix(self):
+        # `bump("1.2.3-rc.1", "patch")` should yield "1.2.4" — bumping a
+        # pre-release means moving past the stable release at the same core.
+        assert _lib.bump("1.2.3-rc.1", "patch") == "1.2.4"
+
+    def test_pads_short_version(self):
+        assert _lib.bump("1", "patch") == "1.0.1"

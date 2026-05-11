@@ -1,7 +1,10 @@
 """Shared helpers for .github/scripts/* CLI tools."""
 from __future__ import annotations
 
+from typing import Literal
+
 SemverKey = tuple[tuple[int, ...], int, str]
+BumpKind = Literal["patch", "minor", "major"]
 
 
 def parse_semver(v: str) -> SemverKey:
@@ -19,3 +22,25 @@ def parse_semver(v: str) -> SemverKey:
     while len(parts) < 3:
         parts.append(0)
     return (tuple(parts), 0 if pre else 1, pre)
+
+
+def bump(current: str, kind: BumpKind) -> str:
+    """Returns `current` with the requested component incremented.
+
+    Pre-release suffixes are stripped (bumping past a pre-release yields the
+    next stable). Short versions are padded to three components.
+    """
+    core, _, _pre = current.partition("-")
+    parts = [int(x) for x in core.split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    major, minor, patch = parts[0], parts[1], parts[2]
+    if kind == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif kind == "minor":
+        minor, patch = minor + 1, 0
+    elif kind == "patch":
+        patch += 1
+    else:
+        raise ValueError(f"unknown bump kind: {kind!r}")
+    return f"{major}.{minor}.{patch}"
