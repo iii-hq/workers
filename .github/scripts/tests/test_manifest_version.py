@@ -43,3 +43,27 @@ class TestReadSubcommand:
         r = run_script("read", str(p))
         assert r.returncode != 0
         assert "unsupported" in (r.stderr + r.stdout).lower()
+
+
+class TestBumpSubcommand:
+    def test_bump_cargo_patch(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "patch")
+        assert r.returncode == 0
+        assert r.stdout.strip() == "0.1.1"
+        # File was actually written.
+        r2 = run_script("read", str(cargo_manifest))
+        assert r2.stdout.strip() == "0.1.1"
+
+    def test_bump_node_minor(self, package_json_manifest):
+        r = run_script("bump", str(package_json_manifest), "--kind", "minor")
+        assert r.returncode == 0
+        assert r.stdout.strip() == "0.2.0"
+
+    def test_bump_python_major(self, pyproject_manifest):
+        r = run_script("bump", str(pyproject_manifest), "--kind", "major")
+        assert r.returncode == 0
+        assert r.stdout.strip() == "1.0.0"
+
+    def test_bump_rejects_unknown_kind(self, cargo_manifest):
+        r = run_script("bump", str(cargo_manifest), "--kind", "weird")
+        assert r.returncode != 0

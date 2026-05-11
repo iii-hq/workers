@@ -31,6 +31,19 @@ def cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bump(args: argparse.Namespace) -> int:
+    path = Path(args.manifest)
+    try:
+        current = _lib.read_version(path)
+        new = _lib.bump(current, args.kind)
+        _lib.write_version(path, new)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(new)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="manifest_version.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -38,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     p_read = sub.add_parser("read", help="print the manifest version")
     p_read.add_argument("manifest", help="path to Cargo.toml/package.json/pyproject.toml")
     p_read.set_defaults(func=cmd_read)
+
+    p_bump = sub.add_parser("bump", help="bump the manifest version in place")
+    p_bump.add_argument("manifest")
+    p_bump.add_argument("--kind", choices=["patch", "minor", "major"], required=True)
+    p_bump.set_defaults(func=cmd_bump)
 
     args = p.parse_args(argv)
     return args.func(args)
