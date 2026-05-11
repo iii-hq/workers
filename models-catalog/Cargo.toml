@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-models-catalog"
-version = "0.1.1"
+version = "0.1.0"
 description = "Model capabilities knowledge base under models::* (list/get/supports/register)."
 edition = "2021"
 license = "Apache-2.0"

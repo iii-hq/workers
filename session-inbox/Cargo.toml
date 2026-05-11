@@ -2,7 +2,7 @@
 
 [package]
 name = "session-inbox"
-version = "0.1.1"
+version = "0.1.0"
 description = "Per-session inbox (session-inbox::push, drain, peek) backed by iii state."
 edition = "2021"
 license = "Apache-2.0"
