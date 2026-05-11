@@ -23,6 +23,27 @@ pub async fn query(cfg: Arc<Config>, payload: Value) -> Result<Value, IIIError> 
         .await
         .map_err(|e| IIIError::Handler(format!("registry GET {url} failed: {e}")))?;
 
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(IIIError::Handler(format!(
+            "registry GET {url} returned HTTP {status}"
+        )));
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !content_type.contains("json") {
+        let preview = resp.text().await.unwrap_or_default();
+        let preview = preview.chars().take(120).collect::<String>();
+        return Err(IIIError::Handler(format!(
+            "registry GET {url} returned non-JSON ({content_type}): {preview}"
+        )));
+    }
+
     let body: Value = resp
         .json()
         .await

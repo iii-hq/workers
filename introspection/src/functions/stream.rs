@@ -22,11 +22,12 @@ pub async fn subscribe(iii: Arc<III>, payload: Value) -> Result<Value, IIIError>
     let events: Vec<Value> = workers
         .into_iter()
         .map(|w| {
+            let function_count = super::effective_fn_count(&w);
             json!({
                 "kind": "snapshot",
                 "worker": w.get("name").cloned().unwrap_or(Value::Null),
                 "status": w.get("status").cloned().unwrap_or(Value::Null),
-                "function_count": w.get("function_count").cloned().unwrap_or(json!(0)),
+                "function_count": function_count,
             })
         })
         .collect();

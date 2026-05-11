@@ -33,6 +33,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         anyhow::bail!("config not found: {}", path);
     }
     let text = std::fs::read_to_string(p)?;
-    let cfg: Config = serde_yaml::from_str(&text).unwrap_or_default();
+    let cfg: Config = serde_yaml::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("invalid yaml in {}: {e}", path))?;
     Ok(cfg)
 }

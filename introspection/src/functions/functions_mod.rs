@@ -101,11 +101,17 @@ pub async fn describe(iii: Arc<III>, payload: Value) -> Result<Value, IIIError> 
         .await
         .map_err(|e| IIIError::Handler(format!("engine::workers::list failed: {e}")))?;
 
-    let workers = raw
-        .get("workers")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // Dedup + filter to connected workers so describe doesn't return stale
+    // metadata from a disconnected ghost row.
+    let workers: Vec<Value> = super::dedup_workers(
+        raw.get("workers")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .into_iter()
+    .filter(|w| w.get("status").and_then(|s| s.as_str()) == Some("connected"))
+    .collect();
 
     for w in workers {
         let worker_name = w.get("name").and_then(|n| n.as_str()).unwrap_or("");

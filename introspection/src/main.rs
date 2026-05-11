@@ -28,7 +28,21 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg = Arc::new(config::load(&cli.config).unwrap_or_default());
+    let cfg = Arc::new(match config::load(&cli.config) {
+        Ok(c) => c,
+        Err(e) => {
+            // Missing file is fine — fall back to defaults. Malformed file
+            // is not — surface it so a typo doesn't ship silently.
+            let msg = e.to_string();
+            if msg.contains("config not found") {
+                tracing::warn!(path = %cli.config, "config not found, using defaults");
+                config::Config::default()
+            } else {
+                tracing::error!(path = %cli.config, error = %msg, "config load failed");
+                return Err(e);
+            }
+        }
+    });
 
     tracing::info!(url = %cli.url, "connecting to iii engine");
 
@@ -185,7 +199,7 @@ async fn main() -> Result<()> {
         },
     );
 
-    tracing::info!("iii-introspection registered 6 functions, awaiting calls");
+    tracing::info!("iii-introspection registered 8 functions, awaiting calls");
 
     tokio::signal::ctrl_c().await?;
     Ok(())

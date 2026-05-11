@@ -162,11 +162,12 @@ pub async fn worker_status(iii: Arc<III>, payload: Value) -> Result<Value, IIIEr
     let raw = super::call(&iii, "engine::workers::list", json!({}))
         .await
         .map_err(|e| IIIError::Handler(format!("engine::workers::list failed: {e}")))?;
-    let workers = raw
-        .get("workers")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let workers = super::dedup_workers(
+        raw.get("workers")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+    );
     let row = workers
         .iter()
         .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(name));
