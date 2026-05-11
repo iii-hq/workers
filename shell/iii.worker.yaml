@@ -6,6 +6,16 @@ manifest: Cargo.toml
 bin: iii-shell
 description: Unix shell + filesystem worker — exec with allowlist/denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write with host jail, denylist, size caps, and sandbox-target forwarding
 
+# POSIX-only: src/fs/host.rs uses std::os::unix::fs::PermissionsExt / chown /
+# OpenOptionsExt directly, so the Windows triples cannot compile.
+targets:
+  - x86_64-apple-darwin
+  - aarch64-apple-darwin
+  - x86_64-unknown-linux-gnu
+  - x86_64-unknown-linux-musl
+  - aarch64-unknown-linux-gnu
+  - armv7-unknown-linux-gnueabihf
+
 runtime:
   kind: rust
 
