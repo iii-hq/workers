@@ -27,6 +27,7 @@ METADATA_GLOBS = (
     "AGENTS.md",
     "AGENTS-*.md",
     "Cargo.lock",
+    "Cargo.toml",
 )
 
 # Top-level dirs we never treat as workers, regardless of contents.
