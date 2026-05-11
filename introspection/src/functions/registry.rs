@@ -10,12 +10,12 @@ pub async fn query(cfg: Arc<Config>, payload: Value) -> Result<Value, IIIError> 
         .get("q")
         .and_then(|v| v.as_str())
         .ok_or_else(|| IIIError::Handler("missing required field: q".into()))?;
-    let limit = payload
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20);
+    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
 
-    let url = format!("{}/registry/index.json", cfg.registry_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/registry/index.json",
+        cfg.registry_url.trim_end_matches('/')
+    );
     let resp = reqwest::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_millis(cfg.default_timeout_ms))
@@ -40,10 +40,7 @@ pub async fn query(cfg: Arc<Config>, payload: Value) -> Result<Value, IIIError> 
         .into_iter()
         .filter(|e| {
             let name = e.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let desc = e
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
+            let desc = e.get("description").and_then(|d| d.as_str()).unwrap_or("");
             name.to_lowercase().contains(&q_lc) || desc.to_lowercase().contains(&q_lc)
         })
         .take(limit as usize)

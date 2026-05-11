@@ -4,7 +4,10 @@ use iii_sdk::{IIIError, III};
 use serde_json::{json, Value};
 
 pub async fn subscribe(iii: Arc<III>, payload: Value) -> Result<Value, IIIError> {
-    let since_ms = payload.get("since_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    let since_ms = payload
+        .get("since_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let snapshot = super::call(&iii, "engine::workers::list", json!({}))
         .await

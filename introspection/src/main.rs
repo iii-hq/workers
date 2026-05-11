@@ -200,14 +200,12 @@ fn register_fn<F>(
 ) where
     F: Fn(
             serde_json::Value,
-        )
-            -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Result<serde_json::Value, iii_sdk::IIIError>,
-                        > + Send,
-                >,
-            > + Send
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<serde_json::Value, iii_sdk::IIIError>>
+                    + Send,
+            >,
+        > + Send
         + Sync
         + 'static,
 {

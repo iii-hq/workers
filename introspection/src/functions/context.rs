@@ -63,10 +63,7 @@ pub async fn bootstrap(iii: Arc<III>, _payload: Value) -> Result<Value, IIIError
         // Dedup: prefer the row with the highest fn_count for the same name.
         match connected_map.get(&name) {
             Some(prev) => {
-                let prev_count = prev
-                    .get("fn_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let prev_count = prev.get("fn_count").and_then(|v| v.as_u64()).unwrap_or(0);
                 let new_count = entry.get("fn_count").and_then(|v| v.as_u64()).unwrap_or(0);
                 if new_count > prev_count {
                     connected_map.insert(name, entry);
@@ -170,9 +167,9 @@ pub async fn worker_status(iii: Arc<III>, payload: Value) -> Result<Value, IIIEr
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let row = workers.iter().find(|w| {
-        w.get("name").and_then(|n| n.as_str()) == Some(name)
-    });
+    let row = workers
+        .iter()
+        .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(name));
     let status = row
         .and_then(|w| w.get("status").and_then(|s| s.as_str()))
         .unwrap_or("not_registered")
