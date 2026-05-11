@@ -1,6 +1,7 @@
 """Shared helpers for .github/scripts/* CLI tools."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Literal
@@ -95,12 +96,27 @@ def _write_cargo_version(path: Path, new_version: str) -> None:
     path.write_text("\n".join(out) + trailing)
 
 
+def _read_node_version(text: str) -> str:
+    data = json.loads(text)
+    if "version" not in data:
+        raise ValueError("no version key in package.json")
+    return str(data["version"])
+
+
+def _write_node_version(path: Path, new_version: str) -> None:
+    data = json.loads(path.read_text())
+    data["version"] = new_version
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def read_version(manifest_path: Path) -> str:
     """Reads the manifest's package version. Dispatches on filename."""
     kind = detect_kind(manifest_path)
     text = manifest_path.read_text()
     if kind == "cargo":
         return _read_cargo_version(text)
+    if kind == "node":
+        return _read_node_version(text)
     raise NotImplementedError(f"read_version not yet implemented for {kind}")
 
 
@@ -109,5 +125,8 @@ def write_version(manifest_path: Path, new_version: str) -> None:
     kind = detect_kind(manifest_path)
     if kind == "cargo":
         _write_cargo_version(manifest_path, new_version)
+        return
+    if kind == "node":
+        _write_node_version(manifest_path, new_version)
         return
     raise NotImplementedError(f"write_version not yet implemented for {kind}")

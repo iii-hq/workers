@@ -98,3 +98,28 @@ class TestWriteVersionCargo:
         text = cargo_manifest.read_text()
         assert 'name = "smoke"' in text
         assert 'edition = "2021"' in text
+
+
+class TestReadVersionNode:
+    def test_reads_version(self, package_json_manifest):
+        assert _lib.read_version(package_json_manifest) == "0.1.0"
+
+    def test_missing_version_raises(self, tmp_path):
+        p = tmp_path / "package.json"
+        p.write_text('{"name": "x"}')
+        with pytest.raises(ValueError):
+            _lib.read_version(p)
+
+
+class TestWriteVersionNode:
+    def test_writes_and_round_trips(self, package_json_manifest):
+        _lib.write_version(package_json_manifest, "9.9.9")
+        assert _lib.read_version(package_json_manifest) == "9.9.9"
+
+    def test_preserves_other_keys(self, tmp_path):
+        import json
+        p = tmp_path / "package.json"
+        p.write_text('{\n  "name": "smoke",\n  "version": "0.1.0",\n  "private": true\n}\n')
+        _lib.write_version(p, "9.9.9")
+        data = json.loads(p.read_text())
+        assert data == {"name": "smoke", "version": "9.9.9", "private": True}
