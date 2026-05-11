@@ -1,16 +1,16 @@
-mod common;
-
 use std::process::Command;
 
 use serde_json::Value;
 
+mod common;
+
 #[test]
 fn manifest_subcommand_emits_valid_json() {
-    let bin = common::session_inbox_executable();
-    let output = Command::new(bin)
+    let bin = common::session_executable();
+    let output = Command::new(&bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-session-inbox --manifest");
+        .expect("spawn iii-session --manifest");
 
     assert!(
         output.status.success(),
@@ -25,6 +25,10 @@ fn manifest_subcommand_emits_valid_json() {
     assert_eq!(manifest["name"], env!("CARGO_PKG_NAME"));
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
     assert!(manifest["default_config"].is_object());
+    let cfg = &manifest["default_config"];
+    assert!(cfg["store_backend"].is_string());
+    assert!(cfg["engine_url"].is_string());
+    assert!(cfg["state_scope"].is_string());
     assert!(!manifest["supported_targets"]
         .as_array()
         .expect("supported_targets must be an array")

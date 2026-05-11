@@ -34,7 +34,7 @@ LOGS_DIR       := $(DEMO_DIR)/logs
 
 WORKERS := \
   turn-orchestrator provider-router \
-  session-tree session-inbox \
+  session \
   models-catalog hook-fanout policy-denylist \
   shell \
   provider-anthropic provider-openai \

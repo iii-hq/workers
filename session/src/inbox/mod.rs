@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 pub mod config;
 pub mod handler;
-pub mod manifest;
 
 pub const PUSH_ID: &str = "session-inbox::push";
 pub const DRAIN_ID: &str = "session-inbox::drain";

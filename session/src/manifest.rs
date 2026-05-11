@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::config::WorkerConfig;
+use crate::config::SessionConfig;
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -15,11 +15,10 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description:
-            "Per-session inbox under session-inbox::* — push, drain, peek backed by iii state."
-                .to_string(),
-        default_config: serde_json::to_value(WorkerConfig::default())
-            .expect("WorkerConfig serializes to JSON"),
+        description: "Session storage (session-tree::*) + per-session inbox (session-inbox::*) backed by iii state."
+            .to_string(),
+        default_config: serde_json::to_value(SessionConfig::default())
+            .expect("SessionConfig serializes to JSON"),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -33,13 +32,12 @@ mod tests {
         let m = build_manifest();
         let json = serde_json::to_string_pretty(&m).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-
         assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
         assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
-        assert!(parsed["description"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty()));
         assert!(parsed["default_config"].is_object());
+        assert!(parsed["default_config"]["store_backend"].is_string());
+        assert!(parsed["default_config"]["engine_url"].is_string());
+        assert!(parsed["default_config"]["state_scope"].is_string());
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }
 }

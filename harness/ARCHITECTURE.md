@@ -82,7 +82,7 @@ server-side. The model passes `function` (a bus id such as
 | Group | Workers | Role |
 |---|---|---|
 | Orchestration | `turn-orchestrator`, `provider-router` | Runs a turn end-to-end: fan a request to a provider and dispatch function calls. |
-| Sessions / state | `session-tree`, `session-inbox` | Persisted message trees and a steering/follow-up inbox queue. |
+| Sessions / state | `session` | Persisted message trees (`session-tree::*`) and a steering/follow-up inbox queue (`session-inbox::*`). |
 | Catalog | `models-catalog` | Model metadata. |
 | Auth | `auth-credentials` | Provider credentials store. |
 | Policy / safety | `policy-denylist`, `llm-budget` | Hook subscriber on `agent::before_function_call` and budget tracking. |

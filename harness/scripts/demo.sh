@@ -39,7 +39,7 @@ DEMO_ENGINE_WS="${III_DEMO_ENGINE_URL:-ws://127.0.0.1:49134}"
 
 WORKERS=(
   turn-orchestrator provider-router
-  session-tree session-inbox
+  session
   models-catalog hook-fanout policy-denylist
   shell
   provider-anthropic provider-openai

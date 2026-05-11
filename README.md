@@ -13,7 +13,7 @@ matching GitHub Release asset for the host's target triple.
 | Worker | Kind | Summary |
 |---|---|---|
 | [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
-| [`session-inbox`](session-inbox/) | Rust | Per-session inbox under `session-inbox::*` (push, drain, peek). |
+| [`session`](session/) | Rust | Session storage under `session-tree::*` and per-session inbox under `session-inbox::*` (push, drain, peek). |
 | [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
 | [`hook-fanout`](hook-fanout/) | Rust | Reusable publish-collect primitive under `hook-fanout::publish_collect` — fans an event to subscribers and merges replies. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete/hover across JS/TS, Python, Rust. |
@@ -28,7 +28,6 @@ matching GitHub Release asset for the host's target triple.
 | [`proof`](proof/) | Node | AI-driven browser testing — diffs changes, generates test plans, drives Playwright. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Native Anthropic Messages API streaming provider under `provider::anthropic::*`. |
 | [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider under `provider::openai::*`. |
-| [`session-tree`](session-tree/) | Rust | Session storage as a parent-id tree of typed entries under `session::*`. |
 | [`shell-bash`](shell-bash/) | Rust | Sandboxed shell execution under `shell::bash::*` — wraps the engine `sandbox::exec` primitive. |
 | [`shell-filesystem`](shell-filesystem/) | Rust | Sandboxed filesystem operations under `shell::fs::*` — read, write, list, stat, glob. |
 | [`turn-orchestrator`](turn-orchestrator/) | Rust | Durable `run::start` state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down. |

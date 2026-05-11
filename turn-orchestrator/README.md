@@ -16,7 +16,7 @@ iii worker add turn-orchestrator
 `iii worker add` fetches the binary, writes a config block into
 `~/.iii/config.yaml`, and the engine starts the worker on the next
 `iii start`. The `dependencies:` field in `iii.worker.yaml` ensures
-`session-inbox`, `hook-fanout`, and `provider-router` are installed
+`session`, `hook-fanout`, and `provider-router` are installed
 alongside this worker automatically.
 
 ## Quickstart

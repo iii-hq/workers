@@ -1,13 +1,13 @@
 //! Smoke + bus-level integration tests for `session-tree::list` and
 //! `session-tree::messages`.
 //!
-//! The bus tests boot a real `iii` engine and the `iii-session-tree` worker
+//! The bus tests boot a real `iii` engine and the `iii-session` worker
 //! against a transient in-memory store, then drive each function through
 //! `iii.trigger`. They skip silently when the `iii` CLI is not on PATH so
 //! `cargo test` stays green in plain dev environments.
 //!
 //! To run them locally:
-//!   cargo build --bin iii-session-tree
+//!   cargo build --bin iii-session
 //!   cargo test --test integration
 
 mod common;
@@ -24,7 +24,7 @@ const ENGINE_WS: &str = "ws://127.0.0.1:49134";
 
 #[test]
 fn in_memory_store_constructs() {
-    let _store = session_tree::InMemoryStore::default();
+    let _store = session::tree::InMemoryStore::default();
 }
 
 struct Harness {
@@ -53,9 +53,9 @@ async fn boot() -> Option<Harness> {
 
     sleep(Duration::from_millis(800)).await;
 
-    let worker_bin = common::session_tree_executable();
+    let worker_bin = common::session_executable();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/tests/integration_memory.yaml");
+    let config_path = format!("{manifest_dir}/tests/tree_integration_memory.yaml");
 
     let worker = Command::new(worker_bin)
         .args(["--url", ENGINE_WS, "--config", &config_path])

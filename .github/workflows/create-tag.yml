@@ -27,8 +27,7 @@ on:
           - provider-anthropic
           - provider-openai
           - provider-router
-          - session-inbox
-          - session-tree
+          - session
           - shell
           - skills
           - storage

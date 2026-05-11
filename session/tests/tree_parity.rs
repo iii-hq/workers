@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use session_tree::{
+use session::tree::{
     io::IIITrigger, store_iii_state::IiiStateSessionStore, InMemoryStore, SessionEntry,
     SessionError, SessionMeta, SessionStore,
 };

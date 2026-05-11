@@ -3,9 +3,9 @@ resolver = "2"
 members = ["crates/harness-types"]
 
 [package]
-name = "iii-session-tree"
-version = "0.1.1"
-description = "Session storage as a parent-id tree of typed entries under session-tree::*."
+name = "session"
+version = "0.1.0"
+description = "Session storage (tree of typed entries) + per-session inbox, exposed as session-tree::* and session-inbox::* over iii."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -14,11 +14,11 @@ publish = false
 build = "build.rs"
 
 [lib]
-name = "session_tree"
+name = "session"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-session-tree"
+name = "iii-session"
 path = "src/main.rs"
 
 [dependencies]

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 
-use crate::config::WorkerConfig;
-use crate::{inbox_key, DRAIN_ID, PEEK_ID, PUSH_ID};
+use super::config::WorkerConfig;
+use super::{inbox_key, DRAIN_ID, PEEK_ID, PUSH_ID};
 
 async fn execute_push(iii: III, state_scope: String, payload: Value) -> Result<Value, IIIError> {
     let name = required_str(&payload, "name")?;

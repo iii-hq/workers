@@ -14,5 +14,5 @@ scripts:
   start: cargo run
 
 dependencies:
-  session-inbox: "^0.1.0"
+  session: "^0.1.0"
   llm-budget: "^0.1.0"

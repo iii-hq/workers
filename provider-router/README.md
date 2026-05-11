@@ -6,7 +6,7 @@ from `llm-router` when installed), abort via `state::set`, and steering /
 follow-up messages through `session-inbox::push`. The turn loop itself lives in
 `turn-orchestrator`; this worker only registers handlers and HTTP triggers.
 
-`iii worker add` pulls declared worker dependencies (`session-inbox`,
+`iii worker add` pulls declared worker dependencies (`session`,
 `llm-budget`). Function ids use `::` throughout (see
 [`src/register.rs`](src/register.rs)).
 

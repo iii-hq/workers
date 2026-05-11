@@ -13,15 +13,15 @@ const ENGINE_WS: &str = "ws://127.0.0.1:49134";
 
 #[test]
 fn function_ids_use_worker_namespace() {
-    assert_eq!(session_inbox::PUSH_ID, "session-inbox::push");
-    assert_eq!(session_inbox::DRAIN_ID, "session-inbox::drain");
-    assert_eq!(session_inbox::PEEK_ID, "session-inbox::peek");
+    assert_eq!(session::inbox::PUSH_ID, "session-inbox::push");
+    assert_eq!(session::inbox::DRAIN_ID, "session-inbox::drain");
+    assert_eq!(session::inbox::PEEK_ID, "session-inbox::peek");
 }
 
 #[test]
 fn inbox_key_uses_session_namespace() {
     assert_eq!(
-        session_inbox::inbox_key("steering", "s1"),
+        session::inbox::inbox_key("steering", "s1"),
         "session/s1/steering"
     );
 }
@@ -52,7 +52,7 @@ async fn boot() -> Option<Harness> {
 
     sleep(Duration::from_millis(800)).await;
 
-    let worker_bin = common::session_inbox_executable();
+    let worker_bin = common::session_executable();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let config_path = format!("{manifest_dir}/config.yaml");
 

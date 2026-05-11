@@ -64,20 +64,20 @@ fn id_is_valid(label: &str, id: &str) {
 
 #[test]
 fn router_well_formed() {
-    well_formed("router", session_tree::SKILL_MD);
-    id_is_valid("router", session_tree::SKILL_ID);
+    well_formed("router", session::tree::SKILL_MD);
+    id_is_valid("router", session::tree::SKILL_ID);
 }
 
 #[test]
 fn sub_skills_well_formed() {
-    let prefix = format!("{}/", session_tree::SKILL_ID);
-    for (id, body) in session_tree::SUB_SKILLS {
+    let prefix = format!("{}/", session::tree::SKILL_ID);
+    for (id, body) in session::tree::SUB_SKILLS {
         well_formed(id, body);
         id_is_valid(id, id);
         assert!(
             id.starts_with(&prefix),
             "sub-skill id {id:?} must be nested under the worker id ({}/)",
-            session_tree::SKILL_ID
+            session::tree::SKILL_ID
         );
     }
 }
