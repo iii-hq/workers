@@ -44,6 +44,22 @@ def cmd_bump(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    path = Path(args.manifest)
+    try:
+        actual = _lib.read_version(path)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if actual != args.expected:
+        print(
+            f"version mismatch in {path}: expected {args.expected}, got {actual}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="manifest_version.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -56,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     p_bump.add_argument("manifest")
     p_bump.add_argument("--kind", choices=["patch", "minor", "major"], required=True)
     p_bump.set_defaults(func=cmd_bump)
+
+    p_verify = sub.add_parser("verify", help="assert the manifest version equals --expected")
+    p_verify.add_argument("manifest")
+    p_verify.add_argument("--expected", required=True)
+    p_verify.set_defaults(func=cmd_verify)
 
     args = p.parse_args(argv)
     return args.func(args)

@@ -67,3 +67,15 @@ class TestBumpSubcommand:
     def test_bump_rejects_unknown_kind(self, cargo_manifest):
         r = run_script("bump", str(cargo_manifest), "--kind", "weird")
         assert r.returncode != 0
+
+
+class TestVerifySubcommand:
+    def test_verify_match(self, cargo_manifest):
+        r = run_script("verify", str(cargo_manifest), "--expected", "0.1.0")
+        assert r.returncode == 0
+
+    def test_verify_mismatch(self, cargo_manifest):
+        r = run_script("verify", str(cargo_manifest), "--expected", "9.9.9")
+        assert r.returncode != 0
+        assert "0.1.0" in (r.stderr + r.stdout)
+        assert "9.9.9" in (r.stderr + r.stdout)
