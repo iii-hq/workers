@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/harness-types"]
 
 [package]
-name = "iii-provider-router"
+name = "provider-router"
 version = "0.1.0"
 description = "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers."
 edition = "2021"
@@ -17,7 +17,7 @@ name = "provider_router"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-provider-router"
+name = "provider-router"
 path = "src/main.rs"
 
 [dependencies]

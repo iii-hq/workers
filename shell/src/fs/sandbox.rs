@@ -19,7 +19,7 @@ use crate::fs::{
 // TriggerFwd + IiiTriggerFwd live in `crate::triggers`; re-exported
 // here so existing `use crate::fs::sandbox::{TriggerFwd, IiiTriggerFwd}`
 // call sites inside the crate, plus the public
-// `iii_shell::fs::sandbox::TriggerFwd` surface consumed by
+// `shell::fs::sandbox::TriggerFwd` surface consumed by
 // `tests/sandbox_dispatch.rs`, keep compiling without mechanical churn.
 pub use crate::triggers::{IiiTriggerFwd, TriggerFwd};
 

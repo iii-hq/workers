@@ -8,7 +8,7 @@ pub mod sandbox;
 
 pub use backend::{ExecBackend, ExecCallResult, ExecOutcome};
 // These two re-exports are the public-API surface for downstream
-// consumers of `iii_shell::exec::*` and the back-compat surface for
+// consumers of `shell::exec::*` and the back-compat surface for
 // internal `crate::exec::{parse_argv, build_command, run_to_completion,
 // HostExecBackend, ExecError}` import paths. Rustc flags them as
 // unused inside the binary target (the binary uses fully-qualified

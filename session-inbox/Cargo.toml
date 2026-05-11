@@ -16,7 +16,7 @@ name = "session_inbox"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-session-inbox"
+name = "session-inbox"
 path = "src/main.rs"
 
 [dependencies]

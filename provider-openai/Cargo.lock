@@ -803,26 +803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-provider-openai"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "auth-credentials",
- "chrono",
- "clap",
- "harness-types",
- "iii-sdk",
- "provider-base",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "iii-sdk"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1266,6 +1246,26 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "provider-openai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "auth-credentials",
+ "chrono",
+ "clap",
+ "harness-types",
+ "iii-sdk",
+ "provider-base",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -3,11 +3,11 @@ use std::process::Command;
 use serde_json::Value;
 
 fn binary_path() -> String {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_iii_approval_gate") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_approval_gate") {
         return path.to_string();
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/target/debug/iii-approval-gate")
+    format!("{manifest_dir}/target/debug/approval-gate")
 }
 
 #[test]

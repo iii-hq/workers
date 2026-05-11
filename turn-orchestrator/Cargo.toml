@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/harness-types"]
 
 [package]
-name = "iii-turn-orchestrator"
+name = "turn-orchestrator"
 version = "0.1.0"
 description = "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down."
 edition = "2021"
@@ -17,7 +17,7 @@ name = "turn_orchestrator"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-turn-orchestrator"
+name = "turn-orchestrator"
 path = "src/main.rs"
 
 [dependencies]

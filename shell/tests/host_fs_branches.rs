@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_sdk::{Channel, IIIError};
 
-use iii_shell::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
-use iii_shell::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
+use shell::fs::host::{ChannelMaker, HostFsBackend, HostFsConfig};
+use shell::fs::{ChmodArgs, FsBackend, GrepArgs, MkdirArgs, MvArgs, RmArgs, SedArgs, StatArgs};
 
 #[derive(Debug)]
 struct StubChan;
@@ -28,11 +28,7 @@ fn backend() -> HostFsBackend {
 }
 
 fn tmpdir(prefix: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "iii-shell-host-{}-{}",
-        prefix,
-        uuid::Uuid::new_v4()
-    ));
+    let d = std::env::temp_dir().join(format!("shell-host-{}-{}", prefix, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

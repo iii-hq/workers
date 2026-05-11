@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-policy-denylist"
+name = "policy-denylist"
 version = "0.1.0"
 description = "Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist."
 edition = "2021"
@@ -15,7 +15,7 @@ name = "policy_denylist"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-policy-denylist"
+name = "policy-denylist"
 path = "src/main.rs"
 
 [dependencies]

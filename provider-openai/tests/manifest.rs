@@ -1,4 +1,4 @@
-//! `iii-provider-openai --manifest` JSON contract (registry publish).
+//! `provider-openai --manifest` JSON contract (registry publish).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,9 +12,9 @@ fn binary_path() -> PathBuf {
         "release"
     };
     #[cfg(target_os = "windows")]
-    let name = "iii-provider-openai.exe";
+    let name = "provider-openai.exe";
     #[cfg(not(target_os = "windows"))]
-    let name = "iii-provider-openai";
+    let name = "provider-openai";
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join(profile)

@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-approval-gate"
+name = "approval-gate"
 version = "0.1.0"
 description = "Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve."
 edition = "2021"
@@ -15,7 +15,7 @@ name = "approval_gate"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-approval-gate"
+name = "approval-gate"
 path = "src/main.rs"
 
 [dependencies]

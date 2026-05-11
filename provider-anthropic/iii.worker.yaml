@@ -3,7 +3,7 @@ name: provider-anthropic
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-provider-anthropic
+bin: provider-anthropic
 description: Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus.
 
 runtime:

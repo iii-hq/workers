@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-credentials", "crates/provider-base"]
 
 [package]
-name = "iii-provider-anthropic"
+name = "provider-anthropic"
 version = "0.1.0"
 description = "Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus."
 edition = "2021"
@@ -18,7 +18,7 @@ name = "provider_anthropic"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-provider-anthropic"
+name = "provider-anthropic"
 path = "src/main.rs"
 
 [dependencies]

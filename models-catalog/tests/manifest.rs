@@ -4,18 +4,18 @@ use std::process::Command;
 use serde_json::Value;
 
 fn models_catalog_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_models_catalog") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_models_catalog") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir.join("target").join(profile).join("iii-models-catalog");
+        let candidate = dir.join("target").join(profile).join("models-catalog");
         if candidate.is_file() {
             return candidate;
         }
     }
     panic!(
-        "iii-models-catalog binary not found under target/{{debug,release}}/; run `cargo build --bin iii-models-catalog` first"
+        "models-catalog binary not found under target/{{debug,release}}/; run `cargo build --bin models-catalog` first"
     );
 }
 
@@ -25,7 +25,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-models-catalog --manifest");
+        .expect("spawn models-catalog --manifest");
 
     assert!(
         output.status.success(),

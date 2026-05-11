@@ -9,10 +9,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh` puts it).
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
-WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/iii-shell}"
+WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/shell}"
 # The engine resolves binaries by registered worker name (`shell` per
 # iii.worker.yaml), not by cargo bin name. If the engine actually looks up
-# by binary name, override with WORKER_BIN_LINK=$HOME/.iii/workers/iii-shell.
+# by binary name, override with WORKER_BIN_LINK=$HOME/.iii/workers/shell.
 WORKER_BIN_LINK="${WORKER_BIN_LINK:-$HOME/.iii/workers/shell}"
 
 REPORT_PATH="$ROOT_DIR/reports/report.json"
@@ -33,7 +33,7 @@ for arg in "$@"; do
 Usage: $0 [--keep] [--no-build]
 
   --keep     Leave the engine running after the run (for debugging).
-  --no-build Skip cargo build of the iii-shell worker.
+  --no-build Skip cargo build of the shell worker.
 
 Env overrides:
   WORKER_SRC          Path to the shell worker crate (default: ../..).
@@ -83,10 +83,10 @@ reap_orphans() {
     kill -9 $port_pid 2>/dev/null || true
   fi
   # Stale shell + iii-worker sandbox-daemon survivors from previous
-  # iii-shell test runs. Match narrowly on the test-config path
+  # shell test runs. Match narrowly on the test-config path
   # signature so we don't touch unrelated iii processes the user has
   # going. -f matches against the full command line.
-  pkill -f "iii-shell --config /var/folders" 2>/dev/null || true
+  pkill -f "shell --config /var/folders" 2>/dev/null || true
   pkill -f "iii-worker sandbox-daemon --config /var/folders" 2>/dev/null || true
   sleep 0.5
 }
@@ -96,8 +96,8 @@ mkdir -p "$ROOT_DIR/reports" "$ROOT_DIR/data" "$(dirname "$WORKER_BIN_LINK")"
 
 # 1. Build the worker (unless --no-build)
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests] cargo build --release (iii-shell worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin iii-shell)
+  echo "[run-tests] cargo build --release (shell worker)"
+  (cd "$WORKER_SRC" && cargo build --release --bin shell)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests] FATAL: worker binary missing at $WORKER_BIN_TARGET — run without --no-build" >&2

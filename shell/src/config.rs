@@ -323,7 +323,7 @@ mod tests {
         let yaml = r#"
 allowlist: []
 fs:
-  host_root: /tmp/iii-shell
+  host_root: /tmp/shell
   max_read_bytes: 1024
   denylist_paths:
     - /etc
@@ -333,7 +333,7 @@ sandbox:
         let c: ShellConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             c.fs.host_root.as_deref(),
-            Some(std::path::Path::new("/tmp/iii-shell"))
+            Some(std::path::Path::new("/tmp/shell"))
         );
         assert_eq!(c.fs.max_read_bytes, 1024);
         assert!(!c.sandbox.enabled);

@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-models-catalog"
+name = "models-catalog"
 version = "0.1.0"
 description = "Model capabilities knowledge base under models::* (list/get/supports/register)."
 edition = "2021"
@@ -15,7 +15,7 @@ name = "models_catalog"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-models-catalog"
+name = "models-catalog"
 path = "src/main.rs"
 
 [dependencies]

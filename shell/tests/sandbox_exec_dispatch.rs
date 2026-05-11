@@ -1,7 +1,7 @@
 //! Integration tests for the public sandbox-exec surface. The handler-
 //! level dispatch via `target` field is exercised by the existing e2e
 //! shell scripts and the unit tests in `src/functions/exec.rs::tests`;
-//! this file cements the public-API surface (consumed via `iii_shell::*`)
+//! this file cements the public-API surface (consumed via `shell::*`)
 //! so downstream consumers pinning these paths catch drift.
 
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,9 @@ use iii_sdk::IIIError;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use iii_shell::exec::sandbox::SandboxExecBackend;
-use iii_shell::exec::ExecBackend;
-use iii_shell::triggers::TriggerFwd;
+use shell::exec::sandbox::SandboxExecBackend;
+use shell::exec::ExecBackend;
+use shell::triggers::TriggerFwd;
 
 struct StubFwd {
     captured: Mutex<Vec<(String, Value)>>,

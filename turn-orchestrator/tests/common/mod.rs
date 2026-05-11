@@ -109,7 +109,7 @@ fn find_session_tree_binary() -> Option<PathBuf> {
         let candidate = session_tree_dir
             .join("target")
             .join(profile)
-            .join("iii-session-tree");
+            .join("session-tree");
         if candidate.is_file() {
             return Some(candidate);
         }

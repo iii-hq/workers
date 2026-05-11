@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "iii-auth-credentials"
+name = "auth-credentials"
 version = "0.1.0"
 description = "Provider credential vault under auth::* — API keys and OAuth tokens."
 edition = "2021"
@@ -16,7 +16,7 @@ name = "auth_credentials"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-auth-credentials"
+name = "auth-credentials"
 path = "src/main.rs"
 
 [dependencies]

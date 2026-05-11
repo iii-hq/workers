@@ -453,6 +453,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "harness-types",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "which",
+]
+
+[[package]]
 name = "harness-types"
 version = "0.1.0"
 dependencies = [
@@ -711,25 +730,6 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
-]
-
-[[package]]
-name = "iii-harness"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "harness-types",
- "iii-sdk",
- "serde",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "which",
 ]
 
 [[package]]

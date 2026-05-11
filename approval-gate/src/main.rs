@@ -14,7 +14,7 @@ use serde_json::json;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-approval-gate",
+    name = "approval-gate",
     about = "Approval gate subscriber for agent::before_function_call"
 )]
 struct Cli {

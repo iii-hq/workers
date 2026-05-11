@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-credentials", "crates/provider-base"]
 
 [package]
-name = "iii-provider-openai"
+name = "provider-openai"
 version = "0.1.0"
 description = "OpenAI Chat Completions; registers provider::openai::complete on the iii bus."
 edition = "2021"
@@ -17,7 +17,7 @@ name = "provider_openai"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-provider-openai"
+name = "provider-openai"
 path = "src/main.rs"
 
 [dependencies]

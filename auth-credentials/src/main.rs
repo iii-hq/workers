@@ -12,7 +12,7 @@ use config::{resolve_store_backend, StoreBackend};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-auth-credentials",
+    name = "auth-credentials",
     about = "Provider credential vault on the iii bus — API keys and OAuth tokens under auth::*."
 )]
 struct Cli {

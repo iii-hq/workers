@@ -9,7 +9,7 @@ mod manifest;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-provider-openai",
+    name = "provider-openai",
     about = "OpenAI Chat Completions provider for the iii bus (provider::openai::complete)."
 )]
 struct Cli {

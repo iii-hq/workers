@@ -3,7 +3,7 @@ name: auth-credentials
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-auth-credentials
+bin: auth-credentials
 description: Provider credential vault under auth::* — API keys and OAuth tokens.
 
 runtime:

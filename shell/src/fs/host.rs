@@ -1127,7 +1127,7 @@ mod tests {
     use std::fs;
 
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("iii-shell-fs-{}", uuid::Uuid::new_v4()));
+        let d = std::env::temp_dir().join(format!("shell-fs-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&d).unwrap();
         d
     }
@@ -1706,7 +1706,7 @@ mod tests {
         let b = stub_backend(HostFsConfig::default());
         let err = b
             .write(crate::fs::WriteArgs {
-                path: "/tmp/iii-shell-write-bad-mode".into(),
+                path: "/tmp/shell-write-bad-mode".into(),
                 mode: "not-octal".into(),
                 parents: false,
                 content: stub_ref(),
@@ -1726,7 +1726,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .write(crate::fs::WriteArgs {
-                path: "/etc/iii-shell-escape".into(),
+                path: "/etc/shell-escape".into(),
                 mode: "0644".into(),
                 parents: false,
                 content: stub_ref(),
@@ -1817,7 +1817,7 @@ mod tests {
         let b = stub_backend(cfg);
         let err = b
             .read(crate::fs::ReadArgs {
-                path: "/etc/iii-shell-escape".into(),
+                path: "/etc/shell-escape".into(),
             })
             .await
             .unwrap_err();
