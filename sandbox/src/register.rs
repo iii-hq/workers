@@ -92,15 +92,43 @@ pub fn register_all(iii: &III, ctx: Ctx) {
         }};
     }
 
-    reg!(ids::CREATE, "Boot a sandbox via the `provider` field (default = local).", "create");
+    reg!(
+        ids::CREATE,
+        "Boot a sandbox via the `provider` field (default = local).",
+        "create"
+    );
     reg!(ids::EXEC, "Exec a command in a sandbox.", "exec");
     reg!(ids::STOP, "Tear down a sandbox. Idempotent.", "stop");
-    reg!(ids::LIST, "List live sandboxes plus concurrency status.", "list");
-    reg!(ids::SNAPSHOT, "Snapshot a sandbox. Capability-gated.", "snapshot");
-    reg!(ids::EXPOSE_PORT, "Return a public URL for a port. Capability-gated.", "expose_port");
-    reg!(ids::BRANCH, "Fan out N siblings from a sandbox. Capability-gated.", "branch");
-    reg!(ids::FS_READ, "Read a file from a sandbox. Capability-gated.", "fs::read");
-    reg!(ids::FS_WRITE, "Write a file into a sandbox. Capability-gated.", "fs::write");
+    reg!(
+        ids::LIST,
+        "List live sandboxes plus concurrency status.",
+        "list"
+    );
+    reg!(
+        ids::SNAPSHOT,
+        "Snapshot a sandbox. Capability-gated.",
+        "snapshot"
+    );
+    reg!(
+        ids::EXPOSE_PORT,
+        "Return a public URL for a port. Capability-gated.",
+        "expose_port"
+    );
+    reg!(
+        ids::BRANCH,
+        "Fan out N siblings from a sandbox. Capability-gated.",
+        "branch"
+    );
+    reg!(
+        ids::FS_READ,
+        "Read a file from a sandbox. Capability-gated.",
+        "fs::read"
+    );
+    reg!(
+        ids::FS_WRITE,
+        "Write a file into a sandbox. Capability-gated.",
+        "fs::write"
+    );
 }
 
 #[cfg(test)]
@@ -117,18 +145,26 @@ mod tests {
     #[test]
     fn provider_defaults_when_empty_string() {
         let cfg = Config::default();
-        assert_eq!(resolve_provider(&json!({"provider": ""}), &cfg.default_provider), "local");
+        assert_eq!(
+            resolve_provider(&json!({"provider": ""}), &cfg.default_provider),
+            "local"
+        );
     }
 
     #[test]
     fn provider_explicit_overrides_default() {
         let cfg = Config::default();
-        assert_eq!(resolve_provider(&json!({"provider": "e2b"}), &cfg.default_provider), "e2b");
+        assert_eq!(
+            resolve_provider(&json!({"provider": "e2b"}), &cfg.default_provider),
+            "e2b"
+        );
     }
 
     #[test]
     fn config_default_provider_can_be_overridden() {
-        let cfg = Config { default_provider: "morph".into() };
+        let cfg = Config {
+            default_provider: "morph".into(),
+        };
         assert_eq!(resolve_provider(&json!({}), &cfg.default_provider), "morph");
     }
 }

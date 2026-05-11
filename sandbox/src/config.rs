@@ -16,7 +16,9 @@ fn default_provider() -> String {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { default_provider: default_provider() }
+        Self {
+            default_provider: default_provider(),
+        }
     }
 }
 

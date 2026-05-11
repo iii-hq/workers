@@ -199,8 +199,14 @@ mod tests {
 
     #[test]
     fn provider_id_shape() {
-        assert_eq!(ids::provider("e2b", "create"), "sandbox::provider::e2b::create");
-        assert_eq!(ids::provider("morph", "branch"), "sandbox::provider::morph::branch");
+        assert_eq!(
+            ids::provider("e2b", "create"),
+            "sandbox::provider::e2b::create"
+        );
+        assert_eq!(
+            ids::provider("morph", "branch"),
+            "sandbox::provider::morph::branch"
+        );
     }
 
     #[test]
@@ -215,6 +221,9 @@ mod tests {
     fn http_status_maps_to_scode() {
         assert!(matches!(map_http_status(401, ""), AbiError::AuthInvalid));
         assert!(matches!(map_http_status(429, ""), AbiError::RateLimited));
-        assert!(matches!(map_http_status(503, ""), AbiError::ProviderUnavailable(_)));
+        assert!(matches!(
+            map_http_status(503, ""),
+            AbiError::ProviderUnavailable(_)
+        ));
     }
 }
