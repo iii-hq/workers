@@ -83,134 +83,18 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
         run: git fetch --no-tags --depth=1 origin "$BASE_REF"
 
-      - name: Install pyyaml
-        run: pip install --quiet pyyaml
-
       - name: Validate worker
         env:
           WORKER: ${{ matrix.worker }}
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
           SOURCE_CHANGED: ${{ needs.discover.outputs.source_changed }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re, subprocess, sys, yaml
-
-          worker = os.environ["WORKER"]
-          base = os.environ["BASE_REF"]
-          source_changed = set(json.loads(os.environ.get("SOURCE_CHANGED") or "[]"))
-          strict = worker in source_changed
-          root = pathlib.Path(worker)
-          errs = []
-
-          def soft(msg: str) -> None:
-              # Strict for workers with real source changes; notice otherwise.
-              if strict:
-                  errs.append(msg)
-              else:
-                  print(f"::notice::{msg} (skipped: {worker} only changed metadata)")
-
-          # 1. README.md present and non-empty
-          readme = root / "README.md"
-          if not readme.exists():
-              errs.append(f"{worker}/README.md is missing")
-          elif readme.stat().st_size == 0:
-              errs.append(f"{worker}/README.md is empty")
-
-          # 2. iii.worker.yaml parses and has required fields
-          meta_path = root / "iii.worker.yaml"
-          if not meta_path.exists():
-              errs.append(f"{worker}/iii.worker.yaml is missing")
-              meta = {}
-          else:
-              meta = yaml.safe_load(meta_path.read_text()) or {}
-              for key in ("name", "language", "deploy", "manifest"):
-                  if not meta.get(key):
-                      errs.append(f"{worker}/iii.worker.yaml is missing key: {key}")
-              if meta.get("name") and meta["name"] != worker:
-                  errs.append(
-                      f"{worker}/iii.worker.yaml name={meta['name']!r} does not match folder"
-                  )
-              if meta.get("deploy") not in ("binary", "image"):
-                  errs.append(
-                      f"{worker}/iii.worker.yaml deploy must be 'binary' or 'image'"
-                  )
-              if meta.get("language") not in ("rust", "node", "python"):
-                  errs.append(
-                      f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python'"
-                  )
-
-          # 3. manifest version on PR > version on base
-          def read_version(text: str, kind: str) -> str | None:
-              if kind == "Cargo.toml":
-                  for line in text.splitlines():
-                      m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
-                      if m:
-                          return m.group(1)
-              elif kind == "package.json":
-                  import json
-                  return json.loads(text).get("version")
-              elif kind == "pyproject.toml":
-                  for line in text.splitlines():
-                      m = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
-                      if m:
-                          return m.group(1)
-              return None
-
-          def parse_semver(v: str) -> tuple:
-              # Strip prerelease/build for ordering: <X>.<Y>.<Z>[-pre]
-              core, _, pre = v.partition("-")
-              parts = [int(x) for x in core.split(".")]
-              while len(parts) < 3:
-                  parts.append(0)
-              # No pre = greater than any pre at the same core
-              return (tuple(parts), 1 if not pre else 0, pre)
-
-          manifest_name = meta.get("manifest")
-          if manifest_name:
-              manifest_path = root / manifest_name
-              if not manifest_path.exists():
-                  errs.append(f"{worker}/{manifest_name} not found")
-              else:
-                  pr_ver = read_version(manifest_path.read_text(), manifest_name)
-                  if not pr_ver:
-                      errs.append(f"could not read version from {worker}/{manifest_name}")
-                  else:
-                      try:
-                          base_blob = subprocess.check_output(
-                              ["git", "show", f"origin/{base}:{worker}/{manifest_name}"],
-                              text=True,
-                              stderr=subprocess.DEVNULL,
-                          )
-                          base_ver = read_version(base_blob, manifest_name)
-                      except subprocess.CalledProcessError:
-                          base_ver = None  # New worker on this PR
-
-                      if base_ver is None:
-                          print(
-                              f"::notice::{worker}: new worker on this PR "
-                              f"(no base version), pr={pr_ver}"
-                          )
-                      elif parse_semver(pr_ver) < parse_semver(base_ver):
-                          soft(
-                              f"{worker}/{manifest_name} version must be no less than base: "
-                              f"pr={pr_ver} base={base_ver}"
-                          )
-                      else:
-                          print(
-                              f"::notice::{worker}: version {base_ver} -> {pr_ver}"
-                          )
-
-          # 4. tests dir present and non-empty
-          tests_dir = root / "tests"
-          if not tests_dir.exists() or not any(tests_dir.iterdir()):
-              soft(f"{worker}/tests/ is missing or empty")
-
-          if errs:
-              for e in errs:
-                  print(f"::error::{e}")
-              sys.exit(1)
-          print(f"::notice::{worker}: all PR checks passed")
-          PY
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/validate_worker.py \
+            --worker "$WORKER" \
+            --base-ref "origin/$BASE_REF" \
+            --source-changed "$SOURCE_CHANGED"
 
   # ──────────────────────────────────────────────────────────────
   # Rust per-worker lint + test
