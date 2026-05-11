@@ -1,0 +1,8 @@
+iii: v1
+name: introspection
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-introspection
+description: Slim, just-in-time engine introspection — workers, functions, registrations, registry query.
+dependencies: {}
