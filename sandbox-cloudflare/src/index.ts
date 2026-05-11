@@ -24,13 +24,13 @@ function reg(id: string, handler: (input: Record<string, unknown>) => Promise<un
   })
 }
 
-reg('sandbox::cloudflare::create', (i) => doCreate(ctx, i))
-reg('sandbox::cloudflare::exec', (i) => doExec(ctx, i))
-reg('sandbox::cloudflare::stop', (i) => doStop(ctx, i))
-reg('sandbox::cloudflare::list', (i) => doList(ctx, i))
-reg('sandbox::cloudflare::expose_port', (i) => doExposePort(ctx, i))
-reg('sandbox::cloudflare::fs::read', (i) => doFsRead(ctx, i))
-reg('sandbox::cloudflare::fs::write', (i) => doFsWrite(ctx, i))
+reg('sandbox::provider::cloudflare::create', (i) => doCreate(ctx, i))
+reg('sandbox::provider::cloudflare::exec', (i) => doExec(ctx, i))
+reg('sandbox::provider::cloudflare::stop', (i) => doStop(ctx, i))
+reg('sandbox::provider::cloudflare::list', (i) => doList(ctx, i))
+reg('sandbox::provider::cloudflare::expose_port', (i) => doExposePort(ctx, i))
+reg('sandbox::provider::cloudflare::fs::read', (i) => doFsRead(ctx, i))
+reg('sandbox::provider::cloudflare::fs::write', (i) => doFsWrite(ctx, i))
 
 logger.info?.('sandbox-cloudflare registered, awaiting invocations')
 

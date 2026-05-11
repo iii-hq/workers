@@ -1,8 +1,8 @@
 # sandbox-cloudflare
 
-Narrow iii worker that exposes [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) under the canonical `sandbox::cloudflare::*` ABI. Unlike the other workers in this family, `sandbox-cloudflare` ships **two artifacts**:
+Narrow iii worker that exposes [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) under the canonical `sandbox::provider::cloudflare::*` ABI. Unlike the other workers in this family, `sandbox-cloudflare` ships **two artifacts**:
 
-1. **iii worker** (this folder, top-level files) — runs on a host the iii engine controls. Registers `sandbox::cloudflare::*` functions. Talks HTTPS to (2).
+1. **iii worker** (this folder, top-level files) — runs on a host the iii engine controls. Registers `sandbox::provider::cloudflare::*` functions. Talks HTTPS to (2).
 2. **CF Worker bridge** (`bridge/` subfolder) — separately deployed via `wrangler deploy`. Hosts the `Sandbox` Durable Object class from `@cloudflare/sandbox`. Receives HTTPS calls from (1) and drives the Container.
 
 The bridge exists because CF Sandbox lives inside the Workers V8 runtime — there is no way to reach `getSandbox()` from a host-side process. The bridge is the smallest amount of CF-native code needed.
@@ -11,13 +11,13 @@ The bridge exists because CF Sandbox lives inside the Workers V8 runtime — the
 
 | Function id | Purpose |
 |---|---|
-| `sandbox::cloudflare::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
-| `sandbox::cloudflare::exec` | Run a command inside a live sandbox |
-| `sandbox::cloudflare::stop` | Tear down a sandbox |
-| `sandbox::cloudflare::list` | Enumerate live sandboxes plus concurrency status |
-| `sandbox::cloudflare::expose_port` | Public URL for a port (requires custom domain on the bridge) |
-| `sandbox::cloudflare::fs::read` | Read a file out of the sandbox |
-| `sandbox::cloudflare::fs::write` | Write a file into the sandbox |
+| `sandbox::provider::cloudflare::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
+| `sandbox::provider::cloudflare::exec` | Run a command inside a live sandbox |
+| `sandbox::provider::cloudflare::stop` | Tear down a sandbox |
+| `sandbox::provider::cloudflare::list` | Enumerate live sandboxes plus concurrency status |
+| `sandbox::provider::cloudflare::expose_port` | Public URL for a port (requires custom domain on the bridge) |
+| `sandbox::provider::cloudflare::fs::read` | Read a file out of the sandbox |
+| `sandbox::provider::cloudflare::fs::write` | Write a file into the sandbox |
 
 `create` advertises capabilities `["expose_port", "fs"]`. CF Sandbox does not ship `snapshot` or `branch`; callers that depend on those should pick a different provider.
 

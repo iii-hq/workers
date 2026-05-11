@@ -1,6 +1,6 @@
 # sandbox-cloudflare bridge
 
-Thin Cloudflare Worker that exposes HTTPS routes corresponding to every `sandbox::cloudflare::*` function, calling `@cloudflare/sandbox`'s `getSandbox(env.Sandbox, id)` underneath. The iii worker in the parent directory talks to this bridge — that's the only way to reach a CF Sandbox from outside the Cloudflare Workers runtime.
+Thin Cloudflare Worker that exposes HTTPS routes corresponding to every `sandbox::provider::cloudflare::*` function, calling `@cloudflare/sandbox`'s `getSandbox(env.Sandbox, id)` underneath. The iii worker in the parent directory talks to this bridge — that's the only way to reach a CF Sandbox from outside the Cloudflare Workers runtime.
 
 ## Why a bridge
 
