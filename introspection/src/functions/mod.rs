@@ -207,10 +207,7 @@ mod tests {
         assert!(is_excluded("skills::resources-list", &[]));
         assert!(is_excluded("telemetry::flush", &[]));
         assert!(!is_excluded("shell::bash::exec", &[]));
-        assert!(is_excluded(
-            "custom::noisy",
-            &["custom::".to_string()]
-        ));
+        assert!(is_excluded("custom::noisy", &["custom::".to_string()]));
     }
 
     #[test]
