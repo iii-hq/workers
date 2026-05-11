@@ -93,15 +93,15 @@ jobs:
             exit 1
           fi
 
-      - name: Discover manifest type
+      - name: Discover manifest
         id: meta
         env:
           WORKER: ${{ inputs.worker }}
         run: |
-          # iii-lsp-vscode does not have iii.worker.yaml (special VS Code extension flow)
+          set -euo pipefail
+          # iii-lsp-vscode has no iii.worker.yaml (special VS Code extension flow).
           if [[ "$WORKER" == "iii-lsp-vscode" ]]; then
             echo "manifest=package.json" >> "$GITHUB_OUTPUT"
-            echo "manifest_type=node" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ ! -f "$WORKER/iii.worker.yaml" ]]; then
@@ -114,12 +114,6 @@ jobs:
             exit 1
           fi
           echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
-          case "$MANIFEST" in
-            Cargo.toml) echo "manifest_type=cargo" >> "$GITHUB_OUTPUT" ;;
-            package.json) echo "manifest_type=node" >> "$GITHUB_OUTPUT" ;;
-            pyproject.toml) echo "manifest_type=python" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::Unsupported manifest: $MANIFEST"; exit 1 ;;
-          esac
 
       - name: Calculate and write next version
         id: versions
@@ -139,26 +133,13 @@ jobs:
       - name: Validate manifest update
         env:
           WORKER: ${{ inputs.worker }}
-          MANIFEST_TYPE: ${{ steps.meta.outputs.manifest_type }}
           MANIFEST: ${{ steps.meta.outputs.manifest }}
           NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |
-          case "$MANIFEST_TYPE" in
-            cargo)   actual=$(grep '^version = ' "$WORKER/$MANIFEST" | head -n1 | cut -d'"' -f2) ;;
-            node)    actual=$(jq -r '.version' "$WORKER/$MANIFEST") ;;
-            python)  actual=$(python3 -c "import re,sys; t=open(sys.argv[1]).read(); proj=False
-          for ln in t.splitlines():
-              s=ln.strip()
-              if s.startswith('['): proj=(s=='[project]'); continue
-              if proj:
-                  m=re.match(r'version\s*=\s*\"([^\"]+)\"', s)
-                  if m: print(m.group(1)); sys.exit(0)" "$WORKER/$MANIFEST") ;;
-          esac
-          if [[ "$actual" != "$NEW_VERSION" ]]; then
-            echo "::error::Manifest mismatch: expected $NEW_VERSION, got $actual"
-            exit 1
-          fi
-          echo "Validated $WORKER/$MANIFEST = $actual"
+          set -euo pipefail
+          python3 .github/scripts/manifest_version.py verify \
+            "$WORKER/$MANIFEST" --expected "$NEW_VERSION"
+          echo "Validated $WORKER/$MANIFEST = $NEW_VERSION"
 
       - name: Check tag does not exist
         env:
