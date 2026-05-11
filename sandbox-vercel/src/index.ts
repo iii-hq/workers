@@ -34,14 +34,14 @@ function reg(id: string, handler: (input: Record<string, unknown>) => Promise<un
   })
 }
 
-reg('sandbox::vercel::create', (i) => doCreate(ctx, i))
-reg('sandbox::vercel::exec', (i) => doExec(ctx, i))
-reg('sandbox::vercel::stop', (i) => doStop(ctx, i))
-reg('sandbox::vercel::list', (i) => doList(ctx, i))
-reg('sandbox::vercel::snapshot', (i) => doSnapshot(ctx, i))
-reg('sandbox::vercel::expose_port', (i) => doExposePort(ctx, i))
-reg('sandbox::vercel::fs::read', (i) => doFsRead(ctx, i))
-reg('sandbox::vercel::fs::write', (i) => doFsWrite(ctx, i))
+reg('sandbox::provider::vercel::create', (i) => doCreate(ctx, i))
+reg('sandbox::provider::vercel::exec', (i) => doExec(ctx, i))
+reg('sandbox::provider::vercel::stop', (i) => doStop(ctx, i))
+reg('sandbox::provider::vercel::list', (i) => doList(ctx, i))
+reg('sandbox::provider::vercel::snapshot', (i) => doSnapshot(ctx, i))
+reg('sandbox::provider::vercel::expose_port', (i) => doExposePort(ctx, i))
+reg('sandbox::provider::vercel::fs::read', (i) => doFsRead(ctx, i))
+reg('sandbox::provider::vercel::fs::write', (i) => doFsWrite(ctx, i))
 
 logger.info?.('sandbox-vercel registered, awaiting invocations')
 

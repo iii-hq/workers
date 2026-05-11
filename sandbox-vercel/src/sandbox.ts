@@ -22,7 +22,7 @@ export class SandboxError extends Error {
   }
 }
 
-// Capabilities advertised by sandbox::vercel::create.
+// Capabilities advertised by sandbox::provider::vercel::create.
 export const CAPABILITIES = ['snapshot', 'expose_port', 'fs'] as const
 
 // Map a non-2xx HTTP status from Vercel onto the right S-code.

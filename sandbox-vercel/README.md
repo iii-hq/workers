@@ -1,6 +1,6 @@
 # sandbox-vercel
 
-Narrow iii worker that wraps [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) (Firecracker microVMs on Vercel's "Hive" infrastructure) via the Vercel REST API. Registers the canonical `sandbox::*` ABI under the `sandbox::vercel::*` namespace so callers can spawn and drive Vercel sandboxes through `iii.trigger(...)` without depending on `@vercel/sandbox`.
+Narrow iii worker that wraps [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) (Firecracker microVMs on Vercel's "Hive" infrastructure) via the Vercel REST API. Registers the canonical `sandbox::*` ABI under the `sandbox::provider::vercel::*` namespace so callers can spawn and drive Vercel sandboxes through `iii.trigger(...)` without depending on `@vercel/sandbox`.
 
 The same ABI is implemented by every sandbox provider worker in this repo (`sandbox-e2b`, `sandbox-daytona`, `sandbox-morph`, `sandbox-modal`, `sandbox-cf`, ...). Callers swap providers by changing the function-id prefix.
 
@@ -8,14 +8,14 @@ The same ABI is implemented by every sandbox provider worker in this repo (`sand
 
 | Function id | Purpose |
 |---|---|
-| `sandbox::vercel::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
-| `sandbox::vercel::exec` | Run a command inside a live sandbox |
-| `sandbox::vercel::stop` | Tear down a sandbox |
-| `sandbox::vercel::list` | Enumerate live sandboxes plus concurrency status |
-| `sandbox::vercel::snapshot` | Snapshot a sandbox (Vercel shuts the parent down after) |
-| `sandbox::vercel::expose_port` | Public URL for a port (must be in `ports` at create time) |
-| `sandbox::vercel::fs::read` | Read a file out of the sandbox |
-| `sandbox::vercel::fs::write` | Write a file into the sandbox |
+| `sandbox::provider::vercel::create` | Boot a sandbox; returns `{sandbox_id, image, capabilities}` |
+| `sandbox::provider::vercel::exec` | Run a command inside a live sandbox |
+| `sandbox::provider::vercel::stop` | Tear down a sandbox |
+| `sandbox::provider::vercel::list` | Enumerate live sandboxes plus concurrency status |
+| `sandbox::provider::vercel::snapshot` | Snapshot a sandbox (Vercel shuts the parent down after) |
+| `sandbox::provider::vercel::expose_port` | Public URL for a port (must be in `ports` at create time) |
+| `sandbox::provider::vercel::fs::read` | Read a file out of the sandbox |
+| `sandbox::provider::vercel::fs::write` | Write a file into the sandbox |
 
 `create` advertises capabilities `["snapshot", "expose_port", "fs"]`. `branch` is not registered — Vercel Sandbox doesn't ship branching.
 

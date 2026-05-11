@@ -3,7 +3,7 @@ name: sandbox-vercel
 language: node
 deploy: image
 manifest: package.json
-description: Narrow iii worker that exposes Vercel Sandbox (Firecracker microVM, "Hive" infra) via the sandbox::vercel::* trigger family.
+description: Narrow iii worker that exposes Vercel Sandbox (Firecracker microVM, "Hive" infra) via the sandbox::provider::vercel::* trigger family.
 config:
   api_base: "https://api.vercel.com"
   oidc_token_env: VERCEL_OIDC_TOKEN
