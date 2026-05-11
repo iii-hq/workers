@@ -1,5 +1,5 @@
 //! Library entry for `sandbox-morph`. Holds shared types, error codes, and the
-//! capability set advertised by `sandbox::morph::create`.
+//! capability set advertised by `sandbox::provider::morph::create`.
 
 pub mod client;
 pub mod config;
@@ -7,7 +7,7 @@ pub mod handler;
 
 use serde::{Deserialize, Serialize};
 
-/// Capability tags advertised by `sandbox::morph::create`. Callers inspect this
+/// Capability tags advertised by `sandbox::provider::morph::create`. Callers inspect this
 /// list to decide whether optional functions like `branch` are available.
 pub const CAPABILITIES: &[&str] = &["branch", "snapshot", "expose_port"];
 

@@ -77,43 +77,43 @@ fn register_all(iii: &iii_sdk::III, ctx: HandlerCtx) {
     }
 
     reg!(
-        "sandbox::morph::create",
+        "sandbox::provider::morph::create",
         "Boot an Morph sandbox; returns {sandbox_id, image, capabilities}",
         do_create
     );
     reg!(
-        "sandbox::morph::exec",
+        "sandbox::provider::morph::exec",
         "Run a command inside a live sandbox",
         do_exec
     );
-    reg!("sandbox::morph::stop", "Tear down a sandbox", do_stop);
+    reg!("sandbox::provider::morph::stop", "Tear down a sandbox", do_stop);
     reg!(
-        "sandbox::morph::list",
+        "sandbox::provider::morph::list",
         "List live sandboxes plus concurrency status",
         do_list
     );
     reg!(
-        "sandbox::morph::snapshot",
+        "sandbox::provider::morph::snapshot",
         "Pause a sandbox into a resumable snapshot",
         do_snapshot
     );
     reg!(
-        "sandbox::morph::branch",
+        "sandbox::provider::morph::branch",
         "Branch a running sandbox into N siblings (Morph Infinibranch)",
         do_branch
     );
     reg!(
-        "sandbox::morph::expose_port",
+        "sandbox::provider::morph::expose_port",
         "Return a public URL for a port inside the sandbox",
         do_expose_port
     );
     reg!(
-        "sandbox::morph::fs::read",
+        "sandbox::provider::morph::fs::read",
         "Read a file out of a sandbox; returns base64-encoded bytes",
         do_fs_read
     );
     reg!(
-        "sandbox::morph::fs::write",
+        "sandbox::provider::morph::fs::write",
         "Write a file into a sandbox; payload carries base64-encoded bytes",
         do_fs_write
     );

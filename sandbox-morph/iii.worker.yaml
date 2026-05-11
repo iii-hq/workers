@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: iii-sandbox-morph
-description: Narrow iii worker that exposes Morph microVM sandboxes via the sandbox::morph::* trigger family.
+description: Narrow iii worker that exposes Morph microVM sandboxes via the sandbox::provider::morph::* trigger family.
 config:
   api_base: "https://cloud.morph.so/api"
   api_key_env: MORPH_API_KEY
