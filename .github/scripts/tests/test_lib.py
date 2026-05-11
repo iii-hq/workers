@@ -1,6 +1,10 @@
 """Tests for .github/scripts/_lib.py."""
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 import _lib
 
 
@@ -48,3 +52,49 @@ class TestBump:
 
     def test_pads_short_version(self):
         assert _lib.bump("1", "patch") == "1.0.1"
+
+
+class TestDetectKind:
+    def test_cargo(self, tmp_path):
+        assert _lib.detect_kind(tmp_path / "Cargo.toml") == "cargo"
+
+    def test_node(self, tmp_path):
+        assert _lib.detect_kind(tmp_path / "package.json") == "node"
+
+    def test_python(self, tmp_path):
+        assert _lib.detect_kind(tmp_path / "pyproject.toml") == "python"
+
+    def test_unknown_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            _lib.detect_kind(tmp_path / "Makefile")
+
+
+class TestReadVersionCargo:
+    def test_reads_first_package_version(self, cargo_manifest):
+        assert _lib.read_version(cargo_manifest) == "0.1.0"
+
+    def test_ignores_dependency_versions(self, tmp_path):
+        p = tmp_path / "Cargo.toml"
+        p.write_text(
+            '[package]\nname = "x"\nversion = "1.0.0"\n'
+            '[dependencies]\nfoo = { version = "2.0.0" }\n'
+        )
+        assert _lib.read_version(p) == "1.0.0"
+
+    def test_missing_version_raises(self, tmp_path):
+        p = tmp_path / "Cargo.toml"
+        p.write_text('[package]\nname = "x"\n')
+        with pytest.raises(ValueError):
+            _lib.read_version(p)
+
+
+class TestWriteVersionCargo:
+    def test_writes_and_round_trips(self, cargo_manifest):
+        _lib.write_version(cargo_manifest, "9.9.9")
+        assert _lib.read_version(cargo_manifest) == "9.9.9"
+
+    def test_preserves_other_lines(self, cargo_manifest):
+        _lib.write_version(cargo_manifest, "9.9.9")
+        text = cargo_manifest.read_text()
+        assert 'name = "smoke"' in text
+        assert 'edition = "2021"' in text
