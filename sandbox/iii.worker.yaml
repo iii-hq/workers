@@ -1,0 +1,9 @@
+iii: v1
+name: sandbox
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-sandbox
+description: Caller-facing sandbox::* router. Dispatches by `provider` field to sandbox::provider::<name>::*. Default provider = "local".
+config:
+  default_provider: local

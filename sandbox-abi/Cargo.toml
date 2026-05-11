@@ -1,0 +1,18 @@
+[package]
+name = "iii-sandbox-abi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+authors = ["iii contributors"]
+description = "Shared types + S-code error space for the sandbox::* worker family."
+publish = false
+
+[lib]
+name = "sandbox_abi"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
