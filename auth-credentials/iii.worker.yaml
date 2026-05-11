@@ -5,3 +5,10 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-auth-credentials
 description: Provider credential vault under auth::* — API keys and OAuth tokens.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run

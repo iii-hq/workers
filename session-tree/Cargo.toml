@@ -5,6 +5,7 @@ members = ["crates/harness-types"]
 [package]
 name = "iii-session-tree"
 version = "0.1.0"
+description = "Session storage as a parent-id tree of typed entries under session-tree::*."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -60,7 +61,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 serde_yaml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

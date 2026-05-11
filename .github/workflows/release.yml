@@ -4,14 +4,31 @@ on:
   push:
     tags:
       - 'acp/v*'
+      - 'approval-gate/v*'
+      - 'auth-credentials/v*'
+      # harness/v* is handled by release-harness-bundle.yml (single-dispatch fan-out).
+      - 'hook-fanout/v*'
       - 'iii-database/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
+      - 'llm-budget/v*'
       - 'mcp/v*'
+      - 'models-catalog/v*'
+      - 'oauth-anthropic/v*'
+      - 'oauth-openai-codex/v*'
+      - 'policy-denylist/v*'
       - 'proof/v*'
-      - 'todo-worker/v*'
+      - 'provider-anthropic/v*'
+      - 'provider-openai/v*'
+      - 'provider-router/v*'
+      - 'session-inbox/v*'
+      - 'session-tree/v*'
+      - 'shell/v*'
       - 'skills/v*'
+      - 'storage/v*'
+      - 'todo-worker/v*'
       - 'todo-worker-python/v*'
+      - 'turn-orchestrator/v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -45,6 +62,7 @@ jobs:
       registry_tag: ${{ steps.meta.outputs.registry_tag }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
+      targets: ${{ steps.meta.outputs.targets }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,6 +112,13 @@ jobs:
           language = meta.get("language")
           bin_name = meta.get("bin") or meta.get("name") or worker
           manifest = meta.get("manifest")
+          targets_raw = meta.get("targets")
+          if isinstance(targets_raw, list):
+              targets = ",".join(str(t).strip() for t in targets_raw if str(t).strip())
+          elif isinstance(targets_raw, str):
+              targets = targets_raw.strip()
+          else:
+              targets = ""
           if deploy not in ("binary", "image"):
               print(f"::error::{worker}: deploy must be binary|image (got {deploy!r})")
               sys.exit(1)
@@ -124,6 +149,7 @@ jobs:
               ("registry_tag", registry_tag),
               ("is_prerelease", is_pre),
               ("dry_run", dry_run),
+              ("targets", targets),
           ]:
               out.write(f"{k}={v}\n")
           out.close()
@@ -165,6 +191,7 @@ jobs:
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      targets: ${{ needs.setup.outputs.targets }}
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────

@@ -5,6 +5,14 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-provider-router
 description: router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run
+
 dependencies:
   session-inbox: "^0.1.0"
   llm-budget: "^0.1.0"

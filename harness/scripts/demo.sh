@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Local demo harness driver — registry-free.
+# Local demo harness driver — builds workers from source and runs them directly.
 #
-# The migration workers aren't published
-# to registry/index.json yet, so `iii worker add <name>` can't find them. But
-# every worker is just an iii-sdk client that connects to the engine and
-# registers its functions on the bus. We can run them all directly.
+# For a registry-based install use `iii worker add harness` instead (the harness
+# and all its dependencies are published to registry/index.json). This script is
+# for local development from a source checkout where you want to run the latest
+# unreleased binaries. Every worker is an iii-sdk client that connects to the
+# engine and registers its functions on the bus.
 #
 # Subcommands:
 #   build     — `cargo build --release` for each of the 23 workers + harness
@@ -40,7 +41,7 @@ WORKERS=(
   turn-orchestrator provider-router
   session-tree session-inbox
   models-catalog hook-fanout policy-denylist
-  shell subagent
+  shell
   provider-anthropic provider-openai
   auth-credentials llm-budget
   skills approval-gate

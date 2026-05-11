@@ -71,30 +71,17 @@ use serde_json::json;
 /// seen with Opus + a few tool calls.
 const BRIDGE_TIMEOUT_MS: u64 = 240_000;
 
-// Note: `iii-worker-manager` is intentionally NOT listed here. It is provided
-// by the iii engine itself (built-in default in the engine's
+// `EXPECTED_WORKERS` is generated from `iii.worker.yaml` by `build.rs` so the
+// Rust side and the engine-facing manifest cannot drift. Add or remove a
+// worker by editing `iii.worker.yaml` only.
+//
+// Note: `iii-worker-manager` is intentionally NOT in `iii.worker.yaml`. It is
+// provided by the iii engine itself (built-in default in the engine's
 // `iii-worker/src/cli/builtin_defaults.rs`), not a discrete worker crate the
 // harness can depend on. The browser SDK README's `iii worker add
 // iii-worker-manager` instruction toggles that built-in feature, not a
-// separate dependency. So Phase B step A keeps EXPECTED_WORKERS unchanged.
-pub const EXPECTED_WORKERS: &[&str] = &[
-    "turn-orchestrator",
-    "provider-router",
-    "session-tree",
-    "session-inbox",
-    "models-catalog",
-    "hook-fanout",
-    "policy-denylist",
-    "shell",
-    "subagent",
-    "provider-anthropic",
-    "provider-openai",
-    "auth-credentials",
-    "llm-budget",
-    "skills",
-    "approval-gate",
-    "iii-sandbox",
-];
+// separate dependency.
+include!(concat!(env!("OUT_DIR"), "/expected_workers.rs"));
 
 /// Build the payload sent to skills::register at boot. Pure helper so the
 /// shape is testable without a live engine.

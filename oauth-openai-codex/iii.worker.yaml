@@ -5,3 +5,6 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-oauth-openai-codex
 description: OpenAI Codex OAuth (PKCE localhost flow) under oauth::openai_codex::*.
+
+runtime:
+  kind: rust

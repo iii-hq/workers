@@ -68,7 +68,7 @@ static NON_OVERFLOW_SET: Lazy<RegexSet> =
 ///
 /// Returns false if the error matches an overflow pattern but is excluded by a
 /// non-overflow pattern (rate-limit and throttling shapes).
-pub fn is_overflow(error_text: &str) -> bool {
+fn is_overflow(error_text: &str) -> bool {
     if NON_OVERFLOW_SET.is_match(error_text) {
         return false;
     }

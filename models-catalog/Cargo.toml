@@ -3,10 +3,11 @@
 [package]
 name = "iii-models-catalog"
 version = "0.1.0"
+description = "Model capabilities knowledge base under models::* (list/get/supports/register)."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
-authors = ["iii contributors"]
+authors = ["iii"]
 publish = false
 
 [lib]

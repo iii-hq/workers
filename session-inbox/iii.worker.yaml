@@ -5,3 +5,10 @@ deploy: binary
 manifest: Cargo.toml
 bin: iii-session-inbox
 description: Per-session inbox (session-inbox::push, drain, peek) backed by iii state.
+
+runtime:
+    kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run

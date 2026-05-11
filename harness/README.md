@@ -85,7 +85,10 @@ Registry-facing defaults also appear in `iii-harness --manifest` under `default_
 
 ## Expected workers
 
-`EXPECTED_WORKERS` in [`src/lib.rs`](src/lib.rs) and the `dependencies:` block of [`iii.worker.yaml`](iii.worker.yaml) must stay in sync (see [`tests/integration.rs`](tests/integration.rs)).
+`EXPECTED_WORKERS` (in [`src/lib.rs`](src/lib.rs)) is generated at build time
+from the `dependencies:` block of [`iii.worker.yaml`](iii.worker.yaml) by
+[`build.rs`](build.rs). Add or remove a worker by editing `iii.worker.yaml`
+only — the Rust constant rebuilds automatically.
 
 ## Local demo stack
 

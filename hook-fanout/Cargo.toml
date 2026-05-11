@@ -3,10 +3,11 @@
 [package]
 name = "hook-fanout"
 version = "0.1.0"
+description = "Reusable publish-collect primitive (hook-fanout::publish_collect) — fans an event to subscribers and collects merged replies."
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
-authors = ["iii contributors"]
+authors = ["iii"]
 publish = false
 build = "build.rs"
 
@@ -28,7 +29,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
 serde_json = "1"

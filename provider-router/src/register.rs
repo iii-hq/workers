@@ -56,8 +56,8 @@ async fn list_function_infos(iii: &III) -> Result<Vec<iii_sdk::FunctionInfo>, St
 /// iii has three primitives: Worker, Function, Trigger. Every entry is a
 /// Function. The `agent::` and `provider::` prefixes are naming
 /// conventions for grep, not categories; the engine treats every id the
-/// same. The eight LLM-callable builtins (`read`, `write`, `edit`, `ls`,
-/// `grep`, `find`, `bash`, `run_subagent`) register under the same name
+/// same. The seven LLM-callable builtins (`read`, `write`, `edit`, `ls`,
+/// `grep`, `find`, `bash`) register under the same name
 /// the LLM emits in `ContentBlock::FunctionCall { function_id }`. The agent loop
 /// dispatches via `iii.trigger(name, payload)` directly; no prefix
 /// mapping, no wrapper.
@@ -512,17 +512,5 @@ mod tests {
         let a = error_assistant("boom");
         assert_eq!(a.error_message.as_deref(), Some("boom"));
         assert!(matches!(a.stop_reason, StopReason::Error));
-    }
-
-    #[test]
-    fn subagent_depth_count_matches_chain() {
-        // Depth = number of "::sub-" segments in the parent session id.
-        // Mirrors the recursion-bound logic inside subagent::start.
-        assert_eq!("root".matches("::sub-").count(), 0);
-        assert_eq!("root::sub-1".matches("::sub-").count(), 1);
-        assert_eq!("root::sub-1::sub-2".matches("::sub-").count(), 2);
-        assert_eq!("root::sub-1::sub-2::sub-3".matches("::sub-").count(), 3);
-        // A session id without our chain prefix counts as depth 0.
-        assert_eq!("free-form-id".matches("::sub-").count(), 0);
     }
 }
