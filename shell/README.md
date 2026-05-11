@@ -155,7 +155,7 @@ fs:
   # (because the alternative is "the entire filesystem is reachable
   # behind only the advisory denylist", which is rarely intended).
   host_root: null
-  allow_unjailed: false
+  allow_unjailed: true
   max_read_bytes: 16777216
   max_write_bytes: 16777216
   denylist_paths:
