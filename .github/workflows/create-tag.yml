@@ -16,6 +16,7 @@ on:
           - iii-database
           - iii-lsp
           - iii-lsp-vscode
+          - iii-directory
           - image-resize
           - llm-budget
           - mcp
@@ -30,7 +31,6 @@ on:
           - session-inbox
           - session-tree
           - shell
-          - skills
           - storage
           - todo-worker
           - todo-worker-python
