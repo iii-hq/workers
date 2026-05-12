@@ -50,3 +50,4 @@ engine.pid
 .gstack/
 .worktrees/
 CLAUDE.md
+data/
