@@ -10,5 +10,5 @@
 
 ## Notes
 
-- Returns provider names only — token bytes are never exposed by this function.
+- Returns provider names only. Token bytes are never exposed by this function.
 - The list reflects stored credentials only. Providers backed by an environment variable do not appear here; use `auth::status` to detect those.

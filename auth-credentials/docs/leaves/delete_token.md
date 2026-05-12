@@ -8,5 +8,5 @@
 
 ## Notes
 
-- Deletes are idempotent — removing a credential that was never stored is not an error.
+- Deletes are idempotent: removing a credential that was never stored is not an error.
 - Only the stored credential is removed; an environment fallback (e.g. `ANTHROPIC_API_KEY`) still resolves on the next `auth::get_token` call until it is unset in the shell.

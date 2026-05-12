@@ -8,5 +8,5 @@
 ## Notes
 
 - Resolution order is: stored credential → matching environment variable → null. Callers never need to read the environment directly.
-- A `null` return means neither a stored credential nor an env fallback exists — distinguish from "credential exists but is empty" via `auth::status`.
+- A `null` return means neither a stored credential nor an env fallback exists. To distinguish from "credential exists but is empty", call `auth::status`.
 - Bus errors surface as `Err`; treat them as transient (engine restart, IPC hiccup) and retry per caller policy.
