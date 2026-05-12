@@ -101,6 +101,21 @@ class TestValidateWorker:
         assert r.returncode != 0
         assert "deploy" in r.stdout + r.stderr
 
+    def test_missing_name_field_fails(self, tmp_path):
+        repo = make_worker(tmp_path, "smoke")
+        meta = repo / "smoke" / "iii.worker.yaml"
+        # Strip the `name:` line — _lib falls back to folder name, so the
+        # downstream m.name != worker check passes trivially. The gate must
+        # still reject manifests missing the required key.
+        meta.write_text("\n".join(
+            line for line in meta.read_text().splitlines()
+            if not line.startswith("name:")
+        ) + "\n")
+        init_git(repo)
+        r = run_script(repo, "smoke", source_changed=["smoke"])
+        assert r.returncode != 0, r.stdout + r.stderr
+        assert "name" in r.stdout + r.stderr
+
     def test_version_must_be_strictly_greater_than_base(self, tmp_path):
         repo = make_worker(tmp_path, "smoke", version="1.0.0")
         init_git(repo)

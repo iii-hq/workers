@@ -65,8 +65,11 @@ def main(argv: list[str] | None = None) -> int:
         hard(f"{worker}/iii.worker.yaml: {e}")
 
     if m is not None:
-        for key in ("language", "deploy", "manifest"):
-            if not getattr(m, key):
+        # Use raw dict, not WorkerManifest attrs: _lib silently fills `name`
+        # with the folder name when the yaml omits it, so getattr(m, "name")
+        # would hide a missing key.
+        for key in ("name", "language", "deploy", "manifest"):
+            if not m.raw.get(key):
                 hard(f"{worker}/iii.worker.yaml is missing key: {key}")
         if m.name != worker:
             hard(f"{worker}/iii.worker.yaml name={m.name!r} does not match folder")
