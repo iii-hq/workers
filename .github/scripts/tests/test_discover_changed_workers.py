@@ -107,3 +107,99 @@ class TestDiscoverChangedWorkers:
         assert r.returncode == 0
         data = json.loads(r.stdout)
         assert data["changed_workers"] == []
+
+
+def make_repo_with_harness(tmp_path: Path) -> Path:
+    """Tmp repo: harness + two in-repo deps + one external dep + one unrelated worker."""
+    def run(*args):
+        return subprocess.run(args, cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    run("git", "init", "-q", "-b", "main")
+    run("git", "config", "user.email", "t@e.com")
+    run("git", "config", "user.name", "T")
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+        'dependencies:\n'
+        '  dep-rust: "^0.1.0"\n'
+        '  dep-node: "^0.1.0"\n'
+        '  external-dep: "^0.1.0"\n'
+    )
+    (tmp_path / "harness" / "Cargo.toml").write_text(
+        '[package]\nname = "harness"\nversion = "0.1.0"\n'
+    )
+    (tmp_path / "dep-rust").mkdir()
+    (tmp_path / "dep-rust" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: dep-rust\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n'
+    )
+    (tmp_path / "dep-rust" / "Cargo.toml").write_text(
+        '[package]\nname = "dep-rust"\nversion = "0.1.0"\n'
+    )
+    (tmp_path / "dep-node").mkdir()
+    (tmp_path / "dep-node" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: dep-node\nlanguage: node\ndeploy: image\nmanifest: package.json\n'
+    )
+    (tmp_path / "dep-node" / "package.json").write_text('{"name":"dep-node","version":"0.1.0"}')
+    (tmp_path / "unrelated").mkdir()
+    (tmp_path / "unrelated" / "iii.worker.yaml").write_text(
+        'iii: v1\nname: unrelated\nlanguage: python\ndeploy: image\nmanifest: pyproject.toml\n'
+    )
+    (tmp_path / "unrelated" / "pyproject.toml").write_text(
+        '[project]\nname = "unrelated"\nversion = "0.1.0"\n'
+    )
+    run("git", "add", ".")
+    run("git", "commit", "-q", "-m", "init")
+    return tmp_path
+
+
+class TestHarnessFanOut:
+    def test_harness_source_change_fans_out_to_in_repo_deps(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "harness" / "lib.rs").write_text("// breaking change\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "harness edit"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert sorted(data["changed_workers"]) == ["dep-node", "dep-rust", "harness"]
+        assert "unrelated" not in data["changed_workers"]
+        # External dep listed in harness deps but absent from repo is skipped.
+        assert "external-dep" not in data["changed_workers"]
+
+    def test_fanned_out_deps_excluded_from_source_changed(self, tmp_path):
+        """Fan-out enters deps into the matrix (so lint+test runs against the
+        new harness) but must NOT mark them source_changed. Otherwise the PR
+        gate in validate_worker.py would force the author to bump every dep's
+        Cargo.toml — version bumps belong to bundle release, not PR CI."""
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "harness" / "lib.rs").write_text("// edit\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "harness edit"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["source_changed"] == ["harness"]
+        assert "dep-rust" not in data["source_changed"]
+        assert "dep-node" not in data["source_changed"]
+
+    def test_harness_metadata_change_does_not_fan_out(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "harness" / "README.md").write_text("# harness\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "harness docs"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["changed_workers"] == ["harness"]
+        assert data["source_changed"] == []
+
+    def test_fanned_out_deps_bucketed_by_language(self, tmp_path):
+        repo = make_repo_with_harness(tmp_path)
+        (repo / "harness" / "lib.rs").write_text("// edit\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "harness edit"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "main~1")
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert sorted(data["by_language"]["rust"]) == ["dep-rust", "harness"]
+        assert data["by_language"]["node"] == ["dep-node"]
+        assert data["by_language"]["python"] == []
