@@ -24,7 +24,7 @@ on:
       - 'session-inbox/v*'
       - 'session-tree/v*'
       - 'shell/v*'
-      - 'skills/v*'
+      - 'iii-directory/v*'
       - 'storage/v*'
       - 'todo-worker/v*'
       - 'todo-worker-python/v*'
