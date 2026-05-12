@@ -4,7 +4,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "turn-orchestrator"
-version = "0.1.1"
+version = "0.1.4"
 description = "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down."
 edition = "2021"
 license = "Apache-2.0"
@@ -41,7 +41,7 @@ which = "8"
 serial_test = "3"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

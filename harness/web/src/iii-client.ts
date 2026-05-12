@@ -170,19 +170,21 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
 }
 
 function composeWsUrl(info: BridgeInfoResponse): string {
-  // If the backend gave us a fully-qualified engine URL (single-tenant local
-  // default), prefer it. Otherwise compose from `window.location` so
-  // reverse-proxy / HTTPS deployments keep working without configuration.
+  // In a browser, prefer the relative ws_path so the dev server / reverse
+  // proxy can route the WS to the engine. Falling back to the absolute
+  // engine_url breaks local dev when the engine advertises an interface
+  // address (e.g. Tailscale 100.x) the browser can't reach.
+  // Outside a browser (tests, native clients), use the absolute engine_url.
+  if (typeof window !== "undefined") {
+    const proto = info.protocol === "wss" ? "wss" : "ws";
+    return `${proto}://${window.location.host}${info.ws_path}`;
+  }
   if (info.engine_url && info.engine_url.length > 0) {
     return info.engine_url;
   }
-  const proto = info.protocol === "wss" ? "wss" : "ws";
-  if (typeof window === "undefined") {
-    throw new Error(
-      "iii-client: cannot compose ws url without window.location and engine_url",
-    );
-  }
-  return `${proto}://${window.location.host}${info.ws_path}`;
+  throw new Error(
+    "iii-client: cannot compose ws url without window.location and engine_url",
+  );
 }
 
 function makeBrowserId(): string {

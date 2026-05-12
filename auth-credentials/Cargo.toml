@@ -2,7 +2,7 @@
 
 [package]
 name = "auth-credentials"
-version = "0.1.1"
+version = "0.1.4"
 description = "Provider credential vault under auth::* — API keys and OAuth tokens."
 edition = "2021"
 license = "Apache-2.0"

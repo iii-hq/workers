@@ -4,7 +4,7 @@ members = ["crates/harness-types"]
 
 [package]
 name = "provider-router"
-version = "0.1.1"
+version = "0.1.4"
 description = "router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers."
 edition = "2021"
 license = "Apache-2.0"
@@ -37,7 +37,7 @@ hex = "0.4"
 sha2 = "0.10"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

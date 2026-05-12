@@ -10,6 +10,12 @@ export default defineConfig({
         target: "http://127.0.0.1:3111",
         changeOrigin: false,
       },
+      "/iii/ws": {
+        target: "ws://127.0.0.1:49134",
+        ws: true,
+        changeOrigin: false,
+        rewrite: (path: string) => path.replace(/^\/iii\/ws/, ""),
+      },
     },
   },
 });
