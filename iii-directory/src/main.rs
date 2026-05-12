@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &cfg, &registered);
     functions::log_fs_health(&cfg);
 
-    tracing::info!("iii-directory ready: 21 functions + 2 custom trigger types");
+    tracing::info!("iii-directory ready: 16 functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-directory shutting down");

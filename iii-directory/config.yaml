@@ -1,4 +1,4 @@
-# skills runtime config.
+# iii-directory runtime config.
 
 # Folder that backs every read (`iii://`, `skill::fetch`, `skills::list`,
 # `prompts::*`) and every write from `skills::download`. Resolved

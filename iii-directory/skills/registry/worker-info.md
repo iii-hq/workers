@@ -13,9 +13,12 @@ reference (functions + triggers with schemas), and the list of skill /
 prompt files the bundle ships.
 
 This is the REMOTE counterpart to `directory::worker-info`. Both
-responses wrap the worker payload in a top-level `worker` field with
-the same core shape so callers can write one parser that handles both
-surfaces.
+responses wrap the worker payload in a top-level `worker` field, and
+the core fields (`name`, `description`, `version`) are guaranteed on
+both surfaces so a parser that touches only those keys works against
+either; everything else is surface-specific (registry adds `repo` /
+`author` plus the top-level `readme`, `api_reference`, `skills_tree`,
+directory adds runtime/connection state).
 
 | Question                                              | Use this                |
 |-------------------------------------------------------|-------------------------|

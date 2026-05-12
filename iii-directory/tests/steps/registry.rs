@@ -51,11 +51,7 @@ fn parse_payload(step: &cucumber::gherkin::Step) -> Value {
 // ── wiremock setup steps ───────────────────────────────────────────
 
 #[given(regex = r#"^a wiremock registry serving search "([^"]+)" with body:$"#)]
-async fn wiremock_search(
-    _world: &mut IiiSkillsWorld,
-    q: String,
-    step: &cucumber::gherkin::Step,
-) {
+async fn wiremock_search(_world: &mut IiiSkillsWorld, q: String, step: &cucumber::gherkin::Step) {
     let body = step.docstring.as_deref().unwrap_or("").to_string();
     let Some(shared) = workers::shared() else {
         return;
@@ -73,11 +69,7 @@ async fn wiremock_search(
 }
 
 #[given(regex = r#"^a wiremock registry that returns (\d+) for search "([^"]+)"$"#)]
-async fn wiremock_search_status(
-    _world: &mut IiiSkillsWorld,
-    status: u16,
-    q: String,
-) {
+async fn wiremock_search_status(_world: &mut IiiSkillsWorld, status: u16, q: String) {
     let Some(shared) = workers::shared() else {
         return;
     };
@@ -140,11 +132,7 @@ async fn wiremock_worker_info_version(
 }
 
 #[given(regex = r#"^a wiremock registry that returns (\d+) for worker info "([^"]+)"$"#)]
-async fn wiremock_worker_info_status(
-    _world: &mut IiiSkillsWorld,
-    status: u16,
-    worker: String,
-) {
+async fn wiremock_worker_info_status(_world: &mut IiiSkillsWorld, status: u16, worker: String) {
     let Some(shared) = workers::shared() else {
         return;
     };
@@ -206,10 +194,12 @@ fn registry_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: Stri
 }
 
 fn last_ok(world: &IiiSkillsWorld) -> &Value {
-    world
-        .stash
-        .get(LAST_OK)
-        .unwrap_or_else(|| panic!("no successful call recorded; last error: {:?}", world.stash.get(LAST_ERR)))
+    world.stash.get(LAST_OK).unwrap_or_else(|| {
+        panic!(
+            "no successful call recorded; last error: {:?}",
+            world.stash.get(LAST_ERR)
+        )
+    })
 }
 
 // ── registry::worker-list assertions ──────────────────────────────
@@ -220,10 +210,10 @@ fn worker_list_includes(world: &mut IiiSkillsWorld, name: String) {
         return;
     }
     let v = last_ok(world);
-    let arr = v["workers"]
-        .as_array()
-        .expect("missing workers array");
-    let found = arr.iter().any(|w| w["name"].as_str() == Some(name.as_str()));
+    let arr = v["workers"].as_array().expect("missing workers array");
+    let found = arr
+        .iter()
+        .any(|w| w["name"].as_str() == Some(name.as_str()));
     assert!(found, "expected {name:?} in worker-list results: {arr:?}");
 }
 
@@ -233,9 +223,7 @@ fn worker_list_empty(world: &mut IiiSkillsWorld) {
         return;
     }
     let v = last_ok(world);
-    let arr = v["workers"]
-        .as_array()
-        .expect("missing workers array");
+    let arr = v["workers"].as_array().expect("missing workers array");
     assert!(arr.is_empty(), "expected empty workers; got: {arr:?}");
 }
 
@@ -245,9 +233,7 @@ fn worker_list_version(world: &mut IiiSkillsWorld, name: String, version: String
         return;
     }
     let v = last_ok(world);
-    let arr = v["workers"]
-        .as_array()
-        .expect("missing workers array");
+    let arr = v["workers"].as_array().expect("missing workers array");
     let entry = arr
         .iter()
         .find(|w| w["name"].as_str() == Some(name.as_str()))
@@ -355,8 +341,12 @@ async fn wiremock_request_count(_world: &mut IiiSkillsWorld, n: usize, path: Str
         .filter(|r: &&Request| r.url.path() == path)
         .count();
     assert_eq!(
-        count, n,
+        count,
+        n,
         "expected {n} requests to {path:?}; got {count}: {:?}",
-        received.iter().map(|r| r.url.to_string()).collect::<Vec<_>>()
+        received
+            .iter()
+            .map(|r| r.url.to_string())
+            .collect::<Vec<_>>()
     );
 }

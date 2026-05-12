@@ -310,18 +310,15 @@ fn register_function_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::function-info",
-            move |req: FunctionInfoInput| {
-                let iii = iii_inner.clone();
-                let cfg = cfg_inner.clone();
-                async move {
-                    function_info(&iii, &cfg, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        RegisterFunction::new_async("directory::function-info", move |req: FunctionInfoInput| {
+            let iii = iii_inner.clone();
+            let cfg = cfg_inner.clone();
+            async move {
+                function_info(&iii, &cfg, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "Full detail for one function: schemas, owning worker, registered \
              triggers that target it, and any matching how-to skill from skills_folder.",
@@ -456,11 +453,7 @@ pub async fn function_list(
                 .or_else(|| id_worker_namespace(&f.function_id));
             if let Some(needle) = &search {
                 let hay_id = f.function_id.to_lowercase();
-                let hay_desc = f
-                    .description
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase();
+                let hay_desc = f.description.as_deref().unwrap_or_default().to_lowercase();
                 if !hay_id.contains(needle) && !hay_desc.contains(needle) {
                     return None;
                 }
@@ -505,10 +498,7 @@ pub async fn function_info(
     function_info_core(&functions, &workers, &triggers, cfg, &function_id)
 }
 
-pub async fn trigger_list(
-    iii: &III,
-    input: TriggerListInput,
-) -> Result<TriggerListOutput, String> {
+pub async fn trigger_list(iii: &III, input: TriggerListInput) -> Result<TriggerListOutput, String> {
     let trigger_types = iii
         .list_trigger_types(true)
         .await
@@ -551,10 +541,7 @@ pub async fn trigger_list(
     Ok(TriggerListOutput { triggers: entries })
 }
 
-pub async fn trigger_info(
-    iii: &III,
-    input: TriggerInfoInput,
-) -> Result<TriggerInfoOutput, String> {
+pub async fn trigger_info(iii: &III, input: TriggerInfoInput) -> Result<TriggerInfoOutput, String> {
     let id = input.id.trim().to_string();
     if id.is_empty() {
         return Err("id must be non-empty".into());
@@ -612,8 +599,7 @@ pub async fn registered_trigger_list(
                 }
             }
             if let Some(needle) = &search {
-                let hay = format!("{} {} {}", t.id, t.trigger_type, t.function_id)
-                    .to_lowercase();
+                let hay = format!("{} {} {}", t.id, t.trigger_type, t.function_id).to_lowercase();
                 if !hay.contains(needle) {
                     return None;
                 }
@@ -681,10 +667,7 @@ pub async fn registered_trigger_info(
     })
 }
 
-pub async fn worker_list(
-    iii: &III,
-    input: WorkerListInput,
-) -> Result<WorkerListOutput, String> {
+pub async fn worker_list(iii: &III, input: WorkerListInput) -> Result<WorkerListOutput, String> {
     let workers = iii
         .list_workers()
         .await
@@ -721,10 +704,7 @@ pub async fn worker_list(
     Ok(WorkerListOutput { workers: entries })
 }
 
-pub async fn worker_info(
-    iii: &III,
-    input: WorkerInfoInput,
-) -> Result<WorkerInfoOutput, String> {
+pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfoOutput, String> {
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("name must be non-empty".into());
@@ -753,8 +733,7 @@ pub async fn worker_info(
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
 
-    let owned_fns: std::collections::HashSet<String> =
-        worker.functions.iter().cloned().collect();
+    let owned_fns: std::collections::HashSet<String> = worker.functions.iter().cloned().collect();
     let function_entries: Vec<WorkerFunctionEntry> = worker
         .functions
         .iter()
@@ -774,7 +753,9 @@ pub async fn worker_info(
     let prefix = format!("{name}::");
     let trigger_type_entries: Vec<WorkerTriggerTypeEntry> = trigger_types
         .into_iter()
-        .filter(|t| t.id.starts_with(&prefix) || id_worker_namespace(&t.id).as_deref() == Some(&name))
+        .filter(|t| {
+            t.id.starts_with(&prefix) || id_worker_namespace(&t.id).as_deref() == Some(&name)
+        })
         .map(|t| WorkerTriggerTypeEntry {
             name: trigger_type_name(&t.id),
             id: t.id,
@@ -1029,10 +1010,7 @@ mod tests {
 
     #[test]
     fn id_worker_namespace_picks_first_segment() {
-        assert_eq!(
-            id_worker_namespace("mem::observe"),
-            Some("mem".to_string())
-        );
+        assert_eq!(id_worker_namespace("mem::observe"), Some("mem".to_string()));
         assert_eq!(id_worker_namespace("flat"), None);
     }
 
@@ -1070,14 +1048,8 @@ mod tests {
             registered_trigger("trg-1", "mem::on-change", "mem::observe"),
             registered_trigger("trg-2", "other::tick", "other::fn"),
         ];
-        let details = function_info_core(
-            &functions,
-            &workers,
-            &triggers,
-            &cfg,
-            "mem::observe",
-        )
-        .unwrap();
+        let details =
+            function_info_core(&functions, &workers, &triggers, &cfg, "mem::observe").unwrap();
         assert_eq!(details.function_id, "mem::observe");
         assert_eq!(details.name, "observe");
         assert_eq!(details.worker_name.as_deref(), Some("agentmemory"));
@@ -1132,7 +1104,10 @@ mod tests {
         let w = worker("agentmemory", &["mem::observe"]);
         let env = worker_envelope_from_sdk(w);
         assert_eq!(env.name.as_deref(), Some("agentmemory"));
-        assert!(env.description.is_none(), "directory carries no description");
+        assert!(
+            env.description.is_none(),
+            "directory carries no description"
+        );
         assert_eq!(env.runtime.as_deref(), Some("rust"));
         assert_eq!(env.status, "connected");
         assert_eq!(env.function_count, 1);

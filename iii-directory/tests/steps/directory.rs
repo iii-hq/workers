@@ -104,19 +104,18 @@ fn directory_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: Str
 }
 
 fn last_ok(world: &IiiSkillsWorld) -> &Value {
-    world
-        .stash
-        .get(LAST_OK)
-        .unwrap_or_else(|| panic!("no successful call recorded; last error: {:?}", world.stash.get(LAST_ERR)))
+    world.stash.get(LAST_OK).unwrap_or_else(|| {
+        panic!(
+            "no successful call recorded; last error: {:?}",
+            world.stash.get(LAST_ERR)
+        )
+    })
 }
 
 // ── directory::function-list assertions ──────────────────────────────
 
 fn functions_array(v: &Value) -> &[Value] {
-    v["functions"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    v["functions"].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 
 #[then(regex = r#"^the directory functions list includes "([^"]+)"$"#)]
@@ -298,10 +297,7 @@ fn fi_how_guide_frontmatter_function_id(world: &mut IiiSkillsWorld, expected: St
 // ── directory::trigger-list (trigger types) ──────────────────────────
 
 fn triggers_array(v: &Value) -> &[Value] {
-    v["triggers"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    v["triggers"].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 
 #[then(regex = r#"^the directory triggers list includes "([^"]+)"$"#)]

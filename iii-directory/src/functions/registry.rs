@@ -281,7 +281,9 @@ impl WorkerInfoSpec {
 /// `crate::functions::download::classify_input` (one of `version` /
 /// `tag`, default tag "latest"). Pure so it's unit-testable without
 /// the engine or HTTP.
-pub fn classify_worker_info_input(input: WorkerInfoInput) -> Result<(String, WorkerInfoSpec), String> {
+pub fn classify_worker_info_input(
+    input: WorkerInfoInput,
+) -> Result<(String, WorkerInfoSpec), String> {
     let WorkerInfoInput { name, version, tag } = input;
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -312,12 +314,7 @@ pub async fn worker_list(
     cache: &RegistryCache,
     input: WorkerListInput,
 ) -> Result<WorkerListOutput, String> {
-    let q = input
-        .search
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let q = input.search.as_deref().unwrap_or("").trim().to_string();
     if q.is_empty() {
         return Err("search must be non-empty".into());
     }

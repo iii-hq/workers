@@ -15,8 +15,11 @@ Use it after `directory::worker-list` when you want to drill into a
 specific worker's surface.
 
 This is the LOCAL view. For the published metadata of a worker (readme,
-api_reference, version history), use `registry::worker-info` — same
-top-level `worker` envelope so callers learn one parser.
+api_reference, version history), use `registry::worker-info` — the
+top-level `worker` envelope shares a fixed set of core fields (`name`,
+`description`, `version`) across both surfaces; everything else
+(connection state here, registry metadata there) is surface-specific
+and should be treated as optional by clients.
 
 # Inputs
 
@@ -56,9 +59,11 @@ top-level `worker` envelope so callers learn one parser.
 }
 ```
 
-The top-level `worker` field has the same shape as
-`registry::worker-info.worker` so a parser written for one surface
-works on the other.
+The top-level `worker` field shares its core fields (`name`,
+`description`, `version`) with `registry::worker-info.worker`, so a
+parser that touches only those keys works on both surfaces. The
+remaining fields shown above are LOCAL-specific runtime state and may
+not appear in the registry envelope.
 
 # Worked example
 
@@ -66,7 +71,7 @@ works on the other.
 { "name": "iii-directory" }
 ```
 
-Returns this worker itself: 13 functions across `skills::*`,
+Returns this worker itself: 16 functions across `skills::*`,
 `prompts::*`, `directory::*`, `registry::*`, plus the `skills::on-change`
 and `prompts::on-change` trigger types.
 

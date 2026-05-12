@@ -11,9 +11,11 @@ Use `registry::worker-list` to search the public workers registry
 PUBLISHED workers — the workers a user could install, regardless of
 whether any of them are currently connected to this engine.
 
-This is the REMOTE counterpart to `directory::worker-list`. The row
-shape is the same so callers can switch between local and registry
-surfaces without re-learning the API.
+This is the REMOTE counterpart to `directory::worker-list`. Rows on
+both surfaces share a fixed set of core fields (`name`, `description`,
+`version`) so a parser that touches only those keys works against
+either; everything else is surface-specific (registry adds `repo` /
+`author`, directory adds runtime/connection state).
 
 | Question                                          | Use this              |
 |---------------------------------------------------|-----------------------|

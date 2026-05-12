@@ -17,10 +17,9 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description:
-            "Engine introspection (functions / triggers / workers), workers \
+        description: "Engine introspection (functions / triggers / workers), workers \
              registry proxy, and filesystem-backed skill + prompt reader."
-                .to_string(),
+            .to_string(),
         default_config: serde_json::json!({
             "skills_folder": DEFAULT_SKILLS_FOLDER,
             "registry_url": DEFAULT_REGISTRY_URL,

@@ -172,10 +172,7 @@ mod tests {
     #[test]
     fn function_id_to_uri_replaces_double_colons() {
         assert_eq!(function_id_to_uri("mem::observe"), "iii://fn/mem/observe");
-        assert_eq!(
-            function_id_to_uri("a::b::c::leaf"),
-            "iii://fn/a/b/c/leaf"
-        );
+        assert_eq!(function_id_to_uri("a::b::c::leaf"), "iii://fn/a/b/c/leaf");
         assert_eq!(function_id_to_uri("flat"), "iii://fn/flat");
     }
 
@@ -217,7 +214,11 @@ mod tests {
             "notes/x.md",
             "---\ntype: reference\n---\n# x\nbody\n",
         );
-        write_fixture(tmp.path(), "notes/y.md", "# plain markdown\nno frontmatter\n");
+        write_fixture(
+            tmp.path(),
+            "notes/y.md",
+            "# plain markdown\nno frontmatter\n",
+        );
         assert!(scan_how_tos(tmp.path()).is_empty());
     }
 

@@ -163,7 +163,7 @@ callers should add their own filtering.
 
 ## Functions
 
-Thirteen functions across four groups. All registrations are
+Sixteen functions across four groups. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 

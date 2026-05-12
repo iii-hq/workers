@@ -11,8 +11,9 @@ connected to the engine, with its runtime metadata (status, version,
 runtime, function count, ...). Filter by name, runtime, or status.
 
 This is the LOCAL view. For the registry view (workers PUBLISHED, not
-connected), use `registry::worker-list` — same row shape so you can
-switch between the two without re-learning the API.
+connected), use `registry::worker-list` — rows share a fixed set of
+core fields (`name`, `description`, `version`) so a parser can walk
+both surfaces. Each surface adds its own optional fields beyond that.
 
 # Inputs
 

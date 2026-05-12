@@ -340,23 +340,25 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
 
 /// Read a fs entry's body fresh from disk, strip any leading
 /// frontmatter, and enforce the same 256 KiB cap as the registry
-/// previously did. Empty-after-strip bodies are an error so the
-/// resolver returns a clear "not found" rather than serving an empty
-/// resource.
+/// previously did. The cap is checked against the raw file size
+/// (matching `crate::how_to::scan_how_tos`) so a file with large
+/// frontmatter can't pass one path and fail the other.
+/// Empty-after-strip bodies are an error so the resolver returns a
+/// clear "not found" rather than serving an empty resource.
 pub fn read_body(abs_path: &Path) -> Result<String, String> {
     let raw = std::fs::read_to_string(abs_path)
         .map_err(|e| format!("read {}: {e}", abs_path.display()))?;
+    if raw.len() > SKILL_BODY_MAX_BYTES {
+        return Err(format!(
+            "file {} is too large ({} bytes; max {SKILL_BODY_MAX_BYTES})",
+            abs_path.display(),
+            raw.len()
+        ));
+    }
     let (_, body) = split_frontmatter(&raw);
     let trimmed = body.trim_matches('\n');
     if trimmed.is_empty() {
         return Err(format!("file {} has empty body", abs_path.display()));
-    }
-    if body.len() > SKILL_BODY_MAX_BYTES {
-        return Err(format!(
-            "file {} is too large ({} bytes; max {SKILL_BODY_MAX_BYTES})",
-            abs_path.display(),
-            body.len()
-        ));
     }
     Ok(body.to_string())
 }

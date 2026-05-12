@@ -113,14 +113,14 @@ pub fn register_all(iii: &Arc<III>) -> RegisteredTriggerTypes {
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after any mutation of the skills registry (register / unregister).".to_string(),
+        "Fires after every successful skills::download that wrote at least one skill markdown file.".to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         PROMPTS_ON_CHANGE.to_string(),
-        "Fires after any mutation of the prompts registry (register / unregister).".to_string(),
+        "Fires after every successful skills::download that wrote at least one prompt markdown file.".to_string(),
         SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
     ));
     tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");
