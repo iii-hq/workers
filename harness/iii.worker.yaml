@@ -18,6 +18,7 @@ dependencies:
   iii-queue: "^0.11.0"
   iii-stream: "^0.11.0"
   iii-bridge: "^0.11.0"
+  iii-http: "^0.11.0"
   turn-orchestrator: "^0.1.0"
   provider-router: "^0.1.0"
   session-tree: "^0.1.0"

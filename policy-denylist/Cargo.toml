@@ -2,7 +2,7 @@
 
 [package]
 name = "policy-denylist"
-version = "0.1.4"
+version = "0.1.5"
 description = "Hook subscriber on agent::before_function_call that blocks calls whose function id matches a configured denylist."
 edition = "2021"
 license = "Apache-2.0"

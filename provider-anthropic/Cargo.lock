@@ -95,7 +95,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth-credentials"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "harness-types"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "overflow-classify"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "harness-types",
  "once_cell",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "auth-credentials",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "provider-base"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "auth-credentials",
