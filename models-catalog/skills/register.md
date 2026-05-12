@@ -5,7 +5,7 @@
 ## When to use
 
 - Adding a new model to the live catalog without restarting or recompiling the worker.
-- Overriding a compiled-in seed entry with updated metadata — pricing, context window, new capability flags.
+- Overriding a compiled-in seed entry with updated metadata (pricing, context window, new capability flags).
 - Syncing a provider's model list from a registry-sync worker or operator CLI tool.
 
 ## Notes

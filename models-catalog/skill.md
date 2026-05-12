@@ -2,9 +2,9 @@
 
 # models-catalog
 
-Model capabilities knowledge base on the iii bus — `models::*` reads provider, context window, pricing, and capability flags from a `models:<provider>:<id>` keyspace, falling back to a compiled-in seed snapshot when state is empty. Routers, provider adapters, and budget gates use it to size requests and pick a model that actually supports the requested feature.
+Model capabilities knowledge base on the iii bus. `models::*` reads provider, context window, pricing, and capability flags from a `models:<provider>:<id>` keyspace, falling back to a compiled-in seed snapshot when state is empty. Routers, provider adapters, and budget gates use it to size requests and pick a model that actually supports the requested feature.
 
-Prefer `models::supports` for capability gates over `models::get` followed by a manual flag check — `supports` returns `{ supported: false }` for unknown models and unknown capabilities consistently, so the gate logic stays a single boolean check instead of a null-vs-flag two-step.
+Prefer `models::supports` for capability gates over `models::get` followed by a manual flag check. `supports` returns `{ supported: false }` for unknown models and unknown capabilities consistently, so the gate logic stays a single boolean check instead of a null-vs-flag two-step.
 
 For per-model cost tracking and spend caps that consume the catalog's pricing fields, pair with the [`llm-budget`](../llm-budget) worker. For surfacing `models::*` to LLM agents, pair with [`skills`](../skills):
 

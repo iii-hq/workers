@@ -12,4 +12,4 @@
 
 - Both `provider` and `model_id` are required.
 - The catalog is state-first: an entry written via `models::register` shadows the compiled-in seed for the same key.
-- A `null` return means the model is in neither state nor seed — distinguish from "registered but missing fields" by inspecting the returned object.
+- A `null` return means the model is in neither state nor seed. To distinguish from "registered but missing fields", inspect the returned object.

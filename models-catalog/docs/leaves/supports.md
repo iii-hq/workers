@@ -10,5 +10,5 @@
 
 - Accepted `capability` values: `"thinking"`, `"thinking:low"`, `"thinking:medium"`, `"thinking:high"`, `"thinking:xhigh"`, `"tools"`, `"vision"`, `"cache"`.
 - `"thinking"` tests the base flag; `"thinking:xhigh"` tests the stricter flag, which implies the base.
-- An unknown model returns `{ supported: false }` rather than an error — safe to call as a single-line gate.
+- An unknown model returns `{ supported: false }` rather than an error, so it is safe to call as a single-line gate.
 - An unknown `capability` value returns an error, so a typo fails fast rather than silently denying.
