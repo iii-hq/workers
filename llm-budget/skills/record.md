@@ -11,6 +11,6 @@
 ## Notes
 
 - `cost_usd` must be a finite, non-negative number. Negative or non-finite values are rejected.
-- `record` does not enforce the ceiling — it always commits. Run `budget::check` before the LLM call when you need the cap to gate behaviour.
+- `record` does not enforce the ceiling; it always commits. Run `budget::check` before the LLM call when you need the cap to gate behaviour.
 - The operation runs inside a per-budget lock; concurrent `budget::record` calls for the same budget serialise. Batch costs before recording rather than calling in a tight loop under high concurrency.
 - Threshold alerts fire at most once per period. Callback payloads carry `alert_id`, `budget_id`, `spent_usd`, `ceiling_usd`, and `threshold_pct`, merged on top of any optional `callback_payload` set on the alert.

@@ -8,7 +8,7 @@
 
 ## Notes
 
-- `threshold_pct` is exclusive at zero and inclusive at one — valid values are in `(0, 1]`.
+- `threshold_pct` is exclusive at zero and inclusive at one; valid values are in `(0, 1]`.
 - Each alert fires at most once per budget period. `last_fired_period_start` is set to the current period start when fired and resets to `null` on `budget::reset` or automatic rollover.
 - The callback receives `{ alert_id, budget_id, spent_usd, ceiling_usd, threshold_pct, ...callback_payload }`. System fields always override same-named keys in `callback_payload`.
 - To remove an alert, patch the `alerts` array with `budget::update` (or recreate the budget). There is no dedicated `alert_delete` function.

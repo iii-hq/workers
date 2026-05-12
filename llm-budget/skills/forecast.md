@@ -5,7 +5,7 @@
 ## When to use
 
 - Determining whether a budget is on track to stay under the ceiling before the period resets.
-- Alerting an operator early — say, at 50% elapsed time — that the projected total will overshoot.
+- Alerting an operator early (say, at 50% elapsed time) that the projected total will overshoot.
 - Driving a spend forecast widget that surfaces estimated end-of-period cost.
 
 ## Notes

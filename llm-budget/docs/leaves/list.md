@@ -9,5 +9,5 @@
 ## Notes
 
 - Results are sorted by `created_at` descending, so newly created budgets appear first.
-- Each entry includes `spent_usd`, `ceiling_usd`, `enforced`, `paused`, and period boundary timestamps — enough to assess status without a follow-up `budget::get`.
+- Each entry includes `spent_usd`, `ceiling_usd`, `enforced`, `paused`, and period boundary timestamps, which is enough to assess status without a follow-up `budget::get`.
 - There is no pagination; for large deployments, filter by `workspace_id` to bound the response size.
