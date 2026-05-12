@@ -4,7 +4,7 @@ members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-cred
 
 [package]
 name = "provider-anthropic"
-version = "0.1.5"
+version = "0.1.6"
 description = "Anthropic Messages API streaming provider; exposes provider::anthropic::complete on the iii bus."
 edition = "2021"
 license = "Apache-2.0"
@@ -46,7 +46,7 @@ tokio-stream = "0.1"
 serde_json = { workspace = true }
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

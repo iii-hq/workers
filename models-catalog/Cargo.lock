@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "models-catalog"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",

@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "harness-types"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "turn-orchestrator"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
