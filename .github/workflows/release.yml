@@ -77,83 +77,14 @@ jobs:
             git fetch origin "+refs/tags/${RAW_TAG}:refs/tags/${RAW_TAG}"
           fi
 
-      - name: Install pyyaml
-        run: pip install --quiet pyyaml
-
       - name: Parse tag + worker manifest
         id: meta
         env:
           RAW_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          python3 - <<'PY'
-          import os, re, subprocess, sys, yaml
-
-          raw = os.environ["RAW_TAG"].strip()
-          m = re.match(r"^([a-z0-9][a-z0-9_-]*)/v(.+)$", raw)
-          if not m:
-              print(f"::error::Invalid tag shape: {raw}")
-              sys.exit(1)
-          worker, version = m.group(1), m.group(2)
-
-          if re.search(r"-dry-run\.\d+$", version):
-              dry_run, is_pre = "true", "true"
-          elif re.search(r"-[a-z]+\.\d+$", version):
-              dry_run, is_pre = "false", "true"
-          else:
-              dry_run, is_pre = "false", "false"
-
-          meta_path = f"{worker}/iii.worker.yaml"
-          if not os.path.exists(meta_path):
-              print(f"::error::{meta_path} not found")
-              sys.exit(1)
-          meta = yaml.safe_load(open(meta_path).read()) or {}
-          deploy = meta.get("deploy")
-          language = meta.get("language")
-          bin_name = meta.get("bin") or meta.get("name") or worker
-          manifest = meta.get("manifest")
-          targets_raw = meta.get("targets")
-          if isinstance(targets_raw, list):
-              targets = ",".join(str(t).strip() for t in targets_raw if str(t).strip())
-          elif isinstance(targets_raw, str):
-              targets = targets_raw.strip()
-          else:
-              targets = ""
-          if deploy not in ("binary", "image"):
-              print(f"::error::{worker}: deploy must be binary|image (got {deploy!r})")
-              sys.exit(1)
-
-          # Pull registry-tag from the annotated tag message; fall back to 'latest'.
-          registry_tag = "latest"
-          try:
-              msg = subprocess.check_output(
-                  ["git", "tag", "-l", "--format=%(contents)", raw], text=True
-              )
-              for line in msg.splitlines():
-                  s = line.strip()
-                  if s.startswith("registry-tag:"):
-                      registry_tag = s.split(":", 1)[1].strip() or "latest"
-                      break
-          except subprocess.CalledProcessError:
-              pass
-
-          out = open(os.environ["GITHUB_OUTPUT"], "a")
-          for k, v in [
-              ("tag", raw),
-              ("worker", worker),
-              ("version", version),
-              ("deploy", deploy),
-              ("language", language or ""),
-              ("bin", bin_name),
-              ("manifest", manifest or ""),
-              ("registry_tag", registry_tag),
-              ("is_prerelease", is_pre),
-              ("dry_run", dry_run),
-              ("targets", targets),
-          ]:
-              out.write(f"{k}={v}\n")
-          out.close()
-          print(f"::notice::release {worker} v{version} deploy={deploy} registry-tag={registry_tag}")
-          PY
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
 
   # ──────────────────────────────────────────────────────────────
   # Create the GitHub Release shell (skipped on dry runs).
