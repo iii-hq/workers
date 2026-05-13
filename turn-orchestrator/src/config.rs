@@ -75,6 +75,10 @@ mod tests {
             from_empty.sync_poll_interval_ms,
             from_default.sync_poll_interval_ms
         );
+        assert_eq!(
+            from_empty.system_default_skills,
+            from_default.system_default_skills
+        );
     }
 
     #[test]
