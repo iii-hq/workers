@@ -1,6 +1,7 @@
 //! `provisioning` state handler. First state of every new chat. Builds the
-//! system prompt by fetching each URI in `cfg.system_default_skills` and
-//! handing the per-URI results to `system_prompt::build`. Soft-fail per URI.
+//! system prompt by fetching each URI in `cfg.system_default_skills` via
+//! `directory::skills::get` and handing the per-URI results to
+//! `system_prompt::build`. Soft-fail per URI.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -55,16 +56,15 @@ pub async fn handle(
 /// that fetched successfully. Missing entries become `body: None` in the
 /// assembled prompt; failures are logged.
 ///
-/// `directory::skills::fetch-skill` accepts a batched `{ uris: [...] }` form,
-/// but it returns the bodies as one concatenated string with no per-URI
-/// attribution, which would lose the per-URI failure granularity we rely on
-/// for the recovery-stub mechanism. With `system_default_skills` typically
-/// one or two entries, N sequential calls is acceptable; chat-init is not
-/// a hot path.
+/// `directory::skills::get` is called with the bare id (URI with `iii://`
+/// stripped) per PR-131. The original URI is kept as the HashMap key for
+/// downstream ordering. With `system_default_skills` typically one or two
+/// entries, N sequential calls is acceptable; chat-init is not a hot path.
 async fn fetch_default_skills(iii: &III, uris: &[String]) -> HashMap<String, String> {
     let mut out = HashMap::with_capacity(uris.len());
     for uri in uris {
-        match fetch_uri(iii, uri).await {
+        let id = uri.strip_prefix("iii://").unwrap_or(uri);
+        match fetch_uri(iii, id).await {
             Some(body) => {
                 out.insert(uri.clone(), body);
             }
@@ -79,13 +79,14 @@ async fn fetch_default_skills(iii: &III, uris: &[String]) -> HashMap<String, Str
     out
 }
 
-/// Fetch a single `iii://` URI via `directory::skills::fetch-skill`.
-/// Tolerates either a raw string response or `{ body: "..." }` envelope.
-async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
+/// Fetch a single skill by bare id via `directory::skills::get`.
+/// Tolerates a raw string response, a `{ body: "..." }` envelope, or the
+/// PR-131 full envelope `{ id, title, description, body, modified_at }`.
+async fn fetch_uri(iii: &III, id: &str) -> Option<String> {
     let resp = match iii
         .trigger(TriggerRequest {
-            function_id: "directory::skills::fetch-skill".into(),
-            payload: json!({ "uri": uri }),
+            function_id: "directory::skills::get".into(),
+            payload: json!({ "id": id }),
             action: None,
             timeout_ms: Some(FETCH_TIMEOUT_MS),
         })
@@ -93,7 +94,7 @@ async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
     {
         Ok(v) => v,
         Err(err) => {
-            tracing::warn!(%uri, %err, "directory::skills::fetch-skill trigger failed");
+            tracing::warn!(%id, %err, "directory::skills::get trigger failed");
             return None;
         }
     };
@@ -107,13 +108,20 @@ fn build_default_skill_bodies(
     fetched: &HashMap<String, String>,
 ) -> Vec<DefaultSkillBody> {
     uris.iter()
-        .map(|uri| DefaultSkillBody {
-            uri: uri.clone(),
-            body: fetched.get(uri).cloned(),
-        })
+        .map(|uri| DefaultSkillBody::from_config_uri(uri.clone(), fetched.get(uri).cloned()))
         .collect()
 }
 
+/// Extract a skill body from a `directory::skills::get` response.
+///
+/// Tolerates three shapes:
+/// - raw string (legacy debug fixtures);
+/// - `{ "body": "..." }` (legacy envelope);
+/// - PR-131 full envelope `{ id, title, description, body, modified_at }`
+///   — the `body` field is at the same JSON path as the legacy envelope,
+///   so the same extraction works.
+///
+/// Returns `None` if the response has no recognizable body field.
 fn response_to_string(resp: &Value) -> Option<String> {
     if let Some(s) = resp.as_str() {
         return Some(s.to_string());
@@ -134,8 +142,10 @@ mod tests {
         let out = build_default_skill_bodies(&uris, &fetched);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].uri, "iii://iii");
+        assert_eq!(out[0].id, "iii");
         assert_eq!(out[0].body.as_deref(), Some("ALPHA"));
         assert_eq!(out[1].uri, "iii://shell");
+        assert_eq!(out[1].id, "shell");
         assert!(out[1].body.is_none());
     }
 
@@ -189,5 +199,20 @@ mod tests {
         assert!(prompt.contains("# iii://iii"));
         assert!(prompt.contains("# iii://shell"));
         assert!(prompt.contains("skill body unavailable at chat start"));
+        assert!(prompt.contains("directory::skills::get { id: \"iii\" }"));
+        assert!(prompt.contains("directory::skills::get { id: \"shell\" }"));
+        assert!(!prompt.contains("fetch-skill"));
+    }
+
+    #[test]
+    fn response_to_string_extracts_body_from_full_envelope() {
+        let resp = json!({
+            "id": "iii",
+            "title": "iii functions",
+            "description": "How to discover and call functions on the iii engine.",
+            "body": "real body content here",
+            "modified_at": "2026-05-13T00:00:00+00:00"
+        });
+        assert_eq!(response_to_string(&resp).as_deref(), Some("real body content here"));
     }
 }
