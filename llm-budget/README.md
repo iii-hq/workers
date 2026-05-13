@@ -93,11 +93,7 @@ print(result)
 ## Configuration
 
 ```yaml
-# Skill registration trigger timeout when calling skills::register (milliseconds).
-skills_trigger_timeout_ms: 5000
-
-# Give up retrying skill registration after this many seconds (engine may be slow starting).
-skills_handshake_deadline_secs: 180
+# llm-budget runtime config.
 ```
 
 ## Additional Resources
