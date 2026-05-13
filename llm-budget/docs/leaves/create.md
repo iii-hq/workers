@@ -9,6 +9,6 @@
 ## Notes
 
 - The returned `budget_id` is the stable handle for every subsequent `budget::*` call.
-- New budgets are created with `enforced = true` and `paused = false` — calls to `budget::check` start respecting the ceiling immediately.
+- New budgets are created with `enforced = true` and `paused = false`, so calls to `budget::check` start respecting the ceiling immediately.
 - `period` accepts `"day"`, `"week"`, or `"month"`. The first window is anchored to the current period boundary, not to wall-clock creation time.
 - `workspace_id` and `agent_id` are free-form labels; `budget::list` can filter by `workspace_id`.

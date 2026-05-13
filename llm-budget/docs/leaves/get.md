@@ -8,6 +8,6 @@
 
 ## Notes
 
-- This is a pure read — the period is not rolled forward and no state mutates.
+- This is a pure read: the period is not rolled forward and no state mutates.
 - For spend totals aggregated across the current and archived periods, use `budget::usage`.
 - The `alerts` array carries threshold percentages and callback function ids; `exemptions` carry principal ids and expiry timestamps.

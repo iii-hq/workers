@@ -8,6 +8,6 @@
 
 ## Notes
 
-- Writes overwrite any existing credential for the provider — there is no append or merge.
+- Writes overwrite any existing credential for the provider; there is no append or merge.
 - The worker stores the serialised credential bytes verbatim. Token shape is the caller's responsibility; nothing is verified at write time.
 - Default backend is `iii_state` (durable). Set `store: memory` in `config.yaml` or `AUTH_CREDENTIALS_STORE=memory` for ephemeral storage in tests.

@@ -2,7 +2,7 @@
 
 ## When to use
 
-- Where a caller would otherwise reach for `rg` or `grep -rn` — faster and structured.
+- Where a caller would otherwise reach for `rg` or `grep -rn`: faster and structured.
 - Pre-step before `shell::fs::sed` to preview what would be rewritten.
 - Cross-file search inside a worker without spawning a process.
 

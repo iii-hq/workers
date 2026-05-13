@@ -2,7 +2,7 @@
 
 ## When to use
 
-- Enumerating filenames before reading — cheaper than `shell::fs::grep` when only names are needed.
+- Enumerating filenames before reading; cheaper than `shell::fs::grep` when only names are needed.
 - Confirming a path is a directory before recursing.
 - Building a file picker or orchestration call that wants a structured listing.
 
@@ -10,5 +10,5 @@
 
 - `path` must be absolute. Anything outside `cfg.fs.host_root` is refused; the path denylist (`cfg.fs.denylist_paths`) refuses inside the jail too.
 - Symlinks are not followed; an entry's `is_dir` reflects the link itself and `is_symlink` is `true`.
-- `mode` is an octal string (e.g. `"0755"`); `mtime` is epoch **seconds**, not milliseconds — `JobRecord.*_at_ms` are ms but `FsEntry.mtime` is seconds.
+- `mode` is an octal string (e.g. `"0755"`); `mtime` is epoch **seconds**, not milliseconds. `JobRecord.*_at_ms` are ms but `FsEntry.mtime` is seconds.
 - The wire shape mirrors the engine's `sandbox::fs::ls`, so host and sandbox targets are interchangeable from the caller's point of view.

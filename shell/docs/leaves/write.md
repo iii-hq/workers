@@ -10,6 +10,6 @@
 
 - The wire payload does not accept raw `content: string` or `content_b64`. The caller opens a channel via the SDK, passes the `ContentRef` here, then writes bytes into the channel and closes it.
 - When `cfg.fs.max_write_bytes > 0` and the streamed total exceeds the cap, the write is aborted mid-stream with `S218`. The default of `0` means no cap.
-- Per-chunk idle timeout is 30s. A caller that opens a write but never sends data and never closes the channel is aborted with `S216 channel idle for 30s — aborting write` so a parked writer cannot leak the temp file.
+- Per-chunk idle timeout is 30s. A caller that opens a write but never sends data and never closes the channel is aborted with `S216 channel idle for 30s, aborting write` so a parked writer cannot leak the temp file.
 - The worker writes through a temp file and renames atomically. On crash mid-stream, the temp file is unlinked by `TempGuard`.
 - Approval policy is not hardcoded into this function. Whether a turn requires approval before a write lands is set per-run by the orchestrator's `approval_required` array.

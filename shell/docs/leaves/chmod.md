@@ -9,7 +9,7 @@
 ## Notes
 
 - `mode` is an octal string (e.g. `"0644"`, `"0755"`). `uid`/`gid` are optional integers; pass them to also `chown`.
-- `updated` is the count of paths whose mode or owner the call mutated — 1 for a single-path call, more under `recursive: true`.
+- `updated` is the count of paths whose mode or owner the call mutated: 1 for a single-path call, more under `recursive: true`.
 - Symlinks are not followed; chmod operates on the link itself. Recursive walks skip symlink entries so `chmod(2)`/`chown(2)` cannot deref to a target outside the walk root.
 - `uid` / `gid` are advisory: the host backend refuses to chown without sufficient privileges; the call returns the trigger `Err` rather than silently skipping.
 - Same jail and denylist rules as `shell::fs::ls`.

@@ -10,5 +10,5 @@
 
 - Spend log entries (archived periods) are not deleted. Historical spend keyed under the old `budget_id` persists until the state store is purged independently.
 - Alerts and exemptions attached to the budget are removed implicitly with the budget record.
-- There is no soft-delete or recovery path — once deleted, the `budget_id` is gone for good.
+- There is no soft-delete or recovery path. Once deleted, the `budget_id` is gone for good.
 - The operation is idempotent: deleting a budget that no longer exists is a no-op rather than an error.
