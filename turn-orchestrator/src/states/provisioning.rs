@@ -1,16 +1,19 @@
 //! `provisioning` state handler.
 
+use std::sync::Arc;
+
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
 use crate::agent_call;
+use crate::config::TurnOrchestratorConfig;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 use crate::system_prompt;
 
 pub async fn handle(
     iii: &III,
-    _cfg: &std::sync::Arc<crate::config::TurnOrchestratorConfig>,
+    _cfg: &Arc<TurnOrchestratorConfig>,
     record: &mut TurnStateRecord,
 ) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;

@@ -25,7 +25,7 @@ pub async fn step(
         TurnState::FunctionFinalize => states::handle_finalize(iii, record).await?,
         TurnState::SteeringCheck => states::handle_steering(iii, record).await?,
         TurnState::TearingDown => states::handle_tearing_down(iii, record).await?,
-        TurnState::Stopped => {}
+        TurnState::Stopped => {} // no-op: idempotent terminal state
     }
     Ok(())
 }
