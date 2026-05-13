@@ -3,7 +3,7 @@
 ## When to use
 
 - Producing a human-readable transcript of a conversation branch for review, sharing, or archiving.
-- Generating a debug artefact during incident triage — write the HTML to disk or return it as a tool result.
+- Generating a debug artefact during incident triage: write the HTML to disk or return it as a tool result.
 - Driving a preview pane in a UI: the returned HTML can be embedded in an iframe or saved straight to a file.
 
 ## Notes

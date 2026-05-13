@@ -11,4 +11,4 @@
 - Unlike `session-tree::fork`, clone copies every entry across every branch, not just the active path.
 - All entry ids in the clone are fresh UUIDs; parent links are fully rewired to point at the clone's equivalents.
 - The new session's display name is `"<source name> (clone)"` when the source has a display name.
-- Cloning a large session is expensive — prefer `session-tree::fork` when only the active-path context matters.
+- Cloning a large session is expensive; prefer `session-tree::fork` when only the active-path context matters.
