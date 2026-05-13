@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 pub fn build_manifest() -> Value {
     json!({
-        "name": "iii-shell",
+        "name": "shell",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Unix shell execution worker for iii agents",
         "functions": [

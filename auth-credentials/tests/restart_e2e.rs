@@ -2,13 +2,13 @@
 //!
 //! Requires:
 //! - `IIITEST_ENGINE_URL`: WebSocket URL of a running iii engine
-//! - `IIITEST_WORKER_BIN`: absolute path to the iii-auth-credentials binary
+//! - `IIITEST_WORKER_BIN`: absolute path to the auth-credentials binary
 //!
 //! Marked `#[ignore]` so cargo test default runs skip it. To execute:
-//!     cargo build --release -p iii-auth-credentials
+//!     cargo build --release -p auth-credentials
 //!     IIITEST_ENGINE_URL=ws://127.0.0.1:49134 \
-//!       IIITEST_WORKER_BIN=$(pwd)/target/release/iii-auth-credentials \
-//!       cargo test -p iii-auth-credentials --test restart_e2e -- --ignored
+//!       IIITEST_WORKER_BIN=$(pwd)/target/release/auth-credentials \
+//!       cargo test -p auth-credentials --test restart_e2e -- --ignored
 
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -23,7 +23,7 @@ fn spawn_worker(engine_url: &str, bin: &str) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn iii-auth-credentials")
+        .expect("spawn auth-credentials")
 }
 
 async fn wait_for_ready() {

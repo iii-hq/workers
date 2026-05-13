@@ -30,6 +30,16 @@ on:
         required: false
         type: boolean
         default: false
+      targets:
+        description: 'Optional comma-separated subset of build targets (default: all). Use to mark a worker as unix-only, host-only, etc.'
+        required: false
+        type: string
+        default: ''
+      version_override:
+        description: 'When set, rewrite [package].version in manifest_path to this value before building. Used by the harness bundle to force coordinated versions across deps.'
+        required: false
+        type: string
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -56,34 +66,60 @@ jobs:
           prerelease: ${{ inputs.is_prerelease }}
           generate_release_notes: true
 
+  matrix:
+    name: Compute build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.compute.outputs.include }}
+    steps:
+      - name: Compute matrix
+        id: compute
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          all_targets = [
+              {"target": "x86_64-apple-darwin",            "os": "macos-latest"},
+              {"target": "aarch64-apple-darwin",           "os": "macos-latest"},
+              {"target": "x86_64-pc-windows-msvc",         "os": "windows-latest"},
+              {"target": "i686-pc-windows-msvc",           "os": "windows-latest"},
+              {"target": "aarch64-pc-windows-msvc",        "os": "windows-latest"},
+              {"target": "x86_64-unknown-linux-gnu",       "os": "ubuntu-22.04"},
+              {"target": "x86_64-unknown-linux-musl",      "os": "ubuntu-latest"},
+              {"target": "aarch64-unknown-linux-gnu",      "os": "ubuntu-22.04"},
+              {"target": "armv7-unknown-linux-gnueabihf",  "os": "ubuntu-22.04"},
+          ]
+          raw = (os.environ.get("TARGETS") or "").strip()
+          if raw:
+              wanted = [t.strip() for t in raw.split(",") if t.strip()]
+              known = {t["target"] for t in all_targets}
+              unknown = [t for t in wanted if t not in known]
+              if unknown:
+                  print(f"::error::unknown targets requested: {unknown}; known={sorted(known)}")
+                  sys.exit(1)
+              include = [t for t in all_targets if t["target"] in set(wanted)]
+              if not include:
+                  print("::error::targets filter resolved to empty set")
+                  sys.exit(1)
+          else:
+              include = all_targets
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          out.write(f"include={json.dumps(include)}\n")
+          out.close()
+          print(f"::notice::building {len(include)} target(s): {[t['target'] for t in include]}")
+          PY
+
   build:
     name: Build ${{ matrix.target }}
-    needs: [pre-build]
+    needs: [pre-build, matrix]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-          - target: i686-pc-windows-msvc
-            os: windows-latest
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-22.04
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +154,42 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ inputs.bin_name }}-${{ matrix.target }}
+
+      - name: Rewrite [package].version (bundle coordinated release)
+        if: inputs.version_override != ''
+        shell: bash
+        env:
+          MANIFEST: ${{ inputs.manifest_path }}
+          VERSION: ${{ inputs.version_override }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+          path = pathlib.Path(os.environ["MANIFEST"])
+          version = os.environ["VERSION"]
+          if not path.is_file():
+              print(f"::error::manifest not found: {path}")
+              sys.exit(1)
+          lines = path.read_text().splitlines(keepends=True)
+          out, in_package, rewrote = [], False, False
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith("["):
+                  in_package = stripped == "[package]"
+                  out.append(line)
+                  continue
+              if in_package and not rewrote:
+                  m = re.match(r'(\s*version\s*=\s*)"[^"]*"(.*)', line)
+                  if m:
+                      out.append(f'{m.group(1)}"{version}"{m.group(2)}\n')
+                      rewrote = True
+                      continue
+              out.append(line)
+          if not rewrote:
+              print(f"::error::[package].version not found in {path}")
+              sys.exit(1)
+          path.write_text("".join(out))
+          print(f"::notice::set [package].version to {version} in {path}")
+          PY
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1

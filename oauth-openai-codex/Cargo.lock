@@ -95,7 +95,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth-credentials"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -814,27 +814,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-oauth-openai-codex"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "auth-credentials",
- "base64",
- "chrono",
- "env_logger",
- "iii-sdk",
- "log",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "iii-sdk"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1046,6 +1025,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "oauth-openai-codex"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "auth-credentials",
+ "base64",
+ "chrono",
+ "env_logger",
+ "iii-sdk",
+ "log",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "url",
 ]
 
 [[package]]

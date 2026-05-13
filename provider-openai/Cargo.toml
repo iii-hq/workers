@@ -3,8 +3,8 @@ resolver = "2"
 members = ["crates/harness-types", "crates/overflow-classify", "crates/auth-credentials", "crates/provider-base"]
 
 [package]
-name = "iii-provider-openai"
-version = "0.2.1"
+name = "provider-openai"
+version = "0.1.6"
 description = "OpenAI Chat Completions; registers provider::openai::complete on the iii bus."
 edition = "2021"
 license = "Apache-2.0"
@@ -17,7 +17,7 @@ name = "provider_openai"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-provider-openai"
+name = "provider-openai"
 path = "src/main.rs"
 
 [dependencies]
@@ -41,7 +41,7 @@ tokio-stream = "0.1"
 serde_json = { workspace = true }
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.6"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -57,7 +57,7 @@ thiserror = "2"
 async-trait = "0.1"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "json", "rustls-tls", "stream"] }
 futures = "0.3"
 bytes = "1"
 regex = "1"

@@ -7,11 +7,11 @@ fn binary_path() -> String {
     // Fall back to constructing it from CARGO_MANIFEST_DIR so the test works in
     // environments where CARGO_BIN_EXE_* is not injected.
     #[allow(clippy::option_env_unwrap)]
-    if let Some(path) = option_env!("CARGO_BIN_EXE_iii_turn_orchestrator") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_turn_orchestrator") {
         return path.to_string();
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{manifest_dir}/target/debug/iii-turn-orchestrator")
+    format!("{manifest_dir}/target/debug/turn-orchestrator")
 }
 
 #[test]

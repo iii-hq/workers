@@ -2,7 +2,7 @@
 
 [package]
 name = "hook-fanout"
-version = "0.1.1"
+version = "0.1.6"
 description = "Reusable publish-collect primitive (hook-fanout::publish_collect) — fans an event to subscribers and collects merged replies."
 edition = "2021"
 license = "Apache-2.0"

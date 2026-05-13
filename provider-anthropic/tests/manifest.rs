@@ -1,4 +1,4 @@
-//! `iii-provider-anthropic --manifest` JSON contract (registry publish).
+//! `provider-anthropic --manifest` JSON contract (registry publish).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,9 +12,9 @@ fn binary_path() -> PathBuf {
         "release"
     };
     #[cfg(target_os = "windows")]
-    let name = "iii-provider-anthropic.exe";
+    let name = "provider-anthropic.exe";
     #[cfg(not(target_os = "windows"))]
-    let name = "iii-provider-anthropic";
+    let name = "provider-anthropic";
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join(profile)

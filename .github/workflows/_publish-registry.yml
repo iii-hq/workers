@@ -276,6 +276,41 @@ jobs:
             exit 1
           fi
 
+      - name: Build skills payload
+        id: skills_payload
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .github/scripts/build_skills_payload.py \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --out skills-payload.json
+
+      - name: POST /w/<worker>/skills
+        if: steps.skills_payload.outputs.skip != 'true'
+        env:
+          API_URL: ${{ inputs.api_url }}
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          http=$(curl -sS -o skills-response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X POST "$API_URL/w/$WORKER/skills" \
+            --data-binary @skills-payload.json)
+          echo "HTTP $http"
+          cat skills-response.json
+          if [[ "$http" != "200" ]]; then
+            echo "::error::publish skills failed with HTTP $http"
+            exit 1
+          fi
+
       - name: Dump III logs
         if: failure()
         run: |

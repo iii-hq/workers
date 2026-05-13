@@ -1,7 +1,7 @@
 //! Engine-backed smoke test for /bridge/events.
 //!
 //! Skipped when no engine is reachable. To run locally:
-//!   harness/scripts/demo.sh engine && cargo test -p iii-harness --test sse_bridge
+//!   harness/scripts/demo.sh engine && cargo test -p harness --test sse_bridge
 
 use harness::register_with_iii;
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};

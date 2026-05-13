@@ -9,7 +9,7 @@ mod manifest;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iii-provider-router",
+    name = "provider-router",
     about = "router::stream_assistant provider router plus router::abort and push helpers."
 )]
 struct Cli {

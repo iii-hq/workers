@@ -6,10 +6,10 @@
 //! - `IIITEST_WORKER_BIN`: absolute path to the iii-session binary
 //!
 //! Marked `#[ignore]` so cargo test default runs skip it. To execute:
-//!     cargo build --release -p iii-session
+//!     cargo build --release -p session
 //!     IIITEST_ENGINE_URL=ws://127.0.0.1:49134 \
 //!       IIITEST_WORKER_BIN=$(pwd)/target/release/iii-session \
-//!       cargo test -p iii-session --test restart_e2e -- --ignored
+//!       cargo test -p session --test tree_restart_e2e -- --ignored
 //!
 //! Schema source (verified against session-tree/src/lib.rs `register_with_iii`):
 //! - `session-tree::create` payload: `{ "display_name": str?, "cwd": str? }` →

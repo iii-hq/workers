@@ -732,31 +732,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-shell"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "clap",
- "iii-sdk",
- "libc",
- "once_cell",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "shell-words",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1540,6 +1515,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shell"
+version = "0.3.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "clap",
+ "iii-sdk",
+ "libc",
+ "once_cell",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shell-words",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

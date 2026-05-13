@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "harness-types"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -764,26 +764,6 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
-]
-
-[[package]]
-name = "iii-provider-router"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "harness-types",
- "hex",
- "iii-sdk",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1197,6 +1177,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "provider-router"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "harness-types",
+ "hex",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

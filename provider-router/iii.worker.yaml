@@ -3,7 +3,7 @@ name: provider-router
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-provider-router
+bin: provider-router
 description: router::stream_assistant provider router plus router::abort and router::push_steering / push_followup helpers.
 
 runtime:

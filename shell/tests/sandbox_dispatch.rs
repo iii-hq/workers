@@ -7,8 +7,8 @@ use iii_sdk::IIIError;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use iii_shell::fs::sandbox::{SandboxFsBackend, TriggerFwd};
-use iii_shell::fs::{
+use shell::fs::sandbox::{SandboxFsBackend, TriggerFwd};
+use shell::fs::{
     ChmodArgs, FsBackend, GrepArgs, LsArgs, MkdirArgs, MvArgs, ReadArgs, RmArgs, SedArgs, StatArgs,
     WriteArgs,
 };

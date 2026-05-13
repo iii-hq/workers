@@ -3,7 +3,7 @@ name: harness
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-harness
+bin: harness
 description: Meta-worker that composes the modular workers backing the iii chat surface.
 
 runtime:
@@ -14,6 +14,11 @@ scripts:
   start: cargo run
 
 dependencies:
+  iii-state: "^0.11.0"
+  iii-queue: "^0.11.0"
+  iii-stream: "^0.11.0"
+  iii-bridge: "^0.11.0"
+  iii-http: "^0.11.0"
   turn-orchestrator: "^0.1.0"
   provider-router: "^0.1.0"
   session: "^0.1.0"

@@ -18,10 +18,7 @@ mod triggers;
 use functions::types::{KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "iii-shell",
-    about = "Unix shell execution worker for iii agents"
-)]
+#[command(name = "shell", about = "Unix shell execution worker for iii agents")]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
@@ -311,12 +308,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    tracing::info!("iii-shell registered 15 functions, ready");
+    tracing::info!("shell registered 15 functions, ready");
 
     spawn_skill_register(iii.clone());
 
     tokio::signal::ctrl_c().await?;
-    tracing::info!("iii-shell shutting down");
+    tracing::info!("shell shutting down");
     unregister_skill(&iii).await;
     iii.shutdown_async().await;
     Ok(())
@@ -368,8 +365,8 @@ async fn register_skill_with_retry(iii: &III, id: &str, body: &str) {
 /// so a missing `skills` worker never delays shell's readiness.
 fn spawn_skill_register(iii: III) {
     tokio::spawn(async move {
-        register_skill_with_retry(&iii, iii_shell::SKILL_ID, iii_shell::SKILL_MD).await;
-        for (id, body) in iii_shell::SUB_SKILLS {
+        register_skill_with_retry(&iii, shell::SKILL_ID, shell::SKILL_MD).await;
+        for (id, body) in shell::SUB_SKILLS {
             register_skill_with_retry(&iii, id, body).await;
         }
     });
@@ -380,7 +377,7 @@ fn spawn_skill_register(iii: III) {
 /// inevitably skip this path; an operator can clean up via
 /// `skills::list` + `skills::unregister` manually.
 async fn unregister_skill(iii: &III) {
-    for (id, _) in iii_shell::SUB_SKILLS {
+    for (id, _) in shell::SUB_SKILLS {
         let _ = iii
             .trigger(TriggerRequest {
                 function_id: "skills::unregister".into(),
@@ -393,7 +390,7 @@ async fn unregister_skill(iii: &III) {
     let _ = iii
         .trigger(TriggerRequest {
             function_id: "skills::unregister".into(),
-            payload: json!({ "id": iii_shell::SKILL_ID }),
+            payload: json!({ "id": shell::SKILL_ID }),
             action: None,
             timeout_ms: Some(2_000),
         })

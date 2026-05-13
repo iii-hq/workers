@@ -1,13 +1,13 @@
 [workspace]
 
 [package]
-name = "iii-shell"
-version = "0.3.2"
+name = "shell"
+version = "0.3.3"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "iii-shell"
+name = "shell"
 path = "src/main.rs"
 
 [dependencies]

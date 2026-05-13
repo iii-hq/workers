@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "harness-types"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -784,26 +784,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "iii-turn-orchestrator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "harness-types",
- "iii-sdk",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "which",
 ]
 
 [[package]]
@@ -2061,6 +2041,26 @@ dependencies = [
  "sha1",
  "thiserror",
  "utf-8",
+]
+
+[[package]]
+name = "turn-orchestrator"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "harness-types",
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "which",
 ]
 
 [[package]]

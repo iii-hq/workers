@@ -1,0 +1,15 @@
+# Branching a conversation at an earlier point
+
+## When to use
+
+- Exploring an alternative reply at an earlier point in a conversation without disturbing the original session.
+- Creating a "what-if" variant from a decision point in an agent's history.
+- Isolating a sub-task context: fork at the entry where the sub-task began and work in the new session independently.
+
+## Notes
+
+- `from_entry_id` must exist in `source_session_id`; otherwise the call returns an error.
+- Only the active path from root to `from_entry_id` is copied; sibling branches are excluded.
+- When the path exceeds 50 entries, a single `BranchSummary` is written in place of the full history. The fork stays lightweight and the summary remains readable.
+- Entry ids in the forked session are fresh UUIDs and never collide with the source.
+- The new session's display name is `"<source name> (fork)"` when the source has a display name.

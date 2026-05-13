@@ -1,5 +1,5 @@
 //! Serde mirrors of the engine daemon's `sandbox::fs::*` JSON shapes.
-//! Authoritative reference: `crates/iii-shell-proto/src/lib.rs:69-100`
+//! Authoritative reference: `crates/shell-proto/src/lib.rs:69-100`
 //! (FsEntry, FsMatch, FsSedFileResult) in the motia repo.
 
 use schemars::JsonSchema;

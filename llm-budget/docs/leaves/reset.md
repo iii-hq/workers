@@ -1,0 +1,14 @@
+# Manually resetting a budget mid-period
+
+## When to use
+
+- Resetting a budget after an anomalous spend event that should not count against the ceiling.
+- Forcing a clean slate before a planned high-volume operation that has prior approval.
+- Correcting a budget that accumulated spend from a misconfigured agent run.
+
+## Notes
+
+- The current window is archived as a spend log entry (with a UUID suffix to avoid key collisions) before `spent_usd` resets to zero. `previous_spent_usd` in the response reflects the archived total.
+- The budget record is saved before the archive log entry. If the archive write fails, the reset has already committed; the error is logged but not rethrown, so retrying unconditionally double-archives.
+- Manual reset and time-based period rollover are independent. Reset re-anchors the period to the current boundary; rollover happens automatically at `period_resets_at` regardless.
+- Every alert's `last_fired_period_start` is cleared so threshold alerts fire again in the new period.

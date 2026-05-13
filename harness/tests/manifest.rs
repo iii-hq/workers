@@ -4,18 +4,18 @@ use std::process::Command;
 use serde_json::Value;
 
 fn harness_executable() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_iii_harness") {
+    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_harness") {
         return PathBuf::from(p);
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
-        let candidate = dir.join("target").join(profile).join("iii-harness");
+        let candidate = dir.join("target").join(profile).join("harness");
         if candidate.is_file() {
             return candidate;
         }
     }
     panic!(
-        "iii-harness binary not found under target/{{debug,release}}/; run `cargo build --bin iii-harness` first"
+        "harness binary not found under target/{{debug,release}}/; run `cargo build --bin harness` first"
     );
 }
 
@@ -25,7 +25,7 @@ fn manifest_subcommand_emits_valid_json() {
     let output = Command::new(&bin)
         .arg("--manifest")
         .output()
-        .expect("spawn iii-harness --manifest");
+        .expect("spawn harness --manifest");
 
     assert!(
         output.status.success(),

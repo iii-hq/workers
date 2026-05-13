@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
-WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/iii-shell}"
+WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/shell}"
 WORKER_BIN_LINK="${WORKER_BIN_LINK:-$HOME/.iii/workers/shell}"
 JAIL_ROOT="${JAIL_ROOT:-/private/tmp/iii-shell-jailed-root}"
 
@@ -36,7 +36,7 @@ Runs the jailed vuln-repro suite (config-jailed.yaml) — currently just
 S-C1 (symlink-parent jail escape).
 
   --keep     Leave the engine running after the run.
-  --no-build Skip cargo build of the iii-shell worker.
+  --no-build Skip cargo build of the shell worker.
 EOF
       exit 0
       ;;
@@ -63,8 +63,8 @@ trap cleanup EXIT INT TERM
 mkdir -p "$ROOT_DIR/reports" "$ROOT_DIR/data" "$(dirname "$WORKER_BIN_LINK")" "$JAIL_ROOT"
 
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests-jailed] cargo build --release (iii-shell worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin iii-shell)
+  echo "[run-tests-jailed] cargo build --release (shell worker)"
+  (cd "$WORKER_SRC" && cargo build --release --bin shell)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests-jailed] FATAL: worker binary missing at $WORKER_BIN_TARGET" >&2

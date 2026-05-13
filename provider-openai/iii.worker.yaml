@@ -3,7 +3,7 @@ name: provider-openai
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-provider-openai
+bin: provider-openai
 description: OpenAI Chat Completions; registers provider::openai::complete on the iii bus.
 
 runtime:

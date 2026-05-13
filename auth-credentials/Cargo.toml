@@ -1,8 +1,8 @@
 [workspace]
 
 [package]
-name = "iii-auth-credentials"
-version = "0.1.1"
+name = "auth-credentials"
+version = "0.1.6"
 description = "Provider credential vault under auth::* — API keys and OAuth tokens."
 edition = "2021"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ name = "auth_credentials"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-auth-credentials"
+name = "auth-credentials"
 path = "src/main.rs"
 
 [dependencies]
