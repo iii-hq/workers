@@ -131,3 +131,19 @@ fn drops_worker_boot_machinery() {
         "engine::workers::register is worker-boot machinery and must not appear in the agent-facing iii skill"
     );
 }
+
+#[test]
+fn references_directory_skills_get() {
+    assert!(
+        III_MD.contains("directory::skills::get"),
+        "iii.md must reference the new directory::skills::get function name"
+    );
+}
+
+#[test]
+fn drops_directory_skills_fetch_skill() {
+    assert!(
+        !III_MD.contains("directory::skills::fetch-skill"),
+        "iii.md must not reference the removed directory::skills::fetch-skill function"
+    );
+}
