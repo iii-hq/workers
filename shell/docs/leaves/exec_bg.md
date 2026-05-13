@@ -2,9 +2,9 @@
 
 ## When to use
 
-- Builds, long greps, watchers — anything that does not fit inside `max_timeout_ms`.
+- Builds, long greps, watchers; anything that does not fit inside `max_timeout_ms`.
 - Keeping the calling turn responsive while the command runs.
-- "Run cargo build and report when it is done" — pair with `shell::status` polling.
+- "Run cargo build and report when it is done": pair with `shell::status` polling.
 
 ## Notes
 
