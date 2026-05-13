@@ -55,7 +55,6 @@
 
 pub mod fanout;
 pub mod fs;
-pub mod skills;
 pub mod sse;
 
 use std::sync::Arc;
@@ -375,15 +374,6 @@ pub async fn register_with_iii_with_engine_url(
             }
         },
     ));
-
-    // First-boot bootstrap of `skills_folder` via iii-directory. Awaited
-    // synchronously so callers can rely on `skill::fetch` having content
-    // for every bundled worker by the time this function returns. Errors
-    // are logged but do not block registration — a transient registry
-    // failure shouldn't keep the harness from coming up.
-    if let Err(e) = skills::bootstrap_run(iii).await {
-        tracing::warn!(error = %e, "harness skills bootstrap encountered errors (best-effort)");
-    }
 
     Ok(HarnessFunctionRefs {
         status,

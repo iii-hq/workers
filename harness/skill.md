@@ -6,11 +6,11 @@ surface.
 The harness boots first; reads its `iii.worker.yaml` so the engine knows
 which sibling workers to spawn; registers `harness::status`,
 `bridge::trigger`, `bridge::events`, `bridge::info`, `ui::subscribe`,
-`ui::unsubscribe`, and `harness::fs::read_inline`; wires the upstream
+`ui::unsubscribe`, and `harness::fs::read_inline`; and wires the upstream
 fanout pumps (agent events, sessions, approvals, cost, workers, skills,
-prompts); and finally awaits a one-shot bootstrap that materialises each
-bundled worker's `skill.md` under `./data/skills/` via
-`skills::download`. After that, every `iii://<worker>/index` is fetchable.
+prompts). The agent's starting context is driven by
+`turn-orchestrator`'s `system_default_skills` config (fetched per chat);
+anything else is loaded on demand via `directory::skills::get`.
 
 - [`harness`](iii://harness/index)
   - [`harness::status`](iii://harness/index) — returns the bundle

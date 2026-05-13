@@ -4,8 +4,7 @@
 //! `iii.worker.yaml` is the manifest the iii engine reads to decide which
 //! workers to spawn. The Rust side needs the same list at runtime to feed
 //! `fanout::diff_workers` (so the workers strip in the UI can flag
-//! down/missing entries), advertise it via `harness::status`, and gate the
-//! first-boot bootstrap in `harness::skills::bootstrap_run`.
+//! down/missing entries) and advertise it via `harness::status`.
 //!
 //! Parsing is line-based on purpose: it avoids pulling `serde_yaml` into
 //! build-deps and keeps the build script self-contained.
