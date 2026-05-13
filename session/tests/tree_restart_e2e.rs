@@ -3,12 +3,12 @@
 //!
 //! Requires:
 //! - `IIITEST_ENGINE_URL`: WebSocket URL of a running iii engine
-//! - `IIITEST_WORKER_BIN`: absolute path to the iii-session binary
+//! - `IIITEST_WORKER_BIN`: absolute path to the session binary
 //!
 //! Marked `#[ignore]` so cargo test default runs skip it. To execute:
 //!     cargo build --release -p session
 //!     IIITEST_ENGINE_URL=ws://127.0.0.1:49134 \
-//!       IIITEST_WORKER_BIN=$(pwd)/target/release/iii-session \
+//!       IIITEST_WORKER_BIN=$(pwd)/target/release/session \
 //!       cargo test -p session --test tree_restart_e2e -- --ignored
 //!
 //! Schema source (verified against session-tree/src/lib.rs `register_with_iii`):
@@ -38,7 +38,7 @@ fn spawn_worker(engine_url: &str, bin: &str) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn iii-session")
+        .expect("spawn session")
 }
 
 async fn wait_for_ready() {

@@ -3,7 +3,7 @@ name: session
 language: rust
 deploy: binary
 manifest: Cargo.toml
-bin: iii-session
+bin: session
 description: Session storage (parent-id tree under session-tree::*) and per-session inbox (session-inbox::*) backed by iii state.
 
 runtime:

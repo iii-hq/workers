@@ -1,6 +1,6 @@
 //! Shared boot harness for turn-orchestrator integration tests.
 //!
-//! Spawns an `iii` engine and the `iii-session` worker, returning a
+//! Spawns an `iii` engine and the `session` worker, returning a
 //! handle whose [`Drop`] kills both. Tests skip gracefully if the `iii`
 //! binary is not on PATH or the session worker binary cannot be located,
 //! so plain `cargo test` stays green.
@@ -32,7 +32,7 @@ impl Drop for Harness {
 }
 
 impl Harness {
-    /// Boot iii engine + iii-session worker. Returns `None` and logs to
+    /// Boot iii engine + session worker. Returns `None` and logs to
     /// stderr if the test environment is missing prerequisites.
     pub async fn boot() -> Option<Self> {
         let iii_bin = match which::which("iii") {
@@ -47,8 +47,8 @@ impl Harness {
             Some(p) => p,
             None => {
                 eprintln!(
-                    "skipping: `iii-session` binary not found; \
-                     run `cargo build --bin iii-session` in ../session first"
+                    "skipping: `session` binary not found; \
+                     run `cargo build --bin session` in ../session first"
                 );
                 return None;
             }
@@ -109,7 +109,7 @@ fn find_session_binary() -> Option<PathBuf> {
         let candidate = session_dir
             .join("target")
             .join(profile)
-            .join("iii-session");
+            .join("session");
         if candidate.is_file() {
             return Some(candidate);
         }

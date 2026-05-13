@@ -9,7 +9,7 @@ use serde_json::json;
 use session::{config, inbox, manifest, tree};
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-session", about = "Session storage + inbox worker for iii")]
+#[command(name = "session", about = "Session storage + inbox worker for iii")]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,

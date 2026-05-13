@@ -18,7 +18,7 @@ name = "session"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iii-session"
+name = "session"
 path = "src/main.rs"
 
 [dependencies]
