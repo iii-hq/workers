@@ -6,7 +6,7 @@ Durable agent-turn state machine on the iii bus. `run::start` drives each sessio
 
 Reach for `run::start` for production runs: it returns the session id immediately and the orchestrator drives the session asynchronously. `run::start_and_wait` blocks until the session reaches a terminal state and is meant for tests, sub-agents, and one-shot scripted invocations. Re-issuing `run::start` with the same `session_id` resumes the persisted run rather than starting a fresh one.
 
-`turn-orchestrator` depends on [`session-inbox`](../session-inbox), [`hook-fanout`](../hook-fanout), and [`provider-router`](../provider-router). `iii worker add turn-orchestrator` pulls them in via the `dependencies` block. Most users get the orchestrator transitively by installing the [`harness`](../harness) meta-worker. For surfacing `run::*` to LLM agents, pair with [`skills`](../skills):
+`turn-orchestrator` depends on [`session`](../session), [`hook-fanout`](../hook-fanout), and [`provider-router`](../provider-router). `iii worker add turn-orchestrator` pulls them in via the `dependencies` block. Most users get the orchestrator transitively by installing the [`harness`](../harness) meta-worker. For surfacing `run::*` to LLM agents, pair with [`skills`](../skills):
 
 ```bash
 iii worker add skills
