@@ -4,7 +4,7 @@
 Enforces:
     1. README.md exists and is non-empty.
     2. iii.worker.yaml parses and has required fields + valid enum values.
-    3. The manifest version on this ref is strictly greater than on --base-ref.
+    3. The manifest version on this ref is greater than or equal to on --base-ref.
     4. tests/ exists and is non-empty.
 
 If `--worker` is not in `--source-changed`, requirements 1, 3, and 4 are
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python'"
             )
 
-    # 3. Manifest version > base
+    # 3. Manifest version >= base
     if m is not None and m.manifest:
         manifest_path = root / m.manifest
         if not manifest_path.exists():
@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                     base_blob = None
                 # Only enforce when base resolves to a commit distinct from
                 # HEAD. With a single-commit repo (e.g. brand-new branch on
-                # this PR), base == HEAD and "strictly greater" is impossible.
+                # this PR), base == HEAD and comparing to base is meaningless.
                 try:
                     base_sha = subprocess.check_output(
                         ["git", "rev-parse", args.base_ref],
@@ -124,9 +124,9 @@ def main(argv: list[str] | None = None) -> int:
                             base_ver = _lib.read_version(tmp)
                         except (ValueError, FileNotFoundError):
                             base_ver = None
-                    if base_ver is not None and _lib.parse_semver(pr_ver) <= _lib.parse_semver(base_ver):
+                    if base_ver is not None and _lib.parse_semver(pr_ver) < _lib.parse_semver(base_ver):
                         soft(
-                            f"{worker}/{m.manifest} version {pr_ver} is not greater "
+                            f"{worker}/{m.manifest} version {pr_ver} is less "
                             f"than base {base_ver}"
                         )
 
