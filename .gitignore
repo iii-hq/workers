@@ -1,28 +1,53 @@
+# Build artifacts
 target/
-.planning/
-.skill-check/
-.claude/
-.idea/
-.DS_Store
-.worktrees
+dist/
+.next/
+.vite/
+graphify-out
+
+# Dependencies
 node_modules
 package-lock.json
 pnpm-lock.yaml
 yarn.lock
 !iii-database/tests/e2e/workers/harness/package-lock.json
 !shell/tests/e2e/workers/harness/package-lock.json
-iii_workers/
-graphify-out
-HARNESS-WORKER-PUBLISHING-MAP.md
-WORKERS-MIGRATING.md
-WORKERS-PR-REVIEW.md
-.gstack/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor / OS
+.idea/
+.vscode/
+.cursor/
+.DS_Store
+
+# Local runtime state
+.omx/
+data/
 *.pid
 *.zip
 iii.lock
-harness/.omx/
-harness/data/
-harness/web/.vite/
-harness/web/dist/
+engine.pid
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Local runtime composition (root) — per-worker config.yaml files are tracked individually
+/config.yaml
+
+# Tooling / agent scratch
+.claude/
+.planning/
+.skill-check/
+.gstack/
+.worktrees/
 CLAUDE.md
-.omx/
+data/

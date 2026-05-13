@@ -111,30 +111,7 @@ jobs:
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
         run: |
           set -euo pipefail
-          mode=$(python3 - <<'PY'
-          import os
-          import yaml
-
-          worker = os.environ["WORKER"]
-          deploy = os.environ.get("DEPLOY", "")
-          manifest_path = f"{worker}/iii.worker.yaml"
-          manifest = yaml.safe_load(open(manifest_path, encoding="utf-8").read()) or {}
-          scripts = manifest.get("scripts") or {}
-          runtime = manifest.get("runtime") or {}
-          has_scripts_start = bool(str(scripts.get("start") or "").strip())
-          has_runtime = bool(runtime.get("kind") or runtime.get("language"))
-          language = str(manifest.get("language") or "").strip().lower()
-
-          if deploy == "binary":
-              print("release-binary")
-          elif has_scripts_start or has_runtime:
-              print("iii-add")
-          elif language == "rust":
-              print("cargo-run")
-          else:
-              print("unsupported")
-          PY
-          )
+          mode=$(python3 .github/scripts/manifest_version.py deploy-mode "$WORKER")
 
           case "$mode" in
             iii-add)
@@ -209,12 +186,9 @@ jobs:
 
       - name: Assert worker interface was collected
         run: |
-          python3 - <<'PY'
-          import json
-          data = json.load(open("worker-interface.json"))
-          if not data.get("functions"):
-              raise SystemExit("no worker functions were collected")
-          PY
+          set -euo pipefail
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty --assert-file worker-interface.json
 
       - name: Resolve binary artifacts
         if: inputs.deploy == 'binary'
@@ -273,6 +247,41 @@ jobs:
           cat response.json
           if [[ "$http" != "200" ]]; then
             echo "::error::publish failed with HTTP $http"
+            exit 1
+          fi
+
+      - name: Build skills payload
+        id: skills_payload
+        env:
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .github/scripts/build_skills_payload.py \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --out skills-payload.json
+
+      - name: POST /w/<worker>/skills
+        if: steps.skills_payload.outputs.skip != 'true'
+        env:
+          API_URL: ${{ inputs.api_url }}
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          http=$(curl -sS -o skills-response.json -w '%{http_code}' \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -X POST "$API_URL/w/$WORKER/skills" \
+            --data-binary @skills-payload.json)
+          echo "HTTP $http"
+          cat skills-response.json
+          if [[ "$http" != "200" ]]; then
+            echo "::error::publish skills failed with HTTP $http"
             exit 1
           fi
 

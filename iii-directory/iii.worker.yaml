@@ -1,0 +1,7 @@
+iii: v1
+name: iii-directory
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-directory
+description: Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader.

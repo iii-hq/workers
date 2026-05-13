@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Real end-to-end usage of the demo harness.
 #
-# Important: turn-orchestrator and session-tree use DIFFERENT stores.
+# Important: turn-orchestrator and session-tree::* use DIFFERENT stores.
 #   - run::start_and_wait persists to engine state under scope="agent",
 #     key="session/<id>/messages" (and a few sibling keys).
-#   - session::tree / session::messages read session-tree's own store,
-#     populated only by explicit session::create + session::append calls.
+#   - session-tree::tree / session-tree::messages read session-tree::*'s own
+#     store, populated only by explicit session-tree::create + append calls.
 # This script uses the run::start path. To enumerate, we list state keys
 # under scope="agent".
 #

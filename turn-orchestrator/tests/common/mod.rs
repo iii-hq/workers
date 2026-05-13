@@ -1,8 +1,8 @@
 //! Shared boot harness for turn-orchestrator integration tests.
 //!
-//! Spawns an `iii` engine and the `iii-session-tree` worker, returning a
+//! Spawns an `iii` engine and the `session` worker, returning a
 //! handle whose [`Drop`] kills both. Tests skip gracefully if the `iii`
-//! binary is not on PATH or the session-tree worker binary cannot be located,
+//! binary is not on PATH or the session worker binary cannot be located,
 //! so plain `cargo test` stays green.
 
 #![allow(dead_code)]
@@ -32,7 +32,7 @@ impl Drop for Harness {
 }
 
 impl Harness {
-    /// Boot iii engine + iii-session-tree worker. Returns `None` and logs to
+    /// Boot iii engine + session worker. Returns `None` and logs to
     /// stderr if the test environment is missing prerequisites.
     pub async fn boot() -> Option<Self> {
         let iii_bin = match which::which("iii") {
@@ -43,21 +43,21 @@ impl Harness {
             }
         };
 
-        let worker_bin = match find_session_tree_binary() {
+        let worker_bin = match find_session_binary() {
             Some(p) => p,
             None => {
                 eprintln!(
-                    "skipping: `iii-session-tree` binary not found; \
-                     run `cargo build --bin iii-session-tree` in ../session-tree first"
+                    "skipping: `session` binary not found; \
+                     run `cargo build --bin session` in ../session first"
                 );
                 return None;
             }
         };
 
-        let config_path = match find_session_tree_memory_config() {
+        let config_path = match find_session_memory_config() {
             Some(p) => p,
             None => {
-                eprintln!("skipping: session-tree integration_memory.yaml not found");
+                eprintln!("skipping: session tree_integration_memory.yaml not found");
                 return None;
             }
         };
@@ -96,20 +96,17 @@ impl Harness {
     }
 }
 
-fn find_session_tree_binary() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("IIITEST_SESSION_TREE_BIN") {
+fn find_session_binary() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("IIITEST_SESSION_BIN") {
         let buf = PathBuf::from(p);
         if buf.is_file() {
             return Some(buf);
         }
     }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let session_tree_dir = manifest_dir.parent()?.join("session-tree");
+    let session_dir = manifest_dir.parent()?.join("session");
     for profile in ["debug", "release"] {
-        let candidate = session_tree_dir
-            .join("target")
-            .join(profile)
-            .join("session-tree");
+        let candidate = session_dir.join("target").join(profile).join("session");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -117,13 +114,13 @@ fn find_session_tree_binary() -> Option<PathBuf> {
     None
 }
 
-fn find_session_tree_memory_config() -> Option<PathBuf> {
+fn find_session_memory_config() -> Option<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let candidate = manifest_dir
         .parent()?
-        .join("session-tree")
+        .join("session")
         .join("tests")
-        .join("integration_memory.yaml");
+        .join("tree_integration_memory.yaml");
     if candidate.is_file() {
         Some(candidate)
     } else {
