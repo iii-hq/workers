@@ -10,5 +10,5 @@
 
 - Same payload contract as `run::start`, plus a `timeout_ms` (default 120000) that bounds polling.
 - The polling cadence is `sync_poll_interval_ms` from `config.yaml` (default 50ms). Increase it for very long runs to reduce poll overhead.
-- The response carries `{ session_id, messages, turn_count }` reflecting the terminal state — use it directly as the child run's transcript.
+- The response carries `{ session_id, messages, turn_count }` reflecting the terminal state. Use it directly as the child run's transcript.
 - For production traffic, prefer `run::start` plus an `agent::events` subscriber; `start_and_wait` ties up a trigger slot for the entire run duration.
