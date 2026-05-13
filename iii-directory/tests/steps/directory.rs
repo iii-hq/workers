@@ -81,7 +81,9 @@ async fn call_with_payload(
     call_directory(world, &function_id, payload).await;
 }
 
-#[then(regex = r#"^the (directory::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#)]
+#[then(
+    regex = r#"^the (directory::engine::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#
+)]
 fn directory_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: String) {
     if world.iii.is_none() {
         return;
