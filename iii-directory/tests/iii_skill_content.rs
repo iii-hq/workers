@@ -10,9 +10,18 @@ fn defines_iii_primitives() {
         III_MD.contains("backend unification engine built from three primitives"),
         "iii.md must define iii as a three-primitive engine"
     );
-    assert!(III_MD.contains("Function"));
-    assert!(III_MD.contains("Trigger"));
-    assert!(III_MD.contains("Worker"));
+    assert!(
+        III_MD.contains("**Function**"),
+        "iii.md must name the Function primitive in the framing block"
+    );
+    assert!(
+        III_MD.contains("**Trigger**"),
+        "iii.md must name the Trigger primitive in the framing block"
+    );
+    assert!(
+        III_MD.contains("**Worker**"),
+        "iii.md must name the Worker primitive in the framing block"
+    );
 }
 
 #[test]
@@ -33,10 +42,22 @@ fn pins_agent_call_argument_contract() {
 
 #[test]
 fn pins_error_envelope_shapes() {
-    assert!(III_MD.contains("function_not_found"));
-    assert!(III_MD.contains("missing_function"));
-    assert!(III_MD.contains("trigger_failed"));
-    assert!(III_MD.contains("blocked: true"));
+    assert!(
+        III_MD.contains("function_not_found"),
+        "iii.md must name the function_not_found error shape"
+    );
+    assert!(
+        III_MD.contains("missing_function"),
+        "iii.md must name the missing_function error shape"
+    );
+    assert!(
+        III_MD.contains("trigger_failed"),
+        "iii.md must name the trigger_failed error shape"
+    );
+    assert!(
+        III_MD.contains("blocked: true"),
+        "iii.md must name the blocked: true policy refusal envelope"
+    );
 }
 
 #[test]
@@ -46,8 +67,8 @@ fn pins_recovery_rules() {
         "iii.md must stop function-id guessing loops"
     );
     assert!(
-        III_MD.contains("Resend with"),
-        "iii.md must show the missing_function recovery path"
+        III_MD.contains("Resend with\n  exactly `function`"),
+        "iii.md must show the missing_function recovery: resend with the exact `function` field"
     );
     assert!(
         III_MD.contains("Do not retry or route around"),
