@@ -1,0 +1,7 @@
+workers:
+  - name: iii-directory
+    config:
+      skills_folder: ./data/skills
+      registry_url: https://api.workers.iii.dev
+      download_timeout_ms: 60000
+      registry_cache_ttl_ms: 60000

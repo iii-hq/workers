@@ -194,6 +194,10 @@ pub fn new_shared() -> SharedFanout {
 pub struct FanoutPumps {
     pub agent_event_fn: FunctionRef,
     pub agent_event_trigger: Option<Trigger>,
+    pub skills_on_change_fn: FunctionRef,
+    pub skills_on_change_trigger: Option<Trigger>,
+    pub prompts_on_change_fn: FunctionRef,
+    pub prompts_on_change_trigger: Option<Trigger>,
     pub sessions_poll: tokio::task::JoinHandle<()>,
     pub approval_poll: tokio::task::JoinHandle<()>,
     pub cost_poll: tokio::task::JoinHandle<()>,
@@ -205,7 +209,15 @@ impl FanoutPumps {
         if let Some(t) = self.agent_event_trigger {
             t.unregister();
         }
+        if let Some(t) = self.skills_on_change_trigger {
+            t.unregister();
+        }
+        if let Some(t) = self.prompts_on_change_trigger {
+            t.unregister();
+        }
         self.agent_event_fn.unregister();
+        self.skills_on_change_fn.unregister();
+        self.prompts_on_change_fn.unregister();
         self.sessions_poll.abort();
         self.approval_poll.abort();
         self.cost_poll.abort();
@@ -232,6 +244,23 @@ pub fn spawn_subscribers(iii: &Arc<III>, fanout: SharedFanout) -> FanoutPumps {
         }
     };
 
+    // iii-directory fan-out pumps: forward every successful skills/prompts
+    // download to all subscribed browsers so the UI can refresh.
+    let (skills_on_change_fn, skills_on_change_trigger) = spawn_directory_on_change_pump(
+        iii.as_ref(),
+        Arc::clone(&fanout),
+        "directory::skills::on-change",
+        "ui::skills::changed",
+        "harness::ui::skills-on-change-pump",
+    );
+    let (prompts_on_change_fn, prompts_on_change_trigger) = spawn_directory_on_change_pump(
+        iii.as_ref(),
+        Arc::clone(&fanout),
+        "directory::prompts::on-change",
+        "ui::prompts::changed",
+        "harness::ui::prompts-on-change-pump",
+    );
+
     let sessions_poll = spawn_sessions_changed_poll(Arc::clone(iii), Arc::clone(&fanout));
     let approval_poll = spawn_approval_poll(Arc::clone(iii), Arc::clone(&fanout));
     let cost_poll = spawn_cost_poll(Arc::clone(iii), Arc::clone(&fanout));
@@ -240,11 +269,102 @@ pub fn spawn_subscribers(iii: &Arc<III>, fanout: SharedFanout) -> FanoutPumps {
     FanoutPumps {
         agent_event_fn,
         agent_event_trigger,
+        skills_on_change_fn,
+        skills_on_change_trigger,
+        prompts_on_change_fn,
+        prompts_on_change_trigger,
         sessions_poll,
         approval_poll,
         cost_poll,
         workers_poll,
     }
+}
+
+/// Register a directory `::on-change` trigger subscriber that broadcasts to
+/// every all-sessions subscriber on every event. Used for the
+/// `directory::skills::on-change` and `directory::prompts::on-change` pumps that iii-directory
+/// fires after every successful `directory::skills::download`.
+///
+/// Returns the registered function and the trigger handle (None if the
+/// trigger-type registration failed, e.g. iii-directory isn't up yet).
+fn spawn_directory_on_change_pump(
+    iii: &III,
+    fanout: SharedFanout,
+    trigger_type: &str,
+    out_prefix: &'static str,
+    fn_id_base: &str,
+) -> (FunctionRef, Option<Trigger>) {
+    let id = format!("{fn_id_base}-{}", std::process::id());
+    let iii_inner = iii.clone();
+    let out_prefix_for_handler = out_prefix.to_string();
+    let function = iii.register_function((
+        RegisterFunctionMessage::with_id(id).with_description(format!(
+            "Internal: fans out {trigger_type} events to UI subscribers as {out_prefix}::*."
+        )),
+        move |payload: Value| {
+            let iii = iii_inner.clone();
+            let fanout = Arc::clone(&fanout);
+            let out_prefix = out_prefix_for_handler.clone();
+            async move {
+                let browsers = {
+                    let state = fanout.read().await;
+                    state.all_sessions_subscribers()
+                };
+                let frame = extract_on_change_payload(&payload);
+                for browser_id in browsers {
+                    let function_id = format!("{out_prefix}::{browser_id}");
+                    let iii_for_push = iii.clone();
+                    let frame = frame.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = iii_for_push
+                            .trigger(TriggerRequest {
+                                function_id,
+                                payload: frame,
+                                action: None,
+                                timeout_ms: Some(PUSH_TIMEOUT_MS),
+                            })
+                            .await
+                        {
+                            tracing::trace!(error = %e, "directory on-change push failed");
+                        }
+                    });
+                }
+                Ok::<_, IIIError>(json!({ "ok": true }))
+            }
+        },
+    ));
+
+    let trigger = match iii.register_trigger(RegisterTriggerInput {
+        trigger_type: trigger_type.into(),
+        function_id: function.id.clone(),
+        config: json!({}),
+        metadata: None,
+    }) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                trigger_type = trigger_type,
+                "harness fanout: failed to register directory on-change trigger"
+            );
+            None
+        }
+    };
+
+    (function, trigger)
+}
+
+/// Pull the broadcast payload out of a directory `::on-change` event. The
+/// engine wraps custom triggers in a `{ type, event: { data: <payload> } }`
+/// envelope; we unwrap it (falling back to the raw payload) so subscribers
+/// always see the iii-directory `WrittenSkill` / `WrittenPrompt` shape.
+pub(crate) fn extract_on_change_payload(payload: &Value) -> Value {
+    payload
+        .get("event")
+        .and_then(|e| e.get("data"))
+        .cloned()
+        .or_else(|| payload.get("data").cloned())
+        .unwrap_or_else(|| payload.clone())
 }
 
 fn register_agent_event_pump(iii: &III, fanout: SharedFanout) -> FunctionRef {
@@ -1160,6 +1280,37 @@ mod tests {
         let _ = s.outbound_for("browser-a");
         s.unsubscribe("browser-a", Some("sess-1".into()));
         assert_eq!(s.outbound.len(), 0);
+    }
+
+    #[test]
+    fn extract_on_change_payload_unwraps_event_envelope() {
+        let env = json!({
+            "type": "directory::skills::on-change",
+            "event": {
+                "data": {
+                    "worker": "shell",
+                    "version": "0.3.3",
+                    "files": ["index.md"]
+                }
+            }
+        });
+        let frame = extract_on_change_payload(&env);
+        assert_eq!(frame["worker"], json!("shell"));
+        assert_eq!(frame["version"], json!("0.3.3"));
+    }
+
+    #[test]
+    fn extract_on_change_payload_falls_back_to_data_field() {
+        let env = json!({ "data": { "worker": "shell" } });
+        let frame = extract_on_change_payload(&env);
+        assert_eq!(frame["worker"], json!("shell"));
+    }
+
+    #[test]
+    fn extract_on_change_payload_returns_raw_payload_when_no_wrapper() {
+        let env = json!({ "worker": "shell", "files": ["index.md"] });
+        let frame = extract_on_change_payload(&env);
+        assert_eq!(frame, env);
     }
 
     /// fanout_pump_drops_oldest_and_emits_resync_on_overflow — we exercise
