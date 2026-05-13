@@ -36,7 +36,7 @@ applies as written.
 ## TL;DR — there is exactly ONE way to list functions
 
 ```json
-{ "function_id": "engine::functions::list",
+{ "function": "engine::functions::list",
   "payload": { "include_internal": false } }
 ```
 
@@ -60,7 +60,7 @@ id from the response.
 ## Step 1 — Discover what exists
 
 ```json
-{ "function_id": "engine::functions::list",
+{ "function": "engine::functions::list",
   "payload": { "include_internal": false } }
 ```
 
@@ -199,8 +199,8 @@ This bundle's harness adds:
    you write code that consumes it.
 4. (Optional) `engine::workers::list` filtered by the function's
    worker — confirm the worker is connected and `status` is healthy.
-5. Call `iii.trigger({ function_id, payload })` with a payload that
-   satisfies the schema.
+5. Call it. From an agent: `agent_call({ function: "<id>", payload })`.
+   From the SDK directly: `iii.trigger({ function_id: "<id>", payload })`.
 
 If a call fails with `function_not_found`, the function does NOT
 exist under that id. Re-run step 1 and pick a real id from the
