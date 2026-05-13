@@ -66,7 +66,6 @@ pub fn build(
         if !c.is_empty() {
             out.push_str("\n\nWorking directory: ");
             out.push_str(&c);
-            out.push('\n');
         }
     }
 

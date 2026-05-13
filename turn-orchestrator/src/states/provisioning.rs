@@ -75,7 +75,7 @@ async fn fetch_default_skills(iii: &III, uris: &[String]) -> HashMap<String, Str
 /// Fetch a single `iii://` URI via `directory::skills::fetch-skill`.
 /// Tolerates either a raw string response or `{ body: "..." }` envelope.
 async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
-    let resp = iii
+    let resp = match iii
         .trigger(TriggerRequest {
             function_id: "directory::skills::fetch-skill".into(),
             payload: json!({ "uri": uri }),
@@ -83,7 +83,13 @@ async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
             timeout_ms: Some(FETCH_TIMEOUT_MS),
         })
         .await
-        .ok()?;
+    {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(%uri, %err, "directory::skills::fetch-skill trigger failed");
+            return None;
+        }
+    };
     response_to_string(&resp)
 }
 
@@ -111,7 +117,6 @@ fn response_to_string(resp: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_prompt::DefaultSkillBody;
 
     #[test]
     fn build_default_skill_bodies_preserves_order_and_misses() {
@@ -125,9 +130,6 @@ mod tests {
         assert_eq!(out[0].body.as_deref(), Some("ALPHA"));
         assert_eq!(out[1].uri, "iii://shell");
         assert!(out[1].body.is_none());
-
-        // Suppress unused-warning for the imported alias.
-        let _: DefaultSkillBody = out[0].clone();
     }
 
     #[test]
