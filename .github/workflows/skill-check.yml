@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write          # for auto-fix mode (commits the rendered diff back)
   pull-requests: write     # for the sticky PR comment
+  actions: write           # for the persistent AI skip-cache (v0.3+)
 
 jobs:
   skill-check:
@@ -16,7 +17,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}    # check out the PR branch directly
-      - uses: iii-hq/skills-and-validation@v0.2
+      - uses: iii-hq/skills-and-validation@v0.3
         with:
           write: true
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
