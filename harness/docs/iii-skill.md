@@ -20,10 +20,10 @@ Three differences from the SDK examples below:
    Every call is synchronous with the bus default timeout. Putting these
    fields in `payload` does nothing.
 
-`directory::skills::fetch-skill` is a real, callable function for
-loading skill bodies by `iii://` URI (or by bare skill path, the
-`id` returned from `directory::skills::list`) — the blacklist below
-is about *function-listing* calls only.
+`directory::skills::get` is a real, callable function for loading one
+skill body by id (the `id` returned from `directory::skills::list`,
+which the worker also accepts in the legacy `iii://{id}` form) — the
+blacklist below is about *function-listing* calls only.
 
 Everything else in this document — discovery, schemas, listings —
 applies as written.

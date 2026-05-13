@@ -7,7 +7,7 @@ split into four sub-namespaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
-| **Skills** (`directory::skills::*`) | Markdown documents under `iii://{id}` plus an `iii://directory/skills` index | Orientation: "when and why to use my worker's tools" |
+| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, description, bytes, modified_at }` per row) and a single-skill reader `directory::skills::get { id }` returning `{ id, title, description, body, modified_at }` | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Static prompt templates listed by `directory::prompts::list` and read by `directory::prompts::get` | Parametric command templates the *user* invokes |
 | **Engine** (`directory::engine::*`) | Read-side enrichment over `engine::functions::list`, `engine::workers::list`, `engine::trigger-types::list`, `engine::triggers::list` | "What's connected to the engine right now?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with the same `workers::{list,info}` shape as `directory::engine::workers::*` | "What's published in the public registry?" |
@@ -29,7 +29,7 @@ engine view and the published-registry view without re-learning the API.
 2. [Configuration](#configuration)
 3. [Quickstart: download some skills](#quickstart-download-some-skills)
 4. [On-disk layout](#on-disk-layout)
-5. [URI scheme](#uri-scheme)
+5. [Skill ids](#skill-ids)
 6. [Functions](#functions)
 7. [Custom trigger types](#custom-trigger-types)
 8. [Local development & testing](#local-development--testing)
@@ -52,8 +52,8 @@ iii worker add iii-directory
 ## Configuration
 
 ```yaml
-# Folder that backs every read (`iii://`, `directory::skills::fetch-skill`,
-# `directory::skills::list`, `directory::prompts::*`) and every write
+# Folder that backs every read (`directory::skills::list`,
+# `directory::skills::get`, `directory::prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
 # against the process current working directory; absolute paths are
 # used as-is.
@@ -125,8 +125,7 @@ skills_folder/
 A few rules:
 
 - **Skill ids** are the relative path under `skills_folder` with `.md`
-  stripped. Each segment must satisfy `[a-z0-9_-]{1,64}` and the first
-  segment must not be the literal `fn` (reserved for section URIs).
+  stripped. Each segment must satisfy `[a-z0-9_-]{1,64}`.
 - **Prompts** live under any `*/prompts/*.md` path. They must start with
   a YAML frontmatter block declaring at least `description`; `name`
   is optional and overrides the file-stem default.
@@ -146,28 +145,19 @@ hand-edited additions survive a re-pull).
 
 ---
 
-## URI scheme
+## Skill ids
 
-Same scheme as previous releases, anchored now on the filesystem:
-
-| URI | Returns |
-|---|---|
-| `iii://directory/skills` | Auto-rendered markdown index of every skill in `skills_folder`. |
-| `iii://{id}` | The body at `<skills_folder>/{id}.md`. Any depth. First segment must NOT equal `fn`. |
-| `iii://fn/{a}/{b}/.../{leaf}` | Trigger function `a::b::...::leaf` with `{}` and serve its output. Each `/` after `fn/` becomes `::`. |
-
-The `directory::skills::fetch-skill` function is a thin batched wrapper
-over the same resolver. Pass either `uri` (single) or `uris` (array) —
-each entry may be a full `iii://` URI or a bare skill path (the `id`
-returned by `directory::skills::list`, auto-prefixed with `iii://`).
-Sections are wrapped as `# {uri}\n\n{body}` and joined with
-`\n\n---\n\n`.
-
-There is no recursion guard on `iii://fn/<path>` URIs — the resolver
-will trigger any function the engine exposes, including `state::*` and
-`engine::*` infra. Adapters that surface
-`directory::skills::fetch-skill` to untrusted callers should add their
-own filtering.
+Skills are addressed by their relative path under `skills_folder` with
+`.md` stripped — e.g. `<skills_folder>/agent-memory/observe.md` →
+id `"agent-memory/observe"`. The same string is what
+`directory::skills::list` returns and what `directory::skills::get`
+expects in `{ "id": ... }`. The legacy `iii://{id}` link form is still
+accepted on `get` (the prefix is auto-stripped), but the worker no
+longer parses any other `iii://` URI shape — bodies are read solely by
+id, and the auto-rendered tree-shaped index that previous releases
+served at `iii://directory/skills` is gone. Consumers that want a
+tree-shaped picker iterate `list` rows themselves and indent by
+`id.matches('/').count()`.
 
 ---
 
@@ -182,8 +172,8 @@ other adapter.
 | Function ID | Description |
 |---|---|
 | `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?|tag?}` (defaults `tag=latest`). |
-| `directory::skills::list` | Metadata-only listing of every fs-backed skill. |
-| `directory::skills::fetch-skill` | Batched read across one or more `iii://` URIs or bare skill paths (returns plain markdown). |
+| `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, description, bytes, modified_at }` per row. Title and description are extracted from each body's H1 + first paragraph so consumers can render a picker without a follow-up `get` per row. |
+| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, description, body, modified_at }` — same flat shape as `directory::prompts::get`. Accepts a bare id or the same id prefixed with `iii://`. |
 
 ### `directory::prompts::*` (filesystem reader)
 
@@ -244,8 +234,8 @@ cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
 ### Tests
 
 ```bash
-# Fast, offline — exercises the pure helpers (markdown / URI / validators)
-# without needing an iii engine.
+# Fast, offline — exercises the pure helpers (markdown / id validators
+# / fs source) without needing an iii engine.
 cargo test --lib
 
 # Full BDD suite — requires an iii engine on ws://127.0.0.1:49134

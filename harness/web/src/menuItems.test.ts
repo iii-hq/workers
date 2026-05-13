@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   BUILT_IN_COMMANDS,
   filterCommands,
-  skillsIndexToMenuItems,
+  skillsListToMenuItems,
 } from "./menuItems";
 import type { MenuItem } from "./useCommandMenu";
 
@@ -48,48 +48,66 @@ describe("filterCommands", () => {
   });
 });
 
-describe("skillsIndexToMenuItems", () => {
+describe("skillsListToMenuItems", () => {
   it("returns [] for null", () => {
-    expect(skillsIndexToMenuItems(null)).toEqual([]);
+    expect(skillsListToMenuItems(null)).toEqual([]);
   });
 
-  it("returns [] for empty string", () => {
-    expect(skillsIndexToMenuItems("")).toEqual([]);
+  it("returns [] for undefined", () => {
+    expect(skillsListToMenuItems(undefined)).toEqual([]);
   });
 
-  it("parses well-formed lines with em-dash", () => {
-    const md = [
-      "# skills",
-      "",
-      "- [tdd](iii://skills/tdd) — Write tests first",
-      "- [refactor](iii://skills/refactor) — Clean up dead code",
-      "",
-    ].join("\n");
-    const out = skillsIndexToMenuItems(md);
+  it("returns [] for empty array", () => {
+    expect(skillsListToMenuItems([])).toEqual([]);
+  });
+
+  it("projects rows into /id menu items with secondary 'title — description'", () => {
+    const out = skillsListToMenuItems([
+      { id: "tdd", title: "Write tests first", description: "Red, green, refactor." },
+      { id: "refactor", title: "Refactor", description: "Clean up dead code" },
+    ]);
     expect(out.length).toBe(2);
     expect(out[0].kind).toBe("skill");
     expect(out[0].id).toBe("/tdd");
     expect(out[0].label).toBe("/tdd");
-    expect(out[0].description).toContain("Write tests first");
-    expect((out[0].meta as { uri: string }).uri).toBe("iii://skills/tdd");
+    expect(out[0].description).toBe("Write tests first — Red, green, refactor.");
+    expect((out[0].meta as { id: string; uri: string })).toEqual({
+      id: "tdd",
+      uri: "iii://tdd",
+    });
   });
 
-  it("parses lines with plain hyphen separator", () => {
-    const md = "- [foo](iii://skills/foo) - description here";
-    const out = skillsIndexToMenuItems(md);
-    expect(out.length).toBe(1);
-    expect(out[0].id).toBe("/foo");
+  it("falls back to id when title is missing or blank", () => {
+    const out = skillsListToMenuItems([
+      { id: "shell" },
+      { id: "harness", title: "   " },
+    ]);
+    expect(out[0].description).toBe("shell");
+    expect(out[1].description).toBe("harness");
   });
 
-  it("skips non-skill lines silently", () => {
-    const md = [
-      "Some intro paragraph",
-      "- not a skill link",
-      "- [valid](iii://skills/valid) — yes",
-      "- [external](https://example.com) — no",
-    ].join("\n");
-    const out = skillsIndexToMenuItems(md);
+  it("omits the trailing em-dash when description is empty", () => {
+    const out = skillsListToMenuItems([{ id: "x", title: "X" }]);
+    expect(out[0].description).toBe("X");
+  });
+
+  it("preserves nested ids in label and uri", () => {
+    const out = skillsListToMenuItems([
+      { id: "resend/email/send", title: "send", description: "Send an email" },
+    ]);
+    expect(out[0].id).toBe("/resend/email/send");
+    expect((out[0].meta as { uri: string }).uri).toBe("iii://resend/email/send");
+  });
+
+  it("drops rows whose id is missing or blank", () => {
+    const out = skillsListToMenuItems([
+      { id: "ok", title: "ok" },
+      { id: "", title: "blank" },
+      { id: "   ", title: "spaces" },
+      // @ts-expect-error — explicitly testing the runtime guard
+      { title: "no id" },
+    ]);
     expect(out.length).toBe(1);
-    expect(out[0].id).toBe("/valid");
+    expect(out[0].id).toBe("/ok");
   });
 });

@@ -525,7 +525,7 @@ export default function App() {
                 disabled={composerDisabled}
                 onSend={send}
                 cwd={cwd.trim()}
-                skillsIndex={null}
+                skillRows={null}
                 sessionMessages={messages}
                 callbacks={{
                   onNew: startNew,

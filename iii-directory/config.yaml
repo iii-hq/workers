@@ -1,7 +1,7 @@
 # iii-directory runtime config.
 
-# Folder that backs every read (`iii://`, `directory::skills::fetch-skill`,
-# `directory::skills::list`, `directory::prompts::*`) and every write
+# Folder that backs every read (`directory::skills::list`,
+# `directory::skills::get`, `directory::prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
 # against the process current working directory; absolute paths are
 # used as-is.
@@ -14,3 +14,7 @@ registry_url: https://api.workers.iii.dev
 
 # Timeout for a single download (`git clone` or HTTP request) in ms.
 download_timeout_ms: 60000
+
+system_prompt_skills:
+  - skills/iii/*.md
+  - skills/directory/*.md

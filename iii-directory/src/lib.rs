@@ -8,10 +8,10 @@
 //!
 //!   * **Skills** (`directory::skills::*`): a filesystem-backed markdown
 //!     reader keyed by short skill ids
-//!     (slashed-path-relative-to-`skills_folder`). Skills are surfaced
-//!     through the `iii://` resource URI scheme.
-//!     `directory::skills::fetch-skill` is a batched read tool over
-//!     one or more `iii://` URIs (or bare skill paths).
+//!     (slashed-path-relative-to-`skills_folder`).
+//!     `directory::skills::list` enumerates them with title/description
+//!     pre-populated; `directory::skills::get` reads one body + metadata
+//!     (same flat shape as `directory::prompts::get`).
 //!   * **Prompts** (`directory::prompts::*`): filesystem-backed
 //!     slash-command templates loaded from
 //!     `<skills_folder>/<ns>/prompts/*.md` files with YAML frontmatter.

@@ -1,11 +1,10 @@
 //! Step defs for `tests/features/read.feature`.
 //!
 //! Drives the read-side surface of the iii-directory worker
-//! (`directory::skills::list`, `directory::skills::fetch-skill`)
-//! against fixture files written directly into `skills_folder`. The
-//! `iii://` URI surface is exercised via
-//! `directory::skills::fetch-skill` (no MCP-shaped wrappers exist any
-//! more — see [`crate::functions::skills`]).
+//! (`directory::skills::list`, `directory::skills::get`) against
+//! fixture files written directly into `skills_folder`. The legacy
+//! `iii://` URI scheme (rendered tree, function-backed sections,
+//! batched fetch) is gone — see [`crate::functions::skills`].
 
 use cucumber::{given, then, when};
 use iii_sdk::TriggerRequest;
@@ -14,8 +13,8 @@ use serde_json::{json, Value};
 use crate::common::world::IiiSkillsWorld;
 
 const LAST_LIST: &str = "read_last_list";
-const LAST_FETCH: &str = "read_last_fetch";
-const LAST_FETCH_ERR: &str = "read_last_err";
+const LAST_GET: &str = "read_last_get";
+const LAST_GET_ERR: &str = "read_last_get_err";
 
 #[given("the iii engine is reachable")]
 async fn engine_reachable(_world: &mut IiiSkillsWorld) {}
@@ -70,6 +69,12 @@ async fn list_skills(world: &mut IiiSkillsWorld) {
     }
 }
 
+fn list_entry<'a>(world: &'a IiiSkillsWorld, id: &str) -> Option<&'a Value> {
+    let list = world.stash.get(LAST_LIST)?;
+    let arr = list.get("skills")?.as_array()?;
+    arr.iter().find(|e| e["id"].as_str() == Some(id))
+}
+
 #[then(regex = r#"^the listing has an entry with id "([^"]+)"$"#)]
 fn listing_has(world: &mut IiiSkillsWorld, id: String) {
     if world.iii.is_none() {
@@ -92,109 +97,121 @@ fn listing_lacks(world: &mut IiiSkillsWorld, id: String) {
     assert!(!found, "id {id:?} unexpectedly in listing: {arr:?}");
 }
 
-// ── iii:// reads via skills::fetch-skill ───────────────────────────
+#[then(regex = r#"^the listing entry "([^"]+)" has title "([^"]+)"$"#)]
+fn listing_entry_title(world: &mut IiiSkillsWorld, id: String, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let entry = list_entry(world, &id).unwrap_or_else(|| panic!("id {id:?} missing from listing"));
+    assert_eq!(entry["title"].as_str().unwrap_or(""), expected);
+}
 
-async fn fetch_via_skill_alias(world: &mut IiiSkillsWorld, uris: Vec<String>) {
-    world.stash.remove(LAST_FETCH);
-    world.stash.remove(LAST_FETCH_ERR);
+#[then(regex = r#"^the listing entry "([^"]+)" has description "([^"]+)"$"#)]
+fn listing_entry_description(world: &mut IiiSkillsWorld, id: String, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let entry = list_entry(world, &id).unwrap_or_else(|| panic!("id {id:?} missing from listing"));
+    assert_eq!(entry["description"].as_str().unwrap_or(""), expected);
+}
+
+// ── skills::get ─────────────────────────────────────────────────────
+
+#[when(regex = r#"^I get skill "([^"]*)"$"#)]
+async fn get_skill(world: &mut IiiSkillsWorld, id: String) {
+    world.stash.remove(LAST_GET);
+    world.stash.remove(LAST_GET_ERR);
     let Some(iii) = world.iii.clone() else {
         return;
     };
     match iii
         .trigger(TriggerRequest {
-            function_id: "directory::skills::fetch-skill".to_string(),
-            payload: json!({ "uris": uris }),
+            function_id: "directory::skills::get".to_string(),
+            payload: json!({ "id": id }),
             action: None,
             timeout_ms: Some(5_000),
         })
         .await
     {
         Ok(v) => {
-            world.stash.insert(LAST_FETCH.into(), v);
+            world.stash.insert(LAST_GET.into(), v);
         }
         Err(e) => {
             world
                 .stash
-                .insert(LAST_FETCH_ERR.into(), Value::String(e.to_string()));
+                .insert(LAST_GET_ERR.into(), Value::String(e.to_string()));
         }
     }
 }
 
-#[when(regex = r#"^I read the URI "([^"]+)"$"#)]
-async fn read_uri(world: &mut IiiSkillsWorld, uri: String) {
-    fetch_via_skill_alias(world, vec![uri]).await;
-}
-
-#[when(regex = r#"^I fetch the URIs "([^"]+)"$"#)]
-async fn fetch_uris(world: &mut IiiSkillsWorld, csv: String) {
-    let uris: Vec<String> = csv.split(',').map(|s| s.trim().to_string()).collect();
-    fetch_via_skill_alias(world, uris).await;
-}
-
-#[then(regex = r#"^the fetched text contains "([^"]+)"$"#)]
-fn fetched_contains(world: &mut IiiSkillsWorld, needle: String) {
+#[then(regex = r#"^the get response has id "([^"]+)"$"#)]
+fn get_id(world: &mut IiiSkillsWorld, expected: String) {
     if world.iii.is_none() {
         return;
     }
-    let v = world.stash.get(LAST_FETCH).expect("no fetch recorded");
-    let text = v.as_str().unwrap_or_default();
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    assert_eq!(v["id"].as_str().unwrap_or(""), expected);
+}
+
+#[then(regex = r#"^the get response has title "([^"]+)"$"#)]
+fn get_title(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    assert_eq!(v["title"].as_str().unwrap_or(""), expected);
+}
+
+#[then(regex = r#"^the get response has description "([^"]+)"$"#)]
+fn get_description(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    assert_eq!(v["description"].as_str().unwrap_or(""), expected);
+}
+
+#[then(regex = r#"^the get response body contains "([^"]+)"$"#)]
+fn get_body_contains(world: &mut IiiSkillsWorld, needle: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    let body = v["body"].as_str().unwrap_or("");
     assert!(
-        text.contains(&needle),
-        "fetched text should contain {needle:?}; got: {text:?}"
+        body.contains(&needle),
+        "expected body to contain {needle:?}; got: {body:?}"
     );
 }
 
-#[then(regex = r#"^the fetched text has (\d+) sections joined by "([^"]+)"$"#)]
-fn fetched_section_count(world: &mut IiiSkillsWorld, n: usize, sep: String) {
+#[then("the get response has a non-empty modified_at")]
+fn get_modified_nonempty(world: &mut IiiSkillsWorld) {
     if world.iii.is_none() {
         return;
     }
-    let v = world.stash.get(LAST_FETCH).expect("no fetch recorded");
-    let text = v.as_str().unwrap_or_default();
-    let count = text.matches(sep.as_str()).count();
-    // n sections → n-1 joiners
-    assert_eq!(
-        count,
-        n.saturating_sub(1),
-        "section-count mismatch in: {text:?}"
-    );
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    let modified = v["modified_at"].as_str().unwrap_or("");
+    assert!(!modified.is_empty(), "modified_at empty: {v}");
 }
 
-#[then(regex = r#"^the read fails with a message mentioning "([^"]+)"$"#)]
-fn read_fails_mentioning(world: &mut IiiSkillsWorld, needle: String) {
+#[then(regex = r#"^the get fails with a message mentioning "([^"]+)"$"#)]
+fn get_fails_mentioning(world: &mut IiiSkillsWorld, needle: String) {
     if world.iii.is_none() {
         return;
     }
     let err = world
         .stash
-        .get(LAST_FETCH_ERR)
+        .get(LAST_GET_ERR)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    assert!(!err.is_empty(), "expected an error; got success");
+    assert!(
+        !err.is_empty(),
+        "expected an error; got success: {:?}",
+        world.stash.get(LAST_GET)
+    );
     assert!(
         err.contains(&needle),
         "expected error to mention {needle:?}; got: {err:?}"
-    );
-}
-
-// ── auto-rendered index assertions ─────────────────────────────────
-
-#[then(regex = r#"^the index has entry "([^"]+)" indented by (\d+) spaces$"#)]
-fn index_indented(world: &mut IiiSkillsWorld, id: String, spaces: usize) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = world.stash.get(LAST_FETCH).expect("no fetch recorded");
-    let text = v.as_str().unwrap_or_default();
-    let needle_inline = format!("[`{id}`](iii://{id})");
-    let line = text
-        .lines()
-        .find(|l| l.contains(&needle_inline))
-        .unwrap_or_else(|| panic!("entry {id:?} not found in index:\n{text}"));
-    let actual_indent = line.chars().take_while(|c| *c == ' ').count();
-    assert_eq!(
-        actual_indent, spaces,
-        "indent mismatch for {id:?}: line={line:?}"
     );
 }

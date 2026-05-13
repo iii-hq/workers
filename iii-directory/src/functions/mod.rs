@@ -55,7 +55,7 @@ pub fn register_all(
     directory::register(iii, cfg);
     registry::register(iii, cfg);
     tracing::info!(
-        "iii-directory registered 2 directory::skills::* (list + fetch-skill), \
+        "iii-directory registered 2 directory::skills::* (list + get), \
          2 directory::prompts::* (list + get), 1 directory::skills::download, \
          8 directory::engine::* and 2 directory::registry::workers::* functions"
     );

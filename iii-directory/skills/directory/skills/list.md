@@ -1,28 +1,28 @@
 ---
 type: how-to
 function_id: directory::skills::list
-title: List filesystem-backed skills (id, bytes, modified_at)
+title: Enumerate every skill on disk with title and description
 ---
 
 # When to use
 
-Call `directory::skills::list` when you need a flat, metadata-only
-enumeration of every markdown skill the iii-directory worker is
-currently serving from its `skills_folder`. One row per file (recursive
-`**/*.md`, `prompts/` segments excluded), sorted lex by `id`.
+Call `directory::skills::list` when you need an enumeration of every
+markdown skill the iii-directory worker is currently serving from its
+`skills_folder`. One row per file (recursive `**/*.md`, `prompts/`
+segments excluded), sorted lex by `id`. Each row already carries the
+H1 `title` and first-paragraph `description` so a picker / table-of-
+contents UI doesn't need a follow-up `directory::skills::get` per row.
 
-This is the cheap "what's on disk?" call. Use it when:
+This is the single "what's on disk?" call. Use it when:
 
 - You want to verify a `directory::skills::download` actually wrote
   what you expect.
-- You're building a picker / autocomplete UI and need just ids + sizes
-  rather than bodies.
+- You're building a picker / autocomplete UI and need a flat list of
+  ids + labels rather than bodies.
 - You want to discover root-level skill ids (no `/`) to bootstrap a
   system prompt.
-
-For the **rendered** index that humans / LLMs actually read (tree shape
-with titles + descriptions), fetch `iii://directory/skills` via
-`directory::skills::fetch-skill` instead.
+- You want to render an indented tree client-side (depth =
+  `id.matches('/').count()`).
 
 # Inputs
 
@@ -30,8 +30,9 @@ with titles + descriptions), fetch `iii://directory/skills` via
 {}
 ```
 
-No parameters. The worker scans `skills_folder` on every call — there is
-no caching, so file edits are visible immediately.
+No parameters. The worker scans `skills_folder` on every call and
+reads each body to populate `title` + `description` — file edits are
+visible immediately, no caching.
 
 # Outputs
 
@@ -40,6 +41,8 @@ no caching, so file edits are visible immediately.
   "skills": [
     {
       "id":          "agent-memory/observe",
+      "title":       "How to observe",
+      "description": "Record an event in agent memory.",
       "bytes":       1234,
       "modified_at": "2026-05-01T12:34:56+00:00"
     }
@@ -47,15 +50,18 @@ no caching, so file edits are visible immediately.
 }
 ```
 
-`bytes` is the on-disk file size (raw, including frontmatter).
-`modified_at` is the file's mtime as RFC 3339 (empty if the FS doesn't
-expose it).
+- `id` is the relative path under `skills_folder` with `.md` stripped
+  (e.g. `agent-memory/observe.md` → `agent-memory/observe`). Same
+  string `directory::skills::get` accepts.
+- `title` is the first `# H1` line in the body, falling back to `id`
+  when the file has no H1.
+- `description` is the first non-heading paragraph, empty when the
+  file has only headings.
+- `bytes` is the on-disk file size (raw, including frontmatter).
+- `modified_at` is the file's mtime as RFC 3339 (empty if the FS
+  doesn't expose it).
 
-Rows are sorted lexicographically by `id`. The `id` is the relative path
-under `skills_folder` with `.md` stripped (e.g. `agent-memory/observe.md`
-→ `agent-memory/observe`). The same id is what
-`directory::skills::fetch-skill` accepts as a bare path (auto-prefixed
-to `iii://agent-memory/observe`).
+Rows are sorted lexicographically by `id`.
 
 # Worked example
 
@@ -67,13 +73,16 @@ to `tag: "latest"`):
 ```
 
 Returns one entry per markdown file the registry shipped under
-`<skills_folder>/agent-memory/...`.
+`<skills_folder>/agent-memory/...`, each with title + description
+already populated.
+
+To render a tree-shaped picker, walk the rows in order and indent each
+by `2 * id.matches('/').count()` spaces — the lex-sort already places
+each child immediately after its parent.
 
 # Related
 
-- `directory::skills::fetch-skill` — read one or more bodies by URI or
-  bare skill path.
+- `directory::skills::get` — read one body by id (returns the same
+  `id` / `title` / `description` / `modified_at` plus `body`).
 - `directory::skills::download` — populate `skills_folder` from the
   registry or a GitHub repo.
-- `iii://directory/skills` — auto-rendered tree-shaped index with
-  titles + descriptions.

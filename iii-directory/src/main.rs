@@ -13,7 +13,7 @@
 //!   5. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! `directory::skills::download` is the only write path. Read-side
-//! surfaces (`iii://`, `directory::skills::fetch-skill`,
+//! surfaces (`directory::skills::list`, `directory::skills::get`,
 //! `directory::prompts::*`, `directory::engine::*`,
 //! `directory::registry::*`) source from the configured `skills_folder`
 //! on disk or proxy to the public registry over HTTP.

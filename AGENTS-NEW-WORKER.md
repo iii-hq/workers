@@ -207,8 +207,6 @@ links every worker.
 - 1+ segments separated by `/`.
 - Each segment: lowercase ASCII letters, digits, `-`, `_`; max 64 chars per segment.
 - Total id length ≤ 1024 chars.
-- First segment MUST NOT be the literal `fn` (reserved for section URIs).
-
 For workers in this repo, the router id equals the folder name — a single
 segment. Leaf ids are `<worker>/<sub>`.
 
@@ -219,28 +217,25 @@ The skill registry expects two kinds of bodies:
 - **Router** (`<worker>/skill.md`) — small. Lists the per-function or
   per-group sub-skills under `iii://<worker>/...`. The agent loads this
   first; it then fetches deeper bodies on demand via
-  `directory::skills::fetch-skill`.
+  `directory::skills::get { id: "<worker>/<sub>" }`.
 - **Leaf** (`<worker>/skills/<sub>.md`) — describes one function (or one
   logical group of functions). Loaded only when the agent decides to drill
   in.
 
-The platform contract is minimal: H1 first (used as the link title in
-`iii://directory/skills`), then a non-heading paragraph (used as the
-description, truncated at 140 chars). Everything else is up to the
-worker.
+The platform contract is minimal: H1 first (used as the link `title` on
+each `directory::skills::list` row), then a non-heading paragraph (used
+as the row's `description`). Everything else is up to the worker.
 
 **Router template** (`<worker>/skill.md`):
 
 The body shape is a **nested list**: the worker id at the top, with each
 sub-skill indented as a child. Renders as a tree in any markdown viewer and
-makes the parent–child relationship explicit when the body is read raw (the
-auto-rendered `iii://skills` index applies its own indentation on top of
-this).
+makes the parent–child relationship explicit when the body is read raw.
 
 ```markdown
 # <worker-name>
 
-<One-sentence summary used as the description in the iii://directory/skills index. Imperative tone.>
+<One-sentence summary used as the row description in directory::skills::list. Imperative tone.>
 
 - [`<worker>`](iii://<worker>)
   - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
@@ -250,19 +245,20 @@ this).
 ```
 
 Leaf link text is the **actual function id** (e.g. `auth::set_token`) — what
-the agent calls via `iii.trigger`. The link target is the **skill URI**
-(`iii://<worker>/<sub>`) — what `directory::skills::fetch-skill`
-resolves. The two strings diverge: a worker named `auth-credentials`
-registers functions under the `auth::*` namespace, so the function id
-`auth::set_token` lives at the skill URI
-`iii://auth-credentials/set_token`.
+the agent calls via `iii.trigger`. The link target is the **skill id**
+written in legacy `iii://<worker>/<sub>` form for human readability — strip
+the `iii://` prefix when calling `directory::skills::get` and pass the
+remainder as `id`. The two strings diverge: a worker named
+`auth-credentials` registers functions under the `auth::*` namespace, so
+the function id `auth::set_token` lives at the skill id
+`auth-credentials/set_token`.
 
 **Leaf template** (`<worker>/skills/<sub>.md`):
 
 ```markdown
 # <namespace>::<fn>
 
-<One-sentence summary used as the description in the iii://directory/skills index.>
+<One-sentence summary used as the row description in directory::skills::list.>
 
 `(input) → output` — argument/return shape and any nuance the caller needs
 (idempotency, side effects, bus failures).
@@ -276,11 +272,10 @@ registers functions under the `auth::*` namespace, so the function id
 <Optional: required config, dependencies on other workers, operational caveats.>
 ```
 
-The leaf H1 is the function id with `::` so the auto-rendered
-`iii://directory/skills` index shows the calling shape directly. The
-skill URI (`iii://<worker>/<sub>`) stays path-form — that's what
-`directory::skills::fetch-skill` resolves and what `SUB_SKILLS`
-registers (see §10.4).
+The leaf H1 is the function id with `::` so each `directory::skills::list`
+row shows the calling shape directly as `title`. The skill id stays
+path-form (`<worker>/<sub>`) — that's what `directory::skills::get`
+expects and what `SUB_SKILLS` registers (see §10.4).
 
 If a worker exposes only one function (e.g. `policy-denylist`), skip the
 leaves layer and put the leaf content directly in `<worker>/skill.md`. The

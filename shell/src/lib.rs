@@ -18,13 +18,13 @@ pub const SKILL_ID: &str = "shell";
 
 /// Top-level router body — small on purpose so the LLM only loads the
 /// router and drills into sub-skills via
-/// `directory::skills::fetch-skill`.
+/// `directory::skills::get`.
 pub const SKILL_MD: &str = include_str!("../skill.md");
 
 /// Sub-skill bodies, keyed by their full id. One leaf per registered
 /// `shell::*` function. The router (`SKILL_MD`) links to each so the
 /// agent only loads what it needs via
-/// `directory::skills::fetch-skill`.
+/// `directory::skills::get`.
 pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("shell/exec", include_str!("../skills/exec.md")),
     ("shell/exec_bg", include_str!("../skills/exec_bg.md")),
