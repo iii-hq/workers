@@ -42,8 +42,9 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Run `git clone --depth 1 --quiet <repo> <tmpdir>` then copy
-/// `<tmpdir>/skills/<skill>/**` into `<skills_folder>/<skill>/`.
+/// Run `git clone --depth 1 --branch <branch> --quiet <repo> <tmpdir>`
+/// then copy `<tmpdir>/skills/<skill>/**` into
+/// `<skills_folder>/<skill>/`.
 ///
 /// `timeout_ms` caps the entire operation (clone + copy). The tempdir
 /// is cleaned up on every exit path because [`tempfile::TempDir`] does
@@ -51,6 +52,7 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
 pub async fn download(
     repo: &str,
     skill: &str,
+    branch: &str,
     skills_folder: &Path,
     timeout_ms: u64,
 ) -> Result<DownloadResult, String> {
@@ -58,11 +60,14 @@ pub async fn download(
     if repo.trim().is_empty() {
         return Err("repo URL must be non-empty".into());
     }
+    if branch.trim().is_empty() {
+        return Err("branch must be non-empty".into());
+    }
 
     let tmp = tempfile::tempdir().map_err(|e| format!("create tempdir: {e}"))?;
     let clone_dir = tmp.path().to_path_buf();
 
-    run_git_clone(repo, &clone_dir, timeout_ms).await?;
+    run_git_clone(repo, branch, &clone_dir, timeout_ms).await?;
 
     // The cloned tree may already exist if a previous run left
     // something behind; in practice tempdir is fresh so this is a
@@ -88,12 +93,19 @@ pub async fn download(
     Ok(result)
 }
 
-async fn run_git_clone(repo: &str, dest: &Path, timeout_ms: u64) -> Result<(), String> {
+async fn run_git_clone(
+    repo: &str,
+    branch: &str,
+    dest: &Path,
+    timeout_ms: u64,
+) -> Result<(), String> {
     let dest_str = dest
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 tempdir path: {}", dest.display()))?;
     let fut = Command::new("git")
-        .args(["clone", "--depth", "1", "--quiet", repo, dest_str])
+        .args([
+            "clone", "--depth", "1", "--branch", branch, "--quiet", repo, dest_str,
+        ])
         .output();
     let output = timeout(Duration::from_millis(timeout_ms), fut)
         .await
@@ -102,7 +114,7 @@ async fn run_git_clone(repo: &str, dest: &Path, timeout_ms: u64) -> Result<(), S
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "git clone exited with {}: {}",
+            "git clone --branch {branch} exited with {}: {}",
             output.status,
             stderr.trim()
         ));

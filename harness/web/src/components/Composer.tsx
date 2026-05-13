@@ -353,7 +353,7 @@ export function Composer({
         if (item.kind === "skill") {
           // Skills get inserted as a /skill-id mention so the user can add
           // context after it. The agent picks it up via the system-prompt
-          // skills index and skill::fetch.
+          // skills index and directory::skills::fetch-skill.
           setText(`${item.id} `);
           dispatch({ kind: "close" });
           return;

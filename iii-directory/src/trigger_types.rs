@@ -2,22 +2,25 @@
 //!
 //! Two trigger types exist:
 //!
-//! - `skills::on-change`  — fires after every successful `skills::download`
-//!   that wrote at least one skill markdown file.
-//! - `prompts::on-change` — fires after every successful `skills::download`
-//!   that wrote at least one prompt markdown file.
+//! - `directory::skills::on-change`  — fires after every successful
+//!   `directory::skills::download` that wrote at least one skill
+//!   markdown file.
+//! - `directory::prompts::on-change` — fires after every successful
+//!   `directory::skills::download` that wrote at least one prompt
+//!   markdown file.
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
-//! `iii.register_trigger(RegisterTriggerInput { trigger_type: "skills::on-change", ... })`.
-//! The engine routes that registration through our [`SkillsTriggerHandler`]
-//! which stashes the subscriber in [`SubscriberSet`]. When a download
-//! lands, the `functions::download` module reads the active subscribers
-//! and invokes each one via `iii.trigger` — a simple in-process fanout.
+//! `iii.register_trigger(RegisterTriggerInput { trigger_type: "directory::skills::on-change", ... })`.
+//! The engine routes that registration through our
+//! [`SkillsTriggerHandler`] which stashes the subscriber in
+//! [`SubscriberSet`]. When a download lands, the `functions::download`
+//! module reads the active subscribers and invokes each one via
+//! `iii.trigger` — a simple in-process fanout.
 //!
 //! Using a named custom trigger keeps the coupling one-way: mcp knows
-//! skills publishes `skills::on-change`; skills never has to know mcp
-//! exists.
+//! the directory worker publishes `directory::skills::on-change`; the
+//! directory worker never has to know mcp exists.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,8 +32,8 @@ use iii_sdk::{
 };
 use serde_json::Value;
 
-pub const SKILLS_ON_CHANGE: &str = "skills::on-change";
-pub const PROMPTS_ON_CHANGE: &str = "prompts::on-change";
+pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
+pub const PROMPTS_ON_CHANGE: &str = "directory::prompts::on-change";
 
 /// Thread-safe subscriber registry keyed by trigger-instance id. Cloned
 /// into both the `TriggerHandler` (which mutates on register /
@@ -113,14 +116,14 @@ pub fn register_all(iii: &Arc<III>) -> RegisteredTriggerTypes {
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after every successful skills::download that wrote at least one skill markdown file.".to_string(),
+        "Fires after every successful directory::skills::download that wrote at least one skill markdown file.".to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         PROMPTS_ON_CHANGE.to_string(),
-        "Fires after every successful skills::download that wrote at least one prompt markdown file.".to_string(),
+        "Fires after every successful directory::skills::download that wrote at least one prompt markdown file.".to_string(),
         SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
     ));
     tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");

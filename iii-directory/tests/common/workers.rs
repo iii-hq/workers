@@ -13,7 +13,8 @@
 //! server so the engine path is exercised end-to-end without a real
 //! HTTP call.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -60,12 +61,6 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
     let cfg = Arc::new(SkillsConfig {
         skills_folder: skills_folder.to_string_lossy().into_owned(),
         registry_url: mock_server.uri(),
-        config_dir: Some(
-            skills_folder
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
-        ),
         ..SkillsConfig::default()
     });
     let registered = trigger_types::register_all(iii);

@@ -1,12 +1,15 @@
 # iii-directory runtime config.
 
-# Folder that backs every read (`iii://`, `skill::fetch`, `skills::list`,
-# `prompts::*`) and every write from `skills::download`. Resolved
-# relative to the directory of this config file.
+# Folder that backs every read (`iii://`, `directory::skills::fetch-skill`,
+# `directory::skills::list`, `directory::prompts::*`) and every write
+# from `directory::skills::download`. Relative paths are resolved
+# against the process current working directory; absolute paths are
+# used as-is.
 skills_folder: ./skills
 
-# Workers registry base URL — used by `skills::download` when a
-# `worker=` source is specified.
+# Workers registry base URL — used by `directory::skills::download` and
+# the `directory::registry::*` proxies when a `worker=` source is
+# specified.
 registry_url: https://api.workers.iii.dev
 
 # Timeout for a single download (`git clone` or HTTP request) in ms.

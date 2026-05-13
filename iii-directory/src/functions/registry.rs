@@ -1,14 +1,16 @@
-//! `registry::*` — HTTP proxy over `https://api.workers.iii.dev`.
+//! `directory::registry::*` — HTTP proxy over
+//! `https://api.workers.iii.dev`.
 //!
-//! Two functions, mirroring `directory::*` so callers learn one shape:
+//! Two functions, mirroring `directory::engine::workers::*` so callers
+//! learn one shape:
 //!
-//!   * `registry::worker-list`  — list workers in the public registry,
-//!     filterable by `search`. Same row envelope (`Worker`) as
-//!     [`crate::functions::directory::Worker`].
-//!   * `registry::worker-info`  — full registry metadata for one
-//!     worker. Wraps the registry-side fields in a top-level `worker`
-//!     envelope (same shape as the list rows), with `readme` /
-//!     `api_reference` / `skills_tree` as surface-specific extras.
+//!   * `directory::registry::workers::list`  — list workers in the
+//!     public registry, filterable by `search`. Same row envelope
+//!     (`Worker`) as [`crate::functions::directory::Worker`].
+//!   * `directory::registry::workers::info`  — full registry metadata
+//!     for one worker. Wraps the registry-side fields in a top-level
+//!     `worker` envelope (same shape as the list rows), with `readme`
+//!     / `api_reference` / `skills_tree` as surface-specific extras.
 //!
 //! Both responses are cached in-process for `registry_cache_ttl_ms`
 //! (default 60s) so repeat lookups don't hammer the registry — every
@@ -42,7 +44,7 @@ const SEARCH_LIMIT_MAX: u32 = 100;
 
 // ---------- public input/output shapes ----------
 
-/// `registry::worker-list` input. Mirrors
+/// `directory::registry::workers::list` input. Mirrors
 /// [`crate::functions::directory::WorkerListInput.search`] so callers
 /// can switch between local and registry surfaces without re-learning
 /// the API. Adds `limit` for paging because the registry is paged.
@@ -65,10 +67,11 @@ pub struct RegistryAuthor {
     pub is_verified: bool,
 }
 
-/// Shared worker envelope used by both `registry::worker-list` rows
-/// and the `worker` field of `registry::worker-info`. Same field names
-/// as [`crate::functions::directory::Worker`] so callers learn one
-/// shape across local + registry surfaces.
+/// Shared worker envelope used by both
+/// `directory::registry::workers::list` rows and the `worker` field of
+/// `directory::registry::workers::info`. Same field names as
+/// [`crate::functions::directory::Worker`] so callers learn one shape
+/// across local + registry surfaces.
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 pub struct Worker {
     pub name: String,
@@ -86,8 +89,8 @@ pub struct WorkerListOutput {
     pub workers: Vec<Worker>,
 }
 
-/// `registry::worker-info` input. Pass either `version` or `tag`; if
-/// neither is provided we fall back to `tag: "latest"`.
+/// `directory::registry::workers::info` input. Pass either `version`
+/// or `tag`; if neither is provided we fall back to `tag: "latest"`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct WorkerInfoInput {
     /// Worker name in the registry (e.g. `"resend"`).
@@ -148,7 +151,8 @@ pub struct SkillsTree {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerInfoOutput {
-    /// Same shape as `worker-list` rows (and `directory::worker-info.worker`).
+    /// Same shape as `directory::registry::workers::list` rows (and
+    /// `directory::engine::workers::info.worker`).
     pub worker: Worker,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readme: Option<String>,
@@ -217,19 +221,22 @@ fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
-        RegisterFunction::new_async("registry::worker-list", move |req: WorkerListInput| {
-            let cfg = cfg_inner.clone();
-            let cache = cache_inner.clone();
-            async move {
-                worker_list(&cfg, &cache, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
-        })
+        RegisterFunction::new_async(
+            "directory::registry::workers::list",
+            move |req: WorkerListInput| {
+                let cfg = cfg_inner.clone();
+                let cache = cache_inner.clone();
+                async move {
+                    worker_list(&cfg, &cache, req)
+                        .await
+                        .map_err(IIIError::Handler)
+                }
+            },
+        )
         .description(
             "List workers from the public registry (api.workers.iii.dev) \
              matching the free-text term `search`. Same row shape as \
-             directory::worker-list so callers learn one envelope. \
+             directory::engine::workers::list so callers learn one envelope. \
              Results are cached for `registry_cache_ttl_ms` (default 60s).",
         ),
     );
@@ -239,19 +246,22 @@ fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
-        RegisterFunction::new_async("registry::worker-info", move |req: WorkerInfoInput| {
-            let cfg = cfg_inner.clone();
-            let cache = cache_inner.clone();
-            async move {
-                worker_info(&cfg, &cache, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
-        })
+        RegisterFunction::new_async(
+            "directory::registry::workers::info",
+            move |req: WorkerInfoInput| {
+                let cfg = cfg_inner.clone();
+                let cache = cache_inner.clone();
+                async move {
+                    worker_info(&cfg, &cache, req)
+                        .await
+                        .map_err(IIIError::Handler)
+                }
+            },
+        )
         .description(
             "Fetch full registry metadata for one worker: worker envelope \
-             (same shape as registry::worker-list rows and \
-             directory::worker-info), readme, full API reference \
+             (same shape as directory::registry::workers::list rows and \
+             directory::engine::workers::info), readme, full API reference \
              (functions + triggers schemas), and tree of skill/prompt \
              file paths. Pass either `version` or `tag` (defaults to \
              tag=\"latest\"). Results are cached for `registry_cache_ttl_ms`.",

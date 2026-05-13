@@ -1,5 +1,5 @@
 @engine @download @download_registry
-Feature: skills::download worker= source (workers registry HTTP)
+Feature: directory::skills::download worker= source (workers registry HTTP)
   Pulls a worker's skills + prompts bundle from
   `{registry_url}/w/{worker}/skills?version=… | tag=…` into
   `<skills_folder>/<worker>/`. Skills are written verbatim; prompts
@@ -28,8 +28,8 @@ Feature: skills::download worker= source (workers registry HTTP)
         ]
       }
       """
-    When I trigger skills::download with worker="resend" version="1.2.3"
-    Then the skills::download call succeeds
+    When I trigger directory::skills::download with worker="resend" version="1.2.3"
+    Then the directory::skills::download call succeeds
     And  the file "resend/index.md" in skills_folder contains "router body"
     And  the file "resend/emails/send-email.md" in skills_folder contains "leaf body"
     And  the file "resend/prompts/send-email.md" in skills_folder contains "Compose a friendly email."
@@ -49,15 +49,27 @@ Feature: skills::download worker= source (workers registry HTTP)
         "prompts": []
       }
       """
-    When I trigger skills::download with worker="resend" tag="latest"
-    Then the skills::download call succeeds
+    When I trigger directory::skills::download with worker="resend" tag="latest"
+    Then the directory::skills::download call succeeds
     And  the file "resend/index.md" in skills_folder contains "tagged"
 
   Scenario: registry HTTP error surfaces in the failure message
     Given a wiremock registry that returns 404 for worker "missing"
-    When I trigger skills::download with worker="missing" tag="latest"
-    Then the skills::download call fails with a message mentioning "404"
+    When I trigger directory::skills::download with worker="missing" tag="latest"
+    Then the directory::skills::download call fails with a message mentioning "404"
 
-  Scenario: download is rejected when neither version nor tag is provided
-    When I trigger skills::download with worker="resend" alone
-    Then the skills::download call fails with a message mentioning "version or tag"
+  Scenario: worker without version or tag defaults to tag=latest
+    Given a wiremock registry serving worker "resend" at tag "latest" with body:
+      """
+      {
+        "name": "resend",
+        "version": "0.0.9",
+        "skills": [
+          { "path": "index.md", "content": "default-latest" }
+        ],
+        "prompts": []
+      }
+      """
+    When I trigger directory::skills::download with worker="resend" alone
+    Then the directory::skills::download call succeeds
+    And  the file "resend/index.md" in skills_folder contains "default-latest"

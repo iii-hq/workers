@@ -1,9 +1,9 @@
 //! Worker runtime config.
 //!
-//! The skills worker is a filesystem-backed reader plus a `skills::download`
-//! function that pulls markdown into the configured `skills_folder`. There
-//! is no state-backed registry, no glob arrays, no scopes — everything
-//! lives on disk under one root.
+//! The skills worker is a filesystem-backed reader plus a
+//! `directory::skills::download` function that pulls markdown into the
+//! configured `skills_folder`. There is no state-backed registry, no
+//! glob arrays, no scopes — everything lives on disk under one root.
 
 use std::path::{Path, PathBuf};
 
@@ -15,8 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.workers.iii.dev";
 
 /// Default destination for downloaded skills. Resolved relative to the
-/// directory of the loaded config file (or CWD if the config has no
-/// parent).
+/// process current working directory.
 pub const DEFAULT_SKILLS_FOLDER: &str = "./skills";
 
 fn default_skills_folder() -> String {
@@ -37,36 +36,34 @@ fn default_registry_cache_ttl_ms() -> u64 {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SkillsConfig {
-    /// Folder that backs every read (`iii://`, `skill::fetch`, `skills::list`,
-    /// `prompts::*`) and every write from `skills::download`. Resolved
-    /// relative to the directory of the loaded config file.
+    /// Folder that backs every read (`iii://`,
+    /// `directory::skills::fetch-skill`, `directory::skills::list`,
+    /// `directory::prompts::*`) and every write from
+    /// `directory::skills::download`. Relative paths are resolved
+    /// against the process current working directory; absolute paths
+    /// are used as-is.
     #[serde(default = "default_skills_folder")]
     pub skills_folder: String,
 
-    /// Workers registry base URL — used by `skills::download` and the
-    /// `registry::*` proxies when a `worker=` source is specified.
-    /// Stored without a trailing slash.
+    /// Workers registry base URL — used by `directory::skills::download`
+    /// and the `directory::registry::*` proxies when a `worker=` source
+    /// is specified. Stored without a trailing slash.
     #[serde(default = "default_registry_url")]
     pub registry_url: String,
 
     /// Timeout for a single download operation (HTTP request OR `git clone`)
-    /// in milliseconds. Also used as the request timeout for `registry::*`
-    /// HTTP calls.
+    /// in milliseconds. Also used as the request timeout for
+    /// `directory::registry::*` HTTP calls.
     #[serde(default = "default_download_timeout_ms")]
     pub download_timeout_ms: u64,
 
-    /// TTL (in milliseconds) for cached `registry::worker-list` and
-    /// `registry::worker-info` responses. Repeat lookups within this
-    /// window skip the HTTP call. Set to 0 to disable caching.
+    /// TTL (in milliseconds) for cached
+    /// `directory::registry::workers::list` and
+    /// `directory::registry::workers::info` responses. Repeat lookups
+    /// within this window skip the HTTP call. Set to 0 to disable
+    /// caching.
     #[serde(default = "default_registry_cache_ttl_ms")]
     pub registry_cache_ttl_ms: u64,
-
-    /// Directory the `skills_folder` is resolved against. Set to the
-    /// parent of the loaded config path; falls back to CWD when no
-    /// config file is read or the path has no parent. Skipped from
-    /// (de)serialization so config files don't have to declare it.
-    #[serde(skip)]
-    pub config_dir: Option<PathBuf>,
 }
 
 impl Default for SkillsConfig {
@@ -76,22 +73,18 @@ impl Default for SkillsConfig {
             registry_url: default_registry_url(),
             download_timeout_ms: default_download_timeout_ms(),
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
-            config_dir: None,
         }
     }
 }
 
 impl SkillsConfig {
-    /// Absolute path to the configured skills folder. Relative paths are
-    /// resolved against the config file's directory; absolute paths are
-    /// returned as-is.
+    /// Absolute path to the configured skills folder. Relative paths
+    /// are resolved against the process current working directory;
+    /// absolute paths are returned as-is.
     pub fn resolved_skills_folder(&self) -> PathBuf {
         let candidate = Path::new(&self.skills_folder);
         if candidate.is_absolute() {
             return candidate.to_path_buf();
-        }
-        if let Some(dir) = &self.config_dir {
-            return dir.join(candidate);
         }
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -107,18 +100,8 @@ impl SkillsConfig {
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let mut cfg: SkillsConfig = serde_yaml::from_str(&contents)?;
-    cfg.config_dir = parent_dir(Path::new(path));
+    let cfg: SkillsConfig = serde_yaml::from_str(&contents)?;
     Ok(cfg)
-}
-
-fn parent_dir(path: &Path) -> Option<PathBuf> {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().ok()?.join(path)
-    };
-    abs.parent().map(|p| p.to_path_buf())
 }
 
 #[cfg(test)]
@@ -132,7 +115,6 @@ mod tests {
         assert_eq!(cfg.registry_url, DEFAULT_REGISTRY_URL);
         assert_eq!(cfg.download_timeout_ms, 60_000);
         assert_eq!(cfg.registry_cache_ttl_ms, 60_000);
-        assert!(cfg.config_dir.is_none());
     }
 
     #[test]
@@ -174,15 +156,6 @@ registry_cache_ttl_ms: 5000
     }
 
     #[test]
-    fn load_config_records_parent_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        std::fs::write(&path, "skills_folder: ./my-skills\n").unwrap();
-        let cfg = load_config(path.to_str().unwrap()).unwrap();
-        assert_eq!(cfg.config_dir.as_deref(), Some(dir.path()));
-    }
-
-    #[test]
     fn resolved_skills_folder_absolute_passes_through() {
         let cfg = SkillsConfig {
             skills_folder: "/tmp/foo".into(),
@@ -192,14 +165,13 @@ registry_cache_ttl_ms: 5000
     }
 
     #[test]
-    fn resolved_skills_folder_relative_resolves_against_config_dir() {
-        let dir = tempfile::tempdir().unwrap();
+    fn resolved_skills_folder_relative_resolves_against_cwd() {
         let cfg = SkillsConfig {
             skills_folder: "./bar".into(),
-            config_dir: Some(dir.path().to_path_buf()),
             ..SkillsConfig::default()
         };
-        assert_eq!(cfg.resolved_skills_folder(), dir.path().join("bar"));
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(cfg.resolved_skills_folder(), cwd.join("bar"));
     }
 
     #[test]

@@ -71,7 +71,7 @@ fn parse_payload(step: &cucumber::gherkin::Step) -> Value {
 
 // ── generic dispatchers ─────────────────────────────────────────────
 
-#[when(regex = r#"^I call (directory::[a-z\-]+) with payload:$"#)]
+#[when(regex = r#"^I call (directory::[a-z:\-]+) with payload:$"#)]
 async fn call_with_payload(
     world: &mut IiiSkillsWorld,
     function_id: String,
@@ -81,7 +81,9 @@ async fn call_with_payload(
     call_directory(world, &function_id, payload).await;
 }
 
-#[then(regex = r#"^the (directory::[a-z\-]+) call fails with a message mentioning "([^"]+)"$"#)]
+#[then(
+    regex = r#"^the (directory::engine::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#
+)]
 fn directory_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: String) {
     if world.iii.is_none() {
         return;
@@ -167,18 +169,6 @@ fn functions_every_prefix(world: &mut IiiSkillsWorld, prefix: String) {
     }
 }
 
-#[then("every directory functions list entry has a non-empty name")]
-fn functions_every_name(world: &mut IiiSkillsWorld) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = last_ok(world);
-    for entry in functions_array(v) {
-        let name = entry["name"].as_str().unwrap_or("");
-        assert!(!name.is_empty(), "missing name in entry: {entry:?}");
-    }
-}
-
 #[then("every directory functions list entry has a non-null worker_name")]
 fn functions_every_worker(world: &mut IiiSkillsWorld) {
     if world.iii.is_none() {
@@ -202,15 +192,6 @@ fn fi_function_id(world: &mut IiiSkillsWorld, fid: String) {
     }
     let v = last_ok(world);
     assert_eq!(v["function_id"].as_str().unwrap_or(""), fid);
-}
-
-#[then(regex = r#"^the directory function-info response has name "([^"]+)"$"#)]
-fn fi_name(world: &mut IiiSkillsWorld, name: String) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = last_ok(world);
-    assert_eq!(v["name"].as_str().unwrap_or(""), name);
 }
 
 #[then("the directory function-info response has a non-empty description")]
@@ -282,16 +263,70 @@ fn fi_how_guide_body_contains(world: &mut IiiSkillsWorld, needle: String) {
     );
 }
 
-#[then(regex = r#"^the directory function-info how_guide frontmatter function_id is "([^"]+)"$"#)]
-fn fi_how_guide_frontmatter_function_id(world: &mut IiiSkillsWorld, expected: String) {
+#[then(regex = r#"^the directory function-info how_guide title is "([^"]+)"$"#)]
+fn fi_how_guide_title(world: &mut IiiSkillsWorld, expected: String) {
     if world.iii.is_none() {
         return;
     }
     let v = last_ok(world);
-    let got = v["how_guide"]["frontmatter"]["function_id"]
-        .as_str()
-        .unwrap_or("");
+    let got = v["how_guide"]["title"].as_str().unwrap_or("");
     assert_eq!(got, expected, "how_guide payload: {:?}", v["how_guide"]);
+}
+
+#[then(regex = r#"^the directory function-info related_skills includes skill_id "([^"]+)"$"#)]
+fn fi_related_includes(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    let arr = v["related_skills"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let found = arr
+        .iter()
+        .any(|e| e["skill_id"].as_str() == Some(expected.as_str()));
+    assert!(
+        found,
+        "expected related_skills to contain skill_id {expected:?}; got: {arr:?}"
+    );
+}
+
+#[then(
+    regex = r#"^the directory function-info related_skills does not include skill_id "([^"]+)"$"#
+)]
+fn fi_related_excludes(world: &mut IiiSkillsWorld, excluded: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    let arr = v["related_skills"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let found = arr
+        .iter()
+        .any(|e| e["skill_id"].as_str() == Some(excluded.as_str()));
+    assert!(
+        !found,
+        "expected related_skills to NOT contain skill_id {excluded:?}; got: {arr:?}"
+    );
+}
+
+#[then("every directory function-info related_skills entry has a non-empty title")]
+fn fi_related_titles_non_empty(world: &mut IiiSkillsWorld) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    let arr = v["related_skills"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for entry in arr {
+        let title = entry["title"].as_str().unwrap_or("");
+        assert!(!title.is_empty(), "missing title in entry: {entry:?}");
+    }
 }
 
 // ── directory::trigger-list (trigger types) ──────────────────────────
@@ -320,15 +355,6 @@ fn ti_id(world: &mut IiiSkillsWorld, id: String) {
     }
     let v = last_ok(world);
     assert_eq!(v["id"].as_str().unwrap_or(""), id);
-}
-
-#[then(regex = r#"^the directory trigger-info response has name "([^"]+)"$"#)]
-fn ti_name(world: &mut IiiSkillsWorld, name: String) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = last_ok(world);
-    assert_eq!(v["name"].as_str().unwrap_or(""), name);
 }
 
 #[then(regex = r#"^the directory trigger-info response has worker_name "([^"]+)"$"#)]

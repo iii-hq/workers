@@ -39,19 +39,20 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
 /// Best-effort bootstrap of the skills surface for the system prompt.
 ///
 /// Concatenates:
-///   1. the auto-rendered `iii://skills` index (links to every registered skill), and
+///   1. the auto-rendered `iii://directory/skills` index (links to every registered skill), and
 ///   2. the bodies of every **root-depth** registered skill (no `/` in the id),
-///      batched in a single `skill::fetch` call.
+///      batched in a single `directory::skills::fetch-skill` call.
 ///
 /// The agent therefore boots with both the table of contents AND the
 /// router-style bodies the agent normally reaches for first — eliminating
-/// the round-trip to `skill::fetch iii://skills` on the first turn.
+/// the round-trip to `directory::skills::fetch-skill iii://directory/skills`
+/// on the first turn.
 ///
 /// Any sub-step that fails returns `None` for that piece; the caller
 /// degrades gracefully (the fallback section in `system_prompt::build`
 /// covers a fully missing skills surface).
 async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
-    let index = fetch_uri(iii, "iii://skills").await;
+    let index = fetch_uri(iii, "iii://directory/skills").await;
     let root_uris = list_root_skill_uris(iii).await;
     let bodies = if root_uris.is_empty() {
         None
@@ -67,12 +68,12 @@ async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
     }
 }
 
-/// Fetch a single `iii://` URI via `skill::fetch`. Tolerates either a raw
-/// string response or `{ body: "..." }` envelope.
+/// Fetch a single `iii://` URI via `directory::skills::fetch-skill`.
+/// Tolerates either a raw string response or `{ body: "..." }` envelope.
 async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "skill::fetch".into(),
+            function_id: "directory::skills::fetch-skill".into(),
             payload: json!({ "uri": uri }),
             action: None,
             timeout_ms: Some(5_000),
@@ -82,12 +83,13 @@ async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
     response_to_string(&resp)
 }
 
-/// Batch-fetch many URIs in one round trip. `skill::fetch` joins them with
-/// `\n\n---\n\n` already, so the return is a single concatenated body.
+/// Batch-fetch many URIs in one round trip.
+/// `directory::skills::fetch-skill` joins them with `\n\n---\n\n`
+/// already, so the return is a single concatenated body.
 async fn fetch_uris_batched(iii: &III, uris: &[String]) -> Option<String> {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "skill::fetch".into(),
+            function_id: "directory::skills::fetch-skill".into(),
             payload: json!({ "uris": uris }),
             action: None,
             timeout_ms: Some(10_000),
@@ -102,7 +104,7 @@ async fn fetch_uris_batched(iii: &III, uris: &[String]) -> Option<String> {
 async fn list_root_skill_uris(iii: &III) -> Vec<String> {
     let Ok(resp) = iii
         .trigger(TriggerRequest {
-            function_id: "skills::list".into(),
+            function_id: "directory::skills::list".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),

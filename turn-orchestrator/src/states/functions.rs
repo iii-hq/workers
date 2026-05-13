@@ -337,10 +337,10 @@ mod tests {
         let input = fc(
             "call_2",
             "agent_call",
-            json!({ "function": "skills::list" }),
+            json!({ "function": "directory::skills::list" }),
         );
         let out = unwrap_agent_call(input);
-        assert_eq!(out.function_id, "skills::list");
+        assert_eq!(out.function_id, "directory::skills::list");
         assert_eq!(out.arguments, json!({}));
     }
 
@@ -367,12 +367,12 @@ mod tests {
                 "agent_call",
                 json!({"function":"shell::fs::ls","payload":{"path":"/tmp"}}),
             ),
-            fc("b", "skills::list", json!({})),
+            fc("b", "directory::skills::list", json!({})),
         ];
         let unwrapped: Vec<_> = calls.into_iter().map(unwrap_agent_call).collect();
         assert_eq!(unwrapped[0].function_id, "shell::fs::ls");
         assert_eq!(unwrapped[0].arguments, json!({"path":"/tmp"}));
-        assert_eq!(unwrapped[1].function_id, "skills::list");
+        assert_eq!(unwrapped[1].function_id, "directory::skills::list");
     }
 
     /// REGRESSION: `handle_execute` must route through `agent_call::dispatch`.

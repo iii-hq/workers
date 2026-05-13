@@ -1,29 +1,29 @@
 ---
 type: how-to
-function_id: registry::worker-info
+function_id: directory::registry::workers::info
 title: Inspect one worker's full registry metadata
 ---
 
 # When to use
 
-Call `registry::worker-info` to pull the FULL published metadata for
-one worker from the public registry: worker envelope (name,
-description, version, repo, author), readme markdown, the API
+Call `directory::registry::workers::info` to pull the FULL published
+metadata for one worker from the public registry: worker envelope
+(name, description, version, repo, author), readme markdown, the API
 reference (functions + triggers with schemas), and the list of skill /
 prompt files the bundle ships.
 
-This is the REMOTE counterpart to `directory::worker-info`. Both
-responses wrap the worker payload in a top-level `worker` field, and
-the core fields (`name`, `description`, `version`) are guaranteed on
-both surfaces so a parser that touches only those keys works against
+This is the REMOTE counterpart to `directory::engine::workers::info`.
+Both responses wrap the worker payload in a top-level `worker` field,
+and the core fields (`name`, `description`, `version`) are guaranteed
+on both surfaces so a parser that touches only those keys works against
 either; everything else is surface-specific (registry adds `repo` /
 `author` plus the top-level `readme`, `api_reference`, `skills_tree`,
 directory adds runtime/connection state).
 
-| Question                                              | Use this                |
-|-------------------------------------------------------|-------------------------|
-| What is THIS worker (connected to my engine) running? | `directory::worker-info` |
-| What does the published version of THAT worker look like? | `registry::worker-info`  |
+| Question                                                  | Use this                              |
+|-----------------------------------------------------------|---------------------------------------|
+| What is THIS worker (connected to my engine) running?     | `directory::engine::workers::info`    |
+| What does the published version of THAT worker look like? | `directory::registry::workers::info`  |
 
 # Inputs
 
@@ -35,15 +35,15 @@ directory adds runtime/connection state).
 }
 ```
 
-You may pass either `version` or `tag`, not both. With neither the
+You may pass either `version` or `tag`, not both. With neither, the
 worker info defaults to `tag: "latest"`.
 
 # Outputs
 
 ```json
 {
-  "worker": {                                          // same shape as registry::worker-list rows
-    "name":        "agent-memory",                     // shared core field with directory::worker-info.worker
+  "worker": {                                          // same shape as directory::registry::workers::list rows
+    "name":        "agent-memory",                     // shared core field with directory::engine::workers::info.worker
     "description": "Persistent memory tier for agents.", // shared core field
     "version":     "1.2.3",                            // shared core field (the resolved version)
     "repo":        "https://github.com/iii-hq/workers",
@@ -71,7 +71,7 @@ worker info defaults to `tag: "latest"`.
     ]
   },
   "skills_tree": {
-    "skills":  [ { "path": "index.md" }, { "path": "agentmemory/observe.md" } ],
+    "skills":  [ { "path": "index.md" }, { "path": "agent-memory/observe.md" } ],
     "prompts": [ { "name": "summarize", "description": "Summarize a session." } ]
   }
 }
@@ -101,8 +101,8 @@ Pin to an exact version:
 
 # Related
 
-- `registry::worker-list` — discover the worker name first.
-- `directory::worker-info` — same `worker` envelope against the
-  connected engine.
-- `skills::download` — install the worker's skill bundle locally
-  (uses the same registry under the hood).
+- `directory::registry::workers::list` — discover the worker name first.
+- `directory::engine::workers::info` — same `worker` envelope against
+  the connected engine.
+- `directory::skills::download` — install the worker's skill bundle
+  locally (uses the same registry under the hood).

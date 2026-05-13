@@ -1,5 +1,5 @@
 @engine @directory @directory_triggers
-Feature: directory::*-trigger functions (types + registered instances)
+Feature: directory::engine triggers and registered-triggers (types + instances)
   Trigger TYPES (templates) and registered TRIGGERS (instances) wrap
   `engine::trigger-types::list` and `engine::triggers::list` with the
   same filter / search / worker affordances the function endpoints use.
@@ -7,71 +7,71 @@ Feature: directory::*-trigger functions (types + registered instances)
   Background:
     Given the iii engine is reachable
 
-  # ── trigger-list (trigger types) ───────────────────────────────────
+  # ── triggers::list (trigger types) ─────────────────────────────────
 
-  Scenario: trigger-list includes the skills-published trigger types
-    When I call directory::trigger-list with payload:
+  Scenario: triggers::list includes the directory-published trigger types
+    When I call directory::engine::triggers::list with payload:
       """
-      {"prefix": "skills::"}
+      {"prefix": "directory::skills::"}
       """
-    Then the directory triggers list includes "skills::on-change"
+    Then the directory triggers list includes "directory::skills::on-change"
 
-  Scenario: trigger-list worker filter selects matching namespace
-    When I call directory::trigger-list with payload:
+  Scenario: triggers::list worker filter selects matching namespace
+    When I call directory::engine::triggers::list with payload:
       """
-      {"worker": "prompts"}
+      {"worker": "directory"}
       """
-    Then the directory triggers list includes "prompts::on-change"
+    Then the directory triggers list includes "directory::skills::on-change"
+    And  the directory triggers list includes "directory::prompts::on-change"
 
   Scenario: search across id and description is case-insensitive
-    When I call directory::trigger-list with payload:
+    When I call directory::engine::triggers::list with payload:
       """
       {"search": "ON-CHANGE"}
       """
-    Then the directory triggers list includes "skills::on-change"
-    And  the directory triggers list includes "prompts::on-change"
+    Then the directory triggers list includes "directory::skills::on-change"
+    And  the directory triggers list includes "directory::prompts::on-change"
 
-  # ── trigger-info ───────────────────────────────────────────────────
+  # ── triggers::info ─────────────────────────────────────────────────
 
-  Scenario: trigger-info returns description, name, worker, and instance count
-    When I call directory::trigger-info with payload:
+  Scenario: triggers::info returns description, worker, and instance count
+    When I call directory::engine::triggers::info with payload:
       """
-      {"id": "skills::on-change"}
+      {"id": "directory::skills::on-change"}
       """
-    Then the directory trigger-info response has id "skills::on-change"
-    And  the directory trigger-info response has name "on-change"
-    And  the directory trigger-info response has worker_name "skills"
+    Then the directory trigger-info response has id "directory::skills::on-change"
+    And  the directory trigger-info response has worker_name "directory"
     And  the directory trigger-info response has a non-empty description
     And  the directory trigger-info instance_count is a number
 
-  Scenario: trigger-info errors on an unknown id
-    When I call directory::trigger-info with payload:
+  Scenario: triggers::info errors on an unknown id
+    When I call directory::engine::triggers::info with payload:
       """
       {"id": "nope::nope"}
       """
-    Then the directory::trigger-info call fails with a message mentioning "not found"
+    Then the directory::engine::triggers::info call fails with a message mentioning "not found"
 
-  # ── registered-trigger-list ────────────────────────────────────────
+  # ── registered-triggers::list ──────────────────────────────────────
 
-  Scenario: registered-trigger-list responds with an array shape
-    When I call directory::registered-trigger-list with payload:
+  Scenario: registered-triggers::list responds with an array shape
+    When I call directory::engine::registered-triggers::list with payload:
       """
       {}
       """
     Then the directory registered-triggers response has a registered_triggers array
 
-  Scenario: registered-trigger-list respects function_id filter
-    When I call directory::registered-trigger-list with payload:
+  Scenario: registered-triggers::list respects function_id filter
+    When I call directory::engine::registered-triggers::list with payload:
       """
       {"function_id": "no-such::function"}
       """
     Then the directory registered-triggers list is empty
 
-  # ── registered-trigger-info ────────────────────────────────────────
+  # ── registered-triggers::info ──────────────────────────────────────
 
-  Scenario: registered-trigger-info errors on an unknown id
-    When I call directory::registered-trigger-info with payload:
+  Scenario: registered-triggers::info errors on an unknown id
+    When I call directory::engine::registered-triggers::info with payload:
       """
       {"id": "no-such-id"}
       """
-    Then the directory::registered-trigger-info call fails with a message mentioning "not found"
+    Then the directory::engine::registered-triggers::info call fails with a message mentioning "not found"

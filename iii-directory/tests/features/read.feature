@@ -1,12 +1,11 @@
 @engine @read
-Feature: filesystem-backed reads (skills::list / skill::fetch)
+Feature: filesystem-backed reads (directory::skills::list / directory::skills::fetch-skill)
   All read paths source from `skills_folder` on disk. Files arrive
-  there via `skills::download` (or by direct editing in tests). Scans
-  derive ids from the path relative to `skills_folder` with `.md`
-  stripped and `prompts/` segments excluded. The `iii://` URI surface
-  is reachable via `skill::fetch` (a non-`skills::*` alias of the
-  internal resolver pipeline) — there are no MCP-shaped wrappers any
-  more.
+  there via `directory::skills::download` (or by direct editing in
+  tests). Scans derive ids from the path relative to `skills_folder`
+  with `.md` stripped and `prompts/` segments excluded. The `iii://`
+  URI surface is reachable via `directory::skills::fetch-skill` — there
+  are no MCP-shaped wrappers any more.
 
   Background:
     Given the iii engine is reachable
@@ -49,7 +48,7 @@ Feature: filesystem-backed reads (skills::list / skill::fetch)
     Then the listing has an entry with id "team-a/playbook"
     And  the listing has an entry with id "team-a/meetings/standup"
 
-  # ── iii://{id} reads via skill::fetch ────────────────────────────────
+  # ── iii://{id} reads via skills::fetch-skill ─────────────────────────
 
   Scenario: iii://{id} returns the file body fresh
     Given a skill file at "ns/lookup.md" with body:
@@ -83,16 +82,16 @@ Feature: filesystem-backed reads (skills::list / skill::fetch)
     When I read the URI "iii://no-such-skill-does-not-exist"
     Then the read fails with a message mentioning "not found"
 
-  # ── auto-rendered iii://skills index ────────────────────────────────
+  # ── auto-rendered iii://directory/skills index ──────────────────────
 
-  Scenario: the iii://skills index lists each fs entry with title and description
+  Scenario: the iii://directory/skills index lists each fs entry with title and description
     Given a skill file at "indexed.md" with body:
       """
       # Indexed skill
 
       First paragraph summary.
       """
-    When I read the URI "iii://skills"
+    When I read the URI "iii://directory/skills"
     Then the fetched text contains "# Skills"
     And  the fetched text contains "Indexed skill"
     And  the fetched text contains "First paragraph summary."
@@ -110,7 +109,7 @@ Feature: filesystem-backed reads (skills::list / skill::fetch)
 
       Bottom.
       """
-    When I read the URI "iii://skills"
+    When I read the URI "iii://directory/skills"
     Then the index has entry "tree" indented by 0 spaces
     And  the index has entry "tree/leaf" indented by 2 spaces
 
@@ -131,9 +130,9 @@ Feature: filesystem-backed reads (skills::list / skill::fetch)
     When I read the URI "https://example.com"
     Then the read fails with a message mentioning "iii://"
 
-  # ── skill::fetch composition ────────────────────────────────────────
+  # ── skills::fetch-skill composition ─────────────────────────────────
 
-  Scenario: skill::fetch concatenates bodies across depths
+  Scenario: skills::fetch-skill concatenates bodies across depths
     Given a skill file at "fetched.md" with body:
       """
       # fetched

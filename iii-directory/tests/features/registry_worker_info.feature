@@ -1,17 +1,17 @@
 @engine @registry @registry_worker_info
-Feature: registry::worker-info (workers registry HTTP proxy)
+Feature: directory::registry::workers::info (workers registry HTTP proxy)
   HTTP `GET {registry_base}/w/{name}?version=…|tag=…` proxied to the
   workers registry. The flat publish payload is decoded into a
   `{ worker: { name, description, version, repo, author }, readme,
   api_reference: { functions, triggers }, skills_tree }` envelope —
-  the `worker` field has the same shape as `directory::worker-info.worker`
-  so callers can switch between local + registry surfaces with one
-  parser.
+  the `worker` field has the same shape as
+  `directory::engine::workers::info.worker` so callers can switch
+  between local + registry surfaces with one parser.
 
   Background:
     Given the iii engine is reachable
 
-  Scenario: worker-info returns the full publish envelope at a tag
+  Scenario: workers::info returns the full publish envelope at a tag
     Given a wiremock registry serving worker info "resend" at tag "latest" with body:
       """
       {
@@ -41,11 +41,11 @@ Feature: registry::worker-info (workers registry HTTP proxy)
         }
       }
       """
-    When I trigger registry::worker-info with payload:
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "resend", "tag": "latest"}
       """
-    Then the registry::worker-info call succeeds
+    Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
     And  the registry worker-info worker version is "1.2.3"
     And  the registry worker-info worker description is "Email worker"
@@ -54,7 +54,7 @@ Feature: registry::worker-info (workers registry HTTP proxy)
     And  the registry worker-info api_reference triggers count is 1
     And  the registry worker-info skills_tree skills count is 1
 
-  Scenario: worker-info defaults to tag latest when neither version nor tag is given
+  Scenario: workers::info defaults to tag latest when neither version nor tag is given
     Given a wiremock registry serving worker info "resend" at tag "latest" with body:
       """
       {
@@ -65,36 +65,36 @@ Feature: registry::worker-info (workers registry HTTP proxy)
         "skills_tree": {"skills": [], "prompts": []}
       }
       """
-    When I trigger registry::worker-info with payload:
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "resend"}
       """
-    Then the registry::worker-info call succeeds
+    Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
 
-  Scenario: worker-info rejects both version and tag
-    When I trigger registry::worker-info with payload:
+  Scenario: workers::info rejects both version and tag
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "resend", "version": "1.2.3", "tag": "latest"}
       """
-    Then the registry::worker-info call fails with a message mentioning "either version OR tag"
+    Then the directory::registry::workers::info call fails with a message mentioning "either version OR tag"
 
-  Scenario: worker-info rejects an empty name
-    When I trigger registry::worker-info with payload:
+  Scenario: workers::info rejects an empty name
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "  "}
       """
-    Then the registry::worker-info call fails with a message mentioning "non-empty"
+    Then the directory::registry::workers::info call fails with a message mentioning "non-empty"
 
-  Scenario: worker-info HTTP 404 surfaces in the failure message
+  Scenario: workers::info HTTP 404 surfaces in the failure message
     Given a wiremock registry that returns 404 for worker info "missing"
-    When I trigger registry::worker-info with payload:
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "missing", "tag": "latest"}
       """
-    Then the registry::worker-info call fails with a message mentioning "404"
+    Then the directory::registry::workers::info call fails with a message mentioning "404"
 
-  Scenario: worker-info caches identical lookups within the TTL window
+  Scenario: workers::info caches identical lookups within the TTL window
     Given a wiremock registry serving worker info "cached" at tag "latest" with body:
       """
       {
@@ -105,14 +105,14 @@ Feature: registry::worker-info (workers registry HTTP proxy)
         "skills_tree": {"skills": [], "prompts": []}
       }
       """
-    When I trigger registry::worker-info with payload:
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "cached", "tag": "latest"}
       """
-    Then the registry::worker-info call succeeds
-    When I trigger registry::worker-info with payload:
+    Then the directory::registry::workers::info call succeeds
+    When I trigger directory::registry::workers::info with payload:
       """
       {"name": "cached", "tag": "latest"}
       """
-    Then the registry::worker-info call succeeds
+    Then the directory::registry::workers::info call succeeds
     And  the wiremock registry received exactly 1 request to "/w/cached"

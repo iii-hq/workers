@@ -104,16 +104,19 @@ export function filterCommands(items: MenuItem[], query: string): MenuItem[] {
   return scored.map((x) => x.item);
 }
 
-// Each line of the rendered iii://skills index looks like:
-//   - [name](iii://skills/<id>) — <description>
-// or with a hyphen-minus instead of em-dash. We keep the regex permissive
-// but anchor it on the `iii://skills/` URI so non-skill lines are skipped.
-const SKILL_LINE = /^-\s+\[([^\]]+)\]\((iii:\/\/skills\/[^)]+)\)\s*[—\-]\s*(.+)$/;
+// Each line of the rendered iii://directory/skills index looks like:
+//   - [name](iii://<id>) — <description>
+// or with a hyphen-minus instead of em-dash. The id may contain
+// arbitrary slashes; the iii-directory worker already validates that
+// it doesn't collide with the `iii://directory/skills` literal that
+// renders the index itself.
+const SKILL_LINE = /^-\s+\[([^\]]+)\]\((iii:\/\/[^)]+)\)\s*[—\-]\s*(.+)$/;
 
 /**
- * Parse the markdown body returned by `skill::fetch iii://skills` into
- * MenuItems. Lines that don't match the expected shape are skipped silently.
- * Returns [] if the index hasn't loaded yet.
+ * Parse the markdown body returned by
+ * `directory::skills::fetch-skill iii://directory/skills` into
+ * MenuItems. Lines that don't match the expected shape are skipped
+ * silently. Returns [] if the index hasn't loaded yet.
  */
 export function skillsIndexToMenuItems(index: string | null): MenuItem[] {
   if (index == null) return [];
@@ -124,8 +127,8 @@ export function skillsIndexToMenuItems(index: string | null): MenuItem[] {
     const m = SKILL_LINE.exec(line);
     if (!m) continue;
     const [, name, uri, description] = m;
-    // Derive the id portion of the URI (everything after `iii://skills/`).
-    const idPart = uri.slice("iii://skills/".length);
+    // Derive the id portion of the URI (everything after `iii://`).
+    const idPart = uri.slice("iii://".length);
     out.push({
       kind: "skill",
       id: `/${idPart}`,

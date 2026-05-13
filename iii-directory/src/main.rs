@@ -3,17 +3,20 @@
 //! Boot sequence:
 //!   1. Parse CLI / load YAML config (with fallback to defaults).
 //!   2. Connect to the iii engine over WebSocket.
-//!   3. Register the custom trigger types `skills::on-change` /
-//!      `prompts::on-change` (fan-out targets for `skills::download`).
-//!   4. Register every public function against the engine
-//!      (`skills::*`, `prompts::*`, `skill::fetch`, `directory::*`,
-//!      `registry::*`).
+//!   3. Register the custom trigger types
+//!      `directory::skills::on-change` /
+//!      `directory::prompts::on-change` (fan-out targets for
+//!      `directory::skills::download`).
+//!   4. Register every public function against the engine — every
+//!      registration sits under `directory::*` (skills, prompts,
+//!      engine introspection, registry HTTP proxy).
 //!   5. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
-//! `skills::download` is the only write path. Read-side surfaces
-//! (`iii://`, `skill::fetch`, `prompts::*`, `directory::*`,
-//! `registry::*`) source from the configured `skills_folder` on disk
-//! or proxy to the public registry over HTTP.
+//! `directory::skills::download` is the only write path. Read-side
+//! surfaces (`iii://`, `directory::skills::fetch-skill`,
+//! `directory::prompts::*`, `directory::engine::*`,
+//! `directory::registry::*`) source from the configured `skills_folder`
+//! on disk or proxy to the public registry over HTTP.
 
 use std::sync::Arc;
 
@@ -97,7 +100,7 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &cfg, &registered);
     functions::log_fs_health(&cfg);
 
-    tracing::info!("iii-directory ready: 16 functions + 2 custom trigger types");
+    tracing::info!("iii-directory ready: 15 directory::* functions + 2 custom trigger types");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-directory shutting down");

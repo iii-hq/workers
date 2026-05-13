@@ -1,7 +1,8 @@
 //! Step defs for `tests/features/prompts.feature`.
 //!
-//! Drives `prompts::list` and `prompts::get` (the post-MCP-purge,
-//! plain-shape API). No MCP envelope or role/messages wrapper.
+//! Drives `directory::prompts::list` and `directory::prompts::get`
+//! (the post-MCP-purge, plain-shape API). No MCP envelope or
+//! role/messages wrapper.
 
 use cucumber::{given, then, when};
 use iii_sdk::TriggerRequest;
@@ -43,7 +44,7 @@ async fn list_prompts(world: &mut IiiSkillsWorld) {
     };
     if let Ok(v) = iii
         .trigger(TriggerRequest {
-            function_id: "prompts::list".to_string(),
+            function_id: "directory::prompts::list".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
@@ -107,7 +108,7 @@ async fn call_get(world: &mut IiiSkillsWorld, name: String) {
     };
     match iii
         .trigger(TriggerRequest {
-            function_id: "prompts::get".to_string(),
+            function_id: "directory::prompts::get".to_string(),
             payload: json!({ "name": name }),
             action: None,
             timeout_ms: Some(5_000),
@@ -166,7 +167,7 @@ fn get_modified_nonempty(world: &mut IiiSkillsWorld) {
     assert!(!modified.is_empty(), "modified_at empty: {v}");
 }
 
-#[then(regex = r#"^the prompts::get call fails with a message mentioning "([^"]+)"$"#)]
+#[then(regex = r#"^the directory::prompts::get call fails with a message mentioning "([^"]+)"$"#)]
 fn get_fails(world: &mut IiiSkillsWorld, needle: String) {
     if world.iii.is_none() {
         return;

@@ -116,7 +116,7 @@ class TestValidateWorker:
         assert r.returncode != 0, r.stdout + r.stderr
         assert "name" in r.stdout + r.stderr
 
-    def test_version_must_be_strictly_greater_than_base(self, tmp_path):
+    def test_version_equal_to_base_passes(self, tmp_path):
         repo = make_worker(tmp_path, "smoke", version="1.0.0")
         init_git(repo)
         # Touch source so worker is source_changed, but don't bump version.
@@ -124,5 +124,19 @@ class TestValidateWorker:
         subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
         subprocess.run(["git", "commit", "-q", "-m", "touch"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
         r = run_script(repo, "smoke", base_ref="main~1", source_changed=["smoke"])
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def test_version_less_than_base_fails(self, tmp_path):
+        repo = make_worker(tmp_path, "smoke", version="1.0.1")
+        init_git(repo)
+        cargo = repo / "smoke" / "Cargo.toml"
+        cargo.write_text(
+            cargo.read_text().replace('version = "1.0.1"', 'version = "1.0.0"'),
+        )
+        (repo / "smoke" / "src.rs").write_text("// touch\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        subprocess.run(["git", "commit", "-q", "-m", "downgrade"], cwd=repo, check=True, env=GIT_HERMETIC_ENV)
+        r = run_script(repo, "smoke", base_ref="main~1", source_changed=["smoke"])
         assert r.returncode != 0
         assert "version" in r.stdout + r.stderr
+        assert "less" in r.stdout + r.stderr

@@ -7,44 +7,53 @@ title: iii-directory
 
 Engine introspection, workers registry proxy, and filesystem-backed
 skill + prompt reader for the [iii engine](https://github.com/iii-hq/iii).
-Hosts four MCP-agnostic surfaces:
+Every public function sits under a single `directory::*` namespace,
+split into four sub-namespaces (all MCP-agnostic):
 
-- **Skills** (`skills::*`, `skill::fetch`) — markdown documents under
-  `iii://{id}` plus an `iii://skills` index. Use for "when and why to
-  use my worker's tools".
-- **Prompts** (`prompts::*`) — static prompt templates listed by
-  `prompts::list` and read by `prompts::get`. Parametric command
-  templates the *user* invokes.
-- **Directory** (`directory::*`) — read-side enrichment over
+- **Skills** (`directory::skills::*`) — markdown documents under
+  `iii://{id}` plus an `iii://directory/skills` index. Use for "when
+  and why to use my worker's tools".
+- **Prompts** (`directory::prompts::*`) — static prompt templates
+  listed by `directory::prompts::list` and read by
+  `directory::prompts::get`. Parametric command templates the *user*
+  invokes.
+- **Engine** (`directory::engine::*`) — read-side enrichment over
   `engine::functions::list`, `engine::workers::list`,
   `engine::trigger-types::list`, and `engine::triggers::list`.
   "What's connected to the engine right now?"
-- **Registry** (`registry::*`) — HTTP proxy over `api.workers.iii.dev`
-  with the same row shape as `directory::*`. "What's published in the
-  public registry?"
+- **Registry** (`directory::registry::*`) — HTTP proxy over
+  `api.workers.iii.dev` with the same `workers::{list,info}` shape as
+  `directory::engine::workers::*`. "What's published in the public
+  registry?"
 
-`directory::*` and `registry::*` share the same `worker-list` /
-`worker-info` envelope shape, so callers can switch between the local
+`directory::engine::workers::*` and `directory::registry::workers::*`
+share the same envelope shape, so callers can switch between the local
 engine view and the published-registry view without re-learning the API.
 
 Skills and prompts are sourced from a single configured folder on disk
 (`skills_folder`); see [the README](../README.md) for the install,
-configuration, and `skills::download` flow.
+configuration, and `directory::skills::download` flow.
 
 ## How-tos
 
-### `directory::*` — what's connected to the engine
+### `directory::skills::*` — filesystem-backed skill reader
 
-- [`directory::function-list`](skills/directory/function-list.md) — list functions registered with the engine; filter by search/prefix/worker.
-- [`directory::function-info`](skills/directory/function-info.md) — inspect one function's schemas, owner, and how-to skill.
-- [`directory::trigger-list`](skills/directory/trigger-list.md) — list trigger types registered with the engine.
-- [`directory::trigger-info`](skills/directory/trigger-info.md) — inspect one trigger type's schemas + live instance count.
-- [`directory::registered-trigger-list`](skills/directory/registered-trigger-list.md) — list registered trigger instances (subscriber rows).
-- [`directory::registered-trigger-info`](skills/directory/registered-trigger-info.md) — inspect one registered trigger (instance + type + function).
-- [`directory::worker-list`](skills/directory/worker-list.md) — list workers connected to the engine; same row shape as `registry::worker-list`.
-- [`directory::worker-info`](skills/directory/worker-info.md) — inspect one connected worker's full surface.
+- [`directory::skills::list`](iii://directory/skills/list) — flat metadata-only listing of every skill on disk (id, bytes, modified_at).
+- [`directory::skills::download`](iii://directory/skills/download) — pull markdown into `skills_folder` from the workers registry or a GitHub repo.
+- [`directory::skills::fetch-skill`](iii://directory/skills/fetch-skill) — batch-read skill bodies (or function-backed sections) by `iii://` URI or bare skill path.
 
-### `registry::*` — what's published in the public registry
+### `directory::engine::*` — what's connected to the engine
 
-- [`registry::worker-list`](skills/registry/worker-list.md) — search published workers in `api.workers.iii.dev`; same row shape as `directory::worker-list`.
-- [`registry::worker-info`](skills/registry/worker-info.md) — full registry detail for one worker (envelope + readme + api_reference + skills_tree).
+- [`directory::engine::functions::list`](iii://directory/engine/functions/list) — list functions registered with the engine; filter by search/prefix/worker.
+- [`directory::engine::functions::info`](iii://directory/engine/functions/info) — inspect one function's schemas, owner, and how-to skill.
+- [`directory::engine::triggers::list`](iii://directory/engine/triggers/list) — list trigger types registered with the engine.
+- [`directory::engine::triggers::info`](iii://directory/engine/triggers/info) — inspect one trigger type's schemas + live instance count.
+- [`directory::engine::registered-triggers::list`](iii://directory/engine/registered-triggers/list) — list registered trigger instances (subscriber rows).
+- [`directory::engine::registered-triggers::info`](iii://directory/engine/registered-triggers/info) — inspect one registered trigger (instance + type + function).
+- [`directory::engine::workers::list`](iii://directory/engine/workers/list) — list workers connected to the engine; same row shape as `directory::registry::workers::list`.
+- [`directory::engine::workers::info`](iii://directory/engine/workers/info) — inspect one connected worker's full surface.
+
+### `directory::registry::*` — what's published in the public registry
+
+- [`directory::registry::workers::list`](iii://directory/registry/workers/list) — search published workers in `api.workers.iii.dev`; same row shape as `directory::engine::workers::list`.
+- [`directory::registry::workers::info`](iii://directory/registry/workers/info) — full registry detail for one worker (envelope + readme + api_reference + skills_tree).
