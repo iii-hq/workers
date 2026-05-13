@@ -86,7 +86,7 @@ pub struct RegisteredTriggerSummary {
 /// Primary how-to skill that documents this function. Kept tiny so
 /// `function-info` stays cheap to render; deeper related skills come
 /// back via [`FunctionInfoOutput::related_skills`] as title-only refs
-/// that callers can pull on demand through `skills::fetch-skill`.
+/// that callers can pull on demand through `directory::skills::get`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HowGuide {
     pub title: String,
@@ -107,7 +107,7 @@ pub struct FunctionInfoOutput {
     pub how_guide: Option<HowGuide>,
     /// Other skills (any `type`) that mention this function via either
     /// the literal `function_id` or the `iii://fn/<dotted/path>` URI.
-    /// Body content is omitted; fetch on demand via `skills::fetch-skill`.
+    /// Body content is omitted; fetch on demand via `directory::skills::get`.
     pub related_skills: Vec<RelatedSkillRef>,
 }
 

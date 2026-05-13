@@ -38,9 +38,13 @@ configuration, and `directory::skills::download` flow.
 
 ### `directory::skills::*` — filesystem-backed skill reader
 
-- [`directory::skills::list`](iii://directory/skills/list) — flat metadata-only listing of every skill on disk (id, bytes, modified_at).
+- [`directory::skills::list`](iii://directory/skills/list) — enriched listing of every skill on disk (id, title, description, bytes, modified_at).
+- [`directory::skills::get`](iii://directory/skills/get) — read one skill body by id (returns the same id/title/description/modified_at as `list` plus `body`).
 - [`directory::skills::download`](iii://directory/skills/download) — pull markdown into `skills_folder` from the workers registry or a GitHub repo.
-- [`directory::skills::fetch-skill`](iii://directory/skills/fetch-skill) — batch-read skill bodies (or function-backed sections) by `iii://` URI or bare skill path.
+
+### `directory::prompts::*` — filesystem-backed prompt reader
+
+- [`directory::prompts::*`](iii://directory/prompts) — list and read parametric slash-command templates the *user* invokes; same flat `{ name, description, body, modified_at }` shape `directory::skills::get` uses for skills.
 
 ### `directory::engine::*` — what's connected to the engine
 

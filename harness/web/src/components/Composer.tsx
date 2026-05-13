@@ -18,7 +18,8 @@ import {
 import {
   BUILT_IN_COMMANDS,
   filterCommands,
-  skillsIndexToMenuItems,
+  skillsListToMenuItems,
+  type SkillRow,
 } from "../menuItems";
 import type { AgentMessage, FsLsResponse, FsEntry } from "../types";
 
@@ -45,8 +46,8 @@ interface Props {
   onSend: (prompt: string) => Promise<void>;
   /** Working directory used as the @-mention browse root. Empty = unset. */
   cwd: string;
-  /** Markdown skills index for slash menu (`null` → built-in commands only; full index is loaded server-side for the model). */
-  skillsIndex: string | null;
+  /** `directory::skills::list` rows for the slash menu (`null` → built-in commands only; the system-prompt bootstrap loads the full index server-side for the model). */
+  skillRows: SkillRow[] | null;
   /** Prior messages of the active session — drives ↑ history walk. */
   sessionMessages: AgentMessage[];
   /** Per-builtin handlers. */
@@ -78,8 +79,8 @@ function joinPath(base: string, name: string): string {
   return `${base}/${name}`;
 }
 
-function buildSkillsItems(index: string | null): MenuItem[] {
-  return [...BUILT_IN_COMMANDS, ...skillsIndexToMenuItems(index)];
+function buildSkillsItems(rows: SkillRow[] | null): MenuItem[] {
+  return [...BUILT_IN_COMMANDS, ...skillsListToMenuItems(rows)];
 }
 
 function entriesToMenuItems(dir: string, entries: FsEntry[]): MenuItem[] {
@@ -121,7 +122,7 @@ export function Composer({
   disabled,
   onSend,
   cwd,
-  skillsIndex,
+  skillRows,
   sessionMessages,
   callbacks,
 }: Props) {
@@ -133,7 +134,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Memoized so reference equality is stable for the menu effect.
-  const slashCatalog = useMemo(() => buildSkillsItems(skillsIndex), [skillsIndex]);
+  const slashCatalog = useMemo(() => buildSkillsItems(skillRows), [skillRows]);
   const history = useMemo(() => userTexts(sessionMessages), [sessionMessages]);
 
   // ─── @-mention IO ───────────────────────────────────────────────────────
@@ -353,7 +354,7 @@ export function Composer({
         if (item.kind === "skill") {
           // Skills get inserted as a /skill-id mention so the user can add
           // context after it. The agent picks it up via the system-prompt
-          // skills index and directory::skills::fetch-skill.
+          // skills index and directory::skills::get.
           setText(`${item.id} `);
           dispatch({ kind: "close" });
           return;

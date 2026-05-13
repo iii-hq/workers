@@ -36,28 +36,47 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
     Ok(())
 }
 
+/// One enriched `directory::skills::list` row, projected from the JSON
+/// the worker returns. Kept tiny on purpose so the bootstrap helper is
+/// unit-testable without an iii engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillRow {
+    id: String,
+    title: String,
+    description: String,
+}
+
 /// Best-effort bootstrap of the skills surface for the system prompt.
 ///
 /// Concatenates:
-///   1. the auto-rendered `iii://directory/skills` index (links to every registered skill), and
-///   2. the bodies of every **root-depth** registered skill (no `/` in the id),
-///      batched in a single `directory::skills::fetch-skill` call.
+///   1. an indented client-side index built from `directory::skills::list`
+///      (links every registered skill, deeper paths indented), and
+///   2. the bodies of every **root-depth** registered skill (no `/` in the
+///      id), each fetched via `directory::skills::get`.
 ///
 /// The agent therefore boots with both the table of contents AND the
 /// router-style bodies the agent normally reaches for first — eliminating
-/// the round-trip to `directory::skills::fetch-skill iii://directory/skills`
-/// on the first turn.
+/// the round-trip to fetch the index on the first turn.
 ///
 /// Any sub-step that fails returns `None` for that piece; the caller
 /// degrades gracefully (the fallback section in `system_prompt::build`
 /// covers a fully missing skills surface).
 async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
-    let index = fetch_uri(iii, "iii://directory/skills").await;
-    let root_uris = list_root_skill_uris(iii).await;
-    let bodies = if root_uris.is_empty() {
+    let rows = list_skills(iii).await;
+    let index = if rows.is_empty() {
         None
     } else {
-        fetch_uris_batched(iii, &root_uris).await
+        Some(render_index_from_rows(&rows))
+    };
+    let root_ids: Vec<String> = rows
+        .iter()
+        .filter(|r| is_root_skill_id(&r.id))
+        .map(|r| r.id.clone())
+        .collect();
+    let bodies = if root_ids.is_empty() {
+        None
+    } else {
+        fetch_root_bodies(iii, &root_ids).await
     };
 
     match (index, bodies) {
@@ -68,40 +87,9 @@ async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
     }
 }
 
-/// Fetch a single `iii://` URI via `directory::skills::fetch-skill`.
-/// Tolerates either a raw string response or `{ body: "..." }` envelope.
-async fn fetch_uri(iii: &III, uri: &str) -> Option<String> {
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "directory::skills::fetch-skill".into(),
-            payload: json!({ "uri": uri }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .ok()?;
-    response_to_string(&resp)
-}
-
-/// Batch-fetch many URIs in one round trip.
-/// `directory::skills::fetch-skill` joins them with `\n\n---\n\n`
-/// already, so the return is a single concatenated body.
-async fn fetch_uris_batched(iii: &III, uris: &[String]) -> Option<String> {
-    let resp = iii
-        .trigger(TriggerRequest {
-            function_id: "directory::skills::fetch-skill".into(),
-            payload: json!({ "uris": uris }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await
-        .ok()?;
-    response_to_string(&resp)
-}
-
-/// List every registered skill id and keep only **root-depth** ones (no
-/// `/` in the id). Empty list on any failure.
-async fn list_root_skill_uris(iii: &III) -> Vec<String> {
+/// Pull the enriched `directory::skills::list` rows. Empty list on any
+/// failure or unexpected shape.
+async fn list_skills(iii: &III) -> Vec<SkillRow> {
     let Ok(resp) = iii
         .trigger(TriggerRequest {
             function_id: "directory::skills::list".into(),
@@ -116,11 +104,90 @@ async fn list_root_skill_uris(iii: &III) -> Vec<String> {
     let Some(arr) = resp.get("skills").and_then(Value::as_array) else {
         return Vec::new();
     };
-    arr.iter()
-        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
-        .filter(|id| is_root_skill_id(id))
-        .map(|id| format!("iii://{id}"))
-        .collect()
+    arr.iter().filter_map(parse_skill_row).collect()
+}
+
+fn parse_skill_row(entry: &Value) -> Option<SkillRow> {
+    let id = entry.get("id").and_then(Value::as_str)?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let title = entry
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_string();
+    let description = entry
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Some(SkillRow {
+        id,
+        title,
+        description,
+    })
+}
+
+/// Indented bullet list of every skill, depth derived from the number
+/// of `/` separators in the id. Output matches the line shape the
+/// harness web slash-menu parser expects:
+///
+/// ```text
+/// - [`<id>`](iii://<id>) — <title>
+/// - [`<id>`](iii://<id>) — <title> — <description>
+/// ```
+fn render_index_from_rows(rows: &[SkillRow]) -> String {
+    let mut out = String::from(
+        "# Skills\n\nRead each skill's body for orientation on when and why to call its functions. \
+         Sub-skills are indented under their parent path so a top-level skill stays small \
+         and the LLM can drill in only when it needs more detail.\n\n",
+    );
+    for row in rows {
+        let depth = row.id.matches('/').count();
+        let indent = " ".repeat(depth * 2);
+        let suffix = if row.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", row.description)
+        };
+        out.push_str(&format!(
+            "{indent}- [`{id}`](iii://{id}) — {title}{suffix}\n",
+            id = row.id,
+            title = row.title,
+        ));
+    }
+    out
+}
+
+/// Fetch the body of every root-depth skill via `directory::skills::get`
+/// and join them with `\n\n---\n\n`. Errors per id drop that body but
+/// the rest of the bootstrap proceeds.
+async fn fetch_root_bodies(iii: &III, root_ids: &[String]) -> Option<String> {
+    let mut sections: Vec<String> = Vec::with_capacity(root_ids.len());
+    for id in root_ids {
+        let Ok(resp) = iii
+            .trigger(TriggerRequest {
+                function_id: "directory::skills::get".into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+        else {
+            continue;
+        };
+        let body = resp.get("body").and_then(Value::as_str).unwrap_or("");
+        if body.is_empty() {
+            continue;
+        }
+        sections.push(format!("# iii://{id}\n\n{}", body.trim_end()));
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n---\n\n"))
+    }
 }
 
 /// `iii` and `harness` are root; `resend/email`, `shell/bash` are not.
@@ -128,16 +195,12 @@ fn is_root_skill_id(id: &str) -> bool {
     !id.is_empty() && !id.contains('/')
 }
 
-fn response_to_string(resp: &Value) -> Option<String> {
-    if let Some(s) = resp.as_str() {
-        return Some(s.to_string());
-    }
-    resp.get("body").and_then(Value::as_str).map(str::to_string)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::is_root_skill_id;
+    use super::{
+        is_root_skill_id, parse_skill_row, render_index_from_rows, SkillRow,
+    };
+    use serde_json::json;
 
     #[test]
     fn root_ids_have_no_slash() {
@@ -155,5 +218,62 @@ mod tests {
     #[test]
     fn empty_id_is_not_root() {
         assert!(!is_root_skill_id(""));
+    }
+
+    #[test]
+    fn parse_row_extracts_required_id_and_optional_title_description() {
+        let v = json!({ "id": "shell", "title": "Shell", "description": "Run commands." });
+        let row = parse_skill_row(&v).unwrap();
+        assert_eq!(row.id, "shell");
+        assert_eq!(row.title, "Shell");
+        assert_eq!(row.description, "Run commands.");
+    }
+
+    #[test]
+    fn parse_row_falls_back_to_id_when_title_missing() {
+        let v = json!({ "id": "shell" });
+        let row = parse_skill_row(&v).unwrap();
+        assert_eq!(row.title, "shell");
+        assert_eq!(row.description, "");
+    }
+
+    #[test]
+    fn parse_row_skips_entries_without_id() {
+        assert!(parse_skill_row(&json!({})).is_none());
+        assert!(parse_skill_row(&json!({ "title": "x" })).is_none());
+        assert!(parse_skill_row(&json!({ "id": "" })).is_none());
+    }
+
+    #[test]
+    fn render_index_indents_by_depth_and_includes_link_label_description() {
+        let rows = vec![
+            SkillRow {
+                id: "shell".into(),
+                title: "Shell".into(),
+                description: "Run commands.".into(),
+            },
+            SkillRow {
+                id: "shell/exec".into(),
+                title: "shell::exec".into(),
+                description: "Foreground exec.".into(),
+            },
+            SkillRow {
+                id: "shell/exec/bg".into(),
+                title: "shell::exec_bg".into(),
+                description: String::new(),
+            },
+        ];
+        let idx = render_index_from_rows(&rows);
+        assert!(idx.contains("# Skills"));
+        assert!(idx.contains("- [`shell`](iii://shell) — Shell — Run commands."));
+        assert!(idx.contains("  - [`shell/exec`](iii://shell/exec) — shell::exec — Foreground exec."));
+        // Empty description: trailing em-dash dropped.
+        assert!(idx.contains("    - [`shell/exec/bg`](iii://shell/exec/bg) — shell::exec_bg\n"));
+    }
+
+    #[test]
+    fn render_index_handles_zero_rows() {
+        let idx = render_index_from_rows(&[]);
+        assert!(idx.contains("# Skills"));
     }
 }

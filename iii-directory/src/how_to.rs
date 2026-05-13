@@ -148,16 +148,18 @@ pub fn find_for_function(skills_folder: &Path, function_id: &str) -> Option<FsHo
     how_tos.iter().find(|h| h.body.contains(&needle)).cloned()
 }
 
-/// `mem::observe` → `iii://fn/mem/observe`. Mirrors the section-URI
-/// shape served by `skills::fetch-skill` (`iii://fn/...`) so the
-/// scanner matches the links agents would actually paste.
+/// `mem::observe` → `iii://fn/mem/observe`. The `iii://fn/...` link
+/// shape is no longer resolved by any worker function (the URI scheme
+/// was retired with `directory::skills::fetch-skill`), but skills still
+/// embed these links for human readability and the scanner uses them
+/// to attribute related skills to a function.
 pub fn function_id_to_uri(function_id: &str) -> String {
     format!("iii://fn/{}", function_id.replace("::", "/"))
 }
 
 /// Title-only reference to another skill that mentions a function.
 /// Bodies are intentionally omitted; callers fetch on demand via
-/// `skills::fetch-skill iii://<skill_id>`.
+/// `directory::skills::get { id: "<skill_id>" }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RelatedSkillRef {
     pub title: String,

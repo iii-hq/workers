@@ -10,14 +10,13 @@ Call `directory::skills::download` when you want to populate
 `skills_folder` with markdown — either from the public workers registry
 (`api.workers.iii.dev`) or from a GitHub repo. This is the **only**
 write path on the iii-directory worker; everything else
-(`directory::skills::list`, `directory::skills::fetch-skill`, the
-`iii://` URI scheme, `directory::prompts::*`) reads from whatever ends
-up on disk.
+(`directory::skills::list`, `directory::skills::get`,
+`directory::prompts::*`) reads from whatever ends up on disk.
 
 Reach for it when:
 
 - You're provisioning a fresh machine and need a worker's bundle pulled
-  locally so `directory::skills::fetch-skill` can serve it.
+  locally so `directory::skills::get` can serve it.
 - You want to pin a worker's skills to a known semver instead of always
   tracking `tag: "latest"`.
 - You want to vendor an out-of-registry skill bundle from a GitHub repo
@@ -147,8 +146,7 @@ Same, but from a `master`-default repo:
 
 - `directory::skills::list` — verify what landed on disk after the
   download.
-- `directory::skills::fetch-skill` — read a downloaded body by `iii://`
-  URI or bare skill path.
+- `directory::skills::get` — read a downloaded body by id.
 - `directory::registry::workers::list` /
   `directory::registry::workers::info` — discover what's available
   before pulling.

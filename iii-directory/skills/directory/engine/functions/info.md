@@ -57,11 +57,12 @@ markdown in `skills_folder` carries `type: how-to` plus a matching
 
 `related_skills` lists every **other** skill (any frontmatter `type`)
 that mentions this function — either via the literal `function_id` or
-via the `iii://fn/<dotted/path>` URI. The bodies are intentionally
-omitted; titles are surfaced for picker UIs and the bodies should be
-loaded on demand via `directory::skills::fetch-skill iii://<skill_id>`.
-The skill already returned as `how_guide` is excluded from this list to
-avoid duplication.
+via the `iii://fn/<dotted/path>` URI link form. The bodies are
+intentionally omitted; titles are surfaced for picker UIs and the
+bodies should be loaded on demand via
+`directory::skills::get { id: "<skill_id>" }`. The skill already
+returned as `how_guide` is excluded from this list to avoid
+duplication.
 
 # Worked example
 
@@ -75,8 +76,8 @@ via the `how_guide` field) when called against a function that has a
 bundled how-to. Any other skill in `skills_folder` that mentions
 `directory::engine::workers::list` (e.g. via
 `iii://fn/directory/engine/workers/list`) shows up in `related_skills`,
-so callers can drill in via `directory::skills::fetch-skill` when they
-want the full body.
+so callers can drill in via `directory::skills::get` when they want the
+full body.
 
 # Related
 

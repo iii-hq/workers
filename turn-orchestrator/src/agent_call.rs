@@ -98,12 +98,11 @@ pub(crate) fn is_timeout(err: &IIIError) -> bool {
 /// it. Otherwise wrap the value as the tool's `details` so function-level
 /// envelopes (`{ok: false, error}`) pass through verbatim per the spec.
 ///
-/// For a JSON `String` value (e.g. `directory::skills::fetch-skill`
-/// returning markdown), use the inner string content as `text`.
-/// `serde_json::Value::to_string()` emits the JSON-encoded form —
-/// surrounding quotes and `\n` literals — which the harness web's
-/// `<pre>` then renders verbatim and looks like "raw JSON in chat"
-/// (turn-orchestrator/agent_call.rs regression).
+/// For a JSON `String` value (any function returning raw text), use the
+/// inner string content as `text`. `serde_json::Value::to_string()` emits
+/// the JSON-encoded form — surrounding quotes and `\n` literals — which
+/// the harness web's `<pre>` then renders verbatim and looks like "raw
+/// JSON in chat" (turn-orchestrator/agent_call.rs regression).
 pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
     if let Ok(tr) = serde_json::from_value::<FunctionResult>(value.clone()) {
         return tr;
@@ -156,7 +155,7 @@ pub async fn dispatch(
         Err(ref e) if is_function_not_found(e) => error_result(json!({
             "error": "function_not_found",
             "function": function_id,
-            "hint": "load the relevant skill via directory::skills::fetch-skill, or check the function id"
+            "hint": "load the relevant skill via directory::skills::get, or check the function id"
         })),
         Err(ref e) if is_timeout(e) => error_result(json!({
             "error": "timeout",
@@ -264,12 +263,12 @@ mod dispatch_tests {
         assert!(!tr.terminate);
     }
 
-    /// Regression: `directory::skills::fetch-skill` and any other function
-    /// returning a JSON String must produce a content block whose `text`
+    /// Regression: any function returning a JSON String (e.g. a skill body
+    /// from a custom worker) must produce a content block whose `text`
     /// is the inner string content (real newlines), not the JSON-encoded
     /// form (literal `\n` + surrounding quotes). The latter renders as
-    /// "raw JSON in chat"
-    /// because the harness web wraps `text` in a `<pre>` verbatim.
+    /// "raw JSON in chat" because the harness web wraps `text` in a
+    /// `<pre>` verbatim.
     #[test]
     fn decode_or_passthrough_unwraps_string_value_into_text() {
         let body = "# shell/fs_read\n\nObserve-only filesystem ops.";

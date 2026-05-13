@@ -36,11 +36,10 @@ fn default_registry_cache_ttl_ms() -> u64 {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SkillsConfig {
-    /// Folder that backs every read (`iii://`,
-    /// `directory::skills::fetch-skill`, `directory::skills::list`,
-    /// `directory::prompts::*`) and every write from
-    /// `directory::skills::download`. Relative paths are resolved
-    /// against the process current working directory; absolute paths
+    /// Folder that backs every read (`directory::skills::list`,
+    /// `directory::skills::get`, `directory::prompts::*`) and every
+    /// write from `directory::skills::download`. Relative paths are
+    /// resolved against the process current working directory; absolute paths
     /// are used as-is.
     #[serde(default = "default_skills_folder")]
     pub skills_folder: String,

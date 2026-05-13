@@ -1,5 +1,6 @@
-// Slash-menu items: built-in commands + skills parsed from the iii://skills
-// markdown index. Plus a fuzzy filter the popover applies as the user types.
+// Slash-menu items: built-in commands + skills surfaced from the
+// `directory::skills::list` rows.  Plus a fuzzy filter the popover
+// applies as the user types.
 //
 // The filter ranking is intentionally simple — the slash menu has at most a
 // few dozen entries, so we sort in-memory on every keystroke.
@@ -104,37 +105,40 @@ export function filterCommands(items: MenuItem[], query: string): MenuItem[] {
   return scored.map((x) => x.item);
 }
 
-// Each line of the rendered iii://directory/skills index looks like:
-//   - [name](iii://<id>) — <description>
-// or with a hyphen-minus instead of em-dash. The id may contain
-// arbitrary slashes; the iii-directory worker already validates that
-// it doesn't collide with the `iii://directory/skills` literal that
-// renders the index itself.
-const SKILL_LINE = /^-\s+\[([^\]]+)\]\((iii:\/\/[^)]+)\)\s*[—\-]\s*(.+)$/;
+/**
+ * One row from `directory::skills::list`. The worker enriches each row
+ * with `title` + `description` so a picker doesn't need a follow-up
+ * `directory::skills::get` per entry.
+ */
+export interface SkillRow {
+  id: string;
+  title?: string;
+  description?: string;
+}
 
 /**
- * Parse the markdown body returned by
- * `directory::skills::fetch-skill iii://directory/skills` into
- * MenuItems. Lines that don't match the expected shape are skipped
- * silently. Returns [] if the index hasn't loaded yet.
+ * Project `directory::skills::list` rows into MenuItems for the slash
+ * popover. Entries without a non-empty `id` are dropped silently;
+ * everything else becomes a `/skill-id` mention with `<title> — <description>`
+ * (or just `<title>` when description is empty) as the secondary line.
+ *
+ * Returns [] when `rows` is null/undefined or empty.
  */
-export function skillsIndexToMenuItems(index: string | null): MenuItem[] {
-  if (index == null) return [];
+export function skillsListToMenuItems(rows: SkillRow[] | null | undefined): MenuItem[] {
+  if (rows == null) return [];
   const out: MenuItem[] = [];
-  for (const raw of index.split("\n")) {
-    const line = raw.trim();
-    if (!line.startsWith("-")) continue;
-    const m = SKILL_LINE.exec(line);
-    if (!m) continue;
-    const [, name, uri, description] = m;
-    // Derive the id portion of the URI (everything after `iii://`).
-    const idPart = uri.slice("iii://".length);
+  for (const row of rows) {
+    const id = row.id?.trim();
+    if (!id) continue;
+    const title = row.title?.trim() || id;
+    const description = row.description?.trim() ?? "";
+    const secondary = description ? `${title} — ${description}` : title;
     out.push({
       kind: "skill",
-      id: `/${idPart}`,
-      label: `/${idPart}`,
-      description: `${name} — ${description}`,
-      meta: { uri },
+      id: `/${id}`,
+      label: `/${id}`,
+      description: secondary,
+      meta: { id, uri: `iii://${id}` },
     });
   }
   return out;
