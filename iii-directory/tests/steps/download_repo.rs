@@ -211,7 +211,9 @@ fn download_succeeds(world: &mut IiiSkillsWorld) {
     );
 }
 
-#[then(regex = r#"^the directory::skills::download call fails with a message mentioning "([^"]+)"$"#)]
+#[then(
+    regex = r#"^the directory::skills::download call fails with a message mentioning "([^"]+)"$"#
+)]
 fn download_fails(world: &mut IiiSkillsWorld, needle: String) {
     if world.iii.is_none() {
         return;

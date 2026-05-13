@@ -508,11 +508,7 @@ mod tests {
     #[test]
     fn related_returns_empty_for_unrelated_function_id() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(
-            tmp.path(),
-            "x.md",
-            "# x\n\nbody mentions other::fn only\n",
-        );
+        write_fixture(tmp.path(), "x.md", "# x\n\nbody mentions other::fn only\n");
         let related = find_related_for_function(tmp.path(), "missing::fn", None);
         assert!(related.is_empty());
     }

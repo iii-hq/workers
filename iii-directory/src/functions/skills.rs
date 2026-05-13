@@ -135,15 +135,18 @@ fn register_fetch_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::skills::fetch-skill", move |req: FetchSkillInput| {
-            let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
-            async move {
-                fetch_skill(&iii, &cfg, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
-        })
+        RegisterFunction::new_async(
+            "directory::skills::fetch-skill",
+            move |req: FetchSkillInput| {
+                let iii = iii_inner.clone();
+                let cfg = cfg_inner.clone();
+                async move {
+                    fetch_skill(&iii, &cfg, req)
+                        .await
+                        .map_err(IIIError::Handler)
+                }
+            },
+        )
         .description(FETCH_DESCRIPTION)
         .metadata(json!({"tool": {"label": "Fetch skill"}})),
     );

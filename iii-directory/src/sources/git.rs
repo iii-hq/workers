@@ -104,14 +104,7 @@ async fn run_git_clone(
         .ok_or_else(|| format!("non-UTF-8 tempdir path: {}", dest.display()))?;
     let fut = Command::new("git")
         .args([
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            branch,
-            "--quiet",
-            repo,
-            dest_str,
+            "clone", "--depth", "1", "--branch", branch, "--quiet", repo, dest_str,
         ])
         .output();
     let output = timeout(Duration::from_millis(timeout_ms), fut)

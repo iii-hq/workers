@@ -183,9 +183,7 @@ async fn run_download(
             repo,
             skill,
             branch,
-        } => {
-            sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await
-        }
+        } => sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await,
         ClassifiedInput::Registry { worker, spec } => {
             sources::registry::download(
                 cfg.registry_base(),

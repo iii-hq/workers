@@ -103,7 +103,9 @@ async fn run_download(world: &mut IiiSkillsWorld, payload: Value) {
     }
 }
 
-#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" version="([^"]+)"$"#)]
+#[when(
+    regex = r#"^I trigger directory::skills::download with worker="([^"]+)" version="([^"]+)"$"#
+)]
 async fn trigger_with_version(world: &mut IiiSkillsWorld, worker: String, version: String) {
     run_download(world, json!({ "worker": worker, "version": version })).await;
 }

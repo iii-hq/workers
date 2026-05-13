@@ -64,24 +64,28 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::prompts::list", move |_input: ListPromptsInput| {
-            let cfg = cfg_inner.clone();
-            async move {
-                let (prompts, _skipped) = fs_source::scan_prompts(&cfg.resolved_skills_folder());
-                let out: Vec<PromptEntry> = prompts
-                    .into_iter()
-                    .map(|p| {
-                        let modified_at = fs_modified_at(&p.abs_path);
-                        PromptEntry {
-                            name: p.name,
-                            description: p.description,
-                            modified_at,
-                        }
-                    })
-                    .collect();
-                Ok::<_, IIIError>(ListPromptsOutput { prompts: out })
-            }
-        })
+        RegisterFunction::new_async(
+            "directory::prompts::list",
+            move |_input: ListPromptsInput| {
+                let cfg = cfg_inner.clone();
+                async move {
+                    let (prompts, _skipped) =
+                        fs_source::scan_prompts(&cfg.resolved_skills_folder());
+                    let out: Vec<PromptEntry> = prompts
+                        .into_iter()
+                        .map(|p| {
+                            let modified_at = fs_modified_at(&p.abs_path);
+                            PromptEntry {
+                                name: p.name,
+                                description: p.description,
+                                modified_at,
+                            }
+                        })
+                        .collect();
+                    Ok::<_, IIIError>(ListPromptsOutput { prompts: out })
+                }
+            },
+        )
         .description(
             "List filesystem-backed prompts (name, description, modified_at) from skills_folder.",
         ),

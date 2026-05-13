@@ -84,7 +84,11 @@ mod tests {
 
     #[test]
     fn canonical_includes_base_cwd_and_skills_sections() {
-        let out = build(Some("- iii://directory/skills/echo"), Some("/work/proj"), None);
+        let out = build(
+            Some("- iii://directory/skills/echo"),
+            Some("/work/proj"),
+            None,
+        );
         assert!(out.contains("agent_call"));
         assert!(out.contains("blocked: true"));
         assert!(out.contains("## Working directory"));

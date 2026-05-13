@@ -290,7 +290,9 @@ fn fi_related_includes(world: &mut IiiSkillsWorld, expected: String) {
     );
 }
 
-#[then(regex = r#"^the directory function-info related_skills does not include skill_id "([^"]+)"$"#)]
+#[then(
+    regex = r#"^the directory function-info related_skills does not include skill_id "([^"]+)"$"#
+)]
 fn fi_related_excludes(world: &mut IiiSkillsWorld, excluded: String) {
     if world.iii.is_none() {
         return;

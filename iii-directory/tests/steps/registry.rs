@@ -172,7 +172,9 @@ fn registry_succeeds(world: &mut IiiSkillsWorld, _function_id: String) {
     );
 }
 
-#[then(regex = r#"^the (directory::registry::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#)]
+#[then(
+    regex = r#"^the (directory::registry::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#
+)]
 fn registry_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: String) {
     if world.iii.is_none() {
         return;
