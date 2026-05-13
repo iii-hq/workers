@@ -106,10 +106,7 @@ fn find_session_binary() -> Option<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let session_dir = manifest_dir.parent()?.join("session");
     for profile in ["debug", "release"] {
-        let candidate = session_dir
-            .join("target")
-            .join(profile)
-            .join("session");
+        let candidate = session_dir.join("target").join(profile).join("session");
         if candidate.is_file() {
             return Some(candidate);
         }
