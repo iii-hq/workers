@@ -1,0 +1,14 @@
+# Allocating a fresh session
+
+## When to use
+
+- An agent or orchestration flow is starting a new conversation and needs a session to record its history.
+- A new task is launched and the harness needs to allocate a storage handle before the first message lands.
+- Building a replay or fork workflow that needs a fresh session root before copying entries into it.
+
+## Notes
+
+- `display_name` and `cwd` are both optional; omit them for anonymous sessions.
+- The returned `session_id` is a UUID; pass it verbatim to every other `session-tree::*` call.
+- Sessions persist via the configured backend (`store_backend: iii_state` by default; `memory` for ephemeral runs).
+- `created_at` and `updated_at` are millisecond epochs; `updated_at` advances on every subsequent `session-tree::append`.

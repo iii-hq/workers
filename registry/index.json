@@ -251,32 +251,21 @@
       "default_config": {},
       "version": "0.1.0"
     },
-    "session-inbox": {
+    "session": {
       "type": "binary",
-      "description": "Per-session inbox (session-inbox::push, drain, peek) backed by iii state.",
+      "description": "Session storage (session-tree::*) + per-session inbox (session-inbox::*) backed by iii state.",
       "repo": "iii-hq/workers",
-      "tag_prefix": "session-inbox",
+      "tag_prefix": "session",
       "supported_targets": [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu"
       ],
       "has_checksum": true,
       "default_config": {
-        "max_inline_bytes": 262144
+        "store_backend": "iii_state",
+        "engine_url": "ws://127.0.0.1:49134",
+        "state_scope": "agent"
       },
-      "version": "0.1.0"
-    },
-    "session-tree": {
-      "type": "binary",
-      "description": "Session storage as a parent-id tree of typed entries under session-tree::*.",
-      "repo": "iii-hq/workers",
-      "tag_prefix": "session-tree",
-      "supported_targets": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
-      ],
-      "has_checksum": true,
-      "default_config": {},
       "version": "0.1.0"
     },
     "shell": {
