@@ -197,9 +197,7 @@ fn is_root_skill_id(id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_root_skill_id, parse_skill_row, render_index_from_rows, SkillRow,
-    };
+    use super::{is_root_skill_id, parse_skill_row, render_index_from_rows, SkillRow};
     use serde_json::json;
 
     #[test]
@@ -266,7 +264,9 @@ mod tests {
         let idx = render_index_from_rows(&rows);
         assert!(idx.contains("# Skills"));
         assert!(idx.contains("- [`shell`](iii://shell) — Shell — Run commands."));
-        assert!(idx.contains("  - [`shell/exec`](iii://shell/exec) — shell::exec — Foreground exec."));
+        assert!(
+            idx.contains("  - [`shell/exec`](iii://shell/exec) — shell::exec — Foreground exec.")
+        );
         // Empty description: trailing em-dash dropped.
         assert!(idx.contains("    - [`shell/exec/bg`](iii://shell/exec/bg) — shell::exec_bg\n"));
     }
