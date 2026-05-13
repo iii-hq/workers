@@ -8,7 +8,11 @@ use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 use crate::system_prompt;
 
-pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+pub async fn handle(
+    iii: &III,
+    _cfg: &std::sync::Arc<crate::config::TurnOrchestratorConfig>,
+    record: &mut TurnStateRecord,
+) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
 
     let tools = json!([agent_call::agent_call_tool()]);
