@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref }}    # check out the PR branch directly
-      - uses: iii-hq/skills-and-validation@v0.3
+      - uses: iii-hq/skills-and-validation@v0.4
         with:
           write: true
+          scope: pr-diff
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
