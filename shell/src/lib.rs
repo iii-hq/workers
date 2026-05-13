@@ -12,17 +12,19 @@ pub mod manifest;
 pub mod target;
 pub mod triggers;
 
-/// Top-level skill id. Registered with the `skills` worker at boot via
-/// `skills::register`; clients fetch the body at `iii://shell`.
+/// Top-level skill id. Bundled markdown is published to the
+/// iii-directory worker; clients fetch the body at `iii://shell`.
 pub const SKILL_ID: &str = "shell";
 
 /// Top-level router body — small on purpose so the LLM only loads the
-/// router and drills into sub-skills via `skill::fetch`.
+/// router and drills into sub-skills via
+/// `directory::skills::fetch-skill`.
 pub const SKILL_MD: &str = include_str!("../skill.md");
 
 /// Sub-skill bodies, keyed by their full id. One leaf per registered
 /// `shell::*` function. The router (`SKILL_MD`) links to each so the
-/// agent only loads what it needs via `skill::fetch`.
+/// agent only loads what it needs via
+/// `directory::skills::fetch-skill`.
 pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("shell/exec", include_str!("../skills/exec.md")),
     ("shell/exec_bg", include_str!("../skills/exec_bg.md")),
@@ -30,8 +32,8 @@ pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("shell/kill", include_str!("../skills/kill.md")),
     ("shell/list", include_str!("../skills/list.md")),
     // The renderer flattens leaf files under skills/. The path-style ids
-    // ("shell/fs/ls", …) preserve the iii://skills namespace registered
-    // with the skills worker; the file layout is separate.
+    // ("shell/fs/ls", …) preserve the iii:// skill namespace served by
+    // the iii-directory worker; the file layout is separate.
     ("shell/fs/ls", include_str!("../skills/ls.md")),
     ("shell/fs/stat", include_str!("../skills/stat.md")),
     ("shell/fs/read", include_str!("../skills/read.md")),

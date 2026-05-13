@@ -1,15 +1,16 @@
-//! `directory::*` — read-side enrichment over engine introspection.
+//! `directory::engine::*` — read-side enrichment over engine
+//! introspection.
 //!
-//! Eight functions, all in the `{entity}-list` / `{entity}-info` shape:
+//! Eight functions, all in the `<entity>::{list,info}` shape:
 //!
-//!   * `directory::function-list`            — list functions, filterable by search/prefix/worker
-//!   * `directory::function-info`            — single function with schemas, registered triggers, how-to skill
-//!   * `directory::trigger-list`             — list trigger TYPES (templates), filterable
-//!   * `directory::trigger-info`             — single trigger type with schemas and instance count
-//!   * `directory::registered-trigger-list`  — list registered trigger INSTANCES, filterable
-//!   * `directory::registered-trigger-info`  — composite: instance + type + function
-//!   * `directory::worker-list`              — list connected workers, filterable
-//!   * `directory::worker-info`              — worker envelope + its functions + trigger types + registered triggers
+//!   * `directory::engine::functions::list`            — list functions, filterable by search/prefix/worker
+//!   * `directory::engine::functions::info`            — single function with schemas, registered triggers, how-to skill
+//!   * `directory::engine::triggers::list`             — list trigger TYPES (templates), filterable
+//!   * `directory::engine::triggers::info`             — single trigger type with schemas and instance count
+//!   * `directory::engine::registered-triggers::list`  — list registered trigger INSTANCES, filterable
+//!   * `directory::engine::registered-triggers::info`  — composite: instance + type + function
+//!   * `directory::engine::workers::list`              — list connected workers, filterable
+//!   * `directory::engine::workers::info`              — worker envelope + its functions + trigger types + registered triggers
 //!
 //! All handlers are pure thin wrappers around `iii.list_*` SDK helpers
 //! (which call `engine::functions::list`, `engine::workers::list`,
@@ -22,11 +23,11 @@
 //! triggers) and fall back to the first `::` segment of the id (only
 //! signal available for trigger types).
 //!
-//! Parity with `registry::*`: the `worker-list` and `worker-info`
-//! shapes share their core fields (`name`, `description`, `version`)
-//! and a top-level `worker` envelope so callers learn one shape and
-//! switch between checking the running engine vs the public registry
-//! without re-learning the API.
+//! Parity with `directory::registry::*`: the `workers::list` and
+//! `workers::info` shapes share their core fields (`name`,
+//! `description`, `version`) and a top-level `worker` envelope so
+//! callers learn one shape and switch between checking the running
+//! engine vs the public registry without re-learning the API.
 
 use std::sync::Arc;
 
@@ -39,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::SkillsConfig;
-use crate::how_to::{self, HowToFrontmatter};
+use crate::how_to::{self, RelatedSkillRef};
 
 // ---------- shared input/output shapes ----------
 
@@ -59,8 +60,6 @@ pub struct FunctionListInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FunctionListEntry {
     pub function_id: String,
-    /// Last `::` segment of `function_id`.
-    pub name: String,
     /// Worker that registered it (resolved via `WorkerInfo.functions[]`),
     /// or the first `::` segment of `function_id` as fallback.
     pub worker_name: Option<String>,
@@ -84,18 +83,20 @@ pub struct RegisteredTriggerSummary {
     pub config: Value,
 }
 
+/// Primary how-to skill that documents this function. Kept tiny so
+/// `function-info` stays cheap to render; deeper related skills come
+/// back via [`FunctionInfoOutput::related_skills`] as title-only refs
+/// that callers can pull on demand through `skills::fetch-skill`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HowGuide {
+    pub title: String,
     pub skill_id: String,
-    pub abs_path: String,
-    pub frontmatter: HowToFrontmatter,
     pub body: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FunctionInfoOutput {
     pub function_id: String,
-    pub name: String,
     pub worker_name: Option<String>,
     pub description: Option<String>,
     pub request_schema: Option<Value>,
@@ -104,6 +105,10 @@ pub struct FunctionInfoOutput {
     pub registered_triggers: Vec<RegisteredTriggerSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub how_guide: Option<HowGuide>,
+    /// Other skills (any `type`) that mention this function via either
+    /// the literal `function_id` or the `iii://fn/<dotted/path>` URI.
+    /// Body content is omitted; fetch on demand via `skills::fetch-skill`.
+    pub related_skills: Vec<RelatedSkillRef>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -119,7 +124,6 @@ pub struct TriggerListInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TriggerListEntry {
     pub id: String,
-    pub name: String,
     pub worker_name: Option<String>,
     pub description: String,
 }
@@ -137,7 +141,6 @@ pub struct TriggerInfoInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TriggerInfoOutput {
     pub id: String,
-    pub name: String,
     pub worker_name: Option<String>,
     pub description: String,
     /// SDK 0.11.3 surfaces a single `trigger_request_format` that doubles
@@ -252,14 +255,12 @@ pub struct WorkerInfoInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WorkerFunctionEntry {
     pub function_id: String,
-    pub name: String,
     pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WorkerTriggerTypeEntry {
     pub id: String,
-    pub name: String,
     pub description: String,
 }
 
@@ -295,10 +296,13 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_function_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::function-list", move |req: FunctionListInput| {
-            let iii = iii_inner.clone();
-            async move { function_list(&iii, req).await.map_err(IIIError::Handler) }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::functions::list",
+            move |req: FunctionListInput| {
+                let iii = iii_inner.clone();
+                async move { function_list(&iii, req).await.map_err(IIIError::Handler) }
+            },
+        )
         .description(
             "List every function registered with the engine. Filter by free-text \
              search, namespace prefix, and/or worker name.",
@@ -310,15 +314,18 @@ fn register_function_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::function-info", move |req: FunctionInfoInput| {
-            let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
-            async move {
-                function_info(&iii, &cfg, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::functions::info",
+            move |req: FunctionInfoInput| {
+                let iii = iii_inner.clone();
+                let cfg = cfg_inner.clone();
+                async move {
+                    function_info(&iii, &cfg, req)
+                        .await
+                        .map_err(IIIError::Handler)
+                }
+            },
+        )
         .description(
             "Full detail for one function: schemas, owning worker, registered \
              triggers that target it, and any matching how-to skill from skills_folder.",
@@ -329,14 +336,17 @@ fn register_function_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_trigger_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::trigger-list", move |req: TriggerListInput| {
-            let iii = iii_inner.clone();
-            async move { trigger_list(&iii, req).await.map_err(IIIError::Handler) }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::triggers::list",
+            move |req: TriggerListInput| {
+                let iii = iii_inner.clone();
+                async move { trigger_list(&iii, req).await.map_err(IIIError::Handler) }
+            },
+        )
         .description(
             "List every trigger TYPE registered with the engine. Filter by \
              search, prefix, worker. (For registered trigger instances, use \
-             directory::registered-trigger-list.)",
+             directory::engine::registered-triggers::list.)",
         ),
     );
 }
@@ -344,10 +354,13 @@ fn register_trigger_list(iii: &Arc<III>) {
 fn register_trigger_info(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::trigger-info", move |req: TriggerInfoInput| {
-            let iii = iii_inner.clone();
-            async move { trigger_info(&iii, req).await.map_err(IIIError::Handler) }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::triggers::info",
+            move |req: TriggerInfoInput| {
+                let iii = iii_inner.clone();
+                async move { trigger_info(&iii, req).await.map_err(IIIError::Handler) }
+            },
+        )
         .description(
             "Full detail for one trigger type: configuration schema, return \
              schema, owning worker, and current instance count.",
@@ -359,7 +372,7 @@ fn register_registered_trigger_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
         RegisterFunction::new_async(
-            "directory::registered-trigger-list",
+            "directory::engine::registered-triggers::list",
             move |req: RegisteredTriggerListInput| {
                 let iii = iii_inner.clone();
                 async move {
@@ -382,7 +395,7 @@ fn register_registered_trigger_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
         RegisterFunction::new_async(
-            "directory::registered-trigger-info",
+            "directory::engine::registered-triggers::info",
             move |req: RegisteredTriggerInfoInput| {
                 let iii = iii_inner.clone();
                 let cfg = cfg_inner.clone();
@@ -403,14 +416,17 @@ fn register_registered_trigger_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_worker_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::worker-list", move |req: WorkerListInput| {
-            let iii = iii_inner.clone();
-            async move { worker_list(&iii, req).await.map_err(IIIError::Handler) }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::workers::list",
+            move |req: WorkerListInput| {
+                let iii = iii_inner.clone();
+                async move { worker_list(&iii, req).await.map_err(IIIError::Handler) }
+            },
+        )
         .description(
             "List every worker currently connected to the engine. Filter by \
              name substring, runtime, or status. Same row shape as \
-             registry::worker-list so callers learn one envelope.",
+             directory::registry::workers::list so callers learn one envelope.",
         ),
     );
 }
@@ -418,15 +434,18 @@ fn register_worker_list(iii: &Arc<III>) {
 fn register_worker_info(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::worker-info", move |req: WorkerInfoInput| {
-            let iii = iii_inner.clone();
-            async move { worker_info(&iii, req).await.map_err(IIIError::Handler) }
-        })
+        RegisterFunction::new_async(
+            "directory::engine::workers::info",
+            move |req: WorkerInfoInput| {
+                let iii = iii_inner.clone();
+                async move { worker_info(&iii, req).await.map_err(IIIError::Handler) }
+            },
+        )
         .description(
             "Worker envelope plus the lists of functions, trigger types, and \
              registered triggers it owns. The `worker` field has the same \
-             shape as registry::worker-info so callers can switch between \
-             local + registry surfaces with the same parser.",
+             shape as directory::registry::workers::info so callers can \
+             switch between local + registry surfaces with the same parser.",
         ),
     );
 }
@@ -468,10 +487,8 @@ pub async fn function_list(
                     return None;
                 }
             }
-            let name = function_name(&f.function_id);
             Some(FunctionListEntry {
                 function_id: f.function_id,
-                name,
                 worker_name,
                 description: f.description,
             })
@@ -528,10 +545,8 @@ pub async fn trigger_list(iii: &III, input: TriggerListInput) -> Result<TriggerL
                     return None;
                 }
             }
-            let name = trigger_type_name(&t.id);
             Some(TriggerListEntry {
                 id: t.id,
-                name,
                 worker_name,
                 description: t.description,
             })
@@ -744,7 +759,6 @@ pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfo
                 .and_then(|f| f.description.clone());
             WorkerFunctionEntry {
                 function_id: fid.clone(),
-                name: function_name(fid),
                 description,
             }
         })
@@ -757,7 +771,6 @@ pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfo
             t.id.starts_with(&prefix) || id_worker_namespace(&t.id).as_deref() == Some(&name)
         })
         .map(|t| WorkerTriggerTypeEntry {
-            name: trigger_type_name(&t.id),
             id: t.id,
             description: t.description,
         })
@@ -820,21 +833,6 @@ pub fn build_function_owner_map(
     map
 }
 
-/// Last `::` segment of a function id; the id itself if it contains no
-/// `::`.
-pub fn function_name(function_id: &str) -> String {
-    function_id
-        .rsplit("::")
-        .next()
-        .unwrap_or(function_id)
-        .to_string()
-}
-
-/// Same naming convention as functions.
-pub fn trigger_type_name(id: &str) -> String {
-    id.rsplit("::").next().unwrap_or(id).to_string()
-}
-
 /// First `::` segment, used as a fallback worker-name attribution for
 /// trigger-type ids (no `WorkerInfo.trigger_types[]` field exists in
 /// SDK 0.11.3).
@@ -895,15 +893,19 @@ pub fn function_info_core(
 
     let how_guide =
         how_to::find_for_function(&cfg.resolved_skills_folder(), function_id).map(|h| HowGuide {
+            title: how_to::resolve_title(h.frontmatter.title.as_deref(), &h.body, &h.skill_id),
             skill_id: h.skill_id,
-            abs_path: h.abs_path.to_string_lossy().into_owned(),
-            frontmatter: h.frontmatter,
             body: h.body,
         });
 
+    let related_skills = how_to::find_related_for_function(
+        &cfg.resolved_skills_folder(),
+        function_id,
+        how_guide.as_ref().map(|h| h.skill_id.as_str()),
+    );
+
     Ok(FunctionInfoOutput {
         function_id: f.function_id.clone(),
-        name: function_name(&f.function_id),
         worker_name,
         description: f.description.clone(),
         request_schema: f.request_format.clone(),
@@ -911,6 +913,7 @@ pub fn function_info_core(
         metadata: f.metadata.clone(),
         registered_triggers: registered,
         how_guide,
+        related_skills,
     })
 }
 
@@ -927,7 +930,6 @@ pub fn trigger_info_core(
     let instance_count = triggers.iter().filter(|x| x.trigger_type == id).count();
     Ok(TriggerInfoOutput {
         id: t.id.clone(),
-        name: trigger_type_name(&t.id),
         worker_name: id_worker_namespace(&t.id),
         description: t.description.clone(),
         configuration_schema: t.trigger_request_format.clone(),
@@ -1001,11 +1003,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn function_name_strips_namespace() {
-        assert_eq!(function_name("mem::observe"), "observe");
-        assert_eq!(function_name("a::b::c::leaf"), "leaf");
-        assert_eq!(function_name("flat"), "flat");
+    /// Build a `SkillsConfig` whose `skills_folder` points at the supplied
+    /// (empty) tempdir so the how-to / related-skill scans don't pick up
+    /// the real `iii-directory/skills/` tree when tests run with the
+    /// crate's CWD.
+    fn isolated_cfg(tmp: &std::path::Path) -> SkillsConfig {
+        SkillsConfig {
+            skills_folder: tmp.to_string_lossy().into_owned(),
+            ..SkillsConfig::default()
+        }
     }
 
     #[test]
@@ -1041,7 +1047,8 @@ mod tests {
 
     #[test]
     fn function_info_core_includes_registered_triggers() {
-        let cfg = SkillsConfig::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = isolated_cfg(tmp.path());
         let functions = vec![function("mem::observe", Some("Observe events."))];
         let workers = vec![worker("agentmemory", &["mem::observe"])];
         let triggers = vec![
@@ -1051,17 +1058,18 @@ mod tests {
         let details =
             function_info_core(&functions, &workers, &triggers, &cfg, "mem::observe").unwrap();
         assert_eq!(details.function_id, "mem::observe");
-        assert_eq!(details.name, "observe");
         assert_eq!(details.worker_name.as_deref(), Some("agentmemory"));
         assert_eq!(details.registered_triggers.len(), 1);
         assert_eq!(details.registered_triggers[0].id, "trg-1");
         // No how-to fixtures so the guide stays None.
         assert!(details.how_guide.is_none());
+        assert!(details.related_skills.is_empty());
     }
 
     #[test]
     fn function_info_core_falls_back_to_namespace_when_no_owner() {
-        let cfg = SkillsConfig::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = isolated_cfg(tmp.path());
         let functions = vec![function("orphan::fn", None)];
         let workers: Vec<WorkerInfo> = vec![]; // worker disconnected
         let triggers: Vec<SdkTriggerInfo> = vec![];
@@ -1072,7 +1080,8 @@ mod tests {
 
     #[test]
     fn function_info_core_errors_on_unknown_id() {
-        let cfg = SkillsConfig::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = isolated_cfg(tmp.path());
         let err = function_info_core(&[], &[], &[], &cfg, "missing::fn").unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
@@ -1088,7 +1097,7 @@ mod tests {
         let det = trigger_info_core(&trigger_types, &triggers, "mem::on-change").unwrap();
         assert_eq!(det.instance_count, 2);
         assert_eq!(det.worker_name.as_deref(), Some("mem"));
-        assert_eq!(det.name, "on-change");
+        assert_eq!(det.id, "mem::on-change");
         assert!(det.configuration_schema.is_some());
         assert!(det.return_schema.is_some());
     }

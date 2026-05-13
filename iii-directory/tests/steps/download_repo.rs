@@ -131,7 +131,7 @@ fn repo_url(world: &IiiSkillsWorld) -> String {
     format!("file://{}", path.display())
 }
 
-#[when(regex = r#"^I trigger skills::download with repo=local skill="([^"]+)"$"#)]
+#[when(regex = r#"^I trigger directory::skills::download with repo=local skill="([^"]+)"$"#)]
 async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
     world.stash.remove(LAST_OK);
     world.stash.remove(LAST_ERR);
@@ -141,7 +141,7 @@ async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
     let url = repo_url(world);
     match iii
         .trigger(TriggerRequest {
-            function_id: "skills::download".to_string(),
+            function_id: "directory::skills::download".to_string(),
             payload: json!({ "repo": url, "skill": skill }),
             action: None,
             timeout_ms: Some(60_000),
@@ -160,7 +160,7 @@ async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
 }
 
 #[when(
-    regex = r#"^I trigger skills::download with both repo="([^"]+)" and worker="([^"]+)" and tag="([^"]+)"$"#
+    regex = r#"^I trigger directory::skills::download with both repo="([^"]+)" and worker="([^"]+)" and tag="([^"]+)"$"#
 )]
 async fn trigger_download_conflicting(
     world: &mut IiiSkillsWorld,
@@ -175,7 +175,7 @@ async fn trigger_download_conflicting(
     };
     match iii
         .trigger(TriggerRequest {
-            function_id: "skills::download".to_string(),
+            function_id: "directory::skills::download".to_string(),
             payload: json!({
                 "repo": repo,
                 "worker": worker,
@@ -199,7 +199,7 @@ async fn trigger_download_conflicting(
 
 // ── shared assertions used by both download features ──────────────
 
-#[then("the skills::download call succeeds")]
+#[then("the directory::skills::download call succeeds")]
 fn download_succeeds(world: &mut IiiSkillsWorld) {
     if world.iii.is_none() {
         return;
@@ -211,7 +211,7 @@ fn download_succeeds(world: &mut IiiSkillsWorld) {
     );
 }
 
-#[then(regex = r#"^the skills::download call fails with a message mentioning "([^"]+)"$"#)]
+#[then(regex = r#"^the directory::skills::download call fails with a message mentioning "([^"]+)"$"#)]
 fn download_fails(world: &mut IiiSkillsWorld, needle: String) {
     if world.iii.is_none() {
         return;

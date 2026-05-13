@@ -1,8 +1,9 @@
 //! Step defs for `tests/features/registry_*.feature`.
 //!
-//! Drives `registry::worker-list` and `registry::worker-info` through
-//! the same iii engine connection the rest of the BDD harness uses;
-//! HTTP is mocked with the shared wiremock server in `common::workers`.
+//! Drives `directory::registry::workers::list` and
+//! `directory::registry::workers::info` through the same iii engine
+//! connection the rest of the BDD harness uses; HTTP is mocked with
+//! the shared wiremock server in `common::workers`.
 
 use cucumber::{given, then, when};
 use iii_sdk::TriggerRequest;
@@ -145,21 +146,21 @@ async fn wiremock_worker_info_status(_world: &mut IiiSkillsWorld, status: u16, w
 
 // ── trigger steps ──────────────────────────────────────────────────
 
-#[when(regex = r#"^I trigger registry::worker-list with payload:$"#)]
+#[when(regex = r#"^I trigger directory::registry::workers::list with payload:$"#)]
 async fn trigger_worker_list(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
     let payload = parse_payload(step);
-    call_registry(world, "registry::worker-list", payload).await;
+    call_registry(world, "directory::registry::workers::list", payload).await;
 }
 
-#[when(regex = r#"^I trigger registry::worker-info with payload:$"#)]
+#[when(regex = r#"^I trigger directory::registry::workers::info with payload:$"#)]
 async fn trigger_worker_info(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
     let payload = parse_payload(step);
-    call_registry(world, "registry::worker-info", payload).await;
+    call_registry(world, "directory::registry::workers::info", payload).await;
 }
 
 // ── outcome assertions ────────────────────────────────────────────
 
-#[then(regex = r#"^the (registry::[a-z\-]+) call succeeds$"#)]
+#[then(regex = r#"^the (directory::registry::[a-z:\-]+) call succeeds$"#)]
 fn registry_succeeds(world: &mut IiiSkillsWorld, _function_id: String) {
     if world.iii.is_none() {
         return;
@@ -171,7 +172,7 @@ fn registry_succeeds(world: &mut IiiSkillsWorld, _function_id: String) {
     );
 }
 
-#[then(regex = r#"^the (registry::[a-z\-]+) call fails with a message mentioning "([^"]+)"$"#)]
+#[then(regex = r#"^the (directory::registry::[a-z:\-]+) call fails with a message mentioning "([^"]+)"$"#)]
 fn registry_fails(world: &mut IiiSkillsWorld, _function_id: String, needle: String) {
     if world.iii.is_none() {
         return;
@@ -245,11 +246,12 @@ fn worker_list_version(world: &mut IiiSkillsWorld, name: String, version: String
     );
 }
 
-// ── registry::worker-info assertions ──────────────────────────────
+// ── directory::registry::workers::info assertions ──────────────────
 //
-// The worker-info response shape wraps the worker payload in a
-// top-level `worker` field — same shape as directory::worker-info —
-// so the assertions read `v["worker"][...]`.
+// The workers::info response shape wraps the worker payload in a
+// top-level `worker` field — same shape as
+// directory::engine::workers::info — so the assertions read
+// `v["worker"][...]`.
 
 #[then(regex = r#"^the registry worker-info worker name is "([^"]+)"$"#)]
 fn wi_worker_name(world: &mut IiiSkillsWorld, name: String) {

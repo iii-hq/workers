@@ -319,9 +319,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Best-effort `skills::register` with capped exponential backoff.
-/// `skills` may come up after us (or be absent in minimal deployments);
-/// give up quietly after 3 minutes so the worker keeps running without it.
+/// Best-effort skill registration with capped exponential backoff.
+/// The iii-directory worker may come up after us (or be absent in
+/// minimal deployments); give up quietly after 3 minutes so the worker
+/// keeps running without it.
 async fn register_skill_with_retry(iii: &III, id: &str, body: &str) {
     let mut backoff = Duration::from_secs(5);
     let started = Instant::now();
@@ -362,7 +363,7 @@ async fn register_skill_with_retry(iii: &III, id: &str, body: &str) {
 }
 
 /// Spawn the boot-time registration loop in the background. Non-blocking
-/// so a missing `skills` worker never delays shell's readiness.
+/// so a missing iii-directory worker never delays shell's readiness.
 fn spawn_skill_register(iii: III) {
     tokio::spawn(async move {
         register_skill_with_retry(&iii, shell::SKILL_ID, shell::SKILL_MD).await;
@@ -372,10 +373,10 @@ fn spawn_skill_register(iii: III) {
     });
 }
 
-/// Best-effort `skills::unregister` on graceful shutdown so a stopped
-/// worker doesn't leave dangling entries in the registry. Crashes
-/// inevitably skip this path; an operator can clean up via
-/// `skills::list` + `skills::unregister` manually.
+/// Best-effort skill unregistration on graceful shutdown so a stopped
+/// worker doesn't leave dangling entries. Crashes inevitably skip this
+/// path; an operator can clean up via `directory::skills::list`
+/// manually if needed.
 async fn unregister_skill(iii: &III) {
     for (id, _) in shell::SUB_SKILLS {
         let _ = iii

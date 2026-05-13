@@ -1,13 +1,13 @@
-//! `skills::download` — pull markdown into `skills_folder` from either
-//! the workers registry (`worker=` source) or a GitHub repo (`repo=`
-//! source).
+//! `directory::skills::download` — pull markdown into `skills_folder`
+//! from either the workers registry (`worker=` source) or a GitHub
+//! repo (`repo=` source).
 //!
 //! The function is the only write path in the worker. It validates the
 //! incoming arguments, dispatches to the matching source module under
-//! [`crate::sources`], and fires the `skills::on-change` /
-//! `prompts::on-change` triggers on success so that subscribers (the
-//! `mcp` worker today) can forward MCP `notifications/*_list_changed`
-//! to their clients.
+//! [`crate::sources`], and fires the `directory::skills::on-change` /
+//! `directory::prompts::on-change` triggers on success so that
+//! subscribers (the `mcp` worker today) can forward MCP
+//! `notifications/*_list_changed` to their clients.
 
 use std::sync::Arc;
 
@@ -29,6 +29,11 @@ pub struct DownloadInput {
     /// the destination namespace inside `skills_folder`.
     #[serde(default)]
     pub skill: Option<String>,
+    /// Source A: branch to clone. Defaults to `"main"`. Pass
+    /// `"master"` (or any other branch name) for repos whose default
+    /// branch is not `main`.
+    #[serde(default)]
+    pub branch: Option<String>,
 
     /// Source B: workers registry name. Pair with exactly one of
     /// `version` / `tag`.
@@ -38,7 +43,8 @@ pub struct DownloadInput {
     #[serde(default)]
     pub version: Option<String>,
     /// Source B: registry tag to pull (e.g. `latest`). Mutually
-    /// exclusive with `version`.
+    /// exclusive with `version`. Defaults to `"latest"` when neither
+    /// `version` nor `tag` is provided.
     #[serde(default)]
     pub tag: Option<String>,
 }
@@ -54,9 +60,22 @@ struct DownloadOutput {
 /// Disambiguated input shape produced by [`classify_input`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassifiedInput {
-    Repo { repo: String, skill: String },
-    Registry { worker: String, spec: VersionSpec },
+    Repo {
+        repo: String,
+        skill: String,
+        branch: String,
+    },
+    Registry {
+        worker: String,
+        spec: VersionSpec,
+    },
 }
+
+/// Default branch passed to `git clone` when the caller doesn't
+/// specify one. GitHub flipped the default-branch convention to `main`
+/// in 2020 and the registry's source-of-truth repos all use it; users
+/// with `master`-default repos can override via the `branch` field.
+pub const DEFAULT_REPO_BRANCH: &str = "main";
 
 pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Subscribers) {
     let iii_inner = iii.clone();
@@ -64,7 +83,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Su
     let skills_subs = subscribers.skills.clone();
     let prompts_subs = subscribers.prompts.clone();
     iii.register_function(
-        RegisterFunction::new_async("skills::download", move |req: DownloadInput| {
+        RegisterFunction::new_async("directory::skills::download", move |req: DownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.clone();
             let skills_subs = skills_subs.clone();
@@ -80,8 +99,10 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Su
         })
         .description(
             "Download skills + prompts into skills_folder. \
-             Pass {repo, skill} to clone a single skill folder from a GitHub repo \
-             (git clone --depth 1), or {worker, version|tag} to pull from the workers registry. \
+             Pass {repo, skill, branch?} to clone a single skill folder from a GitHub repo \
+             (git clone --depth 1 --branch <branch>; branch defaults to \"main\"), \
+             or {worker, version?|tag?} to pull from the workers registry \
+             (defaults to tag=\"latest\" when neither version nor tag is given). \
              Files in the destination namespace are overwritten file-by-file.",
         )
         .metadata(json!({"tool": {"label": "Download skills"}})),
@@ -94,6 +115,7 @@ pub fn classify_input(input: DownloadInput) -> Result<ClassifiedInput, String> {
     let DownloadInput {
         repo,
         skill,
+        branch,
         worker,
         version,
         tag,
@@ -101,6 +123,9 @@ pub fn classify_input(input: DownloadInput) -> Result<ClassifiedInput, String> {
 
     let repo = repo.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let skill = skill
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let branch = branch
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let worker = worker
@@ -111,20 +136,27 @@ pub fn classify_input(input: DownloadInput) -> Result<ClassifiedInput, String> {
         .filter(|s| !s.is_empty());
     let tag = tag.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
-    let has_repo = repo.is_some() || skill.is_some();
+    let has_repo = repo.is_some() || skill.is_some() || branch.is_some();
     let has_worker = worker.is_some() || version.is_some() || tag.is_some();
 
     if has_repo && has_worker {
-        return Err("specify either {repo, skill} OR {worker, version|tag}, not both".into());
+        return Err(
+            "specify either {repo, skill, branch?} OR {worker, version?|tag?}, not both".into(),
+        );
     }
     if !has_repo && !has_worker {
-        return Err("specify either {repo, skill} OR {worker, version|tag}".into());
+        return Err("specify either {repo, skill, branch?} OR {worker, version?|tag?}".into());
     }
 
     if has_repo {
         let repo = repo.ok_or_else(|| "repo is required when skill is set".to_string())?;
         let skill = skill.ok_or_else(|| "skill is required when repo is set".to_string())?;
-        return Ok(ClassifiedInput::Repo { repo, skill });
+        let branch = branch.unwrap_or_else(|| DEFAULT_REPO_BRANCH.to_string());
+        return Ok(ClassifiedInput::Repo {
+            repo,
+            skill,
+            branch,
+        });
     }
 
     let worker =
@@ -133,7 +165,7 @@ pub fn classify_input(input: DownloadInput) -> Result<ClassifiedInput, String> {
         (Some(v), None) => VersionSpec::Version(v),
         (None, Some(t)) => VersionSpec::Tag(t),
         (Some(_), Some(_)) => return Err("specify either version OR tag, not both".into()),
-        (None, None) => return Err("worker requires either version or tag".into()),
+        (None, None) => VersionSpec::Tag("latest".into()),
     };
     Ok(ClassifiedInput::Registry { worker, spec })
 }
@@ -147,8 +179,12 @@ async fn run_download(
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
     match classified {
-        ClassifiedInput::Repo { repo, skill } => {
-            sources::git::download(repo, skill, &folder, cfg.download_timeout_ms).await
+        ClassifiedInput::Repo {
+            repo,
+            skill,
+            branch,
+        } => {
+            sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await
         }
         ClassifiedInput::Registry { worker, spec } => {
             sources::registry::download(
@@ -165,10 +201,15 @@ async fn run_download(
 
 fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> DownloadOutput {
     let source = match classified {
-        ClassifiedInput::Repo { repo, skill } => json!({
+        ClassifiedInput::Repo {
+            repo,
+            skill,
+            branch,
+        } => json!({
             "kind": "repo",
             "repo": repo,
             "skill": skill,
+            "branch": branch,
         }),
         ClassifiedInput::Registry { worker, spec } => match spec {
             VersionSpec::Version(v) => json!({
@@ -261,13 +302,19 @@ mod tests {
     }
 
     #[test]
-    fn classify_rejects_worker_without_version_or_tag() {
-        let err = classify_input(DownloadInput {
+    fn classify_worker_without_version_or_tag_defaults_to_latest() {
+        let c = classify_input(DownloadInput {
             worker: Some("resend".into()),
             ..DownloadInput::default()
         })
-        .unwrap_err();
-        assert!(err.contains("version or tag"), "got: {err}");
+        .unwrap();
+        assert_eq!(
+            c,
+            ClassifiedInput::Registry {
+                worker: "resend".into(),
+                spec: VersionSpec::Tag("latest".into()),
+            }
+        );
     }
 
     #[test]
@@ -283,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_accepts_repo_form() {
+    fn classify_accepts_repo_form_with_default_branch() {
         let c = classify_input(DownloadInput {
             repo: Some("https://github.com/anthropics/skills".into()),
             skill: Some("frontend-design".into()),
@@ -295,6 +342,26 @@ mod tests {
             ClassifiedInput::Repo {
                 repo: "https://github.com/anthropics/skills".into(),
                 skill: "frontend-design".into(),
+                branch: "main".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_accepts_repo_form_with_explicit_branch() {
+        let c = classify_input(DownloadInput {
+            repo: Some("https://github.com/x/y".into()),
+            skill: Some("foo".into()),
+            branch: Some("master".into()),
+            ..DownloadInput::default()
+        })
+        .unwrap();
+        assert_eq!(
+            c,
+            ClassifiedInput::Repo {
+                repo: "https://github.com/x/y".into(),
+                skill: "foo".into(),
+                branch: "master".into(),
             }
         );
     }
@@ -357,12 +424,14 @@ mod tests {
         let classified = ClassifiedInput::Repo {
             repo: "https://github.com/x/y".into(),
             skill: "foo".into(),
+            branch: "main".into(),
         };
         let out = build_output(&classified, result);
         assert_eq!(out.namespace, "foo");
         assert_eq!(out.source["kind"], "repo");
         assert_eq!(out.source["repo"], "https://github.com/x/y");
         assert_eq!(out.source["skill"], "foo");
+        assert_eq!(out.source["branch"], "main");
     }
 
     #[test]

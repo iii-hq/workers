@@ -2,26 +2,24 @@
 //!
 //! Public API (reachable by any worker over `iii.trigger`):
 //!
-//!   * `skills::list`         — metadata-only listing of every markdown
-//!     skill under `skills_folder`, sorted by id.
-//!   * `skills::fetch_skill`  — batched read over one or more `iii://`
-//!     URIs. Internal id; sibling workers call it via `iii.trigger`.
-//!   * `skill::fetch`         — public alias on a non-`skills::*`
-//!     namespace, registered with the same handler so it shows up
-//!     wherever the worker is exposed as a tool surface.
+//!   * `directory::skills::list`         — metadata-only listing of every
+//!     markdown skill under `skills_folder`, sorted by id.
+//!   * `directory::skills::fetch-skill`  — batched read over one or more
+//!     `iii://` URIs (or bare skill paths). Returns plain markdown
+//!     joined with `\n\n---\n\n`.
 //!
-//! The URI resolution pipeline (`iii://skills` index, `iii://{id}`
-//! filesystem reads, `iii://fn/{path}` function triggers) lives here
-//! and is invoked internally by `fetch_skill`. There are no longer any
-//! MCP-shaped wrappers around it — this worker is intentionally
-//! agnostic to MCP and any other adapter; agnostic-shape readers are
-//! the rule.
+//! The URI resolution pipeline (`iii://directory/skills` index,
+//! `iii://{id}` filesystem reads, `iii://fn/{path}` function triggers)
+//! lives here and is invoked internally by `fetch_skill`. There are no
+//! longer any MCP-shaped wrappers around it — this worker is
+//! intentionally agnostic to MCP and any other adapter; agnostic-shape
+//! readers are the rule.
 //!
 //! There are no write paths in this module. Files arrive on disk via
-//! `skills::download` (see [`crate::functions::download`]) or by direct
-//! editing under `skills_folder`. Mutations fan out through the
-//! `skills::on-change` trigger type which is fired from the download
-//! function on success.
+//! `directory::skills::download` (see [`crate::functions::download`])
+//! or by direct editing under `skills_folder`. Mutations fan out
+//! through the `directory::skills::on-change` trigger type which is
+//! fired from the download function on success.
 
 use std::sync::Arc;
 
@@ -56,16 +54,17 @@ const ID_TOTAL_MAX_LEN: usize = 1024;
 const FN_PREFIX: &str = "fn";
 const URI_PREFIX: &str = "iii://";
 
-/// The literal id segment after `iii://` that maps to the auto-rendered
-/// skills index. Kept as a constant so [`parse_uri`] and [`render_index`]
-/// agree without a string-match drift risk.
-const INDEX_ID: &str = "skills";
+/// The id segment(s) after `iii://` that map to the auto-rendered
+/// skills index. The literal `directory/skills` URI is reserved for
+/// the index render so it never collides with a real skill body. Kept
+/// as a constant so [`parse_uri`] and [`render_index`] agree without a
+/// string-match drift risk.
+const INDEX_ID: &str = "directory/skills";
 
-/// Description shared by both `skills::fetch_skill` and its public alias
-/// `skill::fetch`.
-const FETCH_DESCRIPTION: &str = "Fetches the content of one or more skill resources identified by iii:// URIs. \
-     When you encounter iii:// links in skill instructions, use this tool to retrieve their contents \
-     (batch with `uris` when helpful).";
+/// Description for the `directory::skills::fetch-skill` registration.
+const FETCH_DESCRIPTION: &str = "Fetches the content of one or more skill resources. Each entry may be either a full \
+     iii:// URI or a bare skill path (the id returned by directory::skills::list, e.g. \
+     \"directory/skills/list\") which is auto-prefixed with iii://. Batch with `uris` when helpful.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct ListSkillsInput {}
@@ -85,12 +84,15 @@ struct ListSkillsOutput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct FetchSkillInput {
-    /// A single iii:// URI to read. Must start with "iii://".
+    /// A single skill resource to read. Either a full `iii://` URI or
+    /// a bare skill path (the id returned by `directory::skills::list`,
+    /// e.g. `"directory/skills/list"`) which is auto-prefixed with
+    /// `iii://`.
     #[serde(default)]
     pub uri: Option<String>,
-    /// One or more iii:// URIs to read in order. When both `uri` and
-    /// `uris` are provided, `uris` wins (matches the TS reference
-    /// implementation).
+    /// One or more skill resources to read in order. Same shape rules
+    /// as `uri`. When both `uri` and `uris` are provided, `uris` wins
+    /// (matches the TS reference implementation).
     #[serde(default)]
     pub uris: Option<Vec<String>>,
 }
@@ -98,14 +100,13 @@ pub struct FetchSkillInput {
 pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     register_list_skills(iii, cfg);
     register_fetch_skill(iii, cfg);
-    register_fetch_skill_public_alias(iii, cfg);
 }
 
 fn register_list_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("skills::list", move |_input: ListSkillsInput| {
+        RegisterFunction::new_async("directory::skills::list", move |_input: ListSkillsInput| {
             let _iii = iii_inner.clone();
             let cfg = cfg_inner.clone();
             async move {
@@ -134,28 +135,7 @@ fn register_fetch_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("skills::fetch_skill", move |req: FetchSkillInput| {
-            let iii = iii_inner.clone();
-            let cfg = cfg_inner.clone();
-            async move {
-                fetch_skill(&iii, &cfg, req)
-                    .await
-                    .map_err(IIIError::Handler)
-            }
-        })
-        .description(FETCH_DESCRIPTION),
-    );
-}
-
-/// Public alias on a non-`skills::*` namespace so the fetch tool is
-/// reachable from adapters that expose top-level function ids
-/// (e.g. an MCP bridge would surface it as `skill__fetch`). Delegates
-/// to the same shared core fn as `skills::fetch_skill`.
-fn register_fetch_skill_public_alias(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
-    let iii_inner = iii.clone();
-    let cfg_inner = cfg.clone();
-    iii.register_function(
-        RegisterFunction::new_async("skill::fetch", move |req: FetchSkillInput| {
+        RegisterFunction::new_async("directory::skills::fetch-skill", move |req: FetchSkillInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.clone();
             async move {
@@ -208,12 +188,21 @@ async fn read(iii: &III, cfg: &SkillsConfig, uri: &str) -> Result<Value, String>
     }
 }
 
-// ---------- batched fetch (skills::fetch_skill / skill::fetch) ----------
+// ---------- batched fetch (skills::fetch-skill) ----------
 
 /// Pure half of the fetch tool: validates the input shape, normalizes
-/// to an ordered list of trimmed `iii://` URIs, and rejects anything
-/// outside the `iii://` scheme. Split out so the validation branches
-/// can be unit-tested without an iii engine.
+/// each entry to a trimmed `iii://` URI, and rejects anything outside
+/// the `iii://` scheme.
+///
+/// Two input shapes are accepted per entry:
+///   * Full `iii://...` URI — passed through verbatim.
+///   * Bare skill path (matching the `id` returned by
+///     `directory::skills::list`, e.g. `"directory/skills/list"`) —
+///     prefixed with `iii://` automatically.
+///
+/// Anything else with a `://` (e.g. `https://...`) is rejected.
+/// Split out so the validation branches can be unit-tested without an
+/// iii engine.
 pub fn validate_fetch_input(input: FetchSkillInput) -> Result<Vec<String>, String> {
     // `uris` wins when both are provided — matches the TS reference
     // impl and the handoff doc.
@@ -226,16 +215,24 @@ pub fn validate_fetch_input(input: FetchSkillInput) -> Result<Vec<String>, Strin
         .into_iter()
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty())
-        .collect();
+        .map(normalize_fetch_entry)
+        .collect::<Result<Vec<_>, _>>()?;
     if list.is_empty() {
         return Err("Provide uri or a non-empty uris array".into());
     }
-    for u in &list {
-        if !u.starts_with(URI_PREFIX) {
-            return Err(format!("Invalid URI (must start with iii://): {u}"));
-        }
-    }
     Ok(list)
+}
+
+/// Normalize one fetch entry: pass `iii://` URIs through, prefix bare
+/// skill paths with `iii://`, and reject any other URI scheme.
+fn normalize_fetch_entry(entry: String) -> Result<String, String> {
+    if entry.starts_with(URI_PREFIX) {
+        return Ok(entry);
+    }
+    if entry.contains("://") {
+        return Err(format!("Invalid URI (must start with iii://): {entry}"));
+    }
+    Ok(format!("{URI_PREFIX}{entry}"))
 }
 
 /// Resolve every `iii://` URI in `input` through [`read`], wrap each
@@ -268,7 +265,8 @@ pub async fn fetch_skill(
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParsedUri {
-    /// `iii://skills` — the auto-rendered tree-of-skills index.
+    /// `iii://directory/skills` — the auto-rendered tree-of-skills
+    /// index.
     Index,
     /// Filesystem-backed skill body. The payload is the full slashed
     /// path the body is stored under (1+ segments). The first segment
@@ -515,7 +513,18 @@ mod tests {
 
     #[test]
     fn parse_index_uri() {
-        assert_eq!(parse_uri("iii://skills").unwrap(), ParsedUri::Index);
+        assert_eq!(
+            parse_uri("iii://directory/skills").unwrap(),
+            ParsedUri::Index
+        );
+    }
+
+    #[test]
+    fn parse_skill_uri_disambiguates_from_index() {
+        assert_eq!(
+            parse_uri("iii://directory/skills/list").unwrap(),
+            ParsedUri::Skill("directory/skills/list".into())
+        );
     }
 
     // ── parse_uri: skill bodies ─────────────────────────────────────────
@@ -838,6 +847,37 @@ mod tests {
     }
 
     #[test]
+    fn fetch_skill_accepts_bare_skill_path_and_prefixes_it() {
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: Some("agent-memory/observe".into()),
+            uris: None,
+        })
+        .unwrap();
+        assert_eq!(list, vec!["iii://agent-memory/observe".to_string()]);
+    }
+
+    #[test]
+    fn fetch_skill_accepts_mixed_batch_of_uris_and_bare_paths() {
+        let list = validate_fetch_input(FetchSkillInput {
+            uri: None,
+            uris: Some(vec![
+                "iii://full".into(),
+                "directory/skills/list".into(),
+                "single".into(),
+            ]),
+        })
+        .unwrap();
+        assert_eq!(
+            list,
+            vec![
+                "iii://full".to_string(),
+                "iii://directory/skills/list".to_string(),
+                "iii://single".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn fetch_skill_uris_takes_precedence_when_both_provided() {
         let list = validate_fetch_input(FetchSkillInput {
             uri: Some("iii://from-uri".into()),
@@ -879,6 +919,6 @@ mod tests {
 
     #[test]
     fn index_id_constant_matches_index_uri_suffix() {
-        assert_eq!(INDEX_ID, "skills");
+        assert_eq!(INDEX_ID, "directory/skills");
     }
 }

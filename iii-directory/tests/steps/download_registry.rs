@@ -85,7 +85,7 @@ async fn run_download(world: &mut IiiSkillsWorld, payload: Value) {
     };
     match iii
         .trigger(TriggerRequest {
-            function_id: "skills::download".to_string(),
+            function_id: "directory::skills::download".to_string(),
             payload,
             action: None,
             timeout_ms: Some(10_000),
@@ -103,17 +103,17 @@ async fn run_download(world: &mut IiiSkillsWorld, payload: Value) {
     }
 }
 
-#[when(regex = r#"^I trigger skills::download with worker="([^"]+)" version="([^"]+)"$"#)]
+#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" version="([^"]+)"$"#)]
 async fn trigger_with_version(world: &mut IiiSkillsWorld, worker: String, version: String) {
     run_download(world, json!({ "worker": worker, "version": version })).await;
 }
 
-#[when(regex = r#"^I trigger skills::download with worker="([^"]+)" tag="([^"]+)"$"#)]
+#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" tag="([^"]+)"$"#)]
 async fn trigger_with_tag(world: &mut IiiSkillsWorld, worker: String, tag: String) {
     run_download(world, json!({ "worker": worker, "tag": tag })).await;
 }
 
-#[when(regex = r#"^I trigger skills::download with worker="([^"]+)" alone$"#)]
+#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" alone$"#)]
 async fn trigger_alone(world: &mut IiiSkillsWorld, worker: String) {
     run_download(world, json!({ "worker": worker })).await;
 }

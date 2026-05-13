@@ -20,9 +20,10 @@ Three differences from the SDK examples below:
    Every call is synchronous with the bus default timeout. Putting these
    fields in `payload` does nothing.
 
-`skill::fetch` is a real, callable function for loading skill bodies by
-`iii://` URI — the blacklist below is about *function-listing* calls
-only.
+`directory::skills::fetch-skill` is a real, callable function for
+loading skill bodies by `iii://` URI (or by bare skill path, the
+`id` returned from `directory::skills::list`) — the blacklist below
+is about *function-listing* calls only.
 
 Everything else in this document — discovery, schemas, listings —
 applies as written.
@@ -40,7 +41,7 @@ The response is `{ "functions": [ { function_id, description, request_format, re
 **Do NOT guess any of these — none of them exist:**
 
 - ~~`skill::list`~~ → use `engine::functions::list`
-- ~~`skills::list`~~ → that is a skills-registry CRUD call (lists skill bodies, not functions)
+- ~~`skills::list`~~ / ~~`directory::skills::list`~~ → those list skill *bodies* (markdown), not functions; for functions use `engine::functions::list` or `directory::engine::functions::list`
 - ~~`iii::list`~~ → not a thing
 - ~~`bus::list`~~ → not a thing
 - ~~`function::list`~~ → wrong scope; the scope is `engine`, the noun is plural `functions`

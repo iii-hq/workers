@@ -194,12 +194,15 @@ Every worker should register a markdown skill on the [`skills` platform
 worker](https://workers.iii.dev/workers/skills) at startup so MCP clients
 (Claude Desktop, Cursor, MCP Inspector) can discover and orient to its
 functions. The skill body lives at `<worker>/skill.md` and is served at
-`iii://<worker>`; the auto-rendered `iii://skills` index links every worker.
+`iii://<worker>`; the auto-rendered `iii://directory/skills` index
+links every worker.
 
-> The `skills` worker version pinned by this convention is **v0.2.0+** —
-> needed for multi-segment ids and `skills::unregister`.
+> The iii-directory worker version pinned by this convention is
+> **v0.4.x** — the `directory::*` namespace (skills, prompts, engine
+> introspection, registry HTTP proxy) is the source of truth for every
+> reader-side surface this guide refers to.
 
-### 10.1 Skill ID validation rules (skills v0.2.0+)
+### 10.1 Skill ID validation rules (iii-directory v0.4.x)
 
 - 1+ segments separated by `/`.
 - Each segment: lowercase ASCII letters, digits, `-`, `_`; max 64 chars per segment.
@@ -215,14 +218,16 @@ The skill registry expects two kinds of bodies:
 
 - **Router** (`<worker>/skill.md`) — small. Lists the per-function or
   per-group sub-skills under `iii://<worker>/...`. The agent loads this
-  first; it then fetches deeper bodies on demand via `skill::fetch`.
+  first; it then fetches deeper bodies on demand via
+  `directory::skills::fetch-skill`.
 - **Leaf** (`<worker>/skills/<sub>.md`) — describes one function (or one
   logical group of functions). Loaded only when the agent decides to drill
   in.
 
 The platform contract is minimal: H1 first (used as the link title in
-`iii://skills`), then a non-heading paragraph (used as the description,
-truncated at 140 chars). Everything else is up to the worker.
+`iii://directory/skills`), then a non-heading paragraph (used as the
+description, truncated at 140 chars). Everything else is up to the
+worker.
 
 **Router template** (`<worker>/skill.md`):
 
@@ -235,7 +240,7 @@ this).
 ```markdown
 # <worker-name>
 
-<One-sentence summary used as the description in the iii://skills index. Imperative tone.>
+<One-sentence summary used as the description in the iii://directory/skills index. Imperative tone.>
 
 - [`<worker>`](iii://<worker>)
   - [`<namespace>::<fn>`](iii://<worker>/<sub>) — one-line purpose
@@ -246,17 +251,18 @@ this).
 
 Leaf link text is the **actual function id** (e.g. `auth::set_token`) — what
 the agent calls via `iii.trigger`. The link target is the **skill URI**
-(`iii://<worker>/<sub>`) — what `skill::fetch` resolves. The two strings
-diverge: a worker named `auth-credentials` registers functions under the
-`auth::*` namespace, so the function id `auth::set_token` lives at the
-skill URI `iii://auth-credentials/set_token`.
+(`iii://<worker>/<sub>`) — what `directory::skills::fetch-skill`
+resolves. The two strings diverge: a worker named `auth-credentials`
+registers functions under the `auth::*` namespace, so the function id
+`auth::set_token` lives at the skill URI
+`iii://auth-credentials/set_token`.
 
 **Leaf template** (`<worker>/skills/<sub>.md`):
 
 ```markdown
 # <namespace>::<fn>
 
-<One-sentence summary used as the description in the iii://skills index.>
+<One-sentence summary used as the description in the iii://directory/skills index.>
 
 `(input) → output` — argument/return shape and any nuance the caller needs
 (idempotency, side effects, bus failures).
@@ -270,10 +276,11 @@ skill URI `iii://auth-credentials/set_token`.
 <Optional: required config, dependencies on other workers, operational caveats.>
 ```
 
-The leaf H1 is the function id with `::` so the auto-rendered `iii://skills`
-index shows the calling shape directly. The skill URI in the registry
-(`iii://<worker>/<sub>`) stays path-form — that's what `skill::fetch`
-resolves and what `SUB_SKILLS` registers (see §10.4).
+The leaf H1 is the function id with `::` so the auto-rendered
+`iii://directory/skills` index shows the calling shape directly. The
+skill URI (`iii://<worker>/<sub>`) stays path-form — that's what
+`directory::skills::fetch-skill` resolves and what `SUB_SKILLS`
+registers (see §10.4).
 
 If a worker exposes only one function (e.g. `policy-denylist`), skip the
 leaves layer and put the leaf content directly in `<worker>/skill.md`. The
@@ -313,64 +320,27 @@ folder name.
 
 ### 10.5 Wire-up: main.rs
 
-Add four small helpers to `main.rs` and call them from `main`:
+> **Migration note (iii-directory v0.4.x).** The state-backed
+> `skills::register` / `skills::unregister` calls this section
+> previously documented are gone. Skills now live on disk under the
+> iii-directory worker's `skills_folder` and are populated by
+> `directory::skills::download` (from the public registry or a GitHub
+> repo). New workers should publish their bundled skills as part of
+> their release pipeline rather than re-registering at boot. See the
+> [iii-directory README](iii-directory/README.md) for the full flow.
+>
+> The `SUB_SKILLS` table from §10.4 still lives in `lib.rs` because
+> integration tests reference the bundled markdown directly; what
+> changes is just where the bus exposes those bodies (the
+> iii-directory worker reads them off disk after a download instead of
+> a worker pushing them up at boot).
+
+Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
+worker shuts down cleanly in production container restarts:
 
 ```rust
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
 use anyhow::{Context, Result};
-use iii_sdk::TriggerRequest;
-use serde_json::json;
 
-// Registers ONE skill with capped exponential backoff. Background-friendly:
-// caller wraps a series of these in a single tokio::spawn.
-async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                log::info!("registered skill: {id}");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_secs(180) {
-                    log::warn!(
-                        "skills handshake gave up for {id}; install/start the skills worker and restart (last error: {e})"
-                    );
-                    return;
-                }
-                log::debug!("skills::register failed for {id}: {e}; retrying in {backoff:?}");
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
-    }
-}
-
-// Registers the worker's router skill plus every leaf. Fires AFTER the
-// worker's register_with_iii() returns so leaves never advertise functions
-// that aren't registered yet.
-fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
-    tokio::spawn(async move {
-        register_skill_with_retry(&iii, <crate>::SKILL_ID, <crate>::SKILL_MD).await;
-        for (id, body) in <crate>::SUB_SKILLS {
-            register_skill_with_retry(&iii, id, body).await;
-        }
-    });
-}
-
-// Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
-// unregister below runs in production container shutdown, not just dev.
 async fn wait_for_shutdown() -> Result<()> {
     #[cfg(unix)]
     {
@@ -389,29 +359,6 @@ async fn wait_for_shutdown() -> Result<()> {
             .await
             .context("failed to await SIGINT")
     }
-}
-
-// Best-effort: a missed unregister is self-healing on next boot's re-register.
-// Leaves go first so the router is the last entry to disappear from iii://skills.
-async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
-    for (id, _) in <crate>::SUB_SKILLS {
-        let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::unregister".into(),
-                payload: json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(2_000),
-            })
-            .await;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::unregister".into(),
-            payload: json!({ "id": <crate>::SKILL_ID }),
-            action: None,
-            timeout_ms: Some(2_000),
-        })
-        .await;
 }
 ```
 
@@ -517,14 +464,14 @@ fn sub_skills_well_formed() {
 ```
 boot:
   register_worker()  →  configure_store/cfg  →  register_with_iii()  →  serve traffic
-                                                       │
-                                                       ▼  (spawn here, async)
-                                           skills::register router
-                                           skills::register leaf 1
-                                           skills::register leaf 2
-                                           ... (each with capped retry)
+
+skills are populated separately (iii-directory v0.4.x):
+  operator → directory::skills::download (registry or git repo)
+          → markdown lands at <skills_folder>/<worker>/...
+          → directory::skills::on-change fires for subscribers (mcp, etc.)
 
 shutdown (SIGINT or SIGTERM):
-  wait_for_shutdown()  →  skills::unregister leaves  →  skills::unregister router  →  exit
-                          (best-effort, 2s timeout each, errors swallowed)
+  wait_for_shutdown()  →  exit
+                          (no per-worker skill unregister anymore — skills
+                           live on disk under the iii-directory worker)
 ```

@@ -2,23 +2,25 @@
 
 Engine introspection, workers registry proxy, and filesystem-backed
 skill + prompt reader for the [iii engine](https://github.com/iii-hq/iii).
-Hosts four surfaces, all MCP-agnostic:
+Every public function sits under a single `directory::*` namespace,
+split into four sub-namespaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
-| **Skills** (`skills::*`, `skill::fetch`) | Markdown documents under `iii://{id}` plus an `iii://skills` index | Orientation: "when and why to use my worker's tools" |
-| **Prompts** (`prompts::*`) | Static prompt templates listed by `prompts::list` and read by `prompts::get` | Parametric command templates the *user* invokes |
-| **Directory** (`directory::*`) | Read-side enrichment over `engine::functions::list`, `engine::workers::list`, `engine::trigger-types::list`, `engine::triggers::list` | "What's connected to the engine right now?" |
-| **Registry** (`registry::*`) | HTTP proxy over `api.workers.iii.dev` with the same shape as `directory::*` | "What's published in the public registry?" |
+| **Skills** (`directory::skills::*`) | Markdown documents under `iii://{id}` plus an `iii://directory/skills` index | Orientation: "when and why to use my worker's tools" |
+| **Prompts** (`directory::prompts::*`) | Static prompt templates listed by `directory::prompts::list` and read by `directory::prompts::get` | Parametric command templates the *user* invokes |
+| **Engine** (`directory::engine::*`) | Read-side enrichment over `engine::functions::list`, `engine::workers::list`, `engine::trigger-types::list`, `engine::triggers::list` | "What's connected to the engine right now?" |
+| **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with the same `workers::{list,info}` shape as `directory::engine::workers::*` | "What's published in the public registry?" |
 
 Skills and prompts are sourced from a single configured folder on disk
-(`skills_folder`). The only write path is the **`skills::download`**
-function, which pulls markdown into `skills_folder` from either the
+(`skills_folder`). The only write path is the
+**`directory::skills::download`** function, which pulls markdown into
+`skills_folder` from either the
 [workers registry](https://workers.iii.dev) or a GitHub repo. Once
 downloaded, files belong to the developer — edit them however you want.
 
-`directory::*` and `registry::*` share the same `worker-list` /
-`worker-info` envelope shape so callers can switch between the local
+`directory::engine::workers::*` and `directory::registry::workers::*`
+share the same envelope shape so callers can switch between the local
 engine view and the published-registry view without re-learning the API.
 
 ## Table of contents
@@ -50,13 +52,16 @@ iii worker add iii-directory
 ## Configuration
 
 ```yaml
-# Folder that backs every read (`iii://`, `skill::fetch`, `skills::list`,
-# `prompts::*`) and every write from `skills::download`. Resolved
-# relative to the directory of this config file.
+# Folder that backs every read (`iii://`, `directory::skills::fetch-skill`,
+# `directory::skills::list`, `directory::prompts::*`) and every write
+# from `directory::skills::download`. Relative paths are resolved
+# against the process current working directory; absolute paths are
+# used as-is.
 skills_folder: ./skills
 
-# Workers registry base URL — used by `skills::download` when a
-# `worker=` source is specified. Override for self-hosted deployments.
+# Workers registry base URL — used by `directory::skills::download`
+# and the `directory::registry::*` proxies when a `worker=` source is
+# specified. Override for self-hosted deployments.
 registry_url: https://api.workers.iii.dev
 
 # Timeout for a single download (`git clone` or HTTP request) in ms.
@@ -72,17 +77,19 @@ The folder is created on first download if it doesn't exist.
 ```bash
 # Pull a specific worker's skills + prompts at a fixed semver from
 # the registry. Files land under `<skills_folder>/agent-memory/`.
-iii trigger --function-id=skills::download \
+iii trigger --function-id=directory::skills::download \
   --payload='{"worker": "agent-memory", "version": "1.2.3"}'
 
-# Same, but always fetch whatever's tagged `latest`.
-iii trigger --function-id=skills::download \
-  --payload='{"worker": "agent-memory", "tag": "latest"}'
+# Same, but always fetch whatever's tagged `latest` (also the default
+# when neither version nor tag is given).
+iii trigger --function-id=directory::skills::download \
+  --payload='{"worker": "agent-memory"}'
 
 # Pull a single subfolder out of a public GitHub repo via
-# `git clone --depth 1`. Files land under
-# `<skills_folder>/frontend-design/`.
-iii trigger --function-id=skills::download \
+# `git clone --depth 1 --branch main`. Files land under
+# `<skills_folder>/frontend-design/`. The `branch` field defaults to
+# `main`; pass `"master"` for older repos that haven't migrated.
+iii trigger --function-id=directory::skills::download \
   --payload='{
     "repo": "https://github.com/anthropics/skills",
     "skill": "frontend-design"
@@ -94,9 +101,9 @@ where `skills_written` and `prompts_written` are arrays of relative
 paths / prompt names that were materialised in this run.
 
 After every successful download the worker fires the
-`skills::on-change` and/or `prompts::on-change` trigger types so that
-subscribers like the [`mcp`](../mcp/) worker can forward MCP
-`notifications/list_changed` to their clients.
+`directory::skills::on-change` and/or `directory::prompts::on-change`
+trigger types so that subscribers like the [`mcp`](../mcp/) worker can
+forward MCP `notifications/list_changed` to their clients.
 
 ---
 
@@ -106,7 +113,7 @@ The worker assumes a fixed layout under `skills_folder`:
 
 ```text
 skills_folder/
-  <namespace>/                 # one folder per `skills::download` namespace
+  <namespace>/                 # one folder per `directory::skills::download` namespace
     index.md                   # → iii://<namespace>/index
     contacts.md                # → iii://<namespace>/contacts
     emails/send-email.md       # → iii://<namespace>/emails/send-email
@@ -129,9 +136,9 @@ The download function namespaces by source:
 
 | Source | Destination |
 |---|---|
-| `repo=URL skill=NAME` | `<skills_folder>/<NAME>/...` |
+| `repo=URL skill=NAME branch?=main` | `<skills_folder>/<NAME>/...` |
 | `worker=NAME version=…` | `<skills_folder>/<NAME>/...` |
-| `worker=NAME tag=…` | `<skills_folder>/<NAME>/...` |
+| `worker=NAME tag=…` (default `tag=latest`) | `<skills_folder>/<NAME>/...` |
 
 Re-pulling the same source overwrites files **file-by-file** —
 existing siblings outside the response set are preserved (so
@@ -145,68 +152,71 @@ Same scheme as previous releases, anchored now on the filesystem:
 
 | URI | Returns |
 |---|---|
-| `iii://skills` | Auto-rendered markdown index of every skill in `skills_folder`. |
+| `iii://directory/skills` | Auto-rendered markdown index of every skill in `skills_folder`. |
 | `iii://{id}` | The body at `<skills_folder>/{id}.md`. Any depth. First segment must NOT equal `fn`. |
 | `iii://fn/{a}/{b}/.../{leaf}` | Trigger function `a::b::...::leaf` with `{}` and serve its output. Each `/` after `fn/` becomes `::`. |
 
-The `skill::fetch` tool is a thin batched wrapper over the same
-resolver. Pass either `uri` (single) or `uris` (array) to read several
-sections in one round trip; sections are wrapped as `# {uri}\n\n{body}`
-and joined with `\n\n---\n\n`.
+The `directory::skills::fetch-skill` function is a thin batched wrapper
+over the same resolver. Pass either `uri` (single) or `uris` (array) —
+each entry may be a full `iii://` URI or a bare skill path (the `id`
+returned by `directory::skills::list`, auto-prefixed with `iii://`).
+Sections are wrapped as `# {uri}\n\n{body}` and joined with
+`\n\n---\n\n`.
 
 There is no recursion guard on `iii://fn/<path>` URIs — the resolver
 will trigger any function the engine exposes, including `state::*` and
-`engine::*` infra. Adapters that surface `skill::fetch` to untrusted
-callers should add their own filtering.
+`engine::*` infra. Adapters that surface
+`directory::skills::fetch-skill` to untrusted callers should add their
+own filtering.
 
 ---
 
 ## Functions
 
-Sixteen functions across four groups. All registrations are
+Fifteen functions, all under `directory::*`. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 
-### `skills::*` / `skill::fetch` (filesystem reader)
+### `directory::skills::*` (filesystem reader)
 
 | Function ID | Description |
 |---|---|
-| `skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill}` or `{worker, version|tag}`. |
-| `skills::list` | Metadata-only listing of every fs-backed skill. |
-| `skills::fetch_skill` | Batched read across one or more `iii://` URIs (returns plain markdown). |
-| `skill::fetch` | Public alias of `skills::fetch_skill` on a non-`skills::*` namespace. |
+| `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?|tag?}` (defaults `tag=latest`). |
+| `directory::skills::list` | Metadata-only listing of every fs-backed skill. |
+| `directory::skills::fetch-skill` | Batched read across one or more `iii://` URIs or bare skill paths (returns plain markdown). |
 
-### `prompts::*` (filesystem reader)
-
-| Function ID | Description |
-|---|---|
-| `prompts::list` | Metadata-only listing of every fs-backed prompt. |
-| `prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. |
-
-### `directory::*` (engine introspection)
+### `directory::prompts::*` (filesystem reader)
 
 | Function ID | Description |
 |---|---|
-| `directory::function-list` | List functions registered with the engine; filter by search/prefix/worker. |
-| `directory::function-info` | Single-function detail: schemas, owning worker, registered triggers, bundled how-to. |
-| `directory::trigger-list` | List trigger TYPES registered with the engine; filter by search/prefix/worker. |
-| `directory::trigger-info` | Single trigger-type detail: configuration schema, return schema, instance count. |
-| `directory::registered-trigger-list` | List registered trigger INSTANCES (subscriber rows). |
-| `directory::registered-trigger-info` | Composite: instance + trigger-type detail + function detail. |
-| `directory::worker-list` | List workers connected to the engine; same row shape as `registry::worker-list`. |
-| `directory::worker-info` | One worker's `worker` envelope + functions + trigger types + registered triggers. |
+| `directory::prompts::list` | Metadata-only listing of every fs-backed prompt. |
+| `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. |
 
-### `registry::*` (workers registry HTTP proxy)
+### `directory::engine::*` (engine introspection)
 
 | Function ID | Description |
 |---|---|
-| `registry::worker-list` | Search published workers in `api.workers.iii.dev`. Same row shape as `directory::worker-list`. |
-| `registry::worker-info` | Full registry detail for one worker: `worker` envelope (matching `directory::worker-info.worker`) plus `readme`, `api_reference`, `skills_tree`. |
+| `directory::engine::functions::list` | List functions registered with the engine; filter by search/prefix/worker. |
+| `directory::engine::functions::info` | Single-function detail: schemas, owning worker, registered triggers, bundled how-to. |
+| `directory::engine::triggers::list` | List trigger TYPES registered with the engine; filter by search/prefix/worker. |
+| `directory::engine::triggers::info` | Single trigger-type detail: configuration schema, return schema, instance count. |
+| `directory::engine::registered-triggers::list` | List registered trigger INSTANCES (subscriber rows). |
+| `directory::engine::registered-triggers::info` | Composite: instance + trigger-type detail + function detail. |
+| `directory::engine::workers::list` | List workers connected to the engine; same row shape as `directory::registry::workers::list`. |
+| `directory::engine::workers::info` | One worker's `worker` envelope + functions + trigger types + registered triggers. |
 
-Both `registry::*` responses are cached in-process for
+### `directory::registry::*` (workers registry HTTP proxy)
+
+| Function ID | Description |
+|---|---|
+| `directory::registry::workers::list` | Search published workers in `api.workers.iii.dev`. Same row shape as `directory::engine::workers::list`. |
+| `directory::registry::workers::info` | Full registry detail for one worker: `worker` envelope (matching `directory::engine::workers::info.worker`) plus `readme`, `api_reference`, `skills_tree`. |
+
+Both `directory::registry::*` responses are cached in-process for
 `registry_cache_ttl_ms` (default 60s).
 
-There is **no** `skills::register` / `prompts::register` — see
+There is **no** `directory::skills::register` /
+`directory::prompts::register` — see
 [Migration](#migration-from-skills-v02x) below.
 
 ---
@@ -215,8 +225,8 @@ There is **no** `skills::register` / `prompts::register` — see
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `skills::on-change` | After a `skills::download` that wrote at least one skill markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
-| `prompts::on-change` | After a `skills::download` that wrote at least one prompt markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
+| `directory::prompts::on-change` | After a `directory::skills::download` that wrote at least one prompt markdown file | `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` |
 
 Dispatches are fire-and-forget (Void), so the download path doesn't
 block on downstream latency.
@@ -253,36 +263,3 @@ The BDD harness lives under [tests/](tests/). Feature files mirror the
 modules in [src/functions/](src/functions/). Step definitions under
 [tests/steps/](tests/steps/) drive each feature through the same
 `iii.trigger` path the production binary uses.
-
----
-
-## Migration from skills v0.2.x
-
-`skills` v0.3.0 is a breaking change. The state-backed registry and the
-`skills::register` / `prompts::register` functions are gone. Workers in
-this monorepo that called those functions at boot will start receiving
-"function not found" errors on the registration call (the rest of the
-worker keeps working).
-
-The new flow:
-
-1. The worker publishes its skills + prompts to the
-   [workers registry](https://workers.iii.dev) as part of the standard
-   release pipeline.
-2. Operators run `iii trigger skills::download worker=<name> tag=latest`
-   (or pin a version) once per worker on each machine that runs `mcp`.
-3. The downloaded markdown lives at `<skills_folder>/<name>/...` and is
-   served via `iii://` to MCP clients. Operators are free to edit the
-   files locally; a re-pull will overwrite the response set but leave
-   any hand-added sibling files alone.
-
-Workers that ship a private repo can also seed via the GitHub source:
-
-```bash
-iii trigger --function-id=skills::download \
-  --payload='{"repo": "https://github.com/<org>/<repo>", "skill": "<folder>"}'
-```
-
-The `mcp` worker's existing subscriptions to `skills::on-change` and
-`prompts::on-change` continue to work unchanged — those triggers now
-fire after every successful download instead of every register.

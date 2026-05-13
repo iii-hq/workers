@@ -1,13 +1,14 @@
 //! Function registrations for `iii-directory` (formerly `skills` / `engine-catalog`).
 //!
-//! Three groups, all MCP-agnostic:
+//! All public functions sit under a single `directory::*` namespace,
+//! split into four sub-namespaces:
 //!
-//!   * `skills::*` / `prompts::*` / `skill::fetch` — filesystem-backed
+//!   * `directory::skills::*` / `directory::prompts::*` — filesystem-backed
 //!     reads + downloads. Plain JSON shapes; no envelope or templating.
-//!   * `directory::*` — read-side enrichment over engine introspection
-//!     (`engine::functions::list`, `engine::workers::list`,
+//!   * `directory::engine::*` — read-side enrichment over engine
+//!     introspection (`engine::functions::list`, `engine::workers::list`,
 //!     `engine::trigger-types::list`, `engine::triggers::list`).
-//!   * `registry::*` — HTTP proxy over the workers registry
+//!   * `directory::registry::*` — HTTP proxy over the workers registry
 //!     (`api.workers.iii.dev`) for worker listing + per-worker metadata.
 
 pub mod directory;
@@ -25,8 +26,8 @@ use crate::fs_source::{self, SourceKind};
 use crate::trigger_types::{RegisteredTriggerTypes, SubscriberSet};
 
 /// Pair of subscriber sets passed into `download::register` so the
-/// download function can fan out to both `skills::on-change` and
-/// `prompts::on-change` after a successful pull.
+/// download function can fan out to both `directory::skills::on-change`
+/// and `directory::prompts::on-change` after a successful pull.
 pub struct Subscribers {
     pub skills: SubscriberSet,
     pub prompts: SubscriberSet,
@@ -54,9 +55,9 @@ pub fn register_all(
     directory::register(iii, cfg);
     registry::register(iii, cfg);
     tracing::info!(
-        "iii-directory registered 2 skills::* (list + fetch_skill), 1 skill::fetch alias, \
-         2 prompts::* (list + get), 1 skills::download, 8 directory::* and 2 registry::* \
-         functions"
+        "iii-directory registered 2 directory::skills::* (list + fetch-skill), \
+         2 directory::prompts::* (list + get), 1 directory::skills::download, \
+         8 directory::engine::* and 2 directory::registry::workers::* functions"
     );
 }
 

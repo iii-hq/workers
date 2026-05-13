@@ -1,5 +1,5 @@
 @engine @prompts
-Feature: filesystem-backed prompts (prompts::list / prompts::get)
+Feature: filesystem-backed prompts (directory::prompts::list / directory::prompts::get)
   Prompts live at `<skills_folder>/<ns>/prompts/*.md` with YAML
   frontmatter declaring at least `description`. Both endpoints return
   plain JSON shapes — no MCP envelope, no role/messages wrapper — so
@@ -8,9 +8,9 @@ Feature: filesystem-backed prompts (prompts::list / prompts::get)
   Background:
     Given the iii engine is reachable
 
-  # ── prompts::list ──────────────────────────────────────────────────
+  # ── directory::prompts::list ───────────────────────────────────────
 
-  Scenario: a fs prompt with frontmatter appears in prompts::list
+  Scenario: a fs prompt with frontmatter appears in directory::prompts::list
     Given a prompt file at "ns/prompts/open-pr.md" with content:
       """
       ---
@@ -32,9 +32,9 @@ Feature: filesystem-backed prompts (prompts::list / prompts::get)
     When I list prompts
     Then the prompts listing does not include "no-fm"
 
-  # ── prompts::get ───────────────────────────────────────────────────
+  # ── directory::prompts::get ────────────────────────────────────────
 
-  Scenario: prompts::get returns the body, name, description, and modified_at
+  Scenario: directory::prompts::get returns the body, name, description, and modified_at
     Given a prompt file at "ns/prompts/static.md" with content:
       """
       ---
@@ -48,14 +48,14 @@ Feature: filesystem-backed prompts (prompts::list / prompts::get)
     And  the prompt response body contains "The body content of the prompt."
     And  the prompt response has a non-empty modified_at
 
-  Scenario: prompts::get for an unknown name returns a not-found error
+  Scenario: directory::prompts::get for an unknown name returns a not-found error
     When I get prompt "nope"
-    Then the prompts::get call fails with a message mentioning "not found"
+    Then the directory::prompts::get call fails with a message mentioning "not found"
 
-  Scenario: prompts::get rejects an empty name
+  Scenario: directory::prompts::get rejects an empty name
     When I get prompt ""
-    Then the prompts::get call fails with a message mentioning "non-empty"
+    Then the directory::prompts::get call fails with a message mentioning "non-empty"
 
-  Scenario: prompts::get rejects a name with invalid characters
+  Scenario: directory::prompts::get rejects a name with invalid characters
     When I get prompt "Bad/Name"
-    Then the prompts::get call fails with a message mentioning "lowercase"
+    Then the directory::prompts::get call fails with a message mentioning "lowercase"

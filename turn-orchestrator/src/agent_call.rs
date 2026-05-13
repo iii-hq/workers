@@ -98,11 +98,12 @@ pub(crate) fn is_timeout(err: &IIIError) -> bool {
 /// it. Otherwise wrap the value as the tool's `details` so function-level
 /// envelopes (`{ok: false, error}`) pass through verbatim per the spec.
 ///
-/// For a JSON `String` value (e.g. `skill::fetch` returning markdown), use
-/// the inner string content as `text`. `serde_json::Value::to_string()`
-/// emits the JSON-encoded form — surrounding quotes and `\n` literals —
-/// which the harness web's `<pre>` then renders verbatim and looks like
-/// "raw JSON in chat" (turn-orchestrator/agent_call.rs regression).
+/// For a JSON `String` value (e.g. `directory::skills::fetch-skill`
+/// returning markdown), use the inner string content as `text`.
+/// `serde_json::Value::to_string()` emits the JSON-encoded form —
+/// surrounding quotes and `\n` literals — which the harness web's
+/// `<pre>` then renders verbatim and looks like "raw JSON in chat"
+/// (turn-orchestrator/agent_call.rs regression).
 pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
     if let Ok(tr) = serde_json::from_value::<FunctionResult>(value.clone()) {
         return tr;
@@ -123,7 +124,7 @@ pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
 /// mapping has one source of truth.
 ///
 /// Tier 2: no schema lookup, no payload validation, no sandbox automation.
-/// Skills (registered separately via the skills worker) teach the LLM iii
+/// Skills (served by the iii-directory worker) teach the LLM iii
 /// contracts — registry introspection, sandbox lifecycle, etc. The
 /// dispatcher only does what skills can't: validate the `function` field,
 /// dispatch via `iii.trigger`, and map errors back to envelopes the model
@@ -155,7 +156,7 @@ pub async fn dispatch(
         Err(ref e) if is_function_not_found(e) => error_result(json!({
             "error": "function_not_found",
             "function": function_id,
-            "hint": "load the relevant skill via skill::fetch, or check the function id"
+            "hint": "load the relevant skill via directory::skills::fetch-skill, or check the function id"
         })),
         Err(ref e) if is_timeout(e) => error_result(json!({
             "error": "timeout",
@@ -263,10 +264,11 @@ mod dispatch_tests {
         assert!(!tr.terminate);
     }
 
-    /// Regression: `skill::fetch` and any other function returning a JSON
-    /// String must produce a content block whose `text` is the inner
-    /// string content (real newlines), not the JSON-encoded form (literal
-    /// `\n` + surrounding quotes). The latter renders as "raw JSON in chat"
+    /// Regression: `directory::skills::fetch-skill` and any other function
+    /// returning a JSON String must produce a content block whose `text`
+    /// is the inner string content (real newlines), not the JSON-encoded
+    /// form (literal `\n` + surrounding quotes). The latter renders as
+    /// "raw JSON in chat"
     /// because the harness web wraps `text` in a `<pre>` verbatim.
     #[test]
     fn decode_or_passthrough_unwraps_string_value_into_text() {

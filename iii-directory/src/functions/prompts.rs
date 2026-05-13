@@ -2,17 +2,17 @@
 //!
 //! Public API (reachable by any worker over `iii.trigger`):
 //!
-//!   * `prompts::list` — metadata-only listing of every prompt in
-//!     `<skills_folder>/<ns>/prompts/*.md`, sorted by name.
-//!   * `prompts::get`  — fetch one prompt's body + metadata.
+//!   * `directory::prompts::list` — metadata-only listing of every prompt
+//!     in `<skills_folder>/<ns>/prompts/*.md`, sorted by name.
+//!   * `directory::prompts::get`  — fetch one prompt's body + metadata.
 //!
 //! Both responses are plain JSON shapes — no MCP envelope, no role/
 //! messages wrapper — so this worker stays agnostic to MCP and any
 //! other adapter. Adapters can shape the response on their own side.
 //!
 //! There is no `prompts::register` / `prompts::unregister`. Prompts
-//! arrive on disk via `skills::download` (or by direct editing) and are
-//! re-read on every list/get call.
+//! arrive on disk via `directory::skills::download` (or by direct
+//! editing) and are re-read on every list/get call.
 
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("prompts::list", move |_input: ListPromptsInput| {
+        RegisterFunction::new_async("directory::prompts::list", move |_input: ListPromptsInput| {
             let cfg = cfg_inner.clone();
             async move {
                 let (prompts, _skipped) = fs_source::scan_prompts(&cfg.resolved_skills_folder());
@@ -91,7 +91,7 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_get_prompt(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("prompts::get", move |req: PromptGetInput| {
+        RegisterFunction::new_async("directory::prompts::get", move |req: PromptGetInput| {
             let cfg = cfg_inner.clone();
             async move { get_prompt(&cfg, req).await.map_err(IIIError::Handler) }
         })

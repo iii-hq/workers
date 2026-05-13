@@ -1,9 +1,10 @@
 //! Step defs for `tests/features/read.feature`.
 //!
 //! Drives the read-side surface of the iii-directory worker
-//! (`skills::list`, `skill::fetch`) against fixture files written
-//! directly into `skills_folder`. The `iii://` URI surface is
-//! exercised via `skill::fetch` (no MCP-shaped wrappers exist any
+//! (`directory::skills::list`, `directory::skills::fetch-skill`)
+//! against fixture files written directly into `skills_folder`. The
+//! `iii://` URI surface is exercised via
+//! `directory::skills::fetch-skill` (no MCP-shaped wrappers exist any
 //! more — see [`crate::functions::skills`]).
 
 use cucumber::{given, then, when};
@@ -58,7 +59,7 @@ async fn list_skills(world: &mut IiiSkillsWorld) {
     };
     if let Ok(v) = iii
         .trigger(TriggerRequest {
-            function_id: "skills::list".to_string(),
+            function_id: "directory::skills::list".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
@@ -91,7 +92,7 @@ fn listing_lacks(world: &mut IiiSkillsWorld, id: String) {
     assert!(!found, "id {id:?} unexpectedly in listing: {arr:?}");
 }
 
-// ── iii:// reads via skill::fetch ──────────────────────────────────
+// ── iii:// reads via skills::fetch-skill ───────────────────────────
 
 async fn fetch_via_skill_alias(world: &mut IiiSkillsWorld, uris: Vec<String>) {
     world.stash.remove(LAST_FETCH);
@@ -101,7 +102,7 @@ async fn fetch_via_skill_alias(world: &mut IiiSkillsWorld, uris: Vec<String>) {
     };
     match iii
         .trigger(TriggerRequest {
-            function_id: "skill::fetch".to_string(),
+            function_id: "directory::skills::fetch-skill".to_string(),
             payload: json!({ "uris": uris }),
             action: None,
             timeout_ms: Some(5_000),

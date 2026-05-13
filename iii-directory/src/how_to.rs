@@ -9,6 +9,10 @@
 //!   3. Body contains the literal `iii://fn/<dotted/path>` URI for the
 //!      queried id (e.g. `mem::observe` → `iii://fn/mem/observe`)
 //!
+//! Also surfaces *related* skills (any `type`, not just how-to) that
+//! mention the function via either the literal `function_id` or the
+//! `iii://fn/<dotted/path>` URI form — see [`find_related_for_function`].
+//!
 //! Reuses [`crate::fs_source::split_frontmatter`] / [`crate::fs_source::read_body`]
 //! and the same `**/*.md` walker so the new scanner inherits the existing
 //! id-validation, cap-checking, and CRLF-tolerance behaviour.
@@ -19,7 +23,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::fs_source::split_frontmatter;
-use crate::functions::skills::SKILL_BODY_MAX_BYTES;
+use crate::functions::skills::{extract_title, SKILL_BODY_MAX_BYTES};
 
 /// One on-disk how-to skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,10 +149,124 @@ pub fn find_for_function(skills_folder: &Path, function_id: &str) -> Option<FsHo
 }
 
 /// `mem::observe` → `iii://fn/mem/observe`. Mirrors the section-URI
-/// shape served by `skill::fetch` (`iii://fn/...`) so the scanner
-/// matches the links agents would actually paste.
+/// shape served by `skills::fetch-skill` (`iii://fn/...`) so the
+/// scanner matches the links agents would actually paste.
 pub fn function_id_to_uri(function_id: &str) -> String {
     format!("iii://fn/{}", function_id.replace("::", "/"))
+}
+
+/// Title-only reference to another skill that mentions a function.
+/// Bodies are intentionally omitted; callers fetch on demand via
+/// `skills::fetch-skill iii://<skill_id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RelatedSkillRef {
+    pub title: String,
+    pub skill_id: String,
+}
+
+/// Resolve a display title from (in order): an explicit frontmatter
+/// `title`, the first `# H1` line in the body, or the `skill_id` as a
+/// final fallback. Empty inputs are skipped.
+pub fn resolve_title(frontmatter_title: Option<&str>, body: &str, skill_id: &str) -> String {
+    if let Some(t) = frontmatter_title {
+        let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(h1) = extract_title(body) {
+        if !h1.is_empty() {
+            return h1.to_string();
+        }
+    }
+    skill_id.to_string()
+}
+
+/// Frontmatter slice used by [`find_related_for_function`] to harvest a
+/// `title` and check `function_id` / `functions` declarations on skills
+/// of any `type` (the related scan is more permissive than `scan_how_tos`).
+#[derive(Debug, Default, Deserialize)]
+struct AnyFrontmatter {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    function_id: Option<String>,
+    #[serde(default)]
+    functions: Vec<String>,
+}
+
+/// Walk every `*.md` under `skills_folder` (any frontmatter `type`,
+/// including no frontmatter at all) and return the ones that mention
+/// `function_id` via any of:
+///
+///   * frontmatter `function_id` equals the queried id, or
+///   * frontmatter `functions: [...]` contains it, or
+///   * body contains the URI form `iii://fn/<dotted/path>`, or
+///   * body contains the literal `function_id` substring.
+///
+/// `exclude_skill_id`, when set, drops the chosen `how_guide` from the
+/// result so the same skill doesn't appear in both the primary
+/// how-guide slot and the related list. Output is sorted lex by
+/// `skill_id` and deduped.
+pub fn find_related_for_function(
+    skills_folder: &Path,
+    function_id: &str,
+    exclude_skill_id: Option<&str>,
+) -> Vec<RelatedSkillRef> {
+    if !skills_folder.exists() {
+        return Vec::new();
+    }
+    let pattern = match skills_folder.join("**/*.md").to_str() {
+        Some(s) => s.to_string(),
+        None => return Vec::new(),
+    };
+    let entries = match glob::glob(&pattern) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+
+    let uri = function_id_to_uri(function_id);
+    let mut out: Vec<RelatedSkillRef> = Vec::new();
+    for entry in entries {
+        let abs = match entry {
+            Ok(p) if p.is_file() => p,
+            _ => continue,
+        };
+        let rel = match abs.strip_prefix(skills_folder) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => continue,
+        };
+        let raw = match std::fs::read_to_string(&abs) {
+            Ok(s) if s.len() <= SKILL_BODY_MAX_BYTES => s,
+            _ => continue,
+        };
+        let (fm_text, body) = split_frontmatter(&raw);
+        let fm: AnyFrontmatter = fm_text
+            .and_then(|t| serde_yaml::from_str(t).ok())
+            .unwrap_or_default();
+
+        let frontmatter_match = fm.function_id.as_deref() == Some(function_id)
+            || fm.functions.iter().any(|f| f == function_id);
+        let body_match = body.contains(&uri) || body.contains(function_id);
+        if !frontmatter_match && !body_match {
+            continue;
+        }
+
+        let skill_id = match rel_to_id(&rel) {
+            Some(id) => id,
+            None => continue,
+        };
+        if exclude_skill_id == Some(skill_id.as_str()) {
+            continue;
+        }
+        if out.iter().any(|r| r.skill_id == skill_id) {
+            continue;
+        }
+        let title = resolve_title(fm.title.as_deref(), body, &skill_id);
+        out.push(RelatedSkillRef { title, skill_id });
+    }
+    out.sort_by(|a, b| a.skill_id.cmp(&b.skill_id));
+    out
 }
 
 fn rel_to_id(rel: &Path) -> Option<String> {
@@ -279,5 +397,144 @@ mod tests {
     #[test]
     fn scan_handles_missing_dir() {
         assert!(scan_how_tos(Path::new("/no/such/dir")).is_empty());
+    }
+
+    // ── resolve_title ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_title_prefers_frontmatter() {
+        let title = resolve_title(Some("Frontmatter title"), "# Body H1\n\nbody", "skills/foo");
+        assert_eq!(title, "Frontmatter title");
+    }
+
+    #[test]
+    fn resolve_title_trims_frontmatter_whitespace() {
+        let title = resolve_title(Some("   spaced   "), "# H1", "id");
+        assert_eq!(title, "spaced");
+    }
+
+    #[test]
+    fn resolve_title_falls_back_to_h1_when_frontmatter_missing() {
+        let title = resolve_title(None, "# Body H1\n\nbody", "skills/foo");
+        assert_eq!(title, "Body H1");
+    }
+
+    #[test]
+    fn resolve_title_falls_back_to_h1_when_frontmatter_empty() {
+        let title = resolve_title(Some("   "), "# Body H1", "skills/foo");
+        assert_eq!(title, "Body H1");
+    }
+
+    #[test]
+    fn resolve_title_falls_back_to_skill_id_when_no_h1() {
+        let title = resolve_title(None, "no heading here", "skills/foo");
+        assert_eq!(title, "skills/foo");
+    }
+
+    // ── find_related_for_function ────────────────────────────────────
+
+    #[test]
+    fn related_picks_frontmatter_function_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "guides/frontmatter.md",
+            "---\ntype: how-to\nfunction_id: mem::observe\ntitle: How to observe\n---\n# How to observe\n\nbody\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", None);
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].skill_id, "guides/frontmatter");
+        assert_eq!(related[0].title, "How to observe");
+    }
+
+    #[test]
+    fn related_picks_frontmatter_functions_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "guides/array.md",
+            "---\ntype: how-to\nfunctions: [\"mem::observe\", \"mem::recall\"]\n---\n# Memory tour\n\nbody\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", None);
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].skill_id, "guides/array");
+        assert_eq!(related[0].title, "Memory tour");
+    }
+
+    #[test]
+    fn related_picks_uri_form_in_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "tour.md",
+            "# Memory tour\n\nSee iii://fn/mem/observe for details.\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", None);
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].skill_id, "tour");
+    }
+
+    #[test]
+    fn related_picks_literal_id_in_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "notes.md",
+            "# Notes\n\nCheck mem::observe before recall.\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", None);
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].skill_id, "notes");
+    }
+
+    #[test]
+    fn related_excludes_chosen_how_guide() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "primary.md",
+            "---\ntype: how-to\nfunction_id: mem::observe\n---\n# Primary\n\nbody\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "secondary.md",
+            "# Other\n\nLink: iii://fn/mem/observe\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", Some("primary"));
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].skill_id, "secondary");
+    }
+
+    #[test]
+    fn related_returns_empty_for_unrelated_function_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "x.md",
+            "# x\n\nbody mentions other::fn only\n",
+        );
+        let related = find_related_for_function(tmp.path(), "missing::fn", None);
+        assert!(related.is_empty());
+    }
+
+    #[test]
+    fn related_returns_lex_sorted_unique_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "b.md", "# b\n\niii://fn/mem/observe\n");
+        write_fixture(tmp.path(), "a.md", "# a\n\nmem::observe\n");
+        write_fixture(
+            tmp.path(),
+            "c.md",
+            "---\ntype: how-to\nfunction_id: mem::observe\n---\n# c\n",
+        );
+        let related = find_related_for_function(tmp.path(), "mem::observe", None);
+        let ids: Vec<_> = related.iter().map(|r| r.skill_id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn related_handles_missing_dir() {
+        let related = find_related_for_function(Path::new("/no/such/dir"), "x::y", None);
+        assert!(related.is_empty());
     }
 }
