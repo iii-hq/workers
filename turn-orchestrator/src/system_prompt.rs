@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn skills_section_blocks_probe_calls_when_descriptor_is_incomplete() {
-        let out = build(Some("- iii://sandbox"), None, None);
+        let out = build(Some("- iii://iii-directory/sandbox"), None, None);
         assert!(
             out.contains("If the descriptor is null, generic, or incomplete"),
             "loaded-skills section must repeat the schema-gap rule"

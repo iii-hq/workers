@@ -190,9 +190,17 @@ async fn fetch_root_bodies(iii: &III, root_ids: &[String]) -> Option<String> {
     }
 }
 
-/// `iii` and `harness` are root; `resend/email`, `shell/bash` are not.
+/// `iii`, `harness`, and `<single-segment>/index` are root; `resend/email`,
+/// `shell/bash` are not.
 fn is_root_skill_id(id: &str) -> bool {
-    !id.is_empty() && !id.contains('/')
+    if id.is_empty() {
+        return false;
+    }
+    match id.split('/').collect::<Vec<_>>().as_slice() {
+        [single] => !single.is_empty(),
+        [head, "index"] => !head.is_empty(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -201,15 +209,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn root_ids_have_no_slash() {
+    fn single_segment_ids_are_root() {
         assert!(is_root_skill_id("iii"));
         assert!(is_root_skill_id("harness"));
         assert!(is_root_skill_id("shell-bash"));
     }
 
     #[test]
+    fn index_suffixed_ids_are_root() {
+        assert!(is_root_skill_id("shell/index"));
+    }
+
+    #[test]
     fn nested_ids_are_not_root() {
         assert!(!is_root_skill_id("resend/email"));
+        assert!(!is_root_skill_id("shell/bash"));
         assert!(!is_root_skill_id("shell/bash/exec"));
     }
 

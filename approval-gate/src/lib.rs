@@ -14,23 +14,6 @@ use iii_sdk::{
 };
 use serde_json::{json, Value};
 
-pub const SKILL_ID: &str = "approval-gate";
-pub const SKILL_MD: &str = include_str!("../skill.md");
-pub const SUB_SKILLS: &[(&str, &str)] = &[
-    (
-        "approval-gate/resolve",
-        include_str!("../skills/resolve.md"),
-    ),
-    (
-        "approval-gate/list_pending",
-        include_str!("../skills/list_pending.md"),
-    ),
-    (
-        "approval-gate/policy_approval_gate",
-        include_str!("../skills/policy_approval_gate.md"),
-    ),
-];
-
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).

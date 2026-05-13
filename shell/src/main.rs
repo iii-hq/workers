@@ -1,9 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction, TriggerRequest, III};
-use serde_json::{json, Value};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
+use serde_json::Value;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 mod config;
 mod exec;
@@ -310,90 +309,8 @@ async fn main() -> Result<()> {
 
     tracing::info!("shell registered 15 functions, ready");
 
-    spawn_skill_register(iii.clone());
-
     tokio::signal::ctrl_c().await?;
     tracing::info!("shell shutting down");
-    unregister_skill(&iii).await;
     iii.shutdown_async().await;
     Ok(())
-}
-
-/// Best-effort skill registration with capped exponential backoff.
-/// The iii-directory worker may come up after us (or be absent in
-/// minimal deployments); give up quietly after 3 minutes so the worker
-/// keeps running without it.
-async fn register_skill_with_retry(iii: &III, id: &str, body: &str) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                tracing::info!(skill_id = id, "registered skill");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_secs(180) {
-                    tracing::warn!(
-                        skill_id = id,
-                        error = %e,
-                        "skills handshake gave up; install/start the skills worker and restart"
-                    );
-                    return;
-                }
-                tracing::debug!(
-                    skill_id = id,
-                    error = %e,
-                    wait = ?backoff,
-                    "skills::register failed; retrying"
-                );
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
-    }
-}
-
-/// Spawn the boot-time registration loop in the background. Non-blocking
-/// so a missing iii-directory worker never delays shell's readiness.
-fn spawn_skill_register(iii: III) {
-    tokio::spawn(async move {
-        register_skill_with_retry(&iii, shell::SKILL_ID, shell::SKILL_MD).await;
-        for (id, body) in shell::SUB_SKILLS {
-            register_skill_with_retry(&iii, id, body).await;
-        }
-    });
-}
-
-/// Best-effort skill unregistration on graceful shutdown so a stopped
-/// worker doesn't leave dangling entries. Crashes inevitably skip this
-/// path; an operator can clean up via `directory::skills::list`
-/// manually if needed.
-async fn unregister_skill(iii: &III) {
-    for (id, _) in shell::SUB_SKILLS {
-        let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::unregister".into(),
-                payload: json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(2_000),
-            })
-            .await;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::unregister".into(),
-            payload: json!({ "id": shell::SKILL_ID }),
-            action: None,
-            timeout_ms: Some(2_000),
-        })
-        .await;
 }

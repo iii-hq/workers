@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, TriggerRequest, WorkerMetadata};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
 
 use turn_orchestrator::{config, manifest};
 
@@ -77,50 +75,8 @@ async fn main() -> Result<()> {
         .expect("turn-orchestrator register failed");
     tracing::info!("turn-orchestrator registered (run::start, run::start_and_wait, turn::step)");
 
-    spawn_skill_register(iii.clone());
-
     tokio::signal::ctrl_c().await?;
     tracing::info!("turn-orchestrator shutting down");
     iii.shutdown_async().await;
     Ok(())
-}
-
-fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
-    tokio::spawn(async move {
-        register_skill_with_retry(&iii, "turn-orchestrator", include_str!("../skill.md")).await;
-    });
-}
-
-async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                tracing::info!(%id, "registered skill");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
-                    tracing::warn!(
-                        %id,
-                        error = %e,
-                        "skills handshake gave up; install/start the skills worker and restart"
-                    );
-                    return;
-                }
-                tracing::debug!(%id, error = %e, ?backoff, "skills::register failed; retrying");
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
-    }
 }

@@ -5,9 +5,3 @@ engine_url: "ws://127.0.0.1:49134"
 
 # Timeout for state::* and other internal bus triggers, in milliseconds.
 state_request_timeout_ms: 5000
-
-# Timeout for the skills::register handshake on startup.
-skills_register_timeout_ms: 5000
-
-# Timeout for the skills::unregister handshake on shutdown.
-skills_unregister_timeout_ms: 2000
