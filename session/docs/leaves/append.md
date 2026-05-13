@@ -2,7 +2,7 @@
 
 ## When to use
 
-- Recording each turn as it occurs — user messages, assistant replies, tool results.
+- Recording each turn as it occurs: user messages, assistant replies, tool results.
 - Building a branched history: pass the previous entry's id as `parent_id` to chain entries linearly.
 - Writing a synthetic session entry-by-entry before reconstructing it for an agent or rendering it for review.
 
@@ -11,4 +11,4 @@
 - `message` must be a valid `AgentMessage` from `harness-types`. Variants: `user`, `assistant`, `tool_result`, `custom`.
 - `parent_id` is optional. In a linear conversation thread every entry except the first should supply the previous `entry_id` as `parent_id`.
 - Entry ids are generated server-side; a caller-supplied id is ignored.
-- The call is not idempotent — invoking it twice with the same payload writes two distinct entries.
+- The call is not idempotent; invoking it twice with the same payload writes two distinct entries.

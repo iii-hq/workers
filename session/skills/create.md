@@ -10,7 +10,7 @@
 
 ## Notes
 
-- `display_name` and `cwd` are both optional — omit them for anonymous sessions.
+- `display_name` and `cwd` are both optional; omit them for anonymous sessions.
 - The returned `session_id` is a UUID; pass it verbatim to every other `session-tree::*` call.
 - Sessions persist via the configured backend (`store_backend: iii_state` by default; `memory` for ephemeral runs).
 - `created_at` and `updated_at` are millisecond epochs; `updated_at` advances on every subsequent `session-tree::append`.
