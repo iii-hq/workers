@@ -163,7 +163,7 @@ on new_chat:
     system_prompt = system_prompt::build(&bodies, &cwd, override)
 ```
 
-`directory::skills::fetch-skill` already accepts a batched `uris` array, so the chat-init path makes one call regardless of list length.
+`directory::skills::fetch-skill` accepts a batched `uris` array, but the batched form returns the bodies concatenated as a single string with no per-URI attribution. Because the chat-init path needs per-URI success/failure tracking (so each failed URI can become a stub naming itself), the implementation calls the singular `{ uri }` form once per URI. At the default list length of 1, this is identical to a single call; for longer lists the cost is N round-trips, which is acceptable for a non-hot-path operation.
 
 ## Failure scenarios
 

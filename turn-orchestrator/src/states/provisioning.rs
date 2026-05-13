@@ -51,9 +51,16 @@ pub async fn handle(
     Ok(())
 }
 
-/// Fetch each URI independently. Returns a map of `uri → body` for URIs
+/// Fetch each URI independently and return a map of `uri → body` for URIs
 /// that fetched successfully. Missing entries become `body: None` in the
 /// assembled prompt; failures are logged.
+///
+/// `directory::skills::fetch-skill` accepts a batched `{ uris: [...] }` form,
+/// but it returns the bodies as one concatenated string with no per-URI
+/// attribution, which would lose the per-URI failure granularity we rely on
+/// for the recovery-stub mechanism. With `system_default_skills` typically
+/// one or two entries, N sequential calls is acceptable; chat-init is not
+/// a hot path.
 async fn fetch_default_skills(iii: &III, uris: &[String]) -> HashMap<String, String> {
     let mut out = HashMap::with_capacity(uris.len());
     for uri in uris {

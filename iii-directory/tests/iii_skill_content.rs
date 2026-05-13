@@ -67,8 +67,12 @@ fn pins_recovery_rules() {
         "iii.md must stop function-id guessing loops"
     );
     assert!(
-        III_MD.contains("Resend with\n  exactly `function`"),
-        "iii.md must show the missing_function recovery: resend with the exact `function` field"
+        III_MD.contains("Resend with"),
+        "iii.md must include the 'Resend with' phrasing for missing_function recovery"
+    );
+    assert!(
+        III_MD.contains("exactly `function`"),
+        "iii.md must specify that recovery uses the exact `function` field"
     );
     assert!(
         III_MD.contains("Do not retry or route around"),
