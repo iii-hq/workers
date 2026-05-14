@@ -2,16 +2,23 @@
 //! transition. After running the transition the subscriber re-publishes
 //! the topic if the record is not terminal.
 
+use std::sync::Arc;
+
 use iii_sdk::{IIIError, RegisterFunctionMessage, Value, III};
 use serde_json::json;
 
+use crate::config::TurnOrchestratorConfig;
 use crate::persistence;
 use crate::run_start::publish_step;
 use crate::transitions;
 
 pub const FUNCTION_ID: &str = "turn::step";
 
-pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
+pub async fn execute(
+    iii: III,
+    cfg: Arc<TurnOrchestratorConfig>,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let session_id = extract_session_id(&payload).ok_or_else(|| {
         IIIError::Handler("turn::step_requested payload missing session_id".into())
     })?;
@@ -29,12 +36,14 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
     }
 
     let from_state = record.state;
-    transitions::step(&iii, &mut record).await.map_err(|e| {
-        IIIError::Handler(format!(
-            "transition from {} failed: {e}",
-            from_state.as_str()
-        ))
-    })?;
+    transitions::step(&iii, &cfg, &mut record)
+        .await
+        .map_err(|e| {
+            IIIError::Handler(format!(
+                "transition from {} failed: {e}",
+                from_state.as_str()
+            ))
+        })?;
     persistence::save_record(&iii, &record).await;
 
     if !record.is_terminal() {
@@ -47,15 +56,17 @@ pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
     }))
 }
 
-pub fn register(iii: &III) {
+pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
     let iii_for_handler = iii.clone();
+    let cfg_for_handler = Arc::clone(cfg);
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string()).with_description(
             "Run one durable state machine transition for a session.".to_string(),
         ),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
-            async move { execute(iii, payload).await }
+            let cfg = Arc::clone(&cfg_for_handler);
+            async move { execute(iii, cfg, payload).await }
         },
     ));
 }
@@ -76,6 +87,18 @@ fn extract_session_id(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscriber_register_accepts_config_arc() {
+        // Compile-time pin: register() must take an Arc<TurnOrchestratorConfig>.
+        // This guards against silently dropping config plumbing.
+        fn _assert_signature(
+            iii: &iii_sdk::III,
+            cfg: &std::sync::Arc<crate::config::TurnOrchestratorConfig>,
+        ) {
+            super::register(iii, cfg);
+        }
+    }
 
     #[test]
     fn extract_session_id_from_nested_payload() {

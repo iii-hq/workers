@@ -190,19 +190,25 @@ For `deploy: image`: `<worker>/Dockerfile` that respects `III_URL` and traps
 
 ## 10. Skill registration
 
-Every worker should register a markdown skill on the [`skills` platform
-worker](https://workers.iii.dev/workers/skills) at startup so MCP clients
-(Claude Desktop, Cursor, MCP Inspector) can discover and orient to its
+Every worker should ship a markdown skill so MCP clients (Claude Desktop,
+Cursor, MCP Inspector) and the harness UI can discover and orient to its
 functions. The skill body lives at `<worker>/skill.md` and is served at
 `iii://<worker>`; the auto-rendered `iii://directory/skills` index
 links every worker.
 
 > The iii-directory worker version pinned by this convention is
-> **v0.4.x** — the `directory::*` namespace (skills, prompts, engine
+> **v0.5.x** — the `directory::*` namespace (skills, prompts, engine
 > introspection, registry HTTP proxy) is the source of truth for every
 > reader-side surface this guide refers to.
 
-### 10.1 Skill ID validation rules (iii-directory v0.4.x)
+> Registration is **file-based**, not RPC-based. There is no
+> `skills::register` call at boot. Ship `<worker>/skill.md` at the worker
+> root; the publish workflow (`.github/scripts/build_skills_payload.py`)
+> uploads it as `index.md` to the registry; consumers (harness, Claude
+> Desktop, etc.) pull it down on first run via
+> `directory::skills::download`.
+
+### 10.1 Skill ID validation rules (iii-directory v0.5.x)
 
 - 1+ segments separated by `/`.
 - Each segment: lowercase ASCII letters, digits, `-`, `_`; max 64 chars per segment.
@@ -290,32 +296,28 @@ group justifies its own router (e.g., a `harness` worker might expose
 `harness/providers/anthropic` under a `harness/providers` group router).
 Workers in this repo's current batch are single-depth.
 
-### 10.4 Wire-up: lib.rs
+### 10.4 No boot-time code
 
-Expose the id, the router markdown, and the leaf bodies as `pub const`s in
-`src/lib.rs` so both `main.rs` and the integration tests can reference them:
+There is **no** `skills::register`, `skills::unregister`, or
+`spawn_skill_register` to write. The worker's job is to ship
+`<worker>/skill.md` (and any `<worker>/skills/<sub>.md` leaves) at the
+worker root.
 
-```rust
-// In src/lib.rs (near the top):
-pub const SKILL_ID: &str = "<worker>"; // must equal the folder name
-pub const SKILL_MD: &str = include_str!("../skill.md");
+Publishing pipeline:
 
-// Per-function or per-group sub-skill bodies. Empty for workers with one function.
-// Each id must be nested under SKILL_ID (i.e., start with "<worker>/").
-pub const SUB_SKILLS: &[(&str, &str)] = &[
-    ("<worker>/<sub_a>", include_str!("../skills/<sub_a>.md")),
-    ("<worker>/<sub_b>", include_str!("../skills/<sub_b>.md")),
-];
-```
-
-`include_str!("../skill.md")` resolves from `src/lib.rs`, so the file must
-be at the worker root. Don't use `env!("CARGO_PKG_NAME")` — that returns
-`iii-<worker>` (with the `iii-` prefix) for these workers, not the
-folder name.
+1. CI's `pr-checks` job verifies `<worker>/skill.md` exists, is non-empty,
+   and is ≤256 KiB.
+2. `.github/scripts/build_skills_payload.py` runs at release time and
+   uploads the markdown files to the workers registry as `index.md` (and
+   any sibling leaves).
+3. At consumer first boot (e.g. the harness), `iii-directory` calls
+   `directory::skills::download worker=<name>` to materialise the markdown
+   under `skills_folder/<name>/`. Subsequent boots are no-ops —
+   `directory::skills::list` reports everything is present.
 
 ### 10.5 Wire-up: main.rs
 
-> **Migration note (iii-directory v0.4.x).** The state-backed
+> **Migration note (iii-directory v0.5.x).** The state-backed
 > `skills::register` / `skills::unregister` calls this section
 > previously documented are gone. Skills now live on disk under the
 > iii-directory worker's `skills_folder` and are populated by
@@ -323,12 +325,12 @@ folder name.
 > repo). New workers should publish their bundled skills as part of
 > their release pipeline rather than re-registering at boot. See the
 > [iii-directory README](iii-directory/README.md) for the full flow.
->
-> The `SUB_SKILLS` table from §10.4 still lives in `lib.rs` because
-> integration tests reference the bundled markdown directly; what
-> changes is just where the bus exposes those bodies (the
-> iii-directory worker reads them off disk after a download instead of
-> a worker pushing them up at boot).
+
+If you need to reference the skill body or sub-skill names from your
+worker's code (e.g. a self-test), use `include_str!("../skill.md")`
+inside `#[cfg(test)]` only. Production code should not embed the body —
+the markdown is the registry's job to distribute. `include_str!` resolves
+from `src/lib.rs`, so the file must be at the worker root.
 
 Catches BOTH SIGINT (Ctrl-C in dev) and SIGTERM (container kill) so the
 worker shuts down cleanly in production container restarts:
@@ -357,19 +359,12 @@ async fn wait_for_shutdown() -> Result<()> {
 }
 ```
 
-Replace `<crate>` with the worker's library crate name (e.g.
-`auth_credentials`, `auth_rbac`).
-
-In `main()`, immediately after the worker's existing
-`register_with_iii(...)` call, place three calls:
+In `main()`, after `register_with_iii(...)` succeeds, simply await
+shutdown — no skill-register boilerplate:
 
 ```rust
 // After register_with_iii(...) succeeds:
-spawn_skill_register(iii.clone());
-
 wait_for_shutdown().await?;
-
-unregister_skill(&iii).await;
 Ok(())
 ```
 
@@ -457,16 +452,24 @@ fn sub_skills_well_formed() {
 ### 10.7 Lifecycle summary
 
 ```
-boot:
+worker boot:
   register_worker()  →  configure_store/cfg  →  register_with_iii()  →  serve traffic
 
-skills are populated separately (iii-directory v0.4.x):
+skills are populated separately (iii-directory v0.5.x):
   operator → directory::skills::download (registry or git repo)
           → markdown lands at <skills_folder>/<worker>/...
           → directory::skills::on-change fires for subscribers (mcp, etc.)
 
-shutdown (SIGINT or SIGTERM):
-  wait_for_shutdown()  →  exit
-                          (no per-worker skill unregister anymore — skills
-                           live on disk under the iii-directory worker)
+consumer first boot (e.g. harness):
+  directory::skills::list  →  for each missing <worker> in BOOTSTRAP_NAMES:
+                                directory::skills::download {worker, version}
+                                → writes skills_folder/<worker>/index.md
+                                → fires directory::skills::on-change
+
+consumer subsequent boots:
+  directory::skills::list  →  every <worker> present, no downloads needed.
+
+worker shutdown (SIGINT or SIGTERM):
+  wait_for_shutdown()  →  exit. No skill cleanup; the markdown lives in
+  the registry, not in the worker process.
 ```

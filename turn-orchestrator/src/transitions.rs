@@ -2,14 +2,21 @@
 //! state, then returns. Callers persist the new record and decide whether
 //! to re-publish `turn::step_requested`.
 
+use std::sync::Arc;
+
 use iii_sdk::III;
 
+use crate::config::TurnOrchestratorConfig;
 use crate::state::{TurnState, TurnStateRecord};
 use crate::states;
 
-pub async fn step(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+pub async fn step(
+    iii: &III,
+    cfg: &Arc<TurnOrchestratorConfig>,
+    record: &mut TurnStateRecord,
+) -> anyhow::Result<()> {
     match record.state {
-        TurnState::Provisioning => states::handle_provisioning(iii, record).await?,
+        TurnState::Provisioning => states::handle_provisioning(iii, cfg, record).await?,
         TurnState::AwaitingAssistant => states::handle_awaiting(iii, record).await?,
         TurnState::AssistantStreaming => states::handle_streaming(iii, record).await?,
         TurnState::AssistantFinished => states::handle_finished(iii, record).await?,
@@ -18,9 +25,7 @@ pub async fn step(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()>
         TurnState::FunctionFinalize => states::handle_finalize(iii, record).await?,
         TurnState::SteeringCheck => states::handle_steering(iii, record).await?,
         TurnState::TearingDown => states::handle_tearing_down(iii, record).await?,
-        TurnState::Stopped => {
-            // No-op. Idempotent terminal state.
-        }
+        TurnState::Stopped => {} // no-op: idempotent terminal state
     }
     Ok(())
 }

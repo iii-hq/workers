@@ -17,7 +17,7 @@ pub async fn register_with_iii(
 ) -> anyhow::Result<()> {
     run_start::register(iii, cfg);
     agent_call::register(iii);
-    subscriber::register(iii);
+    subscriber::register(iii, cfg);
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "durable:subscriber".into(),

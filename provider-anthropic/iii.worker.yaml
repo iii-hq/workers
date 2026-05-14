@@ -14,4 +14,4 @@ scripts:
   start: cargo run
 
 dependencies:
-  auth-credentials: "^0.1.0"
+  auth-credentials: "^0.2.0"

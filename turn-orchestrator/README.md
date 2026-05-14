@@ -111,6 +111,16 @@ sync_default_timeout_ms: 120000
 
 # How frequently `run::start_and_wait` checks for a terminal state (milliseconds).
 sync_poll_interval_ms: 50
+
+# URIs fetched from iii-directory at the start of every new chat and
+# inlined into the system prompt. The agent always sees the identity
+# preamble (hard-coded in turn-orchestrator) PLUS the bodies of these
+# URIs concatenated under a heading per URI.
+#
+# Operators add URIs here to pre-load worker root skills (e.g. iii://shell).
+# Failed fetches degrade per-URI; the preamble always survives.
+system_default_skills:
+  - iii://iii-directory/index
 ```
 
 ## Additional Resources

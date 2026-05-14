@@ -83,48 +83,6 @@ const BRIDGE_TIMEOUT_MS: u64 = 240_000;
 // separate dependency.
 include!(concat!(env!("OUT_DIR"), "/expected_workers.rs"));
 
-/// Build the payload sent to skills::register at boot. Pure helper so the
-/// shape is testable without a live engine.
-pub fn build_skills_register_payload() -> serde_json::Value {
-    serde_json::json!({
-        "id": "harness",
-        "skill_version": env!("CARGO_PKG_VERSION"),
-        "min_console_version": "0.1.0",
-        "body": "Harness meta-worker. Composes the modular workers that back the iii chat surface.",
-        "expected_workers": EXPECTED_WORKERS,
-    })
-}
-
-// TEMP(iii-skill): the harness ships a generic iii-orientation skill body
-// at boot so agents always have the `iii://iii` document available, even
-// before the engine grows a dedicated skill worker that publishes its own.
-// Revert by deleting:
-//   1. harness/docs/iii-skill.md
-//   2. `build_iii_skill_register_payload` below
-//   3. the second `skills::register` call in `register_with_iii_with_engine_url`
-//   4. the matching test in tests/skills_register.rs
-pub fn build_iii_skill_register_payload() -> serde_json::Value {
-    serde_json::json!({
-        "id": "iii",
-        "skill": include_str!("../docs/iii-skill.md"),
-    })
-}
-
-// TEMP(sandbox-skill): same stopgap as iii-skill above, but for the
-// sandbox surface. The `iii-sandbox` worker registers 14 functions; this
-// body teaches the agent when to reach for them and how to discover
-// their schemas via `engine::functions::list`. Revert by deleting:
-//   1. harness/docs/sandbox-skill.md
-//   2. `build_sandbox_skill_register_payload` below
-//   3. the third `skills::register` call in `register_with_iii_with_engine_url`
-//   4. the matching test in tests/skills_register.rs
-pub fn build_sandbox_skill_register_payload() -> serde_json::Value {
-    serde_json::json!({
-        "id": "sandbox",
-        "skill": include_str!("../docs/sandbox-skill.md"),
-    })
-}
-
 pub struct HarnessFunctionRefs {
     pub status: FunctionRef,
     pub bridge: FunctionRef,
@@ -380,40 +338,6 @@ pub async fn register_with_iii_with_engine_url(
         },
     ));
 
-    // Best-effort: a missing `skills` worker shouldn't stop harness from booting.
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::register".into(),
-            payload: build_skills_register_payload(),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await;
-
-    // TEMP(iii-skill): publish a generic iii-orientation body until the
-    // engine ships its own skill worker. See `build_iii_skill_register_payload`
-    // for revert instructions.
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::register".into(),
-            payload: build_iii_skill_register_payload(),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await;
-
-    // TEMP(sandbox-skill): publish the sandbox orientation body until
-    // iii-sandbox ships its own. See `build_sandbox_skill_register_payload`
-    // for revert instructions.
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::register".into(),
-            payload: build_sandbox_skill_register_payload(),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await;
-
     // Wire the upstream fanout pumps:
     //   - agent::events stream subscriber → ui::session::event::<browser_id>
     //   - state::list poll                → ui::sessions::changed::<browser_id>
@@ -555,5 +479,22 @@ mod tests {
             !EXPECTED_WORKERS.contains(&"shell-filesystem"),
             "shell-filesystem was consolidated into `shell`"
         );
+    }
+
+    /// Manifest drift guard: the worker table in `harness/skill.md` must
+    /// mention every entry in `EXPECTED_WORKERS`. The skill is hand-written
+    /// (see `harness/skill.md`); when a worker is added to `iii.worker.yaml`
+    /// the table must be updated in the same PR.
+    #[test]
+    fn harness_skill_md_lists_every_expected_worker() {
+        const SKILL_MD: &str = include_str!("../skill.md");
+        for w in EXPECTED_WORKERS {
+            let needle = format!("`{w}`");
+            assert!(
+                SKILL_MD.contains(&needle),
+                "harness/skill.md is missing an entry for worker {w:?} \
+                 (look for `{w}` in the `## Workers` table)",
+            );
+        }
     }
 }

@@ -1,9 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, TriggerRequest, WorkerMetadata};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
 
 mod config;
 mod manifest;
@@ -89,58 +88,11 @@ async fn main() -> Result<()> {
         .context("auth-credentials register failed")?;
     tracing::info!("auth-credentials registered (auth::*)");
 
-    spawn_skill_register(iii.clone());
-
     wait_for_shutdown().await?;
 
-    unregister_skill(&iii).await;
     tracing::info!("auth-credentials shutting down");
     iii.shutdown_async().await;
     Ok(())
-}
-
-async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: serde_json::json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                tracing::info!(skill_id = %id, "registered skill");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
-                    tracing::warn!(
-                        skill_id = %id,
-                        error = %e,
-                        "skills handshake gave up; install/start the skills worker and restart"
-                    );
-                    return;
-                }
-                tracing::debug!(skill_id = %id, error = %e, wait = ?backoff, "skills::register failed; retrying");
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
-    }
-}
-
-fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
-    tokio::spawn(async move {
-        register_skill_with_retry(&iii, auth_credentials::SKILL_ID, auth_credentials::SKILL_MD)
-            .await;
-        for (id, body) in auth_credentials::SUB_SKILLS {
-            register_skill_with_retry(&iii, id, body).await;
-        }
-    });
 }
 
 async fn wait_for_shutdown() -> Result<()> {
@@ -163,23 +115,3 @@ async fn wait_for_shutdown() -> Result<()> {
     }
 }
 
-async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
-    for (id, _) in auth_credentials::SUB_SKILLS {
-        let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::unregister".into(),
-                payload: serde_json::json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(2_000),
-            })
-            .await;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::unregister".into(),
-            payload: serde_json::json!({ "id": auth_credentials::SKILL_ID }),
-            action: None,
-            timeout_ms: Some(2_000),
-        })
-        .await;
-}

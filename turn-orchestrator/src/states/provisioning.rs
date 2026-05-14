@@ -1,14 +1,30 @@
-//! `provisioning` state handler.
+//! `provisioning` state handler. First state of every new chat. Builds the
+//! system prompt by fetching each URI in `cfg.system_default_skills` via
+//! `directory::skills::get` and handing the per-URI results to
+//! `system_prompt::build`. Soft-fail per URI.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
 
 use crate::agent_call;
+use crate::config::TurnOrchestratorConfig;
 use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
-use crate::system_prompt;
+use crate::system_prompt::{self, DefaultSkillBody};
 
-pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+/// Per-URI timeout for the chat-init fetch. Each call is independent —
+/// failure of one URI never blocks the others.
+const FETCH_TIMEOUT_MS: u64 = 10_000;
+
+pub async fn handle(
+    iii: &III,
+    cfg: &Arc<TurnOrchestratorConfig>,
+    record: &mut TurnStateRecord,
+) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
 
     let tools = json!([agent_call::agent_call_tool()]);
@@ -19,261 +35,184 @@ pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty());
     let cwd = request.get("cwd").and_then(Value::as_str);
-    let skills_index = fetch_skills_bootstrap(iii).await;
-    let prompt = system_prompt::build(skills_index.as_deref(), cwd, override_prompt);
+    let cwd_path = cwd.map(Path::new);
+
+    let fetched = fetch_default_skills(iii, &cfg.system_default_skills).await;
+    let bodies = build_default_skill_bodies(&cfg.system_default_skills, &fetched);
+
+    let prompt = system_prompt::build(&bodies, cwd_path, override_prompt);
+
     let mut updated = request.clone();
     if let Some(obj) = updated.as_object_mut() {
         obj.insert("system_prompt".into(), json!(prompt));
     }
     persistence::save_run_request(iii, &record.session_id, updated).await;
 
-    // Sandbox provisioning is the LLM's responsibility, learned from a
-    // skill (registered separately via the skills worker). The dispatcher
-    // does not auto-provision; sessions that need a sandbox follow a
-    // skill recipe to call sandbox::list / sandbox::create themselves.
-
     record.transition_to(TurnState::AwaitingAssistant);
     Ok(())
 }
 
-/// One enriched `directory::skills::list` row, projected from the JSON
-/// the worker returns. Kept tiny on purpose so the bootstrap helper is
-/// unit-testable without an iii engine.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillRow {
-    id: String,
-    title: String,
-    description: String,
-}
-
-/// Best-effort bootstrap of the skills surface for the system prompt.
+/// Fetch each URI independently and return a map of `uri → body` for URIs
+/// that fetched successfully. Missing entries become `body: None` in the
+/// assembled prompt; failures are logged.
 ///
-/// Concatenates:
-///   1. an indented client-side index built from `directory::skills::list`
-///      (links every registered skill, deeper paths indented), and
-///   2. the bodies of every **root-depth** registered skill (no `/` in the
-///      id), each fetched via `directory::skills::get`.
-///
-/// The agent therefore boots with both the table of contents AND the
-/// router-style bodies the agent normally reaches for first — eliminating
-/// the round-trip to fetch the index on the first turn.
-///
-/// Any sub-step that fails returns `None` for that piece; the caller
-/// degrades gracefully (the fallback section in `system_prompt::build`
-/// covers a fully missing skills surface).
-async fn fetch_skills_bootstrap(iii: &III) -> Option<String> {
-    let rows = list_skills(iii).await;
-    let index = if rows.is_empty() {
-        None
-    } else {
-        Some(render_index_from_rows(&rows))
-    };
-    let root_ids: Vec<String> = rows
-        .iter()
-        .filter(|r| is_root_skill_id(&r.id))
-        .map(|r| r.id.clone())
-        .collect();
-    let bodies = if root_ids.is_empty() {
-        None
-    } else {
-        fetch_root_bodies(iii, &root_ids).await
-    };
-
-    match (index, bodies) {
-        (Some(idx), Some(bod)) => Some(format!("{idx}\n\n---\n\n# Root skill bodies\n\n{bod}")),
-        (Some(idx), None) => Some(idx),
-        (None, Some(bod)) => Some(bod),
-        (None, None) => None,
-    }
-}
-
-/// Pull the enriched `directory::skills::list` rows. Empty list on any
-/// failure or unexpected shape.
-async fn list_skills(iii: &III) -> Vec<SkillRow> {
-    let Ok(resp) = iii
-        .trigger(TriggerRequest {
-            function_id: "directory::skills::list".into(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-    else {
-        return Vec::new();
-    };
-    let Some(arr) = resp.get("skills").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    arr.iter().filter_map(parse_skill_row).collect()
-}
-
-fn parse_skill_row(entry: &Value) -> Option<SkillRow> {
-    let id = entry.get("id").and_then(Value::as_str)?.to_string();
-    if id.is_empty() {
-        return None;
-    }
-    let title = entry
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or(&id)
-        .to_string();
-    let description = entry
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    Some(SkillRow {
-        id,
-        title,
-        description,
-    })
-}
-
-/// Indented bullet list of every skill, depth derived from the number
-/// of `/` separators in the id. Output matches the line shape the
-/// harness web slash-menu parser expects:
-///
-/// ```text
-/// - [`<id>`](iii://<id>) — <title>
-/// - [`<id>`](iii://<id>) — <title> — <description>
-/// ```
-fn render_index_from_rows(rows: &[SkillRow]) -> String {
-    let mut out = String::from(
-        "# Skills\n\nRead each skill's body for orientation on when and why to call its functions. \
-         Sub-skills are indented under their parent path so a top-level skill stays small \
-         and the LLM can drill in only when it needs more detail.\n\n",
-    );
-    for row in rows {
-        let depth = row.id.matches('/').count();
-        let indent = " ".repeat(depth * 2);
-        let suffix = if row.description.is_empty() {
-            String::new()
-        } else {
-            format!(" — {}", row.description)
-        };
-        out.push_str(&format!(
-            "{indent}- [`{id}`](iii://{id}) — {title}{suffix}\n",
-            id = row.id,
-            title = row.title,
-        ));
+/// `directory::skills::get` is called with the bare id (URI with `iii://`
+/// stripped) per PR-131. The original URI is kept as the HashMap key for
+/// downstream ordering. With `system_default_skills` typically one or two
+/// entries, N sequential calls is acceptable; chat-init is not a hot path.
+async fn fetch_default_skills(iii: &III, uris: &[String]) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(uris.len());
+    for uri in uris {
+        let id = uri.strip_prefix("iii://").unwrap_or(uri);
+        match fetch_uri(iii, id).await {
+            Some(body) => {
+                out.insert(uri.clone(), body);
+            }
+            None => {
+                tracing::warn!(
+                    %uri,
+                    "default skill fetch failed at chat-init; agent will see a recovery stub"
+                );
+            }
+        }
     }
     out
 }
 
-/// Fetch the body of every root-depth skill via `directory::skills::get`
-/// and join them with `\n\n---\n\n`. Errors per id drop that body but
-/// the rest of the bootstrap proceeds.
-async fn fetch_root_bodies(iii: &III, root_ids: &[String]) -> Option<String> {
-    let mut sections: Vec<String> = Vec::with_capacity(root_ids.len());
-    for id in root_ids {
-        let Ok(resp) = iii
-            .trigger(TriggerRequest {
-                function_id: "directory::skills::get".into(),
-                payload: json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await
-        else {
-            continue;
-        };
-        let body = resp.get("body").and_then(Value::as_str).unwrap_or("");
-        if body.is_empty() {
-            continue;
+/// Fetch a single skill by bare id via `directory::skills::get`.
+/// Tolerates a raw string response, a `{ body: "..." }` envelope, or the
+/// PR-131 full envelope `{ id, title, description, body, modified_at }`.
+async fn fetch_uri(iii: &III, id: &str) -> Option<String> {
+    let resp = match iii
+        .trigger(TriggerRequest {
+            function_id: "directory::skills::get".into(),
+            payload: json!({ "id": id }),
+            action: None,
+            timeout_ms: Some(FETCH_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(%id, %err, "directory::skills::get trigger failed");
+            return None;
         }
-        sections.push(format!("# iii://{id}\n\n{}", body.trim_end()));
-    }
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n---\n\n"))
-    }
+    };
+    response_to_string(&resp)
 }
 
-/// `iii` and `harness` are root; `resend/email`, `shell/bash` are not.
-fn is_root_skill_id(id: &str) -> bool {
-    !id.is_empty() && !id.contains('/')
+/// Zip configured URIs with the fetched body map, preserving config order.
+/// URIs not in the map become `DefaultSkillBody { body: None }`.
+fn build_default_skill_bodies(
+    uris: &[String],
+    fetched: &HashMap<String, String>,
+) -> Vec<DefaultSkillBody> {
+    uris.iter()
+        .map(|uri| DefaultSkillBody::from_config_uri(uri.clone(), fetched.get(uri).cloned()))
+        .collect()
+}
+
+/// Extract a skill body from a `directory::skills::get` response.
+///
+/// Tolerates three shapes:
+/// - raw string (legacy debug fixtures);
+/// - `{ "body": "..." }` (legacy envelope);
+/// - PR-131 full envelope `{ id, title, description, body, modified_at }`
+///   — the `body` field is at the same JSON path as the legacy envelope,
+///   so the same extraction works.
+///
+/// Returns `None` if the response has no recognizable body field.
+fn response_to_string(resp: &Value) -> Option<String> {
+    if let Some(s) = resp.as_str() {
+        return Some(s.to_string());
+    }
+    resp.get("body").and_then(Value::as_str).map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_root_skill_id, parse_skill_row, render_index_from_rows, SkillRow};
-    use serde_json::json;
+    use super::*;
 
     #[test]
-    fn root_ids_have_no_slash() {
-        assert!(is_root_skill_id("iii"));
-        assert!(is_root_skill_id("harness"));
-        assert!(is_root_skill_id("shell-bash"));
+    fn build_default_skill_bodies_preserves_order_and_misses() {
+        let uris = vec!["iii://iii".to_string(), "iii://shell".to_string()];
+        let mut fetched: HashMap<String, String> = HashMap::new();
+        fetched.insert("iii://iii".to_string(), "ALPHA".to_string());
+
+        let out = build_default_skill_bodies(&uris, &fetched);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].uri, "iii://iii");
+        assert_eq!(out[0].id, "iii");
+        assert_eq!(out[0].body.as_deref(), Some("ALPHA"));
+        assert_eq!(out[1].uri, "iii://shell");
+        assert_eq!(out[1].id, "shell");
+        assert!(out[1].body.is_none());
     }
 
     #[test]
-    fn nested_ids_are_not_root() {
-        assert!(!is_root_skill_id("resend/email"));
-        assert!(!is_root_skill_id("shell/bash/exec"));
+    fn build_default_skill_bodies_with_empty_uris_returns_empty() {
+        let out = build_default_skill_bodies(&[], &HashMap::new());
+        assert!(out.is_empty());
     }
 
     #[test]
-    fn empty_id_is_not_root() {
-        assert!(!is_root_skill_id(""));
-    }
-
-    #[test]
-    fn parse_row_extracts_required_id_and_optional_title_description() {
-        let v = json!({ "id": "shell", "title": "Shell", "description": "Run commands." });
-        let row = parse_skill_row(&v).unwrap();
-        assert_eq!(row.id, "shell");
-        assert_eq!(row.title, "Shell");
-        assert_eq!(row.description, "Run commands.");
-    }
-
-    #[test]
-    fn parse_row_falls_back_to_id_when_title_missing() {
-        let v = json!({ "id": "shell" });
-        let row = parse_skill_row(&v).unwrap();
-        assert_eq!(row.title, "shell");
-        assert_eq!(row.description, "");
-    }
-
-    #[test]
-    fn parse_row_skips_entries_without_id() {
-        assert!(parse_skill_row(&json!({})).is_none());
-        assert!(parse_skill_row(&json!({ "title": "x" })).is_none());
-        assert!(parse_skill_row(&json!({ "id": "" })).is_none());
-    }
-
-    #[test]
-    fn render_index_indents_by_depth_and_includes_link_label_description() {
-        let rows = vec![
-            SkillRow {
-                id: "shell".into(),
-                title: "Shell".into(),
-                description: "Run commands.".into(),
-            },
-            SkillRow {
-                id: "shell/exec".into(),
-                title: "shell::exec".into(),
-                description: "Foreground exec.".into(),
-            },
-            SkillRow {
-                id: "shell/exec/bg".into(),
-                title: "shell::exec_bg".into(),
-                description: String::new(),
-            },
-        ];
-        let idx = render_index_from_rows(&rows);
-        assert!(idx.contains("# Skills"));
-        assert!(idx.contains("- [`shell`](iii://shell) — Shell — Run commands."));
-        assert!(
-            idx.contains("  - [`shell/exec`](iii://shell/exec) — shell::exec — Foreground exec.")
+    fn response_to_string_handles_string_and_envelope() {
+        assert_eq!(
+            response_to_string(&json!("hello")).as_deref(),
+            Some("hello")
         );
-        // Empty description: trailing em-dash dropped.
-        assert!(idx.contains("    - [`shell/exec/bg`](iii://shell/exec/bg) — shell::exec_bg\n"));
+        assert_eq!(
+            response_to_string(&json!({"body": "world"})).as_deref(),
+            Some("world")
+        );
+        assert!(response_to_string(&json!({"unrelated": 1})).is_none());
+    }
+
+    /// Smoke test: compose the two assembly halves (zip-with-fetched +
+    /// system_prompt::build) so a regression in either half shows up here
+    /// even if its dedicated unit test was deleted.
+    #[test]
+    fn assembled_prompt_contains_preamble_header_and_body() {
+        let uris = vec!["iii://iii".to_string()];
+        let mut fetched: HashMap<String, String> = HashMap::new();
+        fetched.insert("iii://iii".to_string(), "THE BODY".to_string());
+
+        let bodies = build_default_skill_bodies(&uris, &fetched);
+        let prompt = crate::system_prompt::build(&bodies, None, None);
+
+        assert!(prompt.contains("You are an iii agent worker."));
+        assert!(prompt.contains("# iii://iii"));
+        assert!(prompt.contains("THE BODY"));
+    }
+
+    /// Smoke test: a fully failed chat-init still produces a coherent
+    /// prompt — the preamble survives and every URI gets a stub.
+    #[test]
+    fn assembled_prompt_with_all_fetches_failed_keeps_preamble_and_stubs() {
+        let uris = vec!["iii://iii".to_string(), "iii://shell".to_string()];
+        let fetched: HashMap<String, String> = HashMap::new();
+
+        let bodies = build_default_skill_bodies(&uris, &fetched);
+        let prompt = crate::system_prompt::build(&bodies, None, None);
+
+        assert!(prompt.contains("You are an iii agent worker."));
+        assert!(prompt.contains("# iii://iii"));
+        assert!(prompt.contains("# iii://shell"));
+        assert!(prompt.contains("skill body unavailable at chat start"));
+        assert!(prompt.contains("directory::skills::get { id: \"iii\" }"));
+        assert!(prompt.contains("directory::skills::get { id: \"shell\" }"));
+        assert!(!prompt.contains("fetch-skill"));
     }
 
     #[test]
-    fn render_index_handles_zero_rows() {
-        let idx = render_index_from_rows(&[]);
-        assert!(idx.contains("# Skills"));
+    fn response_to_string_extracts_body_from_full_envelope() {
+        let resp = json!({
+            "id": "iii",
+            "title": "iii functions",
+            "description": "How to discover and call functions on the iii engine.",
+            "body": "real body content here",
+            "modified_at": "2026-05-13T00:00:00+00:00"
+        });
+        assert_eq!(response_to_string(&resp).as_deref(), Some("real body content here"));
     }
 }

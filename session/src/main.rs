@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, TriggerRequest, WorkerMetadata};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
 
 use session::{config, inbox, manifest, tree};
 
@@ -107,56 +105,10 @@ async fn main() -> Result<()> {
         inbox::PEEK_ID
     );
 
-    spawn_skill_register(iii.clone());
-
     wait_for_shutdown().await?;
 
-    unregister_skill(&iii).await;
     iii.shutdown_async().await;
     Ok(())
-}
-
-async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                tracing::info!(skill_id = id, "registered skill");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
-                    tracing::warn!(
-                        skill_id = id,
-                        error = %e,
-                        "skills handshake gave up; install/start the skills worker and restart"
-                    );
-                    return;
-                }
-                tracing::debug!(skill_id = id, error = %e, wait = ?backoff, "skills::register failed; retrying");
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
-    }
-}
-
-fn spawn_skill_register(iii: Arc<iii_sdk::III>) {
-    tokio::spawn(async move {
-        register_skill_with_retry(&iii, tree::SKILL_ID, tree::SKILL_MD).await;
-        for (id, body) in tree::SUB_SKILLS {
-            register_skill_with_retry(&iii, id, body).await;
-        }
-    });
 }
 
 async fn wait_for_shutdown() -> Result<()> {
@@ -177,25 +129,4 @@ async fn wait_for_shutdown() -> Result<()> {
             .await
             .context("failed to await SIGINT")
     }
-}
-
-async fn unregister_skill(iii: &Arc<iii_sdk::III>) {
-    for (id, _) in tree::SUB_SKILLS {
-        let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::unregister".into(),
-                payload: json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(2_000),
-            })
-            .await;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::unregister".into(),
-            payload: json!({ "id": tree::SKILL_ID }),
-            action: None,
-            timeout_ms: Some(2_000),
-        })
-        .await;
 }

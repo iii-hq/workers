@@ -1,9 +1,8 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, TriggerRequest, WorkerMetadata};
+use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
 
 mod manifest;
 
@@ -79,72 +78,11 @@ async fn main() -> Result<()> {
         .context("models-catalog register failed")?;
     tracing::info!("models-catalog registered (models::*)");
 
-    spawn_skill_register(iii.clone(), Arc::clone(&cfg));
-
     wait_for_shutdown().await?;
 
-    unregister_skill(&iii, &cfg).await;
     tracing::info!("models-catalog shutting down");
     iii.shutdown_async().await;
     Ok(())
-}
-
-async fn register_skill_with_retry(
-    iii: &iii_sdk::III,
-    id: &str,
-    body: &str,
-    trigger_timeout_ms: u64,
-) {
-    let mut backoff = Duration::from_secs(5);
-    let started = Instant::now();
-    loop {
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::register".into(),
-                payload: serde_json::json!({ "id": id, "skill": body }),
-                action: None,
-                timeout_ms: Some(trigger_timeout_ms),
-            })
-            .await;
-        match res {
-            Ok(_) => {
-                tracing::info!(id, "registered skill");
-                return;
-            }
-            Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
-                    tracing::warn!(
-                        id,
-                        error = %e,
-                        "skills handshake gave up; install/start the skills worker and restart"
-                    );
-                    return;
-                }
-                tracing::debug!(id, error = %e, ?backoff, "skills::register failed; retrying");
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
-    }
-}
-
-fn spawn_skill_register(
-    iii: Arc<iii_sdk::III>,
-    cfg: Arc<models_catalog::config::ModelsCatalogConfig>,
-) {
-    let timeout = cfg.skills_register_timeout_ms;
-    tokio::spawn(async move {
-        register_skill_with_retry(
-            &iii,
-            models_catalog::SKILL_ID,
-            models_catalog::SKILL_MD,
-            timeout,
-        )
-        .await;
-        for (id, body) in models_catalog::SUB_SKILLS {
-            register_skill_with_retry(&iii, id, body, timeout).await;
-        }
-    });
 }
 
 async fn wait_for_shutdown() -> Result<()> {
@@ -167,29 +105,3 @@ async fn wait_for_shutdown() -> Result<()> {
     }
 }
 
-// Best-effort: a missed unregister is self-healing on next boot's re-register.
-// Leaves go first so the router is the last entry to disappear from iii://skills.
-async fn unregister_skill(
-    iii: &Arc<iii_sdk::III>,
-    cfg: &Arc<models_catalog::config::ModelsCatalogConfig>,
-) {
-    let t = cfg.skills_unregister_timeout_ms;
-    for (id, _) in models_catalog::SUB_SKILLS {
-        let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "skills::unregister".into(),
-                payload: serde_json::json!({ "id": id }),
-                action: None,
-                timeout_ms: Some(t),
-            })
-            .await;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "skills::unregister".into(),
-            payload: serde_json::json!({ "id": models_catalog::SKILL_ID }),
-            action: None,
-            timeout_ms: Some(t),
-        })
-        .await;
-}

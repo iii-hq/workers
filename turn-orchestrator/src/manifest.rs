@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::config::TurnOrchestratorConfig;
+
 #[derive(Serialize)]
 pub struct ModuleManifest {
     pub name: String,
@@ -13,11 +15,9 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Durable run::start state machine driving each agent turn through provisioning, assistant, tools, steering, and tearing-down.".to_string(),
-        default_config: serde_json::json!({
-            "sync_default_timeout_ms": 120_000,
-            "sync_poll_interval_ms": 50,
-        }),
+        description: env!("CARGO_PKG_DESCRIPTION").to_string(),
+        default_config: serde_json::to_value(TurnOrchestratorConfig::default())
+            .expect("TurnOrchestratorConfig serializes to JSON"),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -38,8 +38,32 @@ mod tests {
             .as_str()
             .is_some_and(|s| !s.is_empty()));
         assert!(parsed["default_config"].is_object());
-        assert_eq!(parsed["default_config"]["sync_default_timeout_ms"], 120_000);
-        assert_eq!(parsed["default_config"]["sync_poll_interval_ms"], 50);
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
+    }
+
+    /// Every field of [`TurnOrchestratorConfig`] should appear in the
+    /// manifest's `default_config` — that's the whole point of deriving
+    /// from `::default()`. Asserting *presence* (not literal values)
+    /// keeps the test resilient to default tweaks while still catching
+    /// regressions where a new field is added without being serialized.
+    #[test]
+    fn default_config_includes_every_config_field() {
+        let m = build_manifest();
+        let cfg = m.default_config;
+
+        assert!(cfg["sync_default_timeout_ms"].is_number());
+        assert!(cfg["sync_poll_interval_ms"].is_number());
+        assert!(cfg["system_default_skills"].is_array());
+    }
+
+    /// Manifest must match a fresh `TurnOrchestratorConfig::default()`
+    /// byte-for-byte. Lock-step guarantee against the manual-drift
+    /// failure mode the previous hand-written `json!({...})` had.
+    #[test]
+    fn default_config_matches_struct_default() {
+        let m = build_manifest();
+        let from_struct =
+            serde_json::to_value(TurnOrchestratorConfig::default()).unwrap();
+        assert_eq!(m.default_config, from_struct);
     }
 }

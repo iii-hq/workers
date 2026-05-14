@@ -14,6 +14,6 @@ scripts:
   start: cargo run
 
 dependencies:
-  session: "^0.1.0"
-  hook-fanout: "^0.1.0"
-  provider-router: "^0.1.0"
+  session: "^0.2.0"
+  hook-fanout: "^0.2.0"
+  provider-router: "^0.2.0"

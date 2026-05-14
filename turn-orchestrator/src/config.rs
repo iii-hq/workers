@@ -9,6 +9,11 @@ pub struct TurnOrchestratorConfig {
     /// How frequently (ms) `run::start_and_wait` checks for a terminal state.
     #[serde(default = "default_sync_poll_interval_ms")]
     pub sync_poll_interval_ms: u64,
+    /// URIs to fetch from `iii-directory` at the start of every new chat and
+    /// inline into the system prompt after the identity preamble.
+    /// Empty list = preamble-only prompt.
+    #[serde(default = "default_system_default_skills")]
+    pub system_default_skills: Vec<String>,
 }
 
 fn default_sync_default_timeout_ms() -> u64 {
@@ -19,11 +24,22 @@ fn default_sync_poll_interval_ms() -> u64 {
     50
 }
 
+fn default_system_default_skills() -> Vec<String> {
+    // `iii://iii-directory/index` resolves to the iii-directory worker's
+    // root skill (`<skills_folder>/iii-directory/index.md` — the
+    // registry packages it flat, not under `skills/`). The agent's
+    // orientation about iii itself is embedded directly into the
+    // system prompt via `provisioning::embedded_iii_body`, not fetched
+    // from this list.
+    vec!["iii://iii-directory/index".to_string()]
+}
+
 impl Default for TurnOrchestratorConfig {
     fn default() -> Self {
         Self {
             sync_default_timeout_ms: default_sync_default_timeout_ms(),
             sync_poll_interval_ms: default_sync_poll_interval_ms(),
+            system_default_skills: default_system_default_skills(),
         }
     }
 }
@@ -65,10 +81,41 @@ mod tests {
             from_empty.sync_poll_interval_ms,
             from_default.sync_poll_interval_ms
         );
+        assert_eq!(
+            from_empty.system_default_skills,
+            from_default.system_default_skills
+        );
     }
 
     #[test]
     fn missing_file_errors() {
         assert!(load_config("/no/such/path/for/config.yaml").is_err());
+    }
+
+    #[test]
+    fn system_default_skills_defaults_to_iii_uri() {
+        let cfg: TurnOrchestratorConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(
+            cfg.system_default_skills,
+            vec!["iii://iii-directory/index".to_string()],
+            "default config must pre-load the iii-directory root skill at chat start"
+        );
+    }
+
+    #[test]
+    fn system_default_skills_accepts_empty_list() {
+        let cfg: TurnOrchestratorConfig =
+            serde_yaml::from_str("system_default_skills: []").unwrap();
+        assert!(cfg.system_default_skills.is_empty());
+    }
+
+    #[test]
+    fn system_default_skills_accepts_custom_list() {
+        let yaml = "system_default_skills:\n  - iii://iii\n  - iii://shell\n";
+        let cfg: TurnOrchestratorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.system_default_skills,
+            vec!["iii://iii".to_string(), "iii://shell".to_string()]
+        );
     }
 }
