@@ -1,8 +1,8 @@
 # harness
 
 Meta-worker that composes the modular workers behind a runnable iii chat
-surface and exposes the browser-facing HTTP bridge (`bridge::trigger`,
-`bridge::events`) the bundled Vite/React UI talks to. The harness does
+surface and exposes the browser-facing HTTP bridge (`bridge::trigger`)
+the bundled Vite/React UI talks to. The harness does
 not own chat, agent, or provider logic — it registers a small set of
 bus functions and expects peers such as
 [`turn-orchestrator`](../turn-orchestrator),
@@ -77,7 +77,6 @@ Registered functions:
 |---|---|
 | `harness::status` | Bundle name, version, and expected worker list (cheap liveness probe). |
 | `bridge::trigger` | Forwards `{ function_id, payload }` to `iii.trigger`. HTTP: `POST bridge/trigger`. |
-| `bridge::events` | SSE-style tail of `agent::events` for a session. HTTP: `GET bridge/events`. |
 
 `bridge::trigger` is the browser's call-anything escape hatch — not
 meant as an LLM tool.

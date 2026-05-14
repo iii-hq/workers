@@ -173,7 +173,7 @@ harness/
 ├── src/
 │   ├── lib.rs                # register_with_iii, EXPECTED_WORKERS, build_skills_register_payload
 │   └── main.rs               # connect to III_URL (default ws://127.0.0.1:49134), register, wait for ctrl-c
-├── tests/                    # bridge_info, manifest, phase_a, skills_register, sse_bridge
+├── tests/                    # bridge_info, manifest, phase_a, skills_register
 ├── scripts/
 │   ├── demo.sh               # build / engine / start / verify / logs / web / stop / all
 │   └── real-usage.sh         # end-to-end auth → run → state read

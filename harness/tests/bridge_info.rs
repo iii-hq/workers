@@ -2,8 +2,7 @@
 //!
 //! Registers the harness functions in-process against a running engine and
 //! verifies that bridge::info returns a relative WebSocket path plus the
-//! engine URL it was configured with. Skipped when no engine is reachable
-//! (mirrors `tests/sse_bridge.rs`).
+//! engine URL it was configured with. Skipped when no engine is reachable.
 
 use harness::register_with_iii_with_engine_url;
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
