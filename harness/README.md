@@ -92,18 +92,26 @@ only — the Rust constant rebuilds automatically.
 
 ## Local demo stack
 
-From a checkout, [`scripts/demo.sh`](scripts/demo.sh) can build and run the full bundle:
+From a checkout, the [`Makefile`](Makefile) drives the engine. Workers and
+their per-worker config live in [`config.yaml`](config.yaml) — the
+single source of truth the iii engine reads. The engine spawns each
+worker via its `iii.worker.yaml` `scripts.start` (`cargo run` for local
+Rust crates — builds on demand).
 
 ```bash
-./scripts/demo.sh build    # cargo build --release for harness + dependencies
-./scripts/demo.sh engine   # start `iii --use-default-config` in background
-./scripts/demo.sh start    # spawn workers + harness as nohup processes
-./scripts/demo.sh verify   # call harness::status and models::list
-./scripts/demo.sh web      # Vite dev server on :5173 in a tmux session
-./scripts/demo.sh stop     # tear down PIDs, engine, tmux
-./scripts/demo.sh all      # build + engine + start + verify
+make all      # engine + verify
+make engine   # start iii in background, reading harness/config.yaml
+make verify   # call harness::status + models::list
+make web      # background Vite dev server on :5173 (no tmux)
+make stop     # kill engine + web
+make restart  # stop + engine + verify
+make logs W=engine   # tail engine log (W=web for vite)
+make lock     # refresh iii.lock via `iii worker add .`
+make clean    # remove pids/logs/data
 ```
 
-PIDs and logs default under `~/iii-harness-demo`.
+PIDs and logs default under `~/iii-harness-demo`. The engine runs
+with `harness/` as its working directory, so `iii-state`, `iii-stream`,
+and `iii-directory` write their stores under `harness/data/`.
 
 Contributor commands (fmt, clippy, tests) for this crate live in [`binary-worker.md`](../binary-worker.md) §11; source layout notes are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
