@@ -1,9 +1,8 @@
-//! Integration test for harness's bridge::info function.
+//! Integration test for harness's harness::info function.
 //!
 //! Registers the harness functions in-process against a running engine and
-//! verifies that bridge::info returns a relative WebSocket path plus the
-//! engine URL it was configured with. Skipped when no engine is reachable
-//! (mirrors `tests/sse_bridge.rs`).
+//! verifies that harness::info returns a relative WebSocket path plus the
+//! engine URL it was configured with. Skipped when no engine is reachable.
 
 use harness::register_with_iii_with_engine_url;
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
@@ -13,7 +12,7 @@ const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 const ENGINE_PROBE_TIMEOUT_MS: u64 = 500;
 
 #[tokio::test]
-async fn bridge_info_returns_relative_ws_path_and_engine_url() {
+async fn harness_info_returns_relative_ws_path_and_engine_url() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = register_worker(&url, InitOptions::default());
 
@@ -21,7 +20,7 @@ async fn bridge_info_returns_relative_ws_path_and_engine_url() {
     let probe = iii
         .trigger(TriggerRequest {
             function_id: "state::get".into(),
-            payload: json!({ "scope": "agent", "key": "__bridge_info_probe" }),
+            payload: json!({ "scope": "agent", "key": "__harness_info_probe" }),
             action: None,
             timeout_ms: Some(ENGINE_PROBE_TIMEOUT_MS),
         })
@@ -41,13 +40,13 @@ async fn bridge_info_returns_relative_ws_path_and_engine_url() {
 
     let info = iii
         .trigger(TriggerRequest {
-            function_id: "bridge::info".into(),
+            function_id: "harness::info".into(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(2_000),
         })
         .await
-        .expect("call bridge::info");
+        .expect("call harness::info");
 
     assert_eq!(info["ws_path"], "/iii/ws");
     assert_eq!(info["protocol"], "ws");

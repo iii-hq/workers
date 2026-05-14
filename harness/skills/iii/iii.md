@@ -189,7 +189,7 @@ a `stream` trigger bound to your function.
 This bundle's harness adds:
 
 - `harness::status` — bundle name, version, expected workers.
-- `bridge::trigger` — HTTP POST `/bridge/trigger` forwards `{function_id, payload}` onto the bus.
+- `harness::call` — HTTP POST `/harness/call` forwards `{function_id, payload}` onto the bus.
 
 ## Discovery checklist (use before EVERY new call)
 

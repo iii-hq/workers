@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/bridge": {
+      "/harness": {
         target: "http://127.0.0.1:3111",
         changeOrigin: false,
       },

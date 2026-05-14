@@ -164,7 +164,7 @@ export function pushRecent(entry: RecentInvocation): RecentInvocation[] {
 export function curlForBridge(fnId: string, payload: unknown): string {
   const body = JSON.stringify({ function_id: fnId, payload }, null, 2);
   const escaped = body.replace(/'/g, "'\\''");
-  return `curl -X POST http://127.0.0.1:3111/bridge/trigger \\
+  return `curl -X POST http://127.0.0.1:3111/harness/call \\
   -H 'content-type: application/json' \\
   -d '${escaped}'`;
 }

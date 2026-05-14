@@ -1,12 +1,12 @@
 // One endpoint to reach the entire iii bus. Production callers use the iii
 // WebSocket transport (the browser is itself a worker). `bridgeHttp` is kept
 // as a backstop for direct curl-style debugging and for the very first
-// `bridge::info` round-trip in iii-client.ts; nothing else should reach
+// `harness::info` round-trip in iii-client.ts; nothing else should reach
 // for it.
 
 import { getIiiClient } from "./iii-client";
 
-const BRIDGE_URL = "/bridge/trigger";
+const BRIDGE_URL = "/harness/call";
 
 export class BridgeError extends Error {
   constructor(
@@ -36,7 +36,7 @@ export async function bridge<T = unknown>(
 
 /**
  * HTTP backstop for the bridge. Use only for direct debugging or for the
- * single `bridge::info` round-trip needed to bootstrap the WebSocket
+ * single `harness::info` round-trip needed to bootstrap the WebSocket
  * connection; production callers should go through {@link bridge}.
  */
 export async function bridgeHttp<T = unknown>(

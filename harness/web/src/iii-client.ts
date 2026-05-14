@@ -1,14 +1,14 @@
 // Lazy-initialized singleton iii-browser-sdk client used by the harness UI.
 //
 // Bootstrap order:
-//   1. Fetch `bridge::info` over HTTP via the existing `/bridge/trigger` route
+//   1. Fetch `harness::info` over HTTP via the existing `/harness/call` route
 //      to discover the engine WebSocket URL.
 //   2. Open a WebSocket via `iii-browser-sdk::registerWorker(url)`.
 //   3. Mint a stable `browser_id` for this page; per-browser handlers are
 //      registered under `<functionId>::<browserId>` so the harness fanout can
 //      target a specific browser when it pushes events.
 //
-// The `bridge::info` HTTP fetch is deliberately the ONLY HTTP round-trip in
+// The `harness::info` HTTP fetch is deliberately the ONLY HTTP round-trip in
 // the production code path. Once `_client` is resolved, every other call
 // (`call`, `on`, `dispose`) goes over the single WS connection.
 
@@ -201,13 +201,13 @@ function makeBrowserId(): string {
 }
 
 async function fetchBridgeInfo(): Promise<BridgeInfoResponse> {
-  const res = await fetch("/bridge/trigger", {
+  const res = await fetch("/harness/call", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ function_id: "bridge::info", payload: {} }),
+    body: JSON.stringify({ function_id: "harness::info", payload: {} }),
   });
   if (!res.ok) {
-    throw new Error(`bridge::info failed: ${res.status} ${res.statusText}`);
+    throw new Error(`harness::info failed: ${res.status} ${res.statusText}`);
   }
   const data = (await res.json()) as Partial<BridgeInfoResponse>;
   if (
@@ -215,7 +215,7 @@ async function fetchBridgeInfo(): Promise<BridgeInfoResponse> {
     (data.protocol !== "ws" && data.protocol !== "wss") ||
     typeof data.engine_url !== "string"
   ) {
-    throw new Error("bridge::info returned malformed response");
+    throw new Error("harness::info returned malformed response");
   }
   return {
     ws_path: data.ws_path,
