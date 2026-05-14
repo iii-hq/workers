@@ -16,7 +16,7 @@ pub fn build_manifest() -> WorkerManifest {
         description: env!("CARGO_PKG_DESCRIPTION").to_string(),
         default_config: serde_json::to_value(iii_auth::config::AuthConfig::default())
             .expect("config serializes to JSON"),
-        supported_targets: vec![env!("TARGET").to_string()],
+        supported_targets: vec![env!("TARGET_TRIPLE").to_string()],
     }
 }
 

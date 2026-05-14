@@ -25,7 +25,7 @@ use crate::config::AuthConfig;
 use crate::store::AuthStore;
 
 pub const SKILL_ID: &str = "auth";
-pub const SKILL_MD: &str = include_str!("../skill.md");
+pub const SKILL_MD: &str = include_str!("../skills/index.md");
 
 pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("auth/validate", include_str!("../skills/validate.md")),
@@ -41,6 +41,8 @@ pub const SUB_SKILLS: &[(&str, &str)] = &[
     ("auth/jwks", include_str!("../skills/jwks.md")),
     ("auth/jwks_rotate", include_str!("../skills/jwks_rotate.md")),
     ("auth/token", include_str!("../skills/token.md")),
+    ("auth/introspect", include_str!("../skills/introspect.md")),
+    ("auth/revoke", include_str!("../skills/revoke.md")),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,7 @@ pub struct ClientRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicJwk {
     pub kty: String,
+    #[serde(rename = "use")]
     pub use_: String,
     pub kid: String,
     pub alg: String,
@@ -107,9 +110,9 @@ struct Claims {
     iss: String,
     sub: String,
     aud: String,
-    exp: usize,
-    iat: usize,
-    nbf: usize,
+    exp: u64,
+    iat: u64,
+    nbf: u64,
     scope: String,
     client_id: String,
     jti: String,
@@ -125,7 +128,7 @@ pub struct AuthDecision {
     pub allowed_trigger_types: Option<Vec<String>>,
     #[serde(default)]
     pub allow_trigger_type_registration: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub allow_function_registration: bool,
     #[serde(default)]
     pub trusted_internal: bool,
@@ -133,10 +136,6 @@ pub struct AuthDecision {
     pub context: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_registration_prefix: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn now() -> i64 {
@@ -151,6 +150,23 @@ fn random_url_token(bytes: usize) -> String {
 
 fn sha256_url(value: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+}
+
+fn timestamp_claim(value: i64) -> anyhow::Result<u64> {
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("timestamp out of JWT claim range: {value}"))
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let max_len = left.len().max(right.len());
+    let mut diff = left.len() ^ right.len();
+    for i in 0..max_len {
+        let l = left.get(i).copied().unwrap_or(0);
+        let r = right.get(i).copied().unwrap_or(0);
+        diff |= usize::from(l ^ r);
+    }
+    diff == 0
 }
 
 fn split_scope(value: &str) -> Vec<String> {
@@ -218,14 +234,13 @@ pub fn idp_capability_matrix() -> Vec<Value> {
 pub fn server_metadata_document(cfg: &AuthConfig) -> Value {
     json!({
         "issuer": cfg.issuer,
-        "authorization_endpoint": endpoint(&cfg.issuer, "/authorize"),
         "token_endpoint": endpoint(&cfg.issuer, "/token"),
         "registration_endpoint": endpoint(&cfg.issuer, "/register"),
+        "introspection_endpoint": endpoint(&cfg.issuer, "/introspect"),
+        "revocation_endpoint": endpoint(&cfg.issuer, "/revoke"),
         "jwks_uri": endpoint(&cfg.issuer, "/.well-known/jwks.json"),
-        "response_types_supported": ["code"],
         "grant_types_supported": ["client_credentials", "refresh_token"],
         "token_endpoint_auth_methods_supported": cfg.token_endpoint_auth_methods_supported,
-        "code_challenge_methods_supported": ["S256"],
         "scopes_supported": cfg.supported_scopes,
         "idp_mode": cfg.idp_mode,
         "idp_capabilities": idp_capability_matrix(),
@@ -258,32 +273,137 @@ pub fn resource_metadata_response(cfg: &AuthConfig) -> Value {
     http_json(resource_metadata_document(cfg))
 }
 
-fn allowed_scopes(
-    requested: &[String],
-    client: Option<&ClientRecord>,
-    cfg: &AuthConfig,
-) -> Vec<String> {
-    let requested = if requested.is_empty() {
+fn is_privileged_scope(scope: &str) -> bool {
+    scope.starts_with("function:") || scope.starts_with("trigger:") || scope.starts_with("iii:")
+}
+
+fn scope_supported(scope: &str, cfg: &AuthConfig) -> bool {
+    cfg.supported_scopes.iter().any(|supported| {
+        supported == scope
+            || (supported == "function:*" && scope.starts_with("function:"))
+            || (supported == "trigger:*" && scope.starts_with("trigger:"))
+    })
+}
+
+fn scope_allowed_by_client(scope: &str, client: &ClientRecord) -> bool {
+    client.scopes.iter().any(|allowed| {
+        allowed == scope
+            || (allowed == "function:*" && scope.starts_with("function:") && scope != "function:*")
+            || (allowed == "trigger:*" && scope.starts_with("trigger:") && scope != "trigger:*")
+    })
+}
+
+fn requested_or_default(requested: &[String], cfg: &AuthConfig) -> Vec<String> {
+    if requested.is_empty() {
         cfg.default_scopes.clone()
     } else {
         requested.to_vec()
+    }
+}
+
+fn validate_registration_scopes(
+    requested: &[String],
+    cfg: &AuthConfig,
+    admin_authorized: bool,
+) -> anyhow::Result<Vec<String>> {
+    let scopes = requested_or_default(requested, cfg);
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for scope in scopes {
+        if !scope_supported(&scope, cfg) {
+            anyhow::bail!("unsupported scope: {scope}");
+        }
+        if is_privileged_scope(&scope) && !admin_authorized {
+            anyhow::bail!("admin authorization required for privileged scope: {scope}");
+        }
+        if seen.insert(scope.clone()) {
+            out.push(scope);
+        }
+    }
+    Ok(out)
+}
+
+fn validate_token_scopes(
+    requested: &[String],
+    client: &ClientRecord,
+    cfg: &AuthConfig,
+) -> anyhow::Result<Vec<String>> {
+    let scopes = requested_or_default(requested, cfg);
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for scope in scopes {
+        if !scope_supported(&scope, cfg) {
+            anyhow::bail!("unsupported scope: {scope}");
+        }
+        if scope == "function:*" || scope == "trigger:*" {
+            anyhow::bail!("wildcard scopes can be registered but cannot be issued: {scope}");
+        }
+        if !scope_allowed_by_client(&scope, client) {
+            anyhow::bail!("scope not allowed for client: {scope}");
+        }
+        if seen.insert(scope.clone()) {
+            out.push(scope);
+        }
+    }
+    Ok(out)
+}
+
+fn supported_grant_type(value: &str) -> bool {
+    matches!(value, "client_credentials" | "refresh_token")
+}
+
+fn requested_grant_types(body: &Value) -> anyhow::Result<Vec<String>> {
+    let values = string_array_field(body, "grant_types");
+    let grants = if values.is_empty() {
+        vec![
+            "client_credentials".to_string(),
+            "refresh_token".to_string(),
+        ]
+    } else {
+        values
     };
-    let supported: BTreeSet<_> = cfg.supported_scopes.iter().cloned().collect();
-    let client_scopes: Option<BTreeSet<String>> =
-        client.map(|c| c.scopes.iter().cloned().collect());
-    requested
+    for grant in &grants {
+        if !supported_grant_type(grant) {
+            anyhow::bail!("unsupported grant_type for local auth worker: {grant}");
+        }
+    }
+    Ok(grants)
+}
+
+fn requested_auth_method(body: &Value, cfg: &AuthConfig) -> anyhow::Result<String> {
+    let method = string_field(body, "token_endpoint_auth_method")
+        .unwrap_or("client_secret_post")
+        .to_string();
+    if !cfg
+        .token_endpoint_auth_methods_supported
+        .iter()
+        .any(|supported| supported == &method)
+    {
+        anyhow::bail!("unsupported token_endpoint_auth_method: {method}");
+    }
+    Ok(method)
+}
+
+fn admin_registration_token(cfg: &AuthConfig) -> Option<String> {
+    if cfg.registration_admin_token_env.is_empty() {
+        return None;
+    }
+    std::env::var(&cfg.registration_admin_token_env)
+        .ok()
+        .filter(|token| !token.is_empty())
+}
+
+fn registration_admin_authorized(payload: &Value, body: &Value, cfg: &AuthConfig) -> bool {
+    let Some(expected) = admin_registration_token(cfg) else {
+        return false;
+    };
+    let bearer = auth_header_from_payload(payload, body)
+        .and_then(|raw| strip_auth_scheme(&raw, "Bearer").map(str::to_string));
+    let body_token = string_field(body, "admin_token").map(str::to_string);
+    [bearer, body_token]
         .into_iter()
-        .filter(|scope| {
-            supported.contains(scope)
-                || scope.starts_with("function:")
-                || scope.starts_with("trigger:")
-        })
-        .filter(|scope| {
-            client_scopes
-                .as_ref()
-                .is_none_or(|allowed| allowed.contains(scope) || allowed.contains("function:*"))
-        })
-        .collect()
+        .flatten()
+        .any(|token| constant_time_eq(&token, &expected))
 }
 
 fn generate_key_record() -> anyhow::Result<KeyRecord> {
@@ -363,26 +483,23 @@ pub async fn register_client(
     let body = normalize_body(&payload);
     let client_id = random_url_token(18);
     let client_secret = random_url_token(32);
-    let method = string_field(&body, "token_endpoint_auth_method")
-        .unwrap_or("client_secret_post")
-        .to_string();
+    let method = requested_auth_method(&body, cfg)?;
     let requested_scopes = scope_field(&body, "scope");
-    let scopes = allowed_scopes(&requested_scopes, None, cfg);
-    let grant_types = {
-        let values = string_array_field(&body, "grant_types");
-        if values.is_empty() {
-            vec![
-                "client_credentials".to_string(),
-                "refresh_token".to_string(),
-            ]
-        } else {
-            values
-        }
-    };
+    let admin_authorized = registration_admin_authorized(&payload, &body, cfg);
+    let scopes = validate_registration_scopes(&requested_scopes, cfg, admin_authorized)?;
+    let grant_types = requested_grant_types(&body)?;
+    if method == "none"
+        && grant_types
+            .iter()
+            .any(|grant| grant == "client_credentials" || grant == "refresh_token")
+    {
+        anyhow::bail!("token_endpoint_auth_method none cannot use local client_credentials or refresh_token grants");
+    }
     let redirect_uris = string_array_field(&body, "redirect_uris");
     let client_name = string_field(&body, "client_name")
         .unwrap_or("iii client")
         .to_string();
+    let response_client_name = client_name.clone();
     let stored_secret = if method == "none" {
         None
     } else {
@@ -402,7 +519,7 @@ pub async fn register_client(
     let mut out = json!({
         "client_id": client_id,
         "client_id_issued_at": now(),
-        "client_name": string_field(&body, "client_name").unwrap_or("iii client"),
+        "client_name": response_client_name,
         "redirect_uris": redirect_uris,
         "grant_types": grant_types,
         "scope": scopes.join(" "),
@@ -416,10 +533,29 @@ pub async fn register_client(
     Ok(out)
 }
 
-fn client_secret_matches(client: &ClientRecord, secret: Option<&str>) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialSource {
+    Basic,
+    Post,
+    None,
+}
+
+fn client_secret_matches(
+    client: &ClientRecord,
+    secret: Option<&str>,
+    source: CredentialSource,
+) -> bool {
     match (&client.client_secret_sha256, secret) {
-        (None, _) => true,
-        (Some(expected), Some(actual)) => sha256_url(actual) == *expected,
+        (None, None) => client.token_endpoint_auth_method == "none",
+        (None, Some(_)) => false,
+        (Some(expected), Some(actual)) => {
+            let source_allowed = match client.token_endpoint_auth_method.as_str() {
+                "client_secret_basic" => source == CredentialSource::Basic,
+                "client_secret_post" => source == CredentialSource::Post,
+                _ => false,
+            };
+            source_allowed && constant_time_eq(&sha256_url(actual), expected)
+        }
         _ => false,
     }
 }
@@ -442,9 +578,9 @@ fn issue_access_token(
         iss: cfg.issuer.clone(),
         sub: subject.to_string(),
         aud: cfg.audience.clone(),
-        exp: expires_at as usize,
-        iat: issued_at as usize,
-        nbf: issued_at as usize,
+        exp: timestamp_claim(expires_at)?,
+        iat: timestamp_claim(issued_at)?,
+        nbf: timestamp_claim(issued_at)?,
         scope: scopes.join(" "),
         client_id: client.client_id.clone(),
         jti: Uuid::new_v4().to_string(),
@@ -488,8 +624,25 @@ fn auth_header(headers: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn auth_header_from_payload(payload: &Value, body: &Value) -> Option<String> {
+    payload
+        .get("headers")
+        .and_then(Value::as_object)
+        .and_then(auth_header)
+        .or_else(|| {
+            body.get("headers")
+                .and_then(Value::as_object)
+                .and_then(auth_header)
+        })
+}
+
+fn strip_auth_scheme<'a>(value: &'a str, scheme: &str) -> Option<&'a str> {
+    let (actual, rest) = value.split_once(' ')?;
+    actual.eq_ignore_ascii_case(scheme).then_some(rest)
+}
+
 fn basic_credentials(value: &str) -> Option<(String, String)> {
-    let encoded = value.strip_prefix("Basic ")?;
+    let encoded = strip_auth_scheme(value, "Basic")?;
     let decoded = STANDARD.decode(encoded).ok()?;
     let decoded = String::from_utf8(decoded).ok()?;
     let (client_id, secret) = decoded.split_once(':')?;
@@ -502,29 +655,36 @@ fn bearer_token_from_payload(payload: &Value) -> Option<String> {
     }
     let headers = payload.get("headers").and_then(Value::as_object)?;
     let raw = auth_header(headers)?;
-    raw.strip_prefix("Bearer ").map(str::to_string)
+    strip_auth_scheme(&raw, "Bearer").map(str::to_string)
 }
 
-fn client_credentials(body: &Value) -> (Option<String>, Option<String>) {
-    if let Some(headers) = body.get("headers").and_then(Value::as_object) {
-        if let Some(raw) = auth_header(headers) {
-            if let Some((client_id, secret)) = basic_credentials(&raw) {
-                return (Some(client_id), Some(secret));
-            }
+fn client_credentials(
+    payload: &Value,
+    body: &Value,
+) -> (Option<String>, Option<String>, CredentialSource) {
+    if let Some(raw) = auth_header_from_payload(payload, body) {
+        if let Some((client_id, secret)) = basic_credentials(&raw) {
+            return (Some(client_id), Some(secret), CredentialSource::Basic);
         }
     }
     (
         string_field(body, "client_id").map(str::to_string),
         string_field(body, "client_secret").map(str::to_string),
+        if string_field(body, "client_secret").is_some() {
+            CredentialSource::Post
+        } else {
+            CredentialSource::None
+        },
     )
 }
 
 async fn issue_for_client_credentials(
     store: &dyn AuthStore,
     cfg: &AuthConfig,
+    payload: &Value,
     body: &Value,
 ) -> anyhow::Result<Value> {
-    let (client_id, secret) = client_credentials(body);
+    let (client_id, secret, source) = client_credentials(payload, body);
     let client_id = client_id.ok_or_else(|| anyhow::anyhow!("missing client_id"))?;
     let client = store
         .get_client(&client_id)
@@ -537,11 +697,11 @@ async fn issue_for_client_credentials(
     {
         anyhow::bail!("client_credentials grant not allowed for client");
     }
-    if !client_secret_matches(&client, secret.as_deref()) {
+    if !client_secret_matches(&client, secret.as_deref(), source) {
         anyhow::bail!("invalid client_secret");
     }
     let requested = scope_field(body, "scope");
-    let scopes = allowed_scopes(&requested, Some(&client), cfg);
+    let scopes = validate_token_scopes(&requested, &client, cfg)?;
     let keyset = ensure_keyset(store).await?;
     let (access_token, claims) =
         issue_access_token(cfg, &keyset, &client, &client.client_id, &scopes)?;
@@ -566,10 +726,13 @@ async fn issue_for_client_credentials(
 async fn issue_for_refresh_token(
     store: &dyn AuthStore,
     cfg: &AuthConfig,
+    payload: &Value,
     body: &Value,
 ) -> anyhow::Result<Value> {
     let refresh_token = string_field(body, "refresh_token")
         .ok_or_else(|| anyhow::anyhow!("missing refresh_token"))?;
+    let (client_id, secret, source) = client_credentials(payload, body);
+    let client_id = client_id.ok_or_else(|| anyhow::anyhow!("missing client_id"))?;
     let refresh = store
         .get_refresh_token(refresh_token)
         .await?
@@ -577,17 +740,35 @@ async fn issue_for_refresh_token(
     if refresh.expires_at <= now() || store.is_revoked(refresh_token).await? {
         anyhow::bail!("refresh_token expired or revoked");
     }
+    if refresh.client_id != client_id {
+        anyhow::bail!("refresh_token client mismatch");
+    }
     let client = store
         .get_client(&refresh.client_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("refresh token client missing"))?;
+    if !client_secret_matches(&client, secret.as_deref(), source) {
+        anyhow::bail!("invalid client_secret");
+    }
     let keyset = ensure_keyset(store).await?;
     let (access_token, _) =
         issue_access_token(cfg, &keyset, &client, &refresh.subject, &refresh.scopes)?;
+    let new_refresh_token = random_url_token(32);
+    store.revoke(refresh_token).await?;
+    store
+        .set_refresh_token(RefreshTokenRecord {
+            token_id: new_refresh_token.clone(),
+            client_id: client.client_id.clone(),
+            subject: refresh.subject,
+            scopes: refresh.scopes.clone(),
+            expires_at: now() + cfg.refresh_token_ttl_seconds,
+        })
+        .await?;
     Ok(json!({
         "access_token": access_token,
         "token_type": "Bearer",
         "expires_in": cfg.access_token_ttl_seconds,
+        "refresh_token": new_refresh_token,
         "scope": refresh.scopes.join(" "),
     }))
 }
@@ -627,14 +808,70 @@ pub async fn token_endpoint(
     let action = string_field(&body, "action");
     let grant_type = string_field(&body, "grant_type");
     if action == Some("introspect") || grant_type == Some("introspection") {
-        let token = string_field(&body, "token").ok_or_else(|| anyhow::anyhow!("missing token"))?;
-        return introspect_token(store, cfg, token).await;
+        return introspect_endpoint(store, cfg, payload).await;
     }
     match grant_type.unwrap_or("client_credentials") {
-        "client_credentials" => issue_for_client_credentials(store, cfg, &body).await,
-        "refresh_token" => issue_for_refresh_token(store, cfg, &body).await,
+        "client_credentials" => issue_for_client_credentials(store, cfg, &payload, &body).await,
+        "refresh_token" => issue_for_refresh_token(store, cfg, &payload, &body).await,
         other => anyhow::bail!("unsupported grant_type: {other}"),
     }
+}
+
+async fn authenticated_client(
+    store: &dyn AuthStore,
+    payload: &Value,
+    body: &Value,
+) -> anyhow::Result<ClientRecord> {
+    let (client_id, secret, source) = client_credentials(payload, body);
+    let client_id = client_id.ok_or_else(|| anyhow::anyhow!("missing client_id"))?;
+    let client = store
+        .get_client(&client_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("unknown client_id"))?;
+    if !client_secret_matches(&client, secret.as_deref(), source) {
+        anyhow::bail!("invalid client_secret");
+    }
+    Ok(client)
+}
+
+pub async fn introspect_endpoint(
+    store: &dyn AuthStore,
+    cfg: &AuthConfig,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let body = normalize_body(&payload);
+    let _client = authenticated_client(store, &payload, &body).await?;
+    let token = string_field(&body, "token").ok_or_else(|| anyhow::anyhow!("missing token"))?;
+    introspect_token(store, cfg, token).await
+}
+
+pub async fn revoke_endpoint(
+    store: &dyn AuthStore,
+    cfg: &AuthConfig,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let body = normalize_body(&payload);
+    let client = authenticated_client(store, &payload, &body).await?;
+    let token = string_field(&body, "token").ok_or_else(|| anyhow::anyhow!("missing token"))?;
+    let hint = string_field(&body, "token_type_hint");
+    let refresh = store.get_refresh_token(token).await?;
+
+    if hint == Some("refresh_token") || refresh.is_some() {
+        if let Some(refresh) = refresh {
+            if refresh.client_id == client.client_id {
+                store.revoke(token).await?;
+            }
+        }
+        return Ok(json!({ "ok": true }));
+    }
+
+    let keyset = ensure_keyset(store).await?;
+    if let Ok(claims) = decode_token(cfg, &keyset, token) {
+        if claims.client_id == client.client_id {
+            store.revoke(&claims.jti).await?;
+        }
+    }
+    Ok(json!({ "ok": true }))
 }
 
 fn scopes_to_decision(claims: &Claims) -> AuthDecision {
@@ -781,16 +1018,50 @@ pub async fn register_with_iii(
         },
     ));
 
-    let token_store = store;
-    let token_cfg = cfg;
+    let token_store = store.clone();
+    let token_cfg = cfg.clone();
     let token = iii.register_function((
         RegisterFunctionMessage::with_id("auth::token".to_string())
-            .with_description("Issue, refresh, or introspect OAuth tokens.".into()),
+            .with_description("Issue or refresh OAuth tokens.".into()),
         move |payload: Value| {
             let store = token_store.clone();
             let cfg = token_cfg.clone();
             async move {
                 token_endpoint(&*store, &cfg, payload)
+                    .await
+                    .map(http_json)
+                    .map_err(|e| IIIError::Handler(e.to_string()))
+            }
+        },
+    ));
+
+    let introspect_store = store.clone();
+    let introspect_cfg = cfg.clone();
+    let introspect = iii.register_function((
+        RegisterFunctionMessage::with_id("auth::introspect".to_string())
+            .with_description("Introspect an OAuth token for an authenticated client.".into()),
+        move |payload: Value| {
+            let store = introspect_store.clone();
+            let cfg = introspect_cfg.clone();
+            async move {
+                introspect_endpoint(&*store, &cfg, payload)
+                    .await
+                    .map(http_json)
+                    .map_err(|e| IIIError::Handler(e.to_string()))
+            }
+        },
+    ));
+
+    let revoke_store = store;
+    let revoke_cfg = cfg;
+    let revoke = iii.register_function((
+        RegisterFunctionMessage::with_id("auth::revoke".to_string())
+            .with_description("Revoke an access token or refresh token.".into()),
+        move |payload: Value| {
+            let store = revoke_store.clone();
+            let cfg = revoke_cfg.clone();
+            async move {
+                revoke_endpoint(&*store, &cfg, payload)
                     .await
                     .map(http_json)
                     .map_err(|e| IIIError::Handler(e.to_string()))
@@ -806,6 +1077,8 @@ pub async fn register_with_iii(
         jwks,
         jwks_rotate,
         token,
+        introspect,
+        revoke,
     })
 }
 
@@ -817,6 +1090,8 @@ pub struct AuthFunctionRefs {
     pub jwks: iii_sdk::FunctionRef,
     pub jwks_rotate: iii_sdk::FunctionRef,
     pub token: iii_sdk::FunctionRef,
+    pub introspect: iii_sdk::FunctionRef,
+    pub revoke: iii_sdk::FunctionRef,
 }
 
 impl AuthFunctionRefs {
@@ -829,6 +1104,8 @@ impl AuthFunctionRefs {
             self.jwks,
             self.jwks_rotate,
             self.token,
+            self.introspect,
+            self.revoke,
         ] {
             reference.unregister();
         }
@@ -858,23 +1135,37 @@ mod tests {
             store: crate::config::StoreBackend::Memory,
             supported_scopes: vec![
                 "mcp:tools".to_string(),
+                "a2a:message".to_string(),
                 "function:demo::read".to_string(),
+                "function:*".to_string(),
+                "trigger:http".to_string(),
                 "iii:function_registration".to_string(),
                 "iii:trusted_internal".to_string(),
             ],
             default_scopes: vec!["mcp:tools".to_string()],
+            registration_admin_token_env: "III_AUTH_TEST_ADMIN_TOKEN".to_string(),
             ..AuthConfig::default()
+        }
+    }
+
+    fn cfg_with_admin_env() -> AuthConfig {
+        let env_name = format!("III_AUTH_TEST_ADMIN_TOKEN_{}", Uuid::new_v4().simple());
+        std::env::set_var(&env_name, "admin-secret");
+        AuthConfig {
+            registration_admin_token_env: env_name,
+            ..cfg()
         }
     }
 
     #[tokio::test]
     async fn client_credentials_roundtrip_validates_session() -> anyhow::Result<()> {
         let store = InMemoryAuthStore::new();
-        let cfg = cfg();
+        let cfg = cfg_with_admin_env();
         let registration = register_client(
             &store,
             &cfg,
             json!({
+                "headers": { "authorization": "bearer admin-secret" },
                 "client_name": "test",
                 "scope": "function:demo::read iii:function_registration iii:trusted_internal"
             }),
@@ -897,13 +1188,153 @@ mod tests {
         let decision = validate_session(
             &store,
             &cfg,
-            json!({ "headers": { "authorization": format!("Bearer {access_token}") } }),
+            json!({ "headers": { "authorization": format!("beAREr {access_token}") } }),
         )
         .await?;
         assert_eq!(decision.allowed_functions, vec!["demo::read"]);
         assert!(decision.allow_function_registration);
         assert!(decision.trusted_internal);
         assert_eq!(decision.context["client_id"], client_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn public_registration_rejects_privileged_scopes() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg_with_admin_env();
+        let err = register_client(
+            &store,
+            &cfg,
+            json!({
+                "client_name": "test",
+                "scope": "function:demo::read iii:trusted_internal"
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("admin authorization required for privileged scope"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn public_registration_allows_public_scopes() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg();
+        let registration = register_client(
+            &store,
+            &cfg,
+            json!({
+                "client_name": "test",
+                "scope": "mcp:tools a2a:message"
+            }),
+        )
+        .await?;
+        assert_eq!(registration["scope"], "mcp:tools a2a:message");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_cannot_escalate_scopes_at_token_time() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg_with_admin_env();
+        let registration = register_client(
+            &store,
+            &cfg,
+            json!({
+                "headers": { "authorization": "Bearer admin-secret" },
+                "client_name": "test",
+                "scope": "function:demo::read"
+            }),
+        )
+        .await?;
+        let err = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "grant_type": "client_credentials",
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+                "scope": "iii:trusted_internal"
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("scope not allowed for client"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_secret_basic_requires_basic_auth_header() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg();
+        let registration = register_client(
+            &store,
+            &cfg,
+            json!({
+                "client_name": "basic-client",
+                "token_endpoint_auth_method": "client_secret_basic"
+            }),
+        )
+        .await?;
+        let client_id = registration["client_id"].as_str().unwrap();
+        let client_secret = registration["client_secret"].as_str().unwrap();
+        let post_err = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(post_err.to_string().contains("invalid client_secret"));
+        let encoded = STANDARD.encode(format!("{client_id}:{client_secret}"));
+        let token = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "headers": { "authorization": format!("bAsIc {encoded}") },
+                "grant_type": "client_credentials"
+            }),
+        )
+        .await?;
+        assert_eq!(token["token_type"], "Bearer");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wildcard_scope_is_not_issued_as_token_scope() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg_with_admin_env();
+        let registration = register_client(
+            &store,
+            &cfg,
+            json!({
+                "headers": { "authorization": "Bearer admin-secret" },
+                "client_name": "wildcard-client",
+                "scope": "function:*"
+            }),
+        )
+        .await?;
+        let err = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "grant_type": "client_credentials",
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+                "scope": "function:*"
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("wildcard scopes can be registered"));
         Ok(())
     }
 
@@ -928,11 +1359,110 @@ mod tests {
             json!({
                 "grant_type": "refresh_token",
                 "refresh_token": token["refresh_token"],
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
             }),
         )
         .await?;
         assert_eq!(refreshed["token_type"], "Bearer");
         assert!(refreshed["access_token"].as_str().unwrap().len() > 100);
+        assert!(refreshed["refresh_token"].as_str().unwrap().len() > 20);
+        let old_refresh = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "grant_type": "refresh_token",
+                "refresh_token": token["refresh_token"],
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(old_refresh.to_string().contains("expired or revoked"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revoke_invalidates_access_token() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let cfg = cfg();
+        let registration = register_client(&store, &cfg, json!({ "client_name": "test" })).await?;
+        let token = token_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "grant_type": "client_credentials",
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+            }),
+        )
+        .await?;
+        let access_token = token["access_token"].as_str().unwrap();
+        let active = introspect_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+                "token": access_token
+            }),
+        )
+        .await?;
+        assert_eq!(active["active"], true);
+        revoke_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+                "token": access_token,
+                "token_type_hint": "access_token"
+            }),
+        )
+        .await?;
+        let rejected = validate_session(
+            &store,
+            &cfg,
+            json!({ "headers": { "authorization": format!("Bearer {access_token}") } }),
+        )
+        .await
+        .unwrap_err();
+        assert!(rejected.to_string().contains("token revoked"));
+        let inactive = introspect_endpoint(
+            &store,
+            &cfg,
+            json!({
+                "client_id": registration["client_id"],
+                "client_secret": registration["client_secret"],
+                "token": access_token
+            }),
+        )
+        .await?;
+        assert_eq!(inactive["active"], false);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn public_client_method_none_cannot_use_local_grants() -> anyhow::Result<()> {
+        let store = InMemoryAuthStore::new();
+        let mut cfg = cfg();
+        cfg.token_endpoint_auth_methods_supported
+            .push("none".to_string());
+        let err = register_client(
+            &store,
+            &cfg,
+            json!({
+                "client_name": "public",
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["client_credentials"]
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("cannot use local client_credentials"));
         Ok(())
     }
 
@@ -961,5 +1491,12 @@ mod tests {
             metadata["jwks_uri"],
             "https://auth.test/.well-known/jwks.json"
         );
+        assert_eq!(metadata["revocation_endpoint"], "https://auth.test/revoke");
+        assert_eq!(
+            metadata["introspection_endpoint"],
+            "https://auth.test/introspect"
+        );
+        assert!(metadata.get("authorization_endpoint").is_none());
+        assert!(metadata.get("code_challenge_methods_supported").is_none());
     }
 }

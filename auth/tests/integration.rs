@@ -4,6 +4,11 @@ use iii_auth::{register_client, token_endpoint, validate_session};
 use serde_json::json;
 
 fn cfg() -> AuthConfig {
+    let admin_env = format!(
+        "III_AUTH_INTEGRATION_ADMIN_{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    std::env::set_var(&admin_env, "admin-secret");
     AuthConfig {
         issuer: "https://auth.test".to_string(),
         audience: "iii-test".to_string(),
@@ -14,6 +19,7 @@ fn cfg() -> AuthConfig {
             "trigger:http".to_string(),
         ],
         default_scopes: vec!["mcp:tools".to_string()],
+        registration_admin_token_env: admin_env,
         ..AuthConfig::default()
     }
 }
@@ -26,6 +32,7 @@ async fn dcr_token_validate_flow() -> anyhow::Result<()> {
         &store,
         &cfg,
         json!({
+            "headers": { "authorization": "Bearer admin-secret" },
             "client_name": "integration",
             "scope": "function:demo::read trigger:http"
         }),

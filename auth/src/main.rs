@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 mod manifest;
 
-use iii_auth::config::{resolve_store_backend, AuthConfig, StoreBackend};
+use iii_auth::config::{resolve_store_backend, validate_config, AuthConfig, StoreBackend};
 use iii_auth::store::{IiiStateAuthStore, InMemoryAuthStore};
 
 #[derive(Parser, Debug)]
@@ -39,6 +39,10 @@ struct Cli {
     manifest: bool,
 }
 
+const CONNECTION_READY_ATTEMPTS: usize = 100;
+const CONNECTION_READY_INTERVAL: Duration = Duration::from_millis(10);
+const CONNECTION_READY_SETTLE: Duration = Duration::from_millis(50);
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -55,13 +59,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut cfg = match iii_auth::config::load_config(&cli.config) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            AuthConfig::default()
-        }
-    };
+    let mut cfg = iii_auth::config::load_config(&cli.config)
+        .with_context(|| format!("failed to load auth config from {}", cli.config))?;
     if let Some(issuer) = cli.issuer {
         cfg.issuer = issuer;
     }
@@ -71,6 +70,7 @@ async fn main() -> Result<()> {
     if let Some(rotation_cron) = cli.rotation_cron {
         cfg.rotation_cron = rotation_cron;
     }
+    validate_config(&cfg).context("invalid auth config")?;
     let engine_url = cli.url.unwrap_or_else(|| cfg.engine_url.clone());
     let cfg = Arc::new(cfg);
 
@@ -90,13 +90,13 @@ async fn main() -> Result<()> {
             ..InitOptions::default()
         },
     ));
-    wait_for_connection_ready(&iii).await;
+    wait_for_connection_ready(&iii).await?;
 
     let store: Arc<dyn iii_auth::store::AuthStore> = match resolve_store_backend(&cfg) {
         StoreBackend::Memory => Arc::new(InMemoryAuthStore::new()),
         StoreBackend::IiiState => {
             let iii_for_store: Arc<dyn iii_auth::io::IIITrigger> = iii.clone();
-            Arc::new(IiiStateAuthStore::new(iii_for_store))
+            Arc::new(IiiStateAuthStore::new(iii_for_store, cfg.state_timeout_ms))
         }
     };
 
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
         .await
         .context("auth register failed")?;
 
-    register_triggers(&iii, &cfg);
+    register_triggers(&iii, &cfg).context("auth trigger registration failed")?;
     spawn_skill_register(iii.clone(), cfg.clone());
 
     tracing::info!("auth ready");
@@ -115,40 +115,41 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn register_triggers(iii: &iii_sdk::III, cfg: &AuthConfig) {
+fn register_triggers(iii: &iii_sdk::III, cfg: &AuthConfig) -> Result<()> {
     let http_routes = [
         (
             "auth::server_metadata",
             "GET",
-            "/.well-known/oauth-authorization-server",
+            ".well-known/oauth-authorization-server",
         ),
         (
             "auth::resource_metadata",
             "GET",
-            "/.well-known/oauth-protected-resource",
+            ".well-known/oauth-protected-resource",
         ),
-        ("auth::register", "POST", "/register"),
-        ("auth::jwks", "GET", "/.well-known/jwks.json"),
-        ("auth::token", "POST", "/token"),
+        ("auth::register", "POST", "register"),
+        ("auth::jwks", "GET", ".well-known/jwks.json"),
+        ("auth::token", "POST", "token"),
+        ("auth::introspect", "POST", "introspect"),
+        ("auth::revoke", "POST", "revoke"),
     ];
     for (function_id, method, api_path) in http_routes {
-        if let Err(error) = iii.register_trigger(RegisterTriggerInput {
+        iii.register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
             function_id: function_id.to_string(),
             config: json!({ "api_path": api_path, "http_method": method }),
             metadata: None,
-        }) {
-            tracing::warn!(%function_id, %api_path, %error, "failed to register http trigger");
-        }
+        })
+        .with_context(|| format!("failed to register {method} {api_path} for {function_id}"))?;
     }
-    if let Err(error) = iii.register_trigger(RegisterTriggerInput {
+    iii.register_trigger(RegisterTriggerInput {
         trigger_type: "cron".to_string(),
         function_id: "auth::jwks_rotate".to_string(),
         config: json!({ "expression": cfg.rotation_cron }),
         metadata: None,
-    }) {
-        tracing::warn!(error = %error, "failed to register JWKS rotation trigger");
-    }
+    })
+    .context("failed to register JWKS rotation trigger")?;
+    Ok(())
 }
 
 async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str, timeout_ms: u64) {
@@ -213,14 +214,18 @@ async fn unregister_skill(iii: &Arc<iii_sdk::III>, cfg: &Arc<AuthConfig>) {
         .await;
 }
 
-async fn wait_for_connection_ready(iii: &iii_sdk::III) {
-    for _ in 0..100 {
+async fn wait_for_connection_ready(iii: &iii_sdk::III) -> Result<()> {
+    for _ in 0..CONNECTION_READY_ATTEMPTS {
         if iii.get_connection_state() == iii_sdk::IIIConnectionState::Connected {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            return;
+            tokio::time::sleep(CONNECTION_READY_SETTLE).await;
+            return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(CONNECTION_READY_INTERVAL).await;
     }
+    anyhow::bail!(
+        "timed out waiting for iii engine connection after {} attempts",
+        CONNECTION_READY_ATTEMPTS
+    )
 }
 
 async fn wait_for_shutdown() -> Result<()> {

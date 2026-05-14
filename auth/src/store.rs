@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use iii_sdk::TriggerRequest;
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 
 use crate::io::IIITrigger;
 use crate::{ClientRecord, KeySet, RefreshTokenRecord};
@@ -41,35 +42,23 @@ impl InMemoryAuthStore {
 #[async_trait::async_trait]
 impl AuthStore for InMemoryAuthStore {
     async fn get_client(&self, client_id: &str) -> anyhow::Result<Option<ClientRecord>> {
-        Ok(self
-            .clients
-            .read()
-            .map_err(|e| anyhow::anyhow!("client store read lock poisoned: {e}"))?
-            .get(client_id)
-            .cloned())
+        Ok(self.clients.read().await.get(client_id).cloned())
     }
 
     async fn set_client(&self, client: ClientRecord) -> anyhow::Result<()> {
         self.clients
             .write()
-            .map_err(|e| anyhow::anyhow!("client store write lock poisoned: {e}"))?
+            .await
             .insert(client.client_id.clone(), client);
         Ok(())
     }
 
     async fn get_keyset(&self) -> anyhow::Result<Option<KeySet>> {
-        Ok(self
-            .keyset
-            .read()
-            .map_err(|e| anyhow::anyhow!("key store read lock poisoned: {e}"))?
-            .clone())
+        Ok(self.keyset.read().await.clone())
     }
 
     async fn set_keyset(&self, keyset: KeySet) -> anyhow::Result<()> {
-        *self
-            .keyset
-            .write()
-            .map_err(|e| anyhow::anyhow!("key store write lock poisoned: {e}"))? = Some(keyset);
+        *self.keyset.write().await = Some(keyset);
         Ok(())
     }
 
@@ -77,46 +66,35 @@ impl AuthStore for InMemoryAuthStore {
         &self,
         token_id: &str,
     ) -> anyhow::Result<Option<RefreshTokenRecord>> {
-        Ok(self
-            .refresh_tokens
-            .read()
-            .map_err(|e| anyhow::anyhow!("refresh store read lock poisoned: {e}"))?
-            .get(token_id)
-            .cloned())
+        Ok(self.refresh_tokens.read().await.get(token_id).cloned())
     }
 
     async fn set_refresh_token(&self, record: RefreshTokenRecord) -> anyhow::Result<()> {
         self.refresh_tokens
             .write()
-            .map_err(|e| anyhow::anyhow!("refresh store write lock poisoned: {e}"))?
+            .await
             .insert(record.token_id.clone(), record);
         Ok(())
     }
 
     async fn is_revoked(&self, token_id: &str) -> anyhow::Result<bool> {
-        Ok(self
-            .revoked
-            .read()
-            .map_err(|e| anyhow::anyhow!("revocation store read lock poisoned: {e}"))?
-            .contains(token_id))
+        Ok(self.revoked.read().await.contains(token_id))
     }
 
     async fn revoke(&self, token_id: &str) -> anyhow::Result<()> {
-        self.revoked
-            .write()
-            .map_err(|e| anyhow::anyhow!("revocation store write lock poisoned: {e}"))?
-            .insert(token_id.to_string());
+        self.revoked.write().await.insert(token_id.to_string());
         Ok(())
     }
 }
 
 pub struct IiiStateAuthStore {
     iii: Arc<dyn IIITrigger>,
+    timeout_ms: u64,
 }
 
 impl IiiStateAuthStore {
-    pub fn new(iii: Arc<dyn IIITrigger>) -> Self {
-        Self { iii }
+    pub fn new(iii: Arc<dyn IIITrigger>, timeout_ms: u64) -> Self {
+        Self { iii, timeout_ms }
     }
 
     async fn get_value(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
@@ -126,7 +104,7 @@ impl IiiStateAuthStore {
                 function_id: "state::get".into(),
                 payload: json!({ "scope": scope, "key": key }),
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(self.timeout_ms),
             })
             .await
             .map_err(|e| anyhow::anyhow!("state::get failed: {e}"))?;
@@ -143,7 +121,7 @@ impl IiiStateAuthStore {
                 function_id: "state::set".into(),
                 payload: json!({ "scope": scope, "key": key, "value": value }),
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(self.timeout_ms),
             })
             .await
             .map_err(|e| anyhow::anyhow!("state::set failed: {e}"))?;

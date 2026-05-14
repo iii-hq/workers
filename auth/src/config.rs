@@ -11,6 +11,8 @@ pub enum StoreBackend {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AuthConfig {
+    #[serde(default = "default_environment")]
+    pub environment: String,
     #[serde(default = "default_engine_url")]
     pub engine_url: String,
     #[serde(default = "default_issuer")]
@@ -35,6 +37,10 @@ pub struct AuthConfig {
     pub supported_scopes: Vec<String>,
     #[serde(default = "default_token_endpoint_auth_methods_supported")]
     pub token_endpoint_auth_methods_supported: Vec<String>,
+    #[serde(default = "default_registration_admin_token_env")]
+    pub registration_admin_token_env: String,
+    #[serde(default = "default_state_timeout_ms")]
+    pub state_timeout_ms: u64,
     #[serde(default = "default_skills_timeout_ms")]
     pub skills_register_timeout_ms: u64,
     #[serde(default = "default_skills_timeout_ms")]
@@ -43,6 +49,10 @@ pub struct AuthConfig {
 
 fn default_engine_url() -> String {
     "ws://127.0.0.1:49134".to_string()
+}
+
+fn default_environment() -> String {
+    "local".to_string()
 }
 
 fn default_issuer() -> String {
@@ -70,7 +80,7 @@ fn default_rotation_overlap_seconds() -> i64 {
 }
 
 fn default_rotation_cron() -> String {
-    "0 0 3 * * * *".to_string()
+    "0 0 3 * * *".to_string()
 }
 
 fn default_skills_timeout_ms() -> u64 {
@@ -82,23 +92,28 @@ fn default_default_scopes() -> Vec<String> {
 }
 
 fn default_supported_scopes() -> Vec<String> {
-    vec![
-        "mcp:tools".to_string(),
-        "a2a:message".to_string(),
-        "function:*".to_string(),
-        "iii:function_registration".to_string(),
-        "iii:trigger_type_registration".to_string(),
-        "iii:trusted_internal".to_string(),
-    ]
+    vec!["mcp:tools".to_string(), "a2a:message".to_string()]
 }
 
 fn default_token_endpoint_auth_methods_supported() -> Vec<String> {
-    vec!["client_secret_post".to_string(), "none".to_string()]
+    vec![
+        "client_secret_post".to_string(),
+        "client_secret_basic".to_string(),
+    ]
+}
+
+fn default_registration_admin_token_env() -> String {
+    "III_AUTH_REGISTRATION_TOKEN".to_string()
+}
+
+fn default_state_timeout_ms() -> u64 {
+    5_000
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
+            environment: default_environment(),
             engine_url: default_engine_url(),
             issuer: default_issuer(),
             audience: default_audience(),
@@ -111,6 +126,8 @@ impl Default for AuthConfig {
             default_scopes: default_default_scopes(),
             supported_scopes: default_supported_scopes(),
             token_endpoint_auth_methods_supported: default_token_endpoint_auth_methods_supported(),
+            registration_admin_token_env: default_registration_admin_token_env(),
+            state_timeout_ms: default_state_timeout_ms(),
             skills_register_timeout_ms: default_skills_timeout_ms(),
             skills_unregister_timeout_ms: default_skills_timeout_ms(),
         }
@@ -119,8 +136,64 @@ impl Default for AuthConfig {
 
 pub fn load_config(path: &str) -> Result<AuthConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: AuthConfig = serde_yaml::from_str(&contents)?;
+    let mut cfg: AuthConfig = serde_yaml::from_str(&contents)?;
+    if let Ok(environment) = std::env::var("III_AUTH_ENV") {
+        if !environment.is_empty() {
+            cfg.environment = environment;
+        }
+    }
+    validate_config(&cfg)?;
     Ok(cfg)
+}
+
+pub fn validate_config(cfg: &AuthConfig) -> Result<()> {
+    if cfg.access_token_ttl_seconds <= 0 {
+        anyhow::bail!("access_token_ttl_seconds must be positive");
+    }
+    if cfg.refresh_token_ttl_seconds <= 0 {
+        anyhow::bail!("refresh_token_ttl_seconds must be positive");
+    }
+    if cfg.rotation_overlap_seconds <= 0 {
+        anyhow::bail!("rotation_overlap_seconds must be positive");
+    }
+    if cfg.state_timeout_ms == 0 {
+        anyhow::bail!("state_timeout_ms must be positive");
+    }
+    if cfg.skills_register_timeout_ms == 0 {
+        anyhow::bail!("skills_register_timeout_ms must be positive");
+    }
+    if cfg.skills_unregister_timeout_ms == 0 {
+        anyhow::bail!("skills_unregister_timeout_ms must be positive");
+    }
+    if cfg.supported_scopes.is_empty() {
+        anyhow::bail!("supported_scopes must not be empty");
+    }
+    for scope in &cfg.default_scopes {
+        if !scope_supported_by(scope, &cfg.supported_scopes) {
+            anyhow::bail!("default scope {scope} must be listed in supported_scopes");
+        }
+    }
+    if cfg.environment.eq_ignore_ascii_case("production") {
+        if cfg.engine_url.starts_with("ws://") {
+            anyhow::bail!("production auth config requires wss:// engine_url");
+        }
+        if cfg.issuer.starts_with("http://") {
+            anyhow::bail!("production auth config requires https:// issuer");
+        }
+    }
+    let cron_fields = cfg.rotation_cron.split_whitespace().count();
+    if cron_fields != 6 {
+        anyhow::bail!("rotation_cron must use iii's 6-field cron format");
+    }
+    Ok(())
+}
+
+fn scope_supported_by(scope: &str, supported_scopes: &[String]) -> bool {
+    supported_scopes.iter().any(|supported| {
+        supported == scope
+            || (supported == "function:*" && scope.starts_with("function:"))
+            || (supported == "trigger:*" && scope.starts_with("trigger:"))
+    })
 }
 
 pub fn resolve_store_backend(cfg: &AuthConfig) -> StoreBackend {
@@ -144,8 +217,15 @@ mod tests {
         let cfg: AuthConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.engine_url, "ws://127.0.0.1:49134");
         assert_eq!(cfg.issuer, "http://127.0.0.1:3111");
+        assert_eq!(cfg.environment, "local");
         assert_eq!(cfg.store, StoreBackend::IiiState);
         assert!(cfg.supported_scopes.contains(&"mcp:tools".to_string()));
+        assert!(!cfg.supported_scopes.contains(&"function:*".to_string()));
+        assert_eq!(
+            cfg.registration_admin_token_env,
+            "III_AUTH_REGISTRATION_TOKEN"
+        );
+        assert_eq!(cfg.state_timeout_ms, 5_000);
     }
 
     #[test]
@@ -164,5 +244,56 @@ default_scopes: ["function:demo::read"]
         assert_eq!(cfg.audience, "workers");
         assert_eq!(cfg.store, StoreBackend::Memory);
         assert_eq!(cfg.default_scopes, vec!["function:demo::read"]);
+    }
+
+    #[test]
+    fn production_rejects_insecure_urls() {
+        let cfg = AuthConfig {
+            environment: "production".to_string(),
+            ..AuthConfig::default()
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("wss:// engine_url"));
+    }
+
+    #[test]
+    fn cron_must_be_six_fields() {
+        let cfg = AuthConfig {
+            rotation_cron: "0 0 3 * * * *".to_string(),
+            ..AuthConfig::default()
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("6-field cron"));
+    }
+
+    #[test]
+    fn ttls_must_be_positive() {
+        let cfg = AuthConfig {
+            access_token_ttl_seconds: 0,
+            ..AuthConfig::default()
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("access_token_ttl_seconds"));
+    }
+
+    #[test]
+    fn default_scopes_must_be_supported() {
+        let cfg = AuthConfig {
+            default_scopes: vec!["function:demo::read".to_string()],
+            supported_scopes: vec!["mcp:tools".to_string()],
+            ..AuthConfig::default()
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("default scope"));
+    }
+
+    #[test]
+    fn wildcard_supported_scopes_cover_default_scopes() {
+        let cfg = AuthConfig {
+            default_scopes: vec!["function:demo::read".to_string()],
+            supported_scopes: vec!["function:*".to_string()],
+            ..AuthConfig::default()
+        };
+        validate_config(&cfg).unwrap();
     }
 }

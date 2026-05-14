@@ -42,11 +42,25 @@
       ],
       "has_checksum": true,
       "default_config": {
+        "environment": "local",
         "engine_url": "ws://127.0.0.1:49134",
-        "issuer": "http://127.0.0.1:3111",
+        "issuer": "https://127.0.0.1:3111",
         "audience": "iii",
         "idp_mode": "local",
-        "store": "iii_state"
+        "store": "iii_state",
+        "default_scopes": [
+          "mcp:tools"
+        ],
+        "supported_scopes": [
+          "mcp:tools",
+          "a2a:message"
+        ],
+        "token_endpoint_auth_methods_supported": [
+          "client_secret_post",
+          "client_secret_basic"
+        ],
+        "registration_admin_token_env": "III_AUTH_REGISTRATION_TOKEN",
+        "state_timeout_ms": 5000
       },
       "version": "0.1.0"
     },
