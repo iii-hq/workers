@@ -5,7 +5,7 @@ surface.
 
 The harness boots first; reads its `iii.worker.yaml` so the engine knows
 which sibling workers to spawn; registers `harness::status`,
-`harness::call`, `bridge::info`, `ui::subscribe`, `ui::unsubscribe`,
+`harness::call`, `harness::info`, `ui::subscribe`, `ui::unsubscribe`,
 and `harness::fs::read_inline`; and wires the upstream fanout pumps
 (agent events, sessions, approvals, cost, workers, skills, prompts).
 The agent's starting context is driven by `turn-orchestrator`'s

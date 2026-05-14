@@ -48,7 +48,6 @@ type View = { kind: "list" } | { kind: "drill"; entry: FunctionEntry };
 // gating). Only pure engine plumbing is hidden.
 const PALETTE_HIDDEN_PREFIXES = [
   "engine::",
-  "bridge::",
   "ui::",
   "agent::",
 ];

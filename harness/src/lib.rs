@@ -56,13 +56,13 @@ impl HarnessFunctionRefs {
     }
 }
 
-/// Default engine URL used by `bridge::info` when no override is provided.
+/// Default engine URL used by `harness::info` when no override is provided.
 /// Matches `harness/src/config.rs::default_engine_url`.
 const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 /// Register harness functions with iii.
 ///
-/// Uses [`DEFAULT_ENGINE_URL`] for the `engine_url` field of `bridge::info`.
+/// Uses [`DEFAULT_ENGINE_URL`] for the `engine_url` field of `harness::info`.
 /// Production callers should prefer [`register_with_iii_with_engine_url`] so
 /// the URL reflects the actual engine the harness is connected to.
 pub async fn register_with_iii(iii: &III) -> anyhow::Result<HarnessFunctionRefs> {
@@ -138,13 +138,13 @@ pub async fn register_with_iii_with_engine_url(
     })
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    // bridge::info — relative WS path so reverse-proxy / HTTPS deployments
+    // harness::info — relative WS path so reverse-proxy / HTTPS deployments
     // compose the full URL from `window.location`. `engine_url` is the direct
     // ws:// URL for callers (tests, native clients) that bypass the reverse
     // proxy.
     let engine_url_owned = engine_url.to_string();
     let bridge_info = iii.register_function((
-        RegisterFunctionMessage::with_id("bridge::info".into()).with_description(
+        RegisterFunctionMessage::with_id("harness::info".into()).with_description(
             "Returns the relative WebSocket path and engine URL for browser clients.".into(),
         ),
         move |_payload: Value| {
