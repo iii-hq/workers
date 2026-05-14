@@ -9,9 +9,10 @@
 //!   * **Skills** (`directory::skills::*`): a filesystem-backed markdown
 //!     reader keyed by short skill ids
 //!     (slashed-path-relative-to-`skills_folder`).
-//!     `directory::skills::list` enumerates them with title/description
-//!     pre-populated; `directory::skills::get` reads one body + metadata
-//!     (same flat shape as `directory::prompts::get`).
+//!     `directory::skills::list` enumerates them with title/type/description
+//!     pre-populated; `directory::skills::get` reads one body + metadata.
+//!     `title` prefers the YAML frontmatter `title:` over the body H1,
+//!     and `type` is lifted verbatim from frontmatter `type:`.
 //!   * **Prompts** (`directory::prompts::*`): filesystem-backed
 //!     slash-command templates loaded from
 //!     `<skills_folder>/<ns>/prompts/*.md` files with YAML frontmatter.

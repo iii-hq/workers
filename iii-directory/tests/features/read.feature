@@ -44,6 +44,23 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I list skills
     Then the listing entry "ns/labelled" has title "Labelled skill"
     And  the listing entry "ns/labelled" has description "First paragraph summary."
+    And  the listing entry "ns/labelled" has a null type
+
+  Scenario: list rows prefer the frontmatter title and surface the frontmatter type
+    Given a skill file at "ns/branded.md" with body:
+      """
+      ---
+      title: Real title from frontmatter
+      type: how-to
+      ---
+      # Body H1 ignored
+
+      First paragraph summary.
+      """
+    When I list skills
+    Then the listing entry "ns/branded" has title "Real title from frontmatter"
+    And  the listing entry "ns/branded" has type "how-to"
+    And  the listing entry "ns/branded" has description "First paragraph summary."
 
   # ── nested directory hierarchy ───────────────────────────────────────
 
@@ -79,6 +96,23 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     And  the get response has description "Body content here."
     And  the get response body contains "Body content here."
     And  the get response has a non-empty modified_at
+    And  the get response has a null type
+
+  Scenario: directory::skills::get prefers the frontmatter title and exposes the frontmatter type
+    Given a skill file at "ns/branded-get.md" with body:
+      """
+      ---
+      title: Real title from frontmatter
+      type: how-to
+      ---
+      # Body H1 ignored
+
+      Body content here.
+      """
+    When I get skill "ns/branded-get"
+    Then the get response has title "Real title from frontmatter"
+    And  the get response has type "how-to"
+    And  the get response body contains "Body H1 ignored"
 
   Scenario: directory::skills::get accepts the legacy iii:// prefix
     Given a skill file at "ns/prefixed.md" with body:
@@ -129,3 +163,47 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I list skills
     Then no listing entry has id "ns/Bad-Name"
     And  no listing entry has id "ns/bad-name"
+
+  # ── directory::skills::index ─────────────────────────────────────────
+
+  Scenario: directory::skills::index lists workers and filters out non-index skills
+    Given a skill file at "team-a/index.md" with body:
+      """
+      ---
+      title: team-a
+      type: index
+      ---
+      # team-a
+
+      Alpha team's worker. Owns alpha-only tooling.
+      """
+    And   a skill file at "team-b/index.md" with body:
+      """
+      ---
+      title: team-b
+      type: index
+      ---
+      # team-b
+
+      Bravo team's worker. Handles all bravo workflows.
+      """
+    And   a skill file at "team-a/foo.md" with body:
+      """
+      ---
+      type: how-to
+      ---
+      # Foo
+
+      A how-to that must not appear in the worker index.
+      """
+    When I index skills
+    Then the index response has at least 2 workers
+    And  the index response body contains "# Skills index"
+    And  the index response body contains "## team-a"
+    And  the index response body contains "## team-b"
+    And  the index response body contains "Alpha team's worker. Owns alpha-only tooling."
+    And  the index response body contains "Bravo team's worker. Handles all bravo workflows."
+    And  the index response body contains "Read [`iii://team-a/index`](iii://team-a/index) for the full worker reference."
+    And  the index response body contains "Read [`iii://team-b/index`](iii://team-b/index) for the full worker reference."
+    And  the index response body does not contain "team-a/foo"
+    And  the index response body does not contain "## Foo"

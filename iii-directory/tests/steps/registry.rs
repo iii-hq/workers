@@ -58,8 +58,8 @@ async fn wiremock_search(_world: &mut IiiSkillsWorld, q: String, step: &cucumber
         return;
     };
     Mock::given(method("GET"))
-        .and(path("/search"))
-        .and(query_param("q", &q))
+        .and(path("/w"))
+        .and(query_param("search", &q))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(body)
@@ -75,8 +75,8 @@ async fn wiremock_search_status(_world: &mut IiiSkillsWorld, status: u16, q: Str
         return;
     };
     Mock::given(method("GET"))
-        .and(path("/search"))
-        .and(query_param("q", &q))
+        .and(path("/w"))
+        .and(query_param("search", &q))
         .respond_with(ResponseTemplate::new(status).set_body_string("upstream error"))
         .mount(&shared.mock_server)
         .await;
@@ -95,9 +95,12 @@ async fn wiremock_worker_info_tag(
     let Some(shared) = workers::shared() else {
         return;
     };
+    // The worker still accepts `tag:` in its input, but on the wire it
+    // forwards the value as `?version=…` (per OpenAPI). The mock matches
+    // that wire shape.
     Mock::given(method("GET"))
         .and(path(format!("/w/{worker}")))
-        .and(query_param("tag", &tag))
+        .and(query_param("version", &tag))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(body)
@@ -139,6 +142,43 @@ async fn wiremock_worker_info_status(_world: &mut IiiSkillsWorld, status: u16, w
     };
     Mock::given(method("GET"))
         .and(path(format!("/w/{worker}")))
+        .respond_with(ResponseTemplate::new(status).set_body_string("not found"))
+        .mount(&shared.mock_server)
+        .await;
+}
+
+#[given(
+    regex = r#"^a wiremock registry serving worker skills "([^"]+)" at version "([^"]+)" with body:$"#
+)]
+async fn wiremock_worker_skills_version(
+    _world: &mut IiiSkillsWorld,
+    worker: String,
+    version: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let body = step.docstring.as_deref().unwrap_or("").to_string();
+    let Some(shared) = workers::shared() else {
+        return;
+    };
+    Mock::given(method("GET"))
+        .and(path(format!("/w/{worker}/skills")))
+        .and(query_param("version", &version))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(body)
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&shared.mock_server)
+        .await;
+}
+
+#[given(regex = r#"^a wiremock registry that returns (\d+) for worker skills "([^"]+)"$"#)]
+async fn wiremock_worker_skills_status(_world: &mut IiiSkillsWorld, status: u16, worker: String) {
+    let Some(shared) = workers::shared() else {
+        return;
+    };
+    Mock::given(method("GET"))
+        .and(path(format!("/w/{worker}/skills")))
         .respond_with(ResponseTemplate::new(status).set_body_string("not found"))
         .mount(&shared.mock_server)
         .await;
@@ -245,6 +285,42 @@ fn worker_list_version(world: &mut IiiSkillsWorld, name: String, version: String
         entry["version"].as_str().unwrap_or(""),
         version,
         "version mismatch on entry: {entry:?}"
+    );
+}
+
+#[then(regex = r#"^the registry worker-list pagination has_more is (true|false)$"#)]
+fn worker_list_pagination_has_more(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    let actual = v["pagination"]["has_more"]
+        .as_bool()
+        .expect("missing pagination.has_more");
+    let want = expected == "true";
+    assert_eq!(actual, want, "pagination: {:?}", v["pagination"]);
+}
+
+#[then(regex = r#"^the registry worker-list pagination next_cursor is "([^"]*)"$"#)]
+fn worker_list_pagination_next_cursor(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    let actual = v["pagination"]["next_cursor"].as_str().unwrap_or("");
+    assert_eq!(actual, expected, "pagination: {:?}", v["pagination"]);
+}
+
+#[then("the registry worker-list pagination next_cursor is null")]
+fn worker_list_pagination_next_cursor_null(world: &mut IiiSkillsWorld) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    assert!(
+        v["pagination"]["next_cursor"].is_null(),
+        "expected null next_cursor; got: {:?}",
+        v["pagination"]
     );
 }
 

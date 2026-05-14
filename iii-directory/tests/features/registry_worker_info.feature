@@ -1,44 +1,70 @@
 @engine @registry @registry_worker_info
 Feature: directory::registry::workers::info (workers registry HTTP proxy)
-  HTTP `GET {registry_base}/w/{name}?version=…|tag=…` proxied to the
-  workers registry. The flat publish payload is decoded into a
-  `{ worker: { name, description, version, repo, author }, readme,
-  api_reference: { functions, triggers }, skills_tree }` envelope —
-  the `worker` field has the same shape as
-  `directory::engine::workers::info.worker` so callers can switch
-  between local + registry surfaces with one parser.
+  Two parallel registry calls back the response:
+    * `GET {base}/w/{name}?version=…` returns `{ worker: WorkerDetail }`
+      whose `worker` field carries name / description / version / repo /
+      author / type / config / supported_targets / total_downloads /
+      dependencies plus readme / functions / triggers.
+    * `GET {base}/w/{name}/skills?version=…` returns the skills + prompts
+      tree merged into the response as `skills_tree`.
+  The OpenAPI uses `?version=` for both endpoints; tags (`latest`) and
+  exact semvers share that wire param. The user-facing input still
+  accepts `tag:` for ergonomics — the worker rewrites it to `?version=`.
+  The `worker` field shares its core fields (`name`, `description`,
+  `version`) with `directory::engine::workers::info.worker`.
 
   Background:
     Given the iii engine is reachable
 
-  Scenario: workers::info returns the full publish envelope at a tag
+  Scenario: workers::info merges the detail envelope and skills tree at a tag
     Given a wiremock registry serving worker info "resend" at tag "latest" with body:
+      """
+      {
+        "worker": {
+          "name": "resend",
+          "description": "Email worker",
+          "type": "binary",
+          "version": "1.2.3",
+          "repo": "https://github.com/iii-hq/resend",
+          "config": {},
+          "supported_targets": ["x86_64-unknown-linux-gnu"],
+          "total_downloads": 4242,
+          "dependencies": [],
+          "author": { "name": "iii", "pfp": null, "verified": true },
+          "readme": "# resend\n\nDocs body.",
+          "functions": [
+            {
+              "name": "send",
+              "description": "Send an email.",
+              "request_schema": { "type": "object" },
+              "response_schema": { "type": "object" }
+            }
+          ],
+          "triggers": [
+            {
+              "name": "on-bounce",
+              "description": "Fires on a bounce.",
+              "invocation_schema": { "type": "object" },
+              "return_schema": { "type": "object" }
+            }
+          ]
+        }
+      }
+      """
+    And a wiremock registry serving worker skills "resend" at version "latest" with body:
       """
       {
         "name": "resend",
         "version": "1.2.3",
-        "description": "Email worker",
-        "repo": "https://github.com/iii-hq/resend",
-        "readme": "# resend\n\nDocs body.",
-        "author": { "name": "iii", "is_verified": true },
-        "functions": [
+        "skills": [{ "path": "index.md", "content": "# resend" }],
+        "prompts": [
           {
-            "name": "send",
-            "description": "Send an email.",
-            "request_schema": { "type": "object" },
-            "response_schema": { "type": "object" }
+            "name": "send-email",
+            "description": "Compose.",
+            "args_schema": { "type": "object" },
+            "content": "Compose body."
           }
-        ],
-        "triggers": [
-          {
-            "name": "on-bounce",
-            "description": "Fires on a bounce."
-          }
-        ],
-        "skills_tree": {
-          "skills": [{ "path": "index.md" }],
-          "prompts": [{ "name": "send-email", "description": "Compose." }]
-        }
+        ]
       }
       """
     When I trigger directory::registry::workers::info with payload:
@@ -58,12 +84,26 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
     Given a wiremock registry serving worker info "resend" at tag "latest" with body:
       """
       {
-        "name": "resend",
-        "version": "1.2.3",
-        "functions": [],
-        "triggers": [],
-        "skills_tree": {"skills": [], "prompts": []}
+        "worker": {
+          "name": "resend",
+          "description": "Email worker",
+          "type": "binary",
+          "version": "1.2.3",
+          "repo": "https://github.com/iii-hq/resend",
+          "config": {},
+          "supported_targets": [],
+          "total_downloads": 0,
+          "dependencies": [],
+          "author": null,
+          "readme": "",
+          "functions": [],
+          "triggers": []
+        }
       }
+      """
+    And a wiremock registry serving worker skills "resend" at version "latest" with body:
+      """
+      { "name": "resend", "version": "1.2.3", "skills": [], "prompts": [] }
       """
     When I trigger directory::registry::workers::info with payload:
       """
@@ -88,6 +128,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
 
   Scenario: workers::info HTTP 404 surfaces in the failure message
     Given a wiremock registry that returns 404 for worker info "missing"
+    And a wiremock registry that returns 404 for worker skills "missing"
     When I trigger directory::registry::workers::info with payload:
       """
       {"name": "missing", "tag": "latest"}
@@ -98,12 +139,26 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
     Given a wiremock registry serving worker info "cached" at tag "latest" with body:
       """
       {
-        "name": "cached",
-        "version": "1.0.0",
-        "functions": [],
-        "triggers": [],
-        "skills_tree": {"skills": [], "prompts": []}
+        "worker": {
+          "name": "cached",
+          "description": null,
+          "type": "binary",
+          "version": "1.0.0",
+          "repo": null,
+          "config": {},
+          "supported_targets": [],
+          "total_downloads": 0,
+          "dependencies": [],
+          "author": null,
+          "readme": "",
+          "functions": [],
+          "triggers": []
+        }
       }
+      """
+    And a wiremock registry serving worker skills "cached" at version "latest" with body:
+      """
+      { "name": "cached", "version": "1.0.0", "skills": [], "prompts": [] }
       """
     When I trigger directory::registry::workers::info with payload:
       """
@@ -116,3 +171,4 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     Then the directory::registry::workers::info call succeeds
     And  the wiremock registry received exactly 1 request to "/w/cached"
+    And  the wiremock registry received exactly 1 request to "/w/cached/skills"

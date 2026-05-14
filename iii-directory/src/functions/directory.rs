@@ -12,12 +12,13 @@
 //!   * `directory::engine::workers::list`              — list connected workers, filterable
 //!   * `directory::engine::workers::info`              — worker envelope + its functions + trigger types + registered triggers
 //!
-//! All handlers are pure thin wrappers around `iii.list_*` SDK helpers
-//! (which call `engine::functions::list`, `engine::workers::list`,
-//! `engine::trigger-types::list`, `engine::triggers::list`) plus
-//! filesystem-backed how-to skill discovery via [`crate::how_to`].
+//! All handlers are thin wrappers around `III::trigger` calls to the
+//! engine introspection endpoints (`engine::functions::list`,
+//! `engine::workers::list`, `engine::trigger-types::list`,
+//! `engine::triggers::list`) plus filesystem-backed how-to skill discovery
+//! via [`crate::how_to`].
 //!
-//! Worker-name attribution: SDK 0.11.3 returns no `worker` field on
+//! Worker-name attribution: the SDK returns no `worker` field on
 //! `FunctionInfo` / `TriggerTypeInfo` / `TriggerInfo`; we cross-reference
 //! `WorkerInfo.functions[]` (canonical for functions and registered
 //! triggers) and fall back to the first `::` segment of the id (only
@@ -33,7 +34,7 @@ use std::sync::Arc;
 
 use iii_sdk::{
     FunctionInfo as SdkFunctionInfo, IIIError, RegisterFunction, TriggerInfo as SdkTriggerInfo,
-    TriggerTypeInfo, WorkerInfo, III,
+    TriggerRequest, TriggerTypeInfo, WorkerInfo, III,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -508,16 +509,14 @@ pub async fn function_info(
         return Err("function_id must be non-empty".into());
     }
     let (functions, workers) = fetch_functions_and_workers(iii).await?;
-    let triggers = iii
-        .list_triggers(true)
+    let triggers = engine_list_triggers(iii, true)
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
     function_info_core(&functions, &workers, &triggers, cfg, &function_id)
 }
 
 pub async fn trigger_list(iii: &III, input: TriggerListInput) -> Result<TriggerListOutput, String> {
-    let trigger_types = iii
-        .list_trigger_types(true)
+    let trigger_types = engine_list_trigger_types(iii, true)
         .await
         .map_err(|e| format!("engine::trigger-types::list: {e}"))?;
 
@@ -561,12 +560,10 @@ pub async fn trigger_info(iii: &III, input: TriggerInfoInput) -> Result<TriggerI
     if id.is_empty() {
         return Err("id must be non-empty".into());
     }
-    let trigger_types = iii
-        .list_trigger_types(true)
+    let trigger_types = engine_list_trigger_types(iii, true)
         .await
         .map_err(|e| format!("engine::trigger-types::list: {e}"))?;
-    let triggers = iii
-        .list_triggers(true)
+    let triggers = engine_list_triggers(iii, true)
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
     trigger_info_core(&trigger_types, &triggers, &id)
@@ -576,12 +573,10 @@ pub async fn registered_trigger_list(
     iii: &III,
     input: RegisteredTriggerListInput,
 ) -> Result<RegisteredTriggerListOutput, String> {
-    let triggers = iii
-        .list_triggers(true)
+    let triggers = engine_list_triggers(iii, true)
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
-    let workers = iii
-        .list_workers()
+    let workers = engine_list_workers(iii)
         .await
         .map_err(|e| format!("engine::workers::list: {e}"))?;
     let owner_map = build_function_owner_map(&workers);
@@ -644,12 +639,10 @@ pub async fn registered_trigger_info(
     if id.is_empty() {
         return Err("id must be non-empty".into());
     }
-    let triggers = iii
-        .list_triggers(true)
+    let triggers = engine_list_triggers(iii, true)
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
-    let trigger_types = iii
-        .list_trigger_types(true)
+    let trigger_types = engine_list_trigger_types(iii, true)
         .await
         .map_err(|e| format!("engine::trigger-types::list: {e}"))?;
     let (functions, workers) = fetch_functions_and_workers(iii).await?;
@@ -683,8 +676,7 @@ pub async fn registered_trigger_info(
 }
 
 pub async fn worker_list(iii: &III, input: WorkerListInput) -> Result<WorkerListOutput, String> {
-    let workers = iii
-        .list_workers()
+    let workers = engine_list_workers(iii)
         .await
         .map_err(|e| format!("engine::workers::list: {e}"))?;
 
@@ -725,8 +717,7 @@ pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfo
         return Err("name must be non-empty".into());
     }
 
-    let workers = iii
-        .list_workers()
+    let workers = engine_list_workers(iii)
         .await
         .map_err(|e| format!("engine::workers::list: {e}"))?;
     let worker = workers
@@ -735,16 +726,13 @@ pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfo
         .cloned()
         .ok_or_else(|| format!("worker not found: {name}"))?;
 
-    let functions = iii
-        .list_functions()
+    let functions = engine_list_functions(iii)
         .await
         .map_err(|e| format!("engine::functions::list: {e}"))?;
-    let trigger_types = iii
-        .list_trigger_types(true)
+    let trigger_types = engine_list_trigger_types(iii, true)
         .await
         .map_err(|e| format!("engine::trigger-types::list: {e}"))?;
-    let triggers = iii
-        .list_triggers(true)
+    let triggers = engine_list_triggers(iii, true)
         .await
         .map_err(|e| format!("engine::triggers::list: {e}"))?;
 
@@ -938,15 +926,79 @@ pub fn trigger_info_core(
     })
 }
 
+async fn engine_list_functions(iii: &III) -> Result<Vec<SdkFunctionInfo>, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".into(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    Ok(result
+        .get("functions")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default())
+}
+
+async fn engine_list_workers(iii: &III) -> Result<Vec<WorkerInfo>, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".into(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    Ok(result
+        .get("workers")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default())
+}
+
+async fn engine_list_triggers(
+    iii: &III,
+    include_internal: bool,
+) -> Result<Vec<SdkTriggerInfo>, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::triggers::list".into(),
+            payload: serde_json::json!({ "include_internal": include_internal }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    Ok(result
+        .get("triggers")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default())
+}
+
+async fn engine_list_trigger_types(
+    iii: &III,
+    include_internal: bool,
+) -> Result<Vec<TriggerTypeInfo>, IIIError> {
+    let result = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::trigger-types::list".into(),
+            payload: serde_json::json!({ "include_internal": include_internal }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    Ok(result
+        .get("trigger_types")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default())
+}
+
 async fn fetch_functions_and_workers(
     iii: &III,
 ) -> Result<(Vec<SdkFunctionInfo>, Vec<WorkerInfo>), String> {
-    let functions = iii
-        .list_functions()
+    let functions = engine_list_functions(iii)
         .await
         .map_err(|e| format!("engine::functions::list: {e}"))?;
-    let workers = iii
-        .list_workers()
+    let workers = engine_list_workers(iii)
         .await
         .map_err(|e| format!("engine::workers::list: {e}"))?;
     Ok((functions, workers))

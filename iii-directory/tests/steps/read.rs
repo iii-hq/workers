@@ -15,6 +15,7 @@ use crate::common::world::IiiSkillsWorld;
 const LAST_LIST: &str = "read_last_list";
 const LAST_GET: &str = "read_last_get";
 const LAST_GET_ERR: &str = "read_last_get_err";
+const LAST_INDEX: &str = "read_last_index";
 
 #[given("the iii engine is reachable")]
 async fn engine_reachable(_world: &mut IiiSkillsWorld) {}
@@ -29,7 +30,13 @@ fn write_fixture(world: &IiiSkillsWorld, rel: &str, body: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create_dir_all");
     }
-    std::fs::write(&path, body).expect("write fixture");
+    // Gherkin docstrings come back with a leading `\n` (the newline right
+    // after the opening `"""`). That trips the YAML frontmatter parser
+    // because it expects the body to start with `---\n` at byte 0, so
+    // strip it before writing — otherwise scenarios that declare
+    // frontmatter never see it round-trip.
+    let normalized = body.strip_prefix('\n').unwrap_or(body);
+    std::fs::write(&path, normalized).expect("write fixture");
 }
 
 #[given(regex = r#"^a skill file at "([^"]+)" with body:$"#)]
@@ -115,6 +122,31 @@ fn listing_entry_description(world: &mut IiiSkillsWorld, id: String, expected: S
     assert_eq!(entry["description"].as_str().unwrap_or(""), expected);
 }
 
+#[then(regex = r#"^the listing entry "([^"]+)" has type "([^"]+)"$"#)]
+fn listing_entry_type(world: &mut IiiSkillsWorld, id: String, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let entry = list_entry(world, &id).unwrap_or_else(|| panic!("id {id:?} missing from listing"));
+    assert_eq!(
+        entry["type"].as_str().unwrap_or(""),
+        expected,
+        "entry: {entry:?}"
+    );
+}
+
+#[then(regex = r#"^the listing entry "([^"]+)" has a null type$"#)]
+fn listing_entry_null_type(world: &mut IiiSkillsWorld, id: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let entry = list_entry(world, &id).unwrap_or_else(|| panic!("id {id:?} missing from listing"));
+    assert!(
+        entry["type"].is_null(),
+        "expected null type for {id:?}; got: {entry:?}"
+    );
+}
+
 // ── skills::get ─────────────────────────────────────────────────────
 
 #[when(regex = r#"^I get skill "([^"]*)"$"#)]
@@ -171,6 +203,31 @@ fn get_description(world: &mut IiiSkillsWorld, expected: String) {
     assert_eq!(v["description"].as_str().unwrap_or(""), expected);
 }
 
+#[then(regex = r#"^the get response has type "([^"]+)"$"#)]
+fn get_type(world: &mut IiiSkillsWorld, expected: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    assert_eq!(
+        v["type"].as_str().unwrap_or(""),
+        expected,
+        "response: {v:?}"
+    );
+}
+
+#[then("the get response has a null type")]
+fn get_null_type(world: &mut IiiSkillsWorld) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_GET).expect("no get recorded");
+    assert!(
+        v["type"].is_null(),
+        "expected null type; got response: {v:?}"
+    );
+}
+
 #[then(regex = r#"^the get response body contains "([^"]+)"$"#)]
 fn get_body_contains(world: &mut IiiSkillsWorld, needle: String) {
     if world.iii.is_none() {
@@ -213,5 +270,65 @@ fn get_fails_mentioning(world: &mut IiiSkillsWorld, needle: String) {
     assert!(
         err.contains(&needle),
         "expected error to mention {needle:?}; got: {err:?}"
+    );
+}
+
+// ── skills::index ───────────────────────────────────────────────────
+
+#[when("I index skills")]
+async fn index_skills(world: &mut IiiSkillsWorld) {
+    world.stash.remove(LAST_INDEX);
+    let Some(iii) = world.iii.clone() else {
+        return;
+    };
+    if let Ok(v) = iii
+        .trigger(TriggerRequest {
+            function_id: "directory::skills::index".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    {
+        world.stash.insert(LAST_INDEX.into(), v);
+    }
+}
+
+#[then(regex = r#"^the index response has at least (\d+) workers$"#)]
+fn index_min_count(world: &mut IiiSkillsWorld, min: usize) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_INDEX).expect("no index recorded");
+    let count = v["workers_count"].as_u64().unwrap_or(0) as usize;
+    assert!(
+        count >= min,
+        "expected workers_count >= {min}; got {count} in {v:?}"
+    );
+}
+
+#[then(regex = r#"^the index response body contains "([^"]+)"$"#)]
+fn index_body_contains(world: &mut IiiSkillsWorld, needle: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_INDEX).expect("no index recorded");
+    let body = v["body"].as_str().unwrap_or("");
+    assert!(
+        body.contains(&needle),
+        "expected index body to contain {needle:?}; got:\n{body}"
+    );
+}
+
+#[then(regex = r#"^the index response body does not contain "([^"]+)"$"#)]
+fn index_body_lacks(world: &mut IiiSkillsWorld, needle: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = world.stash.get(LAST_INDEX).expect("no index recorded");
+    let body = v["body"].as_str().unwrap_or("");
+    assert!(
+        !body.contains(&needle),
+        "expected index body NOT to contain {needle:?}; got:\n{body}"
     );
 }
