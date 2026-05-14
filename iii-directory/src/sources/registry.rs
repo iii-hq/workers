@@ -38,6 +38,14 @@ use super::{build_http_client, validate_relative_path, write_file_atomic, Downlo
 use crate::functions::prompts::validate_name as validate_prompt_name;
 
 /// Specifier for which version of a worker's skills to pull.
+///
+/// Both arms serialise as `?version=…` on the wire — per the
+/// OpenAPI contract, `/w/{slug}/skills` accepts either a tag
+/// (`latest`, `beta`) or an exact semver under the same `version`
+/// query param. The enum variants are preserved purely so the
+/// user-facing input on `directory::skills::download` (which still
+/// distinguishes `version:` from `tag:`) round-trips through the
+/// download path unchanged for diagnostics and logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
     Version(String),
@@ -45,10 +53,13 @@ pub enum VersionSpec {
 }
 
 impl VersionSpec {
+    /// The `?version=…` value to send to the registry. Both variants
+    /// share the same wire key; `("version", value)` is returned to
+    /// keep the `(key, value)` tuple shape callers already use.
     pub fn as_query_param(&self) -> (&'static str, &str) {
         match self {
             VersionSpec::Version(v) => ("version", v.as_str()),
-            VersionSpec::Tag(t) => ("tag", t.as_str()),
+            VersionSpec::Tag(t) => ("version", t.as_str()),
         }
     }
 }
@@ -242,11 +253,13 @@ mod tests {
     }
 
     #[test]
-    fn version_spec_query_param_picks_key() {
+    fn version_spec_query_param_always_uses_version_key() {
         let v = VersionSpec::Version("1.2.3".into());
         assert_eq!(v.as_query_param(), ("version", "1.2.3"));
         let t = VersionSpec::Tag("latest".into());
-        assert_eq!(t.as_query_param(), ("tag", "latest"));
+        // Per the OpenAPI contract, both tags and exact semvers go on
+        // the wire as `?version=…`.
+        assert_eq!(t.as_query_param(), ("version", "latest"));
     }
 
     #[test]

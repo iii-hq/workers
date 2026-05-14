@@ -9,9 +9,11 @@ title: Enumerate every skill on disk with title and description
 Call `directory::skills::list` when you need an enumeration of every
 markdown skill the iii-directory worker is currently serving from its
 `skills_folder`. One row per file (recursive `**/*.md`, `prompts/`
-segments excluded), sorted lex by `id`. Each row already carries the
-H1 `title` and first-paragraph `description` so a picker / table-of-
-contents UI doesn't need a follow-up `directory::skills::get` per row.
+segments excluded), sorted lex by `id`. Each row already carries
+`title` (frontmatter `title:` when present, else the body H1),
+`type` (frontmatter `type:` — e.g. `index`, `how-to`, `reference`),
+and `description` (first paragraph), so a picker / table-of-contents
+UI doesn't need a follow-up `directory::skills::get` per row.
 
 This is the single "what's on disk?" call. Use it when:
 
@@ -42,6 +44,7 @@ visible immediately, no caching.
     {
       "id":          "agent-memory/observe",
       "title":       "How to observe",
+      "type":        "how-to",
       "description": "Record an event in agent memory.",
       "bytes":       1234,
       "modified_at": "2026-05-01T12:34:56+00:00"
@@ -53,8 +56,12 @@ visible immediately, no caching.
 - `id` is the relative path under `skills_folder` with `.md` stripped
   (e.g. `agent-memory/observe.md` → `agent-memory/observe`). Same
   string `directory::skills::get` accepts.
-- `title` is the first `# H1` line in the body, falling back to `id`
-  when the file has no H1.
+- `title` resolves in this order: YAML frontmatter `title:` (when
+  present and non-empty after trim), then the first `# H1` line in
+  the body, with the bare `id` as a final fallback.
+- `type` is the YAML frontmatter `type:` field (free-form classifier;
+  common values are `index`, `how-to`, `reference`). `null` when the
+  file has no frontmatter or omits the key.
 - `description` is the first non-heading paragraph, empty when the
   file has only headings.
 - `bytes` is the on-disk file size (raw, including frontmatter).
@@ -83,6 +90,6 @@ each child immediately after its parent.
 # Related
 
 - `directory::skills::get` — read one body by id (returns the same
-  `id` / `title` / `description` / `modified_at` plus `body`).
+  `id` / `title` / `type` / `description` / `modified_at` plus `body`).
 - `directory::skills::download` — populate `skills_folder` from the
   registry or a GitHub repo.

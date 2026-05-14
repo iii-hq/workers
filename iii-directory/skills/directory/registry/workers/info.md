@@ -8,17 +8,19 @@ title: Inspect one worker's full registry metadata
 
 Call `directory::registry::workers::info` to pull the FULL published
 metadata for one worker from the public registry: worker envelope
-(name, description, version, repo, author), readme markdown, the API
+(name, description, version, repo, author, plus the publication
+metadata `type` / `config` / `supported_targets` / `total_downloads` /
+`dependencies` / optional `image`), readme markdown, the API
 reference (functions + triggers with schemas), and the list of skill /
 prompt files the bundle ships.
 
 This is the REMOTE counterpart to `directory::engine::workers::info`.
-Both responses wrap the worker payload in a top-level `worker` field,
+Both responses wrap the worker payload in a top-level `worker` field
 and the core fields (`name`, `description`, `version`) are guaranteed
-on both surfaces so a parser that touches only those keys works against
-either; everything else is surface-specific (registry adds `repo` /
-`author` plus the top-level `readme`, `api_reference`, `skills_tree`,
-directory adds runtime/connection state).
+on both surfaces, so a parser that only touches those keys works
+against either; everything else is surface-specific (registry adds
+publication metadata plus the top-level `readme`, `api_reference`,
+`skills_tree`; the engine view adds runtime / connection state).
 
 | Question                                                  | Use this                              |
 |-----------------------------------------------------------|---------------------------------------|
@@ -36,18 +38,25 @@ directory adds runtime/connection state).
 ```
 
 You may pass either `version` or `tag`, not both. With neither, the
-worker info defaults to `tag: "latest"`.
+worker info defaults to `tag: "latest"`. The worker rewrites both
+inputs to `?version=…` on the wire (per the OpenAPI contract — the
+registry's `?version` query param accepts both tags and exact semvers).
 
 # Outputs
 
 ```json
 {
-  "worker": {                                          // same shape as directory::registry::workers::list rows
-    "name":        "agent-memory",                     // shared core field with directory::engine::workers::info.worker
-    "description": "Persistent memory tier for agents.", // shared core field
-    "version":     "1.2.3",                            // shared core field (the resolved version)
-    "repo":        "https://github.com/iii-hq/workers",
-    "author":      { "name": "iii", "is_verified": true }
+  "worker": {
+    "name":              "agent-memory",                       // shared core field
+    "description":       "Persistent memory tier for agents.", // shared core field
+    "type":              "binary",                             // binary | image | engine
+    "version":           "1.2.3",                              // shared core field (resolved)
+    "repo":              "https://github.com/iii-hq/workers",
+    "config":            {},
+    "supported_targets": ["x86_64-unknown-linux-gnu"],
+    "total_downloads":   4242,
+    "dependencies":      [],
+    "author":            { "name": "iii", "pfp": null, "verified": true }
   },
   "readme": "# agent-memory\n\nDocs here.",            // optional; null if registry omits it
   "api_reference": {
@@ -77,13 +86,19 @@ worker info defaults to `tag: "latest"`.
 }
 ```
 
+`worker` / `readme` / `api_reference` come from `GET /w/{slug}?version=…`.
+`skills_tree` comes from a parallel `GET /w/{slug}/skills?version=…`
+call — the worker fans both out concurrently and merges them, dropping
+the markdown `content` and prompt `args_schema` from the skills payload
+(call `directory::skills::download` to materialise bodies on disk).
+
 # Caching
 
 Each unique `(name, version|tag)` pair is cached for
 `registry_cache_ttl_ms` (default 60s). Repeat calls within the TTL
-window don't hit the registry — they return the same response from
-in-process memory. To bust the cache, wait out the TTL or call with a
-different version/tag.
+window don't hit the registry — they return the same merged response
+from in-process memory. To bust the cache, wait out the TTL or call
+with a different version/tag.
 
 # Worked example
 
@@ -102,7 +117,7 @@ Pin to an exact version:
 # Related
 
 - `directory::registry::workers::list` — discover the worker name first.
-- `directory::engine::workers::info` — same `worker` envelope against
-  the connected engine.
+- `directory::engine::workers::info` — same core `worker` fields
+  (`name` / `description` / `version`) against the connected engine.
 - `directory::skills::download` — install the worker's skill bundle
   locally (uses the same registry under the hood).

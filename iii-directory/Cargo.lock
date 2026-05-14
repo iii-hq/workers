@@ -1070,9 +1070,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.11.3"
+version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0226f7ce0d9071f9cb75ea7b7ac1241b15282915ccd41d9bbd2ee0db94f90c6"
+checksum = "6feab7af22d4f583024c5515139b3430c8f4ad1b7a7956351fa52079f05b2dab"
 dependencies = [
  "async-trait",
  "futures-util",

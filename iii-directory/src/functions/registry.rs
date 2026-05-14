@@ -5,27 +5,31 @@
 //! learn one shape:
 //!
 //!   * `directory::registry::workers::list`  — list workers in the
-//!     public registry, filterable by `search`. Same row envelope
-//!     (`Worker`) as [`crate::functions::directory::Worker`].
+//!     public registry, filterable by `search` and paginated via
+//!     opaque `cursor`. Same row envelope (`Worker`) as
+//!     [`crate::functions::directory::Worker`] for the shared core
+//!     fields (`name`, `description`, `version`).
 //!   * `directory::registry::workers::info`  — full registry metadata
 //!     for one worker. Wraps the registry-side fields in a top-level
 //!     `worker` envelope (same shape as the list rows), with `readme`
 //!     / `api_reference` / `skills_tree` as surface-specific extras.
+//!     `skills_tree` is fetched from a separate `/w/{slug}/skills`
+//!     endpoint in parallel and merged into the response.
 //!
 //! Both responses are cached in-process for `registry_cache_ttl_ms`
 //! (default 60s) so repeat lookups don't hammer the registry — every
 //! call is a separate HTTP request without it.
 //!
-//! HTTP shapes assumed:
+//! Wire contract (mirrors `openapi.yaml`):
 //!
-//!   * `GET {base}/search?q=…&limit=…` → `{ workers: [...] }`
-//!   * `GET {base}/w/{worker}?version=…|tag=…` → flat envelope mirroring
-//!     the publish payload (`name`, `version`, `description`, `repo`,
-//!     `author`, `readme`, `functions`, `triggers`, `skills_tree`).
-//!
-//! If either path turns out to differ on the live registry, only the
-//! `fetch_*` helpers below need adjusting; the public function
-//! input/output contracts stay stable.
+//!   * `GET {base}/w?search=…&cursor=…` →
+//!     `{ workers: [WorkerListItem], pagination: { next_cursor, has_more, page_size } }`.
+//!     Page size is server-authored; the client cannot override it.
+//!   * `GET {base}/w/{slug}?version=…` → `{ worker: WorkerDetail }`.
+//!     `version` accepts either a tag (`latest`) or an exact semver
+//!     (`1.2.3`). The legacy `?tag=` query param is not used.
+//!   * `GET {base}/w/{slug}/skills?version=…` →
+//!     `{ name, version, skills: [{path, content}], prompts: [{name, description?, args_schema?, content}] }`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -39,54 +43,107 @@ use tokio::sync::RwLock;
 use crate::config::SkillsConfig;
 use crate::sources::build_http_client;
 
-const SEARCH_LIMIT_DEFAULT: u32 = 20;
-const SEARCH_LIMIT_MAX: u32 = 100;
-
 // ---------- public input/output shapes ----------
 
 /// `directory::registry::workers::list` input. Mirrors
 /// [`crate::functions::directory::WorkerListInput.search`] so callers
 /// can switch between local and registry surfaces without re-learning
-/// the API. Adds `limit` for paging because the registry is paged.
+/// the API. Adds `cursor` for paging because the registry is paged
+/// (server-authored page size — the client cannot override it).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct WorkerListInput {
-    /// Free-text query forwarded to the registry as `?q=…`. Required —
-    /// the public registry doesn't support an unscoped browse endpoint.
+    /// Optional free-text query. Forwarded to the registry as
+    /// `?search=…`; the registry ranks results by `pg_trgm` similarity
+    /// against `lower(name)` and `lower(description)`. When omitted,
+    /// results are ordered by `total_downloads DESC`.
     #[serde(default)]
     pub search: Option<String>,
-    /// Max results to return. Defaults to 20; capped at 100.
+    /// Opaque cursor returned by a previous call's
+    /// `pagination.next_cursor`. Pass back verbatim to fetch the next
+    /// page; omit (or pass `null`) to fetch the first page.
     #[serde(default)]
-    pub limit: Option<u32>,
+    pub cursor: Option<String>,
 }
 
+/// Author block for a published worker. Field names match the
+/// `WorkerAuthor` schema in `openapi.yaml` (`pfp`, `verified`).
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
-pub struct RegistryAuthor {
+pub struct WorkerAuthor {
     pub name: Option<String>,
-    pub profile_picture: Option<String>,
+    /// Profile picture URL. `null` when the author hasn't uploaded one.
     #[serde(default)]
-    pub is_verified: bool,
+    pub pfp: Option<String>,
+    #[serde(default)]
+    pub verified: bool,
+}
+
+/// Worker dependency entry. Mirrors the `Dependency` schema in
+/// `openapi.yaml`.
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+pub struct Dependency {
+    pub name: String,
+    pub version: String,
 }
 
 /// Shared worker envelope used by both
 /// `directory::registry::workers::list` rows and the `worker` field of
-/// `directory::registry::workers::info`. Same field names as
+/// `directory::registry::workers::info`. Field names match the
+/// OpenAPI `WorkerListItem` schema. The shared core fields (`name`,
+/// `description`, `version`) line up with
 /// [`crate::functions::directory::Worker`] so callers learn one shape
 /// across local + registry surfaces.
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 pub struct Worker {
     pub name: String,
+    #[serde(default)]
     pub description: Option<String>,
+    /// Worker kind — `binary`, `image`, or `engine`.
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
     /// Latest published version (worker-list) or the resolved version
     /// (worker-info, when called with `version` / `tag`).
-    pub version: Option<String>,
-    pub repo: Option<String>,
     #[serde(default)]
-    pub author: Option<RegistryAuthor>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Free-form runtime configuration block from the publish payload.
+    #[serde(default = "default_config_object")]
+    pub config: Value,
+    #[serde(default)]
+    pub supported_targets: Vec<String>,
+    /// Container image tag, populated only for `type=image` workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub total_downloads: u64,
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+    #[serde(default)]
+    pub author: Option<WorkerAuthor>,
+}
+
+fn default_config_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+/// Pagination envelope returned alongside a worker-list page. Mirrors
+/// the OpenAPI `Pagination` schema.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]
+pub struct Pagination {
+    /// Opaque cursor for the next page. `null` on the last page.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub has_more: bool,
+    /// Server-authored page size. The client cannot override this.
+    #[serde(default)]
+    pub page_size: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerListOutput {
     pub workers: Vec<Worker>,
+    pub pagination: Pagination,
 }
 
 /// `directory::registry::workers::info` input. Pass either `version`
@@ -234,10 +291,14 @@ fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
             },
         )
         .description(
-            "List workers from the public registry (api.workers.iii.dev) \
-             matching the free-text term `search`. Same row shape as \
-             directory::engine::workers::list so callers learn one envelope. \
-             Results are cached for `registry_cache_ttl_ms` (default 60s).",
+            "List workers from the public registry (api.workers.iii.dev). \
+             Optional free-text `search` is matched fuzzily by the registry; \
+             omit it to browse by `total_downloads DESC`. Pagination is \
+             cursor-based with a server-authored page size — pass back \
+             `pagination.next_cursor` as `cursor` to fetch the next page. \
+             Shares the core `name` / `description` / `version` fields with \
+             directory::engine::workers::list. Results are cached for \
+             `registry_cache_ttl_ms` (default 60s).",
         ),
     );
 }
@@ -260,11 +321,14 @@ fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
         )
         .description(
             "Fetch full registry metadata for one worker: worker envelope \
-             (same shape as directory::registry::workers::list rows and \
-             directory::engine::workers::info), readme, full API reference \
-             (functions + triggers schemas), and tree of skill/prompt \
-             file paths. Pass either `version` or `tag` (defaults to \
-             tag=\"latest\"). Results are cached for `registry_cache_ttl_ms`.",
+             (same core fields as directory::engine::workers::info plus \
+             registry-only `type` / `config` / `supported_targets` / \
+             `total_downloads` / `dependencies` / `image`), readme, full \
+             API reference (functions + triggers schemas), and the tree \
+             of skill / prompt file paths fetched from the registry's \
+             /w/{slug}/skills endpoint. Pass either `version` or `tag` \
+             (defaults to tag=\"latest\"). Results are cached for \
+             `registry_cache_ttl_ms`.",
         ),
     );
 }
@@ -272,6 +336,11 @@ fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
 // ---------- input validation (pure) ----------
 
 /// Resolved version specifier produced by [`classify_worker_info_input`].
+/// Both arms serialise as `?version=…` on the wire (the OpenAPI
+/// `/w/{slug}` and `/w/{slug}/skills` endpoints accept either a tag
+/// or an exact semver under the same `version` query param). The enum
+/// distinction is preserved purely so the cache key, error messages,
+/// and unit tests can tell which user-facing input was supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerInfoSpec {
     Version(String),
@@ -279,10 +348,21 @@ pub enum WorkerInfoSpec {
 }
 
 impl WorkerInfoSpec {
-    pub fn as_query_param(&self) -> (&'static str, &str) {
+    /// User-facing label (for cache keys and diagnostics). The wire
+    /// query key is always `version` — see [`Self::query_value`].
+    pub fn label(&self) -> &'static str {
         match self {
-            WorkerInfoSpec::Version(v) => ("version", v.as_str()),
-            WorkerInfoSpec::Tag(t) => ("tag", t.as_str()),
+            WorkerInfoSpec::Version(_) => "version",
+            WorkerInfoSpec::Tag(_) => "tag",
+        }
+    }
+
+    /// The `?version=…` value to send to the registry. Tags and
+    /// semvers go down the same wire path per the OpenAPI contract.
+    pub fn query_value(&self) -> &str {
+        match self {
+            WorkerInfoSpec::Version(v) => v.as_str(),
+            WorkerInfoSpec::Tag(t) => t.as_str(),
         }
     }
 }
@@ -312,11 +392,6 @@ pub fn classify_worker_info_input(
     Ok((name, spec))
 }
 
-pub fn clamp_search_limit(limit: Option<u32>) -> u32 {
-    let raw = limit.unwrap_or(SEARCH_LIMIT_DEFAULT);
-    raw.clamp(1, SEARCH_LIMIT_MAX)
-}
-
 // ---------- core handlers ----------
 
 pub async fn worker_list(
@@ -324,24 +399,45 @@ pub async fn worker_list(
     cache: &RegistryCache,
     input: WorkerListInput,
 ) -> Result<WorkerListOutput, String> {
-    let q = input.search.as_deref().unwrap_or("").trim().to_string();
-    if q.is_empty() {
-        return Err("search must be non-empty".into());
-    }
-    let limit = clamp_search_limit(input.limit);
-    let cache_key = format!("worker-list:{q}:{limit}");
+    let search = input
+        .search
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let cursor = input
+        .cursor
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let cache_key = format!(
+        "worker-list:{}:{}",
+        search.as_deref().unwrap_or(""),
+        cursor.as_deref().unwrap_or("")
+    );
     if let Some(cached) = cache.get::<WorkerListOutput>(&cache_key).await {
         return Ok(cached);
     }
 
-    let url = format!("{}/search", cfg.registry_base());
+    let url = format!("{}/w", cfg.registry_base());
     let client = build_http_client(cfg.download_timeout_ms)?;
-    let response = client
-        .get(&url)
-        .query(&[("q", q.as_str()), ("limit", &limit.to_string())])
-        .send()
-        .await
-        .map_err(|e| format!("GET {url} (q={q}, limit={limit}): {e}"))?;
+    let mut request = client.get(&url);
+    let mut query: Vec<(&str, &str)> = Vec::with_capacity(2);
+    if let Some(s) = search.as_deref() {
+        query.push(("search", s));
+    }
+    if let Some(c) = cursor.as_deref() {
+        query.push(("cursor", c));
+    }
+    if !query.is_empty() {
+        request = request.query(&query);
+    }
+
+    let response = request.send().await.map_err(|e| {
+        format!(
+            "GET {url} (search={:?}, cursor={:?}): {e}",
+            search.as_deref().unwrap_or(""),
+            cursor.as_deref().unwrap_or("")
+        )
+    })?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -355,8 +451,7 @@ pub async fn worker_list(
         .await
         .map_err(|e| format!("decode registry response: {e}"))?;
 
-    let workers = parse_worker_list_response(&body);
-    let out = WorkerListOutput { workers };
+    let out = parse_worker_list_response(&body);
     cache.put(cache_key, &out).await;
     Ok(out)
 }
@@ -369,22 +464,45 @@ pub async fn worker_info(
     let (name, spec) = classify_worker_info_input(input)?;
     let cache_key = format!(
         "worker-info:{name}:{}={}",
-        spec.as_query_param().0,
-        spec.as_query_param().1
+        spec.label(),
+        spec.query_value()
     );
     if let Some(cached) = cache.get::<WorkerInfoOutput>(&cache_key).await {
         return Ok(cached);
     }
 
-    let url = format!("{}/w/{name}", cfg.registry_base());
-    let (key, value) = spec.as_query_param();
+    let base = cfg.registry_base();
+    let detail_url = format!("{base}/w/{name}");
+    let skills_url = format!("{base}/w/{name}/skills");
+    let version_value = spec.query_value().to_string();
     let client = build_http_client(cfg.download_timeout_ms)?;
+
+    // Fan out the two GETs concurrently. Per OpenAPI both endpoints
+    // accept `?version=` for either tag or exact semver, so both legs
+    // share the same query value.
+    let detail_fut = fetch_json(&client, &detail_url, &version_value);
+    let skills_fut = fetch_json(&client, &skills_url, &version_value);
+    let (detail_body, skills_body) = tokio::try_join!(detail_fut, skills_fut)?;
+
+    let out = parse_worker_info_response(&name, &detail_body, &skills_body);
+    cache.put(cache_key, &out).await;
+    Ok(out)
+}
+
+/// Issue `GET {url}?version={version}` and decode the body as JSON.
+/// Surfaces non-2xx statuses as `Err(String)` so the caller can fail
+/// the whole `worker_info` call.
+async fn fetch_json(
+    client: &reqwest::Client,
+    url: &str,
+    version_value: &str,
+) -> Result<Value, String> {
     let response = client
-        .get(&url)
-        .query(&[(key, value)])
+        .get(url)
+        .query(&[("version", version_value)])
         .send()
         .await
-        .map_err(|e| format!("GET {url} ({key}={value}): {e}"))?;
+        .map_err(|e| format!("GET {url} (version={version_value}): {e}"))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -393,128 +511,90 @@ pub async fn worker_info(
             body.trim()
         ));
     }
-    let body = response
+    response
         .json::<Value>()
         .await
-        .map_err(|e| format!("decode registry response: {e}"))?;
-
-    let out = parse_worker_info_response(&name, &body);
-    cache.put(cache_key, &out).await;
-    Ok(out)
+        .map_err(|e| format!("decode registry response from {url}: {e}"))
 }
 
 // ---------- pure response parsers ----------
 
-/// Tolerant parse of the worker-list response. Accepts either the canonical
-/// `{ "workers": [...] }` envelope OR a bare array, and silently drops
-/// entries that don't include a `name`. Field aliases supported:
-/// `latest_version` → `version` (registry uses the longer name when
-/// listing, the short one when serving worker-info).
-pub fn parse_worker_list_response(value: &Value) -> Vec<Worker> {
-    let arr: &[Value] = value
+/// Parse the `WorkerListResponse` envelope returned by `GET /w`.
+/// Tolerates a missing `pagination` block (defaults to "no more pages")
+/// so a future server hotfix can't break the worker. Entries without
+/// a `name` field are dropped silently.
+pub fn parse_worker_list_response(value: &Value) -> WorkerListOutput {
+    let workers = value
         .get("workers")
         .and_then(|w| w.as_array())
-        .or_else(|| value.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    arr.iter().filter_map(parse_worker_envelope).collect()
+        .map(|arr| arr.iter().filter_map(parse_worker_envelope).collect())
+        .unwrap_or_default();
+    let pagination = value
+        .get("pagination")
+        .and_then(|p| serde_json::from_value::<Pagination>(p.clone()).ok())
+        .unwrap_or_default();
+    WorkerListOutput {
+        workers,
+        pagination,
+    }
 }
 
-/// Project a single registry-shaped JSON object into a [`Worker`].
-/// Returns `None` if there's no `name` field.
+/// Project a single registry-shaped `WorkerListItem` JSON object into
+/// a [`Worker`]. Returns `None` if there's no `name` field.
 fn parse_worker_envelope(v: &Value) -> Option<Worker> {
-    let name = v.get("name").and_then(|n| n.as_str())?.to_string();
-    let description = v
-        .get("description")
-        .and_then(|d| d.as_str())
-        .map(String::from);
-    let version = v
-        .get("version")
-        .or_else(|| v.get("latest_version"))
-        .and_then(|x| x.as_str())
-        .map(String::from);
-    let repo = v
-        .get("repo")
-        .or_else(|| v.get("repository"))
-        .and_then(|r| r.as_str())
-        .map(String::from);
-    let author = v
-        .get("author")
-        .and_then(|a| serde_json::from_value::<RegistryAuthor>(a.clone()).ok());
-    Some(Worker {
-        name,
-        description,
-        version,
-        repo,
-        author,
-    })
+    v.get("name").and_then(|n| n.as_str())?;
+    serde_json::from_value::<Worker>(v.clone()).ok()
 }
 
-/// Tolerant parse of the worker-info response. Missing fields default
-/// to `None` / empty so a registry that ships partial metadata for a
-/// new worker still returns something useful.
-pub fn parse_worker_info_response(default_name: &str, value: &Value) -> WorkerInfoOutput {
-    // Build the worker envelope, defaulting `name` to `default_name`
-    // when the payload omits it.
-    let worker = match parse_worker_envelope(value) {
-        Some(mut w) if w.name.is_empty() => {
-            w.name = default_name.to_string();
-            w
-        }
-        Some(w) => w,
-        None => Worker {
-            name: default_name.to_string(),
-            description: value
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(String::from),
-            version: value
-                .get("version")
-                .or_else(|| value.get("latest_version"))
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            repo: value
-                .get("repo")
-                .or_else(|| value.get("repository"))
-                .and_then(|r| r.as_str())
-                .map(String::from),
-            author: value
-                .get("author")
-                .and_then(|a| serde_json::from_value::<RegistryAuthor>(a.clone()).ok()),
-        },
-    };
+/// Parse the `{ worker: WorkerDetail }` envelope from `GET /w/{slug}`
+/// merged with the `WorkerSkillsDownloadResponse` from
+/// `GET /w/{slug}/skills`. Both inputs are tolerated when partially
+/// populated so a registry that ships partial metadata for a new
+/// worker still returns something useful.
+pub fn parse_worker_info_response(
+    default_name: &str,
+    detail_body: &Value,
+    skills_body: &Value,
+) -> WorkerInfoOutput {
+    // The OpenAPI `/w/{slug}` response is `{ worker: WorkerDetail }`.
+    // Fall back to the top-level object for forward-compatibility with
+    // any older deployment that returned a flat publish payload.
+    let detail = detail_body.get("worker").unwrap_or(detail_body);
 
-    let readme = value
+    let worker = parse_worker_envelope(detail).unwrap_or_else(|| Worker {
+        name: default_name.to_string(),
+        description: None,
+        kind: None,
+        version: None,
+        repo: None,
+        config: default_config_object(),
+        supported_targets: Vec::new(),
+        image: None,
+        total_downloads: 0,
+        dependencies: Vec::new(),
+        author: None,
+    });
+
+    let readme = detail
         .get("readme")
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    // api_reference: accept either a nested object, or a top-level pair
-    // of `functions` / `triggers` arrays alongside the rest of the
-    // payload (the publish payload uses the flat shape).
-    let api_reference = if let Some(api) = value.get("api_reference") {
-        serde_json::from_value::<ApiReference>(api.clone()).unwrap_or_default()
-    } else {
-        let functions = value
-            .get("functions")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new()));
-        let triggers = value
-            .get("triggers")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new()));
-        let composed = serde_json::json!({
-            "functions": functions,
-            "triggers": triggers,
-        });
-        serde_json::from_value::<ApiReference>(composed).unwrap_or_default()
-    };
+    let functions = detail
+        .get("functions")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let triggers = detail
+        .get("triggers")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let api_reference = serde_json::from_value::<ApiReference>(serde_json::json!({
+        "functions": functions,
+        "triggers": triggers,
+    }))
+    .unwrap_or_default();
 
-    let skills_tree = value
-        .get("skills_tree")
-        .or_else(|| value.get("skillsTree"))
-        .and_then(|v| serde_json::from_value::<SkillsTree>(v.clone()).ok())
-        .unwrap_or_default();
+    let skills_tree = parse_skills_tree(skills_body);
 
     WorkerInfoOutput {
         worker,
@@ -522,6 +602,44 @@ pub fn parse_worker_info_response(default_name: &str, value: &Value) -> WorkerIn
         api_reference,
         skills_tree,
     }
+}
+
+/// Project a `WorkerSkillsDownloadResponse` body into the metadata-only
+/// `SkillsTree` shape. Drops markdown bodies (`content`) and prompt
+/// `args_schema` / `content` since this view is for picker UIs, not
+/// content rendering. Use `directory::skills::download` to materialise
+/// the bodies on disk.
+fn parse_skills_tree(value: &Value) -> SkillsTree {
+    let skills = value
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    s.get("path")
+                        .and_then(|p| p.as_str())
+                        .map(|p| SkillsTreeSkill { path: p.to_string() })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let prompts = value
+        .get("prompts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let name = p.get("name").and_then(|n| n.as_str())?.to_string();
+                    let description = p
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(String::from);
+                    Some(SkillsTreePrompt { name, description })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    SkillsTree { skills, prompts }
 }
 
 #[cfg(test)]
@@ -587,115 +705,211 @@ mod tests {
     }
 
     #[test]
-    fn clamp_search_limit_caps_to_max() {
-        assert_eq!(clamp_search_limit(None), SEARCH_LIMIT_DEFAULT);
-        assert_eq!(clamp_search_limit(Some(10)), 10);
-        assert_eq!(clamp_search_limit(Some(500)), SEARCH_LIMIT_MAX);
-        assert_eq!(clamp_search_limit(Some(0)), 1);
+    fn worker_info_spec_label_distinguishes_arms() {
+        assert_eq!(WorkerInfoSpec::Version("1.2.3".into()).label(), "version");
+        assert_eq!(WorkerInfoSpec::Tag("latest".into()).label(), "tag");
     }
 
     #[test]
-    fn parse_worker_list_response_accepts_envelope() {
+    fn worker_info_spec_query_value_uses_inner_string() {
+        assert_eq!(
+            WorkerInfoSpec::Version("1.2.3".into()).query_value(),
+            "1.2.3"
+        );
+        assert_eq!(WorkerInfoSpec::Tag("latest".into()).query_value(), "latest");
+    }
+
+    #[test]
+    fn parse_worker_list_response_accepts_envelope_with_pagination() {
         let v = json!({
             "workers": [
                 {
                     "name": "resend",
-                    "latest_version": "1.2.3",
                     "description": "Email worker",
+                    "type": "binary",
+                    "version": "1.2.3",
                     "repo": "https://github.com/iii/resend",
-                    "author": { "name": "iii", "is_verified": true }
+                    "config": { "runtime": "edge" },
+                    "supported_targets": ["x86_64-unknown-linux-gnu"],
+                    "total_downloads": 42,
+                    "dependencies": [],
+                    "author": { "name": "iii", "pfp": null, "verified": true }
+                }
+            ],
+            "pagination": {
+                "next_cursor": "opaque-cursor",
+                "has_more": true,
+                "page_size": 20
+            }
+        });
+        let out = parse_worker_list_response(&v);
+        assert_eq!(out.workers.len(), 1);
+        assert_eq!(out.workers[0].name, "resend");
+        assert_eq!(out.workers[0].kind.as_deref(), Some("binary"));
+        assert_eq!(out.workers[0].version.as_deref(), Some("1.2.3"));
+        assert_eq!(out.workers[0].total_downloads, 42);
+        assert_eq!(out.workers[0].supported_targets, vec!["x86_64-unknown-linux-gnu".to_string()]);
+        let author = out.workers[0].author.as_ref().unwrap();
+        assert_eq!(author.name.as_deref(), Some("iii"));
+        assert!(author.verified);
+        assert!(author.pfp.is_none());
+        assert_eq!(out.pagination.next_cursor.as_deref(), Some("opaque-cursor"));
+        assert!(out.pagination.has_more);
+        assert_eq!(out.pagination.page_size, 20);
+    }
+
+    #[test]
+    fn parse_worker_list_response_defaults_pagination_when_missing() {
+        let v = json!({ "workers": [ { "name": "alpha" } ] });
+        let out = parse_worker_list_response(&v);
+        assert_eq!(out.workers.len(), 1);
+        assert_eq!(out.workers[0].name, "alpha");
+        assert!(out.pagination.next_cursor.is_none());
+        assert!(!out.pagination.has_more);
+        assert_eq!(out.pagination.page_size, 0);
+    }
+
+    #[test]
+    fn parse_worker_list_response_drops_entries_without_name() {
+        let v = json!({ "workers": [ { "no_name": true }, { "name": "ok" } ] });
+        let out = parse_worker_list_response(&v);
+        assert_eq!(out.workers.len(), 1);
+        assert_eq!(out.workers[0].name, "ok");
+    }
+
+    #[test]
+    fn parse_worker_list_response_handles_empty_envelope() {
+        let v = json!({});
+        let out = parse_worker_list_response(&v);
+        assert!(out.workers.is_empty());
+        assert!(!out.pagination.has_more);
+    }
+
+    #[test]
+    fn parse_worker_info_unwraps_worker_envelope_and_merges_skills() {
+        let detail = json!({
+            "worker": {
+                "name": "resend",
+                "description": "Email worker",
+                "type": "binary",
+                "version": "1.2.3",
+                "repo": "https://github.com/iii/resend",
+                "config": {},
+                "supported_targets": ["x86_64-unknown-linux-gnu"],
+                "total_downloads": 1234,
+                "dependencies": [{ "name": "todo-worker", "version": "0.1.0" }],
+                "author": { "name": "iii", "pfp": null, "verified": true },
+                "readme": "# Resend\n\nDocs here.",
+                "functions": [
+                    {
+                        "name": "send",
+                        "description": "Send an email.",
+                        "request_schema": { "type": "object" },
+                        "response_schema": { "type": "object" }
+                    }
+                ],
+                "triggers": [
+                    {
+                        "name": "on-bounce",
+                        "description": "Fires when a delivery bounces.",
+                        "invocation_schema": { "type": "object" },
+                        "return_schema": { "type": "object" }
+                    }
+                ]
+            }
+        });
+        let skills = json!({
+            "name": "resend",
+            "version": "1.2.3",
+            "skills": [
+                { "path": "index.md", "content": "ignored" },
+                { "path": "emails/send-email.md", "content": "ignored" }
+            ],
+            "prompts": [
+                {
+                    "name": "send-email",
+                    "description": "Compose.",
+                    "args_schema": { "type": "object" },
+                    "content": "ignored"
                 }
             ]
         });
-        let workers = parse_worker_list_response(&v);
-        assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].name, "resend");
-        assert_eq!(workers[0].version.as_deref(), Some("1.2.3"));
-        assert!(workers[0].author.as_ref().unwrap().is_verified);
-    }
-
-    #[test]
-    fn parse_worker_list_response_accepts_bare_array() {
-        let v = json!([
-            { "name": "alpha" },
-            { "name": "beta", "description": "desc" }
-        ]);
-        let workers = parse_worker_list_response(&v);
-        assert_eq!(workers.len(), 2);
-        assert_eq!(workers[1].description.as_deref(), Some("desc"));
-    }
-
-    #[test]
-    fn parse_worker_list_response_drops_invalid_entries() {
-        let v = json!({ "workers": [ { "no_name": true }, { "name": "ok" } ] });
-        let workers = parse_worker_list_response(&v);
-        assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].name, "ok");
-    }
-
-    #[test]
-    fn parse_worker_info_handles_flat_publish_payload() {
-        let v = json!({
-            "name": "resend",
-            "version": "1.2.3",
-            "description": "Email worker",
-            "repo": "https://github.com/iii/resend",
-            "readme": "# Resend\n\nDocs here.",
-            "author": { "name": "iii", "is_verified": true },
-            "functions": [
-                {
-                    "name": "send",
-                    "description": "Send an email.",
-                    "request_schema": { "type": "object" },
-                    "response_schema": { "type": "object" }
-                }
-            ],
-            "triggers": [
-                {
-                    "name": "on-bounce",
-                    "description": "Fires when a delivery bounces.",
-                    "invocation_schema": { "type": "object" }
-                }
-            ],
-            "skills_tree": {
-                "skills": [ { "path": "index.md" } ],
-                "prompts": [ { "name": "send-email", "description": "Compose." } ]
-            }
-        });
-        let out = parse_worker_info_response("resend", &v);
+        let out = parse_worker_info_response("resend", &detail, &skills);
         assert_eq!(out.worker.name, "resend");
         assert_eq!(out.worker.version.as_deref(), Some("1.2.3"));
         assert_eq!(out.worker.description.as_deref(), Some("Email worker"));
+        assert_eq!(out.worker.kind.as_deref(), Some("binary"));
+        assert_eq!(out.worker.total_downloads, 1234);
+        assert_eq!(out.worker.dependencies.len(), 1);
+        assert_eq!(out.worker.dependencies[0].name, "todo-worker");
+        assert!(out.worker.author.as_ref().unwrap().verified);
         assert!(out.readme.as_deref().unwrap().contains("# Resend"));
         assert_eq!(out.api_reference.functions.len(), 1);
         assert_eq!(out.api_reference.functions[0].name, "send");
         assert_eq!(out.api_reference.triggers.len(), 1);
-        assert_eq!(out.skills_tree.skills.len(), 1);
+        assert_eq!(out.api_reference.triggers[0].name, "on-bounce");
+        assert_eq!(out.skills_tree.skills.len(), 2);
+        assert_eq!(out.skills_tree.skills[0].path, "index.md");
         assert_eq!(out.skills_tree.prompts.len(), 1);
-        assert!(out.worker.author.as_ref().unwrap().is_verified);
+        assert_eq!(out.skills_tree.prompts[0].name, "send-email");
+        assert_eq!(
+            out.skills_tree.prompts[0].description.as_deref(),
+            Some("Compose.")
+        );
     }
 
     #[test]
-    fn parse_worker_info_handles_nested_api_reference() {
-        let v = json!({
-            "name": "x",
-            "api_reference": {
-                "functions": [{ "name": "f1" }],
-                "triggers": []
-            }
-        });
-        let out = parse_worker_info_response("x", &v);
-        assert_eq!(out.api_reference.functions.len(), 1);
-        assert!(out.api_reference.triggers.is_empty());
-    }
-
-    #[test]
-    fn parse_worker_info_falls_back_to_default_name() {
-        let v = json!({});
-        let out = parse_worker_info_response("fallback", &v);
+    fn parse_worker_info_falls_back_to_default_name_on_empty_bodies() {
+        let detail = json!({});
+        let skills = json!({ "skills": [], "prompts": [] });
+        let out = parse_worker_info_response("fallback", &detail, &skills);
         assert_eq!(out.worker.name, "fallback");
         assert!(out.worker.version.is_none());
         assert!(out.api_reference.functions.is_empty());
+        assert!(out.skills_tree.skills.is_empty());
+        assert!(out.skills_tree.prompts.is_empty());
+    }
+
+    #[test]
+    fn parse_worker_info_tolerates_legacy_flat_payload() {
+        // Forward-compat: an older deployment that returns the flat
+        // publish payload (no `worker` key) is still readable.
+        let detail = json!({
+            "name": "legacy",
+            "version": "0.1.0",
+            "description": "Legacy worker",
+            "type": "binary",
+            "config": {},
+            "supported_targets": [],
+            "total_downloads": 0,
+            "dependencies": [],
+            "author": null,
+            "functions": [{ "name": "f1" }],
+            "triggers": []
+        });
+        let skills = json!({ "skills": [], "prompts": [] });
+        let out = parse_worker_info_response("legacy", &detail, &skills);
+        assert_eq!(out.worker.name, "legacy");
+        assert_eq!(out.api_reference.functions.len(), 1);
+    }
+
+    #[test]
+    fn parse_skills_tree_drops_entries_without_path_or_name() {
+        let v = json!({
+            "skills": [
+                { "path": "ok.md", "content": "x" },
+                { "content": "missing path" }
+            ],
+            "prompts": [
+                { "name": "ok", "description": "fine" },
+                { "description": "missing name" }
+            ]
+        });
+        let tree = parse_skills_tree(&v);
+        assert_eq!(tree.skills.len(), 1);
+        assert_eq!(tree.skills[0].path, "ok.md");
+        assert_eq!(tree.prompts.len(), 1);
+        assert_eq!(tree.prompts[0].name, "ok");
     }
 
     #[tokio::test]

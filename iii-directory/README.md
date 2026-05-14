@@ -7,10 +7,10 @@ split into four sub-namespaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
-| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, description, bytes, modified_at }` per row) and a single-skill reader `directory::skills::get { id }` returning `{ id, title, description, body, modified_at }` | Orientation: "when and why to use my worker's tools" |
+| **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Static prompt templates listed by `directory::prompts::list` and read by `directory::prompts::get` | Parametric command templates the *user* invokes |
 | **Engine** (`directory::engine::*`) | Read-side enrichment over `engine::functions::list`, `engine::workers::list`, `engine::trigger-types::list`, `engine::triggers::list` | "What's connected to the engine right now?" |
-| **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with the same `workers::{list,info}` shape as `directory::engine::workers::*` | "What's published in the public registry?" |
+| **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with `directory::engine::workers::*` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Skills and prompts are sourced from a single configured folder on disk
 (`skills_folder`). The only write path is the
@@ -20,8 +20,11 @@ Skills and prompts are sourced from a single configured folder on disk
 downloaded, files belong to the developer — edit them however you want.
 
 `directory::engine::workers::*` and `directory::registry::workers::*`
-share the same envelope shape so callers can switch between the local
-engine view and the published-registry view without re-learning the API.
+share the core `name` / `description` / `version` fields so a parser
+that touches only those keys works against either surface; the
+registry view also surfaces publication metadata (`type`, `config`,
+`supported_targets`, `total_downloads`, `dependencies`, optional
+`image`) and the engine view adds runtime / connection state.
 
 ## Table of contents
 
@@ -126,6 +129,11 @@ A few rules:
 
 - **Skill ids** are the relative path under `skills_folder` with `.md`
   stripped. Each segment must satisfy `[a-z0-9_-]{1,64}`.
+- **Skill frontmatter is optional.** When present, the reader honours
+  two keys: `title:` (used by `directory::skills::list` and
+  `directory::skills::get` in preference to a body `# H1`) and
+  `type:` (free-form classifier surfaced verbatim on both responses).
+  Any other YAML keys are ignored.
 - **Prompts** live under any `*/prompts/*.md` path. They must start with
   a YAML frontmatter block declaring at least `description`; `name`
   is optional and overrides the file-stem default.
@@ -163,7 +171,7 @@ tree-shaped picker iterate `list` rows themselves and indent by
 
 ## Functions
 
-Fifteen functions, all under `directory::*`. All registrations are
+Sixteen functions, all under `directory::*`. All registrations are
 namespace-clean; this worker is intentionally agnostic to MCP and any
 other adapter.
 
@@ -172,8 +180,9 @@ other adapter.
 | Function ID | Description |
 |---|---|
 | `directory::skills::download` | Pull markdown into `skills_folder`. Either `{repo, skill, branch?}` (defaults `branch=main`) or `{worker, version?|tag?}` (defaults `tag=latest`). |
-| `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, description, bytes, modified_at }` per row. Title and description are extracted from each body's H1 + first paragraph so consumers can render a picker without a follow-up `get` per row. |
-| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, description, body, modified_at }` — same flat shape as `directory::prompts::get`. Accepts a bare id or the same id prefixed with `iii://`. |
+| `directory::skills::list` | Enriched listing of every fs-backed skill: `{ id, title, type, description, bytes, modified_at }` per row. `title` prefers the YAML frontmatter `title:` over the body H1, `type` is lifted from frontmatter `type:` (`null` when absent), and `description` is the first paragraph of the body — so consumers can render a picker without a follow-up `get` per row. |
+| `directory::skills::get` | Fetch one skill by id. Returns `{ id, title, type, description, body, modified_at }` — same shape `directory::skills::list` rows use, plus the raw markdown `body`. Same title-resolution and `type` precedence as `list`. Accepts a bare id or the same id prefixed with `iii://`. |
+| `directory::skills::index` | Render one short markdown entry per installed worker (skills with frontmatter `type: index`). Returns `{ body, workers_count }` where `body` is a ready-to-paste page: `# Skills index`, then one `## <worker title>` heading + the worker's first overview paragraph + a `Read iii://<ns>/index` pointer the agent can follow with `directory::skills::get`. Token-light by design; use `directory::skills::list` for per-skill rows. |
 
 ### `directory::prompts::*` (filesystem reader)
 
@@ -192,15 +201,15 @@ other adapter.
 | `directory::engine::triggers::info` | Single trigger-type detail: configuration schema, return schema, instance count. |
 | `directory::engine::registered-triggers::list` | List registered trigger INSTANCES (subscriber rows). |
 | `directory::engine::registered-triggers::info` | Composite: instance + trigger-type detail + function detail. |
-| `directory::engine::workers::list` | List workers connected to the engine; same row shape as `directory::registry::workers::list`. |
+| `directory::engine::workers::list` | List workers connected to the engine; shares the core `name` / `description` / `version` fields with `directory::registry::workers::list`. |
 | `directory::engine::workers::info` | One worker's `worker` envelope + functions + trigger types + registered triggers. |
 
 ### `directory::registry::*` (workers registry HTTP proxy)
 
 | Function ID | Description |
 |---|---|
-| `directory::registry::workers::list` | Search published workers in `api.workers.iii.dev`. Same row shape as `directory::engine::workers::list`. |
-| `directory::registry::workers::info` | Full registry detail for one worker: `worker` envelope (matching `directory::engine::workers::info.worker`) plus `readme`, `api_reference`, `skills_tree`. |
+| `directory::registry::workers::list` | Browse / search published workers in `api.workers.iii.dev`. Optional free-text `search` (matched fuzzy by `pg_trgm`) and opaque `cursor` for pagination; page size is server-authored. Response is `{ workers: [...], pagination: { next_cursor, has_more, page_size } }`. Shares the core `name` / `description` / `version` fields with `directory::engine::workers::list`. |
+| `directory::registry::workers::info` | Full registry detail for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions + triggers) and `GET /w/{slug}/skills` for the skills/prompts tree — and merges them into `{ worker, readme, api_reference, skills_tree }`. The user-facing input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
 
 Both `directory::registry::*` responses are cached in-process for
 `registry_cache_ttl_ms` (default 60s).

@@ -27,8 +27,11 @@ split into four sub-namespaces (all MCP-agnostic):
   registry?"
 
 `directory::engine::workers::*` and `directory::registry::workers::*`
-share the same envelope shape, so callers can switch between the local
-engine view and the published-registry view without re-learning the API.
+share the core `name` / `description` / `version` fields, so a parser
+that touches only those keys works against either surface. The registry
+view also surfaces publication metadata (`type`, `config`,
+`supported_targets`, `total_downloads`, `dependencies`, optional
+`image`); the engine view adds runtime / connection state.
 
 Skills and prompts are sourced from a single configured folder on disk
 (`skills_folder`); see [the README](../README.md) for the install,
@@ -38,8 +41,9 @@ configuration, and `directory::skills::download` flow.
 
 ### `directory::skills::*` — filesystem-backed skill reader
 
-- [`directory::skills::list`](iii://directory/skills/list) — enriched listing of every skill on disk (id, title, description, bytes, modified_at).
-- [`directory::skills::get`](iii://directory/skills/get) — read one skill body by id (returns the same id/title/description/modified_at as `list` plus `body`).
+- [`directory::skills::list`](iii://directory/skills/list) — enriched listing of every skill on disk (id, title, type, description, bytes, modified_at). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (`null` when absent).
+- [`directory::skills::get`](iii://directory/skills/get) — read one skill body by id (returns the same id/title/type/description/modified_at as `list` plus `body`).
+- [`directory::skills::index`](iii://directory/skills/index) — short markdown index of every installed worker (one `## <title>` + first paragraph + `read more` link per `type: index` skill); designed for token-light agent bootstrap.
 - [`directory::skills::download`](iii://directory/skills/download) — pull markdown into `skills_folder` from the workers registry or a GitHub repo.
 
 ### `directory::prompts::*` — filesystem-backed prompt reader
@@ -54,10 +58,10 @@ configuration, and `directory::skills::download` flow.
 - [`directory::engine::triggers::info`](iii://directory/engine/triggers/info) — inspect one trigger type's schemas + live instance count.
 - [`directory::engine::registered-triggers::list`](iii://directory/engine/registered-triggers/list) — list registered trigger instances (subscriber rows).
 - [`directory::engine::registered-triggers::info`](iii://directory/engine/registered-triggers/info) — inspect one registered trigger (instance + type + function).
-- [`directory::engine::workers::list`](iii://directory/engine/workers/list) — list workers connected to the engine; same row shape as `directory::registry::workers::list`.
+- [`directory::engine::workers::list`](iii://directory/engine/workers/list) — list workers connected to the engine; shares the core `name` / `description` / `version` fields with `directory::registry::workers::list`.
 - [`directory::engine::workers::info`](iii://directory/engine/workers/info) — inspect one connected worker's full surface.
 
 ### `directory::registry::*` — what's published in the public registry
 
-- [`directory::registry::workers::list`](iii://directory/registry/workers/list) — search published workers in `api.workers.iii.dev`; same row shape as `directory::engine::workers::list`.
+- [`directory::registry::workers::list`](iii://directory/registry/workers/list) — browse / search published workers in `api.workers.iii.dev`. Cursor-paginated; rows share the core `name` / `description` / `version` fields with `directory::engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`).
 - [`directory::registry::workers::info`](iii://directory/registry/workers/info) — full registry detail for one worker (envelope + readme + api_reference + skills_tree).

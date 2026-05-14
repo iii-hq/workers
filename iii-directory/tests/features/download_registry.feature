@@ -1,9 +1,12 @@
 @engine @download @download_registry
 Feature: directory::skills::download worker= source (workers registry HTTP)
   Pulls a worker's skills + prompts bundle from
-  `{registry_url}/w/{worker}/skills?version=… | tag=…` into
+  `{registry_url}/w/{worker}/skills?version=…` into
   `<skills_folder>/<worker>/`. Skills are written verbatim; prompts
   are written under `<worker>/prompts/<name>.md` with YAML frontmatter.
+  The user-facing input accepts either `version:` (exact semver) or
+  `tag:` (e.g. `latest`); both are forwarded as `?version=` per the
+  OpenAPI contract.
 
   Background:
     Given the iii engine is reachable

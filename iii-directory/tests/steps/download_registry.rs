@@ -53,9 +53,11 @@ async fn wiremock_at_tag(
     let Some(shared) = workers::shared() else {
         return;
     };
+    // The user-facing input still says `tag:`, but `VersionSpec::Tag`
+    // serialises as `?version=…` on the wire (per the OpenAPI contract).
     Mock::given(method("GET"))
         .and(path(format!("/w/{worker}/skills")))
-        .and(query_param("tag", &tag))
+        .and(query_param("version", &tag))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(body)
