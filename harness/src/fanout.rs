@@ -98,11 +98,6 @@ const STATE_LIST_TIMEOUT_MS: u64 = 5_000;
 /// the engine's default state worker; the wire round-trip dominates.
 const SESSIONS_POLL_INTERVAL_MS: u64 = 1_000;
 
-/// Approval poll cadence. Hook-driven push (via the agent::events stream
-/// pump) covers low-latency notification; this poll catches missed states
-/// and clears resolved approvals.
-const APPROVAL_POLL_INTERVAL_MS: u64 = 1_000;
-
 /// Cost summary poll cadence. Each tick performs a `budget::list` and (for
 /// changed budgets) a `budget::usage` round-trip. 2s is cheap and matches
 /// the design coalescing target.
@@ -199,7 +194,6 @@ pub struct FanoutPumps {
     pub prompts_on_change_fn: FunctionRef,
     pub prompts_on_change_trigger: Option<Trigger>,
     pub sessions_poll: tokio::task::JoinHandle<()>,
-    pub approval_poll: tokio::task::JoinHandle<()>,
     pub cost_poll: tokio::task::JoinHandle<()>,
     pub workers_poll: tokio::task::JoinHandle<()>,
 }
@@ -219,7 +213,6 @@ impl FanoutPumps {
         self.skills_on_change_fn.unregister();
         self.prompts_on_change_fn.unregister();
         self.sessions_poll.abort();
-        self.approval_poll.abort();
         self.cost_poll.abort();
         self.workers_poll.abort();
     }
@@ -262,7 +255,6 @@ pub fn spawn_subscribers(iii: &Arc<III>, fanout: SharedFanout) -> FanoutPumps {
     );
 
     let sessions_poll = spawn_sessions_changed_poll(Arc::clone(iii), Arc::clone(&fanout));
-    let approval_poll = spawn_approval_poll(Arc::clone(iii), Arc::clone(&fanout));
     let cost_poll = spawn_cost_poll(Arc::clone(iii), Arc::clone(&fanout));
     let workers_poll = spawn_workers_poll(Arc::clone(iii), fanout);
 
@@ -274,7 +266,6 @@ pub fn spawn_subscribers(iii: &Arc<III>, fanout: SharedFanout) -> FanoutPumps {
         prompts_on_change_fn,
         prompts_on_change_trigger,
         sessions_poll,
-        approval_poll,
         cost_poll,
         workers_poll,
     }
@@ -379,6 +370,35 @@ fn register_agent_event_pump(iii: &III, fanout: SharedFanout) -> FunctionRef {
             let fanout = Arc::clone(&fanout);
             async move {
                 if let Some((session_id, event_data)) = extract_event_payload(&payload) {
+                    // Reactive ui::approval::* path: gate writes
+                    // approval_{requested,resolved} frames into agent::events;
+                    // we forward them to all-sessions subscribers without
+                    // polling state. Non-approval frames classify as None and
+                    // fall through to the regular ui::session::event forward
+                    // below.
+                    if let Some(push) = classify_approval_frame(&event_data, &session_id) {
+                        let all_sessions = {
+                            let state = fanout.read().await;
+                            state.all_sessions_subscribers()
+                        };
+                        for (channel, push_payload) in approval_pushes_for(&push, &all_sessions) {
+                            let iii_for_push = iii.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = iii_for_push
+                                    .trigger(TriggerRequest {
+                                        function_id: channel,
+                                        payload: push_payload,
+                                        action: None,
+                                        timeout_ms: Some(PUSH_TIMEOUT_MS),
+                                    })
+                                    .await
+                                {
+                                    tracing::trace!(error = %e, "ui::approval push failed");
+                                }
+                            });
+                        }
+                    }
+
                     let browsers = {
                         let state = fanout.read().await;
                         state.subscribers_for(&session_id)
@@ -449,6 +469,166 @@ fn extract_event_payload(payload: &Value) -> Option<(String, Value)> {
         .or_else(|| payload.get("data").cloned())
         .unwrap_or(Value::Null);
     Some((session_id, data))
+}
+
+/// Push intent derived from an `agent::events` stream frame. Drives the
+/// reactive ui::approval pipeline (replaces the approval poll).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ApprovalUiPush {
+    /// Forward as `ui::approval::requested::<browser_id>`. Payload mirrors the
+    /// poll's enriched record: original gate fields plus `session_id`.
+    Requested(Value),
+    /// Forward as `ui::approval::resolved::<browser_id>`. Payload carries the
+    /// call id under both new and legacy field names so existing consumers in
+    /// `harness/web/src/useStatus.ts` and `harness-tui/src/types.rs` keep
+    /// working.
+    Resolved(Value),
+}
+
+/// Classify an `agent::events` frame body as a UI-bound approval push.
+///
+/// Returns `None` for non-approval frames and for malformed approval frames
+/// (missing ids). Pure function — wired into the stream subscriber callback.
+pub fn classify_approval_frame(data: &Value, session_id: &str) -> Option<ApprovalUiPush> {
+    if session_id.is_empty() {
+        return None;
+    }
+    let frame_type = data.get("type").and_then(Value::as_str)?;
+    let call_id = data
+        .get("function_call_id")
+        .or_else(|| data.get("tool_call_id"))
+        .and_then(Value::as_str)?;
+    match frame_type {
+        "approval_requested" => {
+            let mut payload = data.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("session_id".into(), Value::String(session_id.to_string()));
+            }
+            Some(ApprovalUiPush::Requested(payload))
+        }
+        "approval_resolved" => Some(ApprovalUiPush::Resolved(json!({
+            "function_call_id": call_id,
+            "tool_call_id": call_id,
+        }))),
+        _ => None,
+    }
+}
+
+/// Build per-session hydration payloads for a new all-sessions subscriber.
+///
+/// Each entry in `pending` (as returned by `approval::list_pending`) becomes
+/// one ui::approval::requested-ready payload. Filters: only `status=pending`
+/// entries; entries without a call id are skipped via `classify_approval_frame`.
+pub fn hydration_payloads(session_id: &str, pending: &[Value]) -> Vec<Value> {
+    pending
+        .iter()
+        .filter(|entry| entry.get("status").and_then(Value::as_str) == Some("pending"))
+        .filter_map(|entry| {
+            let mut synth = entry.clone();
+            if let Some(obj) = synth.as_object_mut() {
+                obj.insert(
+                    "type".into(),
+                    Value::String("approval_requested".into()),
+                );
+            }
+            match classify_approval_frame(&synth, session_id)? {
+                ApprovalUiPush::Requested(payload) => Some(payload),
+                ApprovalUiPush::Resolved(_) => None,
+            }
+        })
+        .collect()
+}
+
+/// Hydrate a freshly-attached all-sessions subscriber.
+///
+/// Enumerates active sessions via `state::list`, fetches pending approvals via
+/// `approval::list_pending`, and pushes `ui::approval::requested::<browser_id>`
+/// for each. Replaces the periodic poll for the reconnect/late-join case.
+/// Fire-and-forget: spawn this; do not await it from request handlers.
+pub async fn hydrate_all_sessions_subscriber(
+    iii: Arc<III>,
+    fanout: SharedFanout,
+    browser_id: String,
+) {
+    let sessions = match iii
+        .trigger(TriggerRequest {
+            function_id: "state::list".into(),
+            payload: json!({ "scope": "agent", "prefix": "session/" }),
+            action: None,
+            timeout_ms: Some(STATE_LIST_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(v) => extract_session_ids(&v),
+        Err(_) => return,
+    };
+
+    let mut per_session: Vec<(String, Vec<Value>)> = Vec::with_capacity(sessions.len());
+    for sid in &sessions {
+        let resp = iii
+            .trigger(TriggerRequest {
+                function_id: "approval::list_pending".into(),
+                payload: json!({ "session_id": sid }),
+                action: None,
+                timeout_ms: Some(STATE_LIST_TIMEOUT_MS),
+            })
+            .await;
+        let entries = resp
+            .ok()
+            .and_then(|v| v.get("pending").and_then(|p| p.as_array()).cloned())
+            .unwrap_or_default();
+        if !entries.is_empty() {
+            per_session.push((sid.clone(), entries));
+        }
+    }
+
+    for (channel, payload) in hydration_pushes_for(&browser_id, &per_session) {
+        push_to_browser(
+            &iii,
+            &fanout,
+            &browser_id,
+            channel,
+            payload,
+            PushKind::Standard,
+        );
+    }
+}
+
+/// Orchestration helper for subscribe-time hydration.
+///
+/// Given a freshly-attached all-sessions subscriber and the per-session
+/// `pending` lists already fetched from `approval::list_pending`, produce the
+/// `(channel, payload)` pairs the caller should drive through `iii.trigger`.
+/// Pure function — the async glue (state::list, list_pending, trigger) wraps
+/// this.
+pub fn hydration_pushes_for(
+    browser_id: &str,
+    per_session: &[(String, Vec<Value>)],
+) -> Vec<(String, Value)> {
+    let channel = format!("ui::approval::requested::{browser_id}");
+    per_session
+        .iter()
+        .flat_map(|(session_id, pending)| {
+            hydration_payloads(session_id, pending)
+                .into_iter()
+                .map(|payload| (channel.clone(), payload))
+        })
+        .collect()
+}
+
+/// Fan a classified approval push out to all-sessions subscribers.
+///
+/// Returns `(channel, payload)` pairs the pump can hand to `iii.trigger`.
+/// Keeps wire channel naming and per-browser cloning isolated and testable.
+pub fn approval_pushes_for(push: &ApprovalUiPush, browser_ids: &[String]) -> Vec<(String, Value)> {
+    let (root, payload) = match push {
+        ApprovalUiPush::Requested(p) => ("ui::approval::requested", p),
+        ApprovalUiPush::Resolved(p) => ("ui::approval::resolved", p),
+    };
+    browser_ids
+        .iter()
+        .map(|b| (format!("{root}::{b}"), payload.clone()))
+        .collect()
 }
 
 fn spawn_sessions_changed_poll(iii: Arc<III>, fanout: SharedFanout) -> tokio::task::JoinHandle<()> {
@@ -662,122 +842,6 @@ pub(crate) fn diff_workers(
         "total": total,
         "workers": workers,
     }))
-}
-
-/// Pure diff helper for the approval pump. Returns the IDs that newly
-/// appeared in `next` and the ones that were removed since `prev`.
-pub(crate) fn diff_approvals(
-    prev: &HashMap<String, Value>,
-    next: &HashMap<String, Value>,
-) -> (Vec<(String, Value)>, Vec<String>) {
-    let mut requested: Vec<(String, Value)> = next
-        .iter()
-        .filter(|(k, _)| !prev.contains_key(*k))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    requested.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut resolved: Vec<String> = prev
-        .keys()
-        .filter(|k| !next.contains_key(*k))
-        .cloned()
-        .collect();
-    resolved.sort();
-    (requested, resolved)
-}
-
-/// Spawn the approval pump. Polls `approval::list_pending` for every known
-/// session every `APPROVAL_POLL_INTERVAL_MS`. On change, pushes
-/// `ui::approval::requested` (per new entry) and `ui::approval::resolved`
-/// (per removed entry) to all-sessions subscribers.
-fn spawn_approval_poll(iii: Arc<III>, fanout: SharedFanout) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut prev: HashMap<String, Value> = HashMap::new();
-        let mut interval = tokio::time::interval(Duration::from_millis(APPROVAL_POLL_INTERVAL_MS));
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-
-            // Discover known sessions; without them we have nowhere to ask.
-            let session_ids = match iii
-                .trigger(TriggerRequest {
-                    function_id: "state::list".into(),
-                    payload: json!({ "scope": "agent", "prefix": "session/" }),
-                    action: None,
-                    timeout_ms: Some(STATE_LIST_TIMEOUT_MS),
-                })
-                .await
-            {
-                Ok(v) => extract_session_ids(&v),
-                Err(_) => continue,
-            };
-
-            let mut next: HashMap<String, Value> = HashMap::new();
-            for sid in &session_ids {
-                let resp = iii
-                    .trigger(TriggerRequest {
-                        function_id: "approval::list_pending".into(),
-                        payload: json!({ "session_id": sid }),
-                        action: None,
-                        timeout_ms: Some(STATE_LIST_TIMEOUT_MS),
-                    })
-                    .await;
-                let Ok(resp) = resp else { continue };
-                let Some(arr) = resp.get("pending").and_then(|v| v.as_array()) else {
-                    continue;
-                };
-                for entry in arr {
-                    let Some(id) = entry
-                        .get("function_call_id")
-                        .or_else(|| entry.get("tool_call_id"))
-                        .and_then(|v| v.as_str())
-                    else {
-                        continue;
-                    };
-                    // Annotate with session_id so the UI can group/filter.
-                    let mut enriched = entry.clone();
-                    if let Some(obj) = enriched.as_object_mut() {
-                        obj.insert("session_id".into(), Value::String(sid.clone()));
-                    }
-                    next.insert(id.to_string(), enriched);
-                }
-            }
-
-            let (requested, resolved) = diff_approvals(&prev, &next);
-            if requested.is_empty() && resolved.is_empty() {
-                continue;
-            }
-
-            let browsers = {
-                let state = fanout.read().await;
-                state.all_sessions_subscribers()
-            };
-
-            for browser_id in &browsers {
-                for (_id, payload) in &requested {
-                    push_to_browser(
-                        &iii,
-                        &fanout,
-                        browser_id,
-                        format!("ui::approval::requested::{browser_id}"),
-                        payload.clone(),
-                        PushKind::Standard,
-                    );
-                }
-                for id in &resolved {
-                    push_to_browser(
-                        &iii,
-                        &fanout,
-                        browser_id,
-                        format!("ui::approval::resolved::{browser_id}"),
-                        json!({ "function_call_id": id, "tool_call_id": id }),
-                        PushKind::Standard,
-                    );
-                }
-            }
-
-            prev = next;
-        }
-    })
 }
 
 /// Spawn the cost poll. Calls `budget::list` every `COST_POLL_INTERVAL_MS`,
@@ -1186,40 +1250,6 @@ mod tests {
     }
 
     #[test]
-    fn fanout_approval_pump_emits_resolved_on_removal() {
-        let mut prev: HashMap<String, Value> = HashMap::new();
-        prev.insert(
-            "tc-1".into(),
-            json!({ "function_call_id": "tc-1", "tool_call_id": "tc-1", "function_id": "write", "tool_name": "write" }),
-        );
-        let next: HashMap<String, Value> = HashMap::new();
-        let (requested, resolved) = diff_approvals(&prev, &next);
-        assert!(requested.is_empty());
-        assert_eq!(resolved, vec!["tc-1".to_string()]);
-    }
-
-    #[test]
-    fn fanout_approval_pump_emits_requested_then_resolved_in_sequence() {
-        // Step 1: empty -> {tc-1}
-        let initial: HashMap<String, Value> = HashMap::new();
-        let mut after_request: HashMap<String, Value> = HashMap::new();
-        after_request.insert(
-            "tc-1".into(),
-            json!({ "function_call_id": "tc-1", "tool_call_id": "tc-1", "function_id": "rm", "tool_name": "rm" }),
-        );
-        let (added, removed) = diff_approvals(&initial, &after_request);
-        assert_eq!(added.len(), 1);
-        assert_eq!(added[0].0, "tc-1");
-        assert!(removed.is_empty());
-
-        // Step 2: {tc-1} -> {} after user resolves.
-        let after_resolve: HashMap<String, Value> = HashMap::new();
-        let (added2, removed2) = diff_approvals(&after_request, &after_resolve);
-        assert!(added2.is_empty());
-        assert_eq!(removed2, vec!["tc-1".to_string()]);
-    }
-
-    #[test]
     fn extract_worker_status_reads_array_form() {
         let v = json!([
             { "name": "turn-orchestrator", "status": "up" },
@@ -1339,5 +1369,282 @@ mod tests {
         let second = pending.swap(true, Ordering::SeqCst);
         assert!(!first, "first overflow should emit resync");
         assert!(second, "second overflow should be deduped");
+    }
+
+    // ─── Reactive approval pipeline ──────────────────────────────────────
+    //
+    // classify_approval_frame turns a parsed `agent::events` frame body into
+    // an explicit push intent. The stream subscriber callback uses it to
+    // forward approval_requested/resolved frames as ui::approval::* events
+    // without polling state.
+
+    #[test]
+    fn classify_approval_frame_requested_enriches_with_session_id() {
+        let data = json!({
+            "type": "approval_requested",
+            "function_call_id": "c1",
+            "tool_call_id": "c1",
+            "function_id": "shell::fs::write",
+            "tool_name": "shell::fs::write",
+            "args": { "path": "/tmp/x" },
+            "expires_at": 1_234_567_890_u64,
+        });
+        let out = classify_approval_frame(&data, "s1").expect("requested classified");
+        match out {
+            ApprovalUiPush::Requested(payload) => {
+                assert_eq!(payload["session_id"], json!("s1"));
+                assert_eq!(payload["function_call_id"], json!("c1"));
+                assert_eq!(payload["function_id"], json!("shell::fs::write"));
+            }
+            ApprovalUiPush::Resolved(_) => panic!("expected Requested, got Resolved"),
+        }
+    }
+
+    #[test]
+    fn classify_approval_frame_resolved_emits_minimal_payload() {
+        let data = json!({
+            "type": "approval_resolved",
+            "function_call_id": "c1",
+            "decision": "allow",
+        });
+        let out = classify_approval_frame(&data, "s1").expect("resolved classified");
+        match out {
+            ApprovalUiPush::Resolved(payload) => {
+                assert_eq!(payload["function_call_id"], json!("c1"));
+                assert_eq!(payload["tool_call_id"], json!("c1"));
+            }
+            ApprovalUiPush::Requested(_) => panic!("expected Resolved, got Requested"),
+        }
+    }
+
+    // B1 — non-approval frame types must classify as None so the regular
+    // session-event forward path keeps owning them.
+    #[test]
+    fn classify_approval_frame_ignores_non_approval_types() {
+        let data = json!({
+            "type": "tool_call_started",
+            "function_call_id": "c1",
+            "function_id": "shell::fs::read",
+        });
+        assert!(classify_approval_frame(&data, "s1").is_none());
+    }
+
+    // B2 — malformed approval frames without an id must be dropped silently,
+    // never panic, and never produce a push (UI would have nothing to key on).
+    #[test]
+    fn classify_approval_frame_drops_when_call_id_missing() {
+        let requested = json!({
+            "type": "approval_requested",
+            "function_id": "shell::fs::write",
+        });
+        let resolved = json!({ "type": "approval_resolved", "decision": "allow" });
+        assert!(classify_approval_frame(&requested, "s1").is_none());
+        assert!(classify_approval_frame(&resolved, "s1").is_none());
+    }
+
+    // B3 — legacy field names (tool_call_id / tool_name) must still produce a
+    // push so reload hydration via approval::list_pending stays compatible
+    // with older gate envelopes captured in state.
+    #[test]
+    fn classify_approval_frame_accepts_legacy_tool_call_id() {
+        let data = json!({
+            "type": "approval_requested",
+            "tool_call_id": "c1",
+            "tool_name": "shell::fs::write",
+            "args": {},
+        });
+        let out = classify_approval_frame(&data, "s1").expect("legacy shape classified");
+        match out {
+            ApprovalUiPush::Requested(payload) => {
+                assert_eq!(payload["tool_call_id"], json!("c1"));
+                assert_eq!(payload["session_id"], json!("s1"));
+            }
+            ApprovalUiPush::Resolved(_) => panic!("expected Requested"),
+        }
+    }
+
+    // B10 — empty session_id must not produce a push whose UI cannot key on a
+    // session. Today, the upstream extract_event_payload already drops empty
+    // group ids; this guard pins the contract at the classifier too so future
+    // refactors of either layer don't open a regression.
+    #[test]
+    fn classify_approval_frame_drops_when_session_id_empty() {
+        let data = json!({
+            "type": "approval_requested",
+            "function_call_id": "c1",
+        });
+        assert!(classify_approval_frame(&data, "").is_none());
+    }
+
+    // ─── Hydration payloads ──────────────────────────────────────────────
+    //
+    // When a new all-sessions subscriber attaches, we replay
+    // approval::list_pending per session into the new browser. The pure
+    // helper below turns one session's `pending` array into a list of
+    // ui::approval::requested-ready payloads. Tests pin the filters that
+    // make this safe to call on reconnects (B4, B9, B11).
+
+    // A3 — happy path: each pending entry becomes one enriched payload.
+    #[test]
+    fn hydration_payloads_emits_one_per_pending_entry() {
+        let pending = vec![
+            json!({
+                "function_call_id": "c1",
+                "function_id": "shell::fs::write",
+                "args": { "path": "/a" },
+                "status": "pending",
+                "expires_at": 1u64,
+            }),
+            json!({
+                "function_call_id": "c2",
+                "function_id": "shell::fs::mkdir",
+                "args": { "path": "/b" },
+                "status": "pending",
+                "expires_at": 2u64,
+            }),
+        ];
+        let out = hydration_payloads("s1", &pending);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["function_call_id"], json!("c1"));
+        assert_eq!(out[0]["session_id"], json!("s1"));
+        assert_eq!(out[1]["function_call_id"], json!("c2"));
+        assert_eq!(out[1]["session_id"], json!("s1"));
+    }
+
+    // B4 — malformed entry (no call id) is dropped, other entries still flow.
+    #[test]
+    fn hydration_payloads_skips_entries_missing_call_id() {
+        let pending = vec![
+            json!({ "function_id": "shell::fs::write", "status": "pending" }), // bad
+            json!({
+                "function_call_id": "c2",
+                "function_id": "shell::fs::mkdir",
+                "status": "pending",
+            }),
+        ];
+        let out = hydration_payloads("s1", &pending);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["function_call_id"], json!("c2"));
+    }
+
+    // B9 — empty input is a no-op, not an error.
+    #[test]
+    fn hydration_payloads_empty_input_returns_empty() {
+        assert!(hydration_payloads("s1", &[]).is_empty());
+    }
+
+    // approval_pushes_for fans a classified push out to N all-sessions
+    // browsers, producing (channel, payload) pairs. The pump's only job
+    // after classifying is to drive `iii.trigger` per pair, so pinning the
+    // channel naming convention here is enough to lock the wire format.
+    #[test]
+    fn approval_pushes_for_requested_targets_ui_approval_requested_per_browser() {
+        let push = ApprovalUiPush::Requested(json!({ "function_call_id": "c1", "session_id": "s1" }));
+        let out = approval_pushes_for(&push, &["b1".into(), "b2".into()]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "ui::approval::requested::b1");
+        assert_eq!(out[0].1["function_call_id"], json!("c1"));
+        assert_eq!(out[1].0, "ui::approval::requested::b2");
+    }
+
+    #[test]
+    fn approval_pushes_for_resolved_targets_ui_approval_resolved_per_browser() {
+        let push = ApprovalUiPush::Resolved(json!({ "function_call_id": "c1", "tool_call_id": "c1" }));
+        let out = approval_pushes_for(&push, &["b1".into()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "ui::approval::resolved::b1");
+    }
+
+    #[test]
+    fn approval_pushes_for_zero_browsers_is_noop() {
+        let push = ApprovalUiPush::Resolved(json!({ "function_call_id": "c1" }));
+        assert!(approval_pushes_for(&push, &[]).is_empty());
+    }
+
+    // hydration_pushes_for is the orchestration helper used when an
+    // all-sessions subscriber attaches. Given the per-session pending lists
+    // already fetched from approval::list_pending, it produces the exact
+    // (channel, payload) pairs the subscribe handler should push.
+    #[test]
+    fn hydration_pushes_for_emits_one_push_per_pending_entry_across_sessions() {
+        let per_session = vec![
+            (
+                "s1".to_string(),
+                vec![json!({
+                    "function_call_id": "c1",
+                    "function_id": "shell::fs::write",
+                    "status": "pending",
+                })],
+            ),
+            (
+                "s2".to_string(),
+                vec![json!({
+                    "function_call_id": "c2",
+                    "function_id": "shell::fs::mkdir",
+                    "status": "pending",
+                })],
+            ),
+        ];
+        let out = hydration_pushes_for("browser-a", &per_session);
+        assert_eq!(out.len(), 2);
+        assert!(out
+            .iter()
+            .all(|(chan, _)| chan == "ui::approval::requested::browser-a"));
+        let ids: Vec<&str> = out
+            .iter()
+            .map(|(_, p)| p["function_call_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"c1") && ids.contains(&"c2"));
+    }
+
+    #[test]
+    fn hydration_pushes_for_empty_per_session_returns_empty() {
+        assert!(hydration_pushes_for("browser-a", &[]).is_empty());
+    }
+
+    #[test]
+    fn hydration_pushes_for_session_with_no_pending_is_skipped() {
+        let per_session = vec![
+            ("s1".to_string(), vec![]),
+            (
+                "s2".to_string(),
+                vec![json!({
+                    "function_call_id": "c2",
+                    "status": "pending",
+                })],
+            ),
+        ];
+        let out = hydration_pushes_for("b1", &per_session);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1["function_call_id"], json!("c2"));
+        assert_eq!(out[0].1["session_id"], json!("s2"));
+    }
+
+    // B11 — defense in depth: even if list_pending regresses and returns
+    // resolved entries, the hydration filter must drop them. This is the
+    // only guard against timed-out approvals reappearing on reconnect.
+    #[test]
+    fn hydration_payloads_filters_non_pending_status() {
+        let pending = vec![
+            json!({
+                "function_call_id": "c1",
+                "function_id": "shell::fs::write",
+                "status": "deny",
+                "reason": "timeout",
+            }),
+            json!({
+                "function_call_id": "c2",
+                "function_id": "shell::fs::write",
+                "status": "allow",
+            }),
+            json!({
+                "function_call_id": "c3",
+                "function_id": "shell::fs::write",
+                "status": "pending",
+            }),
+        ];
+        let out = hydration_payloads("s1", &pending);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["function_call_id"], json!("c3"));
     }
 }

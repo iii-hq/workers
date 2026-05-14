@@ -275,6 +275,7 @@ pub async fn register_with_iii_with_engine_url(
     let fanout = fanout::new_shared();
 
     let fanout_for_subscribe = Arc::clone(&fanout);
+    let iii_for_subscribe = Arc::new(iii.clone());
     let subscribe_fn = iii.register_function((
         RegisterFunctionMessage::with_id("ui::subscribe".into()).with_description(
             "Register a browser's interest in a session (or all sessions if session_id is null)."
@@ -282,6 +283,7 @@ pub async fn register_with_iii_with_engine_url(
         ),
         move |input: Value| {
             let fanout = Arc::clone(&fanout_for_subscribe);
+            let iii_for_hydrate = Arc::clone(&iii_for_subscribe);
             async move {
                 let body = input.get("body").cloned().unwrap_or(input);
                 let browser_id = body
@@ -293,11 +295,29 @@ pub async fn register_with_iii_with_engine_url(
                     .get("session_id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                let is_all_sessions = session_id.is_none();
                 let total = {
                     let mut state = fanout.write().await;
-                    state.subscribe(browser_id, session_id);
+                    state.subscribe(browser_id.clone(), session_id);
                     state.browser_count()
                 };
+                // Fire-and-forget reactive hydration: replay any pending
+                // approvals into the new all-sessions subscriber. Replaces
+                // the old periodic approval poll. Per-session subscribers
+                // don't get pending-approval hydration (they only see live
+                // frames via the agent::events stream forward).
+                if is_all_sessions {
+                    let fanout_for_hydrate = Arc::clone(&fanout);
+                    let browser_for_hydrate = browser_id.clone();
+                    tokio::spawn(async move {
+                        fanout::hydrate_all_sessions_subscriber(
+                            iii_for_hydrate,
+                            fanout_for_hydrate,
+                            browser_for_hydrate,
+                        )
+                        .await;
+                    });
+                }
                 Ok::<_, IIIError>(json!({
                     "ok": true,
                     "total_browsers": total,
@@ -340,7 +360,12 @@ pub async fn register_with_iii_with_engine_url(
 
     // Wire the upstream fanout pumps:
     //   - agent::events stream subscriber → ui::session::event::<browser_id>
+    //                                     → ui::approval::{requested,resolved}::<browser_id>
     //   - state::list poll                → ui::sessions::changed::<browser_id>
+    //
+    // Pending-approval hydration runs on ui::subscribe for all-sessions
+    // browsers; live approval frames are forwarded by the agent::events
+    // subscriber (see classify_approval_frame). No periodic approval poll.
     //
     // These spawn long-lived tasks; the returned handle ends them on
     // `unregister_all`. The `iii` clone here is fine — `III` is internally
