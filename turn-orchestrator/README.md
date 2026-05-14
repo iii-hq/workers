@@ -120,7 +120,7 @@ sync_poll_interval_ms: 50
 # Operators add URIs here to pre-load worker root skills (e.g. iii://shell).
 # Failed fetches degrade per-URI; the preamble always survives.
 system_default_skills:
-  - iii://iii
+  - iii://iii-directory/index
 ```
 
 ## Additional Resources
