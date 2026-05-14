@@ -1,7 +1,7 @@
 # harness
 
 Meta-worker that composes the modular workers behind a runnable iii chat
-surface and exposes the browser-facing HTTP bridge (`bridge::trigger`)
+surface and exposes the browser-facing HTTP bridge (`harness::call`)
 the bundled Vite/React UI talks to. The harness does
 not own chat, agent, or provider logic — it registers a small set of
 bus functions and expects peers such as
@@ -54,13 +54,12 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Forward an arbitrary bus call through the HTTP-oriented bridge (same
-shape as `bridge::trigger` on the engine):
+Forward an arbitrary bus call through the HTTP-oriented bridge:
 
 ```rust
 let result = iii
     .trigger(TriggerRequest {
-        function_id: "bridge::trigger".into(),
+        function_id: "harness::call".into(),
         payload: json!({
             "function_id": "models::list",
             "payload": {},
@@ -76,9 +75,9 @@ Registered functions:
 | Function | Role |
 |---|---|
 | `harness::status` | Bundle name, version, and expected worker list (cheap liveness probe). |
-| `bridge::trigger` | Forwards `{ function_id, payload }` to `iii.trigger`. HTTP: `POST bridge/trigger`. |
+| `harness::call` | Forwards `{ function_id, payload }` to `iii.trigger`. HTTP: `POST harness/call`. |
 
-`bridge::trigger` is the browser's call-anything escape hatch — not
+`harness::call` is the browser's call-anything escape hatch — not
 meant as an LLM tool.
 
 ## Configuration

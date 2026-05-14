@@ -6,7 +6,7 @@ The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental
                          ┌────────────────────────────┐
         browser  ───────►│ harness/web (React + Vite) │
         :5173            └──────────────┬─────────────┘
-                                        │ POST /bridge/trigger
+                                        │ POST /harness/call
                                         │ {function_id, payload}
                               vite proxy │ → http://127.0.0.1:3111
                                         ▼
@@ -19,7 +19,7 @@ The `harness` is a meta-worker for the [iii](https://github.com/iii-experimental
             ┌────────────────────────────────────────────────────┐
             │                  iii bus  (ws://:49134)            │
             │                                                    │
-            │  harness::status     bridge::trigger               │◄── iii-harness
+            │  harness::status     harness::call               │◄── iii-harness
             │  run::start          turn::*                       │◄── turn-orchestrator
             │  agent::call         provider::*                  │◄── turn-orchestrator, …
             │  session::* state::*                               │◄── session-tree
@@ -38,17 +38,17 @@ Single-binary Rust worker (`src/main.rs` → `src/lib.rs`) that connects to a ru
 | Function | Source | Purpose |
 |---|---|---|
 | `harness::status` | `lib.rs:71` | Returns `{ok, name, version, expected_workers[]}`. Used as the cheapest "is the bundle alive" probe. |
-| `bridge::trigger` | `lib.rs:87` | Forwards `{function_id, payload}` from HTTP onto `iii.trigger(...)`. Backed by an HTTP trigger at `POST /bridge/trigger` (`lib.rs:123`). |
+| `harness::call` | `lib.rs:87` | Forwards `{function_id, payload}` from HTTP onto `iii.trigger(...)`. Backed by an HTTP trigger at `POST /harness/call` (`lib.rs:123`). |
 
 Boot sequence (`register_with_iii`, `lib.rs:70`):
 
 1. Register `harness::status`.
-2. Register `bridge::trigger` and bind it to `POST /bridge/trigger` with a 4-minute timeout (`BRIDGE_TIMEOUT_MS`, `lib.rs:16`) — long enough for multi-turn tool-calling to complete before the engine's default 30s 504.
+2. Register `harness::call` and bind it to `POST /harness/call` with a 4-minute timeout (`BRIDGE_TIMEOUT_MS`, `lib.rs:16`) — long enough for multi-turn tool-calling to complete before the engine's default 30s 504.
 3. Best-effort fire `skills::register` with the harness's skill descriptor (`build_skills_register_payload`, `lib.rs:45`). A missing `skills` worker does not block boot.
 
 The harness exposes two dispatchers:
 
-- `bridge::trigger` (this worker) — HTTP-bound, browser path. The browser
+- `harness::call` (this worker) — HTTP-bound, browser path. The browser
   POSTs `{function_id, payload}`; this forwards to `iii.trigger(...)`. Not
   advertised to the LLM.
 - `agent::call` (turn-orchestrator) — LLM-facing. The provider sees one
@@ -57,17 +57,17 @@ The harness exposes two dispatchers:
   `iii.trigger(...)`, maps errors back to `FunctionResult` envelopes the
   model can read. No payload validation, no sandbox automation, no
   registry introspection — the model learns iii contracts from skills
-  registered via the skills worker. Both `bridge::trigger` and
+  registered via the skills worker. Both `harness::call` and
   `agent::call` appear in `engine::functions::list`.
 
-`bridge::trigger` is **intentionally not advertised as an LLM tool** (`tools: []` in the skill payload). It exists only as the browser's call-anything escape hatch — exposing it to a model would let the model call itself recursively.
+`harness::call` is **intentionally not advertised as an LLM tool** (`tools: []` in the skill payload). It exists only as the browser's call-anything escape hatch — exposing it to a model would let the model call itself recursively.
 
 ### 2. `harness/web` — React UI (`web/`)
 
 Vite + React 18 single-page app. All bus calls go through one helper:
 
-- `web/src/bridge.ts` — `bridge<T>(functionId, payload)` does `POST /bridge/trigger`, returns the result, surfaces engine errors as `BridgeError`.
-- `vite.config.ts:9` — dev server proxies `/bridge` → `http://127.0.0.1:3111` (the engine's HTTP trigger port). Same path works in production behind any reverse proxy that forwards `/bridge`.
+- `web/src/bridge.ts` — `bridge<T>(functionId, payload)` does `POST /harness/call`, returns the result, surfaces engine errors as `BridgeError`.
+- `vite.config.ts:9` — dev server proxies `/harness` → `http://127.0.0.1:3111` (the engine's HTTP trigger port). Same path works in production behind any reverse proxy that forwards `/harness`.
 
 The UI does not ship tool schemas: `turn-orchestrator` provisions a single
 `agent_call` tool (see `agent_call_tool`) and builds the system prompt
@@ -118,8 +118,8 @@ A user message from the browser:
 
 ```
 1. UI calls bridge("run::start_and_wait", {session_id, provider, model, messages})
-2. POST /bridge/trigger hits the engine's HTTP trigger
-3. bridge::trigger handler unwraps {body} → {function_id, payload}
+2. POST /harness/call hits the engine's HTTP trigger
+3. harness::call handler unwraps {body} → {function_id, payload}
 4. iii.trigger("run::start_and_wait", payload, timeout=240s)
 5. turn-orchestrator picks it up, runs the agent loop:
      - emits `agent::before_function_call` (subscribers: policy-denylist, llm-budget)
@@ -127,7 +127,7 @@ A user message from the browser:
      - calls provider-router → provider-anthropic / provider-openai
      - persists transcript via session-tree / state
 6. turn-orchestrator returns full transcript
-7. bridge::trigger wraps it as {status_code, headers, body} and returns to the browser
+7. harness::call wraps it as {status_code, headers, body} and returns to the browser
 ```
 
 Sessions are persisted in two stores that don't merge automatically:
@@ -142,10 +142,10 @@ Sessions are persisted in two stores that don't merge automatically:
 The harness assumes a layered model and does not enforce policy itself:
 
 1. **SDK wrapper (chat client side)** — workspace allowlist on path arguments before the bus call is dispatched.
-2. **`policy-denylist` (engine side)** — subscriber on `agent::before_function_call` that blocks by function id. Configured via `POLICY_DENIED_FUNCTIONS` env var (legacy `POLICY_DENIED_TOOLS` still honored). **Must include `bridge::trigger`** to prevent the LLM from calling `agent_call(function="bridge::trigger", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `bridge::trigger`, not the inner function). Recommended denylist for solo local dev: `bridge::trigger,shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv`. The demo script (`harness/scripts/demo.sh`) sets `bridge::trigger` automatically.
+2. **`policy-denylist` (engine side)** — subscriber on `agent::before_function_call` that blocks by function id. Configured via `POLICY_DENIED_FUNCTIONS` env var (legacy `POLICY_DENIED_TOOLS` still honored). **Must include `harness::call`** to prevent the LLM from calling `agent_call(function="harness::call", payload={...})` to recursively dispatch any function and bypass name-matched rules (the policy hook fires with name `harness::call`, not the inner function). Recommended denylist for solo local dev: `harness::call,shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv`. The demo script (`harness/scripts/demo.sh`) sets `harness::call` automatically.
 3. **`<ApprovalRow>` (chat UI)** — per-call user approval surfaced inline before any write reaches disk.
 
-`bridge::trigger` is the one bus surface reachable from the browser. It has **no** allowlist — any function id is callable — so the deployment must keep `:3111` private and rely on the three layers above. There is no per-user auth on `bridge::trigger`; the harness assumes a single-tenant local install.
+`harness::call` is the one bus surface reachable from the browser. It has **no** allowlist — any function id is callable — so the deployment must keep `:3111` private and rely on the three layers above. There is no per-user auth on `harness::call`; the harness assumes a single-tenant local install.
 
 ## Versioning and skill registration
 
@@ -162,7 +162,7 @@ On boot the harness publishes a skill descriptor via `skills::register`:
 }
 ```
 
-Empty `tools` is deliberate — the harness has no LLM-callable functions of its own. `harness::status` is for operators; `bridge::trigger` is for the browser.
+Empty `tools` is deliberate — the harness has no LLM-callable functions of its own. `harness::status` is for operators; `harness::call` is for the browser.
 
 ## What lives where
 
@@ -192,7 +192,7 @@ harness/
 ## Design choices worth knowing
 
 - **Meta-worker, not framework.** Adding a capability means adding a worker crate and listing it in `iii.worker.yaml` (the only place — `EXPECTED_WORKERS` is generated from it at build time). The harness binary itself stays small.
-- **Single browser endpoint.** One HTTP trigger (`/bridge/trigger`) reaches the entire bus, so the UI never needs new HTTP routes when the bus grows. Cost: `bridge::trigger` is a powerful primitive that must not leak past the local trust boundary.
+- **Single browser endpoint.** One HTTP trigger (`/harness/call`) reaches the entire bus, so the UI never needs new HTTP routes when the bus grows. Cost: `harness::call` is a powerful primitive that must not leak past the local trust boundary.
 - **No registry coupling.** `demo.sh` runs every worker straight from `target/release/iii-<name>`, so the bundle works against an unmodified upstream `iii` engine without any registry index entries.
 - **Drift impossible by construction.** `EXPECTED_WORKERS` is generated from `iii.worker.yaml` by `build.rs`, so editing the YAML is the only way to change the runtime list. `cargo` reruns the script whenever the YAML changes.
 - **Long bridge timeout.** 4 minutes is high on purpose: a multi-tool turn with Opus + filesystem ops routinely exceeds 30s, and a 504 mid-turn would orphan the orchestrator's bookkeeping.

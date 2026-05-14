@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn parse_denied_functions_accepts_json_array_syntax() {
-        // The Tier 2 demo.sh injects `bridge::trigger` as a single-value
+        // The Tier 2 demo.sh injects `harness::call` as a single-value
         // env, but operators may still pass JSON-array form. This pins
         // the parser's tolerance for both quoting forms.
         assert_eq!(
@@ -200,8 +200,8 @@ mod tests {
 
     /// Malformed bracket inputs must not leak the bracket character into
     /// the parsed tool name. A leaked bracket would silently break the
-    /// operator's intended denial: `bridge::trigger` would never match
-    /// `[bridge::trigger`. The parser strips bracket pairs symmetrically
+    /// operator's intended denial: `harness::call` would never match
+    /// `[harness::call`. The parser strips bracket pairs symmetrically
     /// and falls back to a bracket-tolerant strip + warning when one side
     /// is missing.
     #[test]

@@ -206,9 +206,9 @@ describe("pushRecent", () => {
 });
 
 describe("curlForBridge", () => {
-  it("builds a POST against /bridge/trigger with the function_id + payload", () => {
+  it("builds a POST against /harness/call with the function_id + payload", () => {
     const out = curlForBridge("models::list", {});
-    expect(out).toContain("curl -X POST http://127.0.0.1:3111/bridge/trigger");
+    expect(out).toContain("curl -X POST http://127.0.0.1:3111/harness/call");
     expect(out).toContain("'content-type: application/json'");
     expect(out).toContain('"function_id": "models::list"');
     expect(out).toContain('"payload": {}');

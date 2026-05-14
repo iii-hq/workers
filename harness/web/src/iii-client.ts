@@ -1,7 +1,7 @@
 // Lazy-initialized singleton iii-browser-sdk client used by the harness UI.
 //
 // Bootstrap order:
-//   1. Fetch `bridge::info` over HTTP via the existing `/bridge/trigger` route
+//   1. Fetch `bridge::info` over HTTP via the existing `/harness/call` route
 //      to discover the engine WebSocket URL.
 //   2. Open a WebSocket via `iii-browser-sdk::registerWorker(url)`.
 //   3. Mint a stable `browser_id` for this page; per-browser handlers are
@@ -201,7 +201,7 @@ function makeBrowserId(): string {
 }
 
 async function fetchBridgeInfo(): Promise<BridgeInfoResponse> {
-  const res = await fetch("/bridge/trigger", {
+  const res = await fetch("/harness/call", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ function_id: "bridge::info", payload: {} }),

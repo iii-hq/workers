@@ -1,6 +1,6 @@
 //! Harness meta-worker. Composes the modular workers via `iii.worker.yaml`
 //! runtime dependencies; this lib registers `harness::status` plus a
-//! browser-facing `bridge::trigger` HTTP route that forwards arbitrary
+//! browser-facing `harness::call` HTTP route that forwards arbitrary
 //! `{function_id, payload}` calls onto the iii bus.
 
 pub mod fanout;
@@ -14,7 +14,7 @@ use iii_sdk::{
 };
 use serde_json::json;
 
-/// Upper bound for a single bridge::trigger call. Tool-calling turns roundtrip
+/// Upper bound for a single harness::call. Tool-calling turns roundtrip
 /// the LLM 2+ times plus filesystem ops, so the engine's 30s default 504s
 /// before turn-orchestrator finishes. 4 minutes covers the worst case we've
 /// seen with Opus + a few tool calls.
@@ -91,7 +91,7 @@ pub async fn register_with_iii_with_engine_url(
 
     let iii_for_bridge = iii.clone();
     let bridge = iii.register_function((
-        RegisterFunctionMessage::with_id("bridge::trigger".into()).with_description(
+        RegisterFunctionMessage::with_id("harness::call".into()).with_description(
             "Forward {function_id, payload} to iii.trigger and return the result. \
              Used by harness/web/ to reach the bus over HTTP."
                 .into(),
@@ -128,9 +128,9 @@ pub async fn register_with_iii_with_engine_url(
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".into(),
-        function_id: "bridge::trigger".into(),
+        function_id: "harness::call".into(),
         config: json!({
-            "api_path": "bridge/trigger",
+            "api_path": "harness/call",
             "http_method": "POST",
             "timeout_ms": BRIDGE_TIMEOUT_MS,
         }),

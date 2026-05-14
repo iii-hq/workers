@@ -1,5 +1,5 @@
 // Bus function palette (Cmd-J): list every function on the bus, drill in to
-// any one, edit a JSON payload, send it through /bridge/trigger. JSON-first
+// any one, edit a JSON payload, send it through /harness/call. JSON-first
 // — no schema-driven form generator in v1.
 //
 // Behavior summary (see plan doc Phase B step F):

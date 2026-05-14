@@ -572,7 +572,7 @@ export default function App() {
       <footer className="app-foot">
         <span>provider · {provider}</span>
         <span>model · {model}</span>
-        <span>endpoint · POST /bridge/trigger</span>
+        <span>endpoint · POST /harness/call</span>
         <span>shortcut · ⌘J palette</span>
         <span className="app-foot-spacer" />
         <FootStatus

@@ -6,7 +6,7 @@
 
 import { getIiiClient } from "./iii-client";
 
-const BRIDGE_URL = "/bridge/trigger";
+const BRIDGE_URL = "/harness/call";
 
 export class BridgeError extends Error {
   constructor(
