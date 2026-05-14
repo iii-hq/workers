@@ -25,7 +25,7 @@ Client-secret-basic input:
 ```json
 {
   "headers": {
-    "authorization": "Basic UUd4R3E3bTZiY3FYa0ZZN1EwYzFwMkpmOnNlY3JldA=="
+    "authorization": "Basic UUd4R3E3bTZiY3FYa0ZZN1EwYzFwMkpmOmlOMVBxWFpKREVVNk01SHNSM3VIejEydlFrMWVRSjNUUjFUMWxQWVU2T2M="
   },
   "grant_type": "client_credentials",
   "scope": "mcp:tools"

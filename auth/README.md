@@ -111,6 +111,8 @@ token_endpoint_auth_methods_supported:
   - "client_secret_basic"
 registration_admin_token_env: "III_AUTH_REGISTRATION_TOKEN"
 state_timeout_ms: 5000
+connection_ready_attempts: 150
+connection_ready_interval_ms: 200
 ```
 
 Privileged scopes are opt-in. Add them only for deployments that need worker-manager bootstrap authority, and protect registration with `III_AUTH_REGISTRATION_TOKEN`:

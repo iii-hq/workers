@@ -437,25 +437,15 @@ async fn ensure_keyset(store: &dyn AuthStore) -> anyhow::Result<KeySet> {
         current_kid: key.kid.clone(),
         keys: vec![key],
     };
-    store.set_keyset(keyset.clone()).await?;
-    Ok(keyset)
+    store.create_keyset_if_absent(keyset).await
 }
 
 pub async fn rotate_jwks(store: &dyn AuthStore, cfg: &AuthConfig) -> anyhow::Result<Value> {
-    let mut keyset = ensure_keyset(store).await?;
     let current_time = now();
-    for key in &mut keyset.keys {
-        if key.kid == keyset.current_kid && key.retire_after.is_none() {
-            key.retire_after = Some(current_time + cfg.rotation_overlap_seconds);
-        }
-    }
-    keyset
-        .keys
-        .retain(|key| key.retire_after.is_none_or(|retire| retire > current_time));
     let new_key = generate_key_record()?;
-    keyset.current_kid = new_key.kid.clone();
-    keyset.keys.push(new_key);
-    store.set_keyset(keyset.clone()).await?;
+    let keyset = store
+        .rotate_keyset(new_key, current_time, cfg.rotation_overlap_seconds)
+        .await?;
     Ok(json!({
         "ok": true,
         "current_kid": keyset.current_kid,
@@ -684,6 +674,9 @@ async fn issue_for_client_credentials(
     payload: &Value,
     body: &Value,
 ) -> anyhow::Result<Value> {
+    store
+        .cleanup_expired_tokens(now(), cfg.refresh_token_ttl_seconds)
+        .await?;
     let (client_id, secret, source) = client_credentials(payload, body);
     let client_id = client_id.ok_or_else(|| anyhow::anyhow!("missing client_id"))?;
     let client = store
@@ -729,6 +722,9 @@ async fn issue_for_refresh_token(
     payload: &Value,
     body: &Value,
 ) -> anyhow::Result<Value> {
+    store
+        .cleanup_expired_tokens(now(), cfg.refresh_token_ttl_seconds)
+        .await?;
     let refresh_token = string_field(body, "refresh_token")
         .ok_or_else(|| anyhow::anyhow!("missing refresh_token"))?;
     let (client_id, secret, source) = client_credentials(payload, body);
@@ -754,15 +750,15 @@ async fn issue_for_refresh_token(
     let (access_token, _) =
         issue_access_token(cfg, &keyset, &client, &refresh.subject, &refresh.scopes)?;
     let new_refresh_token = random_url_token(32);
-    store.revoke(refresh_token).await?;
+    let new_refresh_record = RefreshTokenRecord {
+        token_id: new_refresh_token.clone(),
+        client_id: client.client_id.clone(),
+        subject: refresh.subject,
+        scopes: refresh.scopes.clone(),
+        expires_at: now() + cfg.refresh_token_ttl_seconds,
+    };
     store
-        .set_refresh_token(RefreshTokenRecord {
-            token_id: new_refresh_token.clone(),
-            client_id: client.client_id.clone(),
-            subject: refresh.subject,
-            scopes: refresh.scopes.clone(),
-            expires_at: now() + cfg.refresh_token_ttl_seconds,
-        })
+        .rotate_refresh_token(refresh_token, new_refresh_record)
         .await?;
     Ok(json!({
         "access_token": access_token,

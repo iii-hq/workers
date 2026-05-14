@@ -41,6 +41,10 @@ pub struct AuthConfig {
     pub registration_admin_token_env: String,
     #[serde(default = "default_state_timeout_ms")]
     pub state_timeout_ms: u64,
+    #[serde(default = "default_connection_ready_attempts")]
+    pub connection_ready_attempts: usize,
+    #[serde(default = "default_connection_ready_interval_ms")]
+    pub connection_ready_interval_ms: u64,
     #[serde(default = "default_skills_timeout_ms")]
     pub skills_register_timeout_ms: u64,
     #[serde(default = "default_skills_timeout_ms")]
@@ -110,6 +114,14 @@ fn default_state_timeout_ms() -> u64 {
     5_000
 }
 
+fn default_connection_ready_attempts() -> usize {
+    150
+}
+
+fn default_connection_ready_interval_ms() -> u64 {
+    200
+}
+
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
@@ -128,6 +140,8 @@ impl Default for AuthConfig {
             token_endpoint_auth_methods_supported: default_token_endpoint_auth_methods_supported(),
             registration_admin_token_env: default_registration_admin_token_env(),
             state_timeout_ms: default_state_timeout_ms(),
+            connection_ready_attempts: default_connection_ready_attempts(),
+            connection_ready_interval_ms: default_connection_ready_interval_ms(),
             skills_register_timeout_ms: default_skills_timeout_ms(),
             skills_unregister_timeout_ms: default_skills_timeout_ms(),
         }
@@ -156,8 +170,17 @@ pub fn validate_config(cfg: &AuthConfig) -> Result<()> {
     if cfg.rotation_overlap_seconds <= 0 {
         anyhow::bail!("rotation_overlap_seconds must be positive");
     }
+    if cfg.rotation_overlap_seconds >= cfg.refresh_token_ttl_seconds {
+        anyhow::bail!("rotation_overlap_seconds must be less than refresh_token_ttl_seconds");
+    }
     if cfg.state_timeout_ms == 0 {
         anyhow::bail!("state_timeout_ms must be positive");
+    }
+    if cfg.connection_ready_attempts == 0 {
+        anyhow::bail!("connection_ready_attempts must be positive");
+    }
+    if cfg.connection_ready_interval_ms == 0 {
+        anyhow::bail!("connection_ready_interval_ms must be positive");
     }
     if cfg.skills_register_timeout_ms == 0 {
         anyhow::bail!("skills_register_timeout_ms must be positive");
@@ -174,10 +197,10 @@ pub fn validate_config(cfg: &AuthConfig) -> Result<()> {
         }
     }
     if cfg.environment.eq_ignore_ascii_case("production") {
-        if cfg.engine_url.starts_with("ws://") {
+        if !cfg.engine_url.starts_with("wss://") {
             anyhow::bail!("production auth config requires wss:// engine_url");
         }
-        if cfg.issuer.starts_with("http://") {
+        if !cfg.issuer.starts_with("https://") {
             anyhow::bail!("production auth config requires https:// issuer");
         }
     }
@@ -226,6 +249,8 @@ mod tests {
             "III_AUTH_REGISTRATION_TOKEN"
         );
         assert_eq!(cfg.state_timeout_ms, 5_000);
+        assert_eq!(cfg.connection_ready_attempts, 150);
+        assert_eq!(cfg.connection_ready_interval_ms, 200);
     }
 
     #[test]
@@ -274,6 +299,19 @@ default_scopes: ["function:demo::read"]
         };
         let err = validate_config(&cfg).unwrap_err();
         assert!(err.to_string().contains("access_token_ttl_seconds"));
+    }
+
+    #[test]
+    fn rotation_overlap_must_be_less_than_refresh_ttl() {
+        let cfg = AuthConfig {
+            refresh_token_ttl_seconds: 60,
+            rotation_overlap_seconds: 60,
+            ..AuthConfig::default()
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("rotation_overlap_seconds must be less"));
     }
 
     #[test]

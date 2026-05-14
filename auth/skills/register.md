@@ -31,9 +31,9 @@ Privileged registration input:
 ```json
 {
   "headers": {
-    "authorization": "Bearer admin-secret"
+    "authorization": "Bearer <ADMIN_TOKEN>"
   },
-  "client_name": "worker-manager",
+  "client_name": "<CLIENT_NAME_PLACEHOLDER>",
   "scope": "function:* iii:function_registration iii:trusted_internal"
 }
 ```
@@ -42,9 +42,9 @@ Sample output:
 
 ```json
 {
-  "client_id": "QGxGq7m6bcqXkFY7Q0c1p2Jf",
-  "client_secret": "iN1PqXZJDEU6M5HsR3uHz12vQk1eQJ3TR1T1lPYU6Oc",
-  "client_name": "artifact-worker",
+  "client_id": "<CLIENT_ID_PLACEHOLDER>",
+  "client_secret": "<CLIENT_SECRET_PLACEHOLDER>",
+  "client_name": "<CLIENT_NAME_PLACEHOLDER>",
   "client_id_issued_at": 1770000000,
   "grant_types": ["client_credentials", "refresh_token"],
   "redirect_uris": [],

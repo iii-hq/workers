@@ -7,6 +7,7 @@ use iii_sdk::{
     register_worker, InitOptions, OtelConfig, RegisterTriggerInput, TriggerRequest, WorkerMetadata,
 };
 use serde_json::json;
+use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 mod manifest;
@@ -39,9 +40,10 @@ struct Cli {
     manifest: bool,
 }
 
-const CONNECTION_READY_ATTEMPTS: usize = 100;
-const CONNECTION_READY_INTERVAL: Duration = Duration::from_millis(10);
 const CONNECTION_READY_SETTLE: Duration = Duration::from_millis(50);
+const SKILL_REGISTER_TIMEOUT: Duration = Duration::new(3 * 60, 0);
+const SKILL_REGISTER_MAX_BACKOFF: Duration = Duration::new(60, 0);
+const SKILL_REGISTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -90,7 +92,7 @@ async fn main() -> Result<()> {
             ..InitOptions::default()
         },
     ));
-    wait_for_connection_ready(&iii).await?;
+    wait_for_connection_ready(&iii, &cfg).await?;
 
     let store: Arc<dyn iii_auth::store::AuthStore> = match resolve_store_backend(&cfg) {
         StoreBackend::Memory => Arc::new(InMemoryAuthStore::new()),
@@ -105,10 +107,12 @@ async fn main() -> Result<()> {
         .context("auth register failed")?;
 
     register_triggers(&iii, &cfg).context("auth trigger registration failed")?;
-    spawn_skill_register(iii.clone(), cfg.clone());
+    let skill_register_handle = spawn_skill_register(iii.clone(), cfg.clone());
 
     tracing::info!("auth ready");
     wait_for_shutdown().await?;
+    skill_register_handle.abort();
+    let _ = tokio::time::timeout(SKILL_REGISTER_SHUTDOWN_TIMEOUT, skill_register_handle).await;
     unregister_skill(&iii, &cfg).await;
     tracing::info!("auth shutting down");
     iii.shutdown_async().await;
@@ -167,18 +171,18 @@ async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str, tim
         match res {
             Ok(_) => return,
             Err(e) => {
-                if started.elapsed() > Duration::from_mins(3) {
+                if started.elapsed() > SKILL_REGISTER_TIMEOUT {
                     tracing::warn!(%id, error = %e, "skills handshake gave up");
                     return;
                 }
             }
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_mins(1));
+        backoff = (backoff * 2).min(SKILL_REGISTER_MAX_BACKOFF);
     }
 }
 
-fn spawn_skill_register(iii: Arc<iii_sdk::III>, cfg: Arc<AuthConfig>) {
+fn spawn_skill_register(iii: Arc<iii_sdk::III>, cfg: Arc<AuthConfig>) -> JoinHandle<()> {
     tokio::spawn(async move {
         register_skill_with_retry(
             &iii,
@@ -190,7 +194,7 @@ fn spawn_skill_register(iii: Arc<iii_sdk::III>, cfg: Arc<AuthConfig>) {
         for (id, body) in iii_auth::SUB_SKILLS {
             register_skill_with_retry(&iii, id, body, cfg.skills_register_timeout_ms).await;
         }
-    });
+    })
 }
 
 async fn unregister_skill(iii: &Arc<iii_sdk::III>, cfg: &Arc<AuthConfig>) {
@@ -214,17 +218,20 @@ async fn unregister_skill(iii: &Arc<iii_sdk::III>, cfg: &Arc<AuthConfig>) {
         .await;
 }
 
-async fn wait_for_connection_ready(iii: &iii_sdk::III) -> Result<()> {
-    for _ in 0..CONNECTION_READY_ATTEMPTS {
-        if iii.get_connection_state() == iii_sdk::IIIConnectionState::Connected {
+async fn wait_for_connection_ready(iii: &iii_sdk::III, cfg: &AuthConfig) -> Result<()> {
+    let interval = Duration::from_millis(cfg.connection_ready_interval_ms);
+    for attempt in 1..=cfg.connection_ready_attempts {
+        let state = iii.get_connection_state();
+        if state == iii_sdk::IIIConnectionState::Connected {
             tokio::time::sleep(CONNECTION_READY_SETTLE).await;
             return Ok(());
         }
-        tokio::time::sleep(CONNECTION_READY_INTERVAL).await;
+        tracing::debug!(attempt, state = ?state, "iii engine connection not ready");
+        tokio::time::sleep(interval).await;
     }
     anyhow::bail!(
         "timed out waiting for iii engine connection after {} attempts",
-        CONNECTION_READY_ATTEMPTS
+        cfg.connection_ready_attempts
     )
 }
 
