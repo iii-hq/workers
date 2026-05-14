@@ -1,0 +1,244 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use iii_sdk::{
+    register_worker, InitOptions, OtelConfig, RegisterTriggerInput, TriggerRequest, WorkerMetadata,
+};
+use serde_json::json;
+use tracing_subscriber::EnvFilter;
+
+mod manifest;
+
+use iii_auth::config::{resolve_store_backend, AuthConfig, StoreBackend};
+use iii_auth::store::{IiiStateAuthStore, InMemoryAuthStore};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "iii-auth",
+    about = "OAuth authority worker for iii RBAC, discovery, DCR, JWKS, and token validation."
+)]
+struct Cli {
+    #[arg(long, env = "III_AUTH_CONFIG", default_value = "./config.yaml")]
+    config: String,
+
+    #[arg(long, env = "III_URL")]
+    url: Option<String>,
+
+    #[arg(long)]
+    issuer: Option<String>,
+
+    #[arg(long)]
+    idp_mode: Option<String>,
+
+    #[arg(long)]
+    rotation_cron: Option<String>,
+
+    #[arg(long)]
+    manifest: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    if cli.manifest {
+        let m = manifest::build_manifest();
+        println!("{}", serde_json::to_string_pretty(&m)?);
+        return Ok(());
+    }
+
+    let mut cfg = match iii_auth::config::load_config(&cli.config) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
+            AuthConfig::default()
+        }
+    };
+    if let Some(issuer) = cli.issuer {
+        cfg.issuer = issuer;
+    }
+    if let Some(idp_mode) = cli.idp_mode {
+        cfg.idp_mode = idp_mode;
+    }
+    if let Some(rotation_cron) = cli.rotation_cron {
+        cfg.rotation_cron = rotation_cron;
+    }
+    let engine_url = cli.url.unwrap_or_else(|| cfg.engine_url.clone());
+    let cfg = Arc::new(cfg);
+
+    let iii = Arc::new(register_worker(
+        &engine_url,
+        InitOptions {
+            otel: Some(OtelConfig::default()),
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: "auth".to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
+    wait_for_connection_ready(&iii).await;
+
+    let store: Arc<dyn iii_auth::store::AuthStore> = match resolve_store_backend(&cfg) {
+        StoreBackend::Memory => Arc::new(InMemoryAuthStore::new()),
+        StoreBackend::IiiState => {
+            let iii_for_store: Arc<dyn iii_auth::io::IIITrigger> = iii.clone();
+            Arc::new(IiiStateAuthStore::new(iii_for_store))
+        }
+    };
+
+    let _refs = iii_auth::register_with_iii(&iii, store, cfg.clone())
+        .await
+        .context("auth register failed")?;
+
+    register_triggers(&iii, &cfg);
+    spawn_skill_register(iii.clone(), cfg.clone());
+
+    tracing::info!("auth ready");
+    wait_for_shutdown().await?;
+    unregister_skill(&iii, &cfg).await;
+    tracing::info!("auth shutting down");
+    iii.shutdown_async().await;
+    Ok(())
+}
+
+fn register_triggers(iii: &iii_sdk::III, cfg: &AuthConfig) {
+    let http_routes = [
+        (
+            "auth::server_metadata",
+            "GET",
+            "/.well-known/oauth-authorization-server",
+        ),
+        (
+            "auth::resource_metadata",
+            "GET",
+            "/.well-known/oauth-protected-resource",
+        ),
+        ("auth::register", "POST", "/register"),
+        ("auth::jwks", "GET", "/.well-known/jwks.json"),
+        ("auth::token", "POST", "/token"),
+    ];
+    for (function_id, method, api_path) in http_routes {
+        if let Err(error) = iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: function_id.to_string(),
+            config: json!({ "api_path": api_path, "http_method": method }),
+            metadata: None,
+        }) {
+            tracing::warn!(%function_id, %api_path, %error, "failed to register http trigger");
+        }
+    }
+    if let Err(error) = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "cron".to_string(),
+        function_id: "auth::jwks_rotate".to_string(),
+        config: json!({ "expression": cfg.rotation_cron }),
+        metadata: None,
+    }) {
+        tracing::warn!(error = %error, "failed to register JWKS rotation trigger");
+    }
+}
+
+async fn register_skill_with_retry(iii: &iii_sdk::III, id: &str, body: &str, timeout_ms: u64) {
+    let mut backoff = Duration::from_secs(5);
+    let started = Instant::now();
+    loop {
+        let res = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::register".into(),
+                payload: json!({ "id": id, "skill": body }),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            })
+            .await;
+        match res {
+            Ok(_) => return,
+            Err(e) => {
+                if started.elapsed() > Duration::from_mins(3) {
+                    tracing::warn!(%id, error = %e, "skills handshake gave up");
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_mins(1));
+    }
+}
+
+fn spawn_skill_register(iii: Arc<iii_sdk::III>, cfg: Arc<AuthConfig>) {
+    tokio::spawn(async move {
+        register_skill_with_retry(
+            &iii,
+            iii_auth::SKILL_ID,
+            iii_auth::SKILL_MD,
+            cfg.skills_register_timeout_ms,
+        )
+        .await;
+        for (id, body) in iii_auth::SUB_SKILLS {
+            register_skill_with_retry(&iii, id, body, cfg.skills_register_timeout_ms).await;
+        }
+    });
+}
+
+async fn unregister_skill(iii: &Arc<iii_sdk::III>, cfg: &Arc<AuthConfig>) {
+    for (id, _) in iii_auth::SUB_SKILLS {
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "skills::unregister".into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(cfg.skills_unregister_timeout_ms),
+            })
+            .await;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "skills::unregister".into(),
+            payload: json!({ "id": iii_auth::SKILL_ID }),
+            action: None,
+            timeout_ms: Some(cfg.skills_unregister_timeout_ms),
+        })
+        .await;
+}
+
+async fn wait_for_connection_ready(iii: &iii_sdk::III) {
+    for _ in 0..100 {
+        if iii.get_connection_state() == iii_sdk::IIIConnectionState::Connected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_shutdown() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("failed to await SIGINT")?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .context("failed to await SIGINT")
+    }
+}

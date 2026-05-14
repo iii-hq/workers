@@ -1,0 +1,18 @@
+engine_url: "ws://127.0.0.1:49134"
+issuer: "http://127.0.0.1:3111"
+audience: "iii"
+idp_mode: "local"
+store: "iii_state"
+access_token_ttl_seconds: 900
+refresh_token_ttl_seconds: 2592000
+rotation_overlap_seconds: 86400
+rotation_cron: "0 0 3 * * * *"
+default_scopes:
+  - "mcp:tools"
+supported_scopes:
+  - "mcp:tools"
+  - "a2a:message"
+  - "function:*"
+  - "iii:function_registration"
+  - "iii:trigger_type_registration"
+  - "iii:trusted_internal"

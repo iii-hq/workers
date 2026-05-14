@@ -1,17 +1,18 @@
 # iii workers
 
 Workers for the [iii engine](https://github.com/iii-hq/iii). Each directory is a
-self-contained worker module: a process that connects to the engine over
+self-contained worker: a process that connects to the engine over
 WebSocket, registers functions + triggers, and does something useful.
 
 Workers are discoverable through the [registry](registry/index.json) and — for
 binary-shipped workers — installed via `iii worker add <name>`, which pulls the
 matching GitHub Release asset for the host's target triple.
 
-## Modules
+## Workers
 
 | Worker | Kind | Summary |
 |---|---|---|
+| [`auth`](auth/) | Rust | OAuth authority under `auth::*`: RBAC validation, discovery, DCR, JWKS, token issuance. |
 | [`auth-credentials`](auth-credentials/) | Rust | Provider credential vault under `auth::*` — API keys and OAuth tokens. |
 | [`session`](session/) | Rust | Session storage under `session-tree::*` and per-session inbox under `session-inbox::*` (push, drain, peek). |
 | [`provider-router`](provider-router/) | Rust | `router::stream_assistant` provider router plus `router::abort` and `router::push_steering` / `push_followup` helpers. |
@@ -49,11 +50,11 @@ cargo build --release
 ```
 
 Node/Python workers follow the standard `npm install` / `pip install -e .`
-flow — see each module's README for specifics.
+flow — see each worker README for specifics.
 
 ## Binary releases
 
-All Rust workers ship as standalone binaries — see the modules table above
+All Rust workers ship as standalone binaries — see the workers table above
 — and are released via GitHub Actions:
 
 1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump

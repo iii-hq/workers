@@ -31,6 +31,25 @@
       },
       "version": "0.1.0"
     },
+    "auth": {
+      "type": "binary",
+      "description": "OAuth authority under auth::*: RBAC validation, discovery, DCR, JWKS, token issuance.",
+      "repo": "iii-hq/workers",
+      "tag_prefix": "auth",
+      "supported_targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "has_checksum": true,
+      "default_config": {
+        "engine_url": "ws://127.0.0.1:49134",
+        "issuer": "http://127.0.0.1:3111",
+        "audience": "iii",
+        "idp_mode": "local",
+        "store": "iii_state"
+      },
+      "version": "0.1.0"
+    },
     "auth-credentials": {
       "type": "binary",
       "description": "Provider credential vault under auth::* — API keys and OAuth tokens.",
