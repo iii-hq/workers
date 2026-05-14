@@ -92,22 +92,27 @@ only — the Rust constant rebuilds automatically.
 
 ## Local demo stack
 
-From a checkout, the [`Makefile`](Makefile) drives the engine. Workers and
-their per-worker config live in [`config.yaml`](config.yaml) — the
-single source of truth the iii engine reads. The engine spawns each
-worker via its `iii.worker.yaml` `scripts.start` (`cargo run` for local
-Rust crates — builds on demand).
+From a checkout, the [`Makefile`](Makefile) drives the engine.
+`harness/config.yaml` and `harness/iii.lock` are generated (and
+gitignored) — `make config` runs `iii worker add .`, which reads
+[`iii.worker.yaml`](iii.worker.yaml) `dependencies:`, resolves transitives,
+writes the lock, and appends the harness entry with its `worker_path:`.
+The engine then spawns each worker via that worker's own
+`iii.worker.yaml` `scripts.start` (`cargo run` for local Rust crates —
+builds on demand). Per-worker overrides (e.g.,
+[`iii-directory/config.yaml`](../iii-directory/config.yaml)) live in
+each worker's own directory.
 
 ```bash
-make all      # engine + verify
+make all      # config + engine + verify
+make config   # (re)generate harness/config.yaml + iii.lock via `iii worker add .`
 make engine   # start iii in background, reading harness/config.yaml
 make verify   # call harness::status + models::list
 make web      # background Vite dev server on :5173 (no tmux)
 make stop     # kill engine + web
-make restart  # stop + engine + verify
+make restart  # stop + engine + verify (does not regenerate config.yaml)
 make logs W=engine   # tail engine log (W=web for vite)
-make lock     # refresh iii.lock via `iii worker add .`
-make clean    # remove pids/logs/data
+make clean    # remove pids/logs/data + generated config.yaml
 ```
 
 PIDs and logs default under `~/iii-harness-demo`. The engine runs
