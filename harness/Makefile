@@ -39,7 +39,7 @@ WORKERS := \
   shell \
   provider-anthropic provider-openai \
   auth-credentials llm-budget \
-  skills approval-gate
+  iii-directory approval-gate
 
 # Remote / registry-fetched workers. Declared in harness/iii.worker.yaml
 # (which is also where EXPECTED_WORKERS is generated from), but NOT built
@@ -88,7 +88,7 @@ remote-install:
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@for w in $(REMOTE_WORKERS); do \
 	  echo "==> iii worker add $$w (idempotent)"; \
-	  iii worker add "$$w" || { echo "    [error] failed to add $$w; check the registry / iii CLI version"; exit 1; }; \
+	  ( cd "$(HARNESS_DIR)" && iii worker add "$$w" ) || { echo "    [error] failed to add $$w; check the registry / iii CLI version"; exit 1; }; \
 	done
 
 # ─── engine ──────────────────────────────────────────────────────────────────
@@ -100,10 +100,10 @@ engine: ensure-dirs remote-install
 	  exit 0; \
 	fi
 	@echo "==> starting iii engine..."
-	@cd "$(DEMO_DIR)" && { nohup iii > engine.log 2>&1 & echo $$! > "$(DEMO_DIR)/engine.pid"; }
+	@cd "$(DEMO_DIR)" && { nohup iii --config "$(HARNESS_DIR)/config.yaml" > engine.log 2>&1 & echo $$! > "$(DEMO_DIR)/engine.pid"; }
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 	  sleep 1; \
-	  if iii trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then \
+	  if iii trigger --function-id engine::health::check --timeout-ms 1000 >/dev/null 2>&1; then \
 	    echo "==> engine ready after $${i}s (pid $$(cat $(DEMO_DIR)/engine.pid))"; \
 	    exit 0; \
 	  fi; \
@@ -115,7 +115,7 @@ engine: ensure-dirs remote-install
 start: ensure-dirs
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> engine reachability check..."
-	@iii trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1 \
+	@iii trigger --function-id engine::health::check --timeout-ms 1000 >/dev/null 2>&1 \
 	  || { echo "    engine not reachable — run \`make engine\` first (or use \`make all\`)"; exit 1; }
 	@echo "==> spawning $(words $(WORKERS)) dep workers..."
 	@for w in $(WORKERS); do $(MAKE) --no-print-directory _spawn-one W=$$w; sleep 0.1; done
@@ -145,6 +145,9 @@ _spawn-one:
 	  echo $$! > "$$pidfile"; \
 	elif [[ "$$w" == "shell" ]]; then \
 	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" --config "$(WORKERS_REPO)/harness/shell-config.yaml" >> "$$logfile" 2>&1 & \
+	  echo $$! > "$$pidfile"; \
+	elif [[ "$$w" == "iii-directory" ]]; then \
+	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" --config "$(WORKERS_REPO)/iii-directory/config.yaml" >> "$$logfile" 2>&1 & \
 	  echo $$! > "$$pidfile"; \
 	else \
 	  env III_URL="$(DEMO_ENGINE_WS)" nohup "$$bin" >> "$$logfile" 2>&1 & \

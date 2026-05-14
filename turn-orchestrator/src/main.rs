@@ -75,6 +75,16 @@ async fn main() -> Result<()> {
         .expect("turn-orchestrator register failed");
     tracing::info!("turn-orchestrator registered (run::start, run::start_and_wait, turn::step)");
 
+    // Pre-populate iii-directory's skills_folder with the namespaces
+    // referenced by `system_default_skills`. Runs in the background so
+    // a slow/unreachable registry can't gate worker startup; failures
+    // degrade per-namespace to the existing recovery stub in
+    // `states::provisioning`.
+    tokio::spawn(turn_orchestrator::bootstrap::run(
+        Arc::clone(&iii),
+        Arc::clone(&cfg),
+    ));
+
     tokio::signal::ctrl_c().await?;
     tracing::info!("turn-orchestrator shutting down");
     iii.shutdown_async().await;

@@ -44,7 +44,7 @@ WORKERS=(
   shell
   provider-anthropic provider-openai
   auth-credentials llm-budget
-  skills approval-gate
+  iii-directory approval-gate
 )
 
 ensure_dirs() {
@@ -53,7 +53,7 @@ ensure_dirs() {
 
 # Binary artifact name comes from each crate’s `iii.worker.yaml` `bin:` field
 # (same value as `[[bin]]` in Cargo.toml). Do not assume `iii-{folder}` — names
-# are mixed historical (`iii-*`) and folder-matched (`shell`, `skills`, …).
+# are mixed historical (`iii-*`) and folder-matched (`shell`, `session`, …).
 bin_name_for() {
   local w="$1"
   local yaml="$WORKERS_REPO/$w/iii.worker.yaml"
@@ -104,6 +104,10 @@ spawn_one() {
     run_args=(
       --config "$WORKERS_REPO/harness/shell-config.yaml"
     )
+  elif [[ "$w" == "iii-directory" ]]; then
+    run_args=(
+      --config "$WORKERS_REPO/iii-directory/config.yaml"
+    )
   fi
 
   # Per-worker env. policy-denylist needs POLICY_DENIED_FUNCTIONS to include
@@ -135,12 +139,12 @@ cmd_engine() {
   echo "==> starting iii engine..."
   (
     cd "$DEMO_DIR" || exit 1
-    nohup iii --use-default-config > engine.log 2>&1 &
+    nohup iii --config "$HARNESS_DIR/config.yaml" > engine.log 2>&1 &
     echo $! > "$DEMO_DIR/engine.pid"
   )
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
-    if iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then
+    if iii trigger --function-id engine::health::check --timeout-ms 1000 >/dev/null 2>&1; then
       echo "==> engine ready after ${i}s (pid $(cat "$pidfile"))"
       return 0
     fi
@@ -153,7 +157,7 @@ cmd_start() {
   ensure_dirs
   command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
   echo "==> engine reachability check..."
-  if ! iii --use-default-config trigger --function-id engine::queue::list_topics --timeout-ms 1000 >/dev/null 2>&1; then
+  if ! iii trigger --function-id engine::health::check --timeout-ms 1000 >/dev/null 2>&1; then
     echo "    engine not reachable — run \`./scripts/demo.sh engine\` first (or use \`all\`)"; exit 1
   fi
   echo "==> spawning ${#WORKERS[@]} dep workers..."

@@ -25,7 +25,13 @@ fn default_sync_poll_interval_ms() -> u64 {
 }
 
 fn default_system_default_skills() -> Vec<String> {
-    vec!["iii://iii".to_string()]
+    // `iii://iii-directory/index` resolves to the iii-directory worker's
+    // root skill (`<skills_folder>/iii-directory/index.md` — the
+    // registry packages it flat, not under `skills/`). The agent's
+    // orientation about iii itself is embedded directly into the
+    // system prompt via `provisioning::embedded_iii_body`, not fetched
+    // from this list.
+    vec!["iii://iii-directory/index".to_string()]
 }
 
 impl Default for TurnOrchestratorConfig {
@@ -91,8 +97,8 @@ mod tests {
         let cfg: TurnOrchestratorConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(
             cfg.system_default_skills,
-            vec!["iii://iii".to_string()],
-            "default config must pre-load the iii skill at chat start"
+            vec!["iii://iii-directory/index".to_string()],
+            "default config must pre-load the iii-directory root skill at chat start"
         );
     }
 
