@@ -21,12 +21,11 @@ iii worker add harness
 `iii.worker.yaml` `dependencies:`, and the engine starts the bundle on
 the next `iii start`.
 
-To surface registered skills (and slash-command prompts) to MCP clients
-(Cursor, Claude Code, Codex, Claude Desktop, …), add the
-[`mcp`](../mcp) worker as well:
+To back chat history with durable SQL storage instead of the bundled
+in-memory `iii-state`, add the [`iii-database`](../iii-database) worker:
 
 ```bash
-iii worker add mcp
+iii worker add iii-database
 ```
 
 ## Quickstart
