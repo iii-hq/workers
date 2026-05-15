@@ -5,7 +5,7 @@
 pub mod config;
 pub mod manifest;
 
-pub use config::WorkerConfig;
+pub use config::{InterceptorRule, WorkerConfig};
 
 use std::sync::Arc;
 
@@ -19,8 +19,63 @@ pub const FN_LIST_PENDING: &str = "approval::list_pending";
 pub const FN_LIST_UNDELIVERED: &str = "approval::list_undelivered";
 pub const FN_ACK_DELIVERED: &str = "approval::ack_delivered";
 pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
+pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
+
+fn rule_for<'a>(rules: &'a [InterceptorRule], function_id: &str) -> Option<&'a InterceptorRule> {
+    rules.iter().find(|r| r.function_id == function_id)
+}
+
+fn merge_from_approval_marker_if_needed(
+    inject: bool,
+    args: Value,
+    function_call_id: &str,
+    session_id: &str,
+) -> Value {
+    if !inject {
+        return args;
+    }
+    let marker = json!({
+        "call_id": function_call_id,
+        "session_id": session_id,
+    });
+    match args {
+        Value::Object(mut m) => {
+            m.insert("__from_approval".into(), marker);
+            Value::Object(m)
+        }
+        other if other.is_null() => json!({ "__from_approval": marker }),
+        other => json!({
+            "payload": other,
+            "__from_approval": marker,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClassifierDecision {
+    Auto,
+    Deny { reason: String },
+    Ask,
+}
+
+/// Parse classifier JSON (`decision` tag: auto | deny | ask).
+pub(crate) fn interpret_classifier_reply(value: &Value) -> Result<ClassifierDecision, ()> {
+    let tag = value.get("decision").and_then(Value::as_str).ok_or(())?;
+    match tag {
+        "auto" => Ok(ClassifierDecision::Auto),
+        "deny" => Ok(ClassifierDecision::Deny {
+            reason: value
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("denied")
+                .to_string(),
+        }),
+        "ask" => Ok(ClassifierDecision::Ask),
+        _ => Err(()),
+    }
+}
 
 /// True if `status` is one of the terminal states a stitched system message
 /// should be built from. `pending` and `approved` are intermediate.
@@ -169,6 +224,7 @@ pub struct Refs {
     pub list_undelivered: FunctionRef,
     pub ack_delivered: FunctionRef,
     pub sweep_session: FunctionRef,
+    pub lookup_record: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
 }
@@ -184,19 +240,38 @@ pub trait StateBus: Send + Sync {
 /// string. Abstracted so tests can stub the underlying call.
 #[async_trait::async_trait]
 pub trait FunctionExecutor: Send + Sync {
-    async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String>;
+    async fn invoke(
+        &self,
+        function_id: &str,
+        args: Value,
+        function_call_id: &str,
+        session_id: &str,
+    ) -> Result<Value, String>;
 }
 
 /// Production [`FunctionExecutor`] backed by `iii.trigger`.
-pub struct IiiFunctionExecutor(pub III);
+pub struct IiiFunctionExecutor {
+    pub iii: III,
+    pub rules: Arc<Vec<InterceptorRule>>,
+}
 
 #[async_trait::async_trait]
 impl FunctionExecutor for IiiFunctionExecutor {
-    async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String> {
-        self.0
+    async fn invoke(
+        &self,
+        function_id: &str,
+        args: Value,
+        function_call_id: &str,
+        session_id: &str,
+    ) -> Result<Value, String> {
+        let inject =
+            rule_for(self.rules.as_slice(), function_id).is_some_and(|r| r.inject_approval_marker);
+        let payload =
+            merge_from_approval_marker_if_needed(inject, args, function_call_id, session_id);
+        self.iii
             .trigger(TriggerRequest {
                 function_id: function_id.to_string(),
-                payload: args,
+                payload,
                 action: None,
                 timeout_ms: None,
             })
@@ -214,8 +289,9 @@ pub async fn handle_intercept(
     call: &IncomingCall,
     now_ms: u64,
     timeout_ms: u64,
+    force_pending: bool,
 ) -> Value {
-    if !call.requires_approval() {
+    if !force_pending && !call.requires_approval() {
         return json!({ "block": false });
     }
     let record = build_pending_record(
@@ -250,6 +326,23 @@ pub async fn handle_intercept(
     })
 }
 
+/// Lookup a single approval record by session + call id (for shell bypass validation).
+pub async fn handle_lookup_record(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let function_call_id = payload
+        .get("function_call_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_id.is_empty() || function_call_id.is_empty() {
+        return Value::Null;
+    }
+    let key = pending_key(session_id, function_call_id);
+    bus.get(state_scope, &key).await.unwrap_or(Value::Null)
+}
+
 /// Return Some(timed_out_record) if `rec` is pending and `now_ms` is past
 /// `expires_at`; otherwise None. Pure function — does not write state.
 pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
@@ -260,7 +353,13 @@ pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
     if now_ms < exp {
         return None;
     }
-    Some(transition_record(rec, "timed_out", None, None, Some("timeout".into())))
+    Some(transition_record(
+        rec,
+        "timed_out",
+        None,
+        None,
+        Some("timeout".into()),
+    ))
 }
 
 /// Map a legacy approval record (pre-trigger-model) to the new shape.
@@ -271,7 +370,9 @@ pub fn migrate_legacy_record(rec: &Value) -> Option<Value> {
         "allow" => ("executed", None),
         "deny" => (
             "denied",
-            rec.get("reason").and_then(Value::as_str).map(str::to_string),
+            rec.get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         ),
         _ => return None,
     };
@@ -290,7 +391,10 @@ pub async fn handle_resolve(
     payload: Value,
     now_ms: u64,
 ) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let function_call_id = payload
         .get("function_call_id")
         .or_else(|| payload.get("tool_call_id"))
@@ -348,9 +452,13 @@ pub async fn handle_resolve(
             let approved = transition_record(&existing, "approved", None, None, None);
             // Best-effort intermediate write; if it fails, still try to invoke.
             let _ = bus.set(state_scope, &key, approved.clone()).await;
-            match exec.invoke(&function_id, args).await {
+            match exec
+                .invoke(&function_id, args, function_call_id, session_id)
+                .await
+            {
                 Ok(result) => {
-                    let executed = transition_record(&approved, "executed", Some(result), None, None);
+                    let executed =
+                        transition_record(&approved, "executed", Some(result), None, None);
                     if let Err(e) = bus.set(state_scope, &key, executed).await {
                         tracing::error!("approval-gate: failed to write executed record: {e}");
                         return json!({ "ok": false, "error": "state_write_failed" });
@@ -401,7 +509,10 @@ pub async fn handle_list_undelivered(
     payload: Value,
     now_ms: u64,
 ) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "entries": [] });
     }
@@ -410,17 +521,35 @@ pub async fn handle_list_undelivered(
     let mut entries: Vec<Value> = Vec::new();
     for rec in all {
         let rec = if let Some(migrated) = migrate_legacy_record(&rec) {
-            let call_id = migrated.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+            let call_id = migrated
+                .get("function_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if !call_id.is_empty() {
-                let _ = bus.set(state_scope, &pending_key(session_id, call_id), migrated.clone()).await;
+                let _ = bus
+                    .set(
+                        state_scope,
+                        &pending_key(session_id, call_id),
+                        migrated.clone(),
+                    )
+                    .await;
             }
             migrated
         } else {
             rec
         };
         let rec = if let Some(flipped) = maybe_flip_timed_out(&rec, now_ms) {
-            let call_id = flipped.get("function_call_id").and_then(Value::as_str).unwrap_or("");
-            let _ = bus.set(state_scope, &pending_key(session_id, call_id), flipped.clone()).await;
+            let call_id = flipped
+                .get("function_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let _ = bus
+                .set(
+                    state_scope,
+                    &pending_key(session_id, call_id),
+                    flipped.clone(),
+                )
+                .await;
             flipped
         } else {
             rec
@@ -429,7 +558,10 @@ pub async fn handle_list_undelivered(
         if !is_terminal_status(status) {
             continue;
         }
-        if rec.get("delivered_in_turn_id").is_some_and(|v| !v.is_null()) {
+        if rec
+            .get("delivered_in_turn_id")
+            .is_some_and(|v| !v.is_null())
+        {
             continue;
         }
         entries.push(rec);
@@ -441,12 +573,11 @@ pub async fn handle_list_undelivered(
 /// `call_ids` for the given session. Idempotent: records already stamped
 /// (non-null `delivered_in_turn_id`) are not overwritten. Unknown call ids
 /// are silently skipped.
-pub async fn handle_ack_delivered(
-    bus: &dyn StateBus,
-    state_scope: &str,
-    payload: Value,
-) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+pub async fn handle_ack_delivered(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let turn_id = payload.get("turn_id").and_then(Value::as_str).unwrap_or("");
     let call_ids: Vec<String> = payload
         .get("call_ids")
@@ -463,14 +594,20 @@ pub async fn handle_ack_delivered(
     let mut stamped = 0_u64;
     for cid in call_ids {
         let key = pending_key(session_id, &cid);
-        let Some(rec) = bus.get(state_scope, &key).await else { continue };
-        if rec.get("delivered_in_turn_id").is_some_and(|v| !v.is_null()) {
+        let Some(rec) = bus.get(state_scope, &key).await else {
+            continue;
+        };
+        if rec
+            .get("delivered_in_turn_id")
+            .is_some_and(|v| !v.is_null())
+        {
             continue;
         }
         let mut next = rec;
-        next.as_object_mut()
-            .unwrap()
-            .insert("delivered_in_turn_id".into(), Value::String(turn_id.to_string()));
+        next.as_object_mut().unwrap().insert(
+            "delivered_in_turn_id".into(),
+            Value::String(turn_id.to_string()),
+        );
         if bus.set(state_scope, &key, next).await.is_ok() {
             stamped += 1;
         }
@@ -480,12 +617,11 @@ pub async fn handle_ack_delivered(
 
 /// Sweep all still-pending approvals for a session to timed_out
 /// (reason: session_deleted). Called when a session is being deleted.
-pub async fn handle_sweep_session(
-    bus: &dyn StateBus,
-    state_scope: &str,
-    payload: Value,
-) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
     }
@@ -496,11 +632,20 @@ pub async fn handle_sweep_session(
         if rec.get("status").and_then(Value::as_str) != Some("pending") {
             continue;
         }
-        let call_id = rec.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+        let call_id = rec
+            .get("function_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if call_id.is_empty() {
             continue;
         }
-        let flipped = transition_record(&rec, "timed_out", None, None, Some("session_deleted".into()));
+        let flipped = transition_record(
+            &rec,
+            "timed_out",
+            None,
+            None,
+            Some("session_deleted".into()),
+        );
         if bus
             .set(state_scope, &pending_key(session_id, call_id), flipped)
             .await
@@ -612,6 +757,25 @@ impl StateBus for IiiStateBus {
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
+    let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
+    for rule in rules.iter() {
+        if let Some(cid) = rule.classifier.as_deref() {
+            if cid == FN_LOOKUP_RECORD
+                || cid == FN_RESOLVE
+                || cid == FN_LIST_PENDING
+                || cid == FN_LIST_UNDELIVERED
+                || cid == FN_ACK_DELIVERED
+                || cid == FN_SWEEP_SESSION
+            {
+                tracing::warn!(
+                    "approval-gate: interceptor for {:?} uses classifier {:?} which aliases an approval endpoint; fix config",
+                    rule.function_id,
+                    cid
+                );
+            }
+        }
+    }
+
     let bus: Arc<dyn StateBus> = Arc::new(IiiStateBus(iii.clone()));
     let timeout_ms = cfg.default_timeout_ms;
     let topic = cfg.topic.clone();
@@ -619,57 +783,79 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 
     let bus_for_resolve = bus.clone();
     let scope_resolve = state_scope.clone();
-    let exec_for_resolve: Arc<dyn FunctionExecutor> = Arc::new(IiiFunctionExecutor(iii.clone()));
+    let exec_for_resolve: Arc<dyn FunctionExecutor> = Arc::new(IiiFunctionExecutor {
+        iii: iii.clone(),
+        rules: rules.clone(),
+    });
     let iii_for_resolve = iii.clone();
-    let resolve =
-        iii.register_function((
-            RegisterFunctionMessage::with_id(FN_RESOLVE.into())
-                .with_description(
-                    "Resolve a pending approval. On allow, invokes the underlying function; \
+    let resolve = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_RESOLVE.into()).with_description(
+            "Resolve a pending approval. On allow, invokes the underlying function; \
                      on deny, records the denial. The result is stitched into the agent's \
-                     next turn as a system message.".into()
-                ),
-            move |payload: Value| {
-                let bus = bus_for_resolve.clone();
-                let exec = exec_for_resolve.clone();
-                let scope_resolve = scope_resolve.clone();
-                let iii = iii_for_resolve.clone();
-                async move {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    let resp = handle_resolve(bus.as_ref(), exec.as_ref(), &scope_resolve, payload.clone(), now_ms).await;
+                     next turn as a system message."
+                .into(),
+        ),
+        move |payload: Value| {
+            let bus = bus_for_resolve.clone();
+            let exec = exec_for_resolve.clone();
+            let scope_resolve = scope_resolve.clone();
+            let iii = iii_for_resolve.clone();
+            async move {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let resp = handle_resolve(
+                    bus.as_ref(),
+                    exec.as_ref(),
+                    &scope_resolve,
+                    payload.clone(),
+                    now_ms,
+                )
+                .await;
 
-                    if resp.get("ok").and_then(Value::as_bool) == Some(true) {
-                        let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
-                        let call_id = payload.get("function_call_id").or_else(|| payload.get("tool_call_id")).and_then(Value::as_str).unwrap_or("");
-                        if !session_id.is_empty() && !call_id.is_empty() {
-                            let key = pending_key(session_id, call_id);
-                            if let Some(final_rec) = bus.get(&scope_resolve, &key).await {
-                                let mut evt = json!({
-                                    "type": "approval_resolved",
-                                    "function_call_id": call_id,
-                                    "tool_call_id": call_id,
-                                });
-                                if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
-                                    evt["decision"] = match status {
-                                        "executed" | "approved" => json!("allow"),
-                                        _ => json!("deny"),
-                                    };
-                                    evt["status"] = json!(status);
-                                }
-                                if let Some(r) = final_rec.get("result") { evt["result"] = json!(r); }
-                                if let Some(e) = final_rec.get("error") { evt["error"] = json!(e); }
-                                if let Some(reason) = final_rec.get("decision_reason") { evt["decision_reason"] = json!(reason); }
-                                write_event(&iii, session_id, &evt).await;
+                if resp.get("ok").and_then(Value::as_bool) == Some(true) {
+                    let session_id = payload
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let call_id = payload
+                        .get("function_call_id")
+                        .or_else(|| payload.get("tool_call_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if !session_id.is_empty() && !call_id.is_empty() {
+                        let key = pending_key(session_id, call_id);
+                        if let Some(final_rec) = bus.get(&scope_resolve, &key).await {
+                            let mut evt = json!({
+                                "type": "approval_resolved",
+                                "function_call_id": call_id,
+                                "tool_call_id": call_id,
+                            });
+                            if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
+                                evt["decision"] = match status {
+                                    "executed" | "approved" => json!("allow"),
+                                    _ => json!("deny"),
+                                };
+                                evt["status"] = json!(status);
                             }
+                            if let Some(r) = final_rec.get("result") {
+                                evt["result"] = json!(r);
+                            }
+                            if let Some(e) = final_rec.get("error") {
+                                evt["error"] = json!(e);
+                            }
+                            if let Some(reason) = final_rec.get("decision_reason") {
+                                evt["decision_reason"] = json!(reason);
+                            }
+                            write_event(&iii, session_id, &evt).await;
                         }
                     }
-                    Ok::<_, IIIError>(resp)
                 }
-            },
-        ));
+                Ok::<_, IIIError>(resp)
+            }
+        },
+    ));
 
     let bus_for_list = bus.clone();
     let scope_list = state_scope.clone();
@@ -688,11 +874,11 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let bus_for_list_undelivered = bus.clone();
     let scope_list_undelivered = state_scope.clone();
     let list_undelivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_LIST_UNDELIVERED.into())
-            .with_description(
-                "Return resolved approval records for a session that haven't yet been stitched \
-                 into an LLM turn. Lazy-flips expired pendings to timed_out.".into()
-            ),
+        RegisterFunctionMessage::with_id(FN_LIST_UNDELIVERED.into()).with_description(
+            "Return resolved approval records for a session that haven't yet been stitched \
+                 into an LLM turn. Lazy-flips expired pendings to timed_out."
+                .into(),
+        ),
         move |payload: Value| {
             let bus = bus_for_list_undelivered.clone();
             let scope = scope_list_undelivered.clone();
@@ -701,48 +887,71 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                Ok::<_, IIIError>(handle_list_undelivered(bus.as_ref(), &scope, payload, now_ms).await)
+                Ok::<_, IIIError>(
+                    handle_list_undelivered(bus.as_ref(), &scope, payload, now_ms).await,
+                )
             }
         },
     ));
 
     let bus_for_ack = bus.clone();
     let scope_ack = state_scope.clone();
-    let ack_delivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_ACK_DELIVERED.into())
-            .with_description(
+    let ack_delivered =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_ACK_DELIVERED.into()).with_description(
                 "Stamp delivered_in_turn_id on resolved approvals so they aren't replayed \
-                 in subsequent turns. Idempotent.".into()
+                 in subsequent turns. Idempotent."
+                    .into(),
             ),
-        move |payload: Value| {
-            let bus = bus_for_ack.clone();
-            let scope = scope_ack.clone();
-            async move {
-                Ok::<_, IIIError>(handle_ack_delivered(bus.as_ref(), &scope, payload).await)
-            }
-        },
-    ));
+            move |payload: Value| {
+                let bus = bus_for_ack.clone();
+                let scope = scope_ack.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_ack_delivered(bus.as_ref(), &scope, payload).await)
+                }
+            },
+        ));
 
     let bus_for_sweep = bus.clone();
     let scope_sweep = state_scope.clone();
-    let sweep_session = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into())
-            .with_description(
+    let sweep_session =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into()).with_description(
                 "Sweep all pending approvals for a session to timed_out. \
-                 Called when a session is deleted.".into()
+                 Called when a session is deleted."
+                    .into(),
             ),
-        move |payload: Value| {
-            let bus = bus_for_sweep.clone();
-            let scope = scope_sweep.clone();
-            async move {
-                Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope, payload).await)
-            }
-        },
-    ));
+            move |payload: Value| {
+                let bus = bus_for_sweep.clone();
+                let scope = scope_sweep.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope, payload).await)
+                }
+            },
+        ));
+
+    let bus_for_lookup = bus.clone();
+    let scope_lookup = state_scope.clone();
+    let lookup_record =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_LOOKUP_RECORD.into()).with_description(
+                "Return the approval state-store record for a session/function_call_id pair; \
+                 null when absent. Used by shell bypass validation."
+                    .into(),
+            ),
+            move |payload: Value| {
+                let bus = bus_for_lookup.clone();
+                let scope = scope_lookup.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_lookup_record(bus.as_ref(), &scope, payload).await)
+                }
+            },
+        ));
 
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
     let subscriber_scope = state_scope.clone();
+    let rules_for_sub = rules.clone();
     let subscriber_fn = iii.register_function((
         RegisterFunctionMessage::with_id("policy::approval_gate".into())
             .with_description("Pause function calls listed in approval_required.".into()),
@@ -750,6 +959,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let iii = iii_for_sub.clone();
             let bus = bus_for_sub.clone();
             let sc = subscriber_scope.clone();
+            let intercept_rules = rules_for_sub.clone();
             async move {
                 let Some(call) = extract_call(&envelope) else {
                     return Ok::<_, IIIError>(json!({ "block": false }));
@@ -758,7 +968,62 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let reply = handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms).await;
+
+                let reply = if call.requires_approval() {
+                    match rule_for(intercept_rules.as_slice(), &call.function_id) {
+                        Some(rule) if rule.classifier.as_ref().is_some_and(|s| !s.is_empty()) => {
+                            let classifier_fn = rule.classifier.as_ref().unwrap();
+                            match iii
+                                .trigger(TriggerRequest {
+                                    function_id: classifier_fn.clone(),
+                                    payload: call.args.clone(),
+                                    action: None,
+                                    timeout_ms: Some(rule.classifier_timeout_ms),
+                                })
+                                .await
+                            {
+                                Ok(v) => match interpret_classifier_reply(&v) {
+                                    Ok(ClassifierDecision::Auto) => json!({ "block": false }),
+                                    Ok(ClassifierDecision::Deny { reason }) => json!({
+                                        "block": true,
+                                        "reason": format!("approval-classifier: {reason}"),
+                                        "status": "denied",
+                                        "call_id": call.function_call_id,
+                                        "function_id": call.function_id,
+                                    }),
+                                    Ok(ClassifierDecision::Ask) | Err(()) => {
+                                        handle_intercept(
+                                            bus.as_ref(),
+                                            &sc,
+                                            &call,
+                                            now_ms,
+                                            timeout_ms,
+                                            true,
+                                        )
+                                        .await
+                                    }
+                                },
+                                Err(_) => {
+                                    handle_intercept(
+                                        bus.as_ref(),
+                                        &sc,
+                                        &call,
+                                        now_ms,
+                                        timeout_ms,
+                                        true,
+                                    )
+                                    .await
+                                }
+                            }
+                        }
+                        _ => {
+                            handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, false)
+                                .await
+                        }
+                    }
+                } else {
+                    json!({ "block": false })
+                };
 
                 if reply.get("status").and_then(Value::as_str) == Some("pending") {
                     write_event(
@@ -797,6 +1062,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         list_undelivered,
         ack_delivered,
         sweep_session,
+        lookup_record,
         subscriber_fn,
         subscriber_trigger,
     })
@@ -835,17 +1101,35 @@ mod tests {
     #[tokio::test]
     async fn handle_list_undelivered_returns_terminal_records_with_no_delivered_stamp() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
             transition_record(
                 &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c2"),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c2"),
             transition_record(
                 &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "denied", None, None, Some("nope".into()))).await.unwrap();
+                "denied",
+                None,
+                None,
+                Some("nope".into()),
+            ),
+        )
+        .await
+        .unwrap();
 
-        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
-            json!({"session_id": "s1"}), 100_000).await;
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
         let entries = resp["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
     }
@@ -853,19 +1137,24 @@ mod tests {
     #[tokio::test]
     async fn handle_list_undelivered_excludes_pending_records() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
-            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000)).await.unwrap();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        )
+        .await
+        .unwrap();
 
-        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
-            json!({"session_id": "s1"}), 1_500).await;
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 1_500).await;
         assert_eq!(resp["entries"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn handle_list_undelivered_empty_session_returns_empty() {
         let bus = InMemoryStateBus::new();
-        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
-            json!({"session_id": "s1"}), 1_500).await;
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 1_500).await;
         assert_eq!(resp["entries"], json!([]));
     }
 
@@ -874,20 +1163,35 @@ mod tests {
         let bus = InMemoryStateBus::new();
         let mut rec = transition_record(
             &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
-            "executed", Some(json!({"ok": true})), None, None);
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+        );
         rec.as_object_mut().unwrap().insert(
             "delivered_in_turn_id".into(),
             Value::String("turn-prev".into()),
         );
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec).await.unwrap();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec)
+            .await
+            .unwrap();
 
-        bus.set(STATE_SCOPE, &pending_key("s1", "c2"),
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c2"),
             transition_record(
                 &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
 
-        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
-            json!({"session_id": "s1"}), 100_000).await;
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
         let entries = resp["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["function_call_id"], "c2");
@@ -903,49 +1207,93 @@ mod tests {
     #[tokio::test]
     async fn handle_ack_delivered_stamps_records_with_turn_id() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
             transition_record(
                 &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
 
-        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
-            "session_id": "s1",
-            "call_ids": ["c1"],
-            "turn_id": "turn-1",
-        })).await;
+        let resp = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({
+                "session_id": "s1",
+                "call_ids": ["c1"],
+                "turn_id": "turn-1",
+            }),
+        )
+        .await;
         assert_eq!(resp["ok"], json!(true));
         assert_eq!(resp["stamped"], json!(1));
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
         assert_eq!(rec["delivered_in_turn_id"], "turn-1");
     }
 
     #[tokio::test]
     async fn handle_ack_delivered_is_idempotent_keeps_first_turn_id() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
             transition_record(
                 &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
 
-        let _ = handle_ack_delivered(&bus, STATE_SCOPE, json!({
-            "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-first",
-        })).await;
-        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
-            "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-second",
-        })).await;
+        let _ = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({
+                "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-first",
+            }),
+        )
+        .await;
+        let resp = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({
+                "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-second",
+            }),
+        )
+        .await;
         assert_eq!(resp["stamped"], json!(0), "second ack must not re-stamp");
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
         assert_eq!(rec["delivered_in_turn_id"], "turn-first");
     }
 
     #[tokio::test]
     async fn handle_ack_delivered_skips_unknown_call_ids_silently() {
         let bus = InMemoryStateBus::new();
-        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
-            "session_id": "s1", "call_ids": ["ghost"], "turn_id": "turn-1",
-        })).await;
+        let resp = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({
+                "session_id": "s1", "call_ids": ["ghost"], "turn_id": "turn-1",
+            }),
+        )
+        .await;
         assert_eq!(resp["ok"], json!(true));
         assert_eq!(resp["stamped"], json!(0));
     }
@@ -958,19 +1306,27 @@ mod tests {
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
             build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let resp = handle_resolve(
-            &bus, &exec, STATE_SCOPE,
+            &bus,
+            &exec,
+            STATE_SCOPE,
             json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
             70_000,
-        ).await;
+        )
+        .await;
         assert_eq!(resp["ok"], json!(false));
         assert_eq!(resp["error"], "timed_out");
 
         assert!(exec.calls.lock().unwrap().is_empty());
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "timed_out");
     }
 
@@ -985,8 +1341,11 @@ mod tests {
         });
         let migrated = migrate_legacy_record(&legacy).expect("migrates");
         assert_eq!(migrated["status"], "executed");
-        assert!(migrated["result"].is_null() || migrated.get("result").is_none()
-            || migrated["result"] == json!(null));
+        assert!(
+            migrated["result"].is_null()
+                || migrated.get("result").is_none()
+                || migrated["result"] == json!(null)
+        );
         assert_eq!(migrated["legacy_migrated"], json!(true));
     }
 
@@ -1006,10 +1365,20 @@ mod tests {
 
     #[test]
     fn migrate_legacy_record_returns_none_for_new_status_strings() {
-        for new_status in ["pending", "executed", "failed", "denied", "timed_out", "approved"] {
+        for new_status in [
+            "pending",
+            "executed",
+            "failed",
+            "denied",
+            "timed_out",
+            "approved",
+        ] {
             let rec = json!({"status": new_status});
-            assert!(migrate_legacy_record(&rec).is_none(),
-                "should not migrate already-new status '{}'", new_status);
+            assert!(
+                migrate_legacy_record(&rec).is_none(),
+                "should not migrate already-new status '{}'",
+                new_status
+            );
         }
     }
 
@@ -1019,6 +1388,77 @@ mod tests {
         assert_eq!(FN_LIST_PENDING, "approval::list_pending");
         assert_eq!(FN_LIST_UNDELIVERED, "approval::list_undelivered");
         assert_eq!(FN_ACK_DELIVERED, "approval::ack_delivered");
+        assert_eq!(FN_LOOKUP_RECORD, "approval::lookup_record");
+    }
+
+    #[test]
+    fn interpret_classifier_reply_reads_decision_tags() {
+        assert!(matches!(
+            interpret_classifier_reply(&json!({"decision": "auto"})),
+            Ok(ClassifierDecision::Auto)
+        ));
+        match interpret_classifier_reply(&json!({"decision":"deny","reason":"nope"})) {
+            Ok(ClassifierDecision::Deny { reason }) => assert_eq!(reason, "nope"),
+            o => panic!("expected deny {:?}", o),
+        }
+        assert!(matches!(
+            interpret_classifier_reply(&json!({"decision":"ask","summary":"x"})),
+            Ok(ClassifierDecision::Ask)
+        ));
+        assert!(interpret_classifier_reply(&json!({})).is_err());
+    }
+
+    #[test]
+    fn merge_from_approval_inserts_marker_when_inject_true() {
+        let m = merge_from_approval_marker_if_needed(
+            true,
+            json!({"command": "git"}),
+            "call-1",
+            "sess-1",
+        );
+        let inner = m.get("__from_approval").unwrap();
+        assert_eq!(inner["call_id"], "call-1");
+        assert_eq!(inner["session_id"], "sess-1");
+        assert_eq!(m["command"], "git");
+    }
+
+    #[test]
+    fn merge_from_approval_noop_when_inject_false() {
+        let j = json!({"a": 1});
+        let out = merge_from_approval_marker_if_needed(false, j.clone(), "c", "s");
+        assert_eq!(out, j);
+    }
+
+    #[test]
+    fn rule_for_returns_matching_rule() {
+        let rules = vec![
+            InterceptorRule {
+                function_id: "shell::exec".into(),
+                classifier: Some("shell::classify_argv".into()),
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: true,
+            },
+            InterceptorRule {
+                function_id: "other::fn".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: false,
+            },
+        ];
+        let r = rule_for(&rules, "shell::exec").expect("match");
+        assert_eq!(r.classifier.as_deref(), Some("shell::classify_argv"));
+        assert!(r.inject_approval_marker);
+    }
+
+    #[test]
+    fn rule_for_returns_none_when_absent() {
+        let rules = vec![InterceptorRule {
+            function_id: "x::y".into(),
+            classifier: None,
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: false,
+        }];
+        assert!(rule_for(&rules, "missing::id").is_none());
     }
 
     #[test]
@@ -1172,7 +1612,7 @@ mod tests {
     async fn handle_intercept_returns_pending_envelope_when_call_is_gated() {
         let bus = InMemoryStateBus::new();
         let call = sample_call();
-        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
         assert_eq!(reply["block"], json!(true));
         assert_eq!(reply["status"], json!("pending"));
         assert_eq!(reply["call_id"], json!("tc-1"));
@@ -1184,9 +1624,12 @@ mod tests {
     async fn handle_intercept_writes_pending_record_to_state() {
         let bus = InMemoryStateBus::new();
         let call = sample_call();
-        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
         let key = pending_key(&call.session_id, &call.function_call_id);
-        let rec = bus.get(STATE_SCOPE, &key).await.expect("pending record written");
+        let rec = bus
+            .get(STATE_SCOPE, &key)
+            .await
+            .expect("pending record written");
         assert_eq!(rec["status"], "pending");
         assert_eq!(rec["function_call_id"], "tc-1");
         assert_eq!(rec["expires_at"], 61_000);
@@ -1197,22 +1640,75 @@ mod tests {
         let bus = InMemoryStateBus::new();
         let mut call = sample_call();
         call.approval_required = vec!["other".into()];
-        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
         assert_eq!(reply["block"], json!(false));
         let key = pending_key(&call.session_id, &call.function_call_id);
-        assert!(bus.get(STATE_SCOPE, &key).await.is_none(), "no record written");
+        assert!(
+            bus.get(STATE_SCOPE, &key).await.is_none(),
+            "no record written"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_force_pending_writes_when_not_on_required_list() {
+        let bus = InMemoryStateBus::new();
+        let mut call = sample_call();
+        call.approval_required = vec!["other".into()];
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, true).await;
+        assert_eq!(reply["block"], json!(true));
+        assert_eq!(reply["status"], json!("pending"));
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        assert!(bus.get(STATE_SCOPE, &key).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn handle_lookup_record_returns_null_when_missing() {
+        let bus = InMemoryStateBus::new();
+        let v = handle_lookup_record(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "function_call_id": "c1"}),
+        )
+        .await;
+        assert!(v.is_null());
+    }
+
+    #[tokio::test]
+    async fn handle_lookup_record_returns_record_when_present() {
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
+        let v = handle_lookup_record(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "function_call_id": "tc-1"}),
+        )
+        .await;
+        assert_eq!(v["status"], json!("pending"));
+        assert_eq!(v["function_id"], json!("shell::fs::write"));
     }
 
     #[derive(Default)]
     struct FakeExecutor {
-        calls: Mutex<Vec<(String, Value)>>,
+        calls: Mutex<Vec<(String, Value, String, String)>>,
         response: Mutex<Option<Result<Value, String>>>,
     }
 
     #[async_trait::async_trait]
     impl FunctionExecutor for FakeExecutor {
-        async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String> {
-            self.calls.lock().unwrap().push((function_id.to_string(), args));
+        async fn invoke(
+            &self,
+            function_id: &str,
+            args: Value,
+            function_call_id: &str,
+            session_id: &str,
+        ) -> Result<Value, String> {
+            self.calls.lock().unwrap().push((
+                function_id.to_string(),
+                args,
+                function_call_id.to_string(),
+                session_id.to_string(),
+            ));
             self.response
                 .lock()
                 .unwrap()
@@ -1228,26 +1724,42 @@ mod tests {
         bus.set(
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
-            build_pending_record("tc-1", "shell::fs::write", &json!({"path":"/a"}), 1_000, 60_000),
-        ).await.unwrap();
+            build_pending_record(
+                "tc-1",
+                "shell::fs::write",
+                &json!({"path":"/a"}),
+                1_000,
+                60_000,
+            ),
+        )
+        .await
+        .unwrap();
 
         let resp = handle_resolve(
-            &bus, &exec, STATE_SCOPE,
+            &bus,
+            &exec,
+            STATE_SCOPE,
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
                 "decision": "allow",
             }),
             1_500,
-        ).await;
+        )
+        .await;
         assert_eq!(resp["ok"], json!(true));
 
         let calls = exec.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "shell::fs::write");
         assert_eq!(calls[0].1, json!({"path":"/a"}));
+        assert_eq!(calls[0].2, "tc-1");
+        assert_eq!(calls[0].3, "s1");
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "executed");
         assert_eq!(rec["result"], json!({"ok": true}));
     }
@@ -1260,10 +1772,14 @@ mod tests {
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
             build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let resp = handle_resolve(
-            &bus, &exec, STATE_SCOPE,
+            &bus,
+            &exec,
+            STATE_SCOPE,
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
@@ -1271,12 +1787,16 @@ mod tests {
                 "reason": "not authorized",
             }),
             1_500,
-        ).await;
+        )
+        .await;
         assert_eq!(resp["ok"], json!(true));
 
         assert!(exec.calls.lock().unwrap().is_empty());
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "denied");
         assert_eq!(rec["decision_reason"], "not authorized");
     }
@@ -1290,16 +1810,24 @@ mod tests {
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
             build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let resp = handle_resolve(
-            &bus, &exec, STATE_SCOPE,
+            &bus,
+            &exec,
+            STATE_SCOPE,
             json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
             1_500,
-        ).await;
+        )
+        .await;
         assert_eq!(resp["ok"], json!(true));
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "failed");
         assert_eq!(rec["error"], "EACCES");
     }
@@ -1307,11 +1835,16 @@ mod tests {
     #[tokio::test]
     async fn fake_executor_records_calls() {
         let exec = FakeExecutor::default();
-        let out = exec.invoke("shell::fs::write", json!({"x": 1})).await.unwrap();
+        let out = exec
+            .invoke("shell::fs::write", json!({"x": 1}), "cid", "sid")
+            .await
+            .unwrap();
         assert_eq!(out, json!({"ok": true}));
         let calls = exec.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "shell::fs::write");
+        assert_eq!(calls[0].2, "cid");
+        assert_eq!(calls[0].3, "sid");
     }
 
     struct InMemoryStateBus {
@@ -1500,7 +2033,13 @@ mod tests {
 
     #[test]
     fn transition_record_to_executed_attaches_result() {
-        let base = build_pending_record("tc-1", "shell::fs::write", &json!({"path":"/a"}), 1_000, 60_000);
+        let base = build_pending_record(
+            "tc-1",
+            "shell::fs::write",
+            &json!({"path":"/a"}),
+            1_000,
+            60_000,
+        );
         let rec = transition_record(&base, "executed", Some(json!({"ok": true})), None, None);
         assert_eq!(rec["status"], "executed");
         assert_eq!(rec["result"], json!({"ok": true}));
@@ -1548,13 +2087,21 @@ mod tests {
     #[tokio::test]
     async fn handle_sweep_session_flips_pending_records_to_timed_out_with_reason_session_deleted() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
-            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000)).await.unwrap();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        )
+        .await
+        .unwrap();
 
         let resp = handle_sweep_session(&bus, STATE_SCOPE, json!({"session_id": "s1"})).await;
         assert_eq!(resp["swept"], json!(1));
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "timed_out");
         assert_eq!(rec["decision_reason"], "session_deleted");
     }
@@ -1562,15 +2109,27 @@ mod tests {
     #[tokio::test]
     async fn handle_sweep_session_skips_non_pending_records() {
         let bus = InMemoryStateBus::new();
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
             transition_record(
                 &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
 
         let resp = handle_sweep_session(&bus, STATE_SCOPE, json!({"session_id": "s1"})).await;
         assert_eq!(resp["swept"], json!(0));
 
-        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
         assert_eq!(rec["status"], "executed");
     }
 

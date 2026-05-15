@@ -27,6 +27,14 @@ pub struct ShellConfig {
     #[serde(default)]
     pub allowlist: Vec<String>,
 
+    /// Bypass the allowlist-miss-prompts-user behavior. When `true`, every
+    /// non-denylisted command is auto-approved on the classifier path.
+    /// Denylist still wins. Default `false` (fail-closed).
+    ///
+    /// Spec: docs/superpowers/specs/2026-05-15-shell-allowlist-approval-design.md § 6.5
+    #[serde(default)]
+    pub allow_any: bool,
+
     #[serde(default)]
     pub denylist_patterns: Vec<String>,
 
@@ -134,6 +142,7 @@ impl Default for ShellConfig {
             inherit_env: false,
             allowed_env: default_allowed_env(),
             allowlist: Vec::new(),
+            allow_any: false,
             denylist_patterns: Vec::new(),
             max_concurrent_jobs: default_max_concurrent_jobs(),
             job_retention_secs: default_job_retention_secs(),
@@ -178,27 +187,49 @@ impl ShellConfig {
         Ok(())
     }
 
-    pub fn is_command_allowed(&self, argv: &[String]) -> Result<(), String> {
-        let cmd = argv
-            .first()
-            .ok_or_else(|| "empty command".to_string())?
-            .clone();
-
-        if !self.allowlist.is_empty() {
-            let base = std::path::Path::new(&cmd)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&cmd);
-            if !self.allowlist.iter().any(|a| a == base || a == &cmd) {
-                return Err(format!("command '{}' not in allowlist", base));
-            }
-        }
-
+    /// Returns `Some(reason)` if joined argv matches any compiled denylist regex.
+    /// Pure predicate; no allowlist consultation.
+    pub fn denylist_hit_reason(&self, argv: &[String]) -> Option<String> {
         let joined = argv.join(" ");
         for re in &self.compiled_denylist {
             if re.is_match(&joined) {
-                return Err(format!("command matches denylist: {}", re.as_str()));
+                return Some(format!("command matches denylist: {}", re.as_str()));
             }
+        }
+        None
+    }
+
+    /// Returns `true` if argv[0] (basename or exact path) appears in `allowlist`.
+    /// Empty allowlist returns `false` (caller decides what to do with that).
+    pub fn allowlist_contains(&self, argv: &[String]) -> bool {
+        let Some(cmd) = argv.first() else {
+            return false;
+        };
+        if self.allowlist.is_empty() {
+            return false;
+        }
+        let base = std::path::Path::new(cmd)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(cmd);
+        self.allowlist.iter().any(|a| a == base || a == cmd)
+    }
+
+    /// Today's combined check, preserved unchanged on the wire for direct
+    /// (non-agent) callers. Empty allowlist = open. Denylist always wins.
+    /// Agent calls bypass this via the approval-gate classifier path
+    /// (see docs/superpowers/specs/2026-05-15-shell-allowlist-approval-design.md § 6.5).
+    pub fn is_command_allowed(&self, argv: &[String]) -> Result<(), String> {
+        let cmd = argv.first().ok_or_else(|| "empty command".to_string())?;
+        if let Some(reason) = self.denylist_hit_reason(argv) {
+            return Err(reason);
+        }
+        if !self.allowlist.is_empty() && !self.allowlist_contains(argv) {
+            let base = std::path::Path::new(cmd)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(cmd);
+            return Err(format!("command '{}' not in allowlist", base));
         }
         Ok(())
     }

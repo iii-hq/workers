@@ -15,6 +15,23 @@ fn default_default_timeout_ms() -> u64 {
     300_000
 }
 
+fn default_classifier_timeout_ms() -> u64 {
+    2000
+}
+
+/// Per-function iii intercept rule: optional classifier trigger before pending +
+/// optional `__from_approval` injection on post-resolve `iii.trigger`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct InterceptorRule {
+    pub function_id: String,
+    #[serde(default)]
+    pub classifier: Option<String>,
+    #[serde(default = "default_classifier_timeout_ms")]
+    pub classifier_timeout_ms: u64,
+    #[serde(default)]
+    pub inject_approval_marker: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct WorkerConfig {
     #[serde(default = "default_topic")]
@@ -23,6 +40,8 @@ pub struct WorkerConfig {
     pub approval_state_scope: String,
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
+    #[serde(default)]
+    pub interceptors: Vec<InterceptorRule>,
 }
 
 impl Default for WorkerConfig {
@@ -31,6 +50,7 @@ impl Default for WorkerConfig {
             topic: default_topic(),
             approval_state_scope: default_approval_state_scope(),
             default_timeout_ms: default_default_timeout_ms(),
+            interceptors: Vec::new(),
         }
     }
 }
@@ -56,6 +76,50 @@ mod tests {
         assert_eq!(cfg.topic, default_topic());
         assert_eq!(cfg.approval_state_scope, "approvals");
         assert_eq!(cfg.default_timeout_ms, 300_000);
+        assert!(cfg.interceptors.is_empty());
+    }
+
+    #[test]
+    fn interceptors_default_empty() {
+        assert!(WorkerConfig::default().interceptors.is_empty());
+    }
+
+    #[test]
+    fn interceptors_parse_from_nested_config_block() {
+        let yaml = r#"
+interceptors:
+  - function_id: shell::exec
+    classifier: shell::classify_argv
+    classifier_timeout_ms: 1500
+    inject_approval_marker: true
+  - function_id: other::fn
+    classifier: null
+"#;
+        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.interceptors.len(), 2);
+        assert_eq!(cfg.interceptors[0].function_id, "shell::exec");
+        assert_eq!(
+            cfg.interceptors[0].classifier.as_deref(),
+            Some("shell::classify_argv")
+        );
+        assert_eq!(cfg.interceptors[0].classifier_timeout_ms, 1500);
+        assert!(cfg.interceptors[0].inject_approval_marker);
+        assert_eq!(cfg.interceptors[1].function_id, "other::fn");
+        assert!(cfg.interceptors[1].classifier.is_none());
+        assert!(!cfg.interceptors[1].inject_approval_marker);
+    }
+
+    #[test]
+    fn interceptor_rule_marker_defaults_false() {
+        let yaml = r#"
+interceptors:
+  - function_id: x::y
+    classifier: c::f
+"#;
+        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.interceptors.len(), 1);
+        assert!(!cfg.interceptors[0].inject_approval_marker);
+        assert_eq!(cfg.interceptors[0].classifier_timeout_ms, 2000);
     }
 
     #[test]

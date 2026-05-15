@@ -1,9 +1,35 @@
 use std::sync::Arc;
 
+use iii_sdk::TriggerRequest;
+use serde_json::{json, Value};
+
 use crate::config::ShellConfig;
 use crate::exec::host::parse_argv;
 use crate::exec_dispatch::{err_to_string, pick_exec_backend};
+use crate::functions::approval_bypass::{marker_wellformed, validate_approved_record_for_bypass};
 use crate::functions::types::{ExecRequest, ExecResponse};
+
+const FN_APPROVAL_LOOKUP_RECORD: &str = "approval::lookup_record";
+
+async fn fetch_approval_record(iii: &iii_sdk::III, session_id: &str, call_id: &str) -> Result<Value, String> {
+    let v = iii
+        .trigger(TriggerRequest {
+            function_id: FN_APPROVAL_LOOKUP_RECORD.into(),
+            payload: json!({
+                "session_id": session_id,
+                "function_call_id": call_id,
+            }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    if v.is_null() {
+        Err("__from_approval marker without valid pending approval record".into())
+    } else {
+        Ok(v)
+    }
+}
 
 pub async fn handle(
     cfg: Arc<ShellConfig>,
@@ -19,9 +45,28 @@ pub async fn handle(
     //   Some(_) → use args verbatim, even if empty
     // The typed-schema migration must NOT collapse "absent args" into
     // "args: []" or callers lose the shell-words path.
-    let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
-
-    cfg.is_command_allowed(&argv)?;
+    let handler_id = "shell::exec";
+    let argv = if let Some(ref marker) = req.from_approval {
+        marker_wellformed(marker)?;
+        let rec = fetch_approval_record(&iii, &marker.session_id, &marker.call_id).await?;
+        validate_approved_record_for_bypass(&rec, handler_id, &req.command, &req.args)?;
+        let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
+        if let Some(reason) = cfg.denylist_hit_reason(&argv) {
+            tracing::error!(
+                reason = %reason,
+                "post-approval defense-in-depth: denylisted argv on approval bypass path"
+            );
+            return Err(format!(
+                "post-approval defense-in-depth: {}",
+                reason
+            ));
+        }
+        argv
+    } else {
+        let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
+        cfg.is_command_allowed(&argv)?;
+        argv
+    };
 
     let timeout = cfg.resolve_timeout(req.timeout_ms);
 

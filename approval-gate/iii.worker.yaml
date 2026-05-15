@@ -17,3 +17,12 @@ config:
   topic: agent::before_function_call
   approval_state_scope: approvals
   default_timeout_ms: 300000
+  interceptors:
+    - function_id: shell::exec
+      classifier: shell::classify_argv
+      classifier_timeout_ms: 2000
+      inject_approval_marker: true
+    - function_id: shell::exec_bg
+      classifier: shell::classify_argv
+      classifier_timeout_ms: 2000
+      inject_approval_marker: true
