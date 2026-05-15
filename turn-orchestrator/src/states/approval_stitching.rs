@@ -40,6 +40,52 @@ pub fn omission_summary_message(omitted: u64) -> Option<String> {
     ))
 }
 
+/// Render an approval-gate `Denial` (tagged `{ kind, detail }`) as one or
+/// more indented lines for the stitched LLM message. Each kind gets a
+/// shape it can act on:
+/// - `policy`   → "policy denied by <fn>: <reason>" (rule-based deny;
+///   tells the model what rule fired so it can adapt)
+/// - `user_rejected`  → "user rejected this call" (no feedback)
+/// - `user_corrected` → "user rejected with feedback: <text>"
+///   (the high-value variant — model gets actionable correction)
+/// - `state_error`    → "gate state-write failure (phase=<p>): <e>"
+///   (fail-closed signal; operator-facing)
+/// - `legacy` → "<reason>" (pass-through for migrated pre-Denial records)
+fn render_denial_lines(denial: &Value) -> Vec<String> {
+    let kind = denial.get("kind").and_then(Value::as_str).unwrap_or("");
+    let detail = denial.get("detail").cloned().unwrap_or(Value::Null);
+    match kind {
+        "policy" => {
+            let reason = detail
+                .get("classifier_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let f = detail
+                .get("classifier_fn")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            vec![format!("  policy denied by {f}: {reason}")]
+        }
+        "user_rejected" => vec!["  user rejected this call".to_string()],
+        "user_corrected" => {
+            let feedback = detail.get("feedback").and_then(Value::as_str).unwrap_or("");
+            vec![format!("  user rejected with feedback: {feedback}")]
+        }
+        "state_error" => {
+            let phase = detail.get("phase").and_then(Value::as_str).unwrap_or("");
+            let error = detail.get("error").and_then(Value::as_str).unwrap_or("");
+            vec![format!(
+                "  approval gate state-write failure (phase={phase}): {error}"
+            )]
+        }
+        "legacy" => {
+            let reason = detail.get("reason").and_then(Value::as_str).unwrap_or("");
+            vec![format!("  reason: {reason}")]
+        }
+        other => vec![format!("  denial kind: {other}")],
+    }
+}
+
 fn stitch_one(entry: &Value) -> String {
     let call_id = entry.get("call_id").and_then(Value::as_str).unwrap_or("?");
     let fn_id = entry.get("function_id").and_then(Value::as_str).unwrap_or("?");
@@ -71,9 +117,9 @@ fn stitch_one(entry: &Value) -> String {
             lines.push(format!("  error: {e}"));
         }
     }
-    if matches!(status, "denied" | "timed_out") {
-        if let Some(reason) = entry.get("decision_reason").and_then(Value::as_str) {
-            lines.push(format!("  reason: {reason}"));
+    if status == "denied" {
+        if let Some(denial) = entry.get("denial") {
+            lines.extend(render_denial_lines(denial));
         }
     }
     if entry.get("legacy_migrated").and_then(Value::as_bool) == Some(true) {
@@ -128,7 +174,12 @@ mod tests {
     fn stitch_entries_emits_one_message_per_entry() {
         let entries = vec![
             make_entry("c1", "shell::fs::write", "executed", json!({"result": {"ok": true}})),
-            make_entry("c2", "shell::fs::mkdir", "denied",   json!({"decision_reason": "no"})),
+            make_entry(
+                "c2",
+                "shell::fs::mkdir",
+                "denied",
+                json!({"denial": {"kind": "user_rejected"}}),
+            ),
         ];
         let out = stitch_entries(&entries);
         assert_eq!(out.len(), 2);
@@ -158,24 +209,108 @@ mod tests {
     }
 
     #[test]
-    fn stitch_entries_denied_omits_result_and_error() {
-        let entries = vec![make_entry("c1", "shell::fs::write", "denied",
-            json!({"decision_reason": "no"}))];
+    fn stitch_entries_denied_user_rejected_renders_simple_line() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({"denial": {"kind": "user_rejected"}}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: deny"));
         assert!(msg.contains("status: denied"));
-        assert!(msg.contains("reason: no"));
+        assert!(msg.contains("user rejected this call"));
         assert!(!msg.contains("result:"));
         assert!(!msg.contains("error:"));
     }
 
     #[test]
-    fn stitch_entries_timed_out_uses_timeout_decision() {
-        let entries = vec![make_entry("c1", "shell::fs::write", "timed_out",
-            json!({"decision_reason": "timeout"}))];
+    fn stitch_entries_denied_user_corrected_surfaces_feedback() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({
+                "denial": {
+                    "kind": "user_corrected",
+                    "detail": { "feedback": "use git diff instead" }
+                }
+            }),
+        )];
+        let msg = &stitch_entries(&entries)[0];
+        assert!(msg.contains("user rejected with feedback: use git diff instead"));
+    }
+
+    #[test]
+    fn stitch_entries_denied_policy_names_classifier_and_reason() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({
+                "denial": {
+                    "kind": "policy",
+                    "detail": {
+                        "classifier_reason": "command matches denylist",
+                        "classifier_fn": "shell::classify_argv"
+                    }
+                }
+            }),
+        )];
+        let msg = &stitch_entries(&entries)[0];
+        assert!(msg.contains("policy denied by shell::classify_argv: command matches denylist"));
+    }
+
+    #[test]
+    fn stitch_entries_denied_state_error_surfaces_phase_and_error() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({
+                "denial": {
+                    "kind": "state_error",
+                    "detail": { "phase": "intercept_write_pending", "error": "kv unavailable" }
+                }
+            }),
+        )];
+        let msg = &stitch_entries(&entries)[0];
+        assert!(msg.contains("approval gate state-write failure"));
+        assert!(msg.contains("intercept_write_pending"));
+        assert!(msg.contains("kv unavailable"));
+    }
+
+    #[test]
+    fn stitch_entries_denied_legacy_passes_through_reason() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({
+                "denial": {
+                    "kind": "legacy",
+                    "detail": { "reason": "user typed nope" }
+                }
+            }),
+        )];
+        let msg = &stitch_entries(&entries)[0];
+        assert!(msg.contains("reason: user typed nope"));
+    }
+
+    #[test]
+    fn stitch_entries_timed_out_omits_denial_block() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "timed_out",
+            json!({}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: timeout"));
         assert!(msg.contains("status: timed_out"));
+        // Timed-out records carry no denial; the status line is enough.
+        assert!(!msg.contains("user rejected"));
+        assert!(!msg.contains("policy denied"));
     }
 
     #[test]

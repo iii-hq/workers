@@ -93,25 +93,68 @@ fn merge_from_approval_marker_if_needed(
     }
 }
 
+/// Structured deny payload carried on wire replies, persisted records, and
+/// `approval_resolved` stream events. Replaces the legacy free-form
+/// `decision_reason` / `reason` strings so consumers (turn-orchestrator
+/// stitching, UIs, the LLM) can branch on `kind` instead of parsing prose.
+///
+/// Wire shape (serde tag=kind, content=detail, snake_case):
+///   `{ "kind": "policy", "detail": { "classifier_reason": "...", "classifier_fn": "..." } }`
+///   `{ "kind": "user_rejected", "detail": null }`
+///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
+///   `{ "kind": "state_error",   "detail": { "phase": "...", "error": "..." } }`
+///   `{ "kind": "legacy",        "detail": { "reason": "..." } }`
+///
+/// `Legacy` is the read-time landing pad for records persisted before this
+/// type existed (see [`migrate_legacy_record`]). New writes never emit it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum Denial {
+    Policy {
+        classifier_reason: String,
+        classifier_fn: String,
+    },
+    UserRejected,
+    UserCorrected {
+        feedback: String,
+    },
+    StateError {
+        phase: String,
+        error: String,
+    },
+    Legacy {
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClassifierDecision {
     Auto,
-    Deny { reason: String },
+    Deny(Denial),
     Ask,
 }
 
-/// Parse classifier JSON (`decision` tag: auto | deny | ask).
-pub(crate) fn interpret_classifier_reply(value: &Value) -> Result<ClassifierDecision, ()> {
+/// Parse classifier JSON (`decision` tag: auto | deny | ask). On `deny`
+/// the reply may carry `reason` (free-form classifier text) and optionally
+/// `classifier_fn` — both get folded into a [`Denial::Policy`].
+pub(crate) fn interpret_classifier_reply(
+    value: &Value,
+    classifier_fn: &str,
+) -> Result<ClassifierDecision, ()> {
     let tag = value.get("decision").and_then(Value::as_str).ok_or(())?;
     match tag {
         "auto" => Ok(ClassifierDecision::Auto),
-        "deny" => Ok(ClassifierDecision::Deny {
-            reason: value
+        "deny" => {
+            let classifier_reason = value
                 .get("reason")
                 .and_then(Value::as_str)
                 .unwrap_or("denied")
-                .to_string(),
-        }),
+                .to_string();
+            Ok(ClassifierDecision::Deny(Denial::Policy {
+                classifier_reason,
+                classifier_fn: classifier_fn.to_string(),
+            }))
+        }
         "ask" => Ok(ClassifierDecision::Ask),
         _ => Err(()),
     }
@@ -145,7 +188,7 @@ impl IncomingCall {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    Deny { reason: String },
+    Deny(Denial),
 }
 
 /// Wire-format decision string used by `approval::resolve` and stored
@@ -222,9 +265,9 @@ pub fn build_pending_record(
 }
 
 /// Build a new record by transitioning a pending base record to a terminal
-/// status. All terminal fields (`result`, `error`, `decision_reason`) are
-/// optional; only the ones provided are attached. Existing fields on the
-/// base (including `delivered_in_turn_id` and `resolved_at` if present) are
+/// status. All terminal fields (`result`, `error`, `denial`) are optional;
+/// only the ones provided are attached. Existing fields on the base
+/// (including `delivered_in_turn_id` and `resolved_at` if present) are
 /// preserved. The first transition into a terminal status stamps
 /// `resolved_at`.
 pub fn transition_record(
@@ -232,13 +275,13 @@ pub fn transition_record(
     new_status: &str,
     result: Option<Value>,
     error: Option<String>,
-    decision_reason: Option<String>,
+    denial: Option<Denial>,
 ) -> Value {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    transition_record_with_now(base, new_status, result, error, decision_reason, now_ms)
+    transition_record_with_now(base, new_status, result, error, denial, now_ms)
 }
 
 /// Testable variant of [`transition_record`] that takes `now_ms` directly.
@@ -247,7 +290,7 @@ pub fn transition_record_with_now(
     new_status: &str,
     result: Option<Value>,
     error: Option<String>,
-    decision_reason: Option<String>,
+    denial: Option<Denial>,
     now_ms: u64,
 ) -> Value {
     let mut rec = base.clone();
@@ -259,8 +302,11 @@ pub fn transition_record_with_now(
         if let Some(e) = error {
             obj.insert("error".into(), Value::String(e));
         }
-        if let Some(reason) = decision_reason {
-            obj.insert("decision_reason".into(), Value::String(reason));
+        if let Some(d) = denial {
+            obj.insert(
+                "denial".into(),
+                serde_json::to_value(&d).expect("Denial is always serializable"),
+            );
         }
         if is_terminal_status(new_status) && !obj.contains_key("resolved_at") {
             obj.insert("resolved_at".into(), Value::Number(now_ms.into()));
@@ -269,12 +315,16 @@ pub fn transition_record_with_now(
     rec
 }
 
+/// Build the hook block reply for a [`Decision`]. Deny replies carry the
+/// structured [`Denial`] under `denial`; consumers (turn-orchestrator
+/// stitching, UIs, the LLM) branch on `denial.kind` rather than parsing a
+/// free-form `reason` string.
 pub fn block_reply_for(decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({ "block": false }),
-        Decision::Deny { reason } => json!({
+        Decision::Deny(denial) => json!({
             "block": true,
-            "reason": format!("approval-gate: {reason}"),
+            "denial": denial,
         }),
     }
 }
@@ -290,6 +340,10 @@ pub struct Refs {
     pub lookup_record: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
+    /// Background task that flips expired pending records to `timed_out` and
+    /// emits the corresponding `approval_resolved` events. Kept alive by
+    /// virtue of being held here; aborts when the worker shuts down.
+    pub sweeper: tokio::task::JoinHandle<()>,
 }
 
 #[async_trait::async_trait]
@@ -346,6 +400,14 @@ impl FunctionExecutor for IiiFunctionExecutor {
 /// Decide whether a call is gated; if so, write a pending record and return
 /// the structured pending hook reply. If not gated, return `{block: false}`
 /// and do nothing.
+///
+/// Stamps `session_id` onto the persisted record so the timeout sweeper can
+/// emit `approval_resolved` to the right session stream without consulting
+/// the storage layer's keys.
+///
+/// State-write failure is treated as fail-closed: the gate replies
+/// `{block:true, status:"denied"}` so a transient kv outage cannot silently
+/// bypass an approval check.
 pub async fn handle_intercept(
     bus: &dyn StateBus,
     state_scope: &str,
@@ -357,13 +419,55 @@ pub async fn handle_intercept(
     if !force_pending && !call.requires_approval() {
         return json!({ "block": false });
     }
-    let record = build_pending_record(
+
+    // Defense in depth: if a record for this (session, call_id) already
+    // exists, don't blow it away. Re-intercept of an already-decided call
+    // would otherwise revert a terminal record back to `pending`, losing
+    // the audit trail and any `delivered_in_turn_id` stamp. Surfaced by
+    // the state-machine proptest in tests::state_machine_invariants.
+    let key = pending_key(&call.session_id, &call.function_call_id);
+    if let Some(existing) = bus.get(state_scope, &key).await {
+        let status = existing
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if is_terminal_status(&status) {
+            // Replay of an already-resolved call: the prior status carries
+            // the meaning. No fresh Denial is synthesized — consumers that
+            // need to render the historical decision read the persisted
+            // record via approval::lookup_record.
+            return json!({
+                "block": true,
+                "status": status,
+                "replay": "already_resolved",
+                "call_id": call.function_call_id,
+                "function_id": call.function_id,
+            });
+        }
+        if status == "pending" || status == "approved" {
+            // Replay of an in-flight intercept — keep the existing row,
+            // re-emit the pending reply. No state churn.
+            return json!({
+                "block": true,
+                "status": "pending",
+                "replay": "in_flight",
+                "call_id": call.function_call_id,
+                "function_id": call.function_id,
+            });
+        }
+    }
+
+    let mut record = build_pending_record(
         &call.function_call_id,
         &call.function_id,
         &call.args,
         now_ms,
         timeout_ms,
     );
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert("session_id".into(), Value::String(call.session_id.clone()));
+    }
     if let Err(err) = bus
         .set(
             state_scope,
@@ -373,16 +477,24 @@ pub async fn handle_intercept(
         .await
     {
         tracing::error!(
-            "approval-gate: failed to write pending record for {}/{}: {err}",
+            "approval-gate: failed to write pending record for {}/{}: {err} — failing closed",
             call.session_id,
             call.function_call_id
         );
-        // Fail open: better to let the call proceed than to silently drop it.
-        return json!({ "block": false });
+        let denial = Denial::StateError {
+            phase: "intercept_write_pending".to_string(),
+            error: err.to_string(),
+        };
+        return json!({
+            "block": true,
+            "denial": denial,
+            "status": "denied",
+            "call_id": call.function_call_id,
+            "function_id": call.function_id,
+        });
     }
     json!({
         "block": true,
-        "reason": "approval-gate: pending_approval",
         "status": "pending",
         "call_id": call.function_call_id,
         "function_id": call.function_id,
@@ -406,6 +518,36 @@ pub async fn handle_lookup_record(bus: &dyn StateBus, state_scope: &str, payload
     bus.get(state_scope, &key).await.unwrap_or(Value::Null)
 }
 
+/// For a bag of pending records, return the subset that have expired at
+/// `now_ms` along with the metadata needed to commit the flip and notify the
+/// owning session. Records without a stamped `session_id` (legacy rows
+/// written before that field existed) are skipped — they'll still be picked
+/// up lazily by `handle_list_undelivered` on the next read.
+pub fn collect_timed_out_for_sweep(
+    records: &[Value],
+    now_ms: u64,
+) -> Vec<(String, Value, String, String)> {
+    records
+        .iter()
+        .filter_map(|rec| {
+            let flipped = maybe_flip_timed_out(rec, now_ms)?;
+            let session_id = flipped
+                .get("session_id")
+                .and_then(Value::as_str)?
+                .to_string();
+            let function_call_id = flipped
+                .get("function_call_id")
+                .and_then(Value::as_str)?
+                .to_string();
+            if session_id.is_empty() || function_call_id.is_empty() {
+                return None;
+            }
+            let key = pending_key(&session_id, &function_call_id);
+            Some((key, flipped, session_id, function_call_id))
+        })
+        .collect()
+}
+
 /// Return Some(timed_out_record) if `rec` is pending and `now_ms` is past
 /// `expires_at`; otherwise None. Pure function — does not write state.
 pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
@@ -416,34 +558,70 @@ pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
     if now_ms < exp {
         return None;
     }
-    Some(transition_record(
-        rec,
-        "timed_out",
-        None,
-        None,
-        Some("timeout".into()),
-    ))
+    // Timeout flip carries no Denial: the `timed_out` status itself is the
+    // explanation. Downstream renderers (turn-orchestrator stitching, UIs)
+    // branch on the status, not on a redundant reason string.
+    Some(transition_record(rec, "timed_out", None, None, None))
 }
 
-/// Map a legacy approval record (pre-trigger-model) to the new shape.
-/// Returns `None` if the record is already in the new shape.
+/// Map a legacy approval record to the current shape. Covers two
+/// generations of drift:
+///
+/// 1. **Pre-trigger-model** (status `"allow"` / `"deny"`, free-form
+///    `reason`): rewritten as `"executed"` / `"denied"`, with the old
+///    `reason` folded into a [`Denial::Legacy`].
+/// 2. **Pre-Denial** (`decision_reason: <string>` field, no `denial`): the
+///    string is moved into [`Denial::Legacy { reason }`] and the old key is
+///    stripped so writers never resurface it.
+///
+/// Returns `None` only when the record is already current.
 pub fn migrate_legacy_record(rec: &Value) -> Option<Value> {
     let status = rec.get("status").and_then(Value::as_str)?;
-    let (new_status, reason_to_carry) = match status {
+    // Path 1: pre-trigger-model status rename.
+    let (new_status, denial_to_carry) = match status {
         "allow" => ("executed", None),
         "deny" => (
             "denied",
             rec.get("reason")
                 .and_then(Value::as_str)
-                .map(str::to_string),
+                .map(|s| Denial::Legacy {
+                    reason: s.to_string(),
+                }),
         ),
-        _ => return None,
+        _ => {
+            // Path 2: status already current, but the record may carry the
+            // pre-Denial `decision_reason` flat string. Lift it into Denial
+            // and strip the legacy key; otherwise return None.
+            let legacy_reason = rec
+                .get("decision_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let needs_lift = legacy_reason.is_some() && rec.get("denial").is_none();
+            if !needs_lift {
+                return None;
+            }
+            let denial = Denial::Legacy {
+                reason: legacy_reason.expect("checked Some above"),
+            };
+            let mut migrated = rec.clone();
+            if let Some(obj) = migrated.as_object_mut() {
+                obj.remove("decision_reason");
+                obj.insert(
+                    "denial".into(),
+                    serde_json::to_value(&denial).expect("Denial is always serializable"),
+                );
+                obj.insert("legacy_migrated".into(), Value::Bool(true));
+            }
+            return Some(migrated);
+        }
     };
-    let mut migrated = transition_record(rec, new_status, None, None, reason_to_carry);
-    migrated
-        .as_object_mut()
-        .unwrap()
-        .insert("legacy_migrated".into(), Value::Bool(true));
+    let mut migrated = transition_record(rec, new_status, None, None, denial_to_carry);
+    if let Some(obj) = migrated.as_object_mut() {
+        // Strip the pre-trigger-model `reason` once it has been folded into
+        // `denial`; leaving it would create a dead field on the new shape.
+        obj.remove("reason");
+        obj.insert("legacy_migrated".into(), Value::Bool(true));
+    }
     Some(migrated)
 }
 
@@ -493,12 +671,19 @@ pub async fn handle_resolve(
 
     match decision {
         WireDecision::Deny => {
-            let reason = payload
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-            let denied = transition_record(&existing, "denied", None, None, Some(reason));
+            // Caller supplies a structured Denial. Accepted shapes:
+            //   { "decision": "deny", "denial": { "kind": "user_rejected", ... } }
+            //   { "decision": "deny", "denial": { "kind": "user_corrected", "detail": { "feedback": "..." } } }
+            // Missing `denial` is treated as a bare UserRejected (no feedback)
+            // so the simplest UI flow stays one-click.
+            let denial = match payload.get("denial").cloned() {
+                Some(v) => match serde_json::from_value::<Denial>(v) {
+                    Ok(d) => d,
+                    Err(_) => return json!({ "ok": false, "error": "bad_denial" }),
+                },
+                None => Denial::UserRejected,
+            };
+            let denied = transition_record(&existing, "denied", None, None, Some(denial));
             if let Err(e) = bus.set(state_scope, &key, denied).await {
                 tracing::error!("approval-gate: failed to write denied record: {e}");
                 return json!({ "ok": false, "error": "state_write_failed" });
@@ -819,8 +1004,12 @@ pub async fn handle_flush_delivered(bus: &dyn StateBus, state_scope: &str, paylo
     json!({ "ok": true, "stamped": stamped })
 }
 
-/// Sweep all still-pending approvals for a session to timed_out
-/// (reason: session_deleted). Called when a session is being deleted.
+/// Sweep all still-pending approvals for a session to timed_out.
+///
+/// Reason defaults to `"session_deleted"` (legacy callers) but can be
+/// overridden via the `reason` payload field — `run::stop` passes
+/// `"run_stopped"` so consumers can distinguish a manual abort from a
+/// session delete.
 pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")
@@ -828,6 +1017,14 @@ pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload
         .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
+    }
+    // The optional `reason` payload field used to be persisted as
+    // `decision_reason` on the resulting record. With Denial now the only
+    // structured reason channel and timed_out carrying no denial, the
+    // sweep_session reason is informational for the caller only — we log
+    // it but do not stamp it on the record.
+    if let Some(r) = payload.get("reason").and_then(Value::as_str) {
+        tracing::info!(session_id, reason = r, "approval-gate: sweep_session");
     }
     let prefix = format!("{session_id}/");
     let all = bus.list_prefix(state_scope, &prefix).await;
@@ -843,13 +1040,7 @@ pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload
         if call_id.is_empty() {
             continue;
         }
-        let flipped = transition_record(
-            &rec,
-            "timed_out",
-            None,
-            None,
-            Some("session_deleted".into()),
-        );
+        let flipped = transition_record(&rec, "timed_out", None, None, None);
         if bus
             .set(state_scope, &pending_key(session_id, call_id), flipped)
             .await
@@ -887,6 +1078,62 @@ async fn write_event(iii: &III, session_id: &str, event: &Value) {
             timeout_ms: None,
         })
         .await;
+}
+
+/// Build the `approval_resolved` event a sweeper emits when it auto-flips an
+/// expired pending record. Pure — caller pumps the result onto the stream.
+fn timeout_resolved_event(function_call_id: &str) -> Value {
+    json!({
+        "type": "approval_resolved",
+        "function_call_id": function_call_id,
+        "tool_call_id": function_call_id,
+        "decision": "deny",
+        "status": "timed_out",
+        "decision_reason": "timeout",
+    })
+}
+
+/// Spawn the periodic timeout sweeper. The task ticks every `interval_ms`,
+/// scans the configured state scope, and for any pending record whose
+/// `expires_at` is in the past: writes the flipped record back and emits an
+/// `approval_resolved` (status=timed_out) frame on `agent::events/<session>`.
+///
+/// The previous design relied on lazy timeout flips during
+/// `handle_resolve`/`handle_list_undelivered`. Operators who never opened the
+/// UI for a session would leave its pending rows in `pending` forever and
+/// the paused turn-orchestrator would never see a decision. Active sweeping
+/// closes that hole.
+fn spawn_timeout_sweeper(
+    iii: III,
+    bus: Arc<dyn StateBus>,
+    state_scope: String,
+    interval_ms: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_millis(interval_ms.max(50)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Drop the immediate first tick so we don't sweep before any
+        // pending row could possibly exist.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let all = bus.list_prefix(&state_scope, "").await;
+            for (key, flipped, session_id, call_id) in collect_timed_out_for_sweep(&all, now_ms) {
+                if let Err(err) = bus.set(&state_scope, &key, flipped).await {
+                    tracing::warn!(
+                        "approval-gate sweeper: failed to flip {key} → timed_out: {err}"
+                    );
+                    continue;
+                }
+                write_event(&iii, &session_id, &timeout_resolved_event(&call_id)).await;
+            }
+        }
+    })
 }
 
 async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
@@ -960,8 +1207,34 @@ impl StateBus for IiiStateBus {
     }
 }
 
+/// Return the list of function ids whose interceptor asks the gate to
+/// inject `__from_approval` without asserting that the target validates it.
+/// Empty list ⇒ config is safe to register. Pure — exposed for tests and
+/// for the boot-time check in [`register`].
+pub fn unverified_marker_targets(rules: &[InterceptorRule]) -> Vec<&str> {
+    rules
+        .iter()
+        .filter(|r| r.inject_approval_marker && !r.marker_target_verified)
+        .map(|r| r.function_id.as_str())
+        .collect()
+}
+
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
+
+    // Fail fast on honor-system markers: any interceptor that asks the gate
+    // to inject `__from_approval` MUST also assert the target validates it.
+    // Without that assertion the marker is purely decorative and the gate
+    // has no way to know whether bypass-through-direct-trigger is contained.
+    let unverified = unverified_marker_targets(rules.as_slice());
+    if !unverified.is_empty() {
+        return Err(anyhow::anyhow!(
+            "approval-gate: refusing to start — interceptors with inject_approval_marker=true \
+             must also set marker_target_verified=true (target is asserted to validate \
+             __from_approval against approval::lookup_record). Unverified: {unverified:?}"
+        ));
+    }
+
     for rule in rules.iter() {
         if let Some(cid) = rule.classifier.as_deref() {
             if cid == FN_LOOKUP_RECORD
@@ -1049,8 +1322,8 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                             if let Some(e) = final_rec.get("error") {
                                 evt["error"] = json!(e);
                             }
-                            if let Some(reason) = final_rec.get("decision_reason") {
-                                evt["decision_reason"] = json!(reason);
+                            if let Some(denial) = final_rec.get("denial") {
+                                evt["denial"] = denial.clone();
                             }
                             write_event(&iii, session_id, &evt).await;
                         }
@@ -1229,18 +1502,18 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         classifier_timeout_ms,
                     } => match iii
                         .trigger(TriggerRequest {
-                            function_id: classifier_fn,
+                            function_id: classifier_fn.clone(),
                             payload: call.args.clone(),
                             action: None,
                             timeout_ms: Some(classifier_timeout_ms),
                         })
                         .await
                     {
-                        Ok(v) => match interpret_classifier_reply(&v) {
+                        Ok(v) => match interpret_classifier_reply(&v, &classifier_fn) {
                             Ok(ClassifierDecision::Auto) => json!({ "block": false }),
-                            Ok(ClassifierDecision::Deny { reason }) => json!({
+                            Ok(ClassifierDecision::Deny(denial)) => json!({
                                 "block": true,
-                                "reason": format!("approval-classifier: {reason}"),
+                                "denial": denial,
                                 "status": "denied",
                                 "call_id": call.function_call_id,
                                 "function_id": call.function_id,
@@ -1295,6 +1568,13 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         })
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+    let sweeper = spawn_timeout_sweeper(
+        iii.clone(),
+        bus.clone(),
+        state_scope.clone(),
+        cfg.sweeper_interval_ms,
+    );
+
     Ok(Refs {
         resolve,
         list_pending,
@@ -1306,6 +1586,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         lookup_record,
         subscriber_fn,
         subscriber_trigger,
+        sweeper,
     })
 }
 
@@ -1319,7 +1600,9 @@ mod tests {
         let rec = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
         let flipped = maybe_flip_timed_out(&rec, 70_000).expect("should flip");
         assert_eq!(flipped["status"], "timed_out");
-        assert_eq!(flipped["decision_reason"], "timeout");
+        // Timeout carries no Denial — the status alone explains the outcome.
+        assert!(flipped.get("denial").is_none());
+        assert!(flipped.get("decision_reason").is_none());
     }
 
     #[test]
@@ -1696,7 +1979,9 @@ mod tests {
             "denied",
             None,
             None,
-            Some("nope".into()),
+            Some(Denial::UserCorrected {
+                feedback: "nope".into(),
+            }),
         );
         r2.as_object_mut()
             .unwrap()
@@ -1932,7 +2217,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_legacy_record_maps_deny_to_denied_with_original_reason() {
+    fn migrate_legacy_record_maps_deny_to_denied_with_legacy_denial() {
         let legacy = json!({
             "function_call_id": "c1",
             "status": "deny",
@@ -1941,7 +2226,34 @@ mod tests {
         });
         let migrated = migrate_legacy_record(&legacy).expect("migrates");
         assert_eq!(migrated["status"], "denied");
-        assert_eq!(migrated["decision_reason"], "manual");
+        assert_eq!(migrated["denial"]["kind"], "legacy");
+        assert_eq!(migrated["denial"]["detail"]["reason"], "manual");
+        assert_eq!(migrated["legacy_migrated"], json!(true));
+        assert!(
+            migrated.get("decision_reason").is_none(),
+            "legacy decision_reason must be stripped: {migrated}"
+        );
+        assert!(
+            migrated.get("reason").is_none(),
+            "pre-trigger-model `reason` must be stripped after lifting into denial: {migrated}"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_record_lifts_decision_reason_when_status_is_already_current() {
+        // Pre-Denial records carry the flat `decision_reason: <string>` —
+        // migration lifts it into Denial::Legacy and strips the old field.
+        let legacy = json!({
+            "function_call_id": "c1",
+            "status": "denied",
+            "decision_reason": "user typed nope",
+            "expires_at": 1_000_u64,
+        });
+        let migrated = migrate_legacy_record(&legacy).expect("should lift");
+        assert_eq!(migrated["status"], "denied");
+        assert_eq!(migrated["denial"]["kind"], "legacy");
+        assert_eq!(migrated["denial"]["detail"]["reason"], "user typed nope");
+        assert!(migrated.get("decision_reason").is_none());
         assert_eq!(migrated["legacy_migrated"], json!(true));
     }
 
@@ -1976,18 +2288,30 @@ mod tests {
     #[test]
     fn interpret_classifier_reply_reads_decision_tags() {
         assert!(matches!(
-            interpret_classifier_reply(&json!({"decision": "auto"})),
+            interpret_classifier_reply(&json!({"decision": "auto"}), "shell::classify_argv"),
             Ok(ClassifierDecision::Auto)
         ));
-        match interpret_classifier_reply(&json!({"decision":"deny","reason":"nope"})) {
-            Ok(ClassifierDecision::Deny { reason }) => assert_eq!(reason, "nope"),
-            o => panic!("expected deny {:?}", o),
+        match interpret_classifier_reply(
+            &json!({"decision":"deny","reason":"nope"}),
+            "shell::classify_argv",
+        ) {
+            Ok(ClassifierDecision::Deny(Denial::Policy {
+                classifier_reason,
+                classifier_fn,
+            })) => {
+                assert_eq!(classifier_reason, "nope");
+                assert_eq!(classifier_fn, "shell::classify_argv");
+            }
+            o => panic!("expected Policy denial {:?}", o),
         }
         assert!(matches!(
-            interpret_classifier_reply(&json!({"decision":"ask","summary":"x"})),
+            interpret_classifier_reply(
+                &json!({"decision":"ask","summary":"x"}),
+                "shell::classify_argv"
+            ),
             Ok(ClassifierDecision::Ask)
         ));
-        assert!(interpret_classifier_reply(&json!({})).is_err());
+        assert!(interpret_classifier_reply(&json!({}), "shell::classify_argv").is_err());
     }
 
     #[test]
@@ -2019,12 +2343,14 @@ mod tests {
                 classifier: Some("shell::classify_argv".into()),
                 classifier_timeout_ms: 2000,
                 inject_approval_marker: true,
+                marker_target_verified: true,
             },
             InterceptorRule {
                 function_id: "other::fn".into(),
                 classifier: None,
                 classifier_timeout_ms: 2000,
                 inject_approval_marker: false,
+                marker_target_verified: false,
             },
         ];
         let r = rule_for(&rules, "shell::exec").expect("match");
@@ -2039,6 +2365,7 @@ mod tests {
             classifier: None,
             classifier_timeout_ms: 2000,
             inject_approval_marker: false,
+            marker_target_verified: false,
         }];
         assert!(rule_for(&rules, "missing::id").is_none());
     }
@@ -2054,6 +2381,7 @@ mod tests {
             classifier: Some("shell::classify_argv".into()),
             classifier_timeout_ms: 2000,
             inject_approval_marker: true,
+            marker_target_verified: true,
         };
         let action = decide_intercept_action(Some(&rule), false);
         assert_eq!(
@@ -2073,6 +2401,7 @@ mod tests {
             classifier: None,
             classifier_timeout_ms: 2000,
             inject_approval_marker: false,
+            marker_target_verified: false,
         };
         assert_eq!(
             decide_intercept_action(Some(&rule), false),
@@ -2101,6 +2430,7 @@ mod tests {
             classifier: Some(String::new()),
             classifier_timeout_ms: 2000,
             inject_approval_marker: false,
+            marker_target_verified: false,
         };
         assert_eq!(
             decide_intercept_action(Some(&rule), false),
@@ -2201,12 +2531,41 @@ mod tests {
     }
 
     #[test]
-    fn block_reply_for_deny_includes_reason() {
-        let reply = block_reply_for(&Decision::Deny {
-            reason: "timeout".into(),
-        });
+    fn block_reply_for_deny_emits_structured_denial() {
+        let reply = block_reply_for(&Decision::Deny(Denial::UserRejected));
         assert_eq!(reply["block"], true);
-        assert_eq!(reply["reason"], "approval-gate: timeout");
+        assert_eq!(reply["denial"]["kind"], "user_rejected");
+        assert!(reply.as_object().unwrap().get("reason").is_none());
+    }
+
+    #[test]
+    fn block_reply_for_policy_deny_carries_classifier_detail() {
+        let reply = block_reply_for(&Decision::Deny(Denial::Policy {
+            classifier_reason: "command matches denylist".into(),
+            classifier_fn: "shell::classify_argv".into(),
+        }));
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["denial"]["kind"], "policy");
+        assert_eq!(
+            reply["denial"]["detail"]["classifier_reason"],
+            "command matches denylist"
+        );
+        assert_eq!(
+            reply["denial"]["detail"]["classifier_fn"],
+            "shell::classify_argv"
+        );
+    }
+
+    #[test]
+    fn block_reply_for_user_corrected_carries_feedback() {
+        let reply = block_reply_for(&Decision::Deny(Denial::UserCorrected {
+            feedback: "use git diff instead".into(),
+        }));
+        assert_eq!(reply["denial"]["kind"], "user_corrected");
+        assert_eq!(
+            reply["denial"]["detail"]["feedback"],
+            "use git diff instead"
+        );
     }
 
     #[test]
@@ -2232,12 +2591,16 @@ mod tests {
     }
 
     #[test]
-    fn block_reply_for_allow_omits_reason() {
+    fn block_reply_for_allow_omits_denial_and_reason() {
         let reply = block_reply_for(&Decision::Allow);
         assert_eq!(reply["block"], false);
         assert!(
             reply.get("reason").is_none(),
             "Allow must not include reason: {reply}"
+        );
+        assert!(
+            reply.get("denial").is_none(),
+            "Allow must not include denial: {reply}"
         );
     }
 
@@ -2264,7 +2627,10 @@ mod tests {
         assert_eq!(reply["status"], json!("pending"));
         assert_eq!(reply["call_id"], json!("tc-1"));
         assert_eq!(reply["function_id"], json!("shell::fs::write"));
-        assert_eq!(reply["reason"], json!("approval-gate: pending_approval"));
+        // Pending status is self-describing — no `reason` or `denial` field
+        // is emitted while the call is in-flight.
+        assert!(reply.get("reason").is_none());
+        assert!(reply.get("denial").is_none());
     }
 
     #[tokio::test]
@@ -2431,7 +2797,10 @@ mod tests {
                 "session_id": "s1",
                 "function_call_id": "tc-1",
                 "decision": "deny",
-                "reason": "not authorized",
+                "denial": {
+                    "kind": "user_corrected",
+                    "detail": { "feedback": "not authorized" }
+                },
             }),
             1_500,
         )
@@ -2445,7 +2814,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rec["status"], "denied");
-        assert_eq!(rec["decision_reason"], "not authorized");
+        assert_eq!(rec["denial"]["kind"], "user_corrected");
+        assert_eq!(rec["denial"]["detail"]["feedback"], "not authorized");
     }
 
     #[tokio::test]
@@ -2644,7 +3014,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_deny_records_reason() {
+    async fn resolve_deny_without_denial_defaults_to_user_rejected() {
         let bus = InMemoryStateBus::new();
         let _ = bus
             .set(
@@ -2663,7 +3033,6 @@ mod tests {
                 "session_id": "s1",
                 "function_call_id": "tc-1",
                 "decision": "deny",
-                "reason": "user clicked cancel",
             }),
             1_500,
         )
@@ -2675,7 +3044,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored["status"], "denied");
-        assert_eq!(stored["decision_reason"], "user clicked cancel");
+        assert_eq!(stored["denial"]["kind"], "user_rejected");
+    }
+
+    #[tokio::test]
+    async fn resolve_deny_rejects_malformed_denial() {
+        let bus = InMemoryStateBus::new();
+        let _ = bus
+            .set(
+                STATE_SCOPE,
+                &pending_key("s1", "tc-1"),
+                build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+            )
+            .await;
+
+        let exec = FakeExecutor::default();
+        let out = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "deny",
+                "denial": { "kind": "not_a_real_kind" },
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["error"], "bad_denial");
     }
 
     #[test]
@@ -2705,19 +3103,35 @@ mod tests {
     }
 
     #[test]
-    fn transition_record_to_denied_attaches_decision_reason() {
+    fn transition_record_to_denied_attaches_structured_denial() {
         let base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
-        let rec = transition_record(&base, "denied", None, None, Some("not authorized".into()));
+        let rec = transition_record(
+            &base,
+            "denied",
+            None,
+            None,
+            Some(Denial::Policy {
+                classifier_reason: "not authorized".into(),
+                classifier_fn: "shell::classify_argv".into(),
+            }),
+        );
         assert_eq!(rec["status"], "denied");
-        assert_eq!(rec["decision_reason"], "not authorized");
+        assert_eq!(rec["denial"]["kind"], "policy");
+        assert_eq!(rec["denial"]["detail"]["classifier_reason"], "not authorized");
+        assert!(
+            rec.get("decision_reason").is_none(),
+            "legacy decision_reason must not be written: {rec}"
+        );
     }
 
     #[test]
-    fn transition_record_to_timed_out_uses_timeout_reason() {
+    fn transition_record_to_timed_out_carries_no_denial() {
+        // Timeout status is self-describing — no Denial attached.
         let base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
-        let rec = transition_record(&base, "timed_out", None, None, Some("timeout".into()));
+        let rec = transition_record(&base, "timed_out", None, None, None);
         assert_eq!(rec["status"], "timed_out");
-        assert_eq!(rec["decision_reason"], "timeout");
+        assert!(rec.get("denial").is_none());
+        assert!(rec.get("decision_reason").is_none());
     }
 
     #[test]
@@ -2750,7 +3164,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rec["status"], "timed_out");
-        assert_eq!(rec["decision_reason"], "session_deleted");
+        // sweep_session no longer stamps a reason string — timed_out is
+        // self-describing and the sweep cause is logged at info, not
+        // surfaced on the record.
+        assert!(rec.get("denial").is_none());
+        assert!(rec.get("decision_reason").is_none());
     }
 
     #[tokio::test]
@@ -2787,5 +3205,706 @@ mod tests {
         assert_eq!(resp["ok"], json!(false));
         assert_eq!(resp["error"], "missing_session_id");
         assert_eq!(resp["swept"], json!(0));
+    }
+
+    // ── New reliability fixes ─────────────────────────────────────────────
+
+    /// A bus that always refuses writes, to exercise fail-closed semantics.
+    struct FailingStateBus;
+
+    #[async_trait::async_trait]
+    impl StateBus for FailingStateBus {
+        async fn set(
+            &self,
+            _scope: &str,
+            _key: &str,
+            _value: Value,
+        ) -> Result<(), iii_sdk::IIIError> {
+            Err(iii_sdk::IIIError::Runtime("kv unreachable".into()))
+        }
+        async fn get(&self, _scope: &str, _key: &str) -> Option<Value> {
+            None
+        }
+        async fn list_prefix(&self, _scope: &str, _prefix: &str) -> Vec<Value> {
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_fails_closed_on_state_write_error() {
+        let bus = FailingStateBus;
+        let call = sample_call();
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
+        assert_eq!(
+            reply["block"],
+            json!(true),
+            "state write failure must NOT fail-open"
+        );
+        assert_eq!(reply["status"], json!("denied"));
+        assert_eq!(reply["denial"]["kind"], json!("state_error"));
+        assert_eq!(
+            reply["denial"]["detail"]["phase"],
+            json!("intercept_write_pending")
+        );
+        // The underlying error message is present but its exact text is
+        // bus-implementation-specific; just check it's non-empty.
+        assert!(
+            reply["denial"]["detail"]["error"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "state_error detail must include error message: {reply}"
+        );
+        assert_eq!(reply["function_id"], json!("shell::fs::write"));
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_stamps_session_id_into_pending_record() {
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
+        let rec = bus
+            .get(
+                STATE_SCOPE,
+                &pending_key(&call.session_id, &call.function_call_id),
+            )
+            .await
+            .expect("pending record");
+        assert_eq!(rec["session_id"], json!(call.session_id));
+    }
+
+    #[test]
+    fn collect_timed_out_for_sweep_returns_expired_records_with_session_id() {
+        let mut rec = build_pending_record("tc-1", "shell::fs::write", &json!({}), 0, 60_000);
+        rec.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), json!("s-42"));
+        let pile = vec![
+            rec.clone(),
+            build_pending_record("tc-2", "shell::fs::write", &json!({}), 0, 999_999_999),
+        ];
+        let out = collect_timed_out_for_sweep(&pile, 70_000);
+        assert_eq!(out.len(), 1);
+        let (key, flipped, session_id, call_id) = &out[0];
+        assert_eq!(key, "s-42/tc-1");
+        assert_eq!(session_id, "s-42");
+        assert_eq!(call_id, "tc-1");
+        assert_eq!(flipped["status"], json!("timed_out"));
+        // Timeout carries no Denial — status is self-describing.
+        assert!(flipped.get("denial").is_none());
+        assert!(flipped.get("decision_reason").is_none());
+    }
+
+    #[test]
+    fn collect_timed_out_for_sweep_skips_records_without_session_id() {
+        // Legacy row (pre-session_id-stamping fix). The sweeper can't
+        // address the right session stream, so it must skip silently —
+        // lazy-flip on read will still pick it up.
+        let pile = vec![build_pending_record(
+            "tc-legacy",
+            "shell::fs::write",
+            &json!({}),
+            0,
+            60_000,
+        )];
+        let out = collect_timed_out_for_sweep(&pile, 70_000);
+        assert!(
+            out.is_empty(),
+            "legacy record without session_id must not be swept"
+        );
+    }
+
+    #[test]
+    fn timeout_resolved_event_shape() {
+        let evt = timeout_resolved_event("tc-1");
+        assert_eq!(evt["type"], "approval_resolved");
+        assert_eq!(evt["function_call_id"], "tc-1");
+        assert_eq!(evt["tool_call_id"], "tc-1");
+        assert_eq!(evt["decision"], "deny");
+        assert_eq!(evt["status"], "timed_out");
+        assert_eq!(evt["decision_reason"], "timeout");
+    }
+
+    #[test]
+    fn unverified_marker_targets_lists_unasserted_rules() {
+        let rules = vec![
+            InterceptorRule {
+                function_id: "shell::exec".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: true,
+                marker_target_verified: false,
+            },
+            InterceptorRule {
+                function_id: "shell::exec_bg".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: true,
+                marker_target_verified: true,
+            },
+            InterceptorRule {
+                function_id: "no_marker::fn".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: false,
+                marker_target_verified: false,
+            },
+        ];
+        assert_eq!(unverified_marker_targets(&rules), vec!["shell::exec"]);
+    }
+
+    #[test]
+    fn unverified_marker_targets_empty_when_all_verified_or_marker_off() {
+        let rules = vec![
+            InterceptorRule {
+                function_id: "shell::exec".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: true,
+                marker_target_verified: true,
+            },
+            InterceptorRule {
+                function_id: "other".into(),
+                classifier: None,
+                classifier_timeout_ms: 2000,
+                inject_approval_marker: false,
+                marker_target_verified: false,
+            },
+        ];
+        assert!(unverified_marker_targets(&rules).is_empty());
+    }
+
+    // ── Boundary + edge-case tests prompted by cargo-mutants survivors ────
+    //
+    // Each test corresponds to a mutant the test suite previously didn't
+    // catch. Test name → mutated line in src/lib.rs.
+
+    #[test]
+    fn merge_from_approval_wraps_null_args_in_marker_only() {
+        // mutant L48: replace `other.is_null()` match guard
+        let out = merge_from_approval_marker_if_needed(true, Value::Null, "c1", "s1");
+        assert!(out.get("__from_approval").is_some());
+        assert!(
+            out.get("payload").is_none(),
+            "null-arg branch must NOT wrap as payload"
+        );
+    }
+
+    #[test]
+    fn merge_from_approval_wraps_scalar_args_in_payload() {
+        // mutant L48: same guard, the other branch
+        let out = merge_from_approval_marker_if_needed(true, json!("scalar"), "c1", "s1");
+        assert!(out.get("__from_approval").is_some());
+        assert_eq!(
+            out.get("payload"),
+            Some(&json!("scalar")),
+            "scalar-arg branch must wrap original under `payload`"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_replay_of_terminal_record_returns_already_resolved() {
+        // mutant L331: replace `==` with `!=` in the replay defense — if
+        // flipped, terminal records would be overwritten with fresh pending.
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        let terminal = transition_record(
+            &build_pending_record(
+                &call.function_call_id,
+                &call.function_id,
+                &call.args,
+                0,
+                60_000,
+            ),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+        );
+        bus.set(STATE_SCOPE, &key, terminal).await.unwrap();
+
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000, false).await;
+        assert_eq!(reply["block"], json!(true));
+        assert_eq!(reply["status"], json!("executed"));
+        // Replay reply: status carries the prior outcome, `replay` discriminator
+        // says we're echoing rather than denying afresh, and no `denial` is
+        // synthesized (the historical record is the source of truth).
+        assert_eq!(reply["replay"], json!("already_resolved"));
+        assert!(reply.get("denial").is_none());
+        assert!(reply.get("reason").is_none());
+
+        // Crucial: the stored row is still `executed`, not overwritten.
+        let stored = bus.get(STATE_SCOPE, &key).await.unwrap();
+        assert_eq!(stored["status"], json!("executed"));
+        assert_eq!(stored["result"], json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_replay_of_pending_record_preserves_expires_at() {
+        // mutant L331: same branch, pending side. New pending must not bump
+        // the expires_at on the existing row.
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        let pending = build_pending_record(
+            &call.function_call_id,
+            &call.function_id,
+            &call.args,
+            0,
+            60_000,
+        );
+        bus.set(STATE_SCOPE, &key, pending.clone()).await.unwrap();
+
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 999_000, 60_000, false).await;
+        let stored = bus.get(STATE_SCOPE, &key).await.unwrap();
+        assert_eq!(
+            stored["expires_at"], pending["expires_at"],
+            "replay must not bump expires_at on the live row"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_lookup_record_rejects_when_only_one_id_is_empty() {
+        // mutant L395: `||` → `&&` would let one-empty slip through.
+        let bus = InMemoryStateBus::new();
+        let v1 = handle_lookup_record(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "", "function_call_id": "c"}),
+        )
+        .await;
+        assert!(v1.is_null());
+        let v2 = handle_lookup_record(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s", "function_call_id": ""}),
+        )
+        .await;
+        assert!(v2.is_null());
+    }
+
+    #[tokio::test]
+    async fn handle_resolve_rejects_when_only_one_id_is_empty() {
+        // mutant L489: same `||` pattern in handle_resolve guard.
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        let r1 = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            json!({"session_id": "", "function_call_id": "c", "decision": "allow"}),
+            0,
+        )
+        .await;
+        assert_eq!(r1["error"], json!("missing_id"));
+        let r2 = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            json!({"session_id": "s", "function_call_id": "", "decision": "allow"}),
+            0,
+        )
+        .await;
+        assert_eq!(r2["error"], json!("missing_id"));
+    }
+
+    #[tokio::test]
+    async fn handle_ack_delivered_returns_zero_when_only_one_field_is_empty() {
+        // mutant L677: two `||` operators in the empty-field guard.
+        let bus = InMemoryStateBus::new();
+        // empty turn_id
+        let r1 = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s", "turn_id": "", "call_ids": ["c"]}),
+        )
+        .await;
+        assert_eq!(r1["stamped"], json!(0));
+        // empty call_ids
+        let r2 = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s", "turn_id": "t", "call_ids": []}),
+        )
+        .await;
+        assert_eq!(r2["stamped"], json!(0));
+        // empty session_id
+        let r3 = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "", "turn_id": "t", "call_ids": ["c"]}),
+        )
+        .await;
+        assert_eq!(r3["stamped"], json!(0));
+    }
+
+    #[test]
+    fn collect_timed_out_for_sweep_rejects_record_missing_only_call_id() {
+        // mutant L423: `||` → `&&` would let one-empty records sweep.
+        let mut rec = build_pending_record("c1", "shell::fs::write", &json!({}), 0, 60_000);
+        rec.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), json!("s1"));
+        rec.as_object_mut()
+            .unwrap()
+            .insert("function_call_id".into(), json!(""));
+        let out = collect_timed_out_for_sweep(&[rec], 70_000);
+        assert!(out.is_empty(), "empty function_call_id must skip sweep");
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_replay_of_approved_record_preserves_state() {
+        // mutant L331:42 — replace `==` with `!=` on the "approved" side.
+        // The L331:19 mutation is killed by the *_pending_* test above;
+        // this one requires an approved record specifically.
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        let approved = transition_record(
+            &build_pending_record(
+                &call.function_call_id,
+                &call.function_id,
+                &call.args,
+                0,
+                60_000,
+            ),
+            "approved",
+            None,
+            None,
+            None,
+        );
+        bus.set(STATE_SCOPE, &key, approved.clone()).await.unwrap();
+
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 999_000, 60_000, false).await;
+        let stored = bus.get(STATE_SCOPE, &key).await.unwrap();
+        assert_eq!(
+            stored["status"],
+            json!("approved"),
+            "replay of approved row must keep status; mutant would overwrite with pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_lookup_record_short_circuits_before_bus_get_on_one_empty_id() {
+        // mutant L395 — `||` → `&&` would let one-empty slip into bus.get.
+        // Seed a record at the address the mutant would compute (pending_key("", "c") = "/c"),
+        // so the mutant returns the seeded row while original code stays at Null.
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, "/c", json!({"sentinel": "should_not_leak"}))
+            .await
+            .unwrap();
+        let v = handle_lookup_record(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "", "function_call_id": "c"}),
+        )
+        .await;
+        assert!(
+            v.is_null(),
+            "must short-circuit; the seeded sentinel must not leak through"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_ack_delivered_short_circuits_before_stamping_on_one_empty_field() {
+        // mutant L677 — two `||` operators. If either flips to `&&`, the
+        // function falls through and stamps a record even when a required
+        // field is empty. Seed a record so the stamping path can be
+        // observed.
+        let bus = InMemoryStateBus::new();
+        let terminal = transition_record(
+            &build_pending_record("c", "shell::fs::write", &json!({}), 0, 60_000),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+        );
+        bus.set(STATE_SCOPE, &pending_key("s", "c"), terminal)
+            .await
+            .unwrap();
+
+        // empty turn_id — must NOT stamp the seeded record.
+        let r = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s", "turn_id": "", "call_ids": ["c"]}),
+        )
+        .await;
+        assert_eq!(r["stamped"], json!(0));
+        let stored = bus.get(STATE_SCOPE, &pending_key("s", "c")).await.unwrap();
+        assert!(
+            stored.get("delivered_in_turn_id").is_none(),
+            "must not stamp when turn_id is empty; mutant would stamp"
+        );
+
+        // empty call_ids — same property.
+        let r = handle_ack_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s", "turn_id": "t", "call_ids": []}),
+        )
+        .await;
+        assert_eq!(r["stamped"], json!(0));
+        let stored = bus.get(STATE_SCOPE, &pending_key("s", "c")).await.unwrap();
+        assert!(
+            stored.get("delivered_in_turn_id").is_none(),
+            "must not stamp when call_ids is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_persists_migrated_legacy_record() {
+        // mutant L614 — `delete !` on the `if !call_id.is_empty()` guard.
+        // The legacy migration block writes the migrated row back to state
+        // so subsequent reads use the new shape. The mutant inverts the
+        // guard, suppressing the write. Verify the write happens.
+        let bus = InMemoryStateBus::new();
+        // Pre-trigger-model row: status="allow" (legacy form).
+        let legacy = json!({
+            "function_call_id": "c1",
+            "function_id": "shell::fs::write",
+            "args": {},
+            "status": "allow",
+            "expires_at": 1_000u64,
+        });
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), legacy)
+            .await
+            .unwrap();
+
+        let _ =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 5_000).await;
+
+        // Storage now reflects the migrated shape.
+        let stored = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .expect("migrated row persisted");
+        assert_eq!(stored["status"], json!("executed"));
+        assert_eq!(stored["legacy_migrated"], json!(true));
+    }
+
+    #[test]
+    fn maybe_flip_timed_out_flips_at_exact_expires_at() {
+        // mutant L439: `<` → `<=` would not flip at the exact boundary.
+        let rec = build_pending_record("c1", "f", &json!({}), 0, 60_000);
+        // expires_at = 0 + 60_000 = 60_000. At now=60_000 the gate
+        // considers the record expired (strictly past or AT expiry).
+        assert!(
+            maybe_flip_timed_out(&rec, 60_000).is_some(),
+            "must flip at exactly expires_at"
+        );
+        assert!(
+            maybe_flip_timed_out(&rec, 59_999).is_none(),
+            "must not flip one ms before expires_at"
+        );
+    }
+
+    // ── proptest: state-machine invariants ────────────────────────────────
+    //
+    // Random sequences of intercept/resolve/sweep/ack/lazy-flip operations
+    // on a single (session, call) record. After every step we assert four
+    // invariants that the lifecycle is supposed to guarantee:
+    //
+    //   I1. status ∈ {pending, approved, executed, failed, denied, timed_out}.
+    //       Any other string is a corrupt record.
+    //   I2. Once a terminal status is observed, the record never returns to
+    //       `pending`. Terminal = executed | failed | denied | timed_out.
+    //   I3. Every `pending` record carries an `expires_at: u64`. Without it
+    //       the sweeper and lazy-flip paths can't classify the record.
+    //   I4. `delivered_in_turn_id` is monotonic: once a non-null value is
+    //       written it is never unset, never replaced with a different turn.
+    //
+    // If any future change can produce a sequence that violates one of
+    // these, proptest will shrink to the minimal failing sequence and
+    // surface it as a counterexample.
+
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        InterceptRequired,
+        InterceptNotRequired,
+        ResolveAllow,
+        ResolveDeny,
+        AdvanceClockAndLazyFlip, // bumps clock past expires_at, hits list_undelivered
+        SweepSession,
+        AckDelivered,
+    }
+
+    fn arb_op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            Just(Op::InterceptRequired),
+            Just(Op::InterceptNotRequired),
+            Just(Op::ResolveAllow),
+            Just(Op::ResolveDeny),
+            Just(Op::AdvanceClockAndLazyFlip),
+            Just(Op::SweepSession),
+            Just(Op::AckDelivered),
+        ]
+    }
+
+    fn make_call(approval_required_self: bool) -> IncomingCall {
+        IncomingCall {
+            session_id: "s".into(),
+            function_call_id: "c".into(),
+            function_id: "test::write".into(),
+            args: json!({}),
+            approval_required: if approval_required_self {
+                vec!["test::write".into()]
+            } else {
+                vec!["other::fn".into()]
+            },
+            event_id: "e".into(),
+            reply_stream: "r".into(),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn state_machine_invariants(ops in prop::collection::vec(arb_op(), 1..30)) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+
+            rt.block_on(async {
+                let bus = InMemoryStateBus::new();
+                let exec = FakeExecutor::default();
+                let session_id = "s";
+                let call_id = "c";
+                let timeout_ms: u64 = 60_000;
+                let mut now_ms: u64 = 1_000;
+
+                let mut ever_terminal = false;
+                let mut last_delivered: Option<String> = None;
+
+                for op in &ops {
+                    match op {
+                        Op::InterceptRequired => {
+                            let call = make_call(true);
+                            let _ = handle_intercept(&bus, STATE_SCOPE, &call, now_ms, timeout_ms, false).await;
+                        }
+                        Op::InterceptNotRequired => {
+                            let call = make_call(false);
+                            let _ = handle_intercept(&bus, STATE_SCOPE, &call, now_ms, timeout_ms, false).await;
+                        }
+                        Op::ResolveAllow => {
+                            let _ = handle_resolve(
+                                &bus, &exec, STATE_SCOPE,
+                                json!({
+                                    "session_id": session_id,
+                                    "function_call_id": call_id,
+                                    "decision": "allow",
+                                }),
+                                now_ms,
+                            ).await;
+                        }
+                        Op::ResolveDeny => {
+                            let _ = handle_resolve(
+                                &bus, &exec, STATE_SCOPE,
+                                json!({
+                                    "session_id": session_id,
+                                    "function_call_id": call_id,
+                                    "decision": "deny",
+                                    "reason": "user",
+                                }),
+                                now_ms,
+                            ).await;
+                        }
+                        Op::AdvanceClockAndLazyFlip => {
+                            now_ms = now_ms.saturating_add(timeout_ms + 1);
+                            let _ = handle_list_undelivered(
+                                &bus, STATE_SCOPE,
+                                json!({ "session_id": session_id }),
+                                now_ms,
+                            ).await;
+                        }
+                        Op::SweepSession => {
+                            let _ = handle_sweep_session(
+                                &bus, STATE_SCOPE,
+                                json!({ "session_id": session_id }),
+                            ).await;
+                        }
+                        Op::AckDelivered => {
+                            let _ = handle_ack_delivered(
+                                &bus, STATE_SCOPE,
+                                json!({
+                                    "session_id": session_id,
+                                    "turn_id": format!("turn-{now_ms}"),
+                                    "call_ids": [call_id],
+                                }),
+                            ).await;
+                        }
+                    }
+
+                    // Assert invariants on whatever the record currently is.
+                    let key = pending_key(session_id, call_id);
+                    let Some(rec) = bus.get(STATE_SCOPE, &key).await else {
+                        // No record yet (e.g. only InterceptNotRequired so far). Skip.
+                        continue;
+                    };
+
+                    // I1: legal status
+                    let status = rec.get("status").and_then(Value::as_str).unwrap_or("");
+                    assert!(
+                        matches!(
+                            status,
+                            "pending" | "approved" | "executed" | "failed" | "denied" | "timed_out"
+                        ),
+                        "I1 violated: illegal status {status:?} after ops {ops:?}; record={rec:?}"
+                    );
+
+                    // I2: no reverting terminal → pending
+                    if matches!(status, "executed" | "failed" | "denied" | "timed_out") {
+                        ever_terminal = true;
+                    }
+                    if ever_terminal {
+                        assert!(
+                            status != "pending",
+                            "I2 violated: reverted to pending after terminal; ops={ops:?}; record={rec:?}"
+                        );
+                    }
+
+                    // I3: pending records always have expires_at: u64
+                    if status == "pending" {
+                        let exp = rec.get("expires_at").and_then(Value::as_u64);
+                        assert!(
+                            exp.is_some(),
+                            "I3 violated: pending record missing expires_at; ops={ops:?}; record={rec:?}"
+                        );
+                    }
+
+                    // I4: delivered_in_turn_id is monotonic — once set non-null, never unset / never replaced
+                    let cur_delivered = rec
+                        .get("delivered_in_turn_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let Some(prev) = &last_delivered {
+                        match &cur_delivered {
+                            Some(cur) => {
+                                assert_eq!(
+                                    cur, prev,
+                                    "I4 violated: delivered_in_turn_id replaced {prev:?} → {cur:?}; ops={ops:?}"
+                                );
+                            }
+                            None => {
+                                panic!(
+                                    "I4 violated: delivered_in_turn_id unset after being {prev:?}; ops={ops:?}; record={rec:?}"
+                                );
+                            }
+                        }
+                    }
+                    if cur_delivered.is_some() {
+                        last_delivered = cur_delivered;
+                    }
+                }
+            });
+        }
     }
 }

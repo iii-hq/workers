@@ -13,6 +13,37 @@ pub enum ApprovalDecision {
     Deny,
 }
 
+/// Structured deny payload carried on the `approval_resolved` event.
+/// Mirrors the `Denial` type emitted by approval-gate so downstream
+/// consumers (UI, audit, the LLM via stitching) can branch on `kind`
+/// instead of parsing a free-form reason string.
+///
+/// Wire shape (serde tag=kind, content=detail, snake_case):
+///   `{ "kind": "policy",         "detail": { "classifier_reason": "...", "classifier_fn": "..." } }`
+///   `{ "kind": "user_rejected",  "detail": null }`
+///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
+///   `{ "kind": "state_error",    "detail": { "phase": "...", "error": "..." } }`
+///   `{ "kind": "legacy",         "detail": { "reason": "..." } }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum Denial {
+    Policy {
+        classifier_reason: String,
+        classifier_fn: String,
+    },
+    UserRejected,
+    UserCorrected {
+        feedback: String,
+    },
+    StateError {
+        phase: String,
+        error: String,
+    },
+    Legacy {
+        reason: String,
+    },
+}
+
 /// Stable wire format emitted by the loop on `agent::events/<session_id>`.
 /// UIs and observers consume this verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,9 +118,11 @@ pub enum AgentEvent {
         #[serde(alias = "tool_call_id")]
         function_call_id: String,
         decision: ApprovalDecision,
-        /// Free-form reason — populated for "deny" (e.g. "timeout", "user").
+        /// Structured deny payload — populated when `decision == Deny`,
+        /// absent when `decision == Allow` or when the gate timed out
+        /// (timed_out is self-describing via the persisted record status).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
+        denial: Option<Denial>,
     },
 }
 
@@ -147,29 +180,47 @@ mod tests {
     }
 
     #[test]
-    fn approval_resolved_round_trips_with_optional_reason() {
+    fn approval_resolved_round_trips_with_structured_denial() {
         let evt = AgentEvent::ApprovalResolved {
             function_call_id: "tc-9".into(),
             decision: ApprovalDecision::Deny,
-            reason: Some("timeout".into()),
+            denial: Some(Denial::UserCorrected {
+                feedback: "try git diff first".into(),
+            }),
         };
         let json = serde_json::to_value(&evt).unwrap();
         assert_eq!(json["type"], "approval_resolved");
         assert_eq!(json["decision"], "deny");
+        assert_eq!(json["denial"]["kind"], "user_corrected");
+        assert_eq!(json["denial"]["detail"]["feedback"], "try git diff first");
         let back: AgentEvent = serde_json::from_value(json).unwrap();
         assert_eq!(back, evt);
 
-        let none_reason = AgentEvent::ApprovalResolved {
+        let none_denial = AgentEvent::ApprovalResolved {
             function_call_id: "tc-9".into(),
             decision: ApprovalDecision::Allow,
-            reason: None,
+            denial: None,
         };
-        let json = serde_json::to_value(&none_reason).unwrap();
+        let json = serde_json::to_value(&none_denial).unwrap();
         assert_eq!(json["decision"], "allow");
         assert!(
-            !json.as_object().unwrap().contains_key("reason"),
-            "reason should be omitted when None: {json}"
+            !json.as_object().unwrap().contains_key("denial"),
+            "denial should be omitted when None: {json}"
         );
+    }
+
+    #[test]
+    fn denial_policy_serializes_with_classifier_detail() {
+        let d = Denial::Policy {
+            classifier_reason: "command matches denylist".into(),
+            classifier_fn: "shell::classify_argv".into(),
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["kind"], "policy");
+        assert_eq!(v["detail"]["classifier_reason"], "command matches denylist");
+        assert_eq!(v["detail"]["classifier_fn"], "shell::classify_argv");
+        let back: Denial = serde_json::from_value(v).unwrap();
+        assert_eq!(back, d);
     }
 
     #[test]
