@@ -1,3 +1,4 @@
+pub mod approval_stitching;
 pub mod assistant;
 pub mod functions;
 pub mod provisioning;
