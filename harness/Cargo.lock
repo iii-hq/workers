@@ -468,6 +468,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "which",
 ]
 
@@ -734,9 +735,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.11.3"
+version = "0.11.7-next.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0226f7ce0d9071f9cb75ea7b7ac1241b15282915ccd41d9bbd2ee0db94f90c6"
+checksum = "abad1f632473931d97733a4b3d73a04f2cfa1759fa4d4bcdab9305b634563bf7"
 dependencies = [
  "async-trait",
  "futures-util",

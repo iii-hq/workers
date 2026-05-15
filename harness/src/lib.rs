@@ -5,6 +5,7 @@
 
 pub mod fanout;
 pub mod fs;
+pub mod otel;
 
 use std::sync::Arc;
 
@@ -79,13 +80,23 @@ pub async fn register_with_iii_with_engine_url(
             "Returns the harness bundle name, version, and the list of expected runtime workers."
                 .into(),
         ),
-        |_payload: Value| async move {
-            Ok::<_, IIIError>(json!({
-                "ok": true,
-                "name": env!("CARGO_PKG_NAME"),
-                "version": env!("CARGO_PKG_VERSION"),
-                "expected_workers": EXPECTED_WORKERS,
-            }))
+        |input: Value| async move {
+            crate::otel::with_harness_span(
+                "harness.status",
+                input,
+                crate::otel::IdSource::BodyOrTopLevel,
+                crate::otel::WildcardMode::Disabled,
+                None,
+                |_input| async move {
+                    Ok::<_, IIIError>(json!({
+                        "ok": true,
+                        "name": env!("CARGO_PKG_NAME"),
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "expected_workers": EXPECTED_WORKERS,
+                    }))
+                },
+            )
+            .await
         },
     ));
 
@@ -99,29 +110,43 @@ pub async fn register_with_iii_with_engine_url(
         move |input: Value| {
             let iii = iii_for_bridge.clone();
             async move {
-                // HTTP trigger wraps the request body as { body, query_params, headers, ... }.
-                // Direct bus callers send { function_id, payload } at the top level.
-                let body = input.get("body").cloned().unwrap_or(input);
-                let function_id = body
+                let inner_function_id = input
+                    .get("body")
+                    .unwrap_or(&input)
                     .get("function_id")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing function_id".into()))?
-                    .to_string();
-                let inner = body.get("payload").cloned().unwrap_or_else(|| json!({}));
-                let result = iii
-                    .trigger(TriggerRequest {
-                        function_id,
-                        payload: inner,
-                        action: None,
-                        timeout_ms: Some(BRIDGE_TIMEOUT_MS),
-                    })
-                    .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
-                Ok::<_, IIIError>(json!({
-                    "status_code": 200,
-                    "headers": { "content-type": "application/json" },
-                    "body": result,
-                }))
+                    .map(str::to_string);
+                crate::otel::with_harness_span(
+                    "harness.call",
+                    input,
+                    crate::otel::IdSource::BridgeTrigger,
+                    crate::otel::WildcardMode::Disabled,
+                    inner_function_id.as_deref(),
+                    |input| async move {
+                        let body = input.get("body").cloned().unwrap_or(input);
+                        let function_id = body
+                            .get("function_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| IIIError::Handler("missing function_id".into()))?
+                            .to_string();
+                        let inner = body.get("payload").cloned().unwrap_or_else(|| json!({}));
+                        let result = iii
+                            .trigger(TriggerRequest {
+                                function_id,
+                                payload: inner,
+                                action: None,
+                                timeout_ms: Some(BRIDGE_TIMEOUT_MS),
+                            })
+                            .await
+                            .map_err(|e| IIIError::Handler(e.to_string()))?;
+                        Ok::<_, IIIError>(json!({
+                            "status_code": 200,
+                            "headers": { "content-type": "application/json" },
+                            "body": result,
+                        }))
+                    },
+                )
+                .await
             }
         },
     ));
@@ -147,14 +172,24 @@ pub async fn register_with_iii_with_engine_url(
         RegisterFunctionMessage::with_id("harness::info".into()).with_description(
             "Returns the relative WebSocket path and engine URL for browser clients.".into(),
         ),
-        move |_payload: Value| {
+        move |input: Value| {
             let engine_url = engine_url_owned.clone();
             async move {
-                Ok::<_, IIIError>(json!({
-                    "ws_path": "/iii/ws",
-                    "protocol": "ws",
-                    "engine_url": engine_url,
-                }))
+                crate::otel::with_harness_span(
+                    "harness.info",
+                    input,
+                    crate::otel::IdSource::BodyOrTopLevel,
+                    crate::otel::WildcardMode::Disabled,
+                    None,
+                    |_input| async move {
+                        Ok::<_, IIIError>(json!({
+                            "ws_path": "/iii/ws",
+                            "protocol": "ws",
+                            "engine_url": engine_url,
+                        }))
+                    },
+                )
+                .await
             }
         },
     ));
@@ -172,25 +207,35 @@ pub async fn register_with_iii_with_engine_url(
         move |input: Value| {
             let fanout = Arc::clone(&fanout_for_subscribe);
             async move {
-                let body = input.get("body").cloned().unwrap_or(input);
-                let browser_id = body
-                    .get("browser_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
-                    .to_string();
-                let session_id = body
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let total = {
-                    let mut state = fanout.write().await;
-                    state.subscribe(browser_id, session_id);
-                    state.browser_count()
-                };
-                Ok::<_, IIIError>(json!({
-                    "ok": true,
-                    "total_browsers": total,
-                }))
+                crate::otel::with_harness_span(
+                    "harness.ui.subscribe",
+                    input,
+                    crate::otel::IdSource::BodyOrTopLevel,
+                    crate::otel::WildcardMode::OnExplicitNull,
+                    None,
+                    |input| async move {
+                        let body = input.get("body").cloned().unwrap_or(input);
+                        let browser_id = body
+                            .get("browser_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
+                            .to_string();
+                        let session_id = body
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let total = {
+                            let mut state = fanout.write().await;
+                            state.subscribe(browser_id, session_id);
+                            state.browser_count()
+                        };
+                        Ok::<_, IIIError>(json!({
+                            "ok": true,
+                            "total_browsers": total,
+                        }))
+                    },
+                )
+                .await
             }
         },
     ));
@@ -204,25 +249,35 @@ pub async fn register_with_iii_with_engine_url(
         move |input: Value| {
             let fanout = Arc::clone(&fanout_for_unsubscribe);
             async move {
-                let body = input.get("body").cloned().unwrap_or(input);
-                let browser_id = body
-                    .get("browser_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
-                    .to_string();
-                let session_id = body
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let total = {
-                    let mut state = fanout.write().await;
-                    state.unsubscribe(&browser_id, session_id);
-                    state.browser_count()
-                };
-                Ok::<_, IIIError>(json!({
-                    "ok": true,
-                    "total_browsers": total,
-                }))
+                crate::otel::with_harness_span(
+                    "harness.ui.unsubscribe",
+                    input,
+                    crate::otel::IdSource::BodyOrTopLevel,
+                    crate::otel::WildcardMode::OnExplicitNull,
+                    None,
+                    |input| async move {
+                        let body = input.get("body").cloned().unwrap_or(input);
+                        let browser_id = body
+                            .get("browser_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| IIIError::Handler("missing browser_id".into()))?
+                            .to_string();
+                        let session_id = body
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let total = {
+                            let mut state = fanout.write().await;
+                            state.unsubscribe(&browser_id, session_id);
+                            state.browser_count()
+                        };
+                        Ok::<_, IIIError>(json!({
+                            "ok": true,
+                            "total_browsers": total,
+                        }))
+                    },
+                )
+                .await
             }
         },
     ));
@@ -253,13 +308,20 @@ pub async fn register_with_iii_with_engine_url(
             let iii = iii_for_read.clone();
             let ws_base = engine_url_for_read.clone();
             async move {
-                // Direct callers send args at the top level. HTTP triggers
-                // wrap as { body, ... } — the bridge already unwraps before
-                // forwarding, so we accept either by trying `body` first.
-                let body = input.get("body").cloned().unwrap_or(input);
-                let args: fs::ReadInlineArgs = serde_json::from_value(body)
-                    .map_err(|e| IIIError::Handler(format!("bad read_inline args: {e}")))?;
-                fs::read_inline(&iii, &ws_base, args).await
+                Box::pin(crate::otel::with_harness_span(
+                    "harness.fs.read_inline",
+                    input,
+                    crate::otel::IdSource::BodyOrTopLevel,
+                    crate::otel::WildcardMode::Disabled,
+                    None,
+                    |input| async move {
+                        let body = input.get("body").cloned().unwrap_or(input);
+                        let args: fs::ReadInlineArgs = serde_json::from_value(body)
+                            .map_err(|e| IIIError::Handler(format!("bad read_inline args: {e}")))?;
+                        fs::read_inline(&iii, &ws_base, args).await
+                    },
+                ))
+                .await
             }
         },
     ));

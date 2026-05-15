@@ -229,8 +229,21 @@ pub async fn stream(
     tools: Vec<harness_types::AgentFunction>,
 ) -> ReceiverStream<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
+    // tokio::spawn drops the caller's OTel context; capture it here so
+    // the HTTP span inside stream_inner is parented to the invocation
+    // span (and inherits iii.session.id baggage for "Group by session").
+    let otel_cx = iii_sdk::capture_otel_context();
     tokio::spawn(async move {
-        if let Err(e) = stream_inner(cfg, system_prompt, messages, tools, tx.clone()).await {
+        let result = otel_cx
+            .attach(stream_inner(
+                cfg,
+                system_prompt,
+                messages,
+                tools,
+                tx.clone(),
+            ))
+            .await;
+        if let Err(e) = result {
             // Encode any error as final error event per the no-throw contract.
             let final_msg = AssistantMessage {
                 content: vec![ContentBlock::Text(harness_types::TextContent {
@@ -275,28 +288,38 @@ async fn stream_inner(
     tools: Vec<harness_types::AgentFunction>,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) -> Result<(), AnthropicError> {
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "max_tokens": cfg.max_tokens,
-        "system": system_prompt,
-        "messages": to_wire_messages(&messages),
-        "tools": functions_to_wire(&tools),
-        "stream": true,
-    });
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_mins(2))
-        .build()?;
-
-    let (header_name, header_value) = auth_header_for(&cfg);
-    let resp = client
-        .post(&cfg.api_url)
-        .header(header_name, header_value)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
+    // Pre-HTTP marshal: wire-message conversion + serde_json::to_value
+    // + reqwest client build + header assembly. Was the ~60ms gap
+    // between `call provider::anthropic::complete` start and the POST
+    // span start in the trace.
+    let (client, request) = iii_sdk::run_in_span(
+        "anthropic.request.build",
+        Some(iii_sdk::SpanKind::Internal),
+        || async {
+            let body = serde_json::json!({
+                "model": cfg.model,
+                "max_tokens": cfg.max_tokens,
+                "system": system_prompt,
+                "messages": to_wire_messages(&messages),
+                "tools": functions_to_wire(&tools),
+                "stream": true,
+            });
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_mins(2))
+                .build()?;
+            let (header_name, header_value) = auth_header_for(&cfg);
+            let request = client
+                .post(&cfg.api_url)
+                .header(header_name, header_value)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .build()?;
+            Ok::<_, AnthropicError>((client, request))
+        },
+    )
+    .await?;
+    let resp = iii_sdk::execute_traced_request(&client, request).await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -341,19 +364,29 @@ async fn stream_inner(
         ..Default::default()
     };
 
-    let mut bytes_stream = resp.bytes_stream();
-    let mut buf = String::new();
-    while let Some(chunk) = bytes_stream.next().await {
-        let chunk: Bytes = chunk?;
-        let text = String::from_utf8_lossy(&chunk);
-        buf.push_str(&text);
+    // SSE consume: chunked event-stream parsing + delta forwarding.
+    // Was the ~260ms gap between POST end and complete-span end.
+    iii_sdk::run_in_span(
+        "anthropic.stream.consume",
+        Some(iii_sdk::SpanKind::Internal),
+        || async {
+            let mut bytes_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk: Bytes = chunk?;
+                let text = String::from_utf8_lossy(&chunk);
+                buf.push_str(&text);
 
-        while let Some(idx) = buf.find("\n\n") {
-            let event = buf[..idx].to_string();
-            buf.drain(..=idx + 1);
-            handle_sse_event(&event, &mut state, &tx, &cfg.model).await;
-        }
-    }
+                while let Some(idx) = buf.find("\n\n") {
+                    let event = buf[..idx].to_string();
+                    buf.drain(..=idx + 1);
+                    handle_sse_event(&event, &mut state, &tx, &cfg.model).await;
+                }
+            }
+            Ok::<_, AnthropicError>(())
+        },
+    )
+    .await?;
 
     let final_message = build_final(&state, &cfg.model);
     let _ = tx

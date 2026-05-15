@@ -13,8 +13,10 @@
 #
 # Usage:
 #   make                # help
-#   make all            # config + engine + verify
+#   make all            # build + config + observability + engine + verify
+#   make build          # cargo build --release + symlink into ~/.iii/workers/
 #   make config         # (re)generate config.yaml + iii.lock via `iii worker add .`
+#   make observability  # iii worker add iii-observability (powers TRACES tab)
 #   make engine         # start `iii` in background reading harness/config.yaml
 #   make verify         # call harness::status + models::list
 #   make web            # background vite dev server on :5173 (no tmux)
@@ -31,6 +33,8 @@ SHELL := bash
 MAKEFLAGS += --no-print-directory
 
 HARNESS_DIR    := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+WORKERS_REPO   := $(abspath $(HARNESS_DIR)/..)
+WORKERS_BIN    := $(HOME)/.iii/workers
 DEMO_DIR       ?= $(HOME)/iii-harness-demo
 DEMO_ENGINE_WS ?= $(or $(III_DEMO_ENGINE_URL),ws://127.0.0.1:49134)
 PIDS_DIR       := $(DEMO_DIR)/pids
@@ -38,15 +42,39 @@ LOGS_DIR       := $(DEMO_DIR)/logs
 
 CONFIG_FILE := $(HARNESS_DIR)/config.yaml
 
-.PHONY: help all config engine verify web stop restart logs clean ensure-dirs
+# Local worker crates that need to be cargo-built and symlinked into
+# ~/.iii/workers/ so the engine spawns them on host instead of trying
+# `cargo run` inside libkrun (where cargo isn't installed).
+LOCAL_WORKERS := approval-gate auth-credentials hook-fanout iii-directory \
+                 llm-budget models-catalog policy-denylist provider-anthropic \
+                 provider-openai provider-router session shell turn-orchestrator \
+                 harness
+
+.PHONY: help all build config observability engine verify web stop restart logs clean ensure-dirs
 
 help:
 	@awk '/^[^#]/ && !/^$$/ {exit} /^#/ {sub(/^# ?/, ""); print}' $(firstword $(MAKEFILE_LIST))
 
-all: config engine verify
+all: build config observability engine verify
 
 ensure-dirs:
-	@mkdir -p $(PIDS_DIR) $(LOGS_DIR) $(HARNESS_DIR)/data/skills
+	@mkdir -p $(PIDS_DIR) $(LOGS_DIR) $(HARNESS_DIR)/data/skills $(WORKERS_BIN)
+
+# ─── build ───────────────────────────────────────────────────────────────────
+
+# Cargo-builds every local worker in release mode and symlinks each binary
+# into ~/.iii/workers/<name>. The engine looks up workers by that path;
+# symlinks let us iterate on source without re-running `iii worker add`.
+# Each worker is its own cargo workspace (no shared top-level workspace),
+# so we loop and `cargo build --release` per crate.
+build: ensure-dirs
+	@for w in $(LOCAL_WORKERS); do \
+	  echo "==> cargo build --release: $$w"; \
+	  ( cd "$(WORKERS_REPO)/$$w" && cargo build --release --quiet ) \
+	    || { echo "    [error] $$w: cargo build failed"; exit 1; }; \
+	  ln -sf "$(WORKERS_REPO)/$$w/target/release/$$w" "$(WORKERS_BIN)/$$w"; \
+	done
+	@echo "==> all $(words $(LOCAL_WORKERS)) workers built and symlinked into $(WORKERS_BIN)"
 
 # ─── config ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +89,18 @@ $(CONFIG_FILE): $(HARNESS_DIR)/iii.worker.yaml
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> generating $@ via iii worker add"
 	@cd "$(HARNESS_DIR)" && iii worker add . --no-wait
+
+# ─── observability ───────────────────────────────────────────────────────────
+
+# Adds iii-observability to config.yaml. Powers the iii Developer Console
+# TRACES tab and `engine::traces::*` query path. Kept OUT of
+# iii.worker.yaml `dependencies:` (and thus EXPECTED_WORKERS) so prod stacks
+# without observability don't flag missing in `harness::status`. `iii worker
+# add` is idempotent — re-running is a no-op.
+observability: config
+	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
+	@echo "==> iii worker add iii-observability (idempotent)"
+	@cd "$(HARNESS_DIR)" && iii worker add iii-observability --no-wait
 
 # ─── engine ──────────────────────────────────────────────────────────────────
 
