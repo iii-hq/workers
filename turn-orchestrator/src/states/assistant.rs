@@ -2,10 +2,10 @@
 
 use harness_types::{
     AgentEvent, AgentMessage, AssistantMessage, ContentBlock, FunctionCall, StopReason,
-    TextContent,
+    TextContent, UserMessage,
 };
 use iii_sdk::{TriggerRequest, III};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::events;
 use crate::persistence;
@@ -75,87 +75,122 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     Ok(())
 }
 
-/// Fetch resolved-but-undelivered approvals and convert them into system-level
-/// AgentMessages to prepend onto the LLM request. Returns `(messages_to_prepend,
-/// call_ids_to_ack)`. Empty vectors when no entries.
+/// Atomically consume resolved-but-undelivered approvals (list + stamp) and
+/// convert them into stitched user messages plus an optional omission
+/// summary. Returns `(stitched_msgs, summary_msg_or_none)`.
 ///
-/// Network failures are logged and swallowed: a transient list_undelivered
-/// failure must not block the turn.
-pub(crate) async fn fetch_approval_stitch_messages(
+/// Network failures are logged and swallowed: a transient consume failure
+/// must not block the turn. On failure the caller proceeds with an empty
+/// stitch — entries will be retried atomically on the next turn.
+pub(crate) async fn consume_approval_stitch(
     iii: &III,
     session_id: &str,
-) -> (Vec<AgentMessage>, Vec<String>) {
+    turn_id: &str,
+) -> (Vec<AgentMessage>, Option<String>) {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "approval::list_undelivered".into(),
-            payload: json!({"session_id": session_id}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    let entries = match resp {
-        Ok(v) => v.get("entries").and_then(|e| e.as_array().cloned()).unwrap_or_default(),
-        Err(e) => {
-            tracing::warn!(error = %e, "approval::list_undelivered failed; skipping stitch this turn");
-            return (Vec::new(), Vec::new());
-        }
-    };
-    if entries.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-    let call_ids: Vec<String> = entries
-        .iter()
-        .filter_map(|e| e.get("call_id").and_then(|v| v.as_str()).map(str::to_string))
-        .filter(|s| !s.is_empty())
-        .collect();
-    let stitched = crate::states::approval_stitching::stitch_entries(&entries);
-    let messages: Vec<AgentMessage> = stitched
-        .into_iter()
-        .map(|text| AgentMessage::Assistant(AssistantMessage {
-            content: vec![ContentBlock::Text(TextContent { text })],
-            stop_reason: StopReason::End,
-            error_message: None,
-            error_kind: None,
-            usage: None,
-            model: String::new(),
-            provider: "approval-gate".into(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        }))
-        .collect();
-    (messages, call_ids)
-}
-
-/// Fire-and-forget ack after a successful turn. Logs and swallows errors.
-pub(crate) async fn ack_approval_delivery(
-    iii: &III,
-    session_id: &str,
-    call_ids: Vec<String>,
-    turn_id: &str,
-) {
-    if call_ids.is_empty() { return; }
-    if let Err(e) = iii
-        .trigger(TriggerRequest {
-            function_id: "approval::ack_delivered".into(),
+            function_id: "approval::consume_undelivered".into(),
             payload: json!({
                 "session_id": session_id,
-                "call_ids": call_ids,
                 "turn_id": turn_id,
             }),
             action: None,
             timeout_ms: Some(5_000),
         })
-        .await
-    {
-        tracing::warn!(error = %e, "approval::ack_delivered failed; entries may resurface next turn");
+        .await;
+    let resp = match resp {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "approval::consume_undelivered failed; skipping stitch this turn");
+            return (Vec::new(), None);
+        }
+    };
+    let entries = resp
+        .get("entries")
+        .and_then(|e| e.as_array().cloned())
+        .unwrap_or_default();
+    let omitted = resp.get("omitted").and_then(Value::as_u64).unwrap_or(0);
+    if entries.is_empty() && omitted == 0 {
+        return (Vec::new(), None);
     }
+    let stitched = crate::states::approval_stitching::stitch_entries(&entries);
+    let msgs = stitched_strings_to_messages(stitched, chrono::Utc::now().timestamp_millis());
+    let summary = crate::states::approval_stitching::omission_summary_message(omitted);
+    (msgs, summary)
+}
+
+/// Wrap each stitched approval-info string into an `AgentMessage::User`.
+///
+/// **Why `User` and not `Assistant`:** the Anthropic wire contract requires
+/// the messages array to end with `role: "user"`. Wrapping these as
+/// `Assistant` made the request end with an assistant message and the API
+/// rejected the turn with "This model does not support assistant message
+/// prefill. The conversation must end with a user message." The text payload
+/// is already prefixed with `[approval-gate]` so the model knows it didn't
+/// author the line — same convention as `tool_result` blocks (which also
+/// land on `role: "user"` via `to_wire_messages`).
+pub(crate) fn stitched_strings_to_messages(
+    stitched: Vec<String>,
+    timestamp: i64,
+) -> Vec<AgentMessage> {
+    stitched
+        .into_iter()
+        .map(|text| {
+            AgentMessage::User(UserMessage {
+                content: vec![ContentBlock::Text(TextContent { text })],
+                timestamp,
+            })
+        })
+        .collect()
+}
+
+/// Append stitched approval messages onto persisted conversation history.
+/// Pure — caller is responsible for saving the resulting history with
+/// `persistence::save_messages`.
+pub(crate) fn merge_stitched_into_history(
+    history: &mut Vec<AgentMessage>,
+    stitched: Vec<AgentMessage>,
+) {
+    if stitched.is_empty() {
+        return;
+    }
+    history.extend(stitched);
+}
+
+/// Append a one-line summary user message (e.g. omission warning) onto
+/// history. No-op when `summary` is `None`.
+pub(crate) fn append_summary_message(
+    history: &mut Vec<AgentMessage>,
+    summary: Option<String>,
+    timestamp: i64,
+) {
+    let Some(text) = summary else {
+        return;
+    };
+    history.push(AgentMessage::User(UserMessage {
+        content: vec![ContentBlock::Text(TextContent { text })],
+        timestamp,
+    }));
 }
 
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
-    let (stitch_msgs, ack_call_ids) = fetch_approval_stitch_messages(iii, &record.session_id).await;
-    if !stitch_msgs.is_empty() {
-        messages.extend(stitch_msgs);
+    let turn_id = format!("{}-turn-{}", record.session_id, record.turn_count);
+    let (stitch_msgs, summary) =
+        consume_approval_stitch(iii, &record.session_id, &turn_id).await;
+    let stitched_nonempty = !stitch_msgs.is_empty() || summary.is_some();
+    merge_stitched_into_history(&mut messages, stitch_msgs);
+    append_summary_message(
+        &mut messages,
+        summary,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    // Persist BEFORE the LLM call. If the call fails, next turn resumes
+    // from a history that already contains the stitched approvals; no
+    // re-fetch from approval-gate, no accumulation.
+    if stitched_nonempty {
+        persistence::save_messages(iii, &record.session_id, &messages).await;
     }
     let schemas = persistence::load_function_schemas(iii, &record.session_id).await;
 
@@ -179,10 +214,6 @@ pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow
     let assistant: AssistantMessage =
         serde_json::from_value(response).map_err(|e| anyhow::anyhow!("decode assistant: {e}"))?;
     record.last_assistant = Some(assistant);
-    if !ack_call_ids.is_empty() {
-        let turn_id = format!("{}-turn-{}", record.session_id, record.turn_count);
-        ack_approval_delivery(iii, &record.session_id, ack_call_ids, &turn_id).await;
-    }
     record.transition_to(TurnState::AssistantFinished);
     Ok(())
 }
@@ -305,6 +336,56 @@ mod tests {
         assert_eq!(calls[0].function_id, "read");
     }
 
+    /// Regression: stitched approval entries must wrap as `User`, not
+    /// `Assistant`. Wrapping as `Assistant` produced a wire payload ending
+    /// with `role: "assistant"`, which Anthropic rejects with the prefill
+    /// error ("The conversation must end with a user message").
+    #[test]
+    fn stitched_strings_wrap_as_user_messages_not_assistant() {
+        let out = stitched_strings_to_messages(
+            vec!["[approval-gate] Earlier call_id c1 ...".into()],
+            1234,
+        );
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            AgentMessage::User(u) => {
+                assert_eq!(u.timestamp, 1234);
+                match u.content.first() {
+                    Some(ContentBlock::Text(t)) => {
+                        assert!(t.text.starts_with("[approval-gate]"));
+                    }
+                    other => panic!("expected Text content block, got {other:?}"),
+                }
+            }
+            other => panic!("stitched messages must be AgentMessage::User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stitched_strings_to_messages_preserves_order_and_count() {
+        let out = stitched_strings_to_messages(
+            vec!["a".into(), "b".into(), "c".into()],
+            0,
+        );
+        assert_eq!(out.len(), 3);
+        let texts: Vec<String> = out
+            .iter()
+            .map(|m| match m {
+                AgentMessage::User(u) => match &u.content[0] {
+                    ContentBlock::Text(t) => t.text.clone(),
+                    _ => panic!("expected text"),
+                },
+                _ => panic!("expected user"),
+            })
+            .collect();
+        assert_eq!(texts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn stitched_strings_to_messages_empty_input_returns_empty() {
+        assert!(stitched_strings_to_messages(vec![], 0).is_empty());
+    }
+
     #[test]
     fn assistant_lifecycle_events_orders_message_start_before_end() {
         let asst = assistant_text();
@@ -318,5 +399,60 @@ mod tests {
             &events[1],
             harness_types::AgentEvent::MessageEnd { .. }
         ));
+    }
+
+    /// Regression for the unbounded-redelivery bug: stitched messages must
+    /// be persisted into conversation history BEFORE the LLM call. If the
+    /// LLM errors after this point, the next turn loads them from history
+    /// rather than re-fetching from approval-gate and re-accumulating.
+    #[test]
+    fn stitched_messages_must_be_pushed_into_persisted_history() {
+        let stitched = stitched_strings_to_messages(
+            vec!["[approval-gate] Earlier call_id c1 ...".into()],
+            1234,
+        );
+        let mut history: Vec<AgentMessage> = Vec::new();
+        merge_stitched_into_history(&mut history, stitched);
+        assert_eq!(history.len(), 1);
+        match &history[0] {
+            AgentMessage::User(u) => match &u.content[0] {
+                ContentBlock::Text(t) => assert!(t.text.starts_with("[approval-gate]")),
+                _ => panic!("expected text content"),
+            },
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn merge_stitched_into_history_with_empty_stitched_is_noop() {
+        let mut history: Vec<AgentMessage> = vec![AgentMessage::User(UserMessage {
+            content: vec![ContentBlock::Text(TextContent { text: "hi".into() })],
+            timestamp: 1,
+        })];
+        merge_stitched_into_history(&mut history, Vec::new());
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn merge_stitched_into_history_appends_summary_when_provided() {
+        let stitched = stitched_strings_to_messages(vec!["[approval-gate] entry 1".into()], 1);
+        let mut history: Vec<AgentMessage> = Vec::new();
+        merge_stitched_into_history(&mut history, stitched);
+        append_summary_message(&mut history, Some("[approval-gate] 5 omitted".into()), 2);
+        assert_eq!(history.len(), 2);
+        match &history[1] {
+            AgentMessage::User(u) => match &u.content[0] {
+                ContentBlock::Text(t) => assert!(t.text.contains("5 omitted")),
+                _ => panic!("expected text"),
+            },
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn append_summary_message_none_is_noop() {
+        let mut history: Vec<AgentMessage> = Vec::new();
+        append_summary_message(&mut history, None, 1);
+        assert!(history.is_empty());
     }
 }
