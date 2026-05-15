@@ -11,7 +11,10 @@ pub mod record;
 pub mod resolve;
 pub mod rules;
 pub mod state;
+pub mod sweeper;
 pub mod wire;
+
+use sweeper::{spawn_timeout_sweeper, timeout_resolved_event, write_event, write_hook_reply};
 
 pub use config::{InterceptorRule, WorkerConfig};
 pub use delivery::{
@@ -73,110 +76,6 @@ pub struct Refs {
 }
 
 
-fn uuid_like() -> String {
-    // Lightweight unique-ish id without pulling uuid in: ns timestamp + counter.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static C: AtomicU64 = AtomicU64::new(0);
-    let n = C.fetch_add(1, Ordering::Relaxed);
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{t:x}-{n:x}")
-}
-
-async fn write_event(iii: &III, session_id: &str, event: &Value) {
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "stream::set".into(),
-            payload: json!({
-                "stream_name": "agent::events",
-                "group_id": session_id,
-                "item_id": format!("approval-{}", uuid_like()),
-                "data": event,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-}
-
-/// Build the `approval_resolved` event a sweeper emits when it auto-flips an
-/// expired pending record. Pure — caller pumps the result onto the stream.
-fn timeout_resolved_event(function_call_id: &str) -> Value {
-    // Timed-out approvals carry no Denial — the `status: "timed_out"` is
-    // self-describing per the Denial refactor. Consumers (turn-orchestrator
-    // stitching, UIs) render the timeout from the status alone.
-    json!({
-        "type": "approval_resolved",
-        "function_call_id": function_call_id,
-        "tool_call_id": function_call_id,
-        "decision": "deny",
-        "status": "timed_out",
-    })
-}
-
-/// Spawn the periodic timeout sweeper. The task ticks every `interval_ms`,
-/// scans the configured state scope, and for any pending record whose
-/// `expires_at` is in the past: writes the flipped record back and emits an
-/// `approval_resolved` (status=timed_out) frame on `agent::events/<session>`.
-///
-/// The previous design relied on lazy timeout flips during
-/// `handle_resolve`/`handle_list_undelivered`. Operators who never opened the
-/// UI for a session would leave its pending rows in `pending` forever and
-/// the paused turn-orchestrator would never see a decision. Active sweeping
-/// closes that hole.
-fn spawn_timeout_sweeper(
-    iii: III,
-    bus: Arc<dyn StateBus>,
-    state_scope: String,
-    interval_ms: u64,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_millis(interval_ms.max(50)));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Drop the immediate first tick so we don't sweep before any
-        // pending row could possibly exist.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            let all = bus.list_prefix(&state_scope, "").await;
-            for (key, flipped, session_id, call_id) in collect_timed_out_for_sweep(&all, now_ms) {
-                if let Err(err) = bus.set(&state_scope, &key, flipped).await {
-                    tracing::warn!(
-                        "approval-gate sweeper: failed to flip {key} → timed_out: {err}"
-                    );
-                    continue;
-                }
-                write_event(&iii, &session_id, &timeout_resolved_event(&call_id)).await;
-            }
-        }
-    })
-}
-
-async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
-    if stream_name.is_empty() || event_id.is_empty() {
-        return;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "stream::set".into(),
-            payload: json!({
-                "stream_name": stream_name,
-                "group_id": event_id,
-                "item_id": uuid_like(),
-                "data": reply,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-}
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
