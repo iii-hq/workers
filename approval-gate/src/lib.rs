@@ -29,6 +29,44 @@ fn rule_for<'a>(rules: &'a [InterceptorRule], function_id: &str) -> Option<&'a I
     rules.iter().find(|r| r.function_id == function_id)
 }
 
+/// What the subscriber should do with an incoming call. Decided by the
+/// matching interceptor rule (authoritative) with a fallback to the run's
+/// `approval_required` list when no rule exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InterceptAction {
+    /// No rule, no `approval_required` listing — let the call through.
+    Pass,
+    /// Pause and create a pending record; no classifier consulted.
+    Pause,
+    /// Run the classifier first; on `ask`, pause; on `auto`, pass; on `deny`, block.
+    Classify {
+        classifier_fn: String,
+        classifier_timeout_ms: u64,
+    },
+}
+
+/// Pure decision: given a matching rule (or none) and whether the run
+/// explicitly listed this function id in `approval_required`, what should
+/// the subscriber do? Interceptor rules are authoritative — an operator
+/// who registered a rule meant for every call to go through it, regardless
+/// of per-run opt-in.
+pub(crate) fn decide_intercept_action(
+    rule: Option<&InterceptorRule>,
+    requires_approval: bool,
+) -> InterceptAction {
+    match rule {
+        Some(r) if r.classifier.as_ref().is_some_and(|s| !s.is_empty()) => {
+            InterceptAction::Classify {
+                classifier_fn: r.classifier.clone().unwrap(),
+                classifier_timeout_ms: r.classifier_timeout_ms,
+            }
+        }
+        Some(_) => InterceptAction::Pause,
+        None if requires_approval => InterceptAction::Pause,
+        None => InterceptAction::Pass,
+    }
+}
+
 fn merge_from_approval_marker_if_needed(
     inject: bool,
     args: Value,
@@ -1177,60 +1215,53 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
 
-                let reply = if call.requires_approval() {
-                    match rule_for(intercept_rules.as_slice(), &call.function_id) {
-                        Some(rule) if rule.classifier.as_ref().is_some_and(|s| !s.is_empty()) => {
-                            let classifier_fn = rule.classifier.as_ref().unwrap();
-                            match iii
-                                .trigger(TriggerRequest {
-                                    function_id: classifier_fn.clone(),
-                                    payload: call.args.clone(),
-                                    action: None,
-                                    timeout_ms: Some(rule.classifier_timeout_ms),
-                                })
-                                .await
-                            {
-                                Ok(v) => match interpret_classifier_reply(&v) {
-                                    Ok(ClassifierDecision::Auto) => json!({ "block": false }),
-                                    Ok(ClassifierDecision::Deny { reason }) => json!({
-                                        "block": true,
-                                        "reason": format!("approval-classifier: {reason}"),
-                                        "status": "denied",
-                                        "call_id": call.function_call_id,
-                                        "function_id": call.function_id,
-                                    }),
-                                    Ok(ClassifierDecision::Ask) | Err(()) => {
-                                        handle_intercept(
-                                            bus.as_ref(),
-                                            &sc,
-                                            &call,
-                                            now_ms,
-                                            timeout_ms,
-                                            true,
-                                        )
-                                        .await
-                                    }
-                                },
-                                Err(_) => {
-                                    handle_intercept(
-                                        bus.as_ref(),
-                                        &sc,
-                                        &call,
-                                        now_ms,
-                                        timeout_ms,
-                                        true,
-                                    )
-                                    .await
-                                }
-                            }
-                        }
-                        _ => {
-                            handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, false)
-                                .await
-                        }
+                let action = decide_intercept_action(
+                    rule_for(intercept_rules.as_slice(), &call.function_id),
+                    call.requires_approval(),
+                );
+                let reply = match action {
+                    InterceptAction::Pass => json!({ "block": false }),
+                    InterceptAction::Pause => {
+                        handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, false).await
                     }
-                } else {
-                    json!({ "block": false })
+                    InterceptAction::Classify {
+                        classifier_fn,
+                        classifier_timeout_ms,
+                    } => match iii
+                        .trigger(TriggerRequest {
+                            function_id: classifier_fn,
+                            payload: call.args.clone(),
+                            action: None,
+                            timeout_ms: Some(classifier_timeout_ms),
+                        })
+                        .await
+                    {
+                        Ok(v) => match interpret_classifier_reply(&v) {
+                            Ok(ClassifierDecision::Auto) => json!({ "block": false }),
+                            Ok(ClassifierDecision::Deny { reason }) => json!({
+                                "block": true,
+                                "reason": format!("approval-classifier: {reason}"),
+                                "status": "denied",
+                                "call_id": call.function_call_id,
+                                "function_id": call.function_id,
+                            }),
+                            Ok(ClassifierDecision::Ask) | Err(()) => {
+                                handle_intercept(
+                                    bus.as_ref(),
+                                    &sc,
+                                    &call,
+                                    now_ms,
+                                    timeout_ms,
+                                    true,
+                                )
+                                .await
+                            }
+                        },
+                        Err(_) => {
+                            handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, true)
+                                .await
+                        }
+                    },
                 };
 
                 if reply.get("status").and_then(Value::as_str) == Some("pending") {
@@ -2010,6 +2041,71 @@ mod tests {
             inject_approval_marker: false,
         }];
         assert!(rule_for(&rules, "missing::id").is_none());
+    }
+
+    /// An operator-registered rule is authoritative: every call to that
+    /// function id runs through the classifier, even when the run's
+    /// `approval_required` list is empty. This is the inverted contract
+    /// vs. the original "approval_required ANDs the rule" gate.
+    #[test]
+    fn decide_intercept_action_classifies_when_rule_has_classifier_regardless_of_approval_required() {
+        let rule = InterceptorRule {
+            function_id: "shell::exec".into(),
+            classifier: Some("shell::classify_argv".into()),
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: true,
+        };
+        let action = decide_intercept_action(Some(&rule), false);
+        assert_eq!(
+            action,
+            InterceptAction::Classify {
+                classifier_fn: "shell::classify_argv".into(),
+                classifier_timeout_ms: 2000,
+            }
+        );
+        assert_eq!(action, decide_intercept_action(Some(&rule), true));
+    }
+
+    #[test]
+    fn decide_intercept_action_pauses_when_rule_has_no_classifier_regardless_of_approval_required() {
+        let rule = InterceptorRule {
+            function_id: "shell::fs::write".into(),
+            classifier: None,
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: false,
+        };
+        assert_eq!(
+            decide_intercept_action(Some(&rule), false),
+            InterceptAction::Pause
+        );
+        assert_eq!(
+            decide_intercept_action(Some(&rule), true),
+            InterceptAction::Pause
+        );
+    }
+
+    #[test]
+    fn decide_intercept_action_pauses_when_no_rule_but_run_listed_approval_required() {
+        assert_eq!(decide_intercept_action(None, true), InterceptAction::Pause);
+    }
+
+    #[test]
+    fn decide_intercept_action_passes_when_no_rule_and_not_approval_required() {
+        assert_eq!(decide_intercept_action(None, false), InterceptAction::Pass);
+    }
+
+    #[test]
+    fn decide_intercept_action_classifier_empty_string_treated_as_no_classifier() {
+        let rule = InterceptorRule {
+            function_id: "shell::exec".into(),
+            classifier: Some(String::new()),
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: false,
+        };
+        assert_eq!(
+            decide_intercept_action(Some(&rule), false),
+            InterceptAction::Pause
+        );
     }
 
     #[test]
