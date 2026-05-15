@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod manifest;
+pub mod rules;
 
 pub use config::{InterceptorRule, WorkerConfig};
 
@@ -90,6 +91,37 @@ fn merge_from_approval_marker_if_needed(
             "payload": other,
             "__from_approval": marker,
         }),
+    }
+}
+
+/// Outcome of the policy-rules pre-check that runs before the per-function
+/// [`config::InterceptorRule`] flow. `Allow` and `Deny` short-circuit the
+/// subscriber with a final reply; `FallThrough` defers to the existing
+/// interceptor logic (classifier or pause).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PolicyOutcome {
+    Allow,
+    Deny {
+        rule_permission: String,
+        rule_pattern: String,
+    },
+    FallThrough,
+}
+
+/// Apply the layered policy rules to an incoming function id. Pure
+/// function — no I/O, no clock. Extracted from [`register`]'s subscriber
+/// closure so the decision branch can be unit-tested independently.
+pub(crate) fn apply_policy_rules(rules: &rules::Ruleset, function_id: &str) -> PolicyOutcome {
+    match rules::evaluate(function_id, "*", rules) {
+        Some(rule) => match rule.action {
+            rules::Action::Allow => PolicyOutcome::Allow,
+            rules::Action::Deny => PolicyOutcome::Deny {
+                rule_permission: rule.permission.clone(),
+                rule_pattern: rule.pattern.clone(),
+            },
+            rules::Action::Ask => PolicyOutcome::FallThrough,
+        },
+        None => PolicyOutcome::FallThrough,
     }
 }
 
@@ -1221,6 +1253,9 @@ pub fn unverified_marker_targets(rules: &[InterceptorRule]) -> Vec<&str> {
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
+    // Layered policy rules consulted before the per-function interceptor
+    // flow. See [`crate::rules`].
+    let policy_rules: Arc<crate::rules::Ruleset> = Arc::new(cfg.rules.clone());
 
     // Fail fast on honor-system markers: any interceptor that asks the gate
     // to inject `__from_approval` MUST also assert the target validates it.
@@ -1471,6 +1506,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let bus_for_sub = bus.clone();
     let subscriber_scope = state_scope.clone();
     let rules_for_sub = rules.clone();
+    let policy_rules_for_sub = policy_rules.clone();
     let subscriber_fn = iii.register_function((
         RegisterFunctionMessage::with_id("policy::approval_gate".into())
             .with_description("Pause function calls listed in approval_required.".into()),
@@ -1479,6 +1515,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let bus = bus_for_sub.clone();
             let sc = subscriber_scope.clone();
             let intercept_rules = rules_for_sub.clone();
+            let policy_rules = policy_rules_for_sub.clone();
             async move {
                 let Some(call) = extract_call(&envelope) else {
                     return Ok::<_, IIIError>(json!({ "block": false }));
@@ -1487,6 +1524,34 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
+
+                // Layered policy rules run first. Allow / Deny short-circuit;
+                // Ask (and no-match) falls through to the existing per-function
+                // interceptor flow. Pattern is "*" in v1 — see `crate::rules`.
+                match apply_policy_rules(policy_rules.as_ref(), &call.function_id) {
+                    PolicyOutcome::Allow => {
+                        return Ok::<_, IIIError>(json!({ "block": false }));
+                    }
+                    PolicyOutcome::Deny {
+                        rule_permission,
+                        rule_pattern,
+                    } => {
+                        let denial = Denial::Policy {
+                            classifier_reason: format!(
+                                "rule {rule_permission} {rule_pattern} denies"
+                            ),
+                            classifier_fn: "approval-gate::rules".to_string(),
+                        };
+                        return Ok::<_, IIIError>(json!({
+                            "block": true,
+                            "denial": denial,
+                            "status": "denied",
+                            "call_id": call.function_call_id,
+                            "function_id": call.function_id,
+                        }));
+                    }
+                    PolicyOutcome::FallThrough => {}
+                }
 
                 let action = decide_intercept_action(
                     rule_for(intercept_rules.as_slice(), &call.function_id),
@@ -2421,6 +2486,83 @@ mod tests {
     #[test]
     fn decide_intercept_action_passes_when_no_rule_and_not_approval_required() {
         assert_eq!(decide_intercept_action(None, false), InterceptAction::Pass);
+    }
+
+    #[test]
+    fn apply_policy_rules_empty_ruleset_falls_through() {
+        let rs: rules::Ruleset = vec![];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::FallThrough
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_allow_short_circuits() {
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::exec".into(),
+            pattern: "*".into(),
+            action: rules::Action::Allow,
+        }];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::Allow
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_deny_carries_matched_rule_identity() {
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::*".into(),
+            pattern: "*".into(),
+            action: rules::Action::Deny,
+        }];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::fs::write"),
+            PolicyOutcome::Deny {
+                rule_permission: "shell::*".into(),
+                rule_pattern: "*".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_ask_falls_through_to_interceptor_flow() {
+        // Ask means "no decision from this layer — let the next handle it".
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::exec".into(),
+            pattern: "*".into(),
+            action: rules::Action::Ask,
+        }];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::FallThrough
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_last_matching_wins() {
+        // Later-listed more-specific rule overrides earlier permissive default.
+        let rs: rules::Ruleset = vec![
+            rules::Rule {
+                permission: "*".into(),
+                pattern: "*".into(),
+                action: rules::Action::Allow,
+            },
+            rules::Rule {
+                permission: "shell::exec".into(),
+                pattern: "*".into(),
+                action: rules::Action::Deny,
+            },
+        ];
+        assert!(matches!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::Deny { .. }
+        ));
+        assert_eq!(
+            apply_policy_rules(&rs, "approval::resolve"),
+            PolicyOutcome::Allow
+        );
     }
 
     #[test]

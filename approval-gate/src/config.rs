@@ -19,8 +19,18 @@ fn default_classifier_timeout_ms() -> u64 {
     2000
 }
 
+fn default_sweeper_interval_ms() -> u64 {
+    2000
+}
+
 /// Per-function iii intercept rule: optional classifier trigger before pending +
 /// optional `__from_approval` injection on post-resolve `iii.trigger`.
+///
+/// `marker_target_verified` is the operator's explicit assertion that the
+/// `function_id` target validates `__from_approval` against
+/// `approval::lookup_record` on every invocation. When `inject_approval_marker`
+/// is true, [`crate::register`] refuses to start unless this flag is also
+/// true — closing the honor-system gap.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct InterceptorRule {
     pub function_id: String,
@@ -30,6 +40,8 @@ pub struct InterceptorRule {
     pub classifier_timeout_ms: u64,
     #[serde(default)]
     pub inject_approval_marker: bool,
+    #[serde(default)]
+    pub marker_target_verified: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -40,8 +52,16 @@ pub struct WorkerConfig {
     pub approval_state_scope: String,
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
+    #[serde(default = "default_sweeper_interval_ms")]
+    pub sweeper_interval_ms: u64,
     #[serde(default)]
     pub interceptors: Vec<InterceptorRule>,
+    /// Layered permission rules consulted before per-function interceptors.
+    /// `Allow` short-circuits to pass-through; `Deny` short-circuits to a
+    /// policy [`crate::Denial`]; `Ask` (and no-match) falls through to the
+    /// existing [`InterceptorRule`] flow. See [`crate::rules`].
+    #[serde(default)]
+    pub rules: crate::rules::Ruleset,
 }
 
 impl Default for WorkerConfig {
@@ -50,7 +70,9 @@ impl Default for WorkerConfig {
             topic: default_topic(),
             approval_state_scope: default_approval_state_scope(),
             default_timeout_ms: default_default_timeout_ms(),
+            sweeper_interval_ms: default_sweeper_interval_ms(),
             interceptors: Vec::new(),
+            rules: Vec::new(),
         }
     }
 }
@@ -76,7 +98,20 @@ mod tests {
         assert_eq!(cfg.topic, default_topic());
         assert_eq!(cfg.approval_state_scope, "approvals");
         assert_eq!(cfg.default_timeout_ms, 300_000);
+        assert_eq!(cfg.sweeper_interval_ms, 2000);
         assert!(cfg.interceptors.is_empty());
+    }
+
+    #[test]
+    fn marker_target_verified_defaults_false() {
+        let yaml = r#"
+interceptors:
+  - function_id: shell::exec
+    inject_approval_marker: true
+"#;
+        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.interceptors[0].inject_approval_marker);
+        assert!(!cfg.interceptors[0].marker_target_verified);
     }
 
     #[test]
