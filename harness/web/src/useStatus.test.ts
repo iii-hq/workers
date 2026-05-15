@@ -246,4 +246,31 @@ describe("useStatus", () => {
       payload: { browser_id: "harness-test-id", session_id: null },
     });
   });
+
+  it("ignores optional result/error/decision_reason fields on ui::approval::resolved (regression pin)", async () => {
+    const { result } = renderHook(() => useStatus());
+    await flush();
+    // Fire requested first so there's a pending entry to resolve.
+    await fire("ui::approval::requested", {
+      function_call_id: "c-pin",
+      function_id: "shell::fs::write",
+      args: {},
+    });
+    await fire("ui::approval::resolved", {
+      function_call_id: "c-pin",
+      decision: "allow",
+      // New optional fields the producer may now include:
+      status: "executed",
+      result: { ok: true, bytes: 42 },
+      decision_reason: undefined,
+      error: undefined,
+    });
+    // The reducer's contract is: remove from pendingApprovals; do NOT throw
+    // on unrecognised fields.
+    expect(
+      result.current.pendingApprovals.find(
+        (p) => p.function_call_id === "c-pin",
+      ),
+    ).toBeUndefined();
+  });
 });
