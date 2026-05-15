@@ -1,14 +1,14 @@
 //! Engine-backed test for approval-gate. Connects to an in-process /
 //! local iii engine, registers the gate, fires a `before_function_call`
 //! envelope on a per-test topic, posts `approval::resolve`, and asserts
-//! the subscriber unblocks under 1 s.
+//! the trigger model behavior.
 //!
 //! Skips cleanly when no engine is reachable so `cargo test` stays green
 //! in CI without a running engine.
 
 use std::time::Duration;
 
-use approval_gate::{register, WorkerConfig, FN_RESOLVE, STATE_SCOPE};
+use approval_gate::{register, WorkerConfig, FN_RESOLVE, FN_LIST_UNDELIVERED, STATE_SCOPE};
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
 use serde_json::json;
 
@@ -16,7 +16,7 @@ const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 const ENGINE_PROBE_TIMEOUT_MS: u64 = 500;
 
 #[tokio::test]
-async fn round_trip_allow_unblocks_under_one_second() {
+async fn round_trip_allow_returns_pending_immediately_and_executes_on_resolve() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
     let iii = register_worker(&url, InitOptions::default());
 
@@ -73,18 +73,19 @@ async fn round_trip_allow_unblocks_under_one_second() {
     });
 
     // Drive the subscriber by directly triggering its function id.
-    let subscriber_call = tokio::spawn({
-        let iii = iii.clone();
-        async move {
-            iii.trigger(TriggerRequest {
-                function_id: "policy::approval_gate".into(),
-                payload: envelope,
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await
-        }
-    });
+    // In the trigger model, it returns immediately with block=true + pending.
+    let reply = iii
+        .trigger(TriggerRequest {
+            function_id: "policy::approval_gate".into(),
+            payload: envelope,
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .expect("subscriber trigger ok");
+
+    assert_eq!(reply["block"], true, "subscriber reply: {reply}");
+    assert_eq!(reply["status"], "pending", "subscriber reply: {reply}");
 
     // Wait for the gate to write the pending record before we resolve.
     let key = format!("{session_id}/{function_call_id}");
@@ -107,8 +108,7 @@ async fn round_trip_allow_unblocks_under_one_second() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Post the allow decision and time the unblock.
-    let started = std::time::Instant::now();
+    // Post the allow decision.
     let resolve = iii
         .trigger(TriggerRequest {
             function_id: FN_RESOLVE.into(),
@@ -124,14 +124,27 @@ async fn round_trip_allow_unblocks_under_one_second() {
         .expect("resolve trigger");
     assert_eq!(resolve["ok"], true, "resolve response: {resolve}");
 
-    let reply = subscriber_call
+    // The underlying function "shell::filesystem::write" doesn't exist in
+    // the test engine, so the invocation will fail and the record should be
+    // "failed". Verify it surfaced in list_undelivered.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let undelivered = iii
+        .trigger(TriggerRequest {
+            function_id: FN_LIST_UNDELIVERED.into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
         .await
-        .expect("subscriber task join")
-        .expect("subscriber returned ok");
-    let elapsed = started.elapsed();
+        .expect("list_undelivered ok");
+    let entries = undelivered["entries"].as_array().expect("entries array");
+    let our_entry = entries
+        .iter()
+        .find(|e| e["function_call_id"] == function_call_id)
+        .expect("our entry in undelivered list");
     assert!(
-        elapsed < Duration::from_millis(1_000),
-        "allow round-trip took {elapsed:?}, expected <1s",
+        our_entry["status"] == "failed" || our_entry["status"] == "executed",
+        "unexpected status: {}",
+        our_entry["status"]
     );
-    assert_eq!(reply["block"], false, "subscriber reply: {reply}");
 }

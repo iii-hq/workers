@@ -90,7 +90,7 @@ mod tests {
     fn truncate_for_message_truncation_makes_json_visibly_incomplete() {
         let s = format!("{{\"k\":\"{}\"}}", "x".repeat(STITCH_MAX_CHARS));
         let out = truncate_for_message(&s, STITCH_MAX_CHARS);
-        assert!(!out.ends_with("}"), "truncated JSON must not look complete");
+        assert!(!out.ends_with('}'), "truncated JSON must not look complete");
         assert!(out.contains("… (truncated)"));
     }
 
