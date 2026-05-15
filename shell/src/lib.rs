@@ -2,6 +2,7 @@
 //! under `tests/` can drive them at the public-API level. Both targets
 //! share source files via Cargo's two-target compile.
 
+pub mod arity;
 pub mod config;
 pub mod exec;
 pub mod exec_dispatch;

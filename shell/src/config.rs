@@ -199,20 +199,22 @@ impl ShellConfig {
         None
     }
 
-    /// Returns `true` if argv[0] (basename or exact path) appears in `allowlist`.
-    /// Empty allowlist returns `false` (caller decides what to do with that).
+    /// Returns `true` if the arity-aware prefix of `argv` matches any
+    /// entry in `allowlist`. Entries can be single tokens (`"ls"`) or
+    /// multi-token prefixes (`"git checkout"`, `"npm run dev"`); the
+    /// match is token-aligned via [`crate::arity::prefix_matches`]
+    /// so `"git"` matches argv beginning with `git <subcommand>` but
+    /// not `git-lfs`. Full-path argv heads (e.g. `/usr/bin/ls`) are
+    /// normalized to their basename before matching, preserving the
+    /// pre-arity path-agnostic behavior. Empty allowlist returns
+    /// `false` (caller decides what to do with that).
     pub fn allowlist_contains(&self, argv: &[String]) -> bool {
-        let Some(cmd) = argv.first() else {
-            return false;
-        };
-        if self.allowlist.is_empty() {
+        if argv.is_empty() || self.allowlist.is_empty() {
             return false;
         }
-        let base = std::path::Path::new(cmd)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(cmd);
-        self.allowlist.iter().any(|a| a == base || a == cmd)
+        self.allowlist
+            .iter()
+            .any(|entry| crate::arity::prefix_matches(argv, entry))
     }
 
     /// Today's combined check, preserved unchanged on the wire for direct
@@ -290,6 +292,53 @@ mod tests {
         assert!(c
             .is_command_allowed(&["/usr/bin/ls".into(), "-la".into()])
             .is_ok());
+    }
+
+    #[test]
+    fn allowlist_arity_single_token_entry_matches_subcommand_argv() {
+        // Allowlisting just "git" should auto-approve `git checkout main`
+        // because the arity dictionary resolves `git` at arity 2.
+        let c = cfg_with(vec!["git"], vec![]);
+        assert!(c
+            .is_command_allowed(&["git".into(), "checkout".into(), "main".into()])
+            .is_ok());
+    }
+
+    #[test]
+    fn allowlist_arity_multi_token_entry_matches() {
+        // Allowlisting `git checkout` should match exactly that subcommand
+        // and not other git subcommands.
+        let c = cfg_with(vec!["git checkout"], vec![]);
+        assert!(c
+            .is_command_allowed(&["git".into(), "checkout".into(), "main".into()])
+            .is_ok());
+        let err = c
+            .is_command_allowed(&["git".into(), "push".into()])
+            .expect_err("git push must be rejected when only git checkout is allowed");
+        assert!(err.contains("allowlist"));
+    }
+
+    #[test]
+    fn allowlist_arity_npm_run_dev_three_token_entry() {
+        let c = cfg_with(vec!["npm run dev"], vec![]);
+        assert!(c
+            .is_command_allowed(&["npm".into(), "run".into(), "dev".into(), "--watch".into()])
+            .is_ok());
+        let err = c
+            .is_command_allowed(&["npm".into(), "run".into(), "build".into()])
+            .expect_err("npm run build must be rejected when only npm run dev is allowed");
+        assert!(err.contains("allowlist"));
+    }
+
+    #[test]
+    fn allowlist_arity_does_not_collide_on_hyphenated_token() {
+        // Allowlisting `git` must not auto-approve `git-lfs push` — the
+        // basename token boundary protects against substring confusion.
+        let c = cfg_with(vec!["git"], vec![]);
+        let err = c
+            .is_command_allowed(&["git-lfs".into(), "push".into()])
+            .expect_err("git-lfs must not match an allowlist entry of 'git'");
+        assert!(err.contains("allowlist"));
     }
 
     #[test]
