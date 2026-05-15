@@ -165,6 +165,8 @@ pub fn block_reply_for(decision: &Decision) -> Value {
 pub struct Refs {
     pub resolve: FunctionRef,
     pub list_pending: FunctionRef,
+    pub list_undelivered: FunctionRef,
+    pub ack_delivered: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
 }
@@ -474,47 +476,6 @@ pub async fn handle_ack_delivered(
     json!({ "ok": true, "stamped": stamped })
 }
 
-const POLL_INTERVAL_MS: u64 = 250;
-
-pub async fn await_decision(
-    bus: &dyn StateBus,
-    state_scope: &str,
-    session_id: &str,
-    function_call_id: &str,
-    expires_at: u64,
-) -> Decision {
-    let key = pending_key(session_id, function_call_id);
-    loop {
-        let Some(rec) = bus.get(state_scope, &key).await else {
-            return Decision::Deny {
-                reason: "state_unavailable".into(),
-            };
-        };
-        match rec.get("status").and_then(Value::as_str) {
-            Some("allow") => return Decision::Allow,
-            Some("deny") => {
-                let reason = rec
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("user")
-                    .to_string();
-                return Decision::Deny { reason };
-            }
-            _ => {}
-        }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(expires_at);
-        if now >= expires_at {
-            return Decision::Deny {
-                reason: "timeout".into(),
-            };
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-    }
-}
-
 /// Production [`StateBus`] backed by a real iii-sdk [`III`] connection.
 pub struct IiiStateBus(pub III);
 
@@ -618,13 +579,19 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 
     let bus_for_resolve = bus.clone();
     let scope_resolve = state_scope.clone();
+    let exec_for_resolve: Arc<dyn FunctionExecutor> = Arc::new(IiiFunctionExecutor(iii.clone()));
     let iii_for_resolve = iii.clone();
     let resolve =
         iii.register_function((
             RegisterFunctionMessage::with_id(FN_RESOLVE.into())
-                .with_description("Flip a pending approval entry to allow or deny.".into()),
+                .with_description(
+                    "Resolve a pending approval. On allow, invokes the underlying function; \
+                     on deny, records the denial. The result is stitched into the agent's \
+                     next turn as a system message.".into()
+                ),
             move |payload: Value| {
                 let bus = bus_for_resolve.clone();
+                let exec = exec_for_resolve.clone();
                 let scope_resolve = scope_resolve.clone();
                 let iii = iii_for_resolve.clone();
                 async move {
@@ -632,8 +599,34 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
-                    let exec: std::sync::Arc<dyn FunctionExecutor> = std::sync::Arc::new(IiiFunctionExecutor(iii));
-                    Ok::<_, IIIError>(handle_resolve(bus.as_ref(), exec.as_ref(), &scope_resolve, payload, now_ms).await)
+                    let resp = handle_resolve(bus.as_ref(), exec.as_ref(), &scope_resolve, payload.clone(), now_ms).await;
+
+                    if resp.get("ok").and_then(Value::as_bool) == Some(true) {
+                        let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+                        let call_id = payload.get("function_call_id").or_else(|| payload.get("tool_call_id")).and_then(Value::as_str).unwrap_or("");
+                        if !session_id.is_empty() && !call_id.is_empty() {
+                            let key = pending_key(session_id, call_id);
+                            if let Some(final_rec) = bus.get(&scope_resolve, &key).await {
+                                let mut evt = json!({
+                                    "type": "approval_resolved",
+                                    "function_call_id": call_id,
+                                    "tool_call_id": call_id,
+                                });
+                                if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
+                                    evt["decision"] = match status {
+                                        "executed" | "approved" => json!("allow"),
+                                        _ => json!("deny"),
+                                    };
+                                    evt["status"] = json!(status);
+                                }
+                                if let Some(r) = final_rec.get("result") { evt["result"] = r.clone(); }
+                                if let Some(e) = final_rec.get("error") { evt["error"] = e.clone(); }
+                                if let Some(reason) = final_rec.get("decision_reason") { evt["decision_reason"] = reason.clone(); }
+                                write_event(&iii, session_id, &evt).await;
+                            }
+                        }
+                    }
+                    Ok::<_, IIIError>(resp)
                 }
             },
         ));
@@ -652,6 +645,44 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         },
     ));
 
+    let bus_for_list_undelivered = bus.clone();
+    let scope_list_undelivered = state_scope.clone();
+    let list_undelivered = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_LIST_UNDELIVERED.into())
+            .with_description(
+                "Return resolved approval records for a session that haven't yet been stitched \
+                 into an LLM turn. Lazy-flips expired pendings to timed_out.".into()
+            ),
+        move |payload: Value| {
+            let bus = bus_for_list_undelivered.clone();
+            let scope = scope_list_undelivered.clone();
+            async move {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                Ok::<_, IIIError>(handle_list_undelivered(bus.as_ref(), &scope, payload, now_ms).await)
+            }
+        },
+    ));
+
+    let bus_for_ack = bus.clone();
+    let scope_ack = state_scope.clone();
+    let ack_delivered = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_ACK_DELIVERED.into())
+            .with_description(
+                "Stamp delivered_in_turn_id on resolved approvals so they aren't replayed \
+                 in subsequent turns. Idempotent.".into()
+            ),
+        move |payload: Value| {
+            let bus = bus_for_ack.clone();
+            let scope = scope_ack.clone();
+            async move {
+                Ok::<_, IIIError>(handle_ack_delivered(bus.as_ref(), &scope, payload).await)
+            }
+        },
+    ));
+
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
     let subscriber_scope = state_scope.clone();
@@ -666,79 +697,28 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                 let Some(call) = extract_call(&envelope) else {
                     return Ok::<_, IIIError>(json!({ "block": false }));
                 };
-                if !call.requires_approval() {
-                    let reply = json!({ "block": false });
-                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
-                    return Ok(reply);
-                }
-                let now = std::time::SystemTime::now()
+                let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let expires_at = now.saturating_add(timeout_ms);
-                let record = build_pending_record(
-                    &call.function_call_id,
-                    &call.function_id,
-                    &call.args,
-                    now,
-                    timeout_ms,
-                );
-                if let Err(err) = bus
-                    .set(
-                        &sc,
-                        &pending_key(&call.session_id, &call.function_call_id),
-                        record,
+                let reply = handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms).await;
+
+                if reply.get("status").and_then(Value::as_str) == Some("pending") {
+                    write_event(
+                        &iii,
+                        &call.session_id,
+                        &json!({
+                            "type": "approval_requested",
+                            "function_call_id": call.function_call_id,
+                            "tool_call_id": call.function_call_id,
+                            "function_id": call.function_id,
+                            "tool_name": call.function_id,
+                            "args": call.args,
+                            "expires_at": now_ms.saturating_add(timeout_ms),
+                        }),
                     )
-                    .await
-                {
-                    tracing::error!(
-                        "approval-gate: failed to write pending record for {}/{}: {err}",
-                        call.session_id,
-                        call.function_call_id
-                    );
-                    let reply = json!({ "block": false });
-                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
-                    return Ok(reply);
+                    .await;
                 }
-                write_event(
-                    &iii,
-                    &call.session_id,
-                    &json!({
-                        "type": "approval_requested",
-                        "function_call_id": call.function_call_id,
-                        "tool_call_id": call.function_call_id,
-                        "function_id": call.function_id,
-                        "tool_name": call.function_id,
-                        "args": call.args,
-                        "expires_at": expires_at,
-                    }),
-                )
-                .await;
-                let decision = await_decision(
-                    bus.as_ref(),
-                    &sc,
-                    &call.session_id,
-                    &call.function_call_id,
-                    expires_at,
-                )
-                .await;
-                let (decision_str, reason_for_event) = match &decision {
-                    Decision::Allow => ("allow", None),
-                    Decision::Deny { reason } => ("deny", Some(reason.clone())),
-                };
-                write_event(
-                    &iii,
-                    &call.session_id,
-                    &json!({
-                        "type": "approval_resolved",
-                        "function_call_id": call.function_call_id,
-                        "tool_call_id": call.function_call_id,
-                        "decision": decision_str,
-                        "reason": reason_for_event,
-                    }),
-                )
-                .await;
-                let reply = block_reply_for(&decision);
                 write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
                 Ok(reply)
             }
@@ -757,6 +737,8 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     Ok(Refs {
         resolve,
         list_pending,
+        list_undelivered,
+        ack_delivered,
         subscriber_fn,
         subscriber_trigger,
     })
@@ -1421,69 +1403,6 @@ mod tests {
         let items = out["pending"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["function_call_id"], "tc-1");
-    }
-
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
-    #[tokio::test]
-    async fn await_decision_returns_allow_when_status_flips() {
-        let bus = Arc::new(InMemoryStateBus::new());
-        let key = pending_key("s1", "tc-1");
-        bus.set(
-            STATE_SCOPE,
-            &key,
-            build_pending_record("tc-1", "write", &json!({}), now_ms(), 5_000),
-        )
-        .await
-        .unwrap();
-
-        let bus2 = bus.clone();
-        let writer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let mut rec = bus2.get(STATE_SCOPE, &key).await.unwrap();
-            rec["status"] = json!("allow");
-            bus2.set(STATE_SCOPE, &key, rec).await.unwrap();
-        });
-
-        let decision = await_decision(&*bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 5_000).await;
-        writer.await.unwrap();
-        assert_eq!(decision, Decision::Allow);
-    }
-
-    #[tokio::test]
-    async fn await_decision_returns_deny_timeout_when_expired() {
-        let bus = InMemoryStateBus::new();
-        let key = pending_key("s1", "tc-1");
-        let _ = bus
-            .set(
-                STATE_SCOPE,
-                &key,
-                build_pending_record("tc-1", "write", &json!({}), 0, 0),
-            )
-            .await;
-        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() - 10).await;
-        match decision {
-            Decision::Deny { reason } => assert_eq!(reason, "timeout"),
-            other => panic!("expected Deny(timeout), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn await_decision_fail_closed_on_missing_record() {
-        let bus = InMemoryStateBus::new();
-        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 1_000).await;
-        match decision {
-            Decision::Deny { reason } => assert_eq!(reason, "state_unavailable"),
-            other => panic!("expected Deny(state_unavailable), got {other:?}"),
-        }
     }
 
     #[tokio::test]
