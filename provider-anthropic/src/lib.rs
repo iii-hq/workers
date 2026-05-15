@@ -220,6 +220,141 @@ pub fn functions_to_wire(tools: &[harness_types::AgentFunction]) -> Vec<serde_js
         .collect()
 }
 
+// ─── Prompt caching ──────────────────────────────────────────────────────
+//
+// Anthropic's prompt cache reads stable prefixes at 10% input cost (and
+// writes them at 125%). We mark up to 3 cacheable spans per request:
+// the `system` block, the last entry of the `tools` array (which caches
+// the whole tools array as a unit), and the last content block of the
+// last "stable" assistant turn — i.e. one whose `tool_use` blocks all
+// have matching downstream `tool_result` blocks (no in-flight tools).
+// Anthropic rejects requests where the cacheable span hashes below the
+// per-model minimum (~1024 tokens on most models), so each helper gates
+// on a conservative character-length floor (~4 chars/token).
+//
+// Disabled by setting `HARNESS_ANTHROPIC_CACHE=0` in the environment.
+
+const CACHE_MIN_CHARS: usize = 4096;
+const CACHE_FLAG_ENV: &str = "HARNESS_ANTHROPIC_CACHE";
+
+fn cache_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var(CACHE_FLAG_ENV) {
+        Ok(v) => !matches!(v.as_str(), "0" | "false" | "FALSE" | "False"),
+        Err(_) => true,
+    })
+}
+
+fn ephemeral_marker() -> serde_json::Value {
+    serde_json::json!({ "type": "ephemeral" })
+}
+
+/// Build the `system` wire field. Emits the typed-block array form with a
+/// `cache_control: ephemeral` marker when caching is enabled and the prompt
+/// is long enough to be cache-eligible. Otherwise emits the plain-string
+/// form (which Anthropic also accepts) so short system prompts don't trigger
+/// HTTP 400 on too-small cacheable spans.
+pub fn build_system_field(system_prompt: &str) -> serde_json::Value {
+    if cache_enabled() && system_prompt.len() >= CACHE_MIN_CHARS {
+        serde_json::json!([{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": ephemeral_marker(),
+        }])
+    } else {
+        serde_json::Value::String(system_prompt.to_string())
+    }
+}
+
+/// Attach a `cache_control: ephemeral` marker to the last entry of the
+/// `tools` array. Anthropic caches the entire prefix up to the marker, so
+/// one marker on the last tool caches the whole tools array as a unit.
+/// No-op when caching is disabled, the array is empty, or the serialized
+/// size of the array falls below the cache-eligibility floor.
+pub fn apply_tools_cache_control(tools: &mut [serde_json::Value]) {
+    if !cache_enabled() || tools.is_empty() {
+        return;
+    }
+    let serialized_size: usize = tools
+        .iter()
+        .map(|v| serde_json::to_string(v).map(|s| s.len()).unwrap_or(0))
+        .sum();
+    if serialized_size < CACHE_MIN_CHARS {
+        return;
+    }
+    if let Some(last) = tools.last_mut() {
+        if let Some(obj) = last.as_object_mut() {
+            obj.insert("cache_control".into(), ephemeral_marker());
+        }
+    }
+}
+
+/// Stamp a `cache_control: ephemeral` marker on the last content block of
+/// the most recent "stable" assistant turn — i.e. one whose `tool_use`
+/// blocks all have matching downstream `tool_result` blocks. Marking an
+/// unstable turn (in-flight tool calls) would cache a transient state and
+/// invalidate on the next turn, defeating the point.
+pub fn apply_messages_cache_anchor(wire: &mut [serde_json::Value]) {
+    if !cache_enabled() || wire.is_empty() {
+        return;
+    }
+    let last_stable = (0..wire.len())
+        .rev()
+        .find(|&idx| is_stable_assistant(wire, idx));
+    let Some(idx) = last_stable else { return };
+    let Some(content) = wire[idx].get_mut("content").and_then(|c| c.as_array_mut()) else {
+        return;
+    };
+    if let Some(last_block) = content.last_mut() {
+        if let Some(obj) = last_block.as_object_mut() {
+            obj.insert("cache_control".into(), ephemeral_marker());
+        }
+    }
+}
+
+fn is_stable_assistant(wire: &[serde_json::Value], idx: usize) -> bool {
+    let msg = &wire[idx];
+    if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        return false;
+    }
+    let tool_use_ids: Vec<&str> = msg
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        b.get("id").and_then(|i| i.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if tool_use_ids.is_empty() {
+        return true;
+    }
+    tool_use_ids
+        .iter()
+        .all(|id| has_downstream_tool_result(&wire[idx + 1..], id))
+}
+
+fn has_downstream_tool_result(later: &[serde_json::Value], id: &str) -> bool {
+    later.iter().any(|m| {
+        m.get("role").and_then(|r| r.as_str()) == Some("user")
+            && m.get("content")
+                .and_then(|c| c.as_array())
+                .map(|blocks| {
+                    blocks.iter().any(|b| {
+                        b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                            && b.get("tool_use_id").and_then(|i| i.as_str()) == Some(id)
+                    })
+                })
+                .unwrap_or(false)
+    })
+}
+
 /// Stream a response from Anthropic. Returns an event stream that closes with
 /// `done` on success or `error` on failure. Never throws.
 pub async fn stream(
@@ -296,12 +431,16 @@ async fn stream_inner(
         "anthropic.request.build",
         Some(iii_sdk::SpanKind::Internal),
         || async {
+            let mut wire_messages = to_wire_messages(&messages);
+            apply_messages_cache_anchor(&mut wire_messages);
+            let mut wire_tools = functions_to_wire(&tools);
+            apply_tools_cache_control(&mut wire_tools);
             let body = serde_json::json!({
                 "model": cfg.model,
                 "max_tokens": cfg.max_tokens,
-                "system": system_prompt,
-                "messages": to_wire_messages(&messages),
-                "tools": functions_to_wire(&tools),
+                "system": build_system_field(&system_prompt),
+                "messages": wire_messages,
+                "tools": wire_tools,
                 "stream": true,
             });
             let client = reqwest::Client::builder()
@@ -772,6 +911,151 @@ mod tests {
         );
         assert_eq!(u.input, 15);
         assert_eq!(u.output, 26);
+    }
+
+    #[test]
+    fn merge_usage_captures_cache_fields() {
+        let mut u = Usage::default();
+        merge_usage(
+            &serde_json::json!({
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 80,
+                "cache_creation_input_tokens": 20,
+            }),
+            &mut u,
+        );
+        assert_eq!(u.cache_read, 80);
+        assert_eq!(u.cache_write, 20);
+    }
+
+    #[test]
+    fn build_system_field_short_returns_string() {
+        let out = build_system_field("hi");
+        assert!(out.is_string());
+        assert_eq!(out.as_str(), Some("hi"));
+    }
+
+    #[test]
+    fn build_system_field_long_returns_typed_block_with_cache_marker() {
+        let long = "x".repeat(CACHE_MIN_CHARS);
+        let out = build_system_field(&long);
+        let arr = out.as_array().expect("typed-block array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"].as_str().unwrap().len(), CACHE_MIN_CHARS);
+        assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn apply_tools_cache_control_skips_empty() {
+        let mut tools: Vec<serde_json::Value> = vec![];
+        apply_tools_cache_control(&mut tools);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn apply_tools_cache_control_skips_small_arrays() {
+        // A single tiny tool entry — far below the 4 KB floor.
+        let mut tools = vec![serde_json::json!({
+            "name": "agent_call",
+            "description": "noop",
+            "input_schema": {"type": "object"},
+        })];
+        apply_tools_cache_control(&mut tools);
+        assert!(
+            tools[0].get("cache_control").is_none(),
+            "tiny tools array must not be marked (would 400 on Anthropic)"
+        );
+    }
+
+    #[test]
+    fn apply_tools_cache_control_marks_last_when_eligible() {
+        // Pad description so the serialized array exceeds CACHE_MIN_CHARS.
+        let bulky = "x".repeat(CACHE_MIN_CHARS);
+        let mut tools = vec![
+            serde_json::json!({"name": "a", "description": "small", "input_schema": {}}),
+            serde_json::json!({"name": "b", "description": bulky, "input_schema": {}}),
+        ];
+        apply_tools_cache_control(&mut tools);
+        assert!(
+            tools[0].get("cache_control").is_none(),
+            "only the last entry is marked"
+        );
+        assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn apply_messages_cache_anchor_marks_last_stable_assistant() {
+        let mut wire = vec![
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "first reply"}]
+            }),
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "more"}]}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "second reply"}]
+            }),
+        ];
+        apply_messages_cache_anchor(&mut wire);
+        assert!(
+            wire[1]["content"][0].get("cache_control").is_none(),
+            "earlier assistant should not be marked"
+        );
+        assert_eq!(wire[3]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn apply_messages_cache_anchor_skips_assistant_with_unresolved_tool_use() {
+        let mut wire = vec![
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "running"},
+                    {"type": "tool_use", "id": "tc1", "name": "shell__run", "input": {}}
+                ]
+            }),
+            // No matching tool_result follows — assistant is "in-flight".
+        ];
+        apply_messages_cache_anchor(&mut wire);
+        for block in wire[1]["content"].as_array().unwrap() {
+            assert!(
+                block.get("cache_control").is_none(),
+                "in-flight assistant must not be marked"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_messages_cache_anchor_marks_assistant_when_tool_result_follows() {
+        let mut wire = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "running"},
+                    {"type": "tool_use", "id": "tc1", "name": "shell__run", "input": {}}
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tc1", "content": "ok"}]
+            }),
+        ];
+        apply_messages_cache_anchor(&mut wire);
+        // The tool_use is the last content block of the assistant; the
+        // marker lands there.
+        let tool_use = &wire[0]["content"][1];
+        assert_eq!(tool_use["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn apply_messages_cache_anchor_noop_on_empty() {
+        let mut wire: Vec<serde_json::Value> = vec![];
+        apply_messages_cache_anchor(&mut wire);
+        assert!(wire.is_empty());
     }
 
     #[test]

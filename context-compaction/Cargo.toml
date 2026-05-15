@@ -1,0 +1,38 @@
+[workspace]
+
+[package]
+name = "context-compaction"
+version = "0.1.0"
+description = "Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd, summarises older turns via provider-router, and appends a session-tree Compaction entry so the next turn reads a compressed transcript."
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+authors = ["iii"]
+publish = false
+build = "build.rs"
+
+[lib]
+name = "context_compaction"
+path = "src/lib.rs"
+
+[[bin]]
+name = "context-compaction"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.11.7-next.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

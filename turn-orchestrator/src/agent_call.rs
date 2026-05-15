@@ -22,6 +22,14 @@ pub const FUNCTION_ID: &str = "agent::call";
 /// override per call site when a tighter ceiling is wanted.
 pub(crate) const DEFAULT_DISPATCH_TIMEOUT_MS: Option<u64> = None;
 
+/// Reserved virtual function id. When `dispatch()` sees this, it skips the
+/// bus hop and reads the stashed full payload from
+/// `session/<session_id>/result/<call_id>` directly. Not registered on the
+/// bus (no entry in `engine::functions::list`) — discoverable only via the
+/// `[result truncated …]` marker emitted by the truncator and the recovery
+/// clause in [`agent_call_tool`]'s description.
+const RESULT_FETCH_FUNCTION: &str = "result::fetch";
+
 /// The single tool schema sent to the provider.
 ///
 /// Snapshot-tested below — any change here is a wire-format change for every
@@ -29,7 +37,7 @@ pub(crate) const DEFAULT_DISPATCH_TIMEOUT_MS: Option<u64> = None;
 pub fn agent_call_tool() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.",
+        "description": "Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific JSON arguments. Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns. If a previous tool result was replaced with a `[result truncated …]` marker, retrieve the full payload by calling `agent_call` with `function=\"result::fetch\"` and `payload={\"call_id\": \"<id from the marker>\"}`.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -60,6 +68,7 @@ fn error_result(envelope: Value) -> FunctionResult {
         })],
         details: envelope,
         terminate: false,
+        truncated: None,
     }
 }
 
@@ -115,6 +124,7 @@ pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
         content: vec![ContentBlock::Text(TextContent { text })],
         details: value,
         terminate: false,
+        truncated: None,
     }
 }
 
@@ -129,10 +139,9 @@ pub(crate) fn decode_or_passthrough(value: Value) -> FunctionResult {
 /// dispatch via `iii.trigger`, and map errors back to envelopes the model
 /// can read.
 ///
-/// `_session_id` kept in the signature for caller symmetry; not consumed.
 pub async fn dispatch(
     iii: &III,
-    _session_id: &str,
+    session_id: &str,
     function: &Value,
     payload: Value,
 ) -> FunctionResult {
@@ -140,6 +149,10 @@ pub async fn dispatch(
         Ok(id) => id,
         Err(result) => return result,
     };
+
+    if function_id == RESULT_FETCH_FUNCTION {
+        return handle_result_fetch(iii, session_id, &payload).await;
+    }
 
     let response = iii
         .trigger(TriggerRequest {
@@ -166,6 +179,38 @@ pub async fn dispatch(
             "error": "trigger_failed",
             "function": function_id,
             "message": e.to_string()
+        })),
+    }
+}
+
+/// Handle the virtual `result::fetch` function — reads the stashed full
+/// payload for a previously-truncated tool call out of iii-state and
+/// returns it verbatim (as if it had been returned the first time).
+async fn handle_result_fetch(iii: &III, session_id: &str, payload: &Value) -> FunctionResult {
+    if session_id.is_empty() {
+        return error_result(json!({
+            "error": "missing_session",
+            "function": RESULT_FETCH_FUNCTION,
+            "message": "result::fetch requires session context (dispatcher session_id was empty)"
+        }));
+    }
+    let call_id = match payload.get("call_id").and_then(Value::as_str) {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return error_result(json!({
+                "error": "missing_call_id",
+                "function": RESULT_FETCH_FUNCTION,
+                "message": "result::fetch requires a non-empty `call_id` string in payload"
+            }))
+        }
+    };
+    match crate::persistence::load_full_result(iii, session_id, call_id).await {
+        Some(value) => decode_or_passthrough(value),
+        None => error_result(json!({
+            "error": "result_not_found",
+            "function": RESULT_FETCH_FUNCTION,
+            "call_id": call_id,
+            "message": "no stashed result for this call_id (not truncated, or state pruned)"
         })),
     }
 }
@@ -221,6 +266,29 @@ mod tests {
         assert!(
             desc.contains("function id"),
             "description should explain what `function` is"
+        );
+    }
+
+    #[test]
+    fn agent_call_description_documents_result_fetch_recovery() {
+        // The model only learns about `result::fetch` from the tool
+        // description plus the `[result truncated …]` marker emitted by the
+        // truncator. If we drop this from the description, agents will see
+        // truncated results in their context with no way to recover the
+        // full payload.
+        let tool = agent_call_tool();
+        let desc = tool["description"].as_str().unwrap();
+        assert!(
+            desc.contains("result::fetch"),
+            "tool description must mention the result::fetch recovery path"
+        );
+        assert!(
+            desc.contains("call_id"),
+            "tool description must explain the call_id argument"
+        );
+        assert!(
+            desc.contains("truncated"),
+            "tool description must reference the truncation marker"
         );
     }
 }

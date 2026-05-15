@@ -131,6 +131,22 @@ pub fn last_session_tree_len_key(session_id: &str) -> String {
     format!("session/{session_id}/session_tree_mirror_len")
 }
 
+/// Key under scope=agent that the `context-compaction` worker stamps with
+/// `chrono::Utc::now().timestamp_millis()` after each successful
+/// `session-tree::compact` append. The orchestrator watches it to decide
+/// whether to rebuild the hot `messages_key` from session-tree on the
+/// next turn.
+pub fn last_compaction_at_key(session_id: &str) -> String {
+    format!("session/{session_id}/last_compaction_at")
+}
+
+/// Watermark advanced by [`persistence::maybe_reload_after_compaction`]
+/// whenever it consumes a fresh `last_compaction_at`. Reload only fires
+/// when `last_compaction_at > last_compaction_consumed_at`.
+pub fn last_compaction_consumed_at_key(session_id: &str) -> String {
+    format!("session/{session_id}/last_compaction_consumed_at")
+}
+
 #[allow(dead_code)]
 fn _ensure_message_types_in_scope(_: AgentMessage) {}
 

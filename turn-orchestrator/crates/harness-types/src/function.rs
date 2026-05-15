@@ -63,6 +63,23 @@ pub struct FunctionResult {
     pub details: serde_json::Value,
     #[serde(default)]
     pub terminate: bool,
+    /// Set when `content` has been truncated for context-budget reasons.
+    /// The orchestrator stashes the full payload under
+    /// `session/<session_id>/result/<call_id>` and the model can retrieve
+    /// it via `agent_call(function="result::fetch", payload={call_id})`.
+    /// Absent when the result was kept verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<TruncationInfo>,
+}
+
+/// Metadata attached to a [`FunctionResult`] whose `content` has been
+/// truncated. Lets the model decide whether to fetch the full payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TruncationInfo {
+    /// Original serialized size of the un-truncated `{content, details}`.
+    pub original_bytes: u64,
+    /// Side-key suffix; full payload at `session/<session_id>/result/<call_id>`.
+    pub call_id: String,
 }
 
 /// Outcome of prepare. Either ready to execute, or short-circuited.

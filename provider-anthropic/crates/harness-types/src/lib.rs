@@ -18,7 +18,7 @@ pub use agent_message::{
 pub use content::{ContentBlock, ImageContent, TextContent};
 pub use function::{
     AgentFunction, CacheRetention, ExecutionMode, FinalizedFunctionCall, FunctionCall,
-    FunctionResult, PreparedFunctionCall, Transport,
+    FunctionResult, PreparedFunctionCall, Transport, TruncationInfo,
 };
 pub use stream_event::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 pub use thinking::{TextPhase, TextSignature, ThinkingBudgets, ThinkingLevel};
