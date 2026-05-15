@@ -259,6 +259,26 @@ pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
     Some(transition_record(rec, "timed_out", None, None, Some("timeout".into())))
 }
 
+/// Map a legacy approval record (pre-trigger-model) to the new shape.
+/// Returns `None` if the record is already in the new shape.
+pub fn migrate_legacy_record(rec: &Value) -> Option<Value> {
+    let status = rec.get("status").and_then(Value::as_str)?;
+    let (new_status, reason_to_carry) = match status {
+        "allow" => ("executed", None),
+        "deny" => (
+            "denied",
+            rec.get("reason").and_then(Value::as_str).map(str::to_string),
+        ),
+        _ => return None,
+    };
+    let mut migrated = transition_record(rec, new_status, None, None, reason_to_carry);
+    migrated
+        .as_object_mut()
+        .unwrap()
+        .insert("legacy_migrated".into(), Value::Bool(true));
+    Some(migrated)
+}
+
 pub async fn handle_resolve(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
@@ -357,7 +377,12 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
     let all = bus.list_prefix(state_scope, &prefix).await;
     let pending: Vec<Value> = all
         .into_iter()
-        .filter(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
+        .filter(|v| {
+            if migrate_legacy_record(v).is_some() {
+                return false;
+            }
+            v.get("status").and_then(Value::as_str) == Some("pending")
+        })
         .collect();
     json!({ "pending": pending })
 }
@@ -380,6 +405,15 @@ pub async fn handle_list_undelivered(
     let all = bus.list_prefix(state_scope, &prefix).await;
     let mut entries: Vec<Value> = Vec::new();
     for rec in all {
+        let rec = if let Some(migrated) = migrate_legacy_record(&rec) {
+            let call_id = migrated.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+            if !call_id.is_empty() {
+                let _ = bus.set(state_scope, &pending_key(session_id, call_id), migrated.clone()).await;
+            }
+            migrated
+        } else {
+            rec
+        };
         let rec = if let Some(flipped) = maybe_flip_timed_out(&rec, now_ms) {
             let call_id = flipped.get("function_call_id").and_then(Value::as_str).unwrap_or("");
             let _ = bus.set(state_scope, &pending_key(session_id, call_id), flipped.clone()).await;
@@ -898,6 +932,45 @@ mod tests {
 
         let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
         assert_eq!(rec["status"], "timed_out");
+    }
+
+    #[test]
+    fn migrate_legacy_record_maps_allow_to_executed_without_result() {
+        let legacy = json!({
+            "function_call_id": "c1",
+            "function_id": "shell::fs::write",
+            "args": {},
+            "status": "allow",
+            "expires_at": 1_000_u64,
+        });
+        let migrated = migrate_legacy_record(&legacy).expect("migrates");
+        assert_eq!(migrated["status"], "executed");
+        assert!(migrated["result"].is_null() || migrated.get("result").is_none()
+            || migrated["result"] == json!(null));
+        assert_eq!(migrated["legacy_migrated"], json!(true));
+    }
+
+    #[test]
+    fn migrate_legacy_record_maps_deny_to_denied_with_original_reason() {
+        let legacy = json!({
+            "function_call_id": "c1",
+            "status": "deny",
+            "reason": "manual",
+            "expires_at": 1_000_u64,
+        });
+        let migrated = migrate_legacy_record(&legacy).expect("migrates");
+        assert_eq!(migrated["status"], "denied");
+        assert_eq!(migrated["decision_reason"], "manual");
+        assert_eq!(migrated["legacy_migrated"], json!(true));
+    }
+
+    #[test]
+    fn migrate_legacy_record_returns_none_for_new_status_strings() {
+        for new_status in ["pending", "executed", "failed", "denied", "timed_out", "approved"] {
+            let rec = json!({"status": new_status});
+            assert!(migrate_legacy_record(&rec).is_none(),
+                "should not migrate already-new status '{}'", new_status);
+        }
     }
 
     #[test]
