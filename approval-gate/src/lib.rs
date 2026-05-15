@@ -17,7 +17,9 @@ use serde_json::{json, Value};
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
 pub const FN_LIST_UNDELIVERED: &str = "approval::list_undelivered";
+pub const FN_CONSUME_UNDELIVERED: &str = "approval::consume_undelivered";
 pub const FN_ACK_DELIVERED: &str = "approval::ack_delivered";
+pub const FN_FLUSH_DELIVERED: &str = "approval::flush_delivered";
 pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
@@ -680,6 +682,51 @@ pub async fn handle_ack_delivered(bus: &dyn StateBus, state_scope: &str, payload
     json!({ "ok": true, "stamped": stamped })
 }
 
+/// Atomic list+ack: returns the same entries `handle_list_undelivered` would
+/// surface (subject to the same FIFO+cap rules) and stamps each one with
+/// `delivered_in_turn_id` before returning. Eliminates the list→LLM→ack
+/// race window: if the caller crashes after receiving the response, the
+/// entries are still considered delivered and will not resurface, which is
+/// acceptable because terminal records are informational (the side-effect
+/// already executed inside the gate).
+///
+/// Required payload: `{ session_id, turn_id, limit? }`.
+pub async fn handle_consume_undelivered(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+    now_ms: u64,
+) -> Value {
+    let turn_id = payload.get("turn_id").and_then(Value::as_str).unwrap_or("");
+    if turn_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_turn_id", "entries": [], "omitted": 0 });
+    }
+    let listed = handle_list_undelivered(bus, state_scope, payload.clone(), now_ms).await;
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let entries = listed["entries"].as_array().cloned().unwrap_or_default();
+    let omitted = listed["omitted"].as_u64().unwrap_or(0);
+    for rec in &entries {
+        let cid = rec
+            .get("function_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if cid.is_empty() {
+            continue;
+        }
+        let key = pending_key(session_id, cid);
+        let mut stamped = rec.clone();
+        stamped.as_object_mut().unwrap().insert(
+            "delivered_in_turn_id".into(),
+            Value::String(turn_id.to_string()),
+        );
+        let _ = bus.set(state_scope, &key, stamped).await;
+    }
+    json!({ "ok": true, "entries": entries, "omitted": omitted })
+}
+
 /// Sweep all still-pending approvals for a session to timed_out
 /// (reason: session_deleted). Called when a session is being deleted.
 pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
@@ -1320,6 +1367,89 @@ mod tests {
             handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
         assert_eq!(resp["entries"].as_array().unwrap().len(), 1);
         assert_eq!(resp["omitted"].as_u64(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn handle_consume_undelivered_stamps_returned_entries() {
+        let bus = InMemoryStateBus::new();
+        for i in 0..3 {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+                1_000 + i as u64,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp = handle_consume_undelivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "turn_id": "turn-7", "limit": 10}),
+            100_000,
+        )
+        .await;
+        assert_eq!(resp["ok"], json!(true));
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(resp["omitted"].as_u64(), Some(0));
+        let next =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
+        assert_eq!(next["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_consume_undelivered_respects_limit_and_leaves_remainder() {
+        let bus = InMemoryStateBus::new();
+        for i in 0..5 {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+                1_000 + i as u64,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp = handle_consume_undelivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "turn_id": "turn-7", "limit": 2}),
+            100_000,
+        )
+        .await;
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(resp["omitted"].as_u64(), Some(3));
+        let next =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
+        assert_eq!(next["entries"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn handle_consume_undelivered_missing_turn_id_returns_error() {
+        let bus = InMemoryStateBus::new();
+        let resp = handle_consume_undelivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1"}),
+            100_000,
+        )
+        .await;
+        assert_eq!(resp["ok"], json!(false));
+        assert_eq!(resp["error"], json!("missing_turn_id"));
     }
 
     #[tokio::test]
