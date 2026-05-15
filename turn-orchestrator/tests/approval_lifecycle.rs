@@ -145,3 +145,77 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
         "after ack, our entry must not be in undelivered list"
     );
 }
+
+#[tokio::test]
+async fn deny_path_does_not_invoke_function_and_stitches_denied() {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
+    let Some(iii) = skip_if_no_engine(&url).await else { return };
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let session_id = format!("turn-orch-deny-{nonce}");
+    let function_call_id = format!("tc-deny-{nonce}");
+    let topic = format!("agent::before_function_call::itd_{nonce}");
+
+    let target_calls: std::sync::Arc<std::sync::Mutex<Vec<Value>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = target_calls.clone();
+    let _target = iii.register_function((
+        RegisterFunctionMessage::with_id(format!("test::write_d_{nonce}")).with_description("fake write".into()),
+        move |payload: Value| {
+            let log = log.clone();
+            async move {
+                log.lock().unwrap().push(payload);
+                Ok::<_, IIIError>(json!({"ok": true}))
+            }
+        },
+    ));
+
+    let _refs = register(&iii, &WorkerConfig { topic: topic.clone(), default_timeout_ms: 30_000, ..WorkerConfig::default() })
+        .expect("register approval-gate");
+
+    let target_fn = format!("test::write_d_{nonce}");
+    iii.trigger(TriggerRequest {
+        function_id: "policy::approval_gate".into(),
+        payload: json!({
+            "event_id": format!("evt-{nonce}"),
+            "reply_stream": format!("rs-{nonce}"),
+            "payload": {
+                "session_id": session_id,
+                "function_call": {"id": function_call_id, "function_id": target_fn, "arguments": {}},
+                "approval_required": [target_fn.clone()],
+            }
+        }),
+        action: None, timeout_ms: Some(5_000),
+    }).await.expect("intercept");
+
+    iii.trigger(TriggerRequest {
+        function_id: FN_RESOLVE.into(),
+        payload: json!({
+            "session_id": session_id,
+            "function_call_id": function_call_id,
+            "decision": "deny",
+            "reason": "test-deny",
+        }),
+        action: None, timeout_ms: Some(5_000),
+    }).await.expect("resolve deny");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(target_calls.lock().unwrap().is_empty(),
+        "function must not be invoked on deny");
+
+    let undelivered = iii.trigger(TriggerRequest {
+        function_id: FN_LIST_UNDELIVERED.into(),
+        payload: json!({"session_id": session_id}),
+        action: None, timeout_ms: Some(5_000),
+    }).await.expect("ok");
+    let entries = undelivered["entries"].as_array().unwrap();
+    let our_entry = entries
+        .iter()
+        .find(|e| e["function_call_id"] == function_call_id)
+        .expect("our entry in undelivered list");
+    assert_eq!(our_entry["status"], "denied");
+    assert_eq!(our_entry["decision_reason"], "test-deny");
+}
