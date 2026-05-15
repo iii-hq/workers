@@ -362,6 +362,43 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
     json!({ "pending": pending })
 }
 
+/// Return terminal-status records for a session that haven't been stamped
+/// with `delivered_in_turn_id`. Lazy timeout: pending records past
+/// `expires_at` (as observed at `now_ms`) are flipped to `timed_out` before
+/// the filter so they surface here in the same call.
+pub async fn handle_list_undelivered(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+    now_ms: u64,
+) -> Value {
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    if session_id.is_empty() {
+        return json!({ "entries": [] });
+    }
+    let prefix = format!("{session_id}/");
+    let all = bus.list_prefix(state_scope, &prefix).await;
+    let mut entries: Vec<Value> = Vec::new();
+    for rec in all {
+        let rec = if let Some(flipped) = maybe_flip_timed_out(&rec, now_ms) {
+            let call_id = flipped.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+            let _ = bus.set(state_scope, &pending_key(session_id, call_id), flipped.clone()).await;
+            flipped
+        } else {
+            rec
+        };
+        let status = rec.get("status").and_then(Value::as_str).unwrap_or("");
+        if !is_terminal_status(status) {
+            continue;
+        }
+        if rec.get("delivered_in_turn_id").is_some_and(|v| !v.is_null()) {
+            continue;
+        }
+        entries.push(rec);
+    }
+    json!({ "entries": entries })
+}
+
 const POLL_INTERVAL_MS: u64 = 250;
 
 pub async fn await_decision(
@@ -678,6 +715,50 @@ mod tests {
             "expires_at": 1_000_u64,
         });
         assert!(maybe_flip_timed_out(&rec, 999_999_999).is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_returns_terminal_records_with_no_delivered_stamp() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            transition_record(
+                &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c2"),
+            transition_record(
+                &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "denied", None, None, Some("nope".into()))).await.unwrap();
+
+        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
+            json!({"session_id": "s1"}), 100_000).await;
+        let entries = resp["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_excludes_pending_records() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000)).await.unwrap();
+
+        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
+            json!({"session_id": "s1"}), 1_500).await;
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_empty_session_returns_empty() {
+        let bus = InMemoryStateBus::new();
+        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
+            json!({"session_id": "s1"}), 1_500).await;
+        assert_eq!(resp["entries"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_returns_empty_when_session_id_missing() {
+        let bus = InMemoryStateBus::new();
+        let resp = handle_list_undelivered(&bus, STATE_SCOPE, json!({}), 1_500).await;
+        assert_eq!(resp["entries"], json!([]));
     }
 
     #[tokio::test]
