@@ -895,6 +895,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_resolve_deny_does_not_invoke_function() {
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        ).await.unwrap();
+
+        let resp = handle_resolve(
+            &bus, &exec, STATE_SCOPE,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "deny",
+                "reason": "not authorized",
+            }),
+            1_500,
+        ).await;
+        assert_eq!(resp["ok"], json!(true));
+
+        assert!(exec.calls.lock().unwrap().is_empty());
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        assert_eq!(rec["status"], "denied");
+        assert_eq!(rec["decision_reason"], "not authorized");
+    }
+
+    #[tokio::test]
     async fn handle_resolve_allow_records_failed_when_function_errors() {
         let bus = InMemoryStateBus::new();
         let exec = FakeExecutor::default();
