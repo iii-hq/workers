@@ -14,7 +14,7 @@ mod manifest;
 mod target;
 mod triggers;
 
-use functions::types::{KillRequest, StatusRequest};
+use functions::types::{ClassifyArgvRequest, KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
 #[command(name = "shell", about = "Unix shell execution worker for iii agents")]
@@ -129,6 +129,24 @@ async fn main() -> Result<()> {
                  shell::kill, list with shell::list. Do NOT pass argv as an \
                  array in 'command' — use 'command' (string) + 'args' \
                  (string[]).",
+            ),
+        );
+    }
+
+    {
+        let cfg = shared.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "shell::classify_argv",
+                move |req: ClassifyArgvRequest| {
+                    let cfg = cfg.clone();
+                    async move { functions::classify::handle(cfg, req).await }
+                },
+            )
+            .description(
+                "Classify a shell argv for the approval gate (agent path). Returns \
+                 { decision: 'auto' | 'deny' | 'ask', ... } per shell policy — \
+                 not for direct agent use.",
             ),
         );
     }
@@ -307,7 +325,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    tracing::info!("shell registered 15 functions, ready");
+    tracing::info!("shell registered 16 functions, ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("shell shutting down");

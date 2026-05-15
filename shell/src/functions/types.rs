@@ -1,4 +1,4 @@
-//! Typed request/response shapes for the 5 `shell::*` (non-fs) functions.
+//! Typed request/response shapes for the 6 `shell::*` (non-fs) functions.
 //! These mirror the inline `json!()` schemas that lived in `main.rs` before
 //! the migration to `RegisterFunction::new_async`. The wire format is
 //! unchanged from prior versions.
@@ -81,6 +81,22 @@ fn deserialize_timeout_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>
     Ok(v.as_u64())
 }
 
+/// Marker injected by `approval-gate` when re-invoking after user approval.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct ApprovalMarker {
+    pub call_id: String,
+    pub session_id: String,
+}
+
+/// Request body for `shell::classify_argv`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClassifyArgvRequest {
+    #[serde(deserialize_with = "deserialize_command")]
+    pub command: String,
+    #[serde(default, deserialize_with = "deserialize_args")]
+    pub args: Option<Vec<String>>,
+}
+
 /// Wire request for `shell::exec`. The schema is published to the engine's
 /// tool listing so callers see field types up front instead of guessing
 /// from the description.
@@ -107,6 +123,9 @@ pub struct ExecRequest {
     /// `{ kind: "sandbox", sandbox_id }` to forward the call to a microVM.
     #[serde(default)]
     pub target: Target,
+    /// Present only on gate-driven re-invocation after approval (§ 6.4).
+    #[serde(default, rename = "__from_approval")]
+    pub from_approval: Option<ApprovalMarker>,
 }
 
 /// Wire request for `shell::exec_bg`. Same shape as [`ExecRequest`]; documented
@@ -129,6 +148,9 @@ pub struct ExecBgRequest {
     /// Where to run. See [`ExecRequest::target`].
     #[serde(default)]
     pub target: Target,
+    /// Present only on gate-driven re-invocation after approval (§ 6.4).
+    #[serde(default, rename = "__from_approval")]
+    pub from_approval: Option<ApprovalMarker>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
