@@ -117,6 +117,33 @@ pub fn build_pending_record(
     })
 }
 
+/// Build a new record by transitioning a pending base record to a terminal
+/// status. All terminal fields (`result`, `error`, `decision_reason`) are
+/// optional; only the ones provided are attached. Existing fields on the
+/// base (including `delivered_in_turn_id` if present) are preserved.
+pub fn transition_record(
+    base: &Value,
+    new_status: &str,
+    result: Option<Value>,
+    error: Option<String>,
+    decision_reason: Option<String>,
+) -> Value {
+    let mut rec = base.clone();
+    if let Some(obj) = rec.as_object_mut() {
+        obj.insert("status".into(), Value::String(new_status.to_string()));
+        if let Some(r) = result {
+            obj.insert("result".into(), r);
+        }
+        if let Some(e) = error {
+            obj.insert("error".into(), Value::String(e));
+        }
+        if let Some(reason) = decision_reason {
+            obj.insert("decision_reason".into(), Value::String(reason));
+        }
+    }
+    rec
+}
+
 pub fn block_reply_for(decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({ "block": false }),
@@ -835,5 +862,52 @@ mod tests {
             .unwrap();
         assert_eq!(stored["status"], "deny");
         assert_eq!(stored["reason"], "user clicked cancel");
+    }
+
+    #[test]
+    fn transition_record_to_executed_attaches_result() {
+        let base = build_pending_record("tc-1", "shell::fs::write", &json!({"path":"/a"}), 1_000, 60_000);
+        let rec = transition_record(&base, "executed", Some(json!({"ok": true})), None, None);
+        assert_eq!(rec["status"], "executed");
+        assert_eq!(rec["result"], json!({"ok": true}));
+        assert!(rec.get("error").is_none() || rec["error"].is_null());
+        assert_eq!(rec["function_call_id"], "tc-1");
+        assert_eq!(rec["function_id"], "shell::fs::write");
+    }
+
+    #[test]
+    fn transition_record_to_failed_attaches_error() {
+        let base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let rec = transition_record(&base, "failed", None, Some("EACCES".into()), None);
+        assert_eq!(rec["status"], "failed");
+        assert_eq!(rec["error"], "EACCES");
+        assert!(rec.get("result").is_none() || rec["result"].is_null());
+    }
+
+    #[test]
+    fn transition_record_to_denied_attaches_decision_reason() {
+        let base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let rec = transition_record(&base, "denied", None, None, Some("not authorized".into()));
+        assert_eq!(rec["status"], "denied");
+        assert_eq!(rec["decision_reason"], "not authorized");
+    }
+
+    #[test]
+    fn transition_record_to_timed_out_uses_timeout_reason() {
+        let base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let rec = transition_record(&base, "timed_out", None, None, Some("timeout".into()));
+        assert_eq!(rec["status"], "timed_out");
+        assert_eq!(rec["decision_reason"], "timeout");
+    }
+
+    #[test]
+    fn transition_record_preserves_delivered_in_turn_id_when_set() {
+        let mut base = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        base.as_object_mut().unwrap().insert(
+            "delivered_in_turn_id".into(),
+            Value::String("turn-X".into()),
+        );
+        let rec = transition_record(&base, "executed", Some(json!({"ok": true})), None, None);
+        assert_eq!(rec["delivered_in_turn_id"], "turn-X");
     }
 }
