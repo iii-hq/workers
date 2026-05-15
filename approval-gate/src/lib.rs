@@ -399,6 +399,47 @@ pub async fn handle_list_undelivered(
     json!({ "entries": entries })
 }
 
+/// Stamp `delivered_in_turn_id` on terminal-status records named in
+/// `call_ids` for the given session. Idempotent: records already stamped
+/// (non-null `delivered_in_turn_id`) are not overwritten. Unknown call ids
+/// are silently skipped.
+pub async fn handle_ack_delivered(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+) -> Value {
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let turn_id = payload.get("turn_id").and_then(Value::as_str).unwrap_or("");
+    let call_ids: Vec<String> = payload
+        .get("call_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if session_id.is_empty() || turn_id.is_empty() || call_ids.is_empty() {
+        return json!({ "ok": true, "stamped": 0 });
+    }
+    let mut stamped = 0_u64;
+    for cid in call_ids {
+        let key = pending_key(session_id, &cid);
+        let Some(rec) = bus.get(state_scope, &key).await else { continue };
+        if rec.get("delivered_in_turn_id").is_some_and(|v| !v.is_null()) {
+            continue;
+        }
+        let mut next = rec;
+        next.as_object_mut()
+            .unwrap()
+            .insert("delivered_in_turn_id".into(), Value::String(turn_id.to_string()));
+        if bus.set(state_scope, &key, next).await.is_ok() {
+            stamped += 1;
+        }
+    }
+    json!({ "ok": true, "stamped": stamped })
+}
+
 const POLL_INTERVAL_MS: u64 = 250;
 
 pub async fn await_decision(
@@ -783,6 +824,56 @@ mod tests {
         let bus = InMemoryStateBus::new();
         let resp = handle_list_undelivered(&bus, STATE_SCOPE, json!({}), 1_500).await;
         assert_eq!(resp["entries"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn handle_ack_delivered_stamps_records_with_turn_id() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            transition_record(
+                &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+
+        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
+            "session_id": "s1",
+            "call_ids": ["c1"],
+            "turn_id": "turn-1",
+        })).await;
+        assert_eq!(resp["ok"], json!(true));
+        assert_eq!(resp["stamped"], json!(1));
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        assert_eq!(rec["delivered_in_turn_id"], "turn-1");
+    }
+
+    #[tokio::test]
+    async fn handle_ack_delivered_is_idempotent_keeps_first_turn_id() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            transition_record(
+                &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+
+        let _ = handle_ack_delivered(&bus, STATE_SCOPE, json!({
+            "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-first",
+        })).await;
+        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
+            "session_id": "s1", "call_ids": ["c1"], "turn_id": "turn-second",
+        })).await;
+        assert_eq!(resp["stamped"], json!(0), "second ack must not re-stamp");
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        assert_eq!(rec["delivered_in_turn_id"], "turn-first");
+    }
+
+    #[tokio::test]
+    async fn handle_ack_delivered_skips_unknown_call_ids_silently() {
+        let bus = InMemoryStateBus::new();
+        let resp = handle_ack_delivered(&bus, STATE_SCOPE, json!({
+            "session_id": "s1", "call_ids": ["ghost"], "turn_id": "turn-1",
+        })).await;
+        assert_eq!(resp["ok"], json!(true));
+        assert_eq!(resp["stamped"], json!(0));
     }
 
     #[tokio::test]
