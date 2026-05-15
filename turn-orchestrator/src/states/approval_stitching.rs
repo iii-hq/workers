@@ -50,7 +50,6 @@ pub fn omission_summary_message(omitted: u64) -> Option<String> {
 ///   (the high-value variant — model gets actionable correction)
 /// - `state_error`    → "gate state-write failure (phase=<p>): <e>"
 ///   (fail-closed signal; operator-facing)
-/// - `legacy` → "<reason>" (pass-through for migrated pre-Denial records)
 fn render_denial_lines(denial: &Value) -> Vec<String> {
     let kind = denial.get("kind").and_then(Value::as_str).unwrap_or("");
     let detail = denial.get("detail").cloned().unwrap_or(Value::Null);
@@ -77,10 +76,6 @@ fn render_denial_lines(denial: &Value) -> Vec<String> {
             vec![format!(
                 "  approval gate state-write failure (phase={phase}): {error}"
             )]
-        }
-        "legacy" => {
-            let reason = detail.get("reason").and_then(Value::as_str).unwrap_or("");
-            vec![format!("  reason: {reason}")]
         }
         other => vec![format!("  denial kind: {other}")],
     }
@@ -121,9 +116,6 @@ fn stitch_one(entry: &Value) -> String {
         if let Some(denial) = entry.get("denial") {
             lines.extend(render_denial_lines(denial));
         }
-    }
-    if entry.get("legacy_migrated").and_then(Value::as_bool) == Some(true) {
-        lines.push("  note: legacy record migrated from pre-trigger-model gate; original result was delivered in-band when the call was made.".into());
     }
     lines.join("\n")
 }
@@ -278,23 +270,6 @@ mod tests {
         assert!(msg.contains("approval gate state-write failure"));
         assert!(msg.contains("intercept_write_pending"));
         assert!(msg.contains("kv unavailable"));
-    }
-
-    #[test]
-    fn stitch_entries_denied_legacy_passes_through_reason() {
-        let entries = vec![make_entry(
-            "c1",
-            "shell::fs::write",
-            "denied",
-            json!({
-                "denial": {
-                    "kind": "legacy",
-                    "detail": { "reason": "user typed nope" }
-                }
-            }),
-        )];
-        let msg = &stitch_entries(&entries)[0];
-        assert!(msg.contains("reason: user typed nope"));
     }
 
     #[test]

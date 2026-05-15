@@ -135,10 +135,6 @@ pub(crate) fn apply_policy_rules(rules: &rules::Ruleset, function_id: &str) -> P
 ///   `{ "kind": "user_rejected", "detail": null }`
 ///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
 ///   `{ "kind": "state_error",   "detail": { "phase": "...", "error": "..." } }`
-///   `{ "kind": "legacy",        "detail": { "reason": "..." } }`
-///
-/// `Legacy` is the read-time landing pad for records persisted before this
-/// type existed (see [`migrate_legacy_record`]). New writes never emit it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Denial {
@@ -153,9 +149,6 @@ pub enum Denial {
     StateError {
         phase: String,
         error: String,
-    },
-    Legacy {
-        reason: String,
     },
 }
 
@@ -596,67 +589,6 @@ pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
     Some(transition_record(rec, "timed_out", None, None, None))
 }
 
-/// Map a legacy approval record to the current shape. Covers two
-/// generations of drift:
-///
-/// 1. **Pre-trigger-model** (status `"allow"` / `"deny"`, free-form
-///    `reason`): rewritten as `"executed"` / `"denied"`, with the old
-///    `reason` folded into a [`Denial::Legacy`].
-/// 2. **Pre-Denial** (`decision_reason: <string>` field, no `denial`): the
-///    string is moved into [`Denial::Legacy { reason }`] and the old key is
-///    stripped so writers never resurface it.
-///
-/// Returns `None` only when the record is already current.
-pub fn migrate_legacy_record(rec: &Value) -> Option<Value> {
-    let status = rec.get("status").and_then(Value::as_str)?;
-    // Path 1: pre-trigger-model status rename.
-    let (new_status, denial_to_carry) = match status {
-        "allow" => ("executed", None),
-        "deny" => (
-            "denied",
-            rec.get("reason")
-                .and_then(Value::as_str)
-                .map(|s| Denial::Legacy {
-                    reason: s.to_string(),
-                }),
-        ),
-        _ => {
-            // Path 2: status already current, but the record may carry the
-            // pre-Denial `decision_reason` flat string. Lift it into Denial
-            // and strip the legacy key; otherwise return None.
-            let legacy_reason = rec
-                .get("decision_reason")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let needs_lift = legacy_reason.is_some() && rec.get("denial").is_none();
-            if !needs_lift {
-                return None;
-            }
-            let denial = Denial::Legacy {
-                reason: legacy_reason.expect("checked Some above"),
-            };
-            let mut migrated = rec.clone();
-            if let Some(obj) = migrated.as_object_mut() {
-                obj.remove("decision_reason");
-                obj.insert(
-                    "denial".into(),
-                    serde_json::to_value(&denial).expect("Denial is always serializable"),
-                );
-                obj.insert("legacy_migrated".into(), Value::Bool(true));
-            }
-            return Some(migrated);
-        }
-    };
-    let mut migrated = transition_record(rec, new_status, None, None, denial_to_carry);
-    if let Some(obj) = migrated.as_object_mut() {
-        // Strip the pre-trigger-model `reason` once it has been folded into
-        // `denial`; leaving it would create a dead field on the new shape.
-        obj.remove("reason");
-        obj.insert("legacy_migrated".into(), Value::Bool(true));
-    }
-    Some(migrated)
-}
-
 pub async fn handle_resolve(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
@@ -917,12 +849,7 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
     let all = bus.list_prefix(state_scope, &prefix).await;
     let pending: Vec<Value> = all
         .into_iter()
-        .filter(|v| {
-            if migrate_legacy_record(v).is_some() {
-                return false;
-            }
-            v.get("status").and_then(Value::as_str) == Some("pending")
-        })
+        .filter(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
         .collect();
     json!({ "pending": pending })
 }
@@ -965,43 +892,14 @@ pub async fn handle_list_undelivered(
     let mut entries: Vec<Value> = Vec::new();
     for rec in all {
         // Defensive scope: some bus backends ignore the prefix and return
-        // every record in `state_scope`. Filter by stamped `session_id`:
-        //
-        //   - record has session_id matching ours → keep
-        //   - record has session_id different from ours → drop
-        //   - record lacks session_id AND is in "allow"/"deny" pre-trigger
-        //     legacy form → keep (`migrate_legacy_record` below re-keys it
-        //     under our session)
-        //   - record lacks session_id AND is already terminal → drop
-        //     (orphan from before session-id stamping; cannot be attributed)
+        // every record in `state_scope`. Drop anything not stamped with
+        // the session_id we're listing for. Orphan records lacking a
+        // session_id stamp are dropped (cannot be attributed); the
+        // migration path that used to recover them no longer exists.
         match rec.get("session_id").and_then(Value::as_str) {
             Some(sid) if sid == session_id => {}
-            Some(_) => continue,
-            None => {
-                let status = rec.get("status").and_then(Value::as_str).unwrap_or("");
-                if status != "allow" && status != "deny" {
-                    continue;
-                }
-            }
+            _ => continue,
         }
-        let rec = if let Some(migrated) = migrate_legacy_record(&rec) {
-            let call_id = migrated
-                .get("function_call_id")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if !call_id.is_empty() {
-                let _ = bus
-                    .set(
-                        state_scope,
-                        &pending_key(session_id, call_id),
-                        migrated.clone(),
-                    )
-                    .await;
-            }
-            migrated
-        } else {
-            rec
-        };
         let rec = if let Some(flipped) = maybe_flip_timed_out(&rec, now_ms) {
             let call_id = flipped
                 .get("function_call_id")
@@ -1186,10 +1084,10 @@ pub async fn handle_flush_delivered(bus: &dyn StateBus, state_scope: &str, paylo
 
 /// Sweep all still-pending approvals for a session to timed_out.
 ///
-/// Reason defaults to `"session_deleted"` (legacy callers) but can be
-/// overridden via the `reason` payload field — `run::stop` passes
-/// `"run_stopped"` so consumers can distinguish a manual abort from a
-/// session delete.
+/// The `timed_out` status is self-describing per the Denial refactor —
+/// callers no longer pass (or get back) a reason string. If you need to
+/// distinguish *why* a session was swept (delete vs. abort vs. timeout),
+/// the calling worker already has that context and should log it there.
 pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")
@@ -1197,14 +1095,6 @@ pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload
         .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
-    }
-    // The optional `reason` payload field used to be persisted as
-    // `decision_reason` on the resulting record. With Denial now the only
-    // structured reason channel and timed_out carrying no denial, the
-    // sweep_session reason is informational for the caller only — we log
-    // it but do not stamp it on the record.
-    if let Some(r) = payload.get("reason").and_then(Value::as_str) {
-        tracing::info!(session_id, reason = r, "approval-gate: sweep_session");
     }
     let prefix = format!("{session_id}/");
     let all = bus.list_prefix(state_scope, &prefix).await;
@@ -1263,13 +1153,15 @@ async fn write_event(iii: &III, session_id: &str, event: &Value) {
 /// Build the `approval_resolved` event a sweeper emits when it auto-flips an
 /// expired pending record. Pure — caller pumps the result onto the stream.
 fn timeout_resolved_event(function_call_id: &str) -> Value {
+    // Timed-out approvals carry no Denial — the `status: "timed_out"` is
+    // self-describing per the Denial refactor. Consumers (turn-orchestrator
+    // stitching, UIs) render the timeout from the status alone.
     json!({
         "type": "approval_resolved",
         "function_call_id": function_call_id,
         "tool_call_id": function_call_id,
         "decision": "deny",
         "status": "timed_out",
-        "decision_reason": "timeout",
     })
 }
 
@@ -2433,85 +2325,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rec["status"], "timed_out");
-    }
-
-    #[test]
-    fn migrate_legacy_record_maps_allow_to_executed_without_result() {
-        let legacy = json!({
-            "function_call_id": "c1",
-            "function_id": "shell::fs::write",
-            "args": {},
-            "status": "allow",
-            "expires_at": 1_000_u64,
-        });
-        let migrated = migrate_legacy_record(&legacy).expect("migrates");
-        assert_eq!(migrated["status"], "executed");
-        assert!(
-            migrated["result"].is_null()
-                || migrated.get("result").is_none()
-                || migrated["result"] == json!(null)
-        );
-        assert_eq!(migrated["legacy_migrated"], json!(true));
-    }
-
-    #[test]
-    fn migrate_legacy_record_maps_deny_to_denied_with_legacy_denial() {
-        let legacy = json!({
-            "function_call_id": "c1",
-            "status": "deny",
-            "reason": "manual",
-            "expires_at": 1_000_u64,
-        });
-        let migrated = migrate_legacy_record(&legacy).expect("migrates");
-        assert_eq!(migrated["status"], "denied");
-        assert_eq!(migrated["denial"]["kind"], "legacy");
-        assert_eq!(migrated["denial"]["detail"]["reason"], "manual");
-        assert_eq!(migrated["legacy_migrated"], json!(true));
-        assert!(
-            migrated.get("decision_reason").is_none(),
-            "legacy decision_reason must be stripped: {migrated}"
-        );
-        assert!(
-            migrated.get("reason").is_none(),
-            "pre-trigger-model `reason` must be stripped after lifting into denial: {migrated}"
-        );
-    }
-
-    #[test]
-    fn migrate_legacy_record_lifts_decision_reason_when_status_is_already_current() {
-        // Pre-Denial records carry the flat `decision_reason: <string>` —
-        // migration lifts it into Denial::Legacy and strips the old field.
-        let legacy = json!({
-            "function_call_id": "c1",
-            "status": "denied",
-            "decision_reason": "user typed nope",
-            "expires_at": 1_000_u64,
-        });
-        let migrated = migrate_legacy_record(&legacy).expect("should lift");
-        assert_eq!(migrated["status"], "denied");
-        assert_eq!(migrated["denial"]["kind"], "legacy");
-        assert_eq!(migrated["denial"]["detail"]["reason"], "user typed nope");
-        assert!(migrated.get("decision_reason").is_none());
-        assert_eq!(migrated["legacy_migrated"], json!(true));
-    }
-
-    #[test]
-    fn migrate_legacy_record_returns_none_for_new_status_strings() {
-        for new_status in [
-            "pending",
-            "executed",
-            "failed",
-            "denied",
-            "timed_out",
-            "approved",
-        ] {
-            let rec = json!({"status": new_status});
-            assert!(
-                migrate_legacy_record(&rec).is_none(),
-                "should not migrate already-new status '{}'",
-                new_status
-            );
-        }
     }
 
     #[test]
@@ -3712,7 +3525,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_sweep_session_flips_pending_records_to_timed_out_with_reason_session_deleted() {
+    async fn handle_sweep_session_flips_pending_records_to_timed_out() {
         let bus = InMemoryStateBus::new();
         bus.set(
             STATE_SCOPE,
@@ -3731,10 +3544,37 @@ mod tests {
             .unwrap();
         assert_eq!(rec["status"], "timed_out");
         // sweep_session no longer stamps a reason string — timed_out is
-        // self-describing and the sweep cause is logged at info, not
-        // surfaced on the record.
+        // self-describing per the Denial refactor.
         assert!(rec.get("denial").is_none());
         assert!(rec.get("decision_reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_sweep_session_ignores_legacy_reason_payload_field() {
+        // Old callers may still pass `reason` — approval-gate accepts the
+        // payload but does not persist it. Behavior is identical to a
+        // bare {session_id} payload.
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        )
+        .await
+        .unwrap();
+        let resp = handle_sweep_session(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "reason": "run_stopped"}),
+        )
+        .await;
+        assert_eq!(resp["swept"], json!(1));
+        let rec = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
+        assert_eq!(rec["status"], "timed_out");
+        assert!(rec.get("denial").is_none());
     }
 
     #[tokio::test]
@@ -3888,7 +3728,9 @@ mod tests {
         assert_eq!(evt["tool_call_id"], "tc-1");
         assert_eq!(evt["decision"], "deny");
         assert_eq!(evt["status"], "timed_out");
-        assert_eq!(evt["decision_reason"], "timeout");
+        // timed_out is self-describing — no Denial / no legacy reason.
+        assert!(evt.get("decision_reason").is_none());
+        assert!(evt.get("denial").is_none());
     }
 
     #[test]
@@ -4219,37 +4061,6 @@ mod tests {
             stored.get("delivered_in_turn_id").is_none(),
             "must not stamp when call_ids is empty"
         );
-    }
-
-    #[tokio::test]
-    async fn handle_list_undelivered_persists_migrated_legacy_record() {
-        // mutant L614 — `delete !` on the `if !call_id.is_empty()` guard.
-        // The legacy migration block writes the migrated row back to state
-        // so subsequent reads use the new shape. The mutant inverts the
-        // guard, suppressing the write. Verify the write happens.
-        let bus = InMemoryStateBus::new();
-        // Pre-trigger-model row: status="allow" (legacy form).
-        let legacy = json!({
-            "function_call_id": "c1",
-            "function_id": "shell::fs::write",
-            "args": {},
-            "status": "allow",
-            "expires_at": 1_000u64,
-        });
-        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), legacy)
-            .await
-            .unwrap();
-
-        let _ =
-            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 5_000).await;
-
-        // Storage now reflects the migrated shape.
-        let stored = bus
-            .get(STATE_SCOPE, &pending_key("s1", "c1"))
-            .await
-            .expect("migrated row persisted");
-        assert_eq!(stored["status"], json!("executed"));
-        assert_eq!(stored["legacy_migrated"], json!(true));
     }
 
     #[test]
