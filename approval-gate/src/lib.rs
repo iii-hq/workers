@@ -16,8 +16,16 @@ use serde_json::{json, Value};
 
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
+pub const FN_LIST_UNDELIVERED: &str = "approval::list_undelivered";
+pub const FN_ACK_DELIVERED: &str = "approval::ack_delivered";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
+
+/// True if `status` is one of the terminal states a stitched system message
+/// should be built from. `pending` and `approved` are intermediate.
+pub fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "executed" | "failed" | "denied" | "timed_out")
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncomingCall {
@@ -509,6 +517,30 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn fn_constants_match_spec_strings() {
+        assert_eq!(FN_RESOLVE, "approval::resolve");
+        assert_eq!(FN_LIST_PENDING, "approval::list_pending");
+        assert_eq!(FN_LIST_UNDELIVERED, "approval::list_undelivered");
+        assert_eq!(FN_ACK_DELIVERED, "approval::ack_delivered");
+    }
+
+    #[test]
+    fn is_terminal_status_returns_true_for_terminal_states() {
+        assert!(is_terminal_status("executed"));
+        assert!(is_terminal_status("failed"));
+        assert!(is_terminal_status("denied"));
+        assert!(is_terminal_status("timed_out"));
+    }
+
+    #[test]
+    fn is_terminal_status_returns_false_for_in_progress_states() {
+        assert!(!is_terminal_status("pending"));
+        assert!(!is_terminal_status("approved"));
+        assert!(!is_terminal_status("anything_else"));
+        assert!(!is_terminal_status(""));
+    }
 
     #[test]
     fn pending_key_includes_session_and_tool_call_id() {
