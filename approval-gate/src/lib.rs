@@ -176,6 +176,51 @@ pub trait StateBus: Send + Sync {
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
 }
 
+/// Decide whether a call is gated; if so, write a pending record and return
+/// the structured pending hook reply. If not gated, return `{block: false}`
+/// and do nothing.
+pub async fn handle_intercept(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    call: &IncomingCall,
+    now_ms: u64,
+    timeout_ms: u64,
+) -> Value {
+    if !call.requires_approval() {
+        return json!({ "block": false });
+    }
+    let record = build_pending_record(
+        &call.function_call_id,
+        &call.function_id,
+        &call.args,
+        now_ms,
+        timeout_ms,
+    );
+    if let Err(err) = bus
+        .set(
+            state_scope,
+            &pending_key(&call.session_id, &call.function_call_id),
+            record,
+        )
+        .await
+    {
+        tracing::error!(
+            "approval-gate: failed to write pending record for {}/{}: {err}",
+            call.session_id,
+            call.function_call_id
+        );
+        // Fail open: better to let the call proceed than to silently drop it.
+        return json!({ "block": false });
+    }
+    json!({
+        "block": true,
+        "reason": "approval-gate: pending_approval",
+        "status": "pending",
+        "call_id": call.function_call_id,
+        "function_id": call.function_id,
+    })
+}
+
 pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")
@@ -660,6 +705,53 @@ mod tests {
     }
 
     use std::sync::Mutex;
+
+    fn sample_call() -> IncomingCall {
+        IncomingCall {
+            session_id: "s1".into(),
+            function_call_id: "tc-1".into(),
+            function_id: "shell::fs::write".into(),
+            args: json!({"path": "/tmp/a"}),
+            approval_required: vec!["shell::fs::write".into()],
+            event_id: "evt-1".into(),
+            reply_stream: "rs-1".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_returns_pending_envelope_when_call_is_gated() {
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        assert_eq!(reply["block"], json!(true));
+        assert_eq!(reply["status"], json!("pending"));
+        assert_eq!(reply["call_id"], json!("tc-1"));
+        assert_eq!(reply["function_id"], json!("shell::fs::write"));
+        assert_eq!(reply["reason"], json!("approval-gate: pending_approval"));
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_writes_pending_record_to_state() {
+        let bus = InMemoryStateBus::new();
+        let call = sample_call();
+        let _ = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        let rec = bus.get(STATE_SCOPE, &key).await.expect("pending record written");
+        assert_eq!(rec["status"], "pending");
+        assert_eq!(rec["function_call_id"], "tc-1");
+        assert_eq!(rec["expires_at"], 61_000);
+    }
+
+    #[tokio::test]
+    async fn handle_intercept_passes_through_when_call_is_not_gated() {
+        let bus = InMemoryStateBus::new();
+        let mut call = sample_call();
+        call.approval_required = vec!["other".into()];
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+        assert_eq!(reply["block"], json!(false));
+        let key = pending_key(&call.session_id, &call.function_call_id);
+        assert!(bus.get(STATE_SCOPE, &key).await.is_none(), "no record written");
+    }
 
     struct InMemoryStateBus {
         store: Mutex<std::collections::HashMap<String, Value>>,
