@@ -514,11 +514,15 @@ impl StateBus for IiiStateBus {
                 timeout_ms: None,
             })
             .await
-            .unwrap_or_else(|_| json!({ "items": [] }));
-        resp.get("items")
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
+            .unwrap_or_else(|_| json!([]));
+        let arr = if let Some(items) = resp.get("items").and_then(|v| v.as_array().cloned()) {
+            items
+        } else if let Some(arr) = resp.as_array().cloned() {
+            arr
+        } else {
+            Vec::new()
+        };
+        arr.into_iter()
             .map(|entry| entry.get("value").cloned().unwrap_or(entry))
             .collect()
     }
