@@ -245,7 +245,9 @@ pub struct Refs {
     pub resolve: FunctionRef,
     pub list_pending: FunctionRef,
     pub list_undelivered: FunctionRef,
+    pub consume_undelivered: FunctionRef,
     pub ack_delivered: FunctionRef,
+    pub flush_delivered: FunctionRef,
     pub sweep_session: FunctionRef,
     pub lookup_record: FunctionRef,
     pub subscriber_fn: FunctionRef,
@@ -727,6 +729,58 @@ pub async fn handle_consume_undelivered(
     json!({ "ok": true, "entries": entries, "omitted": omitted })
 }
 
+/// One-shot drain: stamp every terminal-status record in `session_id` that
+/// lacks `delivered_in_turn_id`. Intended for operator recovery after a
+/// large backlog accumulates (e.g. when the orchestrator was offline or
+/// `consume_undelivered` was unreachable). Pending records are untouched —
+/// use `sweep_session` if you want to expire them first.
+pub async fn handle_flush_delivered(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let turn_id = payload.get("turn_id").and_then(Value::as_str).unwrap_or("");
+    if session_id.is_empty() || turn_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_session_or_turn_id", "stamped": 0 });
+    }
+    let prefix = format!("{session_id}/");
+    let all = bus.list_prefix(state_scope, &prefix).await;
+    let mut stamped = 0_u64;
+    for rec in all {
+        let status = rec.get("status").and_then(Value::as_str).unwrap_or("");
+        if !is_terminal_status(status) {
+            continue;
+        }
+        if rec
+            .get("delivered_in_turn_id")
+            .is_some_and(|v| !v.is_null())
+        {
+            continue;
+        }
+        let cid = rec
+            .get("function_call_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_default();
+        if cid.is_empty() {
+            continue;
+        }
+        let mut next = rec;
+        next.as_object_mut().unwrap().insert(
+            "delivered_in_turn_id".into(),
+            Value::String(turn_id.to_string()),
+        );
+        if bus
+            .set(state_scope, &pending_key(session_id, &cid), next)
+            .await
+            .is_ok()
+        {
+            stamped += 1;
+        }
+    }
+    json!({ "ok": true, "stamped": stamped })
+}
+
 /// Sweep all still-pending approvals for a session to timed_out
 /// (reason: session_deleted). Called when a session is being deleted.
 pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
@@ -1006,6 +1060,30 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         },
     ));
 
+    let bus_for_consume = bus.clone();
+    let scope_consume = state_scope.clone();
+    let consume_undelivered = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_CONSUME_UNDELIVERED.into()).with_description(
+            "Atomic list+ack of resolved approval records. Returns the same FIFO-capped \
+             slice as list_undelivered AND stamps each entry with delivered_in_turn_id \
+             before returning. Required payload: {session_id, turn_id, limit?}."
+                .into(),
+        ),
+        move |payload: Value| {
+            let bus = bus_for_consume.clone();
+            let scope = scope_consume.clone();
+            async move {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                Ok::<_, IIIError>(
+                    handle_consume_undelivered(bus.as_ref(), &scope, payload, now_ms).await,
+                )
+            }
+        },
+    ));
+
     let bus_for_ack = bus.clone();
     let scope_ack = state_scope.clone();
     let ack_delivered =
@@ -1023,6 +1101,24 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                 }
             },
         ));
+
+    let bus_for_flush = bus.clone();
+    let scope_flush = state_scope.clone();
+    let flush_delivered = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_FLUSH_DELIVERED.into()).with_description(
+            "Stamp every unacked terminal approval record in a session as \
+             delivered. One-shot operator recovery for backlog accumulation. \
+             Required payload: {session_id, turn_id}."
+                .into(),
+        ),
+        move |payload: Value| {
+            let bus = bus_for_flush.clone();
+            let scope = scope_flush.clone();
+            async move {
+                Ok::<_, IIIError>(handle_flush_delivered(bus.as_ref(), &scope, payload).await)
+            }
+        },
+    ));
 
     let bus_for_sweep = bus.clone();
     let scope_sweep = state_scope.clone();
@@ -1172,7 +1268,9 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         resolve,
         list_pending,
         list_undelivered,
+        consume_undelivered,
         ack_delivered,
+        flush_delivered,
         sweep_session,
         lookup_record,
         subscriber_fn,
@@ -1450,6 +1548,100 @@ mod tests {
         .await;
         assert_eq!(resp["ok"], json!(false));
         assert_eq!(resp["error"], json!("missing_turn_id"));
+    }
+
+    #[tokio::test]
+    async fn handle_flush_delivered_stamps_all_unacked_terminals() {
+        let bus = InMemoryStateBus::new();
+        for i in 0..5 {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+                1_000 + i as u64,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp = handle_flush_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "turn_id": "manual-flush"}),
+        )
+        .await;
+        assert_eq!(resp["ok"], json!(true));
+        assert_eq!(resp["stamped"].as_u64(), Some(5));
+        let next =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
+        assert_eq!(next["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_flush_delivered_skips_pending_records() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        )
+        .await
+        .unwrap();
+        let resp = handle_flush_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "turn_id": "manual-flush"}),
+        )
+        .await;
+        assert_eq!(resp["stamped"].as_u64(), Some(0));
+        let still = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
+        assert_eq!(still["status"].as_str(), Some("pending"));
+        assert!(still.get("delivered_in_turn_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_flush_delivered_idempotent_on_already_stamped() {
+        let bus = InMemoryStateBus::new();
+        let mut rec = transition_record_with_now(
+            &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+            1_500,
+        );
+        {
+            let obj = rec.as_object_mut().unwrap();
+            obj.insert(
+                "delivered_in_turn_id".into(),
+                Value::String("turn-prev".into()),
+            );
+            obj.insert("session_id".into(), Value::String("s1".into()));
+        }
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec)
+            .await
+            .unwrap();
+        let resp = handle_flush_delivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "turn_id": "manual-flush"}),
+        )
+        .await;
+        assert_eq!(resp["stamped"].as_u64(), Some(0));
+        let still = bus
+            .get(STATE_SCOPE, &pending_key("s1", "c1"))
+            .await
+            .unwrap();
+        assert_eq!(still["delivered_in_turn_id"].as_str(), Some("turn-prev"));
     }
 
     #[tokio::test]
