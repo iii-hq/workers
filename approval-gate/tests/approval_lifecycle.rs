@@ -4,8 +4,10 @@
 
 use std::time::Duration;
 
-use approval_gate::{register, WorkerConfig, FN_RESOLVE, FN_LIST_UNDELIVERED, FN_ACK_DELIVERED, STATE_SCOPE};
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, TriggerRequest, IIIError};
+use approval_gate::{
+    register, WorkerConfig, FN_ACK_DELIVERED, FN_LIST_UNDELIVERED, FN_RESOLVE, STATE_SCOPE,
+};
+use iii_sdk::{register_worker, IIIError, InitOptions, RegisterFunctionMessage, TriggerRequest};
 use serde_json::{json, Value};
 
 const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
@@ -31,7 +33,9 @@ async fn skip_if_no_engine(url: &str) -> Option<iii_sdk::III> {
 #[tokio::test]
 async fn allow_path_executes_function_and_stitches_into_next_turn() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
-    let Some(iii) = skip_if_no_engine(&url).await else { return };
+    let Some(iii) = skip_if_no_engine(&url).await else {
+        return;
+    };
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -45,7 +49,8 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let target_calls_for_handler = target_calls.clone();
     let _target = iii.register_function((
-        RegisterFunctionMessage::with_id(format!("test::write_{nonce}")).with_description("fake write".into()),
+        RegisterFunctionMessage::with_id(format!("test::write_{nonce}"))
+            .with_description("fake write".into()),
         move |payload: Value| {
             let log = target_calls_for_handler.clone();
             async move {
@@ -62,7 +67,8 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
             default_timeout_ms: 30_000,
             ..WorkerConfig::default()
         },
-    ).expect("register approval-gate");
+    )
+    .expect("register approval-gate");
 
     let target_fn = format!("test::write_{nonce}");
     let envelope = json!({
@@ -78,27 +84,36 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
             "approval_required": [target_fn.clone()],
         }
     });
-    let intercept_resp = iii.trigger(TriggerRequest {
-        function_id: "policy::approval_gate".into(),
-        payload: envelope,
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await.expect("intercept ok");
+    let intercept_resp = iii
+        .trigger(TriggerRequest {
+            function_id: "policy::approval_gate".into(),
+            payload: envelope,
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("intercept ok");
 
     assert_eq!(intercept_resp["block"], json!(true));
     assert_eq!(intercept_resp["status"], json!("pending"));
-    assert!(target_calls.lock().unwrap().is_empty(), "function ran before approval");
+    assert!(
+        target_calls.lock().unwrap().is_empty(),
+        "function ran before approval"
+    );
 
-    let resolve_resp = iii.trigger(TriggerRequest {
-        function_id: FN_RESOLVE.into(),
-        payload: json!({
-            "session_id": session_id,
-            "function_call_id": function_call_id,
-            "decision": "allow",
-        }),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await.expect("resolve ok");
+    let resolve_resp = iii
+        .trigger(TriggerRequest {
+            function_id: FN_RESOLVE.into(),
+            payload: json!({
+                "session_id": session_id,
+                "function_call_id": function_call_id,
+                "decision": "allow",
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("resolve ok");
     assert_eq!(resolve_resp["ok"], json!(true));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -106,12 +121,15 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
     assert_eq!(calls.len(), 1, "expected one invocation; got {calls:?}");
     assert_eq!(calls[0]["path"], json!("/tmp/foo"));
 
-    let undelivered = iii.trigger(TriggerRequest {
-        function_id: FN_LIST_UNDELIVERED.into(),
-        payload: json!({"session_id": session_id}),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await.expect("list_undelivered ok");
+    let undelivered = iii
+        .trigger(TriggerRequest {
+            function_id: FN_LIST_UNDELIVERED.into(),
+            payload: json!({"session_id": session_id}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("list_undelivered ok");
     let entries = undelivered["entries"].as_array().expect("entries array");
     let our_entry = entries
         .iter()
@@ -120,28 +138,36 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
     assert_eq!(our_entry["status"], "executed");
     assert_eq!(our_entry["result"], json!({"ok": true, "bytes": 42}));
 
-    let ack = iii.trigger(TriggerRequest {
-        function_id: FN_ACK_DELIVERED.into(),
-        payload: json!({
-            "session_id": session_id,
-            "call_ids": [function_call_id.clone()],
-            "turn_id": "turn-1",
-        }),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await.expect("ack ok");
+    let ack = iii
+        .trigger(TriggerRequest {
+            function_id: FN_ACK_DELIVERED.into(),
+            payload: json!({
+                "session_id": session_id,
+                "call_ids": [function_call_id.clone()],
+                "turn_id": "turn-1",
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("ack ok");
     assert_eq!(ack["ok"], json!(true));
     assert_eq!(ack["stamped"], json!(1));
 
-    let after = iii.trigger(TriggerRequest {
-        function_id: FN_LIST_UNDELIVERED.into(),
-        payload: json!({"session_id": session_id}),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await.expect("ok");
+    let after = iii
+        .trigger(TriggerRequest {
+            function_id: FN_LIST_UNDELIVERED.into(),
+            payload: json!({"session_id": session_id}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("ok");
     let after_entries = after["entries"].as_array().unwrap();
     assert!(
-        after_entries.iter().all(|e| e["function_call_id"] != function_call_id),
+        after_entries
+            .iter()
+            .all(|e| e["function_call_id"] != function_call_id),
         "after ack, our entry must not be in undelivered list"
     );
 }
@@ -149,7 +175,9 @@ async fn allow_path_executes_function_and_stitches_into_next_turn() {
 #[tokio::test]
 async fn deny_path_does_not_invoke_function_and_stitches_denied() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
-    let Some(iii) = skip_if_no_engine(&url).await else { return };
+    let Some(iii) = skip_if_no_engine(&url).await else {
+        return;
+    };
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -163,7 +191,8 @@ async fn deny_path_does_not_invoke_function_and_stitches_denied() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = target_calls.clone();
     let _target = iii.register_function((
-        RegisterFunctionMessage::with_id(format!("test::write_d_{nonce}")).with_description("fake write".into()),
+        RegisterFunctionMessage::with_id(format!("test::write_d_{nonce}"))
+            .with_description("fake write".into()),
         move |payload: Value| {
             let log = log.clone();
             async move {
@@ -173,8 +202,15 @@ async fn deny_path_does_not_invoke_function_and_stitches_denied() {
         },
     ));
 
-    let _refs = register(&iii, &WorkerConfig { topic: topic.clone(), default_timeout_ms: 30_000, ..WorkerConfig::default() })
-        .expect("register approval-gate");
+    let _refs = register(
+        &iii,
+        &WorkerConfig {
+            topic: topic.clone(),
+            default_timeout_ms: 30_000,
+            ..WorkerConfig::default()
+        },
+    )
+    .expect("register approval-gate");
 
     let target_fn = format!("test::write_d_{nonce}");
     iii.trigger(TriggerRequest {
@@ -199,18 +235,27 @@ async fn deny_path_does_not_invoke_function_and_stitches_denied() {
             "decision": "deny",
             "reason": "test-deny",
         }),
-        action: None, timeout_ms: Some(5_000),
-    }).await.expect("resolve deny");
+        action: None,
+        timeout_ms: Some(5_000),
+    })
+    .await
+    .expect("resolve deny");
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(target_calls.lock().unwrap().is_empty(),
-        "function must not be invoked on deny");
+    assert!(
+        target_calls.lock().unwrap().is_empty(),
+        "function must not be invoked on deny"
+    );
 
-    let undelivered = iii.trigger(TriggerRequest {
-        function_id: FN_LIST_UNDELIVERED.into(),
-        payload: json!({"session_id": session_id}),
-        action: None, timeout_ms: Some(5_000),
-    }).await.expect("ok");
+    let undelivered = iii
+        .trigger(TriggerRequest {
+            function_id: FN_LIST_UNDELIVERED.into(),
+            payload: json!({"session_id": session_id}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("ok");
     let entries = undelivered["entries"].as_array().unwrap();
     let our_entry = entries
         .iter()
@@ -223,7 +268,9 @@ async fn deny_path_does_not_invoke_function_and_stitches_denied() {
 #[tokio::test]
 async fn timeout_path_lazy_flips_pending_to_timed_out_on_read() {
     let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
-    let Some(iii) = skip_if_no_engine(&url).await else { return };
+    let Some(iii) = skip_if_no_engine(&url).await else {
+        return;
+    };
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -234,15 +281,20 @@ async fn timeout_path_lazy_flips_pending_to_timed_out_on_read() {
     let topic = format!("agent::before_function_call::itt_{nonce}");
 
     let _target = iii.register_function((
-        RegisterFunctionMessage::with_id(format!("test::write_t_{nonce}")).with_description("fake".into()),
+        RegisterFunctionMessage::with_id(format!("test::write_t_{nonce}"))
+            .with_description("fake".into()),
         move |_p: Value| async move { Ok::<_, IIIError>(json!({"ok": true})) },
     ));
 
-    let _refs = register(&iii, &WorkerConfig {
-        topic: topic.clone(),
-        default_timeout_ms: 100,
-        ..WorkerConfig::default()
-    }).expect("register approval-gate");
+    let _refs = register(
+        &iii,
+        &WorkerConfig {
+            topic: topic.clone(),
+            default_timeout_ms: 100,
+            ..WorkerConfig::default()
+        },
+    )
+    .expect("register approval-gate");
 
     let target_fn = format!("test::write_t_{nonce}");
     iii.trigger(TriggerRequest {
@@ -261,11 +313,15 @@ async fn timeout_path_lazy_flips_pending_to_timed_out_on_read() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let undelivered = iii.trigger(TriggerRequest {
-        function_id: FN_LIST_UNDELIVERED.into(),
-        payload: json!({"session_id": session_id}),
-        action: None, timeout_ms: Some(5_000),
-    }).await.expect("ok");
+    let undelivered = iii
+        .trigger(TriggerRequest {
+            function_id: FN_LIST_UNDELIVERED.into(),
+            payload: json!({"session_id": session_id}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("ok");
     let entries = undelivered["entries"].as_array().unwrap();
     let our_entry = entries
         .iter()
