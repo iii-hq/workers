@@ -4,9 +4,11 @@
 
 pub mod config;
 pub mod manifest;
+pub mod record;
 pub mod rules;
 
 pub use config::{InterceptorRule, WorkerConfig};
+pub use record::{Next, Record, Status};
 
 use std::sync::{Arc, RwLock};
 
