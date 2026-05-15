@@ -13,7 +13,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve."
+        description: "Trigger-model approval gate. Intercepts function calls listed in approval_required, returns a pending_approval tool result immediately, and executes the underlying function on approval::resolve. Resolutions stitch into the agent's next turn via approval::list_undelivered + approval::ack_delivered."
             .to_string(),
         default_config: serde_json::to_value(crate::config::WorkerConfig::default())
             .unwrap_or_else(|_| serde_json::json!({})),
