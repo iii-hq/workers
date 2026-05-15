@@ -25,6 +25,21 @@ pub fn stitch_entries(entries: &[Value]) -> Vec<String> {
     entries.iter().map(stitch_one).collect()
 }
 
+/// Build a one-line user-message string warning the model that the cap on
+/// `approval::consume_undelivered` left N entries behind. Returns `None`
+/// when `omitted == 0` so the orchestrator can skip emitting anything.
+pub fn omission_summary_message(omitted: u64) -> Option<String> {
+    if omitted == 0 {
+        return None;
+    }
+    Some(format!(
+        "[approval-gate] {omitted} older resolved approval record(s) were \
+         omitted from this turn (oldest-first cap). They remain undelivered and \
+         will surface on later turns. To drain them in one shot, trigger \
+         approval::flush_delivered."
+    ))
+}
+
 fn stitch_one(entry: &Value) -> String {
     let call_id = entry.get("call_id").and_then(Value::as_str).unwrap_or("?");
     let fn_id = entry.get("function_id").and_then(Value::as_str).unwrap_or("?");
@@ -194,5 +209,18 @@ mod tests {
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("result:"));
         assert!(msg.contains("… (truncated)"));
+    }
+
+    #[test]
+    fn omission_summary_message_zero_returns_none() {
+        assert!(omission_summary_message(0).is_none());
+    }
+
+    #[test]
+    fn omission_summary_message_positive_mentions_count_and_advises_flush() {
+        let msg = omission_summary_message(42).expect("expected Some");
+        assert!(msg.starts_with("[approval-gate]"));
+        assert!(msg.contains("42"));
+        assert!(msg.contains("approval::flush_delivered"));
     }
 }
