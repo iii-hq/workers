@@ -39,7 +39,6 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 which = "8"
 serial_test = "3"
-approval-gate = { path = "../approval-gate" }
 
 [workspace.package]
 version = "0.1.6"
