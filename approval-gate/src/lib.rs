@@ -755,6 +755,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_list_undelivered_excludes_records_stamped_with_delivered_turn_id() {
+        let bus = InMemoryStateBus::new();
+        let mut rec = transition_record(
+            &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "executed", Some(json!({"ok": true})), None, None);
+        rec.as_object_mut().unwrap().insert(
+            "delivered_in_turn_id".into(),
+            Value::String("turn-prev".into()),
+        );
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec).await.unwrap();
+
+        bus.set(STATE_SCOPE, &pending_key("s1", "c2"),
+            transition_record(
+                &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+
+        let resp = handle_list_undelivered(&bus, STATE_SCOPE,
+            json!({"session_id": "s1"}), 100_000).await;
+        let entries = resp["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["function_call_id"], "c2");
+    }
+
+    #[tokio::test]
     async fn handle_list_undelivered_returns_empty_when_session_id_missing() {
         let bus = InMemoryStateBus::new();
         let resp = handle_list_undelivered(&bus, STATE_SCOPE, json!({}), 1_500).await;
