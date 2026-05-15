@@ -18,6 +18,7 @@ pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
 pub const FN_LIST_UNDELIVERED: &str = "approval::list_undelivered";
 pub const FN_ACK_DELIVERED: &str = "approval::ack_delivered";
+pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
 
@@ -167,6 +168,7 @@ pub struct Refs {
     pub list_pending: FunctionRef,
     pub list_undelivered: FunctionRef,
     pub ack_delivered: FunctionRef,
+    pub sweep_session: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
 }
@@ -476,6 +478,87 @@ pub async fn handle_ack_delivered(
     json!({ "ok": true, "stamped": stamped })
 }
 
+/// Sweep all still-pending approvals for a session to timed_out
+/// (reason: session_deleted). Called when a session is being deleted.
+pub async fn handle_sweep_session(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+) -> Value {
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    if session_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
+    }
+    let prefix = format!("{session_id}/");
+    let all = bus.list_prefix(state_scope, &prefix).await;
+    let mut swept = 0_u64;
+    for rec in all {
+        if rec.get("status").and_then(Value::as_str) != Some("pending") {
+            continue;
+        }
+        let call_id = rec.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+        if call_id.is_empty() {
+            continue;
+        }
+        let flipped = transition_record(&rec, "timed_out", None, None, Some("session_deleted".into()));
+        if bus
+            .set(state_scope, &pending_key(session_id, call_id), flipped)
+            .await
+            .is_ok()
+        {
+            swept += 1;
+        }
+    }
+    json!({ "ok": true, "swept": swept })
+}
+
+fn uuid_like() -> String {
+    // Lightweight unique-ish id without pulling uuid in: ns timestamp + counter.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static C: AtomicU64 = AtomicU64::new(0);
+    let n = C.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{t:x}-{n:x}")
+}
+
+async fn write_event(iii: &III, session_id: &str, event: &Value) {
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": "agent::events",
+                "group_id": session_id,
+                "item_id": format!("approval-{}", uuid_like()),
+                "data": event,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+}
+
+async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
+    if stream_name.is_empty() || event_id.is_empty() {
+        return;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": stream_name,
+                "group_id": event_id,
+                "item_id": uuid_like(),
+                "data": reply,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+}
+
 /// Production [`StateBus`] backed by a real iii-sdk [`III`] connection.
 pub struct IiiStateBus(pub III);
 
@@ -514,65 +597,14 @@ impl StateBus for IiiStateBus {
                 timeout_ms: None,
             })
             .await
-            .unwrap_or_else(|_| json!([]));
-        let arr = if let Some(items) = resp.get("items").and_then(|v| v.as_array().cloned()) {
-            items
-        } else if let Some(arr) = resp.as_array().cloned() {
-            arr
-        } else {
-            Vec::new()
-        };
-        arr.into_iter()
+            .unwrap_or_else(|_| json!({ "items": [] }));
+        resp.get("items")
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
             .map(|entry| entry.get("value").cloned().unwrap_or(entry))
             .collect()
     }
-}
-
-async fn write_event(iii: &III, session_id: &str, event: &Value) {
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "stream::set".into(),
-            payload: json!({
-                "stream_name": "agent::events",
-                "group_id": session_id,
-                "item_id": format!("approval-{}", uuid_like()),
-                "data": event,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
-}
-
-fn uuid_like() -> String {
-    // Lightweight unique-ish id without pulling uuid in: ns timestamp + counter.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static C: AtomicU64 = AtomicU64::new(0);
-    let n = C.fetch_add(1, Ordering::Relaxed);
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{t:x}-{n:x}")
-}
-
-async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
-    if stream_name.is_empty() || event_id.is_empty() {
-        return;
-    }
-    let _ = iii
-        .trigger(TriggerRequest {
-            function_id: "stream::set".into(),
-            payload: json!({
-                "stream_name": stream_name,
-                "group_id": event_id,
-                "item_id": uuid_like(),
-                "data": reply,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
@@ -623,9 +655,9 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                                     };
                                     evt["status"] = json!(status);
                                 }
-                                if let Some(r) = final_rec.get("result") { evt["result"] = r.clone(); }
-                                if let Some(e) = final_rec.get("error") { evt["error"] = e.clone(); }
-                                if let Some(reason) = final_rec.get("decision_reason") { evt["decision_reason"] = reason.clone(); }
+                                if let Some(r) = final_rec.get("result") { evt["result"] = json!(r); }
+                                if let Some(e) = final_rec.get("error") { evt["error"] = json!(e); }
+                                if let Some(reason) = final_rec.get("decision_reason") { evt["decision_reason"] = json!(reason); }
                                 write_event(&iii, session_id, &evt).await;
                             }
                         }
@@ -687,6 +719,23 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         },
     ));
 
+    let bus_for_sweep = bus.clone();
+    let scope_sweep = state_scope.clone();
+    let sweep_session = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into())
+            .with_description(
+                "Sweep all pending approvals for a session to timed_out. \
+                 Called when a session is deleted.".into()
+            ),
+        move |payload: Value| {
+            let bus = bus_for_sweep.clone();
+            let scope = scope_sweep.clone();
+            async move {
+                Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope, payload).await)
+            }
+        },
+    ));
+
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
     let subscriber_scope = state_scope.clone();
@@ -743,6 +792,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         list_pending,
         list_undelivered,
         ack_delivered,
+        sweep_session,
         subscriber_fn,
         subscriber_trigger,
     })
@@ -1489,5 +1539,43 @@ mod tests {
         );
         let rec = transition_record(&base, "executed", Some(json!({"ok": true})), None, None);
         assert_eq!(rec["delivered_in_turn_id"], "turn-X");
+    }
+
+    #[tokio::test]
+    async fn handle_sweep_session_flips_pending_records_to_timed_out_with_reason_session_deleted() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000)).await.unwrap();
+
+        let resp = handle_sweep_session(&bus, STATE_SCOPE, json!({"session_id": "s1"})).await;
+        assert_eq!(resp["swept"], json!(1));
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        assert_eq!(rec["status"], "timed_out");
+        assert_eq!(rec["decision_reason"], "session_deleted");
+    }
+
+    #[tokio::test]
+    async fn handle_sweep_session_skips_non_pending_records() {
+        let bus = InMemoryStateBus::new();
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"),
+            transition_record(
+                &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed", Some(json!({"ok": true})), None, None)).await.unwrap();
+
+        let resp = handle_sweep_session(&bus, STATE_SCOPE, json!({"session_id": "s1"})).await;
+        assert_eq!(resp["swept"], json!(0));
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1", "c1")).await.unwrap();
+        assert_eq!(rec["status"], "executed");
+    }
+
+    #[tokio::test]
+    async fn handle_sweep_session_returns_error_when_session_id_missing() {
+        let bus = InMemoryStateBus::new();
+        let resp = handle_sweep_session(&bus, STATE_SCOPE, json!({})).await;
+        assert_eq!(resp["ok"], json!(false));
+        assert_eq!(resp["error"], "missing_session_id");
+        assert_eq!(resp["swept"], json!(0));
     }
 }
