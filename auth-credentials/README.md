@@ -86,10 +86,31 @@ engine_url: "ws://127.0.0.1:49134"
 store: iii_state
 ```
 
+## Testing Against a Real Engine
+
+`store: iii_state` requires the engine to expose `state::get`, `state::set`,
+`state::delete`, and `state::list`. For a minimal local engine, start only the
+state worker:
+
+```bash
+iii --config auth-credentials/tests/e2e/engine-state.yaml --no-update-check
+```
+
+Then run the live worker tests from another shell:
+
+```bash
+IIITEST_ENGINE_URL=ws://127.0.0.1:49134 \
+  cargo test --manifest-path auth-credentials/Cargo.toml --all-features
+
+IIITEST_ENGINE_URL=ws://127.0.0.1:49134 \
+IIITEST_WORKER_BIN="$PWD/auth-credentials/target/debug/auth-credentials" \
+  cargo test --manifest-path auth-credentials/Cargo.toml --test restart_e2e -- --ignored
+```
+
 ## Additional Resources
 
-- [Removing a provider credential](skills/delete_token.md)
-- [Reading a provider credential before an API call](skills/get_token.md)
-- [Listing providers with stored credentials](skills/list_providers.md)
-- [Storing a provider credential](skills/set_token.md)
-- [Checking whether a credential is configured](skills/status.md)
+- [Removing a provider credential](skills/auth/delete_token.md)
+- [Reading a provider credential before an API call](skills/auth/get_token.md)
+- [Listing providers with stored credentials](skills/auth/list_providers.md)
+- [Storing a provider credential](skills/auth/set_token.md)
+- [Checking whether a credential is configured](skills/auth/status.md)

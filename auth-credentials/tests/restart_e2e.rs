@@ -13,23 +13,37 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use iii_sdk::TriggerRequest;
+use serde_json::json;
+
 fn spawn_worker(engine_url: &str, bin: &str) -> Child {
     Command::new(bin)
         .env("III_URL", engine_url)
-        // Default backend for the worker is iii-state. We force it explicitly
-        // here so the test is robust against future default flips.
         .env("AUTH_CREDENTIALS_STORE", "iii_state")
-        // Suppress worker output so it doesn't interleave with cargo test output.
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn auth-credentials")
 }
 
-async fn wait_for_ready() {
-    // Crude: give the worker time to register on the bus. A real harness
-    // would poll a status function with backoff.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+async fn wait_for_ready(iii: &iii_sdk::III) {
+    let mut last_err = None;
+    for _ in 0..40 {
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "auth::list_providers".into(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(1_000),
+            })
+            .await
+        {
+            Ok(_) => return,
+            Err(err) => last_err = Some(err.to_string()),
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("auth-credentials did not register auth::* in time: {last_err:?}");
 }
 
 #[tokio::test]
@@ -41,17 +55,13 @@ async fn credential_survives_worker_restart() {
     let provider = format!("e2e-restart-{}", std::process::id());
     let api_key = format!("sk-e2e-{}", std::process::id());
 
-    // 1. Spawn worker, wait for ready, write a credential.
-    let mut worker = spawn_worker(&url, &bin);
-    wait_for_ready().await;
-
     let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
-    iii.trigger(iii_sdk::TriggerRequest {
+
+    let mut worker = spawn_worker(&url, &bin);
+    wait_for_ready(&iii).await;
+
+    iii.trigger(TriggerRequest {
         function_id: "auth::set_token".into(),
-        // Credential serializes per the `#[serde(tag = "type", rename_all =
-        // "snake_case")]` attribute on the `Credential` enum (auth-credentials
-        // src/lib.rs lines 17-34): `ApiKey { key }` => `{ "type": "api_key",
-        // "key": "..." }`.
         payload: serde_json::json!({
             "provider": &provider,
             "credential": { "type": "api_key", "key": &api_key },
@@ -62,17 +72,14 @@ async fn credential_survives_worker_restart() {
     .await
     .expect("auth::set_token failed");
 
-    // 2. Kill the worker.
     worker.kill().expect("kill worker");
     worker.wait().expect("wait for worker exit");
 
-    // 3. Restart and wait.
     let mut worker = spawn_worker(&url, &bin);
-    wait_for_ready().await;
+    wait_for_ready(&iii).await;
 
-    // 4. Read back; assert credential survived.
     let resp = iii
-        .trigger(iii_sdk::TriggerRequest {
+        .trigger(TriggerRequest {
             function_id: "auth::get_token".into(),
             payload: serde_json::json!({ "provider": &provider }),
             action: None,
@@ -91,9 +98,8 @@ async fn credential_survives_worker_restart() {
         .expect("response missing `key` field");
     assert_eq!(key_field, api_key, "credential.key must round-trip");
 
-    // 5. Cleanup. Best-effort — the actual assertion above is what matters.
     let _ = iii
-        .trigger(iii_sdk::TriggerRequest {
+        .trigger(TriggerRequest {
             function_id: "auth::delete_token".into(),
             payload: serde_json::json!({ "provider": &provider }),
             action: None,
