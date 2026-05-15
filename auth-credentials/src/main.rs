@@ -114,4 +114,3 @@ async fn wait_for_shutdown() -> Result<()> {
             .context("failed to await SIGINT")
     }
 }
-

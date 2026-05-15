@@ -189,6 +189,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_returns_err_on_missing_credential_field() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(
+            json!({ "provider": "anthropic" }),
+        )]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.get("anthropic").await.unwrap_err();
+        assert!(err.to_string().contains("missing `credential` field"));
+    }
+
+    #[tokio::test]
+    async fn get_returns_err_on_invalid_credential_payload() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(json!({
+            "provider": "anthropic",
+            "credential": { "type": "api_key" }
+        }))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.get("anthropic").await.unwrap_err();
+        assert!(err.to_string().contains("deserialize credential"));
+    }
+
+    #[tokio::test]
     async fn get_returns_err_on_trigger_failure() {
         let mock = Arc::new(MockTrigger::new(vec![Err(IIIError::Handler(
             "boom".into(),
@@ -284,6 +305,44 @@ mod tests {
         assert_eq!(calls[0].function_id, "state::list");
         assert_eq!(calls[0].payload["scope"], SCOPE);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_returns_err_on_non_array_response() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(json!({ "not": "an array" }))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.list().await.unwrap_err();
+        assert!(err.to_string().contains("state::list returned non-array"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_err_on_missing_provider_field() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(json!([
+            { "credential": { "type": "api_key", "key": "sk-test" } }
+        ]))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.list().await.unwrap_err();
+        assert!(err.to_string().contains("missing `provider`"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_err_on_missing_credential_field() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(json!([
+            { "provider": "anthropic" }
+        ]))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.list().await.unwrap_err();
+        assert!(err.to_string().contains("missing `credential`"));
+    }
+
+    #[tokio::test]
+    async fn list_returns_err_on_invalid_credential_payload() {
+        let mock = Arc::new(MockTrigger::new(vec![Ok(json!([
+            { "provider": "anthropic", "credential": { "type": "api_key" } }
+        ]))]));
+        let store = IiiStateCredentialStore::new(mock);
+        let err = store.list().await.unwrap_err();
+        assert!(err.to_string().contains("deserialize credential"));
     }
 
     #[tokio::test]

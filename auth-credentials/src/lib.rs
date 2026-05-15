@@ -4,6 +4,32 @@
 //! pure resolution helpers. The production backend writes to iii state via CAS;
 //! the in-memory backend is provided for tests.
 
+pub const SKILL_ID: &str = "auth-credentials";
+pub const SKILL_MD: &str = include_str!("../skills/index.md");
+
+pub const SUB_SKILLS: &[(&str, &str)] = &[
+    (
+        "auth-credentials/auth/set_token",
+        include_str!("../skills/auth/set_token.md"),
+    ),
+    (
+        "auth-credentials/auth/get_token",
+        include_str!("../skills/auth/get_token.md"),
+    ),
+    (
+        "auth-credentials/auth/delete_token",
+        include_str!("../skills/auth/delete_token.md"),
+    ),
+    (
+        "auth-credentials/auth/list_providers",
+        include_str!("../skills/auth/list_providers.md"),
+    ),
+    (
+        "auth-credentials/auth/status",
+        include_str!("../skills/auth/status.md"),
+    ),
+];
+
 pub mod io;
 pub mod store_iii_state;
 
@@ -11,35 +37,45 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Stored credential for a provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Credential {
     ApiKey {
+        /// Raw API key bytes for the provider.
         key: String,
     },
+    #[serde(rename = "oauth")]
     OAuth {
+        /// Bearer access token returned by the provider OAuth flow.
         access_token: String,
+        /// Optional refresh token when the provider issues one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         refresh_token: Option<String>,
+        /// Optional Unix timestamp when the access token expires.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at: Option<i64>,
+        /// OAuth scopes granted to the token.
         #[serde(default)]
         scopes: Vec<String>,
+        /// Provider-specific OAuth metadata.
         #[serde(default)]
         provider_extra: serde_json::Value,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum CredentialType {
     ApiKey,
+    #[serde(rename = "oauth")]
     OAuth,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthSource {
     Stored,
@@ -49,27 +85,57 @@ pub enum AuthSource {
 }
 
 /// Status of a provider's credential resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AuthStatus {
+    /// True when the worker can resolve a credential for the provider.
     pub configured: bool,
+    /// Source that satisfied resolution. Omitted when no credential exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AuthSource>,
+    /// Redacted display label. Never contains the full credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ConfiguredProvider {
     pub provider: String,
     pub credential_type: CredentialType,
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EnvKeyMatch {
     pub provider: String,
     pub env_var: String,
     pub key_prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+pub struct ProviderInput {
+    /// Provider identifier, for example "anthropic" or "openai".
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+pub struct SetTokenInput {
+    /// Provider identifier, for example "anthropic" or "openai".
+    pub provider: String,
+    /// Credential payload to persist for the provider.
+    pub credential: Credential,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct OkOutput {
+    pub ok: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+pub struct ListProvidersInput {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ListProvidersOutput {
+    pub providers: Vec<String>,
 }
 
 /// Storage backend abstraction. Production impl writes to iii state; the
@@ -233,6 +299,70 @@ fn label_for(cred: &Credential) -> String {
     }
 }
 
+fn normalize_provider(provider: &str) -> anyhow::Result<String> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(anyhow::anyhow!("provider must be non-empty"));
+    }
+    Ok(provider.to_string())
+}
+
+pub async fn handle_get_token<F>(
+    store: &dyn CredentialStore,
+    input: ProviderInput,
+    getter: F,
+) -> anyhow::Result<Option<Credential>>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let provider = normalize_provider(&input.provider)?;
+    Ok(resolve_credential(store, &provider, getter)
+        .await?
+        .map(|(credential, _source)| credential))
+}
+
+pub async fn handle_set_token(
+    store: &dyn CredentialStore,
+    input: SetTokenInput,
+) -> anyhow::Result<OkOutput> {
+    let provider = normalize_provider(&input.provider)?;
+    store.set(&provider, input.credential).await?;
+    Ok(OkOutput { ok: true })
+}
+
+pub async fn handle_delete_token(
+    store: &dyn CredentialStore,
+    input: ProviderInput,
+) -> anyhow::Result<OkOutput> {
+    let provider = normalize_provider(&input.provider)?;
+    store.clear(&provider).await?;
+    Ok(OkOutput { ok: true })
+}
+
+pub async fn handle_list_providers(
+    store: &dyn CredentialStore,
+    _input: ListProvidersInput,
+) -> anyhow::Result<ListProvidersOutput> {
+    let entries = store.list().await?;
+    let mut providers: Vec<String> = entries.into_iter().map(|(provider, _)| provider).collect();
+    providers.sort();
+    providers.dedup();
+    Ok(ListProvidersOutput { providers })
+}
+
+pub async fn handle_status<F>(
+    store: &dyn CredentialStore,
+    input: ProviderInput,
+    getter: F,
+) -> anyhow::Result<AuthStatus>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let provider = normalize_provider(&input.provider)?;
+    let resolved = resolve_credential(store, &provider, getter).await?;
+    Ok(status_for(resolved.as_ref()))
+}
+
 /// Register `auth::*` iii functions on the bus.
 ///
 /// Functions registered:
@@ -251,124 +381,72 @@ pub async fn register_with_iii(
     iii: &iii_sdk::III,
     store: std::sync::Arc<dyn CredentialStore>,
 ) -> anyhow::Result<AuthFunctionRefs> {
-    use iii_sdk::{IIIError, RegisterFunctionMessage};
-    use serde_json::{json, Value};
+    use iii_sdk::{IIIError, RegisterFunction};
 
     let store_get = store.clone();
-    let get_token = iii.register_function((
-        RegisterFunctionMessage::with_id("auth::get_token".to_string())
-            .with_description("Fetch the stored credential for a provider.".into()),
-        move |payload: Value| {
+    let get_token = iii.register_function(
+        RegisterFunction::new_async("auth::get_token", move |input: ProviderInput| {
             let store = store_get.clone();
             async move {
-                let provider = payload
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
-                    .to_string();
-                // P5: providers call `auth::get_token` as their single
-                // credential entry point. Resolve stored-then-env so callers
-                // never re-read env directly. Returning `null` means the
-                // provider has neither a stored credential nor an env match.
-                let resolved =
-                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok())
-                        .await
-                        .map_err(|e| {
-                            IIIError::Handler(format!("resolve_credential failed: {e}"))
-                        })?;
-                let cred = resolved.map(|(c, _source)| c);
-                serde_json::to_value(cred).map_err(|e| IIIError::Handler(e.to_string()))
+                handle_get_token(&*store, input, |var| std::env::var(var).ok())
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))
             }
-        },
-    ));
+        })
+        .description("Fetch the stored or environment credential for a provider."),
+    );
 
     let store_set = store.clone();
-    let set_token = iii.register_function((
-        RegisterFunctionMessage::with_id("auth::set_token".to_string())
-            .with_description("Persist a credential for a provider.".into()),
-        move |payload: Value| {
+    let set_token = iii.register_function(
+        RegisterFunction::new_async("auth::set_token", move |input: SetTokenInput| {
             let store = store_set.clone();
             async move {
-                let provider = payload
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
-                    .to_string();
-                let cred_value = payload.get("credential").cloned().ok_or_else(|| {
-                    IIIError::Handler("missing required field: credential".into())
-                })?;
-                let cred: Credential = serde_json::from_value(cred_value)
-                    .map_err(|e| IIIError::Handler(format!("invalid credential: {e}")))?;
-                store
-                    .set(&provider, cred)
+                handle_set_token(&*store, input)
                     .await
-                    .map_err(|e| IIIError::Handler(format!("store.set failed: {e}")))?;
-                Ok(json!({ "ok": true }))
+                    .map_err(|e| IIIError::Handler(e.to_string()))
             }
-        },
-    ));
+        })
+        .description("Persist a credential for a provider."),
+    );
 
     let store_del = store.clone();
-    let delete_token = iii.register_function((
-        RegisterFunctionMessage::with_id("auth::delete_token".to_string())
-            .with_description("Remove the stored credential for a provider.".into()),
-        move |payload: Value| {
+    let delete_token = iii.register_function(
+        RegisterFunction::new_async("auth::delete_token", move |input: ProviderInput| {
             let store = store_del.clone();
             async move {
-                let provider = payload
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
-                    .to_string();
-                store
-                    .clear(&provider)
+                handle_delete_token(&*store, input)
                     .await
-                    .map_err(|e| IIIError::Handler(format!("store.clear failed: {e}")))?;
-                Ok(json!({ "ok": true }))
+                    .map_err(|e| IIIError::Handler(e.to_string()))
             }
-        },
-    ));
+        })
+        .description("Remove the stored credential for a provider."),
+    );
 
     let store_list = store.clone();
-    let list_providers = iii.register_function((
-        RegisterFunctionMessage::with_id("auth::list_providers".to_string())
-            .with_description("List every provider with a stored credential.".into()),
-        move |_payload: Value| {
+    let list_providers = iii.register_function(
+        RegisterFunction::new_async("auth::list_providers", move |input: ListProvidersInput| {
             let store = store_list.clone();
             async move {
-                let entries = store
-                    .list()
+                handle_list_providers(&*store, input)
                     .await
-                    .map_err(|e| IIIError::Handler(format!("store.list failed: {e}")))?;
-                let providers: Vec<String> = entries.into_iter().map(|(p, _)| p).collect();
-                Ok(json!({ "providers": providers }))
+                    .map_err(|e| IIIError::Handler(e.to_string()))
             }
-        },
-    ));
+        })
+        .description("List every provider with a stored credential."),
+    );
 
     let store_status = store.clone();
-    let status = iii.register_function((
-        RegisterFunctionMessage::with_id("auth::status".to_string())
-            .with_description("Report stored vs. env credential status for a provider.".into()),
-        move |payload: Value| {
+    let status = iii.register_function(
+        RegisterFunction::new_async("auth::status", move |input: ProviderInput| {
             let store = store_status.clone();
             async move {
-                let provider = payload
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| IIIError::Handler("missing required field: provider".into()))?
-                    .to_string();
-                let resolved =
-                    resolve_credential(&*store, &provider, |var| std::env::var(var).ok())
-                        .await
-                        .map_err(|e| {
-                            IIIError::Handler(format!("resolve_credential failed: {e}"))
-                        })?;
-                let st = status_for(resolved.as_ref());
-                serde_json::to_value(st).map_err(|e| IIIError::Handler(e.to_string()))
+                handle_status(&*store, input, |var| std::env::var(var).ok())
+                    .await
+                    .map_err(|e| IIIError::Handler(e.to_string()))
             }
-        },
-    ));
+        })
+        .description("Report stored vs. environment credential status for a provider."),
+    );
 
     Ok(AuthFunctionRefs {
         get_token,
@@ -521,5 +599,40 @@ mod tests {
         assert!(providers.contains(&&"anthropic"));
         assert!(providers.contains(&&"openai"));
         assert!(providers.contains(&&"google"));
+    }
+
+    #[tokio::test]
+    async fn list_provider_handler_returns_sorted_names_only() -> anyhow::Result<()> {
+        let s = InMemoryStore::new();
+        s.set("openai", Credential::ApiKey { key: "b".into() })
+            .await?;
+        s.set("anthropic", Credential::ApiKey { key: "a".into() })
+            .await?;
+
+        let out = handle_list_providers(&s, ListProvidersInput {}).await?;
+        assert_eq!(out.providers, vec!["anthropic", "openai"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_handlers_reject_blank_provider() {
+        let s = InMemoryStore::new();
+        let err = handle_get_token(
+            &s,
+            ProviderInput {
+                provider: " ".into(),
+            },
+            |_| None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("provider must be non-empty"));
+    }
+
+    #[test]
+    fn auth_source_serializes_snake_case() -> anyhow::Result<()> {
+        let value = serde_json::to_value(AuthSource::Environment)?;
+        assert_eq!(value, serde_json::json!("environment"));
+        Ok(())
     }
 }
