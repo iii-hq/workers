@@ -219,3 +219,58 @@ async fn deny_path_does_not_invoke_function_and_stitches_denied() {
     assert_eq!(our_entry["status"], "denied");
     assert_eq!(our_entry["decision_reason"], "test-deny");
 }
+
+#[tokio::test]
+async fn timeout_path_lazy_flips_pending_to_timed_out_on_read() {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
+    let Some(iii) = skip_if_no_engine(&url).await else { return };
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let session_id = format!("turn-orch-to-{nonce}");
+    let function_call_id = format!("tc-to-{nonce}");
+    let topic = format!("agent::before_function_call::itt_{nonce}");
+
+    let _target = iii.register_function((
+        RegisterFunctionMessage::with_id(format!("test::write_t_{nonce}")).with_description("fake".into()),
+        move |_p: Value| async move { Ok::<_, IIIError>(json!({"ok": true})) },
+    ));
+
+    let _refs = register(&iii, &WorkerConfig {
+        topic: topic.clone(),
+        default_timeout_ms: 100,
+        ..WorkerConfig::default()
+    }).expect("register approval-gate");
+
+    let target_fn = format!("test::write_t_{nonce}");
+    iii.trigger(TriggerRequest {
+        function_id: "policy::approval_gate".into(),
+        payload: json!({
+            "event_id": format!("evt-{nonce}"),
+            "reply_stream": format!("rs-{nonce}"),
+            "payload": {
+                "session_id": session_id,
+                "function_call": {"id": function_call_id, "function_id": target_fn, "arguments": {}},
+                "approval_required": [target_fn.clone()],
+            }
+        }),
+        action: None, timeout_ms: Some(5_000),
+    }).await.expect("intercept");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let undelivered = iii.trigger(TriggerRequest {
+        function_id: FN_LIST_UNDELIVERED.into(),
+        payload: json!({"session_id": session_id}),
+        action: None, timeout_ms: Some(5_000),
+    }).await.expect("ok");
+    let entries = undelivered["entries"].as_array().unwrap();
+    let our_entry = entries
+        .iter()
+        .find(|e| e["function_call_id"] == function_call_id)
+        .expect("expired pending must lazy-flip to timed_out and surface");
+    assert_eq!(our_entry["status"], "timed_out");
+    assert_eq!(our_entry["decision_reason"], "timeout");
+}
