@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use approval_gate::{register, WorkerConfig, FN_RESOLVE, FN_LIST_UNDELIVERED, STATE_SCOPE};
+use approval_gate::{register, WorkerConfig, FN_LIST_UNDELIVERED, FN_RESOLVE, STATE_SCOPE};
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
 use serde_json::json;
 
