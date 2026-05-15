@@ -10,7 +10,7 @@ mod function;
 mod stream_event;
 mod thinking;
 
-pub use agent_event::{AgentEvent, ApprovalDecision};
+pub use agent_event::{AgentEvent, ApprovalDecision, Denial};
 pub use agent_message::{
     AgentContext, AgentMessage, AgentSessionState, AssistantMessage, CustomMessage,
     FunctionResultMessage, UserMessage,
