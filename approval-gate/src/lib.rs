@@ -6,9 +6,13 @@ pub mod config;
 pub mod manifest;
 pub mod record;
 pub mod rules;
+pub mod wire;
 
 pub use config::{InterceptorRule, WorkerConfig};
 pub use record::{Next, Record, Status};
+pub use wire::{
+    block_reply_for, extract_call, pending_key, Decision, Denial, IncomingCall, WireDecision,
+};
 
 use std::sync::{Arc, RwLock};
 
@@ -127,33 +131,6 @@ pub(crate) fn apply_policy_rules(rules: &rules::Ruleset, function_id: &str) -> P
     }
 }
 
-/// Structured deny payload carried on wire replies, persisted records, and
-/// `approval_resolved` stream events. Replaces the legacy free-form
-/// `decision_reason` / `reason` strings so consumers (turn-orchestrator
-/// stitching, UIs, the LLM) can branch on `kind` instead of parsing prose.
-///
-/// Wire shape (serde tag=kind, content=detail, snake_case):
-///   `{ "kind": "policy", "detail": { "classifier_reason": "...", "classifier_fn": "..." } }`
-///   `{ "kind": "user_rejected", "detail": null }`
-///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
-///   `{ "kind": "state_error",   "detail": { "phase": "...", "error": "..." } }`
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
-pub enum Denial {
-    Policy {
-        classifier_reason: String,
-        classifier_fn: String,
-    },
-    UserRejected,
-    UserCorrected {
-        feedback: String,
-    },
-    StateError {
-        phase: String,
-        error: String,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClassifierDecision {
     Auto,
@@ -191,88 +168,6 @@ pub(crate) fn interpret_classifier_reply(
 /// should be built from. `pending` and `approved` are intermediate.
 pub fn is_terminal_status(status: &str) -> bool {
     matches!(status, "executed" | "failed" | "denied" | "timed_out")
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct IncomingCall {
-    pub session_id: String,
-    pub function_call_id: String,
-    pub function_id: String,
-    pub args: Value,
-    pub approval_required: Vec<String>,
-    pub event_id: String,
-    pub reply_stream: String,
-}
-
-impl IncomingCall {
-    pub fn requires_approval(&self) -> bool {
-        self.approval_required
-            .iter()
-            .any(|n| n == &self.function_id)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
-    Allow,
-    Deny(Denial),
-}
-
-/// Wire-format decision string used by `approval::resolve` and stored
-/// as the `status` field of resolved approval records.
-///
-/// Serializes / deserializes as `"allow"` or `"deny"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WireDecision {
-    Allow,
-    Deny,
-}
-
-/// Build the state-store key for a pending approval entry.
-///
-/// `session_id` and `function_call_id` must not contain `/`. They are caller-controlled
-/// IDs minted by turn-orchestrator; today neither format uses the separator.
-pub fn pending_key(session_id: &str, function_call_id: &str) -> String {
-    debug_assert!(!session_id.contains('/'), "session_id must not contain '/'");
-    debug_assert!(
-        !function_call_id.contains('/'),
-        "function_call_id must not contain '/'"
-    );
-    format!("{session_id}/{function_call_id}")
-}
-
-pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
-    let event_id = envelope
-        .get("event_id")
-        .and_then(Value::as_str)?
-        .to_string();
-    let reply_stream = envelope
-        .get("reply_stream")
-        .and_then(Value::as_str)?
-        .to_string();
-    let inner = envelope.get("payload").unwrap_or(envelope);
-    let session_id = inner.get("session_id").and_then(Value::as_str)?.to_string();
-    let fc = inner
-        .get("function_call")
-        .or_else(|| inner.get("tool_call"))?;
-    let function_id = fc
-        .get("function_id")
-        .or_else(|| fc.get("name"))
-        .and_then(Value::as_str)?
-        .to_string();
-    Some(IncomingCall {
-        session_id,
-        function_call_id: fc.get("id").and_then(Value::as_str)?.to_string(),
-        function_id,
-        args: fc.get("arguments").cloned().unwrap_or_else(|| json!({})),
-        approval_required: inner
-            .get("approval_required")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
-        event_id,
-        reply_stream,
-    })
 }
 
 pub fn build_pending_record(
@@ -342,19 +237,6 @@ pub fn transition_record_with_now(
     rec
 }
 
-/// Build the hook block reply for a [`Decision`]. Deny replies carry the
-/// structured [`Denial`] under `denial`; consumers (turn-orchestrator
-/// stitching, UIs, the LLM) branch on `denial.kind` rather than parsing a
-/// free-form `reason` string.
-pub fn block_reply_for(decision: &Decision) -> Value {
-    match decision {
-        Decision::Allow => json!({ "block": false }),
-        Decision::Deny(denial) => json!({
-            "block": true,
-            "denial": denial,
-        }),
-    }
-}
 
 pub struct Refs {
     pub resolve: FunctionRef,
