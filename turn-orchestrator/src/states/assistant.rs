@@ -2,6 +2,7 @@
 
 use harness_types::{
     AgentEvent, AgentMessage, AssistantMessage, ContentBlock, FunctionCall, StopReason,
+    TextContent,
 };
 use iii_sdk::{TriggerRequest, III};
 use serde_json::json;
@@ -74,9 +75,88 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     Ok(())
 }
 
+/// Fetch resolved-but-undelivered approvals and convert them into system-level
+/// AgentMessages to prepend onto the LLM request. Returns `(messages_to_prepend,
+/// call_ids_to_ack)`. Empty vectors when no entries.
+///
+/// Network failures are logged and swallowed: a transient list_undelivered
+/// failure must not block the turn.
+pub(crate) async fn fetch_approval_stitch_messages(
+    iii: &III,
+    session_id: &str,
+) -> (Vec<AgentMessage>, Vec<String>) {
+    let resp = iii
+        .trigger(TriggerRequest {
+            function_id: "approval::list_undelivered".into(),
+            payload: json!({"session_id": session_id}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    let entries = match resp {
+        Ok(v) => v.get("entries").and_then(|e| e.as_array().cloned()).unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "approval::list_undelivered failed; skipping stitch this turn");
+            return (Vec::new(), Vec::new());
+        }
+    };
+    if entries.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let call_ids: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.get("call_id").and_then(|v| v.as_str()).map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let stitched = crate::states::approval_stitching::stitch_entries(&entries);
+    let messages: Vec<AgentMessage> = stitched
+        .into_iter()
+        .map(|text| AgentMessage::Assistant(AssistantMessage {
+            content: vec![ContentBlock::Text(TextContent { text })],
+            stop_reason: StopReason::End,
+            error_message: None,
+            error_kind: None,
+            usage: None,
+            model: String::new(),
+            provider: "approval-gate".into(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }))
+        .collect();
+    (messages, call_ids)
+}
+
+/// Fire-and-forget ack after a successful turn. Logs and swallows errors.
+pub(crate) async fn ack_approval_delivery(
+    iii: &III,
+    session_id: &str,
+    call_ids: Vec<String>,
+    turn_id: &str,
+) {
+    if call_ids.is_empty() { return; }
+    if let Err(e) = iii
+        .trigger(TriggerRequest {
+            function_id: "approval::ack_delivered".into(),
+            payload: json!({
+                "session_id": session_id,
+                "call_ids": call_ids,
+                "turn_id": turn_id,
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    {
+        tracing::warn!(error = %e, "approval::ack_delivered failed; entries may resurface next turn");
+    }
+}
+
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
-    let messages = persistence::load_messages(iii, &record.session_id).await;
+    let mut messages = persistence::load_messages(iii, &record.session_id).await;
+    let (stitch_msgs, ack_call_ids) = fetch_approval_stitch_messages(iii, &record.session_id).await;
+    if !stitch_msgs.is_empty() {
+        messages.extend(stitch_msgs);
+    }
     let schemas = persistence::load_function_schemas(iii, &record.session_id).await;
 
     let payload = json!({
@@ -99,6 +179,10 @@ pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow
     let assistant: AssistantMessage =
         serde_json::from_value(response).map_err(|e| anyhow::anyhow!("decode assistant: {e}"))?;
     record.last_assistant = Some(assistant);
+    if !ack_call_ids.is_empty() {
+        let turn_id = format!("{}-turn-{}", record.session_id, record.turn_count);
+        ack_approval_delivery(iii, &record.session_id, ack_call_ids, &turn_id).await;
+    }
     record.transition_to(TurnState::AssistantFinished);
     Ok(())
 }
