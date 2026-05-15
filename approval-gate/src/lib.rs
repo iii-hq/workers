@@ -246,11 +246,27 @@ pub async fn handle_intercept(
     })
 }
 
-pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
-    let session_id = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+/// Return Some(timed_out_record) if `rec` is pending and `now_ms` is past
+/// `expires_at`; otherwise None. Pure function — does not write state.
+pub fn maybe_flip_timed_out(rec: &Value, now_ms: u64) -> Option<Value> {
+    if rec.get("status").and_then(Value::as_str) != Some("pending") {
+        return None;
+    }
+    let exp = rec.get("expires_at").and_then(Value::as_u64)?;
+    if now_ms < exp {
+        return None;
+    }
+    Some(transition_record(rec, "timed_out", None, None, Some("timeout".into())))
+}
+
+pub async fn handle_resolve(
+    bus: &dyn StateBus,
+    exec: &dyn FunctionExecutor,
+    state_scope: &str,
+    payload: Value,
+    now_ms: u64,
+) -> Value {
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
     let function_call_id = payload
         .get("function_call_id")
         .or_else(|| payload.get("tool_call_id"))
@@ -259,30 +275,74 @@ pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Valu
     if session_id.is_empty() || function_call_id.is_empty() {
         return json!({ "ok": false, "error": "missing_id" });
     }
-    let Some(decision) = payload
-        .get("decision")
-        .cloned()
-        .and_then(|v| serde_json::from_value::<WireDecision>(v).ok())
-    else {
-        return json!({ "ok": false, "error": "bad_decision" });
+    let decision: WireDecision = match payload.get("decision").cloned() {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(d) => d,
+            Err(_) => return json!({ "ok": false, "error": "bad_decision" }),
+        },
+        None => return json!({ "ok": false, "error": "bad_decision" }),
     };
     let key = pending_key(session_id, function_call_id);
-    let Some(mut existing) = bus.get(state_scope, &key).await else {
+    let Some(existing) = bus.get(state_scope, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
     };
+
+    // Lazy timeout flip (covered by Task 7 tests).
+    let existing = match maybe_flip_timed_out(&existing, now_ms) {
+        Some(flipped) => {
+            let _ = bus.set(state_scope, &key, flipped.clone()).await;
+            return json!({ "ok": false, "error": "timed_out" });
+        }
+        None => existing,
+    };
+
     if existing.get("status").and_then(Value::as_str) != Some("pending") {
         return json!({ "ok": false, "error": "already_resolved" });
     }
-    existing["status"] =
-        serde_json::to_value(decision).expect("WireDecision serializes via Serialize");
-    if let Some(reason) = payload.get("reason").cloned() {
-        existing["reason"] = reason;
+
+    match decision {
+        WireDecision::Deny => {
+            let reason = payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("user")
+                .to_string();
+            let denied = transition_record(&existing, "denied", None, None, Some(reason));
+            if let Err(e) = bus.set(state_scope, &key, denied).await {
+                tracing::error!("approval-gate: failed to write denied record: {e}");
+                return json!({ "ok": false, "error": "state_write_failed" });
+            }
+            json!({ "ok": true })
+        }
+        WireDecision::Allow => {
+            let function_id = existing
+                .get("function_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let args = existing.get("args").cloned().unwrap_or(json!({}));
+            let approved = transition_record(&existing, "approved", None, None, None);
+            // Best-effort intermediate write; if it fails, still try to invoke.
+            let _ = bus.set(state_scope, &key, approved.clone()).await;
+            match exec.invoke(&function_id, args).await {
+                Ok(result) => {
+                    let executed = transition_record(&approved, "executed", Some(result), None, None);
+                    if let Err(e) = bus.set(state_scope, &key, executed).await {
+                        tracing::error!("approval-gate: failed to write executed record: {e}");
+                        return json!({ "ok": false, "error": "state_write_failed" });
+                    }
+                }
+                Err(error) => {
+                    let failed = transition_record(&approved, "failed", None, Some(error), None);
+                    if let Err(e) = bus.set(state_scope, &key, failed).await {
+                        tracing::error!("approval-gate: failed to write failed record: {e}");
+                        return json!({ "ok": false, "error": "state_write_failed" });
+                    }
+                }
+            }
+            json!({ "ok": true })
+        }
     }
-    if let Err(err) = bus.set(state_scope, &key, existing).await {
-        tracing::error!("approval-gate: failed to write resolved state: {err}");
-        return json!({ "ok": false, "error": "state_write_failed" });
-    }
-    json!({ "ok": true })
 }
 
 pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
@@ -446,6 +506,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 
     let bus_for_resolve = bus.clone();
     let scope_resolve = state_scope.clone();
+    let iii_for_resolve = iii.clone();
     let resolve =
         iii.register_function((
             RegisterFunctionMessage::with_id(FN_RESOLVE.into())
@@ -453,8 +514,14 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             move |payload: Value| {
                 let bus = bus_for_resolve.clone();
                 let scope_resolve = scope_resolve.clone();
+                let iii = iii_for_resolve.clone();
                 async move {
-                    Ok::<_, IIIError>(handle_resolve(bus.as_ref(), &scope_resolve, payload).await)
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let exec: std::sync::Arc<dyn FunctionExecutor> = std::sync::Arc::new(IiiFunctionExecutor(iii));
+                    Ok::<_, IIIError>(handle_resolve(bus.as_ref(), exec.as_ref(), &scope_resolve, payload, now_ms).await)
                 }
             },
         ));
@@ -797,6 +864,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_resolve_allow_invokes_function_and_records_executed() {
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "shell::fs::write", &json!({"path":"/a"}), 1_000, 60_000),
+        ).await.unwrap();
+
+        let resp = handle_resolve(
+            &bus, &exec, STATE_SCOPE,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+            }),
+            1_500,
+        ).await;
+        assert_eq!(resp["ok"], json!(true));
+
+        let calls = exec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "shell::fs::write");
+        assert_eq!(calls[0].1, json!({"path":"/a"}));
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        assert_eq!(rec["status"], "executed");
+        assert_eq!(rec["result"], json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn handle_resolve_allow_records_failed_when_function_errors() {
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        *exec.response.lock().unwrap() = Some(Err("EACCES".into()));
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        ).await.unwrap();
+
+        let resp = handle_resolve(
+            &bus, &exec, STATE_SCOPE,
+            json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
+            1_500,
+        ).await;
+        assert_eq!(resp["ok"], json!(true));
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        assert_eq!(rec["status"], "failed");
+        assert_eq!(rec["error"], "EACCES");
+    }
+
+    #[tokio::test]
     async fn fake_executor_records_calls() {
         let exec = FakeExecutor::default();
         let out = exec.invoke("shell::fs::write", json!({"x": 1})).await.unwrap();
@@ -854,14 +975,17 @@ mod tests {
         .await
         .unwrap();
 
+        let exec = FakeExecutor::default();
         let out = handle_resolve(
             &bus,
+            &exec,
             STATE_SCOPE,
             json!({
                 "function_call_id": "tc-1",
                 "session_id": "s1",
                 "decision": "allow",
             }),
+            1_500,
         )
         .await;
 
@@ -870,7 +994,7 @@ mod tests {
             .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
             .await
             .unwrap();
-        assert_eq!(stored["status"], "allow");
+        assert_eq!(stored["status"], "executed");
     }
 
     #[tokio::test]
@@ -884,14 +1008,17 @@ mod tests {
         .await
         .unwrap();
 
+        let exec = FakeExecutor::default();
         let out = handle_resolve(
             &bus,
+            &exec,
             STATE_SCOPE,
             json!({
                 "tool_call_id": "tc-1",
                 "session_id": "s1",
                 "decision": "allow",
             }),
+            1_500,
         )
         .await;
 
@@ -907,10 +1034,13 @@ mod tests {
             .await
             .unwrap();
 
+        let exec = FakeExecutor::default();
         let out = handle_resolve(
             &bus,
+            &exec,
             STATE_SCOPE,
             json!({"function_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
+            1_500,
         )
         .await;
         assert_eq!(out["ok"], false);
@@ -1020,8 +1150,10 @@ mod tests {
             )
             .await;
 
+        let exec = FakeExecutor::default();
         let out = handle_resolve(
             &bus,
+            &exec,
             STATE_SCOPE,
             json!({
                 "session_id": "s1",
@@ -1029,6 +1161,7 @@ mod tests {
                 "decision": "deny",
                 "reason": "user clicked cancel",
             }),
+            1_500,
         )
         .await;
         assert_eq!(out["ok"], true);
@@ -1037,8 +1170,8 @@ mod tests {
             .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
             .await
             .unwrap();
-        assert_eq!(stored["status"], "deny");
-        assert_eq!(stored["reason"], "user clicked cancel");
+        assert_eq!(stored["status"], "denied");
+        assert_eq!(stored["decision_reason"], "user clicked cancel");
     }
 
     #[test]
