@@ -520,10 +520,21 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
     json!({ "pending": pending })
 }
 
+/// Default cap for `handle_list_undelivered` responses. A single LLM turn
+/// should never be asked to ingest more than this many stitched approval
+/// messages; older entries beyond the cap stay unacked and are reported via
+/// the `omitted` counter so the caller can render a summary line.
+pub const LIST_UNDELIVERED_DEFAULT_LIMIT: usize = 50;
+
 /// Return terminal-status records for a session that haven't been stamped
 /// with `delivered_in_turn_id`. Lazy timeout: pending records past
 /// `expires_at` (as observed at `now_ms`) are flipped to `timed_out` before
 /// the filter so they surface here in the same call.
+///
+/// Sorted oldest-first by `resolved_at` (records missing `resolved_at` sort
+/// last as `u64::MAX`). Capped at `limit` (default
+/// [`LIST_UNDELIVERED_DEFAULT_LIMIT`]); the response always includes an
+/// `omitted` field counting entries left behind.
 pub async fn handle_list_undelivered(
     bus: &dyn StateBus,
     state_scope: &str,
@@ -535,12 +546,37 @@ pub async fn handle_list_undelivered(
         .and_then(Value::as_str)
         .unwrap_or("");
     if session_id.is_empty() {
-        return json!({ "entries": [] });
+        return json!({ "entries": [], "omitted": 0 });
     }
+    let limit = payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(LIST_UNDELIVERED_DEFAULT_LIMIT);
     let prefix = format!("{session_id}/");
     let all = bus.list_prefix(state_scope, &prefix).await;
     let mut entries: Vec<Value> = Vec::new();
     for rec in all {
+        // Defensive scope: some bus backends ignore the prefix and return
+        // every record in `state_scope`. Filter by stamped `session_id`:
+        //
+        //   - record has session_id matching ours → keep
+        //   - record has session_id different from ours → drop
+        //   - record lacks session_id AND is in "allow"/"deny" pre-trigger
+        //     legacy form → keep (`migrate_legacy_record` below re-keys it
+        //     under our session)
+        //   - record lacks session_id AND is already terminal → drop
+        //     (orphan from before session-id stamping; cannot be attributed)
+        match rec.get("session_id").and_then(Value::as_str) {
+            Some(sid) if sid == session_id => {}
+            Some(_) => continue,
+            None => {
+                let status = rec.get("status").and_then(Value::as_str).unwrap_or("");
+                if status != "allow" && status != "deny" {
+                    continue;
+                }
+            }
+        }
         let rec = if let Some(migrated) = migrate_legacy_record(&rec) {
             let call_id = migrated
                 .get("function_call_id")
@@ -587,7 +623,15 @@ pub async fn handle_list_undelivered(
         }
         entries.push(rec);
     }
-    json!({ "entries": entries })
+    entries.sort_by_key(|e| {
+        e.get("resolved_at")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+    let total = entries.len();
+    let omitted = total.saturating_sub(limit);
+    entries.truncate(limit);
+    json!({ "entries": entries, "omitted": omitted })
 }
 
 /// Stamp `delivered_in_turn_id` on terminal-status records named in
@@ -1164,39 +1208,155 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_list_undelivered_returns_terminal_records_with_no_delivered_stamp() {
+    async fn handle_list_undelivered_caps_at_default_limit_and_reports_omitted() {
         let bus = InMemoryStateBus::new();
-        bus.set(
-            STATE_SCOPE,
-            &pending_key("s1", "c1"),
-            transition_record(
-                &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        for i in 0..75 {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
                 "executed",
                 Some(json!({"ok": true})),
                 None,
                 None,
-            ),
-        )
-        .await
-        .unwrap();
-        bus.set(
+                1_000 + i as u64,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 50);
+        assert_eq!(resp["omitted"].as_u64(), Some(25));
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_honors_explicit_limit() {
+        let bus = InMemoryStateBus::new();
+        for i in 0..10 {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+                1_000 + i as u64,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp = handle_list_undelivered(
+            &bus,
             STATE_SCOPE,
-            &pending_key("s1", "c2"),
-            transition_record(
-                &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "denied",
-                None,
-                None,
-                Some("nope".into()),
-            ),
+            json!({"session_id": "s1", "limit": 3}),
+            100_000,
         )
-        .await
-        .unwrap();
+        .await;
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(resp["omitted"].as_u64(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_returns_oldest_first_by_resolved_at() {
+        let bus = InMemoryStateBus::new();
+        for (i, ts) in [(0_u32, 5_000_u64), (1, 1_000), (2, 3_000)] {
+            let cid = format!("c{i}");
+            let mut rec = transition_record_with_now(
+                &build_pending_record(&cid, "shell::fs::write", &json!({}), 1_000, 60_000),
+                "executed",
+                Some(json!({"ok": true})),
+                None,
+                None,
+                ts,
+            );
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), Value::String("s1".into()));
+            bus.set(STATE_SCOPE, &pending_key("s1", &cid), rec)
+                .await
+                .unwrap();
+        }
+        let resp = handle_list_undelivered(
+            &bus,
+            STATE_SCOPE,
+            json!({"session_id": "s1", "limit": 10}),
+            100_000,
+        )
+        .await;
+        let entries = resp["entries"].as_array().unwrap();
+        let ids: Vec<&str> = entries
+            .iter()
+            .map(|e| e["function_call_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["c1", "c2", "c0"]);
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_omitted_is_zero_when_under_limit() {
+        let bus = InMemoryStateBus::new();
+        let mut rec = transition_record_with_now(
+            &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+            1_500,
+        );
+        rec.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), Value::String("s1".into()));
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec)
+            .await
+            .unwrap();
+        let resp =
+            handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
+        assert_eq!(resp["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(resp["omitted"].as_u64(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn handle_list_undelivered_returns_terminal_records_with_no_delivered_stamp() {
+        let bus = InMemoryStateBus::new();
+        let mut r1 = transition_record(
+            &build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+        );
+        r1.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), Value::String("s1".into()));
+        bus.set(STATE_SCOPE, &pending_key("s1", "c1"), r1)
+            .await
+            .unwrap();
+        let mut r2 = transition_record(
+            &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "denied",
+            None,
+            None,
+            Some("nope".into()),
+        );
+        r2.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), Value::String("s1".into()));
+        bus.set(STATE_SCOPE, &pending_key("s1", "c2"), r2)
+            .await
+            .unwrap();
 
         let resp =
             handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
         let entries = resp["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
+        assert_eq!(resp["omitted"].as_u64(), Some(0));
     }
 
     #[tokio::test]
@@ -1233,27 +1393,31 @@ mod tests {
             None,
             None,
         );
-        rec.as_object_mut().unwrap().insert(
-            "delivered_in_turn_id".into(),
-            Value::String("turn-prev".into()),
-        );
+        {
+            let obj = rec.as_object_mut().unwrap();
+            obj.insert(
+                "delivered_in_turn_id".into(),
+                Value::String("turn-prev".into()),
+            );
+            obj.insert("session_id".into(), Value::String("s1".into()));
+        }
         bus.set(STATE_SCOPE, &pending_key("s1", "c1"), rec)
             .await
             .unwrap();
 
-        bus.set(
-            STATE_SCOPE,
-            &pending_key("s1", "c2"),
-            transition_record(
-                &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
-                "executed",
-                Some(json!({"ok": true})),
-                None,
-                None,
-            ),
-        )
-        .await
-        .unwrap();
+        let mut r2 = transition_record(
+            &build_pending_record("c2", "shell::fs::write", &json!({}), 1_000, 60_000),
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+        );
+        r2.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), Value::String("s1".into()));
+        bus.set(STATE_SCOPE, &pending_key("s1", "c2"), r2)
+            .await
+            .unwrap();
 
         let resp =
             handle_list_undelivered(&bus, STATE_SCOPE, json!({"session_id": "s1"}), 100_000).await;
