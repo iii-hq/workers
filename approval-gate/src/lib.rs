@@ -598,6 +598,10 @@ impl StateBus for IiiStateBus {
             })
             .await
             .unwrap_or_else(|_| json!({ "items": [] }));
+        // Engine may return either {"items": [...]} or a plain Array.
+        if let Some(arr) = resp.as_array() {
+            return arr.clone();
+        }
         resp.get("items")
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
