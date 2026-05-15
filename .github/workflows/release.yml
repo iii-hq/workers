@@ -6,6 +6,7 @@ on:
       - 'acp/v*'
       - 'approval-gate/v*'
       - 'auth-credentials/v*'
+      - 'context-compaction/v*'
       # harness/v* is handled by release-harness-bundle.yml (single-dispatch fan-out).
       - 'hook-fanout/v*'
       - 'iii-database/v*'
