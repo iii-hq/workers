@@ -176,6 +176,31 @@ pub trait StateBus: Send + Sync {
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
 }
 
+/// Invokes an iii function with arguments and returns its result or an error
+/// string. Abstracted so tests can stub the underlying call.
+#[async_trait::async_trait]
+pub trait FunctionExecutor: Send + Sync {
+    async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String>;
+}
+
+/// Production [`FunctionExecutor`] backed by `iii.trigger`.
+pub struct IiiFunctionExecutor(pub III);
+
+#[async_trait::async_trait]
+impl FunctionExecutor for IiiFunctionExecutor {
+    async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String> {
+        self.0
+            .trigger(TriggerRequest {
+                function_id: function_id.to_string(),
+                payload: args,
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// Decide whether a call is gated; if so, write a pending record and return
 /// the structured pending hook reply. If not gated, return `{block: false}`
 /// and do nothing.
@@ -751,6 +776,34 @@ mod tests {
         assert_eq!(reply["block"], json!(false));
         let key = pending_key(&call.session_id, &call.function_call_id);
         assert!(bus.get(STATE_SCOPE, &key).await.is_none(), "no record written");
+    }
+
+    #[derive(Default)]
+    struct FakeExecutor {
+        calls: Mutex<Vec<(String, Value)>>,
+        response: Mutex<Option<Result<Value, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl FunctionExecutor for FakeExecutor {
+        async fn invoke(&self, function_id: &str, args: Value) -> Result<Value, String> {
+            self.calls.lock().unwrap().push((function_id.to_string(), args));
+            self.response
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Ok(json!({"ok": true})))
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_executor_records_calls() {
+        let exec = FakeExecutor::default();
+        let out = exec.invoke("shell::fs::write", json!({"x": 1})).await.unwrap();
+        assert_eq!(out, json!({"ok": true}));
+        let calls = exec.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "shell::fs::write");
     }
 
     struct InMemoryStateBus {
