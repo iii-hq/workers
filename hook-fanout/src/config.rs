@@ -9,6 +9,12 @@ pub struct WorkerConfig {
     pub min_timeout_ms: u64,
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
+    /// Exit the collect loop once this many milliseconds elapse with no
+    /// new replies after the first one. Caps the typical wait at
+    /// `first_reply_ms + quiescence_ms` instead of the full timeout.
+    /// Zero disables quiescence (always wait full timeout).
+    #[serde(default = "default_quiescence_ms")]
+    pub quiescence_ms: u64,
 }
 
 fn default_default_timeout_ms() -> u64 {
@@ -23,12 +29,17 @@ fn default_poll_interval_ms() -> u64 {
     25
 }
 
+fn default_quiescence_ms() -> u64 {
+    200
+}
+
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             default_timeout_ms: default_default_timeout_ms(),
             min_timeout_ms: default_min_timeout_ms(),
             poll_interval_ms: default_poll_interval_ms(),
+            quiescence_ms: default_quiescence_ms(),
         }
     }
 }
@@ -49,17 +60,19 @@ mod tests {
         assert_eq!(cfg.default_timeout_ms, 10_000);
         assert_eq!(cfg.min_timeout_ms, 50);
         assert_eq!(cfg.poll_interval_ms, 25);
+        assert_eq!(cfg.quiescence_ms, 200);
     }
 
     #[test]
     fn custom_yaml_overrides() {
         let cfg: WorkerConfig = serde_yaml::from_str(
-            "default_timeout_ms: 3000\nmin_timeout_ms: 100\npoll_interval_ms: 10",
+            "default_timeout_ms: 3000\nmin_timeout_ms: 100\npoll_interval_ms: 10\nquiescence_ms: 50",
         )
         .unwrap();
         assert_eq!(cfg.default_timeout_ms, 3000);
         assert_eq!(cfg.min_timeout_ms, 100);
         assert_eq!(cfg.poll_interval_ms, 10);
+        assert_eq!(cfg.quiescence_ms, 50);
     }
 
     #[test]
@@ -68,5 +81,6 @@ mod tests {
         assert_eq!(d.default_timeout_ms, default_default_timeout_ms());
         assert_eq!(d.min_timeout_ms, default_min_timeout_ms());
         assert_eq!(d.poll_interval_ms, default_poll_interval_ms());
+        assert_eq!(d.quiescence_ms, default_quiescence_ms());
     }
 }

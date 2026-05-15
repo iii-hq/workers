@@ -29,8 +29,49 @@ export async function bridge<T = unknown>(
     return await client.call<T>(functionId, payload);
   } catch (e) {
     if (e instanceof BridgeError) throw e;
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new BridgeError(msg, functionId, 0);
+    throw toBridgeError(e, functionId);
+  }
+}
+
+/**
+ * Normalize anything thrown by the iii-sdk's `trigger()` into a `BridgeError`
+ * with a human-readable `message`.
+ *
+ * The iii-sdk delivers engine errors via `Promise.reject(error)` where
+ * `error` is the raw JSON value off the wire — usually a plain object like
+ * `{ error_code, message, error_id }` or `{ error }`, NOT an `Error`
+ * instance.  Previously this path collapsed to `String(e)` which produced
+ * the infamous `"[object Object]"` in the UI (see harness AuthPanel error
+ * pill).  Now we walk common engine-error shapes and fall back to
+ * `JSON.stringify` so the actual server message reaches the user.
+ */
+export function toBridgeError(e: unknown, functionId: string): BridgeError {
+  if (e instanceof Error) {
+    return new BridgeError(e.message, functionId, 0);
+  }
+  if (e !== null && typeof e === "object") {
+    const obj = e as Record<string, unknown>;
+    const message =
+      pickString(obj.message) ??
+      pickString(obj.error) ??
+      pickString(obj.error_message) ??
+      pickString(obj.description) ??
+      safeJson(obj);
+    const errorId = pickString(obj.error_id);
+    return new BridgeError(message, functionId, 0, errorId);
+  }
+  return new BridgeError(String(e), functionId, 0);
+}
+
+function pickString(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return "unknown error (unserializable)";
   }
 }
 

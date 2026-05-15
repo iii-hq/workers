@@ -314,13 +314,39 @@ export default function App() {
     setMessageEntryIds([...messageEntryIds, null]);
 
     try {
-      await bridge<{ session_id: string }>("run::start", {
+      // Route through `harness::call` (harness-wrapped) so the harness
+      // wrapper writes `iii.session.id` + `iii.message.id` into OTel
+      // baggage. iii-sdk auto-propagates baggage on every downstream
+      // `iii.trigger(...)`, and the in-SDK `BaggageSpanProcessor`
+      // materializes them as span attributes on every worker span
+      // produced by this turn. Result: the iii Developer Console
+      // TRACES tab can "Group by message" and see all spans for ONE
+      // user turn in one collapsible group.
+      //
+      // Direct `run::start` would bypass this — the chain would start
+      // outside any harness-wrapped function, no baggage would be seeded,
+      // and downstream spans would carry no `iii.message.id` attribute.
+      //
+      // One messageId per `send()` call. The chain (turn-orchestrator
+      // → provider-router → provider-anthropic → tool calls → ...) all
+      // inherit it via baggage. New user messages get a new id.
+      const messageId = `msg-${crypto.randomUUID()}`;
+      await bridge<{
+        status_code?: number;
+        body?: { session_id: string };
+        session_id?: string;
+      }>("harness::call", {
+        function_id: "run::start",
         session_id: sid,
-        provider,
-        model,
-        messages: fullHistory,
-        approval_required: APPROVAL_REQUIRED,
-        ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+        message_id: messageId,
+        payload: {
+          session_id: sid,
+          provider,
+          model,
+          messages: fullHistory,
+          approval_required: APPROVAL_REQUIRED,
+          ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+        },
       });
       void refreshSessions();
     } catch (e) {

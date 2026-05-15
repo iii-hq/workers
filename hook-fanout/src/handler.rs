@@ -34,12 +34,20 @@ pub async fn execute(
         .get("timeout_ms")
         .and_then(Value::as_u64)
         .unwrap_or(cfg.default_timeout_ms);
+    let expected_replies = payload.get("expected_replies").and_then(Value::as_u64);
+    let quiescence_ms = payload
+        .get("quiescence_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(cfg.quiescence_ms);
 
     let min_timeout = cfg.min_timeout_ms;
     let poll_interval = Duration::from_millis(cfg.poll_interval_ms);
+    let quiescence = Duration::from_millis(quiescence_ms);
 
     let event_id = Uuid::new_v4().to_string();
     let envelope = build_publish_envelope(&topic, &event_id, inner.clone());
+    let started_at = Instant::now();
+    let mut publish_failed = false;
     if let Err(e) = iii
         .trigger(TriggerRequest {
             function_id: "iii::durable::publish".into(),
@@ -50,12 +58,17 @@ pub async fn execute(
         .await
     {
         tracing::warn!(error = %e, %topic, "hook-fanout::publish_collect: publish trigger failed");
+        publish_failed = true;
     }
 
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(min_timeout));
+    let deadline = started_at + Duration::from_millis(timeout_ms.max(min_timeout));
     let mut replies: Vec<Value> = Vec::new();
     let mut last_index: usize = 0;
+    let mut first_reply_at: Option<Instant> = None;
+    let mut last_reply_at: Option<Instant> = None;
+    let exit_reason: &'static str;
     loop {
+        let before_len = replies.len();
         if let Ok(value) = iii
             .trigger(TriggerRequest {
                 function_id: "stream::list".into(),
@@ -67,11 +80,50 @@ pub async fn execute(
         {
             collect_stream_items(&value, &mut replies, &mut last_index);
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if replies.len() > before_len {
+            if first_reply_at.is_none() {
+                first_reply_at = Some(now);
+            }
+            last_reply_at = Some(now);
+        }
+
+        if let Some(reason) = decide_exit(
+            replies.len() as u64,
+            expected_replies,
+            quiescence_ms,
+            quiescence,
+            last_reply_at,
+            now,
+            deadline,
+        ) {
+            exit_reason = reason;
             break;
         }
         tokio::time::sleep(poll_interval).await;
     }
+
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    let first_reply_ms = first_reply_at
+        .map(|t| t.duration_since(started_at).as_millis() as u64)
+        .unwrap_or(0);
+    iii_sdk::set_current_span_attribute("hook_fanout.topic", topic.clone());
+    iii_sdk::set_current_span_attribute("hook_fanout.replies", replies.len().to_string());
+    iii_sdk::set_current_span_attribute("hook_fanout.elapsed_ms", elapsed_ms.to_string());
+    iii_sdk::set_current_span_attribute("hook_fanout.first_reply_ms", first_reply_ms.to_string());
+    iii_sdk::set_current_span_attribute("hook_fanout.exit_reason", exit_reason);
+    if publish_failed {
+        iii_sdk::set_current_span_attribute("hook_fanout.publish_failed", "true");
+    }
+    tracing::info!(
+        topic = %topic,
+        replies = replies.len(),
+        elapsed_ms = elapsed_ms,
+        first_reply_ms = first_reply_ms,
+        exit_reason = exit_reason,
+        publish_failed = publish_failed,
+        "hook-fanout::publish_collect completed"
+    );
 
     let merged = match merge_rule {
         MergeRule::FirstBlockWins => merge_first_block_wins(&replies),
@@ -100,6 +152,49 @@ pub fn register(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
             async move { execute(iii, cfg, payload).await }
         },
     ));
+}
+
+/// Pure exit-decision for the collect loop. Returns `Some(reason)` when
+/// the loop must stop, `None` when polling should continue.
+///
+/// Precedence (matches the order checked in `execute`):
+/// 1. `expected_replies` — exits immediately once the reply count
+///    meets the caller-supplied target.
+/// 2. `quiescence` — exits when at least one reply has landed AND
+///    `quiescence` has elapsed since the last one. Disabled when
+///    `quiescence_ms == 0`.
+/// 3. `deadline` / `deadline_no_replies` — exits when wall-clock
+///    crosses the deadline; the variant depends on whether any reply
+///    was seen.
+fn decide_exit(
+    replies_count: u64,
+    expected_replies: Option<u64>,
+    quiescence_ms: u64,
+    quiescence: Duration,
+    last_reply_at: Option<Instant>,
+    now: Instant,
+    deadline: Instant,
+) -> Option<&'static str> {
+    if let Some(expected) = expected_replies {
+        if replies_count >= expected {
+            return Some("expected_replies");
+        }
+    }
+    if quiescence_ms > 0 {
+        if let Some(last) = last_reply_at {
+            if now.duration_since(last) >= quiescence {
+                return Some("quiescence");
+            }
+        }
+    }
+    if now >= deadline {
+        return Some(if last_reply_at.is_some() {
+            "deadline"
+        } else {
+            "deadline_no_replies"
+        });
+    }
+    None
 }
 
 fn collect_stream_items(value: &Value, collected: &mut Vec<Value>, last_index: &mut usize) {
@@ -156,5 +251,146 @@ mod tests {
         collect_stream_items(&v2, &mut out, &mut idx);
         assert_eq!(out.len(), 2);
         assert_eq!(out[1]["n"], 2);
+    }
+
+    /// `expected_replies` short-circuit fires the moment the count meets
+    /// the target — even when quiescence and deadline haven't triggered.
+    /// Highest precedence in `decide_exit`; pins that ordering.
+    #[test]
+    fn decide_exit_fires_expected_replies_at_threshold() {
+        let start = Instant::now();
+        // Deadline far in the future, no quiescence elapsed yet — only
+        // the expected count matters.
+        let deadline = start + Duration::from_secs(60);
+        let reason = decide_exit(
+            3,
+            Some(3),
+            200,
+            Duration::from_millis(200),
+            Some(start),
+            start,
+            deadline,
+        );
+        assert_eq!(reason, Some("expected_replies"));
+
+        // Same setup, but count is one short — must continue.
+        let reason_short = decide_exit(
+            2,
+            Some(3),
+            200,
+            Duration::from_millis(200),
+            Some(start),
+            start,
+            deadline,
+        );
+        assert_eq!(reason_short, None);
+    }
+
+    /// `quiescence` fires once `now - last_reply_at >= quiescence` AND
+    /// at least one reply has landed. With no reply observed yet, the
+    /// branch must NOT fire (otherwise zero-subscriber topics would
+    /// exit immediately).
+    #[test]
+    fn decide_exit_fires_quiescence_after_idle_window() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(60);
+        let last = start + Duration::from_millis(100);
+        // 350ms since first reply, quiescence window = 200ms → fire.
+        let now = start + Duration::from_millis(350);
+        let reason = decide_exit(
+            1,
+            None,
+            200,
+            Duration::from_millis(200),
+            Some(last),
+            now,
+            deadline,
+        );
+        assert_eq!(reason, Some("quiescence"));
+
+        // last_reply_at = None (no reply yet) → quiescence must NOT
+        // fire even though deadline isn't reached either.
+        let reason_no_reply = decide_exit(
+            0,
+            None,
+            200,
+            Duration::from_millis(200),
+            None,
+            now,
+            deadline,
+        );
+        assert_eq!(reason_no_reply, None);
+    }
+
+    /// `quiescence_ms == 0` disables the quiescence branch entirely
+    /// (the documented opt-out). Pins so a refactor can't accidentally
+    /// flip the guard.
+    #[test]
+    fn decide_exit_quiescence_zero_disables_branch() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(60);
+        let now = start + Duration::from_millis(500);
+        let reason = decide_exit(
+            1,
+            None,
+            0,
+            Duration::from_millis(0),
+            Some(start),
+            now,
+            deadline,
+        );
+        assert_eq!(reason, None, "quiescence_ms=0 must NOT trigger exit");
+    }
+
+    /// `deadline` variant fires when `now >= deadline` AND at least one
+    /// reply has landed. Counterpart: `deadline_no_replies` is covered
+    /// in the next test.
+    #[test]
+    fn decide_exit_deadline_with_reply() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(100);
+        let now = start + Duration::from_millis(150);
+        let reason = decide_exit(
+            1,
+            None,
+            0,
+            Duration::from_millis(0),
+            Some(start + Duration::from_millis(50)),
+            now,
+            deadline,
+        );
+        assert_eq!(reason, Some("deadline"));
+    }
+
+    /// `deadline_no_replies` fires when the deadline is reached and
+    /// `last_reply_at` is still None — distinguishes the zero-subscriber
+    /// case from the slow-subscriber case in observability dashboards.
+    #[test]
+    fn decide_exit_deadline_no_replies() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(100);
+        let now = start + Duration::from_millis(150);
+        let reason = decide_exit(0, None, 0, Duration::from_millis(0), None, now, deadline);
+        assert_eq!(reason, Some("deadline_no_replies"));
+    }
+
+    /// Precedence sanity: when expected_replies AND quiescence AND
+    /// deadline all match, expected_replies wins (highest priority).
+    #[test]
+    fn decide_exit_expected_replies_beats_quiescence_and_deadline() {
+        let start = Instant::now();
+        let deadline = start; // already at deadline
+        let last = start;
+        let now = start + Duration::from_millis(500);
+        let reason = decide_exit(
+            5,
+            Some(3), // expected met
+            200,
+            Duration::from_millis(200), // quiescence elapsed too
+            Some(last),
+            now,
+            deadline,
+        );
+        assert_eq!(reason, Some("expected_replies"));
     }
 }

@@ -94,23 +94,21 @@ The harness owns *no* logic from any of these — it only knows their names. Eac
 
 `EXPECTED_WORKERS` is generated from `iii.worker.yaml` at build time by `build.rs`, so the two cannot drift — there is no separate sync test to maintain.
 
-### 4. `scripts/demo.sh` — local orchestration
+### 4. `Makefile` — local orchestration
 
-For registry-based installs, `iii worker add harness` fetches the harness binary and its declared dependencies automatically (see `registry/index.json`). `scripts/demo.sh` is the alternative path for local development from a source checkout:
+For registry-based installs, `iii worker add harness` fetches the harness binary and its declared dependencies automatically (see `registry/index.json`). The `Makefile` is the alternative path for local development from a source checkout:
 
 ```
-demo.sh build    # cargo build --release for harness + dep workers
-demo.sh engine   # start `iii --use-default-config` in background
-demo.sh start    # spawn all workers + harness as nohup processes
-demo.sh verify   # call harness::status, models::list, provider::cli::list_models
-demo.sh web      # npm install + vite in a tmux session
-demo.sh stop     # kill every PID in $DEMO_DIR/pids/ + engine + tmux
-demo.sh all      # build + engine + start + verify
+make config         # generate config.yaml + iii.lock via `iii worker add .`
+make observability  # add iii-observability to config.yaml (powers TRACES tab)
+make engine         # start `iii --config config.yaml` in background
+make verify         # call harness::status + models::list
+make web            # vite dev server on :5173
+make stop           # kill engine + web
+make all            # config + observability + engine + verify
 ```
 
-PIDs and logs live under `$DEMO_DIR` (default `~/iii-harness-demo`). One PID file per worker, one log file per worker — no shared logger, no daemon supervisor.
-
-`scripts/real-usage.sh` exercises the running stack end-to-end: `auth::set_token` → `run::start_and_wait` → `state::get` for both messages and turn record → `state::list` to enumerate sessions.
+PIDs and logs live under `$DEMO_DIR` (default `~/iii-harness-demo`). The engine spawns each worker via its `iii.worker.yaml` `scripts.start`.
 
 ## Runtime data flow
 

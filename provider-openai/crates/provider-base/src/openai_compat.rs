@@ -186,8 +186,14 @@ pub async fn stream_chat_completions(
     request: OpenAICompatRequest,
 ) -> ReceiverStream<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
+    // Preserve the caller's OTel context across tokio::spawn so the
+    // HTTP span inside stream_inner is parented + carries baggage.
+    let otel_cx = iii_sdk::capture_otel_context();
     tokio::spawn(async move {
-        if let Err(e) = stream_inner(cfg.clone(), request, tx.clone()).await {
+        let result = otel_cx
+            .attach(stream_inner(cfg.clone(), request, tx.clone()))
+            .await;
+        if let Err(e) = result {
             let _ = tx
                 .send(error_event(
                     e.to_string(),
@@ -221,31 +227,39 @@ async fn stream_inner(
     request: OpenAICompatRequest,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) -> Result<(), reqwest::Error> {
-    let mut body = serde_json::json!({
-        "model": cfg.model,
-        "max_completion_tokens": cfg.max_tokens,
-        "messages": to_openai_messages(&request.messages, &request.system_prompt),
-        "stream": true,
-        "stream_options": { "include_usage": true },
-    });
-    if !request.tools.is_empty() {
-        body["tools"] = serde_json::Value::Array(functions_to_openai(&request.tools));
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_mins(2))
-        .build()?;
-
-    let auth_name = cfg.auth_header_name.as_deref().unwrap_or("Authorization");
-    let auth_prefix = cfg.auth_value_prefix.as_deref().unwrap_or("Bearer ");
-    let mut req = client
-        .post(&cfg.url)
-        .header("content-type", "application/json")
-        .header(auth_name, format!("{auth_prefix}{}", cfg.api_key));
-    for (name, value) in &cfg.extra_headers {
-        req = req.header(name, value);
-    }
-    let resp = req.json(&body).send().await?;
+    // Pre-HTTP marshal: body assembly + client/header build.
+    let (client, http_request) = iii_sdk::run_in_span(
+        "openai.request.build",
+        Some(iii_sdk::SpanKind::Internal),
+        || async {
+            let mut body = serde_json::json!({
+                "model": cfg.model,
+                "max_completion_tokens": cfg.max_tokens,
+                "messages": to_openai_messages(&request.messages, &request.system_prompt),
+                "stream": true,
+                "stream_options": { "include_usage": true },
+            });
+            if !request.tools.is_empty() {
+                body["tools"] = serde_json::Value::Array(functions_to_openai(&request.tools));
+            }
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_mins(2))
+                .build()?;
+            let auth_name = cfg.auth_header_name.as_deref().unwrap_or("Authorization");
+            let auth_prefix = cfg.auth_value_prefix.as_deref().unwrap_or("Bearer ");
+            let mut req = client
+                .post(&cfg.url)
+                .header("content-type", "application/json")
+                .header(auth_name, format!("{auth_prefix}{}", cfg.api_key));
+            for (name, value) in &cfg.extra_headers {
+                req = req.header(name, value);
+            }
+            let http_request = req.json(&body).build()?;
+            Ok::<_, reqwest::Error>((client, http_request))
+        },
+    )
+    .await?;
+    let resp = iii_sdk::execute_traced_request(&client, http_request).await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -282,36 +296,48 @@ async fn stream_inner(
         ..Default::default()
     };
 
-    let mut bytes_stream = resp.bytes_stream();
-    let mut buf = String::new();
-    while let Some(chunk) = bytes_stream.next().await {
-        let chunk: Bytes = match chunk {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = tx
-                    .send(error_event(
-                        e.to_string(),
-                        None,
-                        cfg.model.clone(),
-                        cfg.provider_name.clone(),
-                    ))
-                    .await;
-                return Ok(());
-            }
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let block = buf[..idx].to_string();
-            buf.drain(..=idx + 1);
-            if let Some(event) = parse_sse_block(&block) {
-                if event.data == "[DONE]" {
-                    break;
+    // SSE consume: chunked event-stream parsing + delta forwarding.
+    let early_return = iii_sdk::run_in_span(
+        "openai.stream.consume",
+        Some(iii_sdk::SpanKind::Internal),
+        || async {
+            let mut bytes_stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk: Bytes = match chunk {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx
+                            .send(error_event(
+                                e.to_string(),
+                                None,
+                                cfg.model.clone(),
+                                cfg.provider_name.clone(),
+                            ))
+                            .await;
+                        return true;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(idx) = buf.find("\n\n") {
+                    let block = buf[..idx].to_string();
+                    buf.drain(..=idx + 1);
+                    if let Some(event) = parse_sse_block(&block) {
+                        if event.data == "[DONE]" {
+                            return false;
+                        }
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                            handle_chunk(&parsed, &mut state, &tx, &cfg).await;
+                        }
+                    }
                 }
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                    handle_chunk(&parsed, &mut state, &tx, &cfg).await;
-                }
             }
-        }
+            false
+        },
+    )
+    .await;
+    if early_return {
+        return Ok(());
     }
 
     let final_msg = build_final(&state, &cfg.model, &cfg.provider_name);

@@ -29,6 +29,8 @@ __pycache__/
 
 # Local runtime state
 .omx/
+.serena/
+docs/
 data/
 *.pid
 *.zip
