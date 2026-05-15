@@ -16,6 +16,38 @@ const TOPIC_BEFORE: &str = "agent::before_function_call";
 const TOPIC_AFTER: &str = "agent::after_function_call";
 const HOOK_TIMEOUT_MS: u64 = 10_000;
 
+/// Build the prefilled FunctionResult for a hook reply that returned
+/// `block: true`. Pending replies produce a structured tool-result-style
+/// payload the LLM can recognise; non-pending blocked replies stay as a
+/// plain text reason.
+pub(crate) fn prefilled_result_for_block(merged: &Value, call_id: &str, function_id: &str) -> FunctionResult {
+    if merged.get("status").and_then(Value::as_str) == Some("pending") {
+        let body = json!({
+            "status": "pending_approval",
+            "call_id": call_id,
+            "function_id": function_id,
+            "message": "Awaiting human approval. The result will be reported in a future turn."
+        });
+        return FunctionResult {
+            content: vec![ContentBlock::Text(TextContent {
+                text: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+            })],
+            details: json!({ "pending_approval": true, "call_id": call_id }),
+            terminate: false,
+        };
+    }
+    let reason = merged
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("blocked")
+        .to_string();
+    FunctionResult {
+        content: vec![ContentBlock::Text(TextContent { text: reason })],
+        details: json!({ "blocked": true }),
+        terminate: false,
+    }
+}
+
 /// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
 /// a normal [`FunctionCall`] carrying the inner function id. Non-`agent_call`
 /// calls pass through unchanged so legacy/test fixtures keep working.
@@ -79,16 +111,7 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let prefilled = if blocked {
-            let reason = merged
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("blocked")
-                .to_string();
-            Some(FunctionResult {
-                content: vec![ContentBlock::Text(TextContent { text: reason })],
-                details: json!({ "blocked": true }),
-                terminate: false,
-            })
+            Some(prefilled_result_for_block(&merged, &fc.id, &fc.function_id))
         } else {
             None
         };
@@ -572,5 +595,34 @@ mod tests {
             !window.contains(".expect(\"tools state requires last_assistant"),
             "handle_finalize must not .expect() last_assistant"
         );
+    }
+
+    #[test]
+    fn prefilled_result_for_block_pending_includes_call_id_in_details() {
+        let merged = json!({
+            "block": true, "status": "pending",
+            "call_id": "tc-1", "function_id": "shell::fs::write",
+        });
+        let fr = prefilled_result_for_block(&merged, "tc-1", "shell::fs::write");
+        assert_eq!(fr.details["pending_approval"], json!(true));
+        assert_eq!(fr.details["call_id"], json!("tc-1"));
+        let text = match &fr.content[0] {
+            ContentBlock::Text(t) => &t.text,
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("pending_approval"));
+        assert!(text.contains("tc-1"));
+    }
+
+    #[test]
+    fn prefilled_result_for_block_non_pending_uses_plain_reason() {
+        let merged = json!({"block": true, "reason": "policy::no"});
+        let fr = prefilled_result_for_block(&merged, "tc-1", "shell::fs::write");
+        assert_eq!(fr.details, json!({"blocked": true}));
+        let text = match &fr.content[0] {
+            ContentBlock::Text(t) => &t.text,
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(text, "policy::no");
     }
 }
