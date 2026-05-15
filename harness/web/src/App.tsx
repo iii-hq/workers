@@ -380,6 +380,20 @@ export default function App() {
     [active, refreshSessions],
   );
 
+  // Cooperatively stop the active session's run via the backend
+  // `run::stop` function (thin wrapper over `router::abort` +
+  // `approval::sweep_session` + step-publish). The UI button morph and
+  // the "stopping…" intermediate state are owned by `Composer`; this
+  // callback just bridges the bus call.
+  const handleStop = useCallback(async () => {
+    if (!active) return;
+    try {
+      await bridge("run::stop", { session_id: active });
+    } catch (e) {
+      setError(e instanceof BridgeError ? e.message : String(e));
+    }
+  }, [active]);
+
   // /repair — read state::* snapshot, hand it to session-tree::reconcile
   // so any drifted rows get re-keyed with entry_ids. Reload after so the
   // UI's entry_ids reflect the new tree state.
@@ -550,6 +564,8 @@ export default function App() {
               <Composer
                 disabled={composerDisabled}
                 onSend={send}
+                running={isRunning}
+                onStop={handleStop}
                 cwd={cwd.trim()}
                 skillRows={null}
                 sessionMessages={messages}

@@ -51,7 +51,7 @@ pub(crate) fn route(
 }
 
 pub async fn handle(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
-    let abort = abort_set(iii, &record.session_id).await;
+    let abort = crate::abort::is_set(iii, &record.session_id).await;
     let steering = if abort {
         Vec::new()
     } else {
@@ -177,25 +177,6 @@ fn aborted_message() -> AssistantMessage {
         provider: "harness".into(),
         timestamp: chrono::Utc::now().timestamp_millis(),
     }
-}
-
-async fn abort_set(iii: &III, session_id: &str) -> bool {
-    // Direct state::get (was flag::is_set via the deleted state-flag worker).
-    // Convention: name "abort" maps to key session/<id>/abort_signal under
-    // scope "agent". Mirrors provider-router's state::set on abort.
-    iii.trigger(TriggerRequest {
-        function_id: "state::get".into(),
-        payload: json!({
-            "scope": "agent",
-            "key": format!("session/{session_id}/abort_signal"),
-        }),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .ok()
-    .and_then(|v| v.as_bool())
-    .unwrap_or(false)
 }
 
 async fn drain_queue(iii: &III, name: &str, session_id: &str) -> Vec<AgentMessage> {

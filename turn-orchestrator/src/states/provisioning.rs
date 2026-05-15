@@ -25,6 +25,12 @@ pub async fn handle(
     cfg: &Arc<TurnOrchestratorConfig>,
     record: &mut TurnStateRecord,
 ) -> anyhow::Result<()> {
+    // Single source of truth for "fresh turn entry": clear any sticky abort
+    // flag carried over from a previous stopped run. Doing this here (not in
+    // `run_start::execute`) avoids a race where `run_start` clears the flag
+    // while a previous turn's subscriber tick is still in-flight.
+    crate::abort::clear(iii, &record.session_id).await;
+
     let request = persistence::load_run_request(iii, &record.session_id).await;
 
     let tools = json!([agent_call::agent_call_tool()]);

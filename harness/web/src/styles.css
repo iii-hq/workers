@@ -1296,8 +1296,12 @@ p.msg-text {
 
 .composer-send {
   justify-self: end;
+  /* Pin width so the send→stop→stopping morph doesn't shift layout. The
+     three labels (send / stop / stopping…) fit inside this min-width. */
+  min-width: 7.5rem;
   display: inline-flex;
   align-items: baseline;
+  justify-content: center;
   gap: 8px;
   font-family: var(--mono);
   font-size: 12px;
@@ -1311,6 +1315,21 @@ p.msg-text {
   transition:
     background 120ms ease,
     transform 80ms ease;
+}
+
+.composer-send[data-mode="stop"] {
+  background: #b94a3c; /* warm red accent */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.composer-send[data-mode="stop"]:hover:not(:disabled) {
+  background: #8f3327;
+}
+
+.composer-send[aria-busy="true"] {
+  background: var(--ink-faint);
+  color: var(--paper);
+  cursor: progress;
 }
 
 .composer-send-mark {

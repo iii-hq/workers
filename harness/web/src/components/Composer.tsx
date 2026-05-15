@@ -52,6 +52,14 @@ interface Props {
   sessionMessages: AgentMessage[];
   /** Per-builtin handlers. */
   callbacks?: ComposerCallbacks;
+  /**
+   * External signal that the active session has a run in flight. When true,
+   * the send button morphs into a stop button and the textarea blocks new
+   * submissions. Sourced from `useAgentStream`'s `status === "running"`.
+   */
+  running?: boolean;
+  /** Fires when the user clicks the stop button. */
+  onStop?: () => void | Promise<void>;
 }
 
 const AT_PAGE_SIZE = 25;
@@ -125,9 +133,18 @@ export function Composer({
   skillRows,
   sessionMessages,
   callbacks,
+  running = false,
+  onStop,
 }: Props) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  // `stopRequested` is a transient local flag: the user clicked stop, the
+  // backend has acked, but the run hasn't finished tearing down yet. It
+  // resets whenever `running` flips false (turn ends naturally or via abort).
+  const [stopRequested, setStopRequested] = useState(false);
+  useEffect(() => {
+    if (!running) setStopRequested(false);
+  }, [running]);
   const [menu, dispatch] = useCommandMenu();
   const [atBrowse, setAtBrowse] = useState<AtBrowseState>(AT_BROWSE_INITIAL);
   const [atPage, setAtPage] = useState(1);
@@ -256,6 +273,10 @@ export function Composer({
   const submit = useCallback(
     async (e?: FormEvent) => {
       e?.preventDefault();
+      // Hard gate on `running`: this catches both the form `onSubmit` path and
+      // the `onKeyDown` history-mode path (Enter in the textarea while a run
+      // is in flight must be a no-op, not a double-fire).
+      if (running) return;
       const trimmed = text.trim();
       if (!trimmed || busy) return;
 
@@ -321,8 +342,14 @@ export function Composer({
         setBusy(false);
       }
     },
-    [text, busy, onSend, callbacks],
+    [text, busy, running, onSend, callbacks],
   );
+
+  const handleStopClick = useCallback(() => {
+    if (stopRequested) return;
+    setStopRequested(true);
+    void onStop?.();
+  }, [stopRequested, onStop]);
 
   const acceptItem = useCallback(
     (item: MenuItem) => {
@@ -543,26 +570,55 @@ export function Composer({
           placeholder={
             disabled
               ? "set a credential to begin"
-              : "address the agent. / for commands, @ for files, ↑ for history."
+              : running
+                ? "run in flight — click stop to interrupt"
+                : "address the agent. / for commands, @ for files, ↑ for history."
           }
           value={text}
           onChange={onChange}
           onKeyDown={onKeyDown}
+          // While a run is in flight use readOnly (not disabled) to keep
+          // focus on the textarea so screen readers don't lose context.
+          // `disabled` still applies for the unauthenticated / mid-submit
+          // states where focus loss is acceptable.
           disabled={disabled || busy}
+          readOnly={running}
           rows={3}
           spellCheck={false}
         />
       </div>
-      <button
-        type="submit"
-        className="composer-send"
-        disabled={disabled || busy || !text.trim()}
-      >
-        <span className="composer-send-mark" aria-hidden>
-          ⏎
-        </span>
-        <span className="composer-send-label">{busy ? "running" : "send"}</span>
-      </button>
+      {running ? (
+        <button
+          type="button"
+          className="composer-send"
+          data-mode="stop"
+          onClick={handleStopClick}
+          disabled={stopRequested}
+          aria-busy={stopRequested || undefined}
+          aria-label="stop current run after current step"
+          title="stop after current step"
+        >
+          <span className="composer-send-mark" aria-hidden>
+            ■
+          </span>
+          <span className="composer-send-label">
+            {stopRequested ? "stopping…" : "stop"}
+          </span>
+        </button>
+      ) : (
+        <button
+          type="submit"
+          className="composer-send"
+          disabled={disabled || busy || !text.trim()}
+        >
+          <span className="composer-send-mark" aria-hidden>
+            ⏎
+          </span>
+          <span className="composer-send-label">
+            {busy ? "running" : "send"}
+          </span>
+        </button>
+      )}
     </form>
   );
 }

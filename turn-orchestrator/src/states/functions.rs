@@ -41,6 +41,15 @@ fn unwrap_agent_call(fc: FunctionCall) -> FunctionCall {
     }
 }
 pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+    // Abort short-circuit before any policy hook / state writes. Pending
+    // calls are dropped — the SteeringCheck branch will synthesize the
+    // aborted assistant message.
+    if crate::abort::is_set(iii, &record.session_id).await {
+        record.pending_function_calls.clear();
+        record.transition_to(TurnState::SteeringCheck);
+        return Ok(());
+    }
+
     record.function_results.clear();
     let raw = std::mem::take(&mut record.pending_function_calls);
     record.pending_function_calls = raw.into_iter().map(unwrap_agent_call).collect();
@@ -108,6 +117,15 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     let prepared = persistence::load_prepared_calls(iii, &record.session_id).await;
     let mut results = persistence::load_executed_calls(iii, &record.session_id).await;
     for (fc, prefilled) in prepared {
+        // Per-call abort check: lets stop interrupt a long batch of pending
+        // function calls without dispatching the rest. Results already
+        // persisted earlier in this loop survive — the SteeringCheck route
+        // will use whatever made it.
+        if crate::abort::is_set(iii, &record.session_id).await {
+            record.pending_function_calls.clear();
+            record.transition_to(TurnState::SteeringCheck);
+            return Ok(());
+        }
         events::emit(
             iii,
             &record.session_id,

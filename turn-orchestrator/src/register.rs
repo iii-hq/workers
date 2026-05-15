@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::agent_call;
 use crate::config::TurnOrchestratorConfig;
 use crate::run_start::{self, STEP_TOPIC};
+use crate::run_stop;
 use crate::subscriber::{self, FUNCTION_ID as STEP_FN_ID};
 
 pub async fn register_with_iii(
@@ -16,6 +17,7 @@ pub async fn register_with_iii(
     cfg: &Arc<TurnOrchestratorConfig>,
 ) -> anyhow::Result<()> {
     run_start::register(iii, cfg);
+    run_stop::register(iii);
     agent_call::register(iii);
     subscriber::register(iii, cfg);
 

@@ -11,6 +11,14 @@ use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 
 pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+    // Early abort check: route to SteeringCheck without burning a turn count.
+    // The Abort branch there synthesizes the aborted assistant message and
+    // tears down.
+    if crate::abort::is_set(iii, &record.session_id).await {
+        record.transition_to(TurnState::SteeringCheck);
+        return Ok(());
+    }
+
     if record
         .max_turns
         .map_or(false, |cap| record.turn_count >= cap)

@@ -1,5 +1,6 @@
 //! Durable session state machine. See plan doc for details.
 
+pub mod abort;
 pub mod agent_call;
 pub mod bootstrap;
 pub mod config;
@@ -8,6 +9,7 @@ pub mod manifest;
 pub mod persistence;
 pub mod register;
 pub mod run_start;
+pub mod run_stop;
 pub mod state;
 pub mod states;
 pub mod subscriber;
