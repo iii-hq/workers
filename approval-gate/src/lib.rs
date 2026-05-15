@@ -656,6 +656,55 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn maybe_flip_timed_out_returns_some_when_pending_and_expired() {
+        let rec = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let flipped = maybe_flip_timed_out(&rec, 70_000).expect("should flip");
+        assert_eq!(flipped["status"], "timed_out");
+        assert_eq!(flipped["decision_reason"], "timeout");
+    }
+
+    #[test]
+    fn maybe_flip_timed_out_returns_none_when_pending_and_not_expired() {
+        let rec = build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        assert!(maybe_flip_timed_out(&rec, 60_000).is_none());
+        assert!(maybe_flip_timed_out(&rec, 1_500).is_none());
+    }
+
+    #[test]
+    fn maybe_flip_timed_out_returns_none_when_not_pending() {
+        let rec = json!({
+            "function_call_id": "tc-1",
+            "status": "executed",
+            "expires_at": 1_000_u64,
+        });
+        assert!(maybe_flip_timed_out(&rec, 999_999_999).is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_resolve_on_expired_pending_flips_to_timed_out_and_ignores_decision() {
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("tc-1", "shell::fs::write", &json!({}), 1_000, 60_000),
+        ).await.unwrap();
+
+        let resp = handle_resolve(
+            &bus, &exec, STATE_SCOPE,
+            json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
+            70_000,
+        ).await;
+        assert_eq!(resp["ok"], json!(false));
+        assert_eq!(resp["error"], "timed_out");
+
+        assert!(exec.calls.lock().unwrap().is_empty());
+
+        let rec = bus.get(STATE_SCOPE, &pending_key("s1","tc-1")).await.unwrap();
+        assert_eq!(rec["status"], "timed_out");
+    }
+
+    #[test]
     fn fn_constants_match_spec_strings() {
         assert_eq!(FN_RESOLVE, "approval::resolve");
         assert_eq!(FN_LIST_PENDING, "approval::list_pending");
