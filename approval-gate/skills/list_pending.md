@@ -1,13 +1,11 @@
 # approval::list_pending
 
-Return every unresolved approval envelope for one session prefix so dashboards can hydrate after reload.
+Return currently-pending approval records for a session, used by UI hydration on browser reconnect.
 
-`(payload) → { pending: [...] }` — pass `{ "session_id": "<sid>" }`. Empty `session_id` returns `pending: []`.
+**Payload:**
+- `session_id` (string, required)
 
-## When to use
+**Returns:**
+- `{ pending: [Record, …] }` — only `status: "pending"` records; legacy records and expired pendings are filtered.
 
-- Hydrate the approvals rail when the SPA boots or reconnects after focus changes.
-
-## Notes
-
-Only rows whose `status` is still `"pending"` are returned; resolved rows stay in state until pruned externally.
+For agent-facing turn integration use `approval::list_undelivered` instead.

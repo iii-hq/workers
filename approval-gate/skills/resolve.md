@@ -1,13 +1,20 @@
 # approval::resolve
 
-Apply a workspace operator decision to unblock (or permanently block) one pending tool call keyed by `(session_id, function_call_id)`.
+Resolve a pending approval entry.
 
-`(input) → { ok, error? }` — send `session_id`, `function_call_id` (legacy `tool_call_id` alias), string `decision` (`allow` | `deny`), and optional `reason` text for denies. Entries must currently be `status: pending` in state.
+**Payload:**
+- `session_id` (string, required)
+- `function_call_id` (string, required) — accepts legacy `tool_call_id`
+- `decision` (string, required) — `"allow"` or `"deny"`
+- `reason` (string, optional) — surfaced as `decision_reason` on deny
 
-## When to use
+**Returns:**
+- `{ ok: true }` on success
+- `{ ok: false, error: "not_found" | "already_resolved" | "bad_decision" | "missing_id" | "timed_out" | "state_write_failed" }`
 
-- The chat shell shows an approval row tied to `approval_requested`; the UI calls this after the user confirms or rejects the action.
+**Behavior:**
+- On `allow`: gate invokes the underlying function via `iii.trigger` and records the outcome (`executed { result }` or `failed { error }`).
+- On `deny`: records `denied { decision_reason }` and never invokes the function.
+- On expired-pending: flips to `timed_out` and returns `{ ok: false, error: "timed_out" }`; late decision is not honored.
 
-## Notes
-
-Requires the `state::*` primitives on the bus and the configured `approval_state_scope` matching this worker (`config.yaml` / operator manifest).
+Resolution is async with respect to the agent's turn — the agent sees a `pending_approval` tool result immediately when the call is intercepted, and the outcome stitches into the agent's next turn via `approval::list_undelivered`.
