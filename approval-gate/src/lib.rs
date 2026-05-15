@@ -184,13 +184,31 @@ pub fn build_pending_record(
 /// Build a new record by transitioning a pending base record to a terminal
 /// status. All terminal fields (`result`, `error`, `decision_reason`) are
 /// optional; only the ones provided are attached. Existing fields on the
-/// base (including `delivered_in_turn_id` if present) are preserved.
+/// base (including `delivered_in_turn_id` and `resolved_at` if present) are
+/// preserved. The first transition into a terminal status stamps
+/// `resolved_at`.
 pub fn transition_record(
     base: &Value,
     new_status: &str,
     result: Option<Value>,
     error: Option<String>,
     decision_reason: Option<String>,
+) -> Value {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    transition_record_with_now(base, new_status, result, error, decision_reason, now_ms)
+}
+
+/// Testable variant of [`transition_record`] that takes `now_ms` directly.
+pub fn transition_record_with_now(
+    base: &Value,
+    new_status: &str,
+    result: Option<Value>,
+    error: Option<String>,
+    decision_reason: Option<String>,
+    now_ms: u64,
 ) -> Value {
     let mut rec = base.clone();
     if let Some(obj) = rec.as_object_mut() {
@@ -203,6 +221,9 @@ pub fn transition_record(
         }
         if let Some(reason) = decision_reason {
             obj.insert("decision_reason".into(), Value::String(reason));
+        }
+        if is_terminal_status(new_status) && !obj.contains_key("resolved_at") {
+            obj.insert("resolved_at".into(), Value::Number(now_ms.into()));
         }
     }
     rec
@@ -1096,6 +1117,50 @@ mod tests {
             "expires_at": 1_000_u64,
         });
         assert!(maybe_flip_timed_out(&rec, 999_999_999).is_none());
+    }
+
+    #[test]
+    fn transition_record_stamps_resolved_at_for_terminal_status() {
+        let base = build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let rec = transition_record_with_now(
+            &base,
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+            12_345,
+        );
+        assert_eq!(rec["resolved_at"].as_u64(), Some(12_345));
+    }
+
+    #[test]
+    fn transition_record_preserves_existing_resolved_at_on_relift() {
+        let base = build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let first = transition_record_with_now(
+            &base,
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+            12_345,
+        );
+        let second = transition_record_with_now(
+            &first,
+            "executed",
+            Some(json!({"ok": true})),
+            None,
+            None,
+            99_999,
+        );
+        assert_eq!(second["resolved_at"].as_u64(), Some(12_345));
+    }
+
+    #[test]
+    fn transition_record_does_not_stamp_resolved_at_for_intermediate_status() {
+        let base = build_pending_record("c1", "shell::fs::write", &json!({}), 1_000, 60_000);
+        let rec =
+            transition_record_with_now(&base, "approved", None, None, None, 12_345);
+        assert!(rec.get("resolved_at").is_none());
     }
 
     #[tokio::test]
