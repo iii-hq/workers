@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-mono:
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+
+  --color-bg: #f2f0ed;
+  --color-panel: #e9e6e2;
+  --color-paper-2: #ebe8e3;
+
+  --color-ink: #0a0a0a;
+  --color-ink-faint: #6b6865;
+  --color-ink-ghost: #a3a09c;
+
+  --color-rule: #d8d5d0;
+  --color-rule-2: #e6e3df;
+
+  --color-accent: #ff5a1f;
+  --color-accent-fg: #f2f0ed;
+
+  --color-alert: #c43e1c;
+  --color-warn: #a87a00;
+
+  --radius-none: 0px;
+  --radius-full: 9999px;
+
+  --spacing-gutter: 24px;
+  --spacing-section-x: 36px;
+  --spacing-section-y: 80px;
+  --spacing-sheet-max: 1200px;
+  --spacing-content-max: 1216px;
+}
+
+[data-theme="dark"] {
+  --color-bg: #111110;
+  --color-panel: #1a1916;
+  --color-paper-2: #1f1e1c;
+  --color-ink: #f2f0ed;
+  --color-ink-faint: #9c9893;
+  --color-ink-ghost: #5d5a55;
+  --color-rule: #2a2926;
+  --color-rule-2: #1f1e1c;
+  --color-accent: #3ea8ff;
+  --color-accent-fg: #111110;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html,
+  body {
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-feature-settings:
+      "liga" 0,
+      "clig" 0,
+      "calt" 0,
+      "dlig" 0;
+  }
+
+  ::selection {
+    background-color: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-rule);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-ghost);
+  }
+}
+
+@keyframes pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@utility pulse-dot {
+  animation: pulse-dot 1.6s ease-out infinite;
+}
+
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@utility blink {
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes wiggle {
+  0%,
+  90%,
+  100% {
+    transform: rotate(0deg);
+  }
+  93% {
+    transform: rotate(-3deg);
+  }
+  96% {
+    transform: rotate(3deg);
+  }
+}
+
+@utility wiggle {
+  animation: wiggle 3s ease-in-out infinite;
+}
+
+/* sanctioned exception to the no-gradients rule: a soft sweep across the */
+/* text mask used to telegraph "thinking" / "streaming" model states. */
+@keyframes thinking-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@utility thinking-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-ink-ghost) 0%,
+    var(--color-ink) 50%,
+    var(--color-ink-ghost) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+}
+
+@utility deal-shadow {
+  box-shadow:
+    -2px 0 0 var(--color-rule),
+    -16px 4px 36px -10px rgba(0, 0, 0, 0.22);
+}
+
+/* lexical editor surface — keep it boring so it inherits the rest of the system */
+.composer-editor {
+  outline: none;
+  min-height: 56px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--color-ink);
+}
+
+.composer-placeholder {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  color: var(--color-ink-ghost);
+  user-select: none;
+}
+
+/* iii-styled <details> rows: hide the native marker, rotate our own chevron */
+.iii-details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.iii-details > summary::-webkit-details-marker {
+  display: none;
+}
+.iii-details > summary .iii-chev {
+  display: inline-block;
+  transition: transform 150ms ease-out;
+}
+.iii-details[open] > summary .iii-chev {
+  transform: rotate(90deg);
+}
