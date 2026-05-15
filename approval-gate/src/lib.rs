@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod manifest;
 pub mod record;
 pub mod rules;
+pub mod state;
 pub mod wire;
 
 pub use config::{InterceptorRule, WorkerConfig};
@@ -15,9 +16,15 @@ pub use lifecycle::{
     transition_record, transition_record_with_now,
 };
 pub use record::{Next, Record, Status};
+pub use state::{
+    unverified_marker_targets, FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus,
+};
 pub use wire::{
     block_reply_for, extract_call, pending_key, Decision, Denial, IncomingCall, WireDecision,
 };
+use state::rule_for;
+#[cfg(test)]
+use state::merge_from_approval_marker_if_needed;
 
 use std::sync::{Arc, RwLock};
 
@@ -36,10 +43,6 @@ pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
-
-fn rule_for<'a>(rules: &'a [InterceptorRule], function_id: &str) -> Option<&'a InterceptorRule> {
-    rules.iter().find(|r| r.function_id == function_id)
-}
 
 /// What the subscriber should do with an incoming call. Decided by the
 /// matching interceptor rule (authoritative) with a fallback to the run's
@@ -76,32 +79,6 @@ pub(crate) fn decide_intercept_action(
         Some(_) => InterceptAction::Pause,
         None if requires_approval => InterceptAction::Pause,
         None => InterceptAction::Pass,
-    }
-}
-
-fn merge_from_approval_marker_if_needed(
-    inject: bool,
-    args: Value,
-    function_call_id: &str,
-    session_id: &str,
-) -> Value {
-    if !inject {
-        return args;
-    }
-    let marker = json!({
-        "call_id": function_call_id,
-        "session_id": session_id,
-    });
-    match args {
-        Value::Object(mut m) => {
-            m.insert("__from_approval".into(), marker);
-            Value::Object(m)
-        }
-        other if other.is_null() => json!({ "__from_approval": marker }),
-        other => json!({
-            "payload": other,
-            "__from_approval": marker,
-        }),
     }
 }
 
@@ -184,57 +161,6 @@ pub struct Refs {
     /// emits the corresponding `approval_resolved` events. Kept alive by
     /// virtue of being held here; aborts when the worker shuts down.
     pub sweeper: tokio::task::JoinHandle<()>,
-}
-
-#[async_trait::async_trait]
-pub trait StateBus: Send + Sync {
-    async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError>;
-    async fn get(&self, scope: &str, key: &str) -> Option<Value>;
-    async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
-}
-
-/// Invokes an iii function with arguments and returns its result or an error
-/// string. Abstracted so tests can stub the underlying call.
-#[async_trait::async_trait]
-pub trait FunctionExecutor: Send + Sync {
-    async fn invoke(
-        &self,
-        function_id: &str,
-        args: Value,
-        function_call_id: &str,
-        session_id: &str,
-    ) -> Result<Value, String>;
-}
-
-/// Production [`FunctionExecutor`] backed by `iii.trigger`.
-pub struct IiiFunctionExecutor {
-    pub iii: III,
-    pub rules: Arc<Vec<InterceptorRule>>,
-}
-
-#[async_trait::async_trait]
-impl FunctionExecutor for IiiFunctionExecutor {
-    async fn invoke(
-        &self,
-        function_id: &str,
-        args: Value,
-        function_call_id: &str,
-        session_id: &str,
-    ) -> Result<Value, String> {
-        let inject =
-            rule_for(self.rules.as_slice(), function_id).is_some_and(|r| r.inject_approval_marker);
-        let payload =
-            merge_from_approval_marker_if_needed(inject, args, function_call_id, session_id);
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map_err(|e| e.to_string())
-    }
 }
 
 /// Decide whether a call is gated; if so, write a pending record and return
@@ -994,70 +920,6 @@ async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &
             timeout_ms: None,
         })
         .await;
-}
-
-/// Production [`StateBus`] backed by a real iii-sdk [`III`] connection.
-pub struct IiiStateBus(pub III);
-
-#[async_trait::async_trait]
-impl StateBus for IiiStateBus {
-    async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
-        self.0
-            .trigger(TriggerRequest {
-                function_id: "state::set".into(),
-                payload: json!({ "scope": scope, "key": key, "value": value }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map(|_| ())
-    }
-    async fn get(&self, scope: &str, key: &str) -> Option<Value> {
-        self.0
-            .trigger(TriggerRequest {
-                function_id: "state::get".into(),
-                payload: json!({ "scope": scope, "key": key }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .ok()
-            .filter(|v| !v.is_null())
-    }
-    async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
-        let resp = self
-            .0
-            .trigger(TriggerRequest {
-                function_id: "state::list".into(),
-                payload: json!({ "scope": scope, "prefix": prefix }),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .unwrap_or_else(|_| json!({ "items": [] }));
-        // Engine may return either {"items": [...]} or a plain Array.
-        if let Some(arr) = resp.as_array() {
-            return arr.clone();
-        }
-        resp.get("items")
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|entry| entry.get("value").cloned().unwrap_or(entry))
-            .collect()
-    }
-}
-
-/// Return the list of function ids whose interceptor asks the gate to
-/// inject `__from_approval` without asserting that the target validates it.
-/// Empty list ⇒ config is safe to register. Pure — exposed for tests and
-/// for the boot-time check in [`register`].
-pub fn unverified_marker_targets(rules: &[InterceptorRule]) -> Vec<&str> {
-    rules
-        .iter()
-        .filter(|r| r.inject_approval_marker && !r.marker_target_verified)
-        .map(|r| r.function_id.as_str())
-        .collect()
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
