@@ -8,7 +8,7 @@ pub mod rules;
 
 pub use config::{InterceptorRule, WorkerConfig};
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use iii_sdk::{
     FunctionRef, IIIError, RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest, III,
@@ -661,6 +661,7 @@ pub async fn handle_resolve(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
+    policy_rules: &RwLock<rules::Ruleset>,
     payload: Value,
     now_ms: u64,
 ) -> Value {
@@ -723,36 +724,183 @@ pub async fn handle_resolve(
             json!({ "ok": true })
         }
         WireDecision::Allow => {
-            let function_id = existing
-                .get("function_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let args = existing.get("args").cloned().unwrap_or(json!({}));
-            let approved = transition_record(&existing, "approved", None, None, None);
-            // Best-effort intermediate write; if it fails, still try to invoke.
-            let _ = bus.set(state_scope, &key, approved.clone()).await;
-            match exec
-                .invoke(&function_id, args, function_call_id, session_id)
-                .await
+            if let Err(err) = approve_and_execute(
+                bus,
+                exec,
+                state_scope,
+                &existing,
+                session_id,
+                function_call_id,
+            )
+            .await
             {
-                Ok(result) => {
-                    let executed =
-                        transition_record(&approved, "executed", Some(result), None, None);
-                    if let Err(e) = bus.set(state_scope, &key, executed).await {
-                        tracing::error!("approval-gate: failed to write executed record: {e}");
-                        return json!({ "ok": false, "error": "state_write_failed" });
-                    }
-                }
-                Err(error) => {
-                    let failed = transition_record(&approved, "failed", None, Some(error), None);
-                    if let Err(e) = bus.set(state_scope, &key, failed).await {
-                        tracing::error!("approval-gate: failed to write failed record: {e}");
-                        return json!({ "ok": false, "error": "state_write_failed" });
-                    }
-                }
+                tracing::error!(
+                    "approval-gate: failed to execute approved call: {err}"
+                );
+                return json!({ "ok": false, "error": "state_write_failed" });
             }
-            json!({ "ok": true })
+
+            // Optional cascade: when `always: true` is set on an allow
+            // reply, add a runtime Allow rule for this call's function id
+            // and resolve every other pending record in the same session
+            // that the new rule covers. v1 scope is function-id-only —
+            // the cascade rule's `pattern` is "*" to match the v1 rules
+            // surface. See [`crate::rules`].
+            let cascaded = if payload
+                .get("always")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let function_id = existing
+                    .get("function_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                cascade_allow_for_session(
+                    bus,
+                    exec,
+                    state_scope,
+                    policy_rules,
+                    session_id,
+                    function_call_id,
+                    &function_id,
+                )
+                .await
+            } else {
+                0
+            };
+
+            if cascaded > 0 {
+                json!({ "ok": true, "cascaded": cascaded })
+            } else {
+                json!({ "ok": true })
+            }
+        }
+    }
+}
+
+/// Push an Allow rule for `function_id` into the shared policy ruleset,
+/// then resolve every pending record in `session_id` (other than the one
+/// just resolved by the caller) that the new rule covers. Returns the
+/// number of records auto-resolved.
+///
+/// The function id rule is appended once; if the user clicks "always
+/// allow X" twice for the same X within a session, the second push is a
+/// duplicate but harmless (last-wins still picks Allow). State-write
+/// failures inside the loop are logged and skipped so a single bad
+/// record can't prevent the rest of the cascade.
+async fn cascade_allow_for_session(
+    bus: &dyn StateBus,
+    exec: &dyn FunctionExecutor,
+    state_scope: &str,
+    policy_rules: &RwLock<rules::Ruleset>,
+    session_id: &str,
+    originator_call_id: &str,
+    originator_function_id: &str,
+) -> u64 {
+    // Push the new Allow rule under the write lock. Hold the guard only
+    // for the mutation, not across the .await in the sweep below.
+    {
+        let mut guard = policy_rules
+            .write()
+            .expect("approval-gate policy rules lock poisoned");
+        guard.push(rules::Rule {
+            permission: originator_function_id.to_string(),
+            pattern: "*".to_string(),
+            action: rules::Action::Allow,
+        });
+    }
+
+    // Snapshot the session's pending records and re-evaluate each one
+    // against the now-updated rules. Use a read-clone so we don't hold
+    // the lock across .await.
+    let prefix = format!("{session_id}/");
+    let session_records = bus.list_prefix(state_scope, &prefix).await;
+    let mut cascaded = 0u64;
+    for rec in session_records {
+        let rec_call_id = match rec.get("function_call_id").and_then(Value::as_str) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if rec_call_id == originator_call_id {
+            continue;
+        }
+        if rec.get("status").and_then(Value::as_str) != Some("pending") {
+            continue;
+        }
+        let fn_id = rec
+            .get("function_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let outcome = {
+            let guard = policy_rules
+                .read()
+                .expect("approval-gate policy rules lock poisoned");
+            apply_policy_rules(&guard, &fn_id)
+        };
+        if !matches!(outcome, PolicyOutcome::Allow) {
+            continue;
+        }
+        if let Err(err) =
+            approve_and_execute(bus, exec, state_scope, &rec, session_id, &rec_call_id).await
+        {
+            tracing::warn!(
+                session_id,
+                call_id = %rec_call_id,
+                "approval-gate: cascade auto-resolve failed: {err}"
+            );
+            continue;
+        }
+        cascaded += 1;
+    }
+    cascaded
+}
+
+/// Drive a pending record through the approved → invoke → executed/failed
+/// flow. Pure plumbing — does not consult policy rules, does not check
+/// the original status (caller must have verified it's pending). Used by
+/// both the user-driven [`handle_resolve`] allow path and the
+/// cascade-on-`always` sweep so the state transitions stay in one place.
+///
+/// Returns `Err` only when a state write fails; the invocation result
+/// itself (success or function-error) is captured on the record. The
+/// caller decides how to surface a state-write failure (the existing
+/// handlers map it to `{ok:false, error:"state_write_failed"}`).
+pub(crate) async fn approve_and_execute(
+    bus: &dyn StateBus,
+    exec: &dyn FunctionExecutor,
+    state_scope: &str,
+    pending: &Value,
+    session_id: &str,
+    function_call_id: &str,
+) -> Result<(), String> {
+    let function_id = pending
+        .get("function_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let args = pending.get("args").cloned().unwrap_or(json!({}));
+    let key = pending_key(session_id, function_call_id);
+    let approved = transition_record(pending, "approved", None, None, None);
+    // Best-effort intermediate write; if it fails we still try to invoke
+    // so the user-visible behavior matches the pre-extraction allow path.
+    let _ = bus.set(state_scope, &key, approved.clone()).await;
+    match exec
+        .invoke(&function_id, args, function_call_id, session_id)
+        .await
+    {
+        Ok(result) => {
+            let executed = transition_record(&approved, "executed", Some(result), None, None);
+            bus.set(state_scope, &key, executed)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        Err(error) => {
+            let failed = transition_record(&approved, "failed", None, Some(error), None);
+            bus.set(state_scope, &key, failed)
+                .await
+                .map_err(|e| e.to_string())
         }
     }
 }
@@ -1254,8 +1402,11 @@ pub fn unverified_marker_targets(rules: &[InterceptorRule]) -> Vec<&str> {
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
     // Layered policy rules consulted before the per-function interceptor
-    // flow. See [`crate::rules`].
-    let policy_rules: Arc<crate::rules::Ruleset> = Arc::new(cfg.rules.clone());
+    // flow. Wrapped in RwLock so a user reply with `always: true` on
+    // `approval::resolve` can push a new Allow rule at runtime (see the
+    // cascade in `handle_resolve`). See [`crate::rules`].
+    let policy_rules: Arc<RwLock<crate::rules::Ruleset>> =
+        Arc::new(RwLock::new(cfg.rules.clone()));
 
     // Fail fast on honor-system markers: any interceptor that asks the gate
     // to inject `__from_approval` MUST also assert the target validates it.
@@ -1300,11 +1451,14 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         rules: rules.clone(),
     });
     let iii_for_resolve = iii.clone();
+    let policy_rules_for_resolve = policy_rules.clone();
     let resolve = iii.register_function((
         RegisterFunctionMessage::with_id(FN_RESOLVE.into()).with_description(
             "Resolve a pending approval. On allow, invokes the underlying function; \
-                     on deny, records the denial. The result is stitched into the agent's \
-                     next turn as a system message."
+                     on deny, records the denial. With `always: true` on an allow reply, \
+                     a runtime rule is added so future calls to this function id auto-allow, \
+                     and the session's other pending calls newly matching are cascade-resolved. \
+                     The result is stitched into the agent's next turn as a system message."
                 .into(),
         ),
         move |payload: Value| {
@@ -1312,6 +1466,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let exec = exec_for_resolve.clone();
             let scope_resolve = scope_resolve.clone();
             let iii = iii_for_resolve.clone();
+            let policy_rules = policy_rules_for_resolve.clone();
             async move {
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1321,6 +1476,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     bus.as_ref(),
                     exec.as_ref(),
                     &scope_resolve,
+                    &policy_rules,
                     payload.clone(),
                     now_ms,
                 )
@@ -1528,7 +1684,16 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                 // Layered policy rules run first. Allow / Deny short-circuit;
                 // Ask (and no-match) falls through to the existing per-function
                 // interceptor flow. Pattern is "*" in v1 — see `crate::rules`.
-                match apply_policy_rules(policy_rules.as_ref(), &call.function_id) {
+                // Read-lock is acquired and dropped inside a block so the
+                // guard never crosses an `.await` (std::sync::RwLock is not
+                // async-safe to hold across suspension points).
+                let policy_outcome = {
+                    let guard = policy_rules
+                        .read()
+                        .expect("approval-gate policy rules lock poisoned");
+                    apply_policy_rules(&guard, &call.function_id)
+                };
+                match policy_outcome {
                     PolicyOutcome::Allow => {
                         return Ok::<_, IIIError>(json!({ "block": false }));
                     }
@@ -1659,6 +1824,13 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Empty policy ruleset for tests that exercise [`handle_resolve`]
+    /// without cascading. Each call freshly constructs the lock so unit
+    /// tests stay independent — there's no shared mutable state.
+    fn empty_policy_rules() -> std::sync::RwLock<crate::rules::Ruleset> {
+        std::sync::RwLock::new(crate::rules::Ruleset::new())
+    }
 
     #[test]
     fn maybe_flip_timed_out_returns_some_when_pending_and_expired() {
@@ -2246,6 +2418,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
             70_000,
         )
@@ -2894,6 +3067,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
@@ -2920,6 +3094,249 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allow_without_always_does_not_cascade() {
+        // Two pending shell::exec calls in the same session. Resolving
+        // the first with allow (always=false) must NOT touch the second.
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        for cid in ["tc-1", "tc-2"] {
+            let mut rec = build_pending_record(cid, "shell::exec", &json!({}), 1_000, 60_000);
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), json!("s1"));
+            bus.set(STATE_SCOPE, &pending_key("s1", cid), rec)
+                .await
+                .unwrap();
+        }
+        let rules = empty_policy_rules();
+        let resp = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            &rules,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(resp["ok"], true);
+        assert!(
+            resp.get("cascaded").is_none(),
+            "cascaded field must be omitted when always was not set: {resp}"
+        );
+        let other = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-2"))
+            .await
+            .unwrap();
+        assert_eq!(other["status"], "pending");
+        assert_eq!(rules.read().unwrap().len(), 0, "rule must not be pushed");
+    }
+
+    #[tokio::test]
+    async fn allow_with_always_pushes_rule_and_cascades_same_session_pending() {
+        // Three pending calls in session s1: two shell::exec, one
+        // shell::fs::write. Resolving the first shell::exec with
+        // always=true must:
+        //   1. Push an Allow rule for shell::exec
+        //   2. Auto-resolve the other shell::exec pending in this session
+        //   3. Leave the shell::fs::write pending untouched
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        for (cid, fn_id) in [
+            ("tc-1", "shell::exec"),
+            ("tc-2", "shell::exec"),
+            ("tc-3", "shell::fs::write"),
+        ] {
+            let mut rec = build_pending_record(cid, fn_id, &json!({}), 1_000, 60_000);
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), json!("s1"));
+            bus.set(STATE_SCOPE, &pending_key("s1", cid), rec)
+                .await
+                .unwrap();
+        }
+        let rules = empty_policy_rules();
+
+        let resp = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            &rules,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+                "always": true,
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(resp["ok"], true);
+        assert_eq!(
+            resp["cascaded"], json!(1),
+            "tc-2 should cascade; tc-1 originator excluded; tc-3 not matched"
+        );
+
+        // The Allow rule for shell::exec is now in the shared ruleset.
+        let pushed = rules.read().unwrap();
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].permission, "shell::exec");
+        assert_eq!(pushed[0].action, rules::Action::Allow);
+        drop(pushed);
+
+        // Originator and cascaded record both transitioned to executed.
+        let r1 = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
+        let r2 = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-2"))
+            .await
+            .unwrap();
+        let r3 = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-3"))
+            .await
+            .unwrap();
+        assert_eq!(r1["status"], "executed");
+        assert_eq!(r2["status"], "executed");
+        assert_eq!(
+            r3["status"], "pending",
+            "non-matching function_id must stay pending: {r3}"
+        );
+
+        // Executor was invoked twice: originator + cascaded.
+        assert_eq!(exec.calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cascade_does_not_cross_session_boundary() {
+        // tc-1 in session s1, tc-2 in session s2 — both shell::exec.
+        // Resolving s1/tc-1 with always must not touch s2/tc-2.
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        for (session, cid) in [("s1", "tc-1"), ("s2", "tc-2")] {
+            let mut rec = build_pending_record(cid, "shell::exec", &json!({}), 1_000, 60_000);
+            rec.as_object_mut()
+                .unwrap()
+                .insert("session_id".into(), json!(session));
+            bus.set(STATE_SCOPE, &pending_key(session, cid), rec)
+                .await
+                .unwrap();
+        }
+        let rules = empty_policy_rules();
+
+        let resp = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            &rules,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+                "always": true,
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(resp["ok"], true);
+        assert!(
+            resp.get("cascaded").is_none() || resp["cascaded"] == json!(0),
+            "no record in s1 to cascade onto; tc-2 in s2 must NOT be touched: {resp}"
+        );
+
+        let other_session = bus
+            .get(STATE_SCOPE, &pending_key("s2", "tc-2"))
+            .await
+            .unwrap();
+        assert_eq!(other_session["status"], "pending");
+        assert_eq!(
+            exec.calls.lock().unwrap().len(),
+            1,
+            "only the originator should have been invoked"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_skips_originator_record() {
+        // Single pending record. always=true must not double-resolve it.
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        let mut rec = build_pending_record("tc-1", "shell::exec", &json!({}), 1_000, 60_000);
+        rec.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), json!("s1"));
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec)
+            .await
+            .unwrap();
+        let rules = empty_policy_rules();
+
+        let resp = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            &rules,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+                "always": true,
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(resp["ok"], true);
+        // Originator counts under the existing allow path, not the cascade.
+        assert!(resp.get("cascaded").is_none() || resp["cascaded"] == json!(0));
+        assert_eq!(exec.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cascade_skips_already_resolved_records_in_session() {
+        // Two records in s1: tc-1 pending, tc-2 already terminal. The
+        // cascade must skip tc-2.
+        let bus = InMemoryStateBus::new();
+        let exec = FakeExecutor::default();
+        let mut r1 = build_pending_record("tc-1", "shell::exec", &json!({}), 1_000, 60_000);
+        r1.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), json!("s1"));
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), r1)
+            .await
+            .unwrap();
+        let mut r2 = build_pending_record("tc-2", "shell::exec", &json!({}), 1_000, 60_000);
+        r2.as_object_mut()
+            .unwrap()
+            .insert("session_id".into(), json!("s1"));
+        let r2_done = transition_record(&r2, "executed", Some(json!({"ok": true})), None, None);
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-2"), r2_done)
+            .await
+            .unwrap();
+
+        let rules = empty_policy_rules();
+        let resp = handle_resolve(
+            &bus,
+            &exec,
+            STATE_SCOPE,
+            &rules,
+            json!({
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "decision": "allow",
+                "always": true,
+            }),
+            1_500,
+        )
+        .await;
+        assert_eq!(resp["ok"], true);
+        // tc-2 is terminal — not pending — so cascade skips it.
+        assert!(resp.get("cascaded").is_none() || resp["cascaded"] == json!(0));
+    }
+
+    #[tokio::test]
     async fn handle_resolve_deny_does_not_invoke_function() {
         let bus = InMemoryStateBus::new();
         let exec = FakeExecutor::default();
@@ -2935,6 +3352,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
@@ -2977,6 +3395,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({"session_id":"s1","function_call_id":"tc-1","decision":"allow"}),
             1_500,
         )
@@ -3059,6 +3478,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "function_call_id": "tc-1",
                 "session_id": "s1",
@@ -3092,6 +3512,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "tool_call_id": "tc-1",
                 "session_id": "s1",
@@ -3118,6 +3539,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({"function_call_id": "tc-1", "session_id": "s1", "decision": "deny"}),
             1_500,
         )
@@ -3171,6 +3593,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
@@ -3205,6 +3628,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({
                 "session_id": "s1",
                 "function_call_id": "tc-1",
@@ -3635,6 +4059,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({"session_id": "", "function_call_id": "c", "decision": "allow"}),
             0,
         )
@@ -3644,6 +4069,7 @@ mod tests {
             &bus,
             &exec,
             STATE_SCOPE,
+            &empty_policy_rules(),
             json!({"session_id": "s", "function_call_id": "", "decision": "allow"}),
             0,
         )
@@ -3938,26 +4364,33 @@ mod tests {
                         }
                         Op::ResolveAllow => {
                             let _ = handle_resolve(
-                                &bus, &exec, STATE_SCOPE,
+                                &bus,
+                                &exec,
+                                STATE_SCOPE,
+                                &empty_policy_rules(),
                                 json!({
                                     "session_id": session_id,
                                     "function_call_id": call_id,
                                     "decision": "allow",
                                 }),
                                 now_ms,
-                            ).await;
+                            )
+                            .await;
                         }
                         Op::ResolveDeny => {
                             let _ = handle_resolve(
-                                &bus, &exec, STATE_SCOPE,
+                                &bus,
+                                &exec,
+                                STATE_SCOPE,
+                                &empty_policy_rules(),
                                 json!({
                                     "session_id": session_id,
                                     "function_call_id": call_id,
                                     "decision": "deny",
-                                    "reason": "user",
                                 }),
                                 now_ms,
-                            ).await;
+                            )
+                            .await;
                         }
                         Op::AdvanceClockAndLazyFlip => {
                             now_ms = now_ms.saturating_add(timeout_ms + 1);
