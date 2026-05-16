@@ -1,74 +1,27 @@
 use std::sync::Arc;
 
-use iii_sdk::TriggerRequest;
-use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::ShellConfig;
 use crate::exec::host::{build_command, parse_argv};
 use crate::exec::sandbox::SandboxExecResponse;
-use crate::functions::approval_bypass::{marker_wellformed, validate_approved_record_for_bypass};
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use crate::target::Target;
 use crate::triggers::{IiiTriggerFwd, TriggerFwd};
 use tokio::io::AsyncReadExt;
 
-const FN_APPROVAL_LOOKUP_RECORD: &str = "approval::lookup_record";
-
-async fn fetch_approval_record(iii: &iii_sdk::III, session_id: &str, call_id: &str) -> Result<Value, String> {
-    let v = iii
-        .trigger(TriggerRequest {
-            function_id: FN_APPROVAL_LOOKUP_RECORD.into(),
-            payload: json!({
-                "session_id": session_id,
-                "function_call_id": call_id,
-            }),
-            action: None,
-            timeout_ms: Some(10_000),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    if v.is_null() {
-        Err("__from_approval marker without valid pending approval record".into())
-    } else {
-        Ok(v)
-    }
-}
-
 pub async fn handle(
     cfg: Arc<ShellConfig>,
     iii: iii_sdk::III,
     req: ExecBgRequest,
 ) -> Result<ExecBgResponse, String> {
-    // Field-level type errors (wrong-type `command`, non-string `args[i]`,
-    // bad `target.kind`) come from the per-field deserializers in
-    // `functions::types`; the SDK forwards them as the trigger `Err` with
-    // the actionable text the LLM needs to self-correct.
-    // See `functions::exec` — `args.as_ref()` preserves the shell-words
-    // tokenization contract when the caller omits `args`.
-    let handler_id = "shell::exec_bg";
-    let argv = if let Some(ref marker) = req.from_approval {
-        marker_wellformed(marker)?;
-        let rec = fetch_approval_record(&iii, &marker.session_id, &marker.call_id).await?;
-        validate_approved_record_for_bypass(&rec, handler_id, &req.command, &req.args)?;
-        let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
-        if let Some(reason) = cfg.denylist_hit_reason(&argv) {
-            tracing::error!(
-                reason = %reason,
-                "post-approval defense-in-depth: denylisted argv on approval bypass path"
-            );
-            return Err(format!(
-                "post-approval defense-in-depth: {}",
-                reason
-            ));
-        }
-        argv
-    } else {
-        let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
-        cfg.is_command_allowed(&argv)?;
-        argv
-    };
+    // Plain executor (T13). All policy lives in approval-gate's rules
+    // layer; shell trusts its caller. `parse_argv`'s two-mode contract:
+    //   None → tokenize `command` via shell-words
+    //   Some(_) → use args verbatim
+    let argv = parse_argv(&req.command, req.args.as_ref())
+        .map_err(|e| format!("argv: {e}"))?;
 
     match req.target {
         Target::Host => spawn_host_job(cfg, argv).await,
@@ -367,7 +320,6 @@ mod sandbox_path_tests {
             max_output_bytes: 4096,
             ..Default::default()
         };
-        c.compile_denylist().unwrap();
         Arc::new(c)
     }
 
