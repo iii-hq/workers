@@ -4,7 +4,12 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: approval-gate
-description: Hook subscriber on agent::before_function_call that pauses function calls listed in approval_required until the UI resolves them via approval::resolve.
+description: |
+  Hook subscriber on agent::before_function_call. Decides every LLM-initiated
+  function call via a layered rules engine. Allow → pass through. Deny →
+  structured Denial::Policy. Ask → write a Pending record and wait for
+  approval::resolve. The classifier surface and __from_approval marker are gone;
+  policy lives entirely in the rules layer.
 
 runtime:
   kind: rust
@@ -17,12 +22,34 @@ config:
   topic: agent::before_function_call
   approval_state_scope: approvals
   default_timeout_ms: 300000
-  interceptors:
-    - function_id: shell::exec
-      classifier: shell::classify_argv
-      classifier_timeout_ms: 2000
-      inject_approval_marker: true
-    - function_id: shell::exec_bg
-      classifier: shell::classify_argv
-      classifier_timeout_ms: 2000
-      inject_approval_marker: true
+
+  # Curated default ruleset. `before_function_call` fires for every tool
+  # call; with no rules and no-match defaulting to Ask, an empty ruleset
+  # would prompt for every read-only function. The defaults below
+  # auto-allow safe reads and ask for everything that writes/executes/
+  # mutates. Operators stack their own rules on top — last-match wins.
+  rules:
+    # Read-only filesystem / introspection
+    - { permission: "fs::read",   pattern: "*", action: allow }
+    - { permission: "fs::list",   pattern: "*", action: allow }
+    - { permission: "fs::stat",   pattern: "*", action: allow }
+    - { permission: "fs::glob",   pattern: "*", action: allow }
+    - { permission: "fs::grep",   pattern: "*", action: allow }
+
+    # Read-only git
+    - { permission: "shell::exec", pattern: "git status*",  action: allow }
+    - { permission: "shell::exec", pattern: "git log*",     action: allow }
+    - { permission: "shell::exec", pattern: "git diff*",    action: allow }
+    - { permission: "shell::exec", pattern: "git show*",    action: allow }
+    - { permission: "shell::exec", pattern: "git branch*",  action: allow }
+    - { permission: "shell::exec", pattern: "git remote*",  action: allow }
+
+    # Approval API — the gate must not gate itself
+    - { permission: "approval::*", pattern: "*", action: allow }
+
+    # All remaining shell exec calls → ask
+    - { permission: "shell::exec",    pattern: "*", action: ask }
+    - { permission: "shell::exec_bg", pattern: "*", action: ask }
+
+    # Catch-all: anything else → ask. (Operator overrides go above.)
+    - { permission: "*", pattern: "*", action: ask }

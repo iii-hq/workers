@@ -51,17 +51,14 @@ pub struct Refs {
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
-    let rules: Arc<Vec<InterceptorRule>> = Arc::new(cfg.interceptors.clone());
-    // Layered policy rules consulted before the per-function interceptor
-    // flow. Wrapped in RwLock so a user reply with `always: true` on
-    // `approval::resolve` can push a new Allow rule at runtime (see the
-    // cascade in `handle_resolve`). See [`crate::rules`].
+    // Layered policy ruleset, wrapped in RwLock so cascade-on-`always:true`
+    // can push a runtime Allow rule (see resolve.rs::cascade_allow_for_session).
     let policy_rules: Arc<RwLock<rules::Ruleset>> = Arc::new(RwLock::new(cfg.rules.clone()));
 
-    // T10: the boot-time marker-target-verified check is gone with the
-    // marker plumbing. InterceptorRule.classifier is also retired — the
-    // alias-warning loop below stays as a config-hygiene check until T12
-    // strips InterceptorRule from config.rs entirely.
+    // No-op alias-warning loop kept as a no-op for backward source
+    // compatibility (no interceptors are configured anymore). Empty vec
+    // so the loop body never runs.
+    let rules: Arc<Vec<InterceptorRule>> = Arc::new(Vec::new());
     for rule in rules.iter() {
         if let Some(cid) = rule.classifier.as_deref() {
             if cid == FN_LOOKUP_RECORD

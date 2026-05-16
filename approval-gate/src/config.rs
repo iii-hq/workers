@@ -1,4 +1,14 @@
 //! YAML-backed runtime settings for [`WorkerConfig`].
+//!
+//! Post-refactor surface (T12):
+//!   - `topic` — hook bus topic the gate subscribes to.
+//!   - `approval_state_scope` — iii-state scope for approval records.
+//!   - `default_timeout_ms` — Pending-row TTL.
+//!   - `rules` — the layered ruleset (default + operator-shipped),
+//!     evaluated in order with last-match winning.
+//!
+//! Deleted in T12: `interceptors`, `sweeper_interval_ms`,
+//! `InterceptorRule` (the classifier surface is gone).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -15,33 +25,16 @@ fn default_default_timeout_ms() -> u64 {
     300_000
 }
 
-fn default_classifier_timeout_ms() -> u64 {
-    2000
-}
-
-fn default_sweeper_interval_ms() -> u64 {
-    2000
-}
-
-/// Per-function iii intercept rule: optional classifier trigger before pending +
-/// optional `__from_approval` injection on post-resolve `iii.trigger`.
-///
-/// `marker_target_verified` is the operator's explicit assertion that the
-/// `function_id` target validates `__from_approval` against
-/// `approval::lookup_record` on every invocation. When `inject_approval_marker`
-/// is true, [`crate::register`] refuses to start unless this flag is also
-/// true — closing the honor-system gap.
+/// Temporary alias retained while register.rs's classifier-alias warning
+/// loop still references the symbol. The struct is structurally unused
+/// (no fields populated from config) and will be deleted alongside the
+/// warning loop when there are no more callers. Provided here so the
+/// crate builds.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct InterceptorRule {
     pub function_id: String,
     #[serde(default)]
     pub classifier: Option<String>,
-    #[serde(default = "default_classifier_timeout_ms")]
-    pub classifier_timeout_ms: u64,
-    #[serde(default)]
-    pub inject_approval_marker: bool,
-    #[serde(default)]
-    pub marker_target_verified: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -52,14 +45,9 @@ pub struct WorkerConfig {
     pub approval_state_scope: String,
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
-    #[serde(default = "default_sweeper_interval_ms")]
-    pub sweeper_interval_ms: u64,
-    #[serde(default)]
-    pub interceptors: Vec<InterceptorRule>,
-    /// Layered permission rules consulted before per-function interceptors.
-    /// `Allow` short-circuits to pass-through; `Deny` short-circuits to a
-    /// policy [`crate::Denial`]; `Ask` (and no-match) falls through to the
-    /// existing [`InterceptorRule`] flow. See [`crate::rules`].
+    /// Layered permission ruleset. Allow / Deny / Ask actions. Evaluated
+    /// last-match-wins; the YAML's curated defaults ship at the bottom,
+    /// operator overrides stack on top. See [`crate::rules`].
     #[serde(default)]
     pub rules: crate::rules::Ruleset,
 }
@@ -70,8 +58,6 @@ impl Default for WorkerConfig {
             topic: default_topic(),
             approval_state_scope: default_approval_state_scope(),
             default_timeout_ms: default_default_timeout_ms(),
-            sweeper_interval_ms: default_sweeper_interval_ms(),
-            interceptors: Vec::new(),
             rules: Vec::new(),
         }
     }
@@ -91,6 +77,7 @@ pub fn load_config(path: &str) -> Result<WorkerConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::{Action, Rule};
 
     #[test]
     fn defaults_from_empty_yaml_mapping() {
@@ -98,63 +85,27 @@ mod tests {
         assert_eq!(cfg.topic, default_topic());
         assert_eq!(cfg.approval_state_scope, "approvals");
         assert_eq!(cfg.default_timeout_ms, 300_000);
-        assert_eq!(cfg.sweeper_interval_ms, 2000);
-        assert!(cfg.interceptors.is_empty());
+        assert!(cfg.rules.is_empty());
     }
 
     #[test]
-    fn marker_target_verified_defaults_false() {
+    fn rules_parse_from_yaml() {
         let yaml = r#"
-interceptors:
-  - function_id: shell::exec
-    inject_approval_marker: true
+rules:
+  - { permission: "shell::exec", pattern: "git status*", action: allow }
+  - { permission: "shell::exec", pattern: "*",            action: ask }
 "#;
         let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(cfg.interceptors[0].inject_approval_marker);
-        assert!(!cfg.interceptors[0].marker_target_verified);
-    }
-
-    #[test]
-    fn interceptors_default_empty() {
-        assert!(WorkerConfig::default().interceptors.is_empty());
-    }
-
-    #[test]
-    fn interceptors_parse_from_nested_config_block() {
-        let yaml = r#"
-interceptors:
-  - function_id: shell::exec
-    classifier: shell::classify_argv
-    classifier_timeout_ms: 1500
-    inject_approval_marker: true
-  - function_id: other::fn
-    classifier: null
-"#;
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.interceptors.len(), 2);
-        assert_eq!(cfg.interceptors[0].function_id, "shell::exec");
-        assert_eq!(
-            cfg.interceptors[0].classifier.as_deref(),
-            Some("shell::classify_argv")
-        );
-        assert_eq!(cfg.interceptors[0].classifier_timeout_ms, 1500);
-        assert!(cfg.interceptors[0].inject_approval_marker);
-        assert_eq!(cfg.interceptors[1].function_id, "other::fn");
-        assert!(cfg.interceptors[1].classifier.is_none());
-        assert!(!cfg.interceptors[1].inject_approval_marker);
-    }
-
-    #[test]
-    fn interceptor_rule_marker_defaults_false() {
-        let yaml = r#"
-interceptors:
-  - function_id: x::y
-    classifier: c::f
-"#;
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.interceptors.len(), 1);
-        assert!(!cfg.interceptors[0].inject_approval_marker);
-        assert_eq!(cfg.interceptors[0].classifier_timeout_ms, 2000);
+        assert_eq!(cfg.rules.len(), 2);
+        assert_eq!(cfg.rules[0].permission, "shell::exec");
+        assert_eq!(cfg.rules[0].pattern, "git status*");
+        assert_eq!(cfg.rules[0].action, Action::Allow);
+        assert_eq!(cfg.rules[1].action, Action::Ask);
+        let _ = Rule {  // smoke check on the imported type
+            permission: "x".into(),
+            pattern: "*".into(),
+            action: Action::Deny,
+        };
     }
 
     #[test]
