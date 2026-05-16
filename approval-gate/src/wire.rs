@@ -22,21 +22,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Structured deny payload carried on wire replies, persisted records, and
-/// `approval_resolved` stream events. Replaces the legacy free-form
-/// `decision_reason` / `reason` strings so consumers (turn-orchestrator
-/// stitching, UIs, the LLM) can branch on `kind` instead of parsing prose.
+/// `approval_resolved` stream events. Consumers (turn-orchestrator
+/// stitching, UIs, the LLM) branch on `kind` instead of parsing prose.
 ///
 /// Wire shape (serde tag=kind, content=detail, snake_case):
-///   `{ "kind": "policy", "detail": { "classifier_reason": "...", "classifier_fn": "..." } }`
+///   `{ "kind": "policy", "detail": { "rule_permission": "...", "rule_pattern": "..." } }`
 ///   `{ "kind": "user_rejected", "detail": null }`
 ///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
 ///   `{ "kind": "state_error",   "detail": { "phase": "...", "error": "..." } }`
+///
+/// `Policy` names the matching rule from the layered ruleset
+/// (`approval-gate/src/rules.rs`). The old `classifier_reason` /
+/// `classifier_fn` shape went away when the classifier surface was
+/// deleted in favor of pure rules-based decisions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Denial {
     Policy {
-        classifier_reason: String,
-        classifier_fn: String,
+        rule_permission: String,
+        rule_pattern: String,
     },
     UserRejected,
     UserCorrected {

@@ -88,18 +88,18 @@ use std::sync::Mutex;
     #[test]
     fn block_reply_for_policy_deny_carries_classifier_detail() {
         let reply = block_reply_for(&Decision::Deny(Denial::Policy {
-            classifier_reason: "command matches denylist".into(),
-            classifier_fn: "shell::classify_argv".into(),
+            rule_permission: "shell::exec".into(),
+            rule_pattern: "rm -rf*".into(),
         }));
         assert_eq!(reply["block"], true);
         assert_eq!(reply["denial"]["kind"], "policy");
         assert_eq!(
-            reply["denial"]["detail"]["classifier_reason"],
-            "command matches denylist"
+            reply["denial"]["detail"]["rule_permission"],
+            "shell::exec"
         );
         assert_eq!(
-            reply["denial"]["detail"]["classifier_fn"],
-            "shell::classify_argv"
+            reply["denial"]["detail"]["rule_pattern"],
+            "rm -rf*"
         );
     }
 

@@ -123,9 +123,12 @@ pub(crate) fn interpret_classifier_reply(
                 .and_then(Value::as_str)
                 .unwrap_or("denied")
                 .to_string();
+            // Transient mapping: classifier reason/fn stored in the renamed
+            // Denial::Policy fields. The whole classifier surface is deleted
+            // in T5; for now this just keeps the build green.
             Ok(ClassifierDecision::Deny(Denial::Policy {
-                classifier_reason,
-                classifier_fn: classifier_fn.to_string(),
+                rule_permission: classifier_fn.to_string(),
+                rule_pattern: classifier_reason,
             }))
         }
         "ask" => Ok(ClassifierDecision::Ask),
@@ -252,11 +255,12 @@ mod tests {
             "shell::classify_argv",
         ) {
             Ok(ClassifierDecision::Deny(Denial::Policy {
-                classifier_reason,
-                classifier_fn,
+                rule_permission,
+                rule_pattern,
             })) => {
-                assert_eq!(classifier_reason, "nope");
-                assert_eq!(classifier_fn, "shell::classify_argv");
+                // Per the transient mapping in interpret_classifier_reply.
+                assert_eq!(rule_pattern, "nope");
+                assert_eq!(rule_permission, "shell::classify_argv");
             }
             o => panic!("expected Policy denial {:?}", o),
         }

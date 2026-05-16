@@ -370,10 +370,8 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         rule_pattern,
                     } => {
                         let denial = Denial::Policy {
-                            classifier_reason: format!(
-                                "rule {rule_permission} {rule_pattern} denies"
-                            ),
-                            classifier_fn: "approval-gate::rules".to_string(),
+                            rule_permission,
+                            rule_pattern,
                         };
                         return Ok::<_, IIIError>(json!({
                             "block": true,

@@ -159,13 +159,13 @@ use std::sync::Mutex;
             None,
             None,
             Some(Denial::Policy {
-                classifier_reason: "not authorized".into(),
-                classifier_fn: "shell::classify_argv".into(),
+                rule_permission: "shell::fs::write".into(),
+                rule_pattern: "*".into(),
             }),
         );
         assert_eq!(rec["status"], "denied");
         assert_eq!(rec["denial"]["kind"], "policy");
-        assert_eq!(rec["denial"]["detail"]["classifier_reason"], "not authorized");
+        assert_eq!(rec["denial"]["detail"]["rule_permission"], "shell::fs::write");
         assert!(
             rec.get("decision_reason").is_none(),
             "legacy decision_reason must not be written: {rec}"
