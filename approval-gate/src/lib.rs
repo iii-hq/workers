@@ -5,6 +5,7 @@
 pub mod config;
 pub mod delivery;
 pub mod intercept;
+pub mod lifecycle;  // transitional compat shim — deleted in T11 after T5/T6/T8 migrate callsites
 pub mod manifest;
 pub mod record;
 pub mod register;
