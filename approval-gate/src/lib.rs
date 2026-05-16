@@ -1,6 +1,8 @@
-//! Approval gate. Subscribes to `agent::before_function_call` and blocks calls
-//! whose `function_call.function_id` appears in the run's `approval_required` list,
-//! waiting for the UI to call `approval::resolve` (or for a timeout).
+//! Approval gate. Subscribes to `agent::before_function_call` and decides
+//! every call via the layered rules engine (`rules::evaluate`). Allow →
+//! `{block:false}`. Deny → `{block:true, denial:Policy{rule_permission,
+//! rule_pattern}}`. Ask → write a Pending record and wait for
+//! `approval::resolve`.
 
 pub mod config;
 pub mod delivery;
@@ -34,13 +36,38 @@ pub use wire::{
     block_reply_for, extract_call, pending_key, Decision, Denial, IncomingCall, WireDecision,
 };
 
-// Test-only re-imports so the inline `mod tests` below keeps working
-// without an unreasonable churn pass over its assertions.
-#[cfg(test)]
-use intercept::{
-    apply_policy_rules, decide_intercept_action, interpret_classifier_reply, ClassifierDecision,
-    InterceptAction, PolicyOutcome,
-};
+/// Subscriber's terminal verdict for an incoming call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Allow,
+    Deny(Denial),
+    Ask,
+}
+
+/// Apply the layered rules to an incoming call. Last-matching rule wins;
+/// no match defaults to Ask (operator-safe default — paired with the
+/// curated default ruleset shipped in `iii.worker.yaml`).
+pub(crate) fn verdict_for(
+    function_id: &str,
+    args: &serde_json::Value,
+    rules: &rules::Ruleset,
+) -> Verdict {
+    let pattern = rules::pattern_for(function_id, args);
+    match rules::evaluate(function_id, &pattern, rules) {
+        Some(r) => match r.action {
+            rules::Action::Allow => Verdict::Allow,
+            rules::Action::Deny => Verdict::Deny(Denial::Policy {
+                rule_permission: r.permission.clone(),
+                rule_pattern: r.pattern.clone(),
+            }),
+            rules::Action::Ask => Verdict::Ask,
+        },
+        None => Verdict::Ask,
+    }
+}
+
+// Test-only re-imports kept as small as possible. Helpers below this line
+// will be deleted as their owning modules are rewritten in later tasks.
 #[cfg(test)]
 use state::{merge_from_approval_marker_if_needed, rule_for};
 #[cfg(test)]

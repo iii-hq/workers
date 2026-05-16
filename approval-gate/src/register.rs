@@ -24,10 +24,7 @@ use crate::delivery::{
     handle_ack_delivered, handle_consume_undelivered, handle_flush_delivered, handle_list_pending,
     handle_list_undelivered, handle_sweep_session,
 };
-use crate::intercept::{
-    apply_policy_rules, decide_intercept_action, handle_intercept, interpret_classifier_reply,
-    ClassifierDecision, InterceptAction, PolicyOutcome,
-};
+use crate::intercept::handle_intercept;
 use crate::resolve::{handle_lookup_record, handle_resolve};
 use crate::rules;
 use crate::state::{
@@ -349,89 +346,28 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
 
-                // Layered policy rules run first. Allow / Deny short-circuit;
-                // Ask (and no-match) falls through to the existing per-function
-                // interceptor flow. Pattern is "*" in v1 — see `crate::rules`.
-                // Read-lock is acquired and dropped inside a block so the
-                // guard never crosses an `.await` (std::sync::RwLock is not
-                // async-safe to hold across suspension points).
-                let policy_outcome = {
+                // Take a snapshot of the rules ruleset under the read lock,
+                // then drop the guard before any .await. std::sync::RwLock
+                // is not async-safe to hold across suspension points, and
+                // a held guard would block every concurrent intercept.
+                let rules_snapshot: rules::Ruleset = {
                     let guard = policy_rules
                         .read()
                         .expect("approval-gate policy rules lock poisoned");
-                    apply_policy_rules(&guard, &call.function_id)
+                    guard.clone()
                 };
-                match policy_outcome {
-                    PolicyOutcome::Allow => {
-                        return Ok::<_, IIIError>(json!({ "block": false }));
-                    }
-                    PolicyOutcome::Deny {
-                        rule_permission,
-                        rule_pattern,
-                    } => {
-                        let denial = Denial::Policy {
-                            rule_permission,
-                            rule_pattern,
-                        };
-                        return Ok::<_, IIIError>(json!({
-                            "block": true,
-                            "denial": denial,
-                            "status": "denied",
-                            "call_id": call.function_call_id,
-                            "function_id": call.function_id,
-                        }));
-                    }
-                    PolicyOutcome::FallThrough => {}
-                }
 
-                let action = decide_intercept_action(
-                    rule_for(intercept_rules.as_slice(), &call.function_id),
-                    call.requires_approval(),
-                );
-                let reply = match action {
-                    InterceptAction::Pass => json!({ "block": false }),
-                    InterceptAction::Pause => {
-                        handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, false).await
-                    }
-                    InterceptAction::Classify {
-                        classifier_fn,
-                        classifier_timeout_ms,
-                    } => match iii
-                        .trigger(TriggerRequest {
-                            function_id: classifier_fn.clone(),
-                            payload: call.args.clone(),
-                            action: None,
-                            timeout_ms: Some(classifier_timeout_ms),
-                        })
-                        .await
-                    {
-                        Ok(v) => match interpret_classifier_reply(&v, &classifier_fn) {
-                            Ok(ClassifierDecision::Auto) => json!({ "block": false }),
-                            Ok(ClassifierDecision::Deny(denial)) => json!({
-                                "block": true,
-                                "denial": denial,
-                                "status": "denied",
-                                "call_id": call.function_call_id,
-                                "function_id": call.function_id,
-                            }),
-                            Ok(ClassifierDecision::Ask) | Err(()) => {
-                                handle_intercept(
-                                    bus.as_ref(),
-                                    &sc,
-                                    &call,
-                                    now_ms,
-                                    timeout_ms,
-                                    true,
-                                )
-                                .await
-                            }
-                        },
-                        Err(_) => {
-                            handle_intercept(bus.as_ref(), &sc, &call, now_ms, timeout_ms, true)
-                                .await
-                        }
-                    },
-                };
+                // One decision call. Verdict::Allow → {block:false}.
+                // Verdict::Deny → {block:true, denial:Policy{...}}.
+                // Verdict::Ask → write Pending + reply {block:true, status:pending}.
+                let reply = handle_intercept(
+                    bus.as_ref(),
+                    &sc,
+                    &call,
+                    &rules_snapshot,
+                    now_ms,
+                    timeout_ms,
+                ).await;
 
                 if reply.get("status").and_then(Value::as_str) == Some("pending") {
                     write_event(

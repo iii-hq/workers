@@ -1,240 +1,114 @@
 //! Intercept decision flow.
 //!
-//! Pure decision helpers + the async [`handle_intercept`] that writes
-//! the pending record. Together they answer the question every hook
-//! event triggers: "what should the gate do with this function call?"
+//! One async entry point: [`handle_intercept`]. The classifier surface and
+//! per-function `InterceptorRule` flow are gone — the layered rules engine
+//! (`crate::rules`) is the only policy decision. `handle_intercept` reads
+//! the verdict via [`crate::verdict_for`] and writes a `Pending` row when
+//! the verdict is `Ask`. Allow/Deny verdicts return synchronous replies
+//! and never touch state.
 //!
-//! Three layers run, in order:
+//! Replay defense recognises all three persisted states:
+//! - `Pending` → reply `{replay:"in_flight", status:"pending"}`
+//! - `InFlight` → reply `{replay:"in_flight", status:"in_flight"}`
+//! - `Done` → reply `{replay:"already_resolved", status:"done"}`
 //!
-//! 1. **Policy rules** ([`apply_policy_rules`]) — operator-configured
-//!    layered ruleset. `Allow` and `Deny` short-circuit; `Ask` (and
-//!    no-match) falls through.
-//! 2. **Interceptor rule** ([`decide_intercept_action`]) — per-function
-//!    config. Decides between `Pass`, `Pause` (no classifier), and
-//!    `Classify { classifier_fn, … }`.
-//! 3. **Classifier reply** ([`interpret_classifier_reply`]) — parses the
-//!    classifier function's JSON response and maps it back to either an
-//!    immediate `Auto` (pass), an immediate `Deny`, or `Ask` (fall back
-//!    to user prompt via `handle_intercept`).
-//!
-//! This module owns only the decision types and `handle_intercept`. The
-//! wiring (closure body in `register`) lives in `register.rs`.
+//! None of these overwrite the existing row.
 
 use serde_json::{json, Value};
 
-use crate::config::InterceptorRule;
-use crate::lifecycle::{build_pending_record, is_terminal_status};
-use crate::rules;
+use crate::record::{Record, Status};
+use crate::rules::Ruleset;
 use crate::state::StateBus;
 use crate::wire::{pending_key, Denial, IncomingCall};
 
-/// What the subscriber should do with an incoming call. Decided by the
-/// matching interceptor rule (authoritative) with a fallback to the run's
-/// `approval_required` list when no rule exists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum InterceptAction {
-    /// No rule, no `approval_required` listing — let the call through.
-    Pass,
-    /// Pause and create a pending record; no classifier consulted.
-    Pause,
-    /// Run the classifier first; on `ask`, pause; on `auto`, pass; on `deny`, block.
-    Classify {
-        classifier_fn: String,
-        classifier_timeout_ms: u64,
-    },
-}
-
-/// Pure decision: given a matching rule (or none) and whether the run
-/// explicitly listed this function id in `approval_required`, what should
-/// the subscriber do? Interceptor rules are authoritative — an operator
-/// who registered a rule meant for every call to go through it, regardless
-/// of per-run opt-in.
-pub(crate) fn decide_intercept_action(
-    rule: Option<&InterceptorRule>,
-    requires_approval: bool,
-) -> InterceptAction {
-    match rule {
-        Some(r) if r.classifier.as_ref().is_some_and(|s| !s.is_empty()) => {
-            InterceptAction::Classify {
-                classifier_fn: r.classifier.clone().unwrap(),
-                classifier_timeout_ms: r.classifier_timeout_ms,
-            }
-        }
-        Some(_) => InterceptAction::Pause,
-        None if requires_approval => InterceptAction::Pause,
-        None => InterceptAction::Pass,
-    }
-}
-
-/// Outcome of the policy-rules pre-check that runs before the per-function
-/// [`InterceptorRule`] flow. `Allow` and `Deny` short-circuit the
-/// subscriber with a final reply; `FallThrough` defers to the existing
-/// interceptor logic (classifier or pause).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PolicyOutcome {
-    Allow,
-    Deny {
-        rule_permission: String,
-        rule_pattern: String,
-    },
-    FallThrough,
-}
-
-/// Apply the layered policy rules to an incoming function id. Pure
-/// function — no I/O, no clock. Extracted from the subscriber closure
-/// so the decision branch can be unit-tested independently.
-pub(crate) fn apply_policy_rules(
-    rules: &rules::Ruleset,
-    function_id: &str,
-) -> PolicyOutcome {
-    match rules::evaluate(function_id, "*", rules) {
-        Some(rule) => match rule.action {
-            rules::Action::Allow => PolicyOutcome::Allow,
-            rules::Action::Deny => PolicyOutcome::Deny {
-                rule_permission: rule.permission.clone(),
-                rule_pattern: rule.pattern.clone(),
-            },
-            rules::Action::Ask => PolicyOutcome::FallThrough,
-        },
-        None => PolicyOutcome::FallThrough,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ClassifierDecision {
-    Auto,
-    Deny(Denial),
-    Ask,
-}
-
-/// Parse classifier JSON (`decision` tag: auto | deny | ask). On `deny`
-/// the reply may carry `reason` (free-form classifier text); both that
-/// and the calling `classifier_fn` get folded into a [`Denial::Policy`].
-pub(crate) fn interpret_classifier_reply(
-    value: &Value,
-    classifier_fn: &str,
-) -> Result<ClassifierDecision, ()> {
-    let tag = value.get("decision").and_then(Value::as_str).ok_or(())?;
-    match tag {
-        "auto" => Ok(ClassifierDecision::Auto),
-        "deny" => {
-            let classifier_reason = value
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("denied")
-                .to_string();
-            // Transient mapping: classifier reason/fn stored in the renamed
-            // Denial::Policy fields. The whole classifier surface is deleted
-            // in T5; for now this just keeps the build green.
-            Ok(ClassifierDecision::Deny(Denial::Policy {
-                rule_permission: classifier_fn.to_string(),
-                rule_pattern: classifier_reason,
-            }))
-        }
-        "ask" => Ok(ClassifierDecision::Ask),
-        _ => Err(()),
-    }
-}
-
-/// Decide whether a call is gated; if so, write a pending record and return
-/// the structured pending hook reply. If not gated, return `{block: false}`
-/// and do nothing.
-///
-/// Stamps `session_id` onto the persisted record so the timeout sweeper can
-/// emit `approval_resolved` to the right session stream without consulting
-/// the storage layer's keys.
-///
-/// State-write failure is treated as fail-closed: the gate replies
-/// `{block:true, status:"denied"}` so a transient kv outage cannot silently
+/// Subscriber-side entry point. Decides via `verdict_for` (rules layer);
+/// on Ask, persists a Pending record. State-write failure fails closed
+/// with `Denial::StateError` so a transient kv outage cannot silently
 /// bypass an approval check.
 pub async fn handle_intercept(
     bus: &dyn StateBus,
     state_scope: &str,
     call: &IncomingCall,
+    rules: &Ruleset,
     now_ms: u64,
     timeout_ms: u64,
-    force_pending: bool,
 ) -> Value {
-    if !force_pending && !call.requires_approval() {
-        return json!({ "block": false });
+    // 1. Rules pre-check.
+    match crate::verdict_for(&call.function_id, &call.args, rules) {
+        crate::Verdict::Allow => return json!({ "block": false }),
+        crate::Verdict::Deny(denial) => {
+            return json!({
+                "block": true,
+                "status": "denied",
+                "denial": denial,
+                "call_id": call.function_call_id,
+                "function_id": call.function_id,
+            });
+        }
+        crate::Verdict::Ask => { /* fall through */ }
     }
 
-    // Defense in depth: if a record for this (session, call_id) already
-    // exists, don't blow it away. Re-intercept of an already-decided call
-    // would otherwise revert a terminal record back to `pending`, losing
-    // the audit trail and any `delivered_in_turn_id` stamp.
+    // 2. Replay defense — never overwrite an existing row.
     let key = pending_key(&call.session_id, &call.function_call_id);
-    if let Some(existing) = bus.get(state_scope, &key).await {
-        let status = existing
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if is_terminal_status(&status) {
-            // Replay of an already-resolved call: the prior status carries
-            // the meaning. No fresh Denial is synthesized — consumers that
-            // need to render the historical decision read the persisted
-            // record via approval::lookup_record.
-            return json!({
-                "block": true,
-                "status": status,
-                "replay": "already_resolved",
-                "call_id": call.function_call_id,
-                "function_id": call.function_id,
-            });
+    if let Some(existing_raw) = bus.get(state_scope, &key).await {
+        if let Some(existing) = Record::from_value(existing_raw) {
+            return match existing.status {
+                Status::Done => json!({
+                    "block":       true,
+                    "status":      "done",
+                    "replay":      "already_resolved",
+                    "call_id":     call.function_call_id,
+                    "function_id": call.function_id,
+                }),
+                Status::Pending => json!({
+                    "block":       true,
+                    "status":      "pending",
+                    "replay":      "in_flight",
+                    "call_id":     call.function_call_id,
+                    "function_id": call.function_id,
+                }),
+                Status::InFlight => json!({
+                    "block":       true,
+                    "status":      "in_flight",
+                    "replay":      "in_flight",
+                    "call_id":     call.function_call_id,
+                    "function_id": call.function_id,
+                }),
+            };
         }
-        if status == "pending" || status == "approved" {
-            // Replay of an in-flight intercept — keep the existing row,
-            // re-emit the pending reply. No state churn.
-            return json!({
-                "block": true,
-                "status": "pending",
-                "replay": "in_flight",
-                "call_id": call.function_call_id,
-                "function_id": call.function_id,
-            });
-        }
+        // Malformed row → fall through and overwrite (defensive).
     }
 
-    let mut record = build_pending_record(
-        &call.function_call_id,
-        &call.function_id,
-        &call.args,
+    // 3. Fresh Pending write.
+    let record = Record::pending(
+        call.function_call_id.clone(),
+        call.function_id.clone(),
+        call.args.clone(),
+        call.session_id.clone(),
         now_ms,
         timeout_ms,
     );
-    if let Some(obj) = record.as_object_mut() {
-        obj.insert("session_id".into(), Value::String(call.session_id.clone()));
-    }
-    if let Err(err) = bus
-        .set(
-            state_scope,
-            &pending_key(&call.session_id, &call.function_call_id),
-            record,
-        )
-        .await
-    {
+    if let Err(err) = bus.set(state_scope, &key, record.to_value()).await {
         tracing::error!(
             "approval-gate: failed to write pending record for {}/{}: {err} — failing closed",
-            call.session_id,
-            call.function_call_id
+            call.session_id, call.function_call_id,
         );
         let denial = Denial::StateError {
             phase: "intercept_write_pending".to_string(),
             error: err.to_string(),
         };
         return json!({
-            "block": true,
-            "denial": denial,
-            "status": "denied",
-            "call_id": call.function_call_id,
+            "block":       true,
+            "denial":      denial,
+            "status":      "denied",
+            "call_id":     call.function_call_id,
             "function_id": call.function_id,
         });
     }
     json!({
-        "block": true,
-        "status": "pending",
-        "call_id": call.function_call_id,
+        "block":       true,
+        "status":      "pending",
+        "call_id":     call.function_call_id,
         "function_id": call.function_id,
     })
 }
@@ -242,178 +116,158 @@ pub async fn handle_intercept(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::{Outcome, Record};
+    use crate::rules::{Action, Rule};
     use serde_json::json;
+    use std::sync::Mutex;
 
-    #[test]
-    fn interpret_classifier_reply_reads_decision_tags() {
-        assert!(matches!(
-            interpret_classifier_reply(&json!({"decision": "auto"}), "shell::classify_argv"),
-            Ok(ClassifierDecision::Auto)
-        ));
-        match interpret_classifier_reply(
-            &json!({"decision":"deny","reason":"nope"}),
-            "shell::classify_argv",
-        ) {
-            Ok(ClassifierDecision::Deny(Denial::Policy {
-                rule_permission,
-                rule_pattern,
-            })) => {
-                // Per the transient mapping in interpret_classifier_reply.
-                assert_eq!(rule_pattern, "nope");
-                assert_eq!(rule_permission, "shell::classify_argv");
-            }
-            o => panic!("expected Policy denial {:?}", o),
+    #[derive(Default)]
+    struct InMemBus {
+        rows: Mutex<std::collections::BTreeMap<(String, String), Value>>,
+    }
+    #[async_trait::async_trait]
+    impl StateBus for InMemBus {
+        async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
+            self.rows.lock().unwrap().insert((scope.into(), key.into()), value);
+            Ok(())
         }
-        assert!(matches!(
-            interpret_classifier_reply(
-                &json!({"decision":"ask","summary":"x"}),
-                "shell::classify_argv"
-            ),
-            Ok(ClassifierDecision::Ask)
-        ));
-        assert!(interpret_classifier_reply(&json!({}), "shell::classify_argv").is_err());
+        async fn get(&self, scope: &str, key: &str) -> Option<Value> {
+            self.rows.lock().unwrap().get(&(scope.into(), key.into())).cloned()
+        }
+        async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
+            self.rows.lock().unwrap()
+                .iter()
+                .filter(|((s, k), _)| s == scope && k.starts_with(prefix))
+                .map(|(_, v)| v.clone())
+                .collect()
+        }
+        async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
+            self.rows.lock().unwrap().remove(&(scope.into(), key.into()));
+            Ok(())
+        }
     }
 
-    /// An operator-registered rule is authoritative: every call to that
-    /// function id runs through the classifier, even when the run's
-    /// `approval_required` list is empty.
-    #[test]
-    fn decide_intercept_action_classifies_when_rule_has_classifier_regardless_of_approval_required(
-    ) {
-        let rule = InterceptorRule {
-            function_id: "shell::exec".into(),
-            classifier: Some("shell::classify_argv".into()),
-            classifier_timeout_ms: 2000,
-            inject_approval_marker: true,
-            marker_target_verified: true,
-        };
-        let action = decide_intercept_action(Some(&rule), false);
-        assert_eq!(
-            action,
-            InterceptAction::Classify {
-                classifier_fn: "shell::classify_argv".into(),
-                classifier_timeout_ms: 2000,
-            }
-        );
-        assert_eq!(action, decide_intercept_action(Some(&rule), true));
+    fn call(fc_id: &str, fn_id: &str, args: Value) -> IncomingCall {
+        IncomingCall {
+            session_id: "sess_a".into(),
+            function_call_id: fc_id.into(),
+            function_id: fn_id.into(),
+            args,
+            approval_required: Vec::new(),
+            event_id: "evt-1".into(),
+            reply_stream: "hk-1".into(),
+        }
     }
 
-    #[test]
-    fn decide_intercept_action_pauses_when_rule_has_no_classifier_regardless_of_approval_required()
-    {
-        let rule = InterceptorRule {
-            function_id: "shell::fs::write".into(),
-            classifier: None,
-            classifier_timeout_ms: 2000,
-            inject_approval_marker: false,
-            marker_target_verified: false,
-        };
-        assert_eq!(
-            decide_intercept_action(Some(&rule), false),
-            InterceptAction::Pause
-        );
-        assert_eq!(
-            decide_intercept_action(Some(&rule), true),
-            InterceptAction::Pause
-        );
-    }
-
-    #[test]
-    fn decide_intercept_action_pauses_when_no_rule_but_run_listed_approval_required() {
-        assert_eq!(decide_intercept_action(None, true), InterceptAction::Pause);
-    }
-
-    #[test]
-    fn decide_intercept_action_passes_when_no_rule_and_not_approval_required() {
-        assert_eq!(decide_intercept_action(None, false), InterceptAction::Pass);
-    }
-
-    #[test]
-    fn decide_intercept_action_classifier_empty_string_treated_as_no_classifier() {
-        let rule = InterceptorRule {
-            function_id: "shell::exec".into(),
-            classifier: Some(String::new()),
-            classifier_timeout_ms: 2000,
-            inject_approval_marker: false,
-            marker_target_verified: false,
-        };
-        assert_eq!(
-            decide_intercept_action(Some(&rule), false),
-            InterceptAction::Pause
-        );
-    }
-
-    #[test]
-    fn apply_policy_rules_empty_ruleset_falls_through() {
-        let rs: rules::Ruleset = vec![];
-        assert_eq!(
-            apply_policy_rules(&rs, "shell::exec"),
-            PolicyOutcome::FallThrough
-        );
-    }
-
-    #[test]
-    fn apply_policy_rules_allow_short_circuits() {
-        let rs: rules::Ruleset = vec![rules::Rule {
+    #[tokio::test]
+    async fn allow_rule_returns_block_false_no_state_write() {
+        let bus = InMemBus::default();
+        let rs: Ruleset = vec![Rule {
             permission: "shell::exec".into(),
-            pattern: "*".into(),
-            action: rules::Action::Allow,
+            pattern: "git status*".into(),
+            action: Action::Allow,
         }];
-        assert_eq!(apply_policy_rules(&rs, "shell::exec"), PolicyOutcome::Allow);
+        let c = call("tc-1", "shell::exec", json!({"command": "git", "args": ["status"]}));
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["block"], false);
+        assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
     }
 
-    #[test]
-    fn apply_policy_rules_deny_carries_matched_rule_identity() {
-        let rs: rules::Ruleset = vec![rules::Rule {
-            permission: "shell::*".into(),
-            pattern: "*".into(),
-            action: rules::Action::Deny,
-        }];
-        assert_eq!(
-            apply_policy_rules(&rs, "shell::fs::write"),
-            PolicyOutcome::Deny {
-                rule_permission: "shell::*".into(),
-                rule_pattern: "*".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn apply_policy_rules_ask_falls_through_to_interceptor_flow() {
-        // Ask means "no decision from this layer — let the next handle it".
-        let rs: rules::Ruleset = vec![rules::Rule {
+    #[tokio::test]
+    async fn deny_rule_returns_block_true_structured_policy_denial() {
+        let bus = InMemBus::default();
+        let rs: Ruleset = vec![Rule {
             permission: "shell::exec".into(),
-            pattern: "*".into(),
-            action: rules::Action::Ask,
+            pattern: "rm -rf*".into(),
+            action: Action::Deny,
         }];
-        assert_eq!(
-            apply_policy_rules(&rs, "shell::exec"),
-            PolicyOutcome::FallThrough
-        );
+        let c = call("tc-1", "shell::exec", json!({"command": "rm", "args": ["-rf", "/"]}));
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["denial"]["kind"], "policy");
+        assert_eq!(reply["denial"]["detail"]["rule_permission"], "shell::exec");
+        assert_eq!(reply["denial"]["detail"]["rule_pattern"], "rm -rf*");
+        assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
     }
 
-    #[test]
-    fn apply_policy_rules_last_matching_wins() {
-        // Later-listed more-specific rule overrides earlier permissive default.
-        let rs: rules::Ruleset = vec![
-            rules::Rule {
-                permission: "*".into(),
-                pattern: "*".into(),
-                action: rules::Action::Allow,
-            },
-            rules::Rule {
-                permission: "shell::exec".into(),
-                pattern: "*".into(),
-                action: rules::Action::Deny,
-            },
-        ];
-        assert!(matches!(
-            apply_policy_rules(&rs, "shell::exec"),
-            PolicyOutcome::Deny { .. }
-        ));
-        assert_eq!(
-            apply_policy_rules(&rs, "approval::resolve"),
-            PolicyOutcome::Allow
-        );
+    #[tokio::test]
+    async fn no_match_defaults_to_ask_writes_pending() {
+        let bus = InMemBus::default();
+        let rs: Ruleset = vec![];
+        let c = call("tc-1", "shell::exec", json!({"command": "git", "args": ["push"]}));
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["status"], "pending");
+        let stored = bus.get("approvals", "sess_a/tc-1").await.expect("pending row");
+        let r = Record::from_value(stored).unwrap();
+        assert_eq!(r.status, Status::Pending);
+    }
+
+    #[tokio::test]
+    async fn replay_on_pending_returns_in_flight_no_state_churn() {
+        let bus = InMemBus::default();
+        let rs: Ruleset = vec![];
+        let c = call("tc-1", "shell::exec", json!({"command": "ls"}));
+
+        handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        let r2 = handle_intercept(&bus, "approvals", &c, &rs, 2_000, 60_000).await;
+        assert_eq!(r2["replay"], "in_flight");
+        assert_eq!(r2["status"], "pending");
+
+        let r = Record::from_value(bus.get("approvals", "sess_a/tc-1").await.unwrap()).unwrap();
+        assert_eq!(r.expires_at, 61_000, "second call must NOT have re-written expires_at");
+    }
+
+    #[tokio::test]
+    async fn replay_on_in_flight_returns_in_flight_marker() {
+        let bus = InMemBus::default();
+        let in_flight = Record::pending(
+            "tc-1".into(), "shell::exec".into(), json!({}),
+            "sess_a".into(), 0, 60_000,
+        ).in_flight(500);
+        bus.set("approvals", "sess_a/tc-1", in_flight.to_value()).await.unwrap();
+
+        let rs: Ruleset = vec![];
+        let c = call("tc-1", "shell::exec", json!({}));
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["replay"], "in_flight");
+        assert_eq!(reply["status"], "in_flight");
+    }
+
+    #[tokio::test]
+    async fn replay_on_done_returns_already_resolved_marker() {
+        let bus = InMemBus::default();
+        let done = Record::pending(
+            "tc-1".into(), "shell::exec".into(), json!({}),
+            "sess_a".into(), 0, 60_000,
+        ).in_flight(500).done(Outcome::Executed { result: json!({"ok": true}) });
+        bus.set("approvals", "sess_a/tc-1", done.to_value()).await.unwrap();
+
+        let rs: Ruleset = vec![];
+        let c = call("tc-1", "shell::exec", json!({}));
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["replay"], "already_resolved");
+        assert_eq!(reply["status"], "done");
+    }
+
+    #[tokio::test]
+    async fn state_write_failure_fails_closed_with_state_error_denial() {
+        struct FailBus;
+        #[async_trait::async_trait]
+        impl StateBus for FailBus {
+            async fn set(&self, _: &str, _: &str, _: Value) -> Result<(), iii_sdk::IIIError> {
+                Err(iii_sdk::IIIError::Runtime("kv down".into()))
+            }
+            async fn get(&self, _: &str, _: &str) -> Option<Value> { None }
+            async fn list_prefix(&self, _: &str, _: &str) -> Vec<Value> { Vec::new() }
+            async fn delete(&self, _: &str, _: &str) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+        }
+        let rs: Ruleset = vec![];
+        let c = call("tc-1", "shell::exec", json!({}));
+        let reply = handle_intercept(&FailBus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["status"], "denied");
+        assert_eq!(reply["denial"]["kind"], "state_error");
+        assert_eq!(reply["denial"]["detail"]["phase"], "intercept_write_pending");
     }
 }

@@ -11,7 +11,8 @@ use std::sync::RwLock;
 
 use serde_json::{json, Value};
 
-use crate::intercept::{apply_policy_rules, PolicyOutcome};
+// apply_policy_rules / PolicyOutcome were deleted in T5. The cascade loop
+// below uses crate::verdict_for instead. T7 rewrites this entirely.
 use crate::lifecycle::{maybe_flip_timed_out, transition_record};
 use crate::rules;
 use crate::state::{FunctionExecutor, StateBus};
@@ -214,13 +215,14 @@ async fn cascade_allow_for_session(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let outcome = {
+        let args = rec.get("args").cloned().unwrap_or(json!({}));
+        let verdict = {
             let guard = policy_rules
                 .read()
                 .expect("approval-gate policy rules lock poisoned");
-            apply_policy_rules(&guard, &fn_id)
+            crate::verdict_for(&fn_id, &args, &guard)
         };
-        if !matches!(outcome, PolicyOutcome::Allow) {
+        if !matches!(verdict, crate::Verdict::Allow) {
             continue;
         }
         if let Err(err) =
