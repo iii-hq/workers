@@ -4,7 +4,6 @@ use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
 use serde_json::Value;
 use std::sync::Arc;
 
-mod arity;
 mod config;
 mod exec;
 mod exec_dispatch;
@@ -15,7 +14,7 @@ mod manifest;
 mod target;
 mod triggers;
 
-use functions::types::{ClassifyArgvRequest, KillRequest, StatusRequest};
+use functions::types::{KillRequest, StatusRequest};
 
 #[derive(Parser, Debug)]
 #[command(name = "shell", about = "Unix shell execution worker for iii agents")]
@@ -50,8 +49,6 @@ async fn main() -> Result<()> {
     let shell_config = match config::load_config(&cli.config) {
         Ok(c) => {
             tracing::info!(
-                allowlist_size = c.allowlist.len(),
-                denylist_size = c.denylist_patterns.len(),
                 max_timeout_ms = c.max_timeout_ms,
                 max_concurrent = c.max_concurrent_jobs,
                 "loaded config from {}",
@@ -61,8 +58,7 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
-            let mut c = config::ShellConfig::default();
-            c.compile_denylist()?;
+            let c = config::ShellConfig::default();
             // Defaults have host_root=None and allow_unjailed=false, so this
             // path refuses to start. Otherwise a missing config file would
             // silently bypass the S-H2 jail requirement.
@@ -100,13 +96,14 @@ async fn main() -> Result<()> {
                 },
             )
             .description(
-                "Run an allowlisted command in the foreground and return its \
-                 full output. Payload: { command: string (program name), \
-                 args?: string[], timeout_ms?: number, target?: { kind: \
-                 'host'|'sandbox', sandbox_id?: string } }. Returns { stdout, \
-                 stderr, exit_code, duration_ms, timed_out, stdout_truncated, \
-                 stderr_truncated }. Do NOT pass argv as an array in 'command' \
-                 — split program and arguments across the two fields.",
+                "Run a command in the foreground and return its full output. \
+                 Policy lives in approval-gate's rules layer. Payload: { \
+                 command: string (program name), args?: string[], timeout_ms?: \
+                 number, target?: { kind: 'host'|'sandbox', sandbox_id?: \
+                 string } }. Returns { stdout, stderr, exit_code, \
+                 duration_ms, timed_out, stdout_truncated, stderr_truncated \
+                 }. Do NOT pass argv as an array in 'command' — split program \
+                 and arguments across the two fields.",
             ),
         );
     }
@@ -124,33 +121,18 @@ async fn main() -> Result<()> {
                 },
             )
             .description(
-                "Spawn an allowlisted command as a background job. Same \
-                 payload shape as shell::exec; returns { job_id, argv } \
-                 immediately. Poll with shell::status, terminate with \
-                 shell::kill, list with shell::list. Do NOT pass argv as an \
-                 array in 'command' — use 'command' (string) + 'args' \
-                 (string[]).",
+                "Spawn a command as a background job. Same payload shape as \
+                 shell::exec; returns { job_id, argv } immediately. Poll with \
+                 shell::status, terminate with shell::kill, list with \
+                 shell::list. Do NOT pass argv as an array in 'command' — \
+                 use 'command' (string) + 'args' (string[]).",
             ),
         );
     }
 
-    {
-        let cfg = shared.clone();
-        iii.register_function(
-            RegisterFunction::new_async(
-                "shell::classify_argv",
-                move |req: ClassifyArgvRequest| {
-                    let cfg = cfg.clone();
-                    async move { functions::classify::handle(cfg, req).await }
-                },
-            )
-            .description(
-                "Classify a shell argv for the approval gate (agent path). Returns \
-                 { decision: 'auto' | 'deny' | 'ask', ... } per shell policy — \
-                 not for direct agent use.",
-            ),
-        );
-    }
+    // shell::classify_argv registration removed in T13. The approval-gate
+    // refactor moved all policy decisions to the rules layer; shell is a
+    // plain executor now.
 
     iii.register_function(
         RegisterFunction::new_async("shell::kill", |req: KillRequest| async move {

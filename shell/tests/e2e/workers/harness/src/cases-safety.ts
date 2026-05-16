@@ -2,29 +2,16 @@ import type { TestCase } from './cases.ts';
 import { expect, expectEqual } from './cases.ts';
 
 export const SAFETY_CASES: TestCase[] = [
+  // T13: shell-side allowlist and denylist tests deleted. Command-level
+  // policy lives in approval-gate's rules layer now. Equivalent assertions
+  // (rule matches → Verdict::Allow / Verdict::Deny(Policy{...})) live in
+  // approval-gate/src/intercept.rs::verdict_intercept_tests and
+  // approval-gate/tests/lifecycle.rs.
   {
-    name: 'allowlist rejects unlisted command',
-    async run({ call, expectError }) {
-      await expectError(
-        () => call('shell::exec', { command: 'nmap', args: ['-v'] }),
-        'not in allowlist',
-      );
-    },
-  },
-  {
-    name: 'allowlist permits via basename match',
+    name: 'absolute-path command runs (no allowlist gating)',
     async run({ call }) {
       const r = await call('shell::exec', { command: '/bin/ls', args: ['-d', '.'] });
       expectEqual(r.exit_code, 0, 'exit_code');
-    },
-  },
-  {
-    name: 'denylist blocks via regex match on allowlisted command',
-    async run({ call, expectError }) {
-      await expectError(
-        () => call('shell::exec', { command: 'echo', args: ['harness_denylist_marker'] }),
-        'denylist',
-      );
     },
   },
   {

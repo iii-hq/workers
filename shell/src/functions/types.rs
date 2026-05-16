@@ -81,30 +81,17 @@ fn deserialize_timeout_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>
     Ok(v.as_u64())
 }
 
-/// Marker injected by `approval-gate` when re-invoking after user approval.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct ApprovalMarker {
-    pub call_id: String,
-    pub session_id: String,
-}
-
-/// Request body for `shell::classify_argv`.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ClassifyArgvRequest {
-    #[serde(deserialize_with = "deserialize_command")]
-    pub command: String,
-    #[serde(default, deserialize_with = "deserialize_args")]
-    pub args: Option<Vec<String>>,
-}
+// `ApprovalMarker` + `ClassifyArgvRequest` deleted in T13: the
+// approval-gate refactor moved all policy decisions to the rules layer.
+// Shell is a plain executor; no `__from_approval` field on requests.
 
 /// Wire request for `shell::exec`. The schema is published to the engine's
 /// tool listing so callers see field types up front instead of guessing
 /// from the description.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecRequest {
-    /// Program name (matched against the allowlist by basename or exact path).
-    /// Must be a string — split arguments into `args`, do not pass argv as
-    /// an array here.
+    /// Program name. Must be a string — split arguments into `args`, do not
+    /// pass argv as an array here.
     #[serde(deserialize_with = "deserialize_command")]
     pub command: String,
     /// Arguments passed to the program, in order. Every element must be a
@@ -115,42 +102,27 @@ pub struct ExecRequest {
     #[serde(default, deserialize_with = "deserialize_args")]
     pub args: Option<Vec<String>>,
     /// Per-call timeout override, milliseconds. Capped at `cfg.max_timeout_ms`.
-    /// Negative or fractional values silently fall back to
-    /// `cfg.default_timeout_ms` (loose wire semantic, preserved on purpose).
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
     /// Where to run the command. Defaults to the host worker; pass
     /// `{ kind: "sandbox", sandbox_id }` to forward the call to a microVM.
     #[serde(default)]
     pub target: Target,
-    /// Present only on gate-driven re-invocation after approval (§ 6.4).
-    #[serde(default, rename = "__from_approval")]
-    pub from_approval: Option<ApprovalMarker>,
 }
 
-/// Wire request for `shell::exec_bg`. Same shape as [`ExecRequest`]; documented
-/// separately so the engine publishes a distinct schema per function.
+/// Wire request for `shell::exec_bg`. Same shape as [`ExecRequest`].
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecBgRequest {
-    /// Program name. See [`ExecRequest::command`].
     #[serde(deserialize_with = "deserialize_command")]
     pub command: String,
-    /// Arguments passed to the program. See [`ExecRequest::args`].
-    /// `None` (or `args: null` / absent) means "tokenize `command` via
-    /// shell-words"; `Some(_)` (including the empty vec) means "use args
-    /// verbatim, no shell-words." See `parse_argv` in `crate::exec::host`.
     #[serde(default, deserialize_with = "deserialize_args")]
     pub args: Option<Vec<String>>,
-    /// Per-call timeout. Host-targeted background jobs IGNORE `timeout_ms`;
-    /// sandbox-targeted ones forward it through `cfg.resolve_timeout`.
+    /// Host-targeted background jobs IGNORE `timeout_ms`; sandbox-targeted
+    /// ones forward it through `cfg.resolve_timeout`.
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
-    /// Where to run. See [`ExecRequest::target`].
     #[serde(default)]
     pub target: Target,
-    /// Present only on gate-driven re-invocation after approval (§ 6.4).
-    #[serde(default, rename = "__from_approval")]
-    pub from_approval: Option<ApprovalMarker>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

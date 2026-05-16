@@ -23,7 +23,6 @@ pub enum ApprovalDecision {
 ///   `{ "kind": "user_rejected",  "detail": null }`
 ///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
 ///   `{ "kind": "state_error",    "detail": { "phase": "...", "error": "..." } }`
-///   `{ "kind": "legacy",         "detail": { "reason": "..." } }`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Denial {
@@ -38,9 +37,6 @@ pub enum Denial {
     StateError {
         phase: String,
         error: String,
-    },
-    Legacy {
-        reason: String,
     },
 }
 

@@ -25,46 +25,44 @@ pub fn stitch_entries(entries: &[Value]) -> Vec<String> {
     entries.iter().map(stitch_one).collect()
 }
 
-/// Build a one-line user-message string warning the model that the cap on
-/// `approval::consume_undelivered` left N entries behind. Returns `None`
-/// when `omitted == 0` so the orchestrator can skip emitting anything.
+/// Build a one-line user-message string warning the model that
+/// `approval::consume` capped the response and left N entries behind.
+/// Returns `None` when `omitted == 0`. After T14 the recovery path is
+/// the natural next-turn consume (no flush_delivered RPC anymore).
 pub fn omission_summary_message(omitted: u64) -> Option<String> {
     if omitted == 0 {
         return None;
     }
     Some(format!(
-        "[approval-gate] {omitted} older resolved approval record(s) were \
-         omitted from this turn (oldest-first cap). They remain undelivered and \
-         will surface on later turns. To drain them in one shot, trigger \
-         approval::flush_delivered."
+        "[approval-gate] {omitted} more resolved approvals waiting to stitch — \
+         they'll surface on the next turn."
     ))
 }
 
 /// Render an approval-gate `Denial` (tagged `{ kind, detail }`) as one or
 /// more indented lines for the stitched LLM message. Each kind gets a
 /// shape it can act on:
-/// - `policy`   → "policy denied by <fn>: <reason>" (rule-based deny;
-///   tells the model what rule fired so it can adapt)
+/// - `policy`   → "policy denied by rule <perm>:<pat>" (rule-based deny;
+///   names the matched rule so the model knows what to avoid)
 /// - `user_rejected`  → "user rejected this call" (no feedback)
 /// - `user_corrected` → "user rejected with feedback: <text>"
 ///   (the high-value variant — model gets actionable correction)
 /// - `state_error`    → "gate state-write failure (phase=<p>): <e>"
 ///   (fail-closed signal; operator-facing)
-/// - `legacy` → "<reason>" (pass-through for migrated pre-Denial records)
 fn render_denial_lines(denial: &Value) -> Vec<String> {
     let kind = denial.get("kind").and_then(Value::as_str).unwrap_or("");
     let detail = denial.get("detail").cloned().unwrap_or(Value::Null);
     match kind {
         "policy" => {
-            let reason = detail
-                .get("classifier_reason")
+            let perm = detail
+                .get("rule_permission")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let f = detail
-                .get("classifier_fn")
+            let pat = detail
+                .get("rule_pattern")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            vec![format!("  policy denied by {f}: {reason}")]
+            vec![format!("  policy denied by rule {perm} : {pat}")]
         }
         "user_rejected" => vec!["  user rejected this call".to_string()],
         "user_corrected" => {
@@ -78,25 +76,34 @@ fn render_denial_lines(denial: &Value) -> Vec<String> {
                 "  approval gate state-write failure (phase={phase}): {error}"
             )]
         }
-        "legacy" => {
-            let reason = detail.get("reason").and_then(Value::as_str).unwrap_or("");
-            vec![format!("  reason: {reason}")]
-        }
         other => vec![format!("  denial kind: {other}")],
     }
 }
 
+/// Render one entry from `approval::consume`. Record shape after T1/T8:
+///   `{ function_call_id, function_id, args, session_id, expires_at,
+///      status: "done", outcome: { kind, detail }, resolved_at }`
+/// `outcome.kind` is `"executed" | "failed" | "denied" | "timed_out"`.
 fn stitch_one(entry: &Value) -> String {
-    let call_id = entry.get("call_id").and_then(Value::as_str).unwrap_or("?");
+    let call_id = entry
+        .get("function_call_id")
+        .or_else(|| entry.get("call_id"))   // legacy fallback
+        .and_then(Value::as_str)
+        .unwrap_or("?");
     let fn_id = entry.get("function_id").and_then(Value::as_str).unwrap_or("?");
-    let status = entry.get("status").and_then(Value::as_str).unwrap_or("?");
-    let decision = match status {
+
+    let outcome = entry.get("outcome").cloned().unwrap_or(Value::Null);
+    let outcome_kind = outcome.get("kind").and_then(Value::as_str).unwrap_or("?");
+    let detail = outcome.get("detail").cloned().unwrap_or(Value::Null);
+
+    let decision = match outcome_kind {
         "executed" | "failed" => "allow",
         "denied" => "deny",
         "timed_out" => "timeout",
         _ => "?",
     };
-    let args_json = entry.get("args")
+    let args_json = entry
+        .get("args")
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .unwrap_or_default();
     let args = truncate_for_message(&args_json, STITCH_MAX_CHARS);
@@ -104,26 +111,30 @@ fn stitch_one(entry: &Value) -> String {
     let mut lines = vec![
         format!("[approval-gate] Earlier call_id {call_id} (function_id={fn_id}, args={args}):"),
         format!("  decision: {decision}"),
-        format!("  status: {status}"),
+        format!("  outcome: {outcome_kind}"),
     ];
-    if status == "executed" {
-        if let Some(r) = entry.get("result") {
-            let r_json = serde_json::to_string(r).unwrap_or_default();
-            lines.push(format!("  result: {}", truncate_for_message(&r_json, STITCH_MAX_CHARS)));
+    match outcome_kind {
+        "executed" => {
+            if let Some(r) = detail.get("result") {
+                let r_json = serde_json::to_string(r).unwrap_or_default();
+                lines.push(format!(
+                    "  result: {}",
+                    truncate_for_message(&r_json, STITCH_MAX_CHARS)
+                ));
+            }
         }
-    }
-    if status == "failed" {
-        if let Some(e) = entry.get("error").and_then(Value::as_str) {
-            lines.push(format!("  error: {e}"));
+        "failed" => {
+            if let Some(e) = detail.get("error").and_then(Value::as_str) {
+                lines.push(format!("  error: {e}"));
+            }
         }
-    }
-    if status == "denied" {
-        if let Some(denial) = entry.get("denial") {
-            lines.extend(render_denial_lines(denial));
+        "denied" => {
+            if let Some(denial) = detail.get("denial") {
+                lines.extend(render_denial_lines(denial));
+            }
         }
-    }
-    if entry.get("legacy_migrated").and_then(Value::as_bool) == Some(true) {
-        lines.push("  note: legacy record migrated from pre-trigger-model gate; original result was delivered in-band when the call was made.".into());
+        "timed_out" => { /* self-describing */ }
+        _ => {}
     }
     lines.join("\n")
 }
@@ -155,19 +166,33 @@ mod tests {
         assert!(out.contains("… (truncated)"));
     }
 
-    fn make_entry(call_id: &str, fn_id: &str, status: &str, extras: Value) -> Value {
-        let mut v = json!({
-            "call_id": call_id,
+    /// Build a wire-shape entry as `approval::consume` returns it: typed
+    /// Record with nested `outcome: { kind, detail }`. `old_status` maps to
+    /// the matching `outcome.kind` and the top-level extras are folded
+    /// under `outcome.detail` where the new shape expects them.
+    fn make_entry(call_id: &str, fn_id: &str, old_status: &str, extras: Value) -> Value {
+        // Pull args override out of extras if present (top-level on the
+        // Record), and fold the remaining keys into outcome.detail.
+        let mut extras_obj = match extras {
+            Value::Object(m) => m,
+            _ => serde_json::Map::new(),
+        };
+        let args_override = extras_obj.remove("args");
+        let detail: Value = if extras_obj.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(extras_obj)
+        };
+        let kind = old_status;  // executed | failed | denied | timed_out
+        json!({
+            "function_call_id": call_id,
             "function_id": fn_id,
-            "args": {"path": "/tmp/x"},
-            "status": status,
-        });
-        if let Value::Object(extras) = extras {
-            for (k, val) in extras {
-                v[k] = val;
-            }
-        }
-        v
+            "args": args_override.unwrap_or_else(|| json!({"path": "/tmp/x"})),
+            "session_id": "sess_test",
+            "expires_at": u64::MAX,
+            "status": "done",
+            "outcome": { "kind": kind, "detail": detail },
+        })
     }
 
     #[test]
@@ -191,7 +216,7 @@ mod tests {
             json!({"result": {"ok": true}}))];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: allow"));
-        assert!(msg.contains("status: executed"));
+        assert!(msg.contains("outcome: executed"));
         assert!(msg.contains("result:"));
         assert!(msg.contains("c1"));
         assert!(!msg.contains("error:"));
@@ -203,7 +228,7 @@ mod tests {
             json!({"error": "EACCES"}))];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: allow"));
-        assert!(msg.contains("status: failed"));
+        assert!(msg.contains("outcome: failed"));
         assert!(msg.contains("error: EACCES"));
         assert!(!msg.contains("result:"));
     }
@@ -218,7 +243,7 @@ mod tests {
         )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: deny"));
-        assert!(msg.contains("status: denied"));
+        assert!(msg.contains("outcome: denied"));
         assert!(msg.contains("user rejected this call"));
         assert!(!msg.contains("result:"));
         assert!(!msg.contains("error:"));
@@ -242,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn stitch_entries_denied_policy_names_classifier_and_reason() {
+    fn stitch_entries_denied_policy_names_matching_rule() {
         let entries = vec![make_entry(
             "c1",
             "shell::fs::write",
@@ -251,14 +276,14 @@ mod tests {
                 "denial": {
                     "kind": "policy",
                     "detail": {
-                        "classifier_reason": "command matches denylist",
-                        "classifier_fn": "shell::classify_argv"
+                        "rule_permission": "shell::exec",
+                        "rule_pattern": "rm -rf*"
                     }
                 }
             }),
         )];
         let msg = &stitch_entries(&entries)[0];
-        assert!(msg.contains("policy denied by shell::classify_argv: command matches denylist"));
+        assert!(msg.contains("policy denied by rule shell::exec : rm -rf*"));
     }
 
     #[test]
@@ -281,23 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn stitch_entries_denied_legacy_passes_through_reason() {
-        let entries = vec![make_entry(
-            "c1",
-            "shell::fs::write",
-            "denied",
-            json!({
-                "denial": {
-                    "kind": "legacy",
-                    "detail": { "reason": "user typed nope" }
-                }
-            }),
-        )];
-        let msg = &stitch_entries(&entries)[0];
-        assert!(msg.contains("reason: user typed nope"));
-    }
-
-    #[test]
     fn stitch_entries_timed_out_omits_denial_block() {
         let entries = vec![make_entry(
             "c1",
@@ -307,7 +315,7 @@ mod tests {
         )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: timeout"));
-        assert!(msg.contains("status: timed_out"));
+        assert!(msg.contains("outcome: timed_out"));
         // Timed-out records carry no denial; the status line is enough.
         assert!(!msg.contains("user rejected"));
         assert!(!msg.contains("policy denied"));
@@ -352,10 +360,10 @@ mod tests {
     }
 
     #[test]
-    fn omission_summary_message_positive_mentions_count_and_advises_flush() {
+    fn omission_summary_message_positive_mentions_count_and_next_turn() {
         let msg = omission_summary_message(42).expect("expected Some");
         assert!(msg.starts_with("[approval-gate]"));
         assert!(msg.contains("42"));
-        assert!(msg.contains("approval::flush_delivered"));
+        assert!(msg.contains("next turn"));
     }
 }

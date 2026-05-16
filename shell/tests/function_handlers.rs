@@ -17,15 +17,16 @@ async fn seed(handle: JobHandle) -> String {
     }
 }
 
-fn cfg_with_allow(allow: &[&str]) -> Arc<ShellConfig> {
-    let mut c = ShellConfig {
-        allowlist: allow.iter().map(|s| s.to_string()).collect(),
+/// Build a test config. `_allow` is ignored after T13 (shell no longer
+/// consults an allowlist — policy lives in approval-gate). The parameter
+/// stays for call-site source compatibility until the tests are pruned.
+fn cfg_with_allow(_allow: &[&str]) -> Arc<ShellConfig> {
+    let c = ShellConfig {
         max_timeout_ms: 5000,
         default_timeout_ms: 1500,
         max_output_bytes: 4096,
         ..Default::default()
     };
-    c.compile_denylist().unwrap();
     Arc::new(c)
 }
 
@@ -101,18 +102,12 @@ fn exec_request_rejects_array_command_with_helpful_error() {
     );
 }
 
-#[tokio::test]
-async fn exec_handler_rejects_unlisted_command() {
-    let cfg = cfg_with_allow(&["echo"]);
-    let err = functions::exec::handle(
-        cfg,
-        fresh_iii(),
-        typed::<ExecRequest>(json!({"command": "nmap", "args": ["-v"]})),
-    )
-    .await
-    .unwrap_err();
-    assert!(err.contains("allowlist"));
-}
+// `exec_handler_rejects_unlisted_command` deleted in T13 — shell no
+// longer enforces an allowlist; policy lives in approval-gate's rules
+// layer. The equivalent assertion under the new model is that an
+// `Action::Deny` rule for `shell::exec` + matching pattern returns a
+// structured Denial::Policy at intercept time (see approval-gate's
+// intercept tests).
 
 /// `args[i]` validation is per-index; a non-string element must be rejected
 /// with a message that names which index failed and what it actually was.

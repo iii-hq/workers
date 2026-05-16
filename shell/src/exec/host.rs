@@ -159,7 +159,6 @@ mod tests {
             max_output_bytes: 4096,
             ..Default::default()
         };
-        c.compile_denylist().unwrap();
         c
     }
 

@@ -2,8 +2,10 @@
 
 Self-asserting smoke harness for the `shell` worker. Validates all 5 iii
 functions (`shell::exec`, `shell::exec_bg`, `shell::kill`, `shell::status`,
-`shell::list`), every safety guardrail (allowlist, denylist, timeout, output
-truncation, env scrubbing), and the background-job lifecycle in one command.
+`shell::list`), the remaining safety guardrails (timeout, output truncation,
+env scrubbing, fs path denylist), and the background-job lifecycle in one
+command. Command-level policy (formerly the shell allowlist/denylist) lives
+in approval-gate's rules layer — see `approval-gate/tests/lifecycle.rs`.
 
 Modeled on `iii-database/tests/e2e/`.
 

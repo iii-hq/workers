@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Shell worker config. Post-T13 this is just execution-runtime tunables —
+/// allowlist / denylist / allow_any / compiled regex live in the
+/// approval-gate's rules layer, not here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellConfig {
     #[serde(default = "default_max_timeout_ms")]
@@ -24,20 +26,6 @@ pub struct ShellConfig {
     #[serde(default = "default_allowed_env")]
     pub allowed_env: Vec<String>,
 
-    #[serde(default)]
-    pub allowlist: Vec<String>,
-
-    /// Bypass the allowlist-miss-prompts-user behavior. When `true`, every
-    /// non-denylisted command is auto-approved on the classifier path.
-    /// Denylist still wins. Default `false` (fail-closed).
-    ///
-    /// Spec: docs/superpowers/specs/2026-05-15-shell-allowlist-approval-design.md § 6.5
-    #[serde(default)]
-    pub allow_any: bool,
-
-    #[serde(default)]
-    pub denylist_patterns: Vec<String>,
-
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: usize,
 
@@ -49,9 +37,6 @@ pub struct ShellConfig {
 
     #[serde(default)]
     pub sandbox: SandboxConfig,
-
-    #[serde(default, skip)]
-    pub compiled_denylist: Vec<Regex>,
 }
 
 fn default_max_timeout_ms() -> u64 {
@@ -141,97 +126,34 @@ impl Default for ShellConfig {
             working_dir: None,
             inherit_env: false,
             allowed_env: default_allowed_env(),
-            allowlist: Vec::new(),
-            allow_any: false,
-            denylist_patterns: Vec::new(),
             max_concurrent_jobs: default_max_concurrent_jobs(),
             job_retention_secs: default_job_retention_secs(),
             fs: FsConfig::default(),
             sandbox: SandboxConfig::default(),
-            compiled_denylist: Vec::new(),
         }
     }
 }
 
 pub fn load_config(path: &str) -> Result<ShellConfig> {
     let content = fs::read_to_string(path).with_context(|| format!("read {}", path))?;
-    let mut cfg: ShellConfig =
+    let cfg: ShellConfig =
         serde_yaml::from_str(&content).with_context(|| format!("parse {}", path))?;
-    cfg.compile_denylist()?;
     cfg.validate_fs_jail()?;
     Ok(cfg)
 }
 
 impl ShellConfig {
-    pub fn compile_denylist(&mut self) -> Result<()> {
-        self.compiled_denylist = self
-            .denylist_patterns
-            .iter()
-            .map(|p| Regex::new(p).with_context(|| format!("bad denylist pattern: {}", p)))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(())
-    }
-
     /// Refuse to start with the host backend exposing the entire filesystem
-    /// behind only the (advisory) denylist — the operator must either pin a
-    /// host_root jail or explicitly opt in via `fs.allow_unjailed: true`.
+    /// unjailed — the operator must either pin a host_root jail or
+    /// explicitly opt in via `fs.allow_unjailed: true`.
     pub fn validate_fs_jail(&self) -> Result<()> {
         if self.fs.host_root.is_none() && !self.fs.allow_unjailed {
             anyhow::bail!(
                 "fs.host_root is unset and fs.allow_unjailed is false — refusing to start \
                  unjailed. Set fs.host_root to a directory you intend to expose, or set \
                  fs.allow_unjailed: true to accept that the entire host filesystem is \
-                 reachable through shell::fs::* (subject only to the advisory denylist)."
+                 reachable through shell::fs::*."
             );
-        }
-        Ok(())
-    }
-
-    /// Returns `Some(reason)` if joined argv matches any compiled denylist regex.
-    /// Pure predicate; no allowlist consultation.
-    pub fn denylist_hit_reason(&self, argv: &[String]) -> Option<String> {
-        let joined = argv.join(" ");
-        for re in &self.compiled_denylist {
-            if re.is_match(&joined) {
-                return Some(format!("command matches denylist: {}", re.as_str()));
-            }
-        }
-        None
-    }
-
-    /// Returns `true` if the arity-aware prefix of `argv` matches any
-    /// entry in `allowlist`. Entries can be single tokens (`"ls"`) or
-    /// multi-token prefixes (`"git checkout"`, `"npm run dev"`); the
-    /// match is token-aligned via [`crate::arity::prefix_matches`]
-    /// so `"git"` matches argv beginning with `git <subcommand>` but
-    /// not `git-lfs`. Full-path argv heads (e.g. `/usr/bin/ls`) are
-    /// normalized to their basename before matching, preserving the
-    /// pre-arity path-agnostic behavior. Empty allowlist returns
-    /// `false` (caller decides what to do with that).
-    pub fn allowlist_contains(&self, argv: &[String]) -> bool {
-        if argv.is_empty() || self.allowlist.is_empty() {
-            return false;
-        }
-        self.allowlist
-            .iter()
-            .any(|entry| crate::arity::prefix_matches(argv, entry))
-    }
-
-    /// Today's combined check, preserved unchanged on the wire for direct
-    /// (non-agent) callers. Empty allowlist = open. Denylist always wins.
-    /// Agent calls bypass this via the approval-gate classifier path
-    /// (see docs/superpowers/specs/2026-05-15-shell-allowlist-approval-design.md § 6.5).
-    pub fn is_command_allowed(&self, argv: &[String]) -> Result<(), String> {
-        let cmd = argv.first().ok_or_else(|| "empty command".to_string())?;
-        if let Some(reason) = self.denylist_hit_reason(argv) {
-            return Err(reason);
-        }
-        if !self.allowlist.is_empty() && !self.allowlist_contains(argv) {
-            let base = std::path::Path::new(cmd)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(cmd);
-            return Err(format!("command '{}' not in allowlist", base));
         }
         Ok(())
     }
@@ -246,16 +168,6 @@ impl ShellConfig {
 mod tests {
     use super::*;
 
-    fn cfg_with(allow: Vec<&str>, deny: Vec<&str>) -> ShellConfig {
-        let mut c = ShellConfig {
-            allowlist: allow.into_iter().map(String::from).collect(),
-            denylist_patterns: deny.into_iter().map(String::from).collect(),
-            ..Default::default()
-        };
-        c.compile_denylist().unwrap();
-        c
-    }
-
     #[test]
     fn test_defaults() {
         let c = ShellConfig::default();
@@ -263,122 +175,6 @@ mod tests {
         assert_eq!(c.default_timeout_ms, 10_000);
         assert!(!c.inherit_env);
         assert_eq!(c.max_concurrent_jobs, 16);
-    }
-
-    #[test]
-    fn test_allowlist_permits() {
-        let c = cfg_with(vec!["ls", "cat"], vec![]);
-        assert!(c.is_command_allowed(&["ls".into(), "-la".into()]).is_ok());
-    }
-
-    #[test]
-    fn test_allowlist_rejects() {
-        let c = cfg_with(vec!["ls"], vec![]);
-        let err = c
-            .is_command_allowed(&["nmap".into()])
-            .expect_err("must reject");
-        assert!(err.contains("not in allowlist"));
-    }
-
-    #[test]
-    fn test_allowlist_empty_means_open() {
-        let c = cfg_with(vec![], vec![]);
-        assert!(c.is_command_allowed(&["anything".into()]).is_ok());
-    }
-
-    #[test]
-    fn test_allowlist_basename_match() {
-        let c = cfg_with(vec!["ls"], vec![]);
-        assert!(c
-            .is_command_allowed(&["/usr/bin/ls".into(), "-la".into()])
-            .is_ok());
-    }
-
-    #[test]
-    fn allowlist_arity_single_token_entry_matches_subcommand_argv() {
-        // Allowlisting just "git" should auto-approve `git checkout main`
-        // because the arity dictionary resolves `git` at arity 2.
-        let c = cfg_with(vec!["git"], vec![]);
-        assert!(c
-            .is_command_allowed(&["git".into(), "checkout".into(), "main".into()])
-            .is_ok());
-    }
-
-    #[test]
-    fn allowlist_arity_multi_token_entry_matches() {
-        // Allowlisting `git checkout` should match exactly that subcommand
-        // and not other git subcommands.
-        let c = cfg_with(vec!["git checkout"], vec![]);
-        assert!(c
-            .is_command_allowed(&["git".into(), "checkout".into(), "main".into()])
-            .is_ok());
-        let err = c
-            .is_command_allowed(&["git".into(), "push".into()])
-            .expect_err("git push must be rejected when only git checkout is allowed");
-        assert!(err.contains("allowlist"));
-    }
-
-    #[test]
-    fn allowlist_arity_npm_run_dev_three_token_entry() {
-        let c = cfg_with(vec!["npm run dev"], vec![]);
-        assert!(c
-            .is_command_allowed(&["npm".into(), "run".into(), "dev".into(), "--watch".into()])
-            .is_ok());
-        let err = c
-            .is_command_allowed(&["npm".into(), "run".into(), "build".into()])
-            .expect_err("npm run build must be rejected when only npm run dev is allowed");
-        assert!(err.contains("allowlist"));
-    }
-
-    #[test]
-    fn allowlist_arity_does_not_collide_on_hyphenated_token() {
-        // Allowlisting `git` must not auto-approve `git-lfs push` — the
-        // basename token boundary protects against substring confusion.
-        let c = cfg_with(vec!["git"], vec![]);
-        let err = c
-            .is_command_allowed(&["git-lfs".into(), "push".into()])
-            .expect_err("git-lfs must not match an allowlist entry of 'git'");
-        assert!(err.contains("allowlist"));
-    }
-
-    #[test]
-    fn test_denylist_blocks() {
-        let c = cfg_with(vec![], vec![r"rm\s+-rf\s+/"]);
-        let err = c
-            .is_command_allowed(&["rm".into(), "-rf".into(), "/".into()])
-            .expect_err("must reject");
-        assert!(err.contains("denylist"));
-    }
-
-    #[test]
-    fn test_empty_argv_rejected() {
-        let c = ShellConfig::default();
-        assert!(c.is_command_allowed(&[]).is_err());
-    }
-
-    /// Loads the shipped `config.yaml` and asserts the default allowlist
-    /// preserves read-only env inspection (`printenv`) while rejecting the
-    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
-    /// because `is_command_allowed` only checks argv[0]; with `env`
-    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
-    /// Loads the shipped `config.yaml` and asserts the default allowlist
-    /// preserves read-only env inspection (`printenv`) while rejecting the
-    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
-    /// because `is_command_allowed` only checks argv[0]; with `env`
-    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
-    /// Parses the YAML directly (skipping `load_config`'s fs-jail check,
-    /// which is unrelated to the allowlist policy under test).
-    #[test]
-    fn shipped_config_blocks_env_exec_escape() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
-        let content = fs::read_to_string(path).expect("read config.yaml");
-        let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
-        c.compile_denylist().expect("denylist compiles");
-        assert!(c.is_command_allowed(&["printenv".into()]).is_ok());
-        let err = c
-            .is_command_allowed(&["env".into(), "nmap".into(), "host".into()])
-            .expect_err("env <cmd> must be rejected");
-        assert!(err.contains("not in allowlist"));
     }
 
     #[test]
@@ -401,7 +197,6 @@ mod tests {
     #[test]
     fn yaml_with_fs_section_parses() {
         let yaml = r#"
-allowlist: []
 fs:
   host_root: /tmp/shell
   max_read_bytes: 1024
@@ -418,15 +213,6 @@ sandbox:
         assert_eq!(c.fs.max_read_bytes, 1024);
         assert!(!c.sandbox.enabled);
         assert_eq!(c.fs.denylist_paths.len(), 1);
-    }
-
-    #[test]
-    fn missing_fs_section_uses_defaults() {
-        let yaml = "allowlist: []\n";
-        let c: ShellConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(c.fs.max_read_bytes, 0);
-        assert_eq!(c.fs.max_write_bytes, 0);
-        assert!(c.sandbox.enabled);
     }
 
     #[test]

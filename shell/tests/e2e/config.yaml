@@ -43,11 +43,10 @@ workers:
       working_dir: ./data
       inherit_env: false
       allowed_env: [PATH, HOME, LANG, HARNESS_TEST_VAR]
-      allowlist: [echo, ls, cat, sleep, pwd, printf, sh, false, "true", env]
-      denylist_patterns:
-        - "rm\\s+-rf\\s+/"
-        - ":\\(\\)\\s*\\{\\s*:\\|"
-        - "harness_denylist_marker"
+      # T13: shell allowlist/denylist_patterns are gone. Command-level
+      # policy lives in approval-gate's rules layer; shell is a plain
+      # executor for the LLM path. The fs.denylist_paths below is the
+      # separate filesystem-path denylist for shell::fs::* tools (kept).
       max_concurrent_jobs: 2
       job_retention_secs: 2
       fs:

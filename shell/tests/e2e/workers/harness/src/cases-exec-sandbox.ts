@@ -167,28 +167,10 @@ export const EXEC_SANDBOX_CASES: TestCase[] = [
       );
     },
   },
-  {
-    name: 'exec_sandbox_allowlist_still_enforced',
-    async run(ctx: CaseContext) {
-      const sandbox_id = await maybeSandbox(ctx, 'exec_sandbox_allowlist_still_enforced');
-      if (!sandbox_id) return;
-      // The shell allowlist gates argv[0] BEFORE backend dispatch for
-      // both targets. `nmap` is not in the e2e allowlist
-      // (echo/ls/cat/sleep/pwd/printf/sh/false/true/env), so the call
-      // must fail with an allowlist error WITHOUT reaching the VM.
-      // (We can't directly observe "VM not hit" the way we can with
-      // mocks; the assertion is just that the shell denies the call.)
-      await ctx.expectError(
-        () =>
-          ctx.call('shell::exec', {
-            command: 'nmap',
-            args: ['-A', 'localhost'],
-            target: { kind: 'sandbox', sandbox_id },
-          }),
-        'allowlist',
-      );
-    },
-  },
+  // T13: 'exec_sandbox_allowlist_still_enforced' deleted — shell no longer
+  // enforces a command allowlist. Command-level policy lives in
+  // approval-gate's rules layer; the sandbox backend is a plain executor
+  // path just like the local backend.
   {
     name: 'exec_bg_sandbox_lifecycle_finishes',
     async run(ctx: CaseContext) {

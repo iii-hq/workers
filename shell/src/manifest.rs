@@ -15,10 +15,6 @@ pub fn build_manifest() -> Value {
                 "description": "Spawn a command in the background and return job_id",
             },
             {
-                "id": "shell::classify_argv",
-                "description": "Argv classifier for approval-gate (auto/deny/ask)",
-            },
-            {
                 "id": "shell::kill",
                 "description": "Kill a running background job",
             },
@@ -85,7 +81,7 @@ mod tests {
         assert!(m.get("version").is_some());
         assert!(m.get("functions").is_some());
         let fns = m.get("functions").unwrap().as_array().unwrap();
-        assert_eq!(fns.len(), 16);
+        assert_eq!(fns.len(), 15);
     }
 
     #[test]
