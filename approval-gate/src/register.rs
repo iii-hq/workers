@@ -20,29 +20,19 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 use crate::config::{InterceptorRule, WorkerConfig};
-use crate::delivery::{
-    handle_ack_delivered, handle_consume_undelivered, handle_flush_delivered, handle_list_pending,
-    handle_list_undelivered, handle_sweep_session,
-};
+use crate::delivery::{handle_consume, handle_list_pending, handle_sweep_session};
 use crate::intercept::handle_intercept;
 use crate::resolve::{handle_lookup_record, handle_resolve};
 use crate::rules;
 use crate::state::{
-    rule_for, unverified_marker_targets, FunctionExecutor, IiiFunctionExecutor, IiiStateBus,
-    StateBus,
+    unverified_marker_targets, FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus,
 };
-use crate::sweeper::{spawn_timeout_sweeper, write_event, write_hook_reply};
-use crate::wire::{extract_call, pending_key, Denial};
+use crate::wire::{extract_call, pending_key};
 
-/// The iii function ids registered by [`register`]. Operators must not
-/// alias these on any classifier — the boot guard logs a warning when
-/// a misconfiguration is detected, see [`register`].
+/// The iii function ids registered by [`register`].
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
-pub const FN_LIST_UNDELIVERED: &str = "approval::list_undelivered";
-pub const FN_CONSUME_UNDELIVERED: &str = "approval::consume_undelivered";
-pub const FN_ACK_DELIVERED: &str = "approval::ack_delivered";
-pub const FN_FLUSH_DELIVERED: &str = "approval::flush_delivered";
+pub const FN_CONSUME: &str = "approval::consume";
 pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
 
@@ -50,22 +40,16 @@ pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
 pub const STATE_SCOPE: &str = "approvals";
 
 /// Handles returned from [`register`]; holding them keeps every iii
-/// function registration and the background sweeper task alive.
+/// function registration alive for the worker's lifetime. The 2-second
+/// background sweeper task is gone — timeouts now flip lazily on read.
 pub struct Refs {
     pub resolve: FunctionRef,
     pub list_pending: FunctionRef,
-    pub list_undelivered: FunctionRef,
-    pub consume_undelivered: FunctionRef,
-    pub ack_delivered: FunctionRef,
-    pub flush_delivered: FunctionRef,
+    pub consume: FunctionRef,
     pub sweep_session: FunctionRef,
     pub lookup_record: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
-    /// Background task that flips expired pending records to `timed_out` and
-    /// emits the corresponding `approval_resolved` events. Kept alive by
-    /// virtue of being held here; aborts when the worker shuts down.
-    pub sweeper: tokio::task::JoinHandle<()>,
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
@@ -94,8 +78,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             if cid == FN_LOOKUP_RECORD
                 || cid == FN_RESOLVE
                 || cid == FN_LIST_PENDING
-                || cid == FN_LIST_UNDELIVERED
-                || cid == FN_ACK_DELIVERED
+                || cid == FN_CONSUME
                 || cid == FN_SWEEP_SESSION
             {
                 tracing::warn!(
@@ -207,36 +190,14 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         },
     ));
 
-    let bus_for_list_undelivered = bus.clone();
-    let scope_list_undelivered = state_scope.clone();
-    let list_undelivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_LIST_UNDELIVERED.into()).with_description(
-            "Return resolved approval records for a session that haven't yet been stitched \
-                 into an LLM turn. Lazy-flips expired pendings to timed_out."
-                .into(),
-        ),
-        move |payload: Value| {
-            let bus = bus_for_list_undelivered.clone();
-            let scope = scope_list_undelivered.clone();
-            async move {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                Ok::<_, IIIError>(
-                    handle_list_undelivered(bus.as_ref(), &scope, payload, now_ms).await,
-                )
-            }
-        },
-    ));
-
     let bus_for_consume = bus.clone();
     let scope_consume = state_scope.clone();
-    let consume_undelivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_CONSUME_UNDELIVERED.into()).with_description(
-            "Atomic list+ack of resolved approval records. Returns the same FIFO-capped \
-             slice as list_undelivered AND stamps each entry with delivered_in_turn_id \
-             before returning. Required payload: {session_id, turn_id, limit?}."
+    let consume = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_CONSUME.into()).with_description(
+            "Atomic drain: returns Done rows for a session and deletes them in the \
+             same call. Pending and InFlight rows stay in state. Pending rows past \
+             expires_at are lazy-flipped to Done(TimedOut) before return. \
+             Required payload: {session_id, limit?}. Response: {ok, entries, omitted}."
                 .into(),
         ),
         move |payload: Value| {
@@ -248,43 +209,8 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
                 Ok::<_, IIIError>(
-                    handle_consume_undelivered(bus.as_ref(), &scope, payload, now_ms).await,
+                    handle_consume(bus.as_ref(), &scope, payload, now_ms).await,
                 )
-            }
-        },
-    ));
-
-    let bus_for_ack = bus.clone();
-    let scope_ack = state_scope.clone();
-    let ack_delivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_ACK_DELIVERED.into()).with_description(
-            "Stamp delivered_in_turn_id on resolved approvals so they aren't replayed \
-                 in subsequent turns. Idempotent."
-                .into(),
-        ),
-        move |payload: Value| {
-            let bus = bus_for_ack.clone();
-            let scope = scope_ack.clone();
-            async move {
-                Ok::<_, IIIError>(handle_ack_delivered(bus.as_ref(), &scope, payload).await)
-            }
-        },
-    ));
-
-    let bus_for_flush = bus.clone();
-    let scope_flush = state_scope.clone();
-    let flush_delivered = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_FLUSH_DELIVERED.into()).with_description(
-            "Stamp every unacked terminal approval record in a session as \
-             delivered. One-shot operator recovery for backlog accumulation. \
-             Required payload: {session_id, turn_id}."
-                .into(),
-        ),
-        move |payload: Value| {
-            let bus = bus_for_flush.clone();
-            let scope = scope_flush.clone();
-            async move {
-                Ok::<_, IIIError>(handle_flush_delivered(bus.as_ref(), &scope, payload).await)
             }
         },
     ));
@@ -400,24 +326,72 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         })
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    let sweeper = spawn_timeout_sweeper(
-        iii.clone(),
-        bus.clone(),
-        state_scope.clone(),
-        cfg.sweeper_interval_ms,
-    );
-
     Ok(Refs {
         resolve,
         list_pending,
-        list_undelivered,
-        consume_undelivered,
-        ack_delivered,
-        flush_delivered,
+        consume,
         sweep_session,
         lookup_record,
         subscriber_fn,
         subscriber_trigger,
-        sweeper,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Inline stream helpers (used by the subscriber to write the
+// `approval_requested` stream frame and the hook reply). These used to
+// live in `sweeper.rs` but that file is gone now that the background
+// polling task is deleted; the helpers move here as their only consumer.
+// ─────────────────────────────────────────────────────────────────────────
+
+pub(crate) fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static C: AtomicU64 = AtomicU64::new(0);
+    let n = C.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{t:x}-{n:x}")
+}
+
+/// Append `event` to the `agent::events` stream for `session_id`. Fire-
+/// and-forget: errors are swallowed because the persisted record is the
+/// source of truth — orchestrators re-derive state from
+/// `approval::consume` if a frame is lost.
+pub(crate) async fn write_event(iii: &III, session_id: &str, event: &Value) {
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": "agent::events",
+                "group_id": session_id,
+                "item_id": format!("approval-{}", uuid_like()),
+                "data": event,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+}
+
+/// Append a hook reply onto `stream_name` keyed by `event_id`. No-op when
+/// either id is empty so a malformed envelope can't crash the gate.
+pub(crate) async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &str, reply: &Value) {
+    if stream_name.is_empty() || event_id.is_empty() {
+        return;
+    }
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "stream::set".into(),
+            payload: json!({
+                "stream_name": stream_name,
+                "group_id": event_id,
+                "item_id": uuid_like(),
+                "data": reply,
+            }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
 }
