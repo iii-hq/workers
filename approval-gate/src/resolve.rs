@@ -1,33 +1,42 @@
 //! Resolve flow — handles `approval::resolve` and the cascading-allow
 //! behavior that fires when a reply carries `always: true`.
 //!
-//! [`handle_resolve`] is the main entry point. On allow it routes
-//! through [`approve_and_execute`], which is also reused by the cascade
-//! sweep ([`cascade_allow_for_session`]) so the approved → invoke →
-//! executed/failed transitions stay in one place. [`handle_lookup_record`]
-//! is the small read-only helper called by shell bypass validation.
+//! ## Three-phase allow path
+//!
+//! [`handle_resolve`] is the entry point. On allow it routes through
+//! [`approve_and_execute`]:
+//!   1. write `InFlight` (closes the dup-exec race — a second resolve
+//!      arriving during the invoke await sees a non-Pending row and bails);
+//!   2. `iii.trigger(function_id, args)` and await;
+//!   3. write `Done(Executed{result})` or `Done(Failed{error})`.
+//!
+//! Deny is a single Pending → Done(Denied) write — no invoke, no InFlight.
+//!
+//! ## Cascade
+//!
+//! On `allow + always:true`, [`cascade_allow_for_session`] pushes a runtime
+//! `Allow` rule with the originator's **exact pattern** (via
+//! [`crate::rules::pattern_for`]) — not a blanket `pattern: "*"`. "Always
+//! allow git status" does NOT auto-allow `rm -rf /` via the same
+//! `shell::exec` function id. Same-session pending rows whose
+//! `verdict_for` returns `Allow` under the new rule are driven through
+//! `approve_and_execute`.
 
 use std::sync::RwLock;
 
 use serde_json::{json, Value};
 
-// apply_policy_rules / PolicyOutcome were deleted in T5. The cascade loop
-// below uses crate::verdict_for instead. T7 rewrites this entirely.
-use crate::lifecycle::{maybe_flip_timed_out, transition_record};
-use crate::rules;
+use crate::record::{Record, Status, Outcome};
+use crate::rules::{self, Action, Rule, Ruleset};
 use crate::state::{FunctionExecutor, StateBus};
 use crate::wire::{pending_key, Denial, WireDecision};
 
-/// Lookup a single approval record by session + call id (for shell bypass validation).
+/// Lookup a single approval record by session + call id (for shell bypass
+/// validation). Stays on the old free-form Value shape so shell-side
+/// readers don't break — shell strip in T13 deletes the callsite there.
 pub async fn handle_lookup_record(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
-    let session_id = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let function_call_id = payload
-        .get("function_call_id")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let function_call_id = payload.get("function_call_id").and_then(Value::as_str).unwrap_or("");
     if session_id.is_empty() || function_call_id.is_empty() {
         return Value::Null;
     }
@@ -35,22 +44,19 @@ pub async fn handle_lookup_record(bus: &dyn StateBus, state_scope: &str, payload
     bus.get(state_scope, &key).await.unwrap_or(Value::Null)
 }
 
-/// Resolve a pending approval. Wire-format errors return `{ok: false,
-/// error: "<reason>"}`. Success returns `{ok: true}` plus an optional
-/// `cascaded: N` count when an `always: true` reply triggered the
+/// Resolve a pending approval. Wire-format errors return
+/// `{ok:false, error:"<reason>"}`. Success returns `{ok:true}` plus an
+/// optional `cascaded: N` count when an `always:true` reply triggered the
 /// session sweep.
 pub async fn handle_resolve(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
-    policy_rules: &RwLock<rules::Ruleset>,
+    policy_rules: &RwLock<Ruleset>,
     payload: Value,
     now_ms: u64,
 ) -> Value {
-    let session_id = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
     let function_call_id = payload
         .get("function_call_id")
         .or_else(|| payload.get("tool_call_id"))
@@ -59,6 +65,7 @@ pub async fn handle_resolve(
     if session_id.is_empty() || function_call_id.is_empty() {
         return json!({ "ok": false, "error": "missing_id" });
     }
+
     let decision: WireDecision = match payload.get("decision").cloned() {
         Some(v) => match serde_json::from_value(v) {
             Ok(d) => d,
@@ -66,33 +73,33 @@ pub async fn handle_resolve(
         },
         None => return json!({ "ok": false, "error": "bad_decision" }),
     };
+
     let key = pending_key(session_id, function_call_id);
-    let Some(existing) = bus.get(state_scope, &key).await else {
+    let Some(raw) = bus.get(state_scope, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
     };
-
-    // Lazy timeout flip: if the record is past expires_at, write the
-    // timed_out transition and refuse the resolve so the caller can't
-    // race the sweeper.
-    let existing = match maybe_flip_timed_out(&existing, now_ms) {
-        Some(flipped) => {
-            let _ = bus.set(state_scope, &key, flipped.clone()).await;
-            return json!({ "ok": false, "error": "timed_out" });
-        }
-        None => existing,
+    let Some(record) = Record::from_value(raw) else {
+        return json!({ "ok": false, "error": "corrupt_record" });
     };
 
-    if existing.get("status").and_then(Value::as_str) != Some("pending") {
-        return json!({ "ok": false, "error": "already_resolved" });
+    // Lazy timeout flip — Pending rows past expires_at flip to
+    // Done(TimedOut) on read.
+    if let Some(flipped) = record.flipped_to_timed_out_if_expired(now_ms) {
+        let _ = bus.set(state_scope, &key, flipped.to_value()).await;
+        return json!({ "ok": false, "error": "timed_out" });
+    }
+
+    // Dup-exec guard: only Pending rows are resolvable. InFlight means a
+    // concurrent resolve is still mid-invoke; Done means terminal.
+    match record.status {
+        Status::Pending  => { /* fall through */ }
+        Status::InFlight => return json!({ "ok": false, "error": "in_flight" }),
+        Status::Done     => return json!({ "ok": false, "error": "already_resolved" }),
     }
 
     match decision {
         WireDecision::Deny => {
-            // Caller supplies a structured Denial. Accepted shapes:
-            //   { "decision": "deny", "denial": { "kind": "user_rejected", ... } }
-            //   { "decision": "deny", "denial": { "kind": "user_corrected", "detail": { "feedback": "..." } } }
-            // Missing `denial` is treated as a bare UserRejected (no feedback)
-            // so the simplest UI flow stays one-click.
+            // Optional structured denial from caller; missing → UserRejected.
             let denial = match payload.get("denial").cloned() {
                 Some(v) => match serde_json::from_value::<Denial>(v) {
                     Ok(d) => d,
@@ -100,54 +107,36 @@ pub async fn handle_resolve(
                 },
                 None => Denial::UserRejected,
             };
-            let denied = transition_record(&existing, "denied", None, None, Some(denial));
-            if let Err(e) = bus.set(state_scope, &key, denied).await {
+            let denied = record.done_at(now_ms, Outcome::Denied { denial });
+            if let Err(e) = bus.set(state_scope, &key, denied.to_value()).await {
                 tracing::error!("approval-gate: failed to write denied record: {e}");
                 return json!({ "ok": false, "error": "state_write_failed" });
             }
             json!({ "ok": true })
         }
         WireDecision::Allow => {
+            // Snapshot args + function_id before consuming `record` in
+            // approve_and_execute — cascade needs them for the rule push.
+            let function_id = record.function_id.clone();
+            let args = record.args.clone();
+
             if let Err(err) = approve_and_execute(
-                bus,
-                exec,
-                state_scope,
-                &existing,
-                session_id,
-                function_call_id,
-            )
-            .await
-            {
+                bus, exec, state_scope, record, session_id, function_call_id, now_ms,
+            ).await {
                 tracing::error!("approval-gate: failed to execute approved call: {err}");
                 return json!({ "ok": false, "error": "state_write_failed" });
             }
 
-            // Optional cascade: when `always: true` is set on an allow
-            // reply, add a runtime Allow rule for this call's function id
-            // and resolve every other pending record in the same session
-            // that the new rule covers. v1 scope is function-id-only —
-            // the cascade rule's `pattern` is "*" to match the v1 rules
-            // surface. See [`crate::rules`].
-            let cascaded = if payload
-                .get("always")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                let function_id = existing
-                    .get("function_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+            // Cascade on `always:true`. Push a runtime Allow rule with the
+            // ORIGINATOR'S EXACT PATTERN (via pattern_for), then sweep the
+            // session's other Pending rows.
+            let cascaded = if payload.get("always").and_then(Value::as_bool).unwrap_or(false) {
                 cascade_allow_for_session(
-                    bus,
-                    exec,
-                    state_scope,
-                    policy_rules,
-                    session_id,
-                    function_call_id,
-                    &function_id,
-                )
-                .await
+                    bus, exec, state_scope, policy_rules,
+                    session_id, function_call_id,
+                    &function_id, &args,
+                    now_ms,
+                ).await
             } else {
                 0
             };
@@ -161,77 +150,72 @@ pub async fn handle_resolve(
     }
 }
 
-/// Push an Allow rule for `function_id` into the shared policy ruleset,
-/// then resolve every pending record in `session_id` (other than the one
-/// just resolved by the caller) that the new rule covers. Returns the
-/// number of records auto-resolved.
+/// Push an exact-pattern Allow rule into the shared ruleset, then sweep
+/// the session's other Pending rows. Returns the number of rows
+/// auto-resolved (originator excluded).
 ///
-/// The function id rule is appended once; if the user clicks "always
-/// allow X" twice for the same X within a session, the second push is a
-/// duplicate but harmless (last-wins still picks Allow). State-write
-/// failures inside the loop are logged and skipped so a single bad
-/// record can't prevent the rest of the cascade.
+/// **Lock-ordering invariant**: the write/read guards on `policy_rules`
+/// are released before any `.await`. `std::sync::RwLock` is not async-safe
+/// to hold across suspension; a held guard would block every concurrent
+/// intercept.
 async fn cascade_allow_for_session(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
-    policy_rules: &RwLock<rules::Ruleset>,
+    policy_rules: &RwLock<Ruleset>,
     session_id: &str,
     originator_call_id: &str,
     originator_function_id: &str,
+    originator_args: &Value,
+    now_ms: u64,
 ) -> u64 {
-    // Push the new Allow rule under the write lock. Hold the guard only
-    // for the mutation, not across the .await in the sweep below.
+    // 1. Push the exact-pattern Allow rule under the write lock.
+    //    pattern_for is the same extractor used at intercept time, so
+    //    "always allow git status" means literally that argv shape — NOT
+    //    a blanket "*" pattern that would auto-allow rm -rf /.
+    let pushed_pattern = rules::pattern_for(originator_function_id, originator_args);
     {
         let mut guard = policy_rules
             .write()
             .expect("approval-gate policy rules lock poisoned");
-        guard.push(rules::Rule {
+        guard.push(Rule {
             permission: originator_function_id.to_string(),
-            pattern: "*".to_string(),
-            action: rules::Action::Allow,
+            pattern: pushed_pattern,
+            action: Action::Allow,
         });
     }
 
-    // Snapshot the session's pending records and re-evaluate each one
-    // against the now-updated rules. Use a read-clone so we don't hold
-    // the lock across .await.
+    // 2. Snapshot the session's pending rows.
     let prefix = format!("{session_id}/");
-    let session_records = bus.list_prefix(state_scope, &prefix).await;
+    let session_rows = bus.list_prefix(state_scope, &prefix).await;
+
     let mut cascaded = 0u64;
-    for rec in session_records {
-        let rec_call_id = match rec.get("function_call_id").and_then(Value::as_str) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        if rec_call_id == originator_call_id {
-            continue;
-        }
-        if rec.get("status").and_then(Value::as_str) != Some("pending") {
-            continue;
-        }
-        let fn_id = rec
-            .get("function_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let args = rec.get("args").cloned().unwrap_or(json!({}));
+    for raw in session_rows {
+        let Some(record) = Record::from_value(raw) else { continue };
+        if record.session_id != session_id { continue; }                  // defensive
+        if record.function_call_id == originator_call_id { continue; }    // skip originator
+        if record.status != Status::Pending { continue; }                 // skip non-pending
+
+        // 3. Re-evaluate against the updated ruleset.
         let verdict = {
             let guard = policy_rules
                 .read()
                 .expect("approval-gate policy rules lock poisoned");
-            crate::verdict_for(&fn_id, &args, &guard)
+            crate::verdict_for(&record.function_id, &record.args, &guard)
         };
         if !matches!(verdict, crate::Verdict::Allow) {
             continue;
         }
-        if let Err(err) =
-            approve_and_execute(bus, exec, state_scope, &rec, session_id, &rec_call_id).await
-        {
+
+        // 4. Drive through the same approve_and_execute path as the
+        //    user-driven allow (InFlight → invoke → Done).
+        let cid = record.function_call_id.clone();
+        if let Err(err) = approve_and_execute(
+            bus, exec, state_scope, record, session_id, &cid, now_ms,
+        ).await {
             tracing::warn!(
-                session_id,
-                call_id = %rec_call_id,
-                "approval-gate: cascade auto-resolve failed: {err}"
+                session_id, call_id = %cid,
+                "approval-gate: cascade auto-resolve failed: {err}",
             );
             continue;
         }
@@ -240,50 +224,44 @@ async fn cascade_allow_for_session(
     cascaded
 }
 
-/// Drive a pending record through the approved → invoke → executed/failed
-/// flow. Pure plumbing — does not consult policy rules, does not check
-/// the original status (caller must have verified it's pending). Used by
-/// both the user-driven [`handle_resolve`] allow path and the
-/// cascade-on-`always` sweep so the state transitions stay in one place.
+/// Drive a Pending row through InFlight → invoke → Done. Used by both
+/// the user-driven allow path and the cascade sweep so the lifecycle
+/// transitions stay in one place.
 ///
-/// Returns `Err` only when a state write fails; the invocation result
-/// itself (success or function-error) is captured on the record. The
-/// caller decides how to surface a state-write failure (the existing
-/// handlers map it to `{ok:false, error:"state_write_failed"}`).
+/// Phase 1 (InFlight) is the dup-exec guard: a concurrent resolve seeing
+/// a non-Pending row in `handle_resolve` returns `in_flight` and skips
+/// the second invoke.
 pub(crate) async fn approve_and_execute(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
-    pending: &Value,
+    pending: Record,
     session_id: &str,
     function_call_id: &str,
+    now_ms: u64,
 ) -> Result<(), String> {
-    let function_id = pending
-        .get("function_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let args = pending.get("args").cloned().unwrap_or(json!({}));
     let key = pending_key(session_id, function_call_id);
-    let approved = transition_record(pending, "approved", None, None, None);
-    // Best-effort intermediate write; if it fails we still try to invoke
-    // so the user-visible behavior matches the pre-extraction allow path.
-    let _ = bus.set(state_scope, &key, approved.clone()).await;
-    match exec
+    let function_id = pending.function_id.clone();
+    let args = pending.args.clone();
+
+    // Phase 1: InFlight write. Closes the dup-exec race.
+    let in_flight = pending.in_flight(now_ms);
+    bus.set(state_scope, &key, in_flight.to_value())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Phase 2: invoke. Result/error captured on the record below.
+    let outcome = match exec
         .invoke(&function_id, args, function_call_id, session_id)
         .await
     {
-        Ok(result) => {
-            let executed = transition_record(&approved, "executed", Some(result), None, None);
-            bus.set(state_scope, &key, executed)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        Err(error) => {
-            let failed = transition_record(&approved, "failed", None, Some(error), None);
-            bus.set(state_scope, &key, failed)
-                .await
-                .map_err(|e| e.to_string())
-        }
-    }
+        Ok(result) => Outcome::Executed { result },
+        Err(error) => Outcome::Failed { error },
+    };
+
+    // Phase 3: Done write. resolved_at preserved from the InFlight write.
+    let done = in_flight.done(outcome);
+    bus.set(state_scope, &key, done.to_value())
+        .await
+        .map_err(|e| e.to_string())
 }
