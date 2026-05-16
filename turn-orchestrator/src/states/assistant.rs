@@ -75,25 +75,26 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     Ok(())
 }
 
-/// Atomically consume resolved-but-undelivered approvals (list + stamp) and
+/// Drain resolved approvals from the gate via `approval::consume` and
 /// convert them into stitched user messages plus an optional omission
 /// summary. Returns `(stitched_msgs, summary_msg_or_none)`.
 ///
+/// `approval::consume` is atomic: it returns Done rows and deletes them
+/// in the same call. No turn_id stamping (delivered_in_turn_id is gone);
+/// rows beyond the gate's cap stay in state and surface on the next turn,
+/// counted via `omitted`.
+///
 /// Network failures are logged and swallowed: a transient consume failure
 /// must not block the turn. On failure the caller proceeds with an empty
-/// stitch — entries will be retried atomically on the next turn.
+/// stitch — entries will be retried on the next turn.
 pub(crate) async fn consume_approval_stitch(
     iii: &III,
     session_id: &str,
-    turn_id: &str,
 ) -> (Vec<AgentMessage>, Option<String>) {
     let resp = iii
         .trigger(TriggerRequest {
-            function_id: "approval::consume_undelivered".into(),
-            payload: json!({
-                "session_id": session_id,
-                "turn_id": turn_id,
-            }),
+            function_id: "approval::consume".into(),
+            payload: json!({ "session_id": session_id }),
             action: None,
             timeout_ms: Some(5_000),
         })
@@ -101,7 +102,7 @@ pub(crate) async fn consume_approval_stitch(
     let resp = match resp {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "approval::consume_undelivered failed; skipping stitch this turn");
+            tracing::warn!(error = %e, "approval::consume failed; skipping stitch this turn");
             return (Vec::new(), None);
         }
     };
@@ -176,9 +177,8 @@ pub(crate) fn append_summary_message(
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
     let request = persistence::load_run_request(iii, &record.session_id).await;
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
-    let turn_id = format!("{}-turn-{}", record.session_id, record.turn_count);
     let (stitch_msgs, summary) =
-        consume_approval_stitch(iii, &record.session_id, &turn_id).await;
+        consume_approval_stitch(iii, &record.session_id).await;
     let stitched_nonempty = !stitch_msgs.is_empty() || summary.is_some();
     merge_stitched_into_history(&mut messages, stitch_msgs);
     append_summary_message(
