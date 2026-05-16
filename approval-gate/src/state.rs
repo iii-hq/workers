@@ -68,6 +68,10 @@ pub trait StateBus: Send + Sync {
     async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), IIIError>;
     async fn get(&self, scope: &str, key: &str) -> Option<Value>;
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
+    /// Remove a key. Required by `approval::consume`, which returns Done
+    /// rows and deletes them in the same call. Idempotent (deleting a
+    /// missing key returns Ok).
+    async fn delete(&self, scope: &str, key: &str) -> Result<(), IIIError>;
 }
 
 /// Invokes an iii function with arguments and returns its result or an
@@ -163,6 +167,17 @@ impl StateBus for IiiStateBus {
             .into_iter()
             .map(|entry| entry.get("value").cloned().unwrap_or(entry))
             .collect()
+    }
+    async fn delete(&self, scope: &str, key: &str) -> Result<(), IIIError> {
+        self.0
+            .trigger(TriggerRequest {
+                function_id: "state::delete".into(),
+                payload: json!({ "scope": scope, "key": key }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+            .map(|_| ())
     }
 }
 

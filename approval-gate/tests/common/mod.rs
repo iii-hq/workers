@@ -92,6 +92,13 @@ impl StateBus for InMemoryStateBus {
             .map(|(_, v)| v.clone())
             .collect()
     }
+    async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
+        self.store
+            .lock()
+            .unwrap()
+            .remove(&format!("{scope}/{key}"));
+        Ok(())
+    }
 }
 
 /// `StateBus` whose `set` always errors. Used to exercise the gate's
@@ -113,6 +120,9 @@ impl StateBus for FailingStateBus {
     }
     async fn list_prefix(&self, _scope: &str, _prefix: &str) -> Vec<Value> {
         Vec::new()
+    }
+    async fn delete(&self, _scope: &str, _key: &str) -> Result<(), iii_sdk::IIIError> {
+        Err(iii_sdk::IIIError::Runtime("kv unreachable".into()))
     }
 }
 
