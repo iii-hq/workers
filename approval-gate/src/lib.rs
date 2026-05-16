@@ -26,9 +26,7 @@ pub use register::{
     STATE_SCOPE,
 };
 pub use resolve::{handle_lookup_record, handle_resolve};
-pub use state::{
-    unverified_marker_targets, FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus,
-};
+pub use state::{FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus};
 pub use wire::{
     block_reply_for, extract_call, pending_key, Decision, Denial, IncomingCall, WireDecision,
 };
@@ -63,9 +61,3 @@ pub(crate) fn verdict_for(
     }
 }
 
-// Test-only re-imports: the few helpers below this line stay private to
-// the crate but the integration tests need them. Will shrink as state.rs
-// strips the marker plumbing (T10) and the orchestrator-side helpers
-// migrate to the new wire shape (T14).
-#[cfg(test)]
-use state::{merge_from_approval_marker_if_needed, rule_for};
