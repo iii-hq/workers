@@ -5,7 +5,6 @@
 pub mod config;
 pub mod delivery;
 pub mod intercept;
-pub mod lifecycle;
 pub mod manifest;
 pub mod record;
 pub mod register;
@@ -21,11 +20,7 @@ pub use delivery::{
     handle_list_undelivered, handle_sweep_session, LIST_UNDELIVERED_DEFAULT_LIMIT,
 };
 pub use intercept::handle_intercept;
-pub use lifecycle::{
-    build_pending_record, collect_timed_out_for_sweep, is_terminal_status, maybe_flip_timed_out,
-    transition_record, transition_record_with_now,
-};
-pub use record::{Next, Record, Status};
+pub use record::{Outcome, Record, Status};
 pub use register::{
     register, Refs, FN_ACK_DELIVERED, FN_CONSUME_UNDELIVERED, FN_FLUSH_DELIVERED, FN_LIST_PENDING,
     FN_LIST_UNDELIVERED, FN_LOOKUP_RECORD, FN_RESOLVE, FN_SWEEP_SESSION, STATE_SCOPE,
