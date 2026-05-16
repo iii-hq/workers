@@ -235,3 +235,181 @@ pub async fn handle_intercept(
         "function_id": call.function_id,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn interpret_classifier_reply_reads_decision_tags() {
+        assert!(matches!(
+            interpret_classifier_reply(&json!({"decision": "auto"}), "shell::classify_argv"),
+            Ok(ClassifierDecision::Auto)
+        ));
+        match interpret_classifier_reply(
+            &json!({"decision":"deny","reason":"nope"}),
+            "shell::classify_argv",
+        ) {
+            Ok(ClassifierDecision::Deny(Denial::Policy {
+                classifier_reason,
+                classifier_fn,
+            })) => {
+                assert_eq!(classifier_reason, "nope");
+                assert_eq!(classifier_fn, "shell::classify_argv");
+            }
+            o => panic!("expected Policy denial {:?}", o),
+        }
+        assert!(matches!(
+            interpret_classifier_reply(
+                &json!({"decision":"ask","summary":"x"}),
+                "shell::classify_argv"
+            ),
+            Ok(ClassifierDecision::Ask)
+        ));
+        assert!(interpret_classifier_reply(&json!({}), "shell::classify_argv").is_err());
+    }
+
+    /// An operator-registered rule is authoritative: every call to that
+    /// function id runs through the classifier, even when the run's
+    /// `approval_required` list is empty.
+    #[test]
+    fn decide_intercept_action_classifies_when_rule_has_classifier_regardless_of_approval_required(
+    ) {
+        let rule = InterceptorRule {
+            function_id: "shell::exec".into(),
+            classifier: Some("shell::classify_argv".into()),
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: true,
+            marker_target_verified: true,
+        };
+        let action = decide_intercept_action(Some(&rule), false);
+        assert_eq!(
+            action,
+            InterceptAction::Classify {
+                classifier_fn: "shell::classify_argv".into(),
+                classifier_timeout_ms: 2000,
+            }
+        );
+        assert_eq!(action, decide_intercept_action(Some(&rule), true));
+    }
+
+    #[test]
+    fn decide_intercept_action_pauses_when_rule_has_no_classifier_regardless_of_approval_required()
+    {
+        let rule = InterceptorRule {
+            function_id: "shell::fs::write".into(),
+            classifier: None,
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: false,
+            marker_target_verified: false,
+        };
+        assert_eq!(
+            decide_intercept_action(Some(&rule), false),
+            InterceptAction::Pause
+        );
+        assert_eq!(
+            decide_intercept_action(Some(&rule), true),
+            InterceptAction::Pause
+        );
+    }
+
+    #[test]
+    fn decide_intercept_action_pauses_when_no_rule_but_run_listed_approval_required() {
+        assert_eq!(decide_intercept_action(None, true), InterceptAction::Pause);
+    }
+
+    #[test]
+    fn decide_intercept_action_passes_when_no_rule_and_not_approval_required() {
+        assert_eq!(decide_intercept_action(None, false), InterceptAction::Pass);
+    }
+
+    #[test]
+    fn decide_intercept_action_classifier_empty_string_treated_as_no_classifier() {
+        let rule = InterceptorRule {
+            function_id: "shell::exec".into(),
+            classifier: Some(String::new()),
+            classifier_timeout_ms: 2000,
+            inject_approval_marker: false,
+            marker_target_verified: false,
+        };
+        assert_eq!(
+            decide_intercept_action(Some(&rule), false),
+            InterceptAction::Pause
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_empty_ruleset_falls_through() {
+        let rs: rules::Ruleset = vec![];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::FallThrough
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_allow_short_circuits() {
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::exec".into(),
+            pattern: "*".into(),
+            action: rules::Action::Allow,
+        }];
+        assert_eq!(apply_policy_rules(&rs, "shell::exec"), PolicyOutcome::Allow);
+    }
+
+    #[test]
+    fn apply_policy_rules_deny_carries_matched_rule_identity() {
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::*".into(),
+            pattern: "*".into(),
+            action: rules::Action::Deny,
+        }];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::fs::write"),
+            PolicyOutcome::Deny {
+                rule_permission: "shell::*".into(),
+                rule_pattern: "*".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_ask_falls_through_to_interceptor_flow() {
+        // Ask means "no decision from this layer — let the next handle it".
+        let rs: rules::Ruleset = vec![rules::Rule {
+            permission: "shell::exec".into(),
+            pattern: "*".into(),
+            action: rules::Action::Ask,
+        }];
+        assert_eq!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::FallThrough
+        );
+    }
+
+    #[test]
+    fn apply_policy_rules_last_matching_wins() {
+        // Later-listed more-specific rule overrides earlier permissive default.
+        let rs: rules::Ruleset = vec![
+            rules::Rule {
+                permission: "*".into(),
+                pattern: "*".into(),
+                action: rules::Action::Allow,
+            },
+            rules::Rule {
+                permission: "shell::exec".into(),
+                pattern: "*".into(),
+                action: rules::Action::Deny,
+            },
+        ];
+        assert!(matches!(
+            apply_policy_rules(&rs, "shell::exec"),
+            PolicyOutcome::Deny { .. }
+        ));
+        assert_eq!(
+            apply_policy_rules(&rs, "approval::resolve"),
+            PolicyOutcome::Allow
+        );
+    }
+}

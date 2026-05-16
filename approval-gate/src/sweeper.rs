@@ -131,3 +131,21 @@ pub(crate) async fn write_hook_reply(iii: &III, stream_name: &str, event_id: &st
         })
         .await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_resolved_event_shape() {
+        let evt = timeout_resolved_event("tc-1");
+        assert_eq!(evt["type"], "approval_resolved");
+        assert_eq!(evt["function_call_id"], "tc-1");
+        assert_eq!(evt["tool_call_id"], "tc-1");
+        assert_eq!(evt["decision"], "deny");
+        assert_eq!(evt["status"], "timed_out");
+        // timed_out is self-describing — no Denial / no legacy reason.
+        assert!(evt.get("decision_reason").is_none());
+        assert!(evt.get("denial").is_none());
+    }
+}
