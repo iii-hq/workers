@@ -29,6 +29,7 @@
 //! programming so `"a*b*c"` matches `"axxxbxxxc"` correctly.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Decision a [`Rule`] expresses when it matches an incoming call.
 ///
@@ -117,6 +118,44 @@ where
         .into_iter()
         .filter(|r| wildcard_match(&r.permission, permission) && wildcard_match(&r.pattern, pattern))
         .last()
+}
+
+/// Per-function pattern extractor. The pattern is the second axis a rule
+/// matches on (alongside `function_id`); for `shell::exec` we derive it
+/// from `{command, args}` so operators can write rules like
+/// `permission: "shell::exec", pattern: "git status*"` and get
+/// argv-level granularity. Other function ids default to `"*"`, which
+/// matches only wildcard rules.
+pub fn pattern_for(function_id: &str, args: &Value) -> String {
+    match function_id {
+        "shell::exec" | "shell::exec_bg" => extract_shell_pattern(args),
+        _ => "*".to_string(),
+    }
+}
+
+/// Shell ExecRequest is `{ command: String, args: Option<Vec<String>> }`
+/// per `shell/src/functions/types.rs`. There is no `argv` field. Two
+/// modes:
+///   - `args = None` → `command` is a shell-words string, use as-is.
+///   - `args = Some(list)` → join `command + " " + list.join(" ")`.
+/// Malformed input (missing/non-string command) falls back to `"*"` so
+/// the row matches only wildcard rules.
+///
+/// Known conflation: argv `[git, log, "--grep=foo bar"]` joins to
+/// `"git log --grep=foo bar"`, same pattern string as
+/// `[git, log, "--grep=foo", bar]`. Documented; acceptable for v1.
+fn extract_shell_pattern(args: &Value) -> String {
+    let cmd = args.get("command").and_then(Value::as_str);
+    let argv = args.get("args").and_then(Value::as_array);
+    match (cmd, argv) {
+        (Some(c), Some(arr)) if !arr.is_empty() => {
+            let mut parts = vec![c.to_string()];
+            parts.extend(arr.iter().filter_map(Value::as_str).map(str::to_string));
+            parts.join(" ")
+        }
+        (Some(c), _) => c.to_string(),
+        _ => "*".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +306,66 @@ mod tests {
             let back: Action = serde_yaml::from_str(&y).unwrap();
             assert_eq!(back, a);
         }
+    }
+
+    // -------------------- pattern_for / extract_shell_pattern --------------------
+
+    use serde_json::json;
+
+    #[test]
+    fn pattern_for_shell_exec_joins_command_with_args() {
+        let pat = pattern_for("shell::exec", &json!({"command": "git", "args": ["status"]}));
+        assert_eq!(pat, "git status");
+    }
+
+    #[test]
+    fn pattern_for_shell_exec_bg_joins_command_with_args() {
+        let pat = pattern_for("shell::exec_bg",
+            &json!({"command": "tail", "args": ["-f", "/var/log/x"]}));
+        assert_eq!(pat, "tail -f /var/log/x");
+    }
+
+    #[test]
+    fn pattern_for_shell_exec_single_string_command_no_args() {
+        // shell::exec supports the "command is a shell-words string" mode
+        // (args: None). The pattern is just the command string.
+        let pat = pattern_for("shell::exec", &json!({"command": "git status"}));
+        assert_eq!(pat, "git status");
+    }
+
+    #[test]
+    fn pattern_for_shell_exec_empty_args_list_treated_as_no_args() {
+        let pat = pattern_for("shell::exec", &json!({"command": "ls", "args": []}));
+        assert_eq!(pat, "ls");
+    }
+
+    #[test]
+    fn pattern_for_shell_exec_missing_command_falls_back_to_star() {
+        let pat = pattern_for("shell::exec", &json!({"args": ["foo"]}));
+        assert_eq!(pat, "*");
+    }
+
+    #[test]
+    fn pattern_for_shell_exec_completely_malformed_args_falls_back_to_star() {
+        let pat = pattern_for("shell::exec", &json!(null));
+        assert_eq!(pat, "*");
+    }
+
+    #[test]
+    fn pattern_for_non_shell_function_id_returns_star() {
+        let pat = pattern_for("http::fetch", &json!({"url": "https://x"}));
+        assert_eq!(pat, "*");
+    }
+
+    #[test]
+    fn pattern_for_known_conflation_documented() {
+        // Documented in spec: an arg containing a space conflates with two
+        // separate args. This is acceptable for v1.
+        let with_inner_space = pattern_for("shell::exec",
+            &json!({"command": "git", "args": ["log", "--grep=foo bar"]}));
+        let split_args = pattern_for("shell::exec",
+            &json!({"command": "git", "args": ["log", "--grep=foo", "bar"]}));
+        assert_eq!(with_inner_space, split_args,
+            "v1 conflates space-in-arg with arg boundary; see spec");
     }
 }
