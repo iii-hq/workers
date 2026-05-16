@@ -101,6 +101,14 @@ const SESSIONS_POLL_INTERVAL_MS: u64 = 1_000;
 /// Approval poll cadence. Hook-driven push (via the agent::events stream
 /// pump) covers low-latency notification; this poll catches missed states
 /// and clears resolved approvals.
+///
+/// T16 follow-up (deferred): replace this poll loop with a per-session
+/// agent::events subscription that reconciles requested / resolved
+/// frames against a client-side cache. `approval::list_pending` would
+/// stay as the one-shot rehydration call on connect/reload. Polling
+/// works today against the new wire shape (Records carry
+/// `function_call_id` at the top level, which is what `diff_approvals`
+/// reads) — this is purely a perf cleanup.
 const APPROVAL_POLL_INTERVAL_MS: u64 = 1_000;
 
 /// Cost summary poll cadence. Each tick performs a `budget::list` and (for
