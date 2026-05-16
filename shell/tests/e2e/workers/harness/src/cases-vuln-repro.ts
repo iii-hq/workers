@@ -9,9 +9,11 @@
 //   - S-H1: chmod -R no longer rewrites symlink targets
 //   - S-H2: unjailed mode requires explicit allow_unjailed: true (the
 //     test config sets it, demonstrating the opt-in surface)
-//   - S-H3: denylist is advisory; literal-form patterns reject, but
-//     trivially-bypassable. Documented as such — the test pins both
-//     halves of the contract.
+//   - S-H3: REMOVED post-T13. The shell-level denylist is gone — the
+//     finding's framing (advisory, trivially bypassable) was the whole
+//     reason to lift command-level policy into approval-gate's rules
+//     layer. Approval-gate enforces a hard policy floor; see
+//     approval-gate/src/intercept.rs and approval-gate/tests/lifecycle.rs.
 //   - S-H4: shell::list returns summary records only; argv/stdout are
 //     reachable only via shell::status <job_id> (the UUID is the cap).
 //
@@ -145,41 +147,10 @@ export const VULN_REPRO_CASES: TestCase[] = [
       rmSync(path, { force: true });
     },
   },
-  {
-    // S-H3: shell/src/config.rs:148-171 + shell/config.yaml + README.md.
-    // The denylist is advisory; the README and the shipped config
-    // comment now state this explicitly. We pin both halves of the
-    // contract so a future "let's tighten it" attempt is forced to
-    // either invalidate this test or actually upgrade the boundary.
-    name: 'vuln_repro_h3_denylist_is_advisory_literal_match_rejects_construction_bypasses',
-    async run(ctx: CaseContext) {
-      // (a) Literal form is still rejected — the tripwire works for
-      // honest mistakes.
-      await ctx.expectError(
-        () =>
-          ctx.call('shell::exec', {
-            command: 'echo',
-            args: ['harness_denylist_marker'],
-          }),
-        'denylist',
-      );
-
-      // (b) Bypass via shell-variable construction still works,
-      // because regex against argv.join(" ") was never a real
-      // boundary. If a future change blocks this, the README's
-      // advisory-only framing is also stale and needs updating.
-      const r = await ctx.call('shell::exec', {
-        command: 'sh',
-        args: ['-c', 'h=harness;d=denylist_marker;echo ${h}_${d}'],
-      });
-      expectEqual(r.exit_code, 0, 'bypass exec succeeded');
-      expectEqual(
-        r.stdout,
-        'harness_denylist_marker\n',
-        'regression-or-rewrite: denylist behavior changed; reconcile README + this test',
-      );
-    },
-  },
+  // S-H3 vuln-repro test deleted post-T13 — shell no longer carries an
+  // advisory command-pattern denylist. Equivalent regression coverage
+  // for the new policy floor lives in approval-gate
+  // (intercept.rs::verdict_intercept_tests, tests/lifecycle.rs).
   {
     // S-H4: shell/src/jobs.rs + shell/src/functions/list.rs +
     // shell/src/functions/types.rs.

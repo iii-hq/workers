@@ -34,11 +34,13 @@ export const EDGE_CASES: TestCase[] = [
     },
   },
   {
-    name: 'nonexistent unlisted command is rejected by allowlist',
+    name: 'nonexistent command surfaces spawn error',
     async run({ call, expectError }) {
+      // T13: no shell-side allowlist anymore — the error comes from the
+      // OS at spawn time (ENOENT), not from a pre-spawn allowlist check.
       await expectError(
         () => call('shell::exec', { command: '/_no_such_bin_at_all_' }),
-        'not in allowlist',
+        'spawn',
       );
     },
   },

@@ -43,8 +43,6 @@ iii -c ./config.yaml
 | `working_dir` | `null` | pins cwd for spawned commands when set |
 | `inherit_env` | `false` | when `false`, only `allowed_env` keys are forwarded |
 | `allowed_env` | `[PATH, HOME, LANG, LC_ALL, TERM]` | env passthrough allowlist |
-| `allowlist` | `[]` (open) | command basename allowlist; empty = open |
-| `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |
 | `job_retention_secs` | `3600` | finished jobs pruned on every `shell::list` |
 | `fs.host_root` | `null` | jail root; required unless `fs.allow_unjailed: true` |
@@ -58,7 +56,7 @@ iii -c ./config.yaml
 
 The host backend's path-validation gate is check-then-use: there is a TOCTOU window between validation and the `std::fs::*` call. Validation walks to the longest existing ancestor, canonicalizes that (resolving symlinks in the existing portion), and lexically collapses the non-existent tail before the `starts_with(host_root)` check — so a symlink whose target escapes the jail cannot slip through the lexical fallback. The worker is intended for trusted caller pipelines; for untrusted input, use the sandbox backend.
 
-Host-targeted calls run with the shell worker's OS permissions. The denylist is regex over `argv.join(" ")` and only catches honest typos — a caller invoking an allowlisted shell or interpreter (`sh`, `node`, `python`, …) can bypass it by construction. The actual security boundary is `target: { kind: "sandbox", sandbox_id }`.
+Host-targeted calls run with the shell worker's OS permissions. The shell does not enforce command-level policy — that lives in approval-gate's rules layer (see `approval-gate/src/intercept.rs`). The actual isolation boundary is `target: { kind: "sandbox", sandbox_id }`.
 
 ## Streaming wire shapes
 
@@ -127,21 +125,20 @@ let bytes = reader.read_all().await?;
 | Symptom | Cause | Fix |
 |---|---|---|
 | `fs.host_root is unset and fs.allow_unjailed is false — refusing to start unjailed` | Default config no longer permits running unjailed. | Set `fs.host_root` to a directory, OR set `fs.allow_unjailed: true`. |
-| `command 'xyz' not in allowlist` | `allowlist` is non-empty and doesn't include the binary's basename. | Add it to `allowlist`, or empty the list to allow anything. |
 | Worker never connects to engine | Engine isn't running or isn't bound on the URL the worker is configured for. | Start the engine first; check `--url` matches. The default WS port is 49134. |
 | Engine started but doesn't see the worker | Binary isn't symlinked at `~/.iii/workers/shell`. | `ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell` |
 | `S215 path escapes host_root` on a path inside the jail | A symlink in the path resolves outside the jail. | Resolve the symlink yourself, or move the target inside `host_root`. |
 
 ## Tests
 
-- `tests/e2e/` — TypeScript harness, **143 default cases + 1 jailed case**. The default suite (`run-tests.sh`) covers happy paths, safety guardrails, jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus 4 vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression.
+- `tests/e2e/` — TypeScript harness. The default suite (`run-tests.sh`) covers happy paths, remaining safety guardrails (timeout, output truncation, env scrubbing, fs path denylist), jobs lifecycle, fs across host and sandbox targets, adversarial protocol-break suites for streaming/exec/jobs/encoding/concurrency, plus vulnerability-regression cases under `cases-vuln-repro.ts`. The jailed suite (`run-tests-jailed.sh`, against `config-jailed.yaml`) covers the symlink-parent jail-escape regression.
 - `tests/*.rs` — Rust integration tests (`jobs_lifecycle`, `host_fs_branches`, `sandbox_dispatch`, `function_handlers`) covering the host backend branches, sandbox forwarder, and every typed-registration handler. Run with `cargo test`.
 - Line coverage measured with `cargo tarpaulin` sits around 65%; `jobs.rs` is at 100% and the sandbox dispatch path is fully exercised.
 
 ## What this is NOT
 
 - **Not a PTY.** Interactive shells, TUIs, password prompts all break.
-- **Not an isolation boundary itself.** Host-targeted calls run with the shell worker's OS permissions. For process isolation, set `target: { kind: "sandbox", sandbox_id }` — that path forwards through `iii-sandbox`'s microVM. The allowlist + denylist still apply on top of either backend.
+- **Not an isolation boundary itself.** Host-targeted calls run with the shell worker's OS permissions. For process isolation, set `target: { kind: "sandbox", sandbox_id }` — that path forwards through `iii-sandbox`'s microVM. Command-level policy is enforced upstream by approval-gate regardless of target.
 - **Not a streaming surface for `exec`.** Foreground `shell::exec` returns once the process exits and stdout/stderr are captured whole. Live streaming is `shell::exec_stream` (deferred).
 - **Not per-caller-isolated.** The JOBS registry is a process-wide singleton. `shell::list` redacts argv/stdout/stderr to limit blast radius; full records are cap-gated by `job_id`.
 

@@ -163,20 +163,9 @@ export const EXEC_BREAK_CASES: TestCase[] = [
       expectEqual(r2.exit_code, 0, 'worker survives argv flood');
     },
   },
-  {
-    name: 'exec_unlisted_command_with_extra_fields_still_rejected',
-    async run({ call, expectError }) {
-      await expectError(
-        () => call('shell::exec', {
-          command: 'nmap',
-          args: ['-v'],
-          unknown_field: 'ignored',
-          another_extra: 42,
-        }),
-        'allowlist',
-      );
-    },
-  },
+  // T13: 'exec_unlisted_command_with_extra_fields_still_rejected'
+  // deleted — shell no longer enforces an allowlist. Extra-fields
+  // tolerance on the happy path is still pinned below.
   {
     name: 'exec_extra_unknown_fields_on_happy_path_tolerated',
     async run({ call }) {
