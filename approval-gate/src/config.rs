@@ -25,18 +25,6 @@ fn default_default_timeout_ms() -> u64 {
     300_000
 }
 
-/// Temporary alias retained while register.rs's classifier-alias warning
-/// loop still references the symbol. The struct is structurally unused
-/// (no fields populated from config) and will be deleted alongside the
-/// warning loop when there are no more callers. Provided here so the
-/// crate builds.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-pub struct InterceptorRule {
-    pub function_id: String,
-    #[serde(default)]
-    pub classifier: Option<String>,
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct WorkerConfig {
     #[serde(default = "default_topic")]

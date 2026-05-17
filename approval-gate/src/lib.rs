@@ -15,7 +15,7 @@ pub mod rules;
 pub mod state;
 pub mod wire;
 
-pub use config::{InterceptorRule, WorkerConfig};
+pub use config::WorkerConfig;
 pub use delivery::{
     handle_consume, handle_list_pending, handle_sweep_session, CONSUME_DEFAULT_LIMIT,
 };

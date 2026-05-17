@@ -19,7 +19,7 @@ use iii_sdk::{
 };
 use serde_json::{json, Value};
 
-use crate::config::{InterceptorRule, WorkerConfig};
+use crate::config::WorkerConfig;
 use crate::delivery::{handle_consume, handle_list_pending, handle_sweep_session};
 use crate::intercept::handle_intercept;
 use crate::resolve::{handle_lookup_record, handle_resolve};
@@ -54,27 +54,6 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     // Layered policy ruleset, wrapped in RwLock so cascade-on-`always:true`
     // can push a runtime Allow rule (see resolve.rs::cascade_allow_for_session).
     let policy_rules: Arc<RwLock<rules::Ruleset>> = Arc::new(RwLock::new(cfg.rules.clone()));
-
-    // No-op alias-warning loop kept as a no-op for backward source
-    // compatibility (no interceptors are configured anymore). Empty vec
-    // so the loop body never runs.
-    let rules: Arc<Vec<InterceptorRule>> = Arc::new(Vec::new());
-    for rule in rules.iter() {
-        if let Some(cid) = rule.classifier.as_deref() {
-            if cid == FN_LOOKUP_RECORD
-                || cid == FN_RESOLVE
-                || cid == FN_LIST_PENDING
-                || cid == FN_CONSUME
-                || cid == FN_SWEEP_SESSION
-            {
-                tracing::warn!(
-                    "approval-gate: interceptor for {:?} uses classifier {:?} which aliases an approval endpoint; fix config",
-                    rule.function_id,
-                    cid
-                );
-            }
-        }
-    }
 
     let bus: Arc<dyn StateBus> = Arc::new(IiiStateBus(iii.clone()));
     let timeout_ms = cfg.default_timeout_ms;
@@ -153,6 +132,12 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                             }
                             write_event(&iii, session_id, &evt).await;
                         }
+                        // Wake the orchestrator so it drains the resolved
+                        // record into the next assistant turn. Pending
+                        // results carry `terminate: true`, so without this
+                        // re-kick the conversation would stall after the
+                        // operator clicks allow/deny.
+                        publish_turn_step(&iii, session_id).await;
                     }
                 }
                 Ok::<_, IIIError>(resp)
@@ -236,7 +221,6 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
     let subscriber_scope = state_scope.clone();
-    let rules_for_sub = rules.clone();
     let policy_rules_for_sub = policy_rules.clone();
     let subscriber_fn = iii.register_function((
         RegisterFunctionMessage::with_id("policy::approval_gate".into())
@@ -245,7 +229,6 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let iii = iii_for_sub.clone();
             let bus = bus_for_sub.clone();
             let sc = subscriber_scope.clone();
-            let intercept_rules = rules_for_sub.clone();
             let policy_rules = policy_rules_for_sub.clone();
             async move {
                 let Some(call) = extract_call(&envelope) else {
@@ -357,6 +340,39 @@ pub(crate) async fn write_event(iii: &III, session_id: &str, event: &Value) {
             timeout_ms: None,
         })
         .await;
+}
+
+/// Wake the turn-orchestrator after an approval resolves so the Done
+/// record drains into the next assistant turn via `approval::consume`.
+///
+/// Calls `run::resume` rather than publishing `turn::step_requested`
+/// directly. The reason: a `pending_approval` prefilled result ends the
+/// turn with `terminate: true`, leaving the record in `Stopped`. A bare
+/// step-kick against a terminal record is a no-op in the orchestrator's
+/// subscriber, so the resolved approval would never surface. `run::resume`
+/// resets a terminal record to `Provisioning` and re-kicks; against a
+/// still-running session it just re-kicks (idempotent).
+pub(crate) async fn publish_turn_step(iii: &III, session_id: &str) {
+    if session_id.is_empty() {
+        return;
+    }
+    tracing::info!(%session_id, "approval-gate: calling run::resume after approval resolve");
+    match iii
+        .trigger(TriggerRequest {
+            function_id: "run::resume".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+    {
+        Ok(v) => {
+            tracing::info!(%session_id, response = %v, "approval-gate: run::resume returned");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, %session_id, "approval-gate: run::resume failed");
+        }
+    }
 }
 
 /// Append a hook reply onto `stream_name` keyed by `event_id`. No-op when
