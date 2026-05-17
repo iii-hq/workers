@@ -91,7 +91,8 @@ pub async fn handle_intercept(
     if let Err(err) = bus.set(state_scope, &key, record.to_value()).await {
         tracing::error!(
             "approval-gate: failed to write pending record for {}/{}: {err} — failing closed",
-            call.session_id, call.function_call_id,
+            call.session_id,
+            call.function_call_id,
         );
         let denial = Denial::StateError {
             phase: "intercept_write_pending".to_string(),
@@ -128,21 +129,33 @@ mod tests {
     #[async_trait::async_trait]
     impl StateBus for InMemBus {
         async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
-            self.rows.lock().unwrap().insert((scope.into(), key.into()), value);
+            self.rows
+                .lock()
+                .unwrap()
+                .insert((scope.into(), key.into()), value);
             Ok(())
         }
         async fn get(&self, scope: &str, key: &str) -> Option<Value> {
-            self.rows.lock().unwrap().get(&(scope.into(), key.into())).cloned()
+            self.rows
+                .lock()
+                .unwrap()
+                .get(&(scope.into(), key.into()))
+                .cloned()
         }
         async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
-            self.rows.lock().unwrap()
+            self.rows
+                .lock()
+                .unwrap()
                 .iter()
                 .filter(|((s, k), _)| s == scope && k.starts_with(prefix))
                 .map(|(_, v)| v.clone())
                 .collect()
         }
         async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
-            self.rows.lock().unwrap().remove(&(scope.into(), key.into()));
+            self.rows
+                .lock()
+                .unwrap()
+                .remove(&(scope.into(), key.into()));
             Ok(())
         }
     }
@@ -167,9 +180,37 @@ mod tests {
             pattern: "git status*".into(),
             action: Action::Allow,
         }];
-        let c = call("tc-1", "shell::exec", json!({"command": "git", "args": ["status"]}));
+        let c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["status"]}),
+        );
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["block"], false);
+        assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rules_are_authoritative_over_approval_required_list() {
+        let bus = InMemBus::default();
+        let rs: Ruleset = vec![Rule {
+            permission: "shell::exec".into(),
+            pattern: "git status*".into(),
+            action: Action::Allow,
+        }];
+        let mut c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["status"]}),
+        );
+        c.approval_required = vec!["shell::exec".into()];
+
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+
+        assert_eq!(
+            reply["block"], false,
+            "approval_required is legacy payload context; policy decisions come from rules",
+        );
         assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
     }
 
@@ -181,7 +222,11 @@ mod tests {
             pattern: "rm -rf*".into(),
             action: Action::Deny,
         }];
-        let c = call("tc-1", "shell::exec", json!({"command": "rm", "args": ["-rf", "/"]}));
+        let c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "rm", "args": ["-rf", "/"]}),
+        );
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["block"], true);
         assert_eq!(reply["denial"]["kind"], "policy");
@@ -194,11 +239,18 @@ mod tests {
     async fn no_match_defaults_to_ask_writes_pending() {
         let bus = InMemBus::default();
         let rs: Ruleset = vec![];
-        let c = call("tc-1", "shell::exec", json!({"command": "git", "args": ["push"]}));
+        let c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["push"]}),
+        );
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["block"], true);
         assert_eq!(reply["status"], "pending");
-        let stored = bus.get("approvals", "sess_a/tc-1").await.expect("pending row");
+        let stored = bus
+            .get("approvals", "sess_a/tc-1")
+            .await
+            .expect("pending row");
         let r = Record::from_value(stored).unwrap();
         assert_eq!(r.status, Status::Pending);
     }
@@ -215,17 +267,27 @@ mod tests {
         assert_eq!(r2["status"], "pending");
 
         let r = Record::from_value(bus.get("approvals", "sess_a/tc-1").await.unwrap()).unwrap();
-        assert_eq!(r.expires_at, 61_000, "second call must NOT have re-written expires_at");
+        assert_eq!(
+            r.expires_at, 61_000,
+            "second call must NOT have re-written expires_at"
+        );
     }
 
     #[tokio::test]
     async fn replay_on_in_flight_returns_in_flight_marker() {
         let bus = InMemBus::default();
         let in_flight = Record::pending(
-            "tc-1".into(), "shell::exec".into(), json!({}),
-            "sess_a".into(), 0, 60_000,
-        ).in_flight(500);
-        bus.set("approvals", "sess_a/tc-1", in_flight.to_value()).await.unwrap();
+            "tc-1".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_a".into(),
+            0,
+            60_000,
+        )
+        .in_flight(500);
+        bus.set("approvals", "sess_a/tc-1", in_flight.to_value())
+            .await
+            .unwrap();
 
         let rs: Ruleset = vec![];
         let c = call("tc-1", "shell::exec", json!({}));
@@ -238,10 +300,20 @@ mod tests {
     async fn replay_on_done_returns_already_resolved_marker() {
         let bus = InMemBus::default();
         let done = Record::pending(
-            "tc-1".into(), "shell::exec".into(), json!({}),
-            "sess_a".into(), 0, 60_000,
-        ).in_flight(500).done(Outcome::Executed { result: json!({"ok": true}) });
-        bus.set("approvals", "sess_a/tc-1", done.to_value()).await.unwrap();
+            "tc-1".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_a".into(),
+            0,
+            60_000,
+        )
+        .in_flight(500)
+        .done(Outcome::Executed {
+            result: json!({"ok": true}),
+        });
+        bus.set("approvals", "sess_a/tc-1", done.to_value())
+            .await
+            .unwrap();
 
         let rs: Ruleset = vec![];
         let c = call("tc-1", "shell::exec", json!({}));
@@ -258,9 +330,15 @@ mod tests {
             async fn set(&self, _: &str, _: &str, _: Value) -> Result<(), iii_sdk::IIIError> {
                 Err(iii_sdk::IIIError::Runtime("kv down".into()))
             }
-            async fn get(&self, _: &str, _: &str) -> Option<Value> { None }
-            async fn list_prefix(&self, _: &str, _: &str) -> Vec<Value> { Vec::new() }
-            async fn delete(&self, _: &str, _: &str) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+            async fn get(&self, _: &str, _: &str) -> Option<Value> {
+                None
+            }
+            async fn list_prefix(&self, _: &str, _: &str) -> Vec<Value> {
+                Vec::new()
+            }
+            async fn delete(&self, _: &str, _: &str) -> Result<(), iii_sdk::IIIError> {
+                Ok(())
+            }
         }
         let rs: Ruleset = vec![];
         let c = call("tc-1", "shell::exec", json!({}));
@@ -268,6 +346,9 @@ mod tests {
         assert_eq!(reply["block"], true);
         assert_eq!(reply["status"], "denied");
         assert_eq!(reply["denial"]["kind"], "state_error");
-        assert_eq!(reply["denial"]["detail"]["phase"], "intercept_write_pending");
+        assert_eq!(
+            reply["denial"]["detail"]["phase"],
+            "intercept_write_pending"
+        );
     }
 }

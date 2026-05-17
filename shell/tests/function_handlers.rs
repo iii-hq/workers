@@ -22,13 +22,19 @@ async fn seed(handle: JobHandle) -> String {
 /// policy) leaves the list empty → pass-through, matching today's default
 /// where the approval-gate (when present) is the sole policy layer.
 fn cfg_with_allow(allow: &[&str]) -> Arc<ShellConfig> {
-    let c = ShellConfig {
+    cfg_with_policy(allow, &[])
+}
+
+fn cfg_with_policy(allow: &[&str], deny: &[&str]) -> Arc<ShellConfig> {
+    let mut c = ShellConfig {
         max_timeout_ms: 5000,
         default_timeout_ms: 1500,
         max_output_bytes: 4096,
         allowlist: allow.iter().map(|s| s.to_string()).collect(),
+        denylist_patterns: deny.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
     };
+    c.compile_denylist().expect("test denylist compiles");
     Arc::new(c)
 }
 
@@ -118,6 +124,45 @@ async fn exec_handler_rejects_unlisted_command() {
     .await
     .expect_err("unlisted command must be rejected");
     assert!(err.contains("not in allowlist"), "got: {err}");
+}
+
+#[tokio::test]
+async fn exec_bg_handler_rejects_unlisted_command() {
+    let cfg = cfg_with_allow(&["sleep"]);
+    let err = functions::exec_bg::handle(
+        cfg,
+        fresh_iii(),
+        typed::<ExecBgRequest>(json!({"command": "nmap", "args": ["scanme.nmap.org"]})),
+    )
+    .await
+    .expect_err("unlisted background command must be rejected");
+    assert!(err.contains("not in allowlist"), "got: {err}");
+}
+
+#[tokio::test]
+async fn exec_handler_rejects_denylisted_command_before_spawn() {
+    let cfg = cfg_with_policy(&["rm"], &[r"rm\s+-rf\s+/"]);
+    let err = functions::exec::handle(
+        cfg,
+        fresh_iii(),
+        typed::<ExecRequest>(json!({"command": "rm", "args": ["-rf", "/"]})),
+    )
+    .await
+    .expect_err("denylist must reject even when allowlist permits");
+    assert!(err.contains("denylist"), "got: {err}");
+}
+
+#[tokio::test]
+async fn exec_bg_handler_rejects_denylisted_command_before_spawn() {
+    let cfg = cfg_with_policy(&["rm"], &[r"rm\s+-rf\s+/"]);
+    let err = functions::exec_bg::handle(
+        cfg,
+        fresh_iii(),
+        typed::<ExecBgRequest>(json!({"command": "rm", "args": ["-rf", "/"]})),
+    )
+    .await
+    .expect_err("denylist must reject background command before spawn");
+    assert!(err.contains("denylist"), "got: {err}");
 }
 
 /// With both shell-side lists empty (today's default), every argv runs —
