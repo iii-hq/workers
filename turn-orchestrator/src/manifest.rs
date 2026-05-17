@@ -62,8 +62,7 @@ mod tests {
     #[test]
     fn default_config_matches_struct_default() {
         let m = build_manifest();
-        let from_struct =
-            serde_json::to_value(TurnOrchestratorConfig::default()).unwrap();
+        let from_struct = serde_json::to_value(TurnOrchestratorConfig::default()).unwrap();
         assert_eq!(m.default_config, from_struct);
     }
 }

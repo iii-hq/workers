@@ -6,6 +6,7 @@ use harness_types::{
 };
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
+use std::collections::HashSet;
 
 use crate::agent_call::TOOL_NAME as AGENT_CALL_TOOL_NAME;
 use crate::events;
@@ -133,6 +134,100 @@ fn char_boundary_ceil(s: &str, idx: usize) -> usize {
     i
 }
 
+pub(crate) fn prefilled_result_for_block(
+    merged: &Value,
+    call_id: &str,
+    function_id: &str,
+) -> FunctionResult {
+    if merged.get("status").and_then(Value::as_str) == Some("pending") {
+        let body = json!({
+            "status": "pending_approval",
+            "call_id": call_id,
+            "function_id": function_id,
+            "message": "Awaiting human approval. The result will be reported in a future turn."
+        });
+        return FunctionResult {
+            content: vec![ContentBlock::Text(TextContent {
+                text: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+            })],
+            details: json!({ "pending_approval": true, "call_id": call_id }),
+            terminate: true,
+            truncated: None,
+        };
+    }
+
+    let reason = merged
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("blocked")
+        .to_string();
+    FunctionResult {
+        content: vec![ContentBlock::Text(TextContent { text: reason })],
+        details: json!({ "blocked": true }),
+        terminate: false,
+        truncated: None,
+    }
+}
+
+pub(crate) fn prefilled_result_is_error(result: &FunctionResult) -> bool {
+    !result
+        .details
+        .get("pending_approval")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(crate) fn fail_closed_block_reply(phase: &str, error: &str) -> Value {
+    json!({
+        "block": true,
+        "status": "denied",
+        "denial": {
+            "kind": "state_error",
+            "detail": {
+                "phase": phase,
+                "error": error,
+            },
+        },
+        "reason": format!("hook bus unavailable during {phase}: {error}"),
+    })
+}
+
+pub(crate) fn publish_failure_from_response(
+    response: &Value,
+    require_approval_gate_reply: bool,
+) -> Option<String> {
+    if let Some(publish) = response.get("publish") {
+        if publish.get("ok").and_then(Value::as_bool) == Some(false) {
+            return Some(
+                publish
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("publish failed")
+                    .to_string(),
+            );
+        }
+    }
+    if response.get("publish_failed").and_then(Value::as_bool) == Some(true) {
+        return Some("publish failed".to_string());
+    }
+    if require_approval_gate_reply {
+        let approval_gate_replied = response
+            .get("replies")
+            .and_then(Value::as_array)
+            .map(|replies| replies.iter().any(is_approval_gate_reply))
+            .unwrap_or(false);
+        if !approval_gate_replied {
+            return Some("publish succeeded but approval-gate did not reply".to_string());
+        }
+    }
+    None
+}
+
+fn is_approval_gate_reply(reply: &Value) -> bool {
+    reply.get("approval_gate").and_then(Value::as_bool) == Some(true)
+        || reply.get("subscriber").and_then(Value::as_str) == Some("approval-gate")
+}
+
 /// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
 /// a normal [`FunctionCall`] carrying the inner function id. Non-`agent_call`
 /// calls pass through unchanged so legacy/test fixtures keep working.
@@ -183,33 +278,25 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     let mut prepared: Vec<(FunctionCall, Option<FunctionResult>)> =
         Vec::with_capacity(record.pending_function_calls.len());
     for fc in record.pending_function_calls.iter().cloned() {
-        let merged = publish_collect(
+        let merged = match publish_collect_checked(
             iii,
             TOPIC_BEFORE,
-            build_before_function_call_payload(&fc, &approval_required),
+            build_before_function_call_payload(&record.session_id, &fc, &approval_required),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
+            true,
         )
-        .await;
+        .await
+        {
+            Ok(merged) => merged,
+            Err(err) => fail_closed_block_reply("hook_publish", &err),
+        };
         let blocked = merged
             .get("block")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let prefilled = if blocked {
-            let reason = merged
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("blocked")
-                .to_string();
-            Some(FunctionResult {
-                content: vec![ContentBlock::Text(TextContent { text: reason })],
-                details: json!({ "blocked": true }),
-                terminate: false,
-                truncated: None,
-            })
-        } else {
-            None
-        };
+        let prefilled =
+            blocked.then(|| prefilled_result_for_block(&merged, &fc.id, &fc.function_id));
         prepared.push((fc, prefilled));
     }
 
@@ -237,9 +324,13 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         )
         .await;
         if let Some(blocked) = prefilled {
-            persistence::upsert_executed_call(&mut results, (fc.clone(), blocked.clone(), true));
+            let is_error = prefilled_result_is_error(&blocked);
+            persistence::upsert_executed_call(
+                &mut results,
+                (fc.clone(), blocked.clone(), is_error),
+            );
             persistence::save_executed_calls(iii, &record.session_id, &results).await;
-            let evt = build_function_execution_event(&fc, &blocked, true);
+            let evt = build_function_execution_event(&fc, &blocked, is_error);
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
@@ -303,7 +394,14 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
             "field_merge",
             HOOK_TIMEOUT_MS,
         )
-        .await;
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                error = %err,
+                "after-hook publish failed; preserving original function result",
+            );
+            json!({})
+        });
         if let Ok(after) = serde_json::from_value::<FunctionResult>(merged.clone()) {
             result = after;
         }
@@ -321,6 +419,7 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     }
 
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
+    replace_pending_approval_placeholders(&mut messages, &function_results);
     for r in &function_results {
         messages.push(AgentMessage::FunctionResult(r.clone()));
     }
@@ -329,11 +428,11 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     let Some(last_assistant) = record.last_assistant.clone() else {
         tracing::warn!(
             session_id = %record.session_id,
-            "FunctionFinalize reached without last_assistant; tearing down without lifecycle emit"
+            "FunctionFinalize reached without last_assistant; skipping lifecycle emit"
         );
         record.function_results = function_results;
         record.pending_function_calls.clear();
-        record.transition_to(TurnState::TearingDown);
+        record.transition_to(next_state_after_finalize(false, all_terminate));
         return Ok(());
     };
     for evt in build_finalize_lifecycle(&last_assistant, &function_results) {
@@ -343,12 +442,19 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
 
     record.function_results = function_results;
     record.pending_function_calls.clear();
-    if all_terminate {
-        record.transition_to(TurnState::TearingDown);
-    } else {
-        record.transition_to(TurnState::SteeringCheck);
-    }
+    record.transition_to(next_state_after_finalize(true, all_terminate));
     Ok(())
+}
+
+pub(crate) fn next_state_after_finalize(
+    _has_last_assistant: bool,
+    all_terminate: bool,
+) -> TurnState {
+    if all_terminate {
+        TurnState::TearingDown
+    } else {
+        TurnState::SteeringCheck
+    }
 }
 
 pub(crate) fn executed_staging_for_new_prepare_batch(
@@ -357,15 +463,105 @@ pub(crate) fn executed_staging_for_new_prepare_batch(
     Vec::new()
 }
 
+pub(crate) fn prepared_calls_from_approval_entries(
+    entries: &[Value],
+) -> Vec<(FunctionCall, Option<FunctionResult>)> {
+    entries
+        .iter()
+        .filter_map(prepared_call_from_approval_entry)
+        .collect()
+}
+
+fn prepared_call_from_approval_entry(
+    entry: &Value,
+) -> Option<(FunctionCall, Option<FunctionResult>)> {
+    let function_call_id = entry
+        .get("function_call_id")
+        .or_else(|| entry.get("tool_call_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let function_id = entry
+        .get("function_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let args = entry.get("args").cloned().unwrap_or_else(|| json!({}));
+    let decision = entry
+        .get("decision")
+        .and_then(Value::as_str)
+        .unwrap_or("deny");
+    let fc = FunctionCall {
+        id: function_call_id.clone(),
+        function_id,
+        arguments: args,
+    };
+    if decision == "allow" {
+        return Some((fc, None));
+    }
+
+    let reason = entry
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("denied");
+    let text = if reason == "timed_out" || decision == "timed_out" {
+        "approval timed out before resolution".to_string()
+    } else {
+        format!("approval denied: {reason}")
+    };
+    let result = FunctionResult {
+        content: vec![ContentBlock::Text(TextContent { text })],
+        details: json!({
+            "approval_denied": true,
+            "decision": decision,
+            "reason": reason,
+            "resolved_via_approval_gate": true,
+            "call_id": function_call_id,
+        }),
+        terminate: false,
+        truncated: None,
+    };
+    Some((fc, Some(result)))
+}
+
 /// Pure helper: inner payload for the `agent::before_function_call` topic.
 pub(crate) fn build_before_function_call_payload(
+    session_id: &str,
     fc: &FunctionCall,
     approval_required: &[String],
 ) -> Value {
     json!({
+        "session_id": session_id,
         "function_call": fc,
         "approval_required": approval_required,
     })
+}
+
+pub(crate) async fn consume_resolved_approval_entries(
+    iii: &III,
+    session_id: &str,
+) -> Result<Vec<(FunctionCall, Option<FunctionResult>)>, String> {
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "approval::consume".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .map_err(|err| err.to_string())?;
+    if response.get("ok").and_then(Value::as_bool) == Some(false) {
+        return Err(response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("approval::consume failed")
+            .to_string());
+    }
+    let entries = response
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(prepared_calls_from_approval_entries(&entries))
 }
 
 /// Pure helper: build [`AgentEvent::FunctionExecutionEnd`] for one call.
@@ -400,13 +596,49 @@ pub(crate) fn build_finalize_lifecycle(
     out
 }
 
+pub(crate) fn replace_pending_approval_placeholders(
+    messages: &mut Vec<AgentMessage>,
+    replacements: &[FunctionResultMessage],
+) {
+    let replacement_ids = replacements
+        .iter()
+        .map(|r| r.function_call_id.as_str())
+        .collect::<HashSet<_>>();
+    if replacement_ids.is_empty() {
+        return;
+    }
+    messages.retain(|message| match message {
+        AgentMessage::FunctionResult(result) => {
+            let is_replaced_call = replacement_ids.contains(result.function_call_id.as_str());
+            let is_pending_placeholder = result
+                .details
+                .get("pending_approval")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            !(is_replaced_call && is_pending_placeholder)
+        }
+        _ => true,
+    });
+}
+
 async fn publish_collect(
     iii: &III,
     topic: &str,
     inner: Value,
     merge_rule: &str,
     timeout_ms: u64,
-) -> Value {
+) -> Result<Value, String> {
+    publish_collect_checked(iii, topic, inner, merge_rule, timeout_ms, false).await
+}
+
+async fn publish_collect_checked(
+    iii: &III,
+    topic: &str,
+    inner: Value,
+    merge_rule: &str,
+    timeout_ms: u64,
+    require_approval_gate_reply: bool,
+) -> Result<Value, String> {
     let payload = json!({
         "topic": topic,
         "payload": inner,
@@ -420,9 +652,14 @@ async fn publish_collect(
         timeout_ms: None,
     })
     .await
-    .ok()
-    .and_then(|v| v.get("merged").cloned())
-    .unwrap_or_else(|| json!({}))
+    .map_err(|err| err.to_string())
+    .and_then(|response| {
+        if let Some(err) = publish_failure_from_response(&response, require_approval_gate_reply) {
+            Err(err)
+        } else {
+            Ok(response.get("merged").cloned().unwrap_or_else(|| json!({})))
+        }
+    })
 }
 
 #[cfg(test)]
@@ -624,6 +861,82 @@ mod tests {
     }
 
     #[test]
+    fn pending_block_prefill_terminates_without_error_flag() {
+        let merged = json!({
+            "block": true,
+            "status": "pending",
+            "reason": "approval required",
+        });
+
+        let result = prefilled_result_for_block(&merged, "tc-1", "shell::exec");
+
+        assert!(result.terminate, "pending approvals must stop the turn");
+        assert_eq!(result.details["pending_approval"], true);
+        assert!(!prefilled_result_is_error(&result));
+        assert!(matches!(
+            result.content.first(),
+            Some(ContentBlock::Text(text))
+                if text.text.contains("\"status\": \"pending_approval\"")
+                    && text.text.contains("\"call_id\": \"tc-1\"")
+        ));
+    }
+
+    #[test]
+    fn hard_block_prefill_remains_error_without_terminating() {
+        let merged = json!({
+            "block": true,
+            "status": "denied",
+            "reason": "blocked by policy",
+        });
+
+        let result = prefilled_result_for_block(&merged, "tc-2", "shell::exec");
+
+        assert!(!result.terminate);
+        assert_eq!(result.details["blocked"], true);
+        assert!(prefilled_result_is_error(&result));
+    }
+
+    #[test]
+    fn approval_allow_entry_prepares_dispatchable_function_call() {
+        let prepared = prepared_calls_from_approval_entries(&[json!({
+            "function_call_id": "tc-1",
+            "function_id": "shell::exec",
+            "args": { "command": "date" },
+            "decision": "allow",
+        })]);
+
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].0.id, "tc-1");
+        assert_eq!(prepared[0].0.function_id, "shell::exec");
+        assert_eq!(prepared[0].0.arguments, json!({ "command": "date" }));
+        assert!(
+            prepared[0].1.is_none(),
+            "allow must execute through the normal dispatch path"
+        );
+    }
+
+    #[test]
+    fn approval_deny_entry_prepares_prefilled_result_without_dispatch() {
+        let prepared = prepared_calls_from_approval_entries(&[json!({
+            "function_call_id": "tc-1",
+            "function_id": "shell::exec",
+            "args": { "command": "date" },
+            "decision": "deny",
+            "reason": "timed_out",
+        })]);
+
+        let result = prepared[0].1.as_ref().expect("deny should prefill");
+        assert_eq!(prepared[0].0.id, "tc-1");
+        assert!(prefilled_result_is_error(result));
+        assert_eq!(result.details["approval_denied"], true);
+        assert_eq!(result.details["reason"], "timed_out");
+        assert!(matches!(
+            result.content.first(),
+            Some(ContentBlock::Text(text)) if text.text.contains("approval timed out")
+        ));
+    }
+
+    #[test]
     fn before_function_call_payload_carries_approval_required() {
         let fc = FunctionCall {
             id: "tc-1".into(),
@@ -631,7 +944,8 @@ mod tests {
             arguments: json!({"path": "/tmp/x"}),
         };
         let approval_required = vec!["shell::fs::write".to_string()];
-        let inner = build_before_function_call_payload(&fc, &approval_required);
+        let inner = build_before_function_call_payload("sess-a", &fc, &approval_required);
+        assert_eq!(inner["session_id"], "sess-a");
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(inner["approval_required"], json!(["shell::fs::write"]),);
     }
@@ -643,7 +957,7 @@ mod tests {
             function_id: "shell::fs::ls".into(),
             arguments: json!({}),
         };
-        let inner = build_before_function_call_payload(&fc, &[]);
+        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
         assert_eq!(inner["approval_required"], json!([]));
     }
 
@@ -658,6 +972,75 @@ mod tests {
         assert_eq!(evs.len(), 5);
         assert!(matches!(&evs[0], AgentEvent::MessageStart { .. }));
         assert!(matches!(evs.last(), Some(AgentEvent::TurnEnd { .. })));
+    }
+
+    #[test]
+    fn approval_resume_replaces_pending_placeholder_for_same_call_id() {
+        let mut messages = vec![
+            AgentMessage::User(harness_types::UserMessage {
+                content: vec![ContentBlock::Text(TextContent { text: "run".into() })],
+                timestamp: 0,
+            }),
+            AgentMessage::FunctionResult(FunctionResultMessage {
+                function_call_id: "tc-1".into(),
+                function_id: "shell::fs::mkdir".into(),
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "pending approval".into(),
+                })],
+                details: json!({ "pending_approval": true }),
+                is_error: false,
+                timestamp: 1,
+            }),
+            AgentMessage::FunctionResult(FunctionResultMessage {
+                function_call_id: "tc-2".into(),
+                function_id: "shell::fs::ls".into(),
+                content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
+                details: json!({}),
+                is_error: false,
+                timestamp: 2,
+            }),
+        ];
+        let replacement = FunctionResultMessage {
+            function_call_id: "tc-1".into(),
+            function_id: "shell::fs::mkdir".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: "created".into(),
+            })],
+            details: json!({ "created": true }),
+            is_error: false,
+            timestamp: 3,
+        };
+
+        replace_pending_approval_placeholders(&mut messages, &[replacement]);
+
+        assert_eq!(messages.len(), 2);
+        assert!(!messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::FunctionResult(result)
+                if result.function_call_id == "tc-1"
+                    && result.details.get("pending_approval").and_then(Value::as_bool) == Some(true)
+        )));
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            AgentMessage::FunctionResult(result) if result.function_call_id == "tc-2"
+        )));
+    }
+
+    #[test]
+    fn approval_resume_keeps_non_placeholder_result_with_same_call_id() {
+        let mut messages = vec![AgentMessage::FunctionResult(FunctionResultMessage {
+            function_call_id: "tc-1".into(),
+            function_id: "shell::fs::mkdir".into(),
+            content: vec![ContentBlock::Text(TextContent { text: "old".into() })],
+            details: json!({ "created": true }),
+            is_error: false,
+            timestamp: 1,
+        })];
+        let replacement = function_result_msg("shell::fs::mkdir", false);
+
+        replace_pending_approval_placeholders(&mut messages, &[replacement]);
+
+        assert_eq!(messages.len(), 1);
     }
 
     /// policy-denylist subscribes to this topic by exact name.
@@ -676,11 +1059,66 @@ mod tests {
             function_id: "shell::fs::ls".into(),
             arguments: json!({"path": "/tmp"}),
         };
-        let inner = build_before_function_call_payload(&fc, &[]);
+        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
+        assert_eq!(inner["session_id"], "sess-a");
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(inner["function_call"]["function_id"], "shell::fs::ls");
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
         assert!(inner.get("approval_required").is_some());
+    }
+
+    #[test]
+    fn publish_failure_from_response_fails_closed_on_publish_error() {
+        let response = json!({
+            "event_id": "evt",
+            "replies": [],
+            "merged": { "block": false },
+            "publish": { "ok": false, "error": "ws closed" }
+        });
+
+        assert_eq!(
+            publish_failure_from_response(&response, true).as_deref(),
+            Some("ws closed"),
+        );
+    }
+
+    #[test]
+    fn publish_failure_from_response_requires_approval_gate_reply_for_before_hook() {
+        let empty = json!({
+            "event_id": "evt",
+            "replies": [],
+            "merged": { "block": false },
+            "publish": { "ok": true }
+        });
+        assert!(publish_failure_from_response(&empty, true).is_some());
+
+        let non_gate = json!({
+            "event_id": "evt",
+            "replies": [{ "block": false, "subscriber": "policy-denylist" }],
+            "merged": { "block": false },
+            "publish": { "ok": true }
+        });
+        assert!(publish_failure_from_response(&non_gate, true).is_some());
+
+        let gate = json!({
+            "event_id": "evt",
+            "replies": [{ "block": false, "subscriber": "approval-gate", "approval_gate": true }],
+            "merged": { "block": false },
+            "publish": { "ok": true }
+        });
+        assert!(publish_failure_from_response(&gate, true).is_none());
+    }
+
+    #[test]
+    fn publish_failure_from_response_allows_zero_replies_for_after_hook() {
+        let response = json!({
+            "event_id": "evt",
+            "replies": [],
+            "merged": { "block": false },
+            "publish": { "ok": true }
+        });
+
+        assert!(publish_failure_from_response(&response, false).is_none());
     }
 
     #[test]
@@ -787,5 +1225,23 @@ mod tests {
         let t = truncate_threshold();
         assert!(t >= 1024, "threshold should never round down below 1 KB");
         assert!(t <= 1_000_000, "threshold should be sane");
+    }
+
+    #[test]
+    fn finalize_without_last_assistant_still_continues_after_function_results() {
+        assert_eq!(
+            next_state_after_finalize(false, false),
+            TurnState::SteeringCheck,
+            "approval resume records have no last_assistant, but allowed function results \
+             must still flow through steering into the next assistant turn"
+        );
+    }
+
+    #[test]
+    fn finalize_without_last_assistant_tears_down_when_all_results_terminate() {
+        assert_eq!(
+            next_state_after_finalize(false, true),
+            TurnState::TearingDown
+        );
     }
 }

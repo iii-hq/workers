@@ -385,34 +385,58 @@ fn build_routing_request(payload: &Value) -> Option<Value> {
 fn register_abort(iii: &III) {
     let iii_for_handler = iii.clone();
     iii.register_function((
-        RegisterFunctionMessage::with_id("router::abort".to_string())
-            .with_description("Set abort signal in iii state.".to_string()),
+        RegisterFunctionMessage::with_id("router::abort".to_string()).with_description(
+            "Set abort signal and sweep pending approvals for a session.".to_string(),
+        ),
         move |payload: Value| {
             let iii = iii_for_handler.clone();
             async move {
                 let session_id = required_str(&payload, "session_id")?;
-                // Direct state::set (was flag::set via the deleted state-flag
-                // worker). Convention: name "abort" maps to key
-                // session/<id>/abort_signal under scope "agent".
-                if let Err(e) = iii
-                    .trigger(TriggerRequest {
-                        function_id: "state::set".to_string(),
-                        payload: json!({
-                            "scope": STATE_SCOPE,
-                            "key": format!("session/{session_id}/abort_signal"),
-                            "value": true,
-                        }),
-                        action: None,
-                        timeout_ms: None,
-                    })
-                    .await
-                {
-                    tracing::warn!(error = %e, %session_id, "router::abort: state::set failed");
+                for effect in abort_side_effects(&session_id) {
+                    if let Err(e) = iii
+                        .trigger(TriggerRequest {
+                            function_id: effect.function_id.to_string(),
+                            payload: effect.payload,
+                            action: None,
+                            timeout_ms: None,
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            %session_id,
+                            function_id = effect.function_id,
+                            "router::abort side effect failed"
+                        );
+                    }
                 }
                 Ok(json!({ "ok": true }))
             }
         },
     ));
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AbortSideEffect {
+    function_id: &'static str,
+    payload: Value,
+}
+
+fn abort_side_effects(session_id: &str) -> Vec<AbortSideEffect> {
+    vec![
+        AbortSideEffect {
+            function_id: "state::set",
+            payload: json!({
+                "scope": STATE_SCOPE,
+                "key": format!("session/{session_id}/abort_signal"),
+                "value": true,
+            }),
+        },
+        AbortSideEffect {
+            function_id: "approval::sweep_session",
+            payload: json!({ "session_id": session_id }),
+        },
+    ]
 }
 
 fn register_push_steering(iii: &III) {
@@ -512,5 +536,23 @@ mod tests {
         let a = error_assistant("boom");
         assert_eq!(a.error_message.as_deref(), Some("boom"));
         assert!(matches!(a.stop_reason, StopReason::Error));
+    }
+
+    #[test]
+    fn abort_side_effects_set_abort_flag_then_sweep_approvals() {
+        let effects = abort_side_effects("sess-a");
+
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].function_id, "state::set");
+        assert_eq!(
+            effects[0].payload,
+            json!({
+                "scope": STATE_SCOPE,
+                "key": "session/sess-a/abort_signal",
+                "value": true,
+            })
+        );
+        assert_eq!(effects[1].function_id, "approval::sweep_session");
+        assert_eq!(effects[1].payload, json!({ "session_id": "sess-a" }));
     }
 }

@@ -13,6 +13,7 @@ use crate::state::TurnStateRecord;
 
 pub const FUNCTION_ID: &str = "run::start";
 pub const SYNC_FUNCTION_ID: &str = "run::start_and_wait";
+pub const RESUME_FUNCTION_ID: &str = "run::resume";
 pub const STEP_TOPIC: &str = "turn::step_requested";
 
 pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
@@ -132,6 +133,39 @@ pub async fn execute_sync(
     }
 }
 
+pub(crate) fn build_resume_record(existing: &TurnStateRecord) -> TurnStateRecord {
+    let mut resumed = TurnStateRecord::new(existing.session_id.clone(), existing.max_turns);
+    resumed.turn_count = existing.turn_count;
+    resumed
+}
+
+pub(crate) fn build_resume_plan(existing: &TurnStateRecord) -> Option<TurnStateRecord> {
+    existing.is_terminal().then(|| build_resume_record(existing))
+}
+
+pub async fn execute_resume(iii: III, payload: Value) -> Result<Value, IIIError> {
+    let session_id = required_str(&payload, "session_id")?;
+    let existing = persistence::load_record(&iii, &session_id)
+        .await
+        .ok_or_else(|| IIIError::Handler(format!("unknown session: {session_id}")))?;
+
+    let Some(resume_record) = build_resume_plan(&existing) else {
+        return Ok(json!({
+            "ok": true,
+            "session_id": session_id,
+            "resumed": false,
+        }));
+    };
+
+    persistence::save_record(&iii, &resume_record).await;
+    publish_step(&iii, &session_id).await;
+    Ok(json!({
+        "ok": true,
+        "session_id": session_id,
+        "resumed": true,
+    }))
+}
+
 pub async fn publish_step(iii: &III, session_id: &str) {
     if let Err(e) = iii
         .trigger(TriggerRequest {
@@ -170,6 +204,16 @@ pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
             let iii = iii_sync.clone();
             let cfg = cfg_sync.clone();
             async move { execute_sync(iii, cfg, payload).await }
+        },
+    ));
+    let iii_resume = iii.clone();
+    iii.register_function((
+        RegisterFunctionMessage::with_id(RESUME_FUNCTION_ID.to_string()).with_description(
+            "Resume an idled approval session and publish a turn step.".to_string(),
+        ),
+        move |payload: Value| {
+            let iii = iii_resume.clone();
+            async move { execute_resume(iii, payload).await }
         },
     ));
 }
@@ -235,6 +279,37 @@ mod tests {
 
         assert_eq!(request["cwd"], Value::Null);
         assert_eq!(request["cwd_hash"], Value::Null);
+    }
+
+    #[test]
+    fn build_resume_record_reopens_terminal_record_without_resetting_budget() {
+        let mut stopped = TurnStateRecord::new("sess-pending", Some(4));
+        stopped.turn_count = 3;
+        stopped.transition_to(crate::state::TurnState::Stopped);
+
+        let resumed = build_resume_record(&stopped);
+
+        assert_eq!(resumed.session_id, "sess-pending");
+        assert_eq!(resumed.state, crate::state::TurnState::Provisioning);
+        assert_eq!(resumed.turn_count, 3);
+        assert_eq!(resumed.max_turns, Some(4));
+        assert!(!resumed.is_terminal());
+        assert!(resumed.last_assistant.is_none());
+        assert!(resumed.pending_function_calls.is_empty());
+    }
+
+    #[test]
+    fn build_resume_plan_reopens_only_terminal_records() {
+        let mut stopped = TurnStateRecord::new("sess-stopped", None);
+        stopped.transition_to(crate::state::TurnState::Stopped);
+        assert!(build_resume_plan(&stopped).is_some());
+
+        let mut active = TurnStateRecord::new("sess-active", None);
+        active.transition_to(crate::state::TurnState::FunctionExecute);
+        assert!(
+            build_resume_plan(&active).is_none(),
+            "run::resume must not publish another step while a turn is already active"
+        );
     }
 
     #[test]

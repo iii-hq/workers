@@ -47,10 +47,7 @@ pub struct PublishCollectResponse {
 pub fn merge_first_block_wins(replies: &[Value]) -> Value {
     for reply in replies {
         if reply.get("block").and_then(Value::as_bool).unwrap_or(false) {
-            return serde_json::json!({
-                "block": true,
-                "reason": reply.get("reason").cloned().unwrap_or(Value::Null),
-            });
+            return reply.clone();
         }
     }
     serde_json::json!({ "block": false })
@@ -148,6 +145,29 @@ mod tests {
 
         assert_eq!(merged["block"], true);
         assert_eq!(merged["reason"], "first");
+    }
+
+    #[test]
+    fn first_block_wins_preserves_full_blocking_reply() {
+        let replies = vec![
+            json!({ "block": false }),
+            json!({
+                "block": true,
+                "status": "pending",
+                "function_call_id": "call-1",
+                "function_id": "shell::exec",
+                "subscriber": "approval-gate",
+                "approval_gate": true
+            }),
+        ];
+
+        let merged = merge_first_block_wins(&replies);
+
+        assert_eq!(merged["block"], true);
+        assert_eq!(merged["status"], "pending");
+        assert_eq!(merged["function_call_id"], "call-1");
+        assert_eq!(merged["subscriber"], "approval-gate");
+        assert_eq!(merged["approval_gate"], true);
     }
 
     #[test]

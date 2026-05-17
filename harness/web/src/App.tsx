@@ -546,6 +546,7 @@ export default function App() {
               <ApprovalRow
                 sessionId={active ?? ""}
                 pending={stream.pendingApprovals}
+                wakeFailures={stream.wakeFailures}
               />
               <Composer
                 disabled={composerDisabled}

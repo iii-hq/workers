@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { applyEvent } from "./reducer";
 import { INITIAL_STREAM_STATE, type AgentEvent, type AgentMessage } from "./types";
 
@@ -87,5 +87,44 @@ describe("reducer (entry-id keyed)", () => {
     const s = applyEvent(INITIAL_STREAM_STATE, e);
     expect(s.unkeyedMessages.length).toBe(1);
     expect(s.messageMap.size).toBe(0);
+  });
+});
+
+describe("reducer (approval wake failures)", () => {
+  it("collapses repeated same-error wake failures to one alert", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "run::resume timed out",
+    });
+    s = applyEvent(s, {
+      type: "approval_wake_failed",
+      error: "run::resume timed out",
+    });
+
+    expect(s.wakeFailures).toHaveLength(1);
+    expect(s.wakeFailures[0].error).toBe("run::resume timed out");
+  });
+
+  it("refreshes timestamp when the same wake failure repeats", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-05-17T10:00:00Z"));
+      let s = applyEvent(INITIAL_STREAM_STATE, {
+        type: "approval_wake_failed",
+        error: "run::resume timed out",
+      });
+      const firstTs = s.wakeFailures[0].ts;
+
+      vi.setSystemTime(new Date("2026-05-17T10:00:05Z"));
+      s = applyEvent(s, {
+        type: "approval_wake_failed",
+        error: "run::resume timed out",
+      });
+
+      expect(s.wakeFailures).toHaveLength(1);
+      expect(s.wakeFailures[0].ts).toBeGreaterThan(firstTs);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -213,6 +213,9 @@ mod tests {
             "body": "real body content here",
             "modified_at": "2026-05-13T00:00:00+00:00"
         });
-        assert_eq!(response_to_string(&resp).as_deref(), Some("real body content here"));
+        assert_eq!(
+            response_to_string(&resp).as_deref(),
+            Some("real body content here")
+        );
     }
 }

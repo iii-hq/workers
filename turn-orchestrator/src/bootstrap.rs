@@ -191,10 +191,7 @@ mod tests {
 
     #[test]
     fn leading_namespace_handles_missing_prefix() {
-        assert_eq!(
-            leading_namespace("shell/index"),
-            Some("shell".to_string())
-        );
+        assert_eq!(leading_namespace("shell/index"), Some("shell".to_string()));
     }
 
     #[test]

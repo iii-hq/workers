@@ -11,6 +11,29 @@ use crate::persistence;
 use crate::state::{TurnState, TurnStateRecord};
 
 pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+    let request = persistence::load_run_request(iii, &record.session_id).await;
+    if approval_required_enabled(&request) {
+        match crate::states::functions::consume_resolved_approval_entries(iii, &record.session_id)
+            .await
+        {
+            Ok(prepared) if !prepared.is_empty() => {
+                let executed: Vec<(FunctionCall, harness_types::FunctionResult, bool)> = Vec::new();
+                persistence::save_executed_calls(iii, &record.session_id, &executed).await;
+                persistence::save_prepared_calls(iii, &record.session_id, &prepared).await;
+                record.transition_to(TurnState::FunctionExecute);
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    session_id = %record.session_id,
+                    "approval::consume failed; continuing without resolved approvals"
+                );
+            }
+        }
+    }
+
     if record
         .max_turns
         .map_or(false, |cap| record.turn_count >= cap)
@@ -72,6 +95,13 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     events::emit(iii, &record.session_id, &AgentEvent::TurnStart).await;
     record.transition_to(TurnState::AssistantStreaming);
     Ok(())
+}
+
+pub(crate) fn approval_required_enabled(request: &serde_json::Value) -> bool {
+    request
+        .get("approval_required")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| !items.is_empty())
 }
 
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
@@ -235,5 +265,16 @@ mod tests {
             &events[1],
             harness_types::AgentEvent::MessageEnd { .. }
         ));
+    }
+
+    #[test]
+    fn approval_consume_is_only_enabled_when_run_has_required_functions() {
+        assert!(approval_required_enabled(&json!({
+            "approval_required": ["shell::exec"]
+        })));
+        assert!(!approval_required_enabled(&json!({
+            "approval_required": []
+        })));
+        assert!(!approval_required_enabled(&json!({})));
     }
 }

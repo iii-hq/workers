@@ -138,6 +138,18 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
       };
     }
 
+    case "approval_wake_failed": {
+      const error = event.error || "run::resume failed";
+      const nextFailure = { error, ts: Date.now() };
+      const existing = state.wakeFailures.findIndex((f) => f.error === error);
+      if (existing === -1) {
+        return { ...state, wakeFailures: [...state.wakeFailures, nextFailure] };
+      }
+      const wakeFailures = [...state.wakeFailures];
+      wakeFailures[existing] = nextFailure;
+      return { ...state, wakeFailures };
+    }
+
     case "turn_start":
     case "tool_execution_start":
     case "tool_execution_update":

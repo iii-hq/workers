@@ -124,13 +124,21 @@ mod tests {
 
     #[test]
     fn override_returns_verbatim_when_non_empty() {
-        let out = build(&[skill("iii://iii", "body")], Some(Path::new("/tmp")), Some("custom"));
+        let out = build(
+            &[skill("iii://iii", "body")],
+            Some(Path::new("/tmp")),
+            Some("custom"),
+        );
         assert_eq!(out, "custom");
     }
 
     #[test]
     fn empty_override_falls_through_to_canonical() {
-        let out = build(&[skill("iii://iii", "body")], Some(Path::new("/tmp")), Some(""));
+        let out = build(
+            &[skill("iii://iii", "body")],
+            Some(Path::new("/tmp")),
+            Some(""),
+        );
         assert!(out.contains("You are an iii agent worker"));
         assert!(out.contains("/tmp"));
         assert!(out.contains("body"));
@@ -179,7 +187,10 @@ mod tests {
         );
         let pos_iii = out.find("AAA").expect("first skill body must be present");
         let pos_shell = out.find("BBB").expect("second skill body must be present");
-        assert!(pos_iii < pos_shell, "skills must appear in config-list order");
+        assert!(
+            pos_iii < pos_shell,
+            "skills must appear in config-list order"
+        );
     }
 
     #[test]
@@ -192,7 +203,11 @@ mod tests {
 
     #[test]
     fn cwd_appears_between_preamble_and_skills() {
-        let out = build(&[skill("iii://iii", "BODY")], Some(Path::new("/work/proj")), None);
+        let out = build(
+            &[skill("iii://iii", "BODY")],
+            Some(Path::new("/work/proj")),
+            None,
+        );
         let pos_preamble = out.find("iii agent worker").unwrap();
         let pos_cwd = out.find("/work/proj").unwrap();
         let pos_body = out.find("BODY").unwrap();
@@ -225,7 +240,11 @@ mod tests {
     #[test]
     fn large_override_returns_same_length() {
         let huge = "a".repeat(1_000_000);
-        let out = build(&[skill("iii://iii", "body")], Some(Path::new("/tmp")), Some(&huge));
+        let out = build(
+            &[skill("iii://iii", "body")],
+            Some(Path::new("/tmp")),
+            Some(&huge),
+        );
         assert_eq!(out.len(), 1_000_000);
         assert_eq!(out, huge);
     }

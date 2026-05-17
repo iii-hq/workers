@@ -241,6 +241,10 @@ export type AgentEvent =
       decision: "allow" | "deny";
       reason?: string | null;
       tool_call_id?: string;
+    }
+  | {
+      type: "approval_wake_failed";
+      error?: string | null;
     };
 
 export interface PendingApproval {
@@ -252,12 +256,18 @@ export interface PendingApproval {
   expires_at?: number;
 }
 
+export interface WakeFailure {
+  error: string;
+  ts: number;
+}
+
 export interface StreamState {
   messageMap: Map<EntryId, AgentMessage>;
   unkeyedMessages: AgentMessage[];   // backwards-compat for events without entry_id
   messageOrder: EntryId[];
   lastEntryId: EntryId | null;
   pendingApprovals: PendingApproval[];
+  wakeFailures: WakeFailure[];
   status: "idle" | "running" | "ended";
 }
 
@@ -267,5 +277,6 @@ export const INITIAL_STREAM_STATE: StreamState = {
   messageOrder: [],
   lastEntryId: null,
   pendingApprovals: [],
+  wakeFailures: [],
   status: "idle",
 };

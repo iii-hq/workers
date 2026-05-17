@@ -48,6 +48,7 @@ pub async fn execute(
     let envelope = build_publish_envelope(&topic, &event_id, inner.clone());
     let started_at = Instant::now();
     let mut publish_failed = false;
+    let mut publish_error: Option<String> = None;
     if let Err(e) = iii
         .trigger(TriggerRequest {
             function_id: "iii::durable::publish".into(),
@@ -59,6 +60,7 @@ pub async fn execute(
     {
         tracing::warn!(error = %e, %topic, "hook-fanout::publish_collect: publish trigger failed");
         publish_failed = true;
+        publish_error = Some(e.to_string());
     }
 
     let deadline = started_at + Duration::from_millis(timeout_ms.max(min_timeout));
@@ -131,11 +133,39 @@ pub async fn execute(
         MergeRule::PipelineLastWins => merge_pipeline_last_wins(inner.clone(), &replies),
     };
 
-    Ok(json!({
+    Ok(build_response(
+        &event_id,
+        replies,
+        merged,
+        publish_failed,
+        publish_error.as_deref(),
+    ))
+}
+
+pub(crate) fn build_response(
+    event_id: &str,
+    replies: Vec<Value>,
+    merged: Value,
+    publish_failed: bool,
+    publish_error: Option<&str>,
+) -> Value {
+    let mut out = json!({
         "event_id": event_id,
         "replies": replies,
         "merged": merged,
-    }))
+        "publish": if publish_failed {
+            match publish_error {
+                Some(error) => json!({ "ok": false, "error": error }),
+                None => json!({ "ok": false }),
+            }
+        } else {
+            json!({ "ok": true })
+        },
+    });
+    if publish_failed {
+        out["publish_failed"] = json!(true);
+    }
+    out
 }
 
 pub fn register(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
@@ -392,5 +422,37 @@ mod tests {
             deadline,
         );
         assert_eq!(reason, Some("expected_replies"));
+    }
+
+    #[test]
+    fn build_response_marks_publish_ok_on_success() {
+        let out = build_response(
+            "evt-1",
+            vec![json!({ "block": false })],
+            json!({ "block": false }),
+            false,
+            None,
+        );
+
+        assert_eq!(out["event_id"], "evt-1");
+        assert_eq!(out["publish"]["ok"], true);
+        assert!(out["publish"]["error"].is_null());
+        assert!(!out.as_object().unwrap().contains_key("publish_failed"));
+    }
+
+    #[test]
+    fn build_response_marks_publish_failed_with_error_text() {
+        let out = build_response(
+            "evt-2",
+            vec![],
+            json!({ "block": false }),
+            true,
+            Some("ws closed"),
+        );
+
+        assert_eq!(out["publish"]["ok"], false);
+        assert_eq!(out["publish"]["error"], "ws closed");
+        assert_eq!(out["publish_failed"], true);
+        assert_eq!(out["merged"]["block"], false);
     }
 }

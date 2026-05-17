@@ -1,6 +1,6 @@
 //! Approval gate. Subscribes to `agent::before_function_call` and blocks calls
 //! whose `function_call.function_id` appears in the run's `approval_required` list,
-//! waiting for the UI to call `approval::resolve` (or for a timeout).
+//! then lets `approval::consume` drain resolved decisions back into the turn.
 
 pub mod config;
 pub mod manifest;
@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 
 pub const FN_RESOLVE: &str = "approval::resolve";
 pub const FN_LIST_PENDING: &str = "approval::list_pending";
+pub const FN_CONSUME: &str = "approval::consume";
+pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
 
@@ -102,6 +104,7 @@ pub fn extract_call(envelope: &Value) -> Option<IncomingCall> {
 }
 
 pub fn build_pending_record(
+    session_id: &str,
     function_call_id: &str,
     function_id: &str,
     args: &Value,
@@ -109,20 +112,28 @@ pub fn build_pending_record(
     timeout_ms: u64,
 ) -> Value {
     json!({
+        "session_id": session_id,
         "function_call_id": function_call_id,
         "function_id": function_id,
         "args": args,
         "status": "pending",
+        "created_at": now_ms,
         "expires_at": now_ms.saturating_add(timeout_ms),
     })
 }
 
 pub fn block_reply_for(decision: &Decision) -> Value {
     match decision {
-        Decision::Allow => json!({ "block": false }),
+        Decision::Allow => json!({
+            "block": false,
+            "subscriber": "approval-gate",
+            "approval_gate": true,
+        }),
         Decision::Deny { reason } => json!({
             "block": true,
             "reason": format!("approval-gate: {reason}"),
+            "subscriber": "approval-gate",
+            "approval_gate": true,
         }),
     }
 }
@@ -130,6 +141,8 @@ pub fn block_reply_for(decision: &Decision) -> Value {
 pub struct Refs {
     pub resolve: FunctionRef,
     pub list_pending: FunctionRef,
+    pub consume: FunctionRef,
+    pub sweep_session: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
 }
@@ -168,8 +181,23 @@ pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Valu
     if existing.get("status").and_then(Value::as_str) != Some("pending") {
         return json!({ "ok": false, "error": "already_resolved" });
     }
-    existing["status"] =
+    let now_ms = now_ms();
+    if existing
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .is_some_and(|expires_at| now_ms >= expires_at)
+    {
+        existing["status"] = json!("resolved");
+        existing["decision"] = json!("deny");
+        existing["reason"] = json!("timed_out");
+        existing["resolved_at"] = json!(now_ms);
+        let _ = bus.set(state_scope, &key, existing).await;
+        return json!({ "ok": false, "error": "timed_out" });
+    }
+    existing["status"] = json!("resolved");
+    existing["decision"] =
         serde_json::to_value(decision).expect("WireDecision serializes via Serialize");
+    existing["resolved_at"] = json!(now_ms);
     if let Some(reason) = payload.get("reason").cloned() {
         existing["reason"] = reason;
     }
@@ -178,6 +206,157 @@ pub async fn handle_resolve(bus: &dyn StateBus, state_scope: &str, payload: Valu
         return json!({ "ok": false, "error": "state_write_failed" });
     }
     json!({ "ok": true })
+}
+
+pub async fn handle_intercept(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    call: &IncomingCall,
+    now_ms: u64,
+    timeout_ms: u64,
+) -> Value {
+    if !call.requires_approval() {
+        return block_reply_for(&Decision::Allow);
+    }
+
+    let record = build_pending_record(
+        &call.session_id,
+        &call.function_call_id,
+        &call.function_id,
+        &call.args,
+        now_ms,
+        timeout_ms,
+    );
+    if let Err(err) = bus
+        .set(
+            state_scope,
+            &pending_key(&call.session_id, &call.function_call_id),
+            record,
+        )
+        .await
+    {
+        tracing::error!(
+            "approval-gate: failed to write pending record for {}/{}: {err}",
+            call.session_id,
+            call.function_call_id
+        );
+        return json!({
+            "block": true,
+            "status": "denied",
+            "reason": "approval-gate: state_write_failed",
+            "subscriber": "approval-gate",
+            "approval_gate": true,
+            "denial": {
+                "kind": "state_error",
+                "detail": {
+                    "phase": "pending_write",
+                    "error": err.to_string(),
+                }
+            }
+        });
+    }
+
+    json!({
+        "block": true,
+        "status": "pending",
+        "reason": "approval required",
+        "function_call_id": call.function_call_id,
+        "tool_call_id": call.function_call_id,
+        "function_id": call.function_id,
+        "subscriber": "approval-gate",
+        "approval_gate": true,
+    })
+}
+
+pub async fn handle_consume(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_session_id", "entries": [] });
+    }
+
+    let prefix = format!("{session_id}/");
+    let rows = bus.list_prefix(state_scope, &prefix).await;
+    let mut entries = Vec::new();
+    for mut row in rows {
+        if row.get("session_id").and_then(Value::as_str) != Some(session_id) {
+            continue;
+        }
+        if row.get("status").and_then(Value::as_str) != Some("resolved") {
+            continue;
+        }
+        let Some(function_call_id) = row.get("function_call_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = pending_key(session_id, function_call_id);
+        entries.push(json!({
+            "function_call_id": function_call_id,
+            "tool_call_id": function_call_id,
+            "function_id": row.get("function_id").cloned().unwrap_or(Value::Null),
+            "args": row.get("args").cloned().unwrap_or_else(|| json!({})),
+            "decision": row.get("decision").cloned().unwrap_or_else(|| json!("deny")),
+            "reason": row.get("reason").cloned().unwrap_or(Value::Null),
+        }));
+        row["status"] = json!("consumed");
+        row["consumed_at"] = json!(now_ms());
+        let _ = bus.set(state_scope, &key, row).await;
+    }
+    json!({ "ok": true, "entries": entries })
+}
+
+pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_id.is_empty() {
+        return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
+    }
+
+    let prefix = format!("{session_id}/");
+    let rows = bus.list_prefix(state_scope, &prefix).await;
+    let now_ms = now_ms();
+    let mut swept = 0u64;
+    for mut row in rows {
+        if row.get("session_id").and_then(Value::as_str) != Some(session_id) {
+            continue;
+        }
+        if row.get("status").and_then(Value::as_str) != Some("pending") {
+            continue;
+        }
+        let Some(function_call_id) = row
+            .get("function_call_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        row["status"] = json!("resolved");
+        row["decision"] = json!("deny");
+        row["reason"] = json!("timed_out");
+        row["resolved_at"] = json!(now_ms);
+        if bus
+            .set(
+                state_scope,
+                &pending_key(session_id, &function_call_id),
+                row,
+            )
+            .await
+            .is_ok()
+        {
+            swept += 1;
+        }
+    }
+    json!({ "ok": true, "swept": swept })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
@@ -192,50 +371,29 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
     let all = bus.list_prefix(state_scope, &prefix).await;
     let pending: Vec<Value> = all
         .into_iter()
+        .filter(|v| v.get("session_id").and_then(Value::as_str) == Some(session_id))
         .filter(|v| v.get("status").and_then(Value::as_str) == Some("pending"))
         .collect();
     json!({ "pending": pending })
 }
 
-const POLL_INTERVAL_MS: u64 = 250;
+fn state_list_values(resp: Value) -> Vec<Value> {
+    let entries = match resp {
+        Value::Array(entries) => entries,
+        Value::Object(mut obj) => obj
+            .remove("items")
+            .and_then(|items| match items {
+                Value::Array(entries) => Some(entries),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
 
-pub async fn await_decision(
-    bus: &dyn StateBus,
-    state_scope: &str,
-    session_id: &str,
-    function_call_id: &str,
-    expires_at: u64,
-) -> Decision {
-    let key = pending_key(session_id, function_call_id);
-    loop {
-        let Some(rec) = bus.get(state_scope, &key).await else {
-            return Decision::Deny {
-                reason: "state_unavailable".into(),
-            };
-        };
-        match rec.get("status").and_then(Value::as_str) {
-            Some("allow") => return Decision::Allow,
-            Some("deny") => {
-                let reason = rec
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("user")
-                    .to_string();
-                return Decision::Deny { reason };
-            }
-            _ => {}
-        }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(expires_at);
-        if now >= expires_at {
-            return Decision::Deny {
-                reason: "timeout".into(),
-            };
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-    }
+    entries
+        .into_iter()
+        .map(|entry| entry.get("value").cloned().unwrap_or(entry))
+        .collect()
 }
 
 /// Production [`StateBus`] backed by a real iii-sdk [`III`] connection.
@@ -277,12 +435,7 @@ impl StateBus for IiiStateBus {
             })
             .await
             .unwrap_or_else(|_| json!({ "items": [] }));
-        resp.get("items")
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|entry| entry.get("value").cloned().unwrap_or(entry))
-            .collect()
+        state_list_values(resp)
     }
 }
 
@@ -341,18 +494,58 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
 
     let bus_for_resolve = bus.clone();
     let scope_resolve = state_scope.clone();
-    let resolve =
-        iii.register_function((
-            RegisterFunctionMessage::with_id(FN_RESOLVE.into())
-                .with_description("Flip a pending approval entry to allow or deny.".into()),
-            move |payload: Value| {
-                let bus = bus_for_resolve.clone();
-                let scope_resolve = scope_resolve.clone();
-                async move {
-                    Ok::<_, IIIError>(handle_resolve(bus.as_ref(), &scope_resolve, payload).await)
+    let iii_for_resolve = iii.clone();
+    let resolve = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_RESOLVE.into())
+            .with_description("Flip a pending approval entry to allow or deny.".into()),
+        move |payload: Value| {
+            let bus = bus_for_resolve.clone();
+            let scope_resolve = scope_resolve.clone();
+            let iii = iii_for_resolve.clone();
+            async move {
+                let session_id = payload
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let function_call_id = payload
+                    .get("function_call_id")
+                    .or_else(|| payload.get("tool_call_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let out = handle_resolve(bus.as_ref(), &scope_resolve, payload).await;
+                if out.get("ok").and_then(Value::as_bool) == Some(true)
+                    && !session_id.is_empty()
+                    && !function_call_id.is_empty()
+                {
+                    if let Some(record) = bus
+                        .get(&scope_resolve, &pending_key(&session_id, &function_call_id))
+                        .await
+                    {
+                        write_event(
+                            &iii,
+                            &session_id,
+                            &approval_resolved_event(&function_call_id, &record),
+                        )
+                        .await;
+                    }
+                    if let Err(err) = resume_session(&iii, &session_id).await {
+                        write_event(
+                            &iii,
+                            &session_id,
+                            &json!({
+                                "type": "approval_wake_failed",
+                                "error": err,
+                            }),
+                        )
+                        .await;
+                    }
                 }
-            },
-        ));
+                Ok::<_, IIIError>(out)
+            }
+        },
+    ));
 
     let bus_for_list = bus.clone();
     let scope_list = state_scope.clone();
@@ -364,6 +557,35 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let scope_list = scope_list.clone();
             async move {
                 Ok::<_, IIIError>(handle_list_pending(bus.as_ref(), &scope_list, payload).await)
+            }
+        },
+    ));
+
+    let bus_for_consume = bus.clone();
+    let scope_consume = state_scope.clone();
+    let consume =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_CONSUME.into())
+                .with_description("Return resolved approval decisions for a session once.".into()),
+            move |payload: Value| {
+                let bus = bus_for_consume.clone();
+                let scope_consume = scope_consume.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_consume(bus.as_ref(), &scope_consume, payload).await)
+                }
+            },
+        ));
+
+    let bus_for_sweep = bus.clone();
+    let scope_sweep = state_scope.clone();
+    let sweep_session = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into())
+            .with_description("Resolve a session's pending approvals as denied.".into()),
+        move |payload: Value| {
+            let bus = bus_for_sweep.clone();
+            let scope_sweep = scope_sweep.clone();
+            async move {
+                Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope_sweep, payload).await)
             }
         },
     ));
@@ -380,81 +602,27 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let sc = subscriber_scope.clone();
             async move {
                 let Some(call) = extract_call(&envelope) else {
-                    return Ok::<_, IIIError>(json!({ "block": false }));
-                };
-                if !call.requires_approval() {
-                    let reply = json!({ "block": false });
-                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
+                    let reply = block_reply_for(&Decision::Allow);
                     return Ok(reply);
-                }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                let expires_at = now.saturating_add(timeout_ms);
-                let record = build_pending_record(
-                    &call.function_call_id,
-                    &call.function_id,
-                    &call.args,
-                    now,
-                    timeout_ms,
-                );
-                if let Err(err) = bus
-                    .set(
-                        &sc,
-                        &pending_key(&call.session_id, &call.function_call_id),
-                        record,
+                };
+                let now = now_ms();
+                let reply = handle_intercept(bus.as_ref(), &sc, &call, now, timeout_ms).await;
+                if reply.get("status").and_then(Value::as_str) == Some("pending") {
+                    write_event(
+                        &iii,
+                        &call.session_id,
+                        &json!({
+                            "type": "approval_requested",
+                            "function_call_id": call.function_call_id,
+                            "tool_call_id": call.function_call_id,
+                            "function_id": call.function_id,
+                            "tool_name": call.function_id,
+                            "args": call.args,
+                            "expires_at": now.saturating_add(timeout_ms),
+                        }),
                     )
-                    .await
-                {
-                    tracing::error!(
-                        "approval-gate: failed to write pending record for {}/{}: {err}",
-                        call.session_id,
-                        call.function_call_id
-                    );
-                    let reply = json!({ "block": false });
-                    write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
-                    return Ok(reply);
+                    .await;
                 }
-                write_event(
-                    &iii,
-                    &call.session_id,
-                    &json!({
-                        "type": "approval_requested",
-                        "function_call_id": call.function_call_id,
-                        "tool_call_id": call.function_call_id,
-                        "function_id": call.function_id,
-                        "tool_name": call.function_id,
-                        "args": call.args,
-                        "expires_at": expires_at,
-                    }),
-                )
-                .await;
-                let decision = await_decision(
-                    bus.as_ref(),
-                    &sc,
-                    &call.session_id,
-                    &call.function_call_id,
-                    expires_at,
-                )
-                .await;
-                let (decision_str, reason_for_event) = match &decision {
-                    Decision::Allow => ("allow", None),
-                    Decision::Deny { reason } => ("deny", Some(reason.clone())),
-                };
-                write_event(
-                    &iii,
-                    &call.session_id,
-                    &json!({
-                        "type": "approval_resolved",
-                        "function_call_id": call.function_call_id,
-                        "tool_call_id": call.function_call_id,
-                        "decision": decision_str,
-                        "reason": reason_for_event,
-                    }),
-                )
-                .await;
-                let reply = block_reply_for(&decision);
                 write_hook_reply(&iii, &call.reply_stream, &call.event_id, &reply).await;
                 Ok(reply)
             }
@@ -473,9 +641,45 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     Ok(Refs {
         resolve,
         list_pending,
+        consume,
+        sweep_session,
         subscriber_fn,
         subscriber_trigger,
     })
+}
+
+fn approval_resolved_event(function_call_id: &str, record: &Value) -> Value {
+    json!({
+        "type": "approval_resolved",
+        "function_call_id": function_call_id,
+        "tool_call_id": function_call_id,
+        "decision": record.get("decision").cloned().unwrap_or_else(|| json!("deny")),
+        "reason": record.get("reason").cloned().unwrap_or(Value::Null),
+    })
+}
+
+async fn resume_session(iii: &III, session_id: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = iii
+            .trigger(TriggerRequest {
+                function_id: "run::resume".into(),
+                payload: json!({ "session_id": session_id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.get("resumed").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err("run::resume did not reopen approval turn before timeout".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 #[cfg(test)]
@@ -547,7 +751,7 @@ mod tests {
     #[test]
     fn build_pending_record_sets_status_and_expiry() {
         let now = 1_000_000;
-        let rec = build_pending_record("tc-1", "write", &json!({"x": 1}), now, 60_000);
+        let rec = build_pending_record("s1", "tc-1", "write", &json!({"x": 1}), now, 60_000);
         assert_eq!(rec["status"], "pending");
         assert_eq!(rec["function_call_id"], "tc-1");
         assert_eq!(rec["expires_at"], 1_060_000);
@@ -645,7 +849,7 @@ mod tests {
         bus.set(
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
-            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+            build_pending_record("s1", "tc-1", "write", &json!({}), now_ms(), 60_000),
         )
         .await
         .unwrap();
@@ -666,7 +870,117 @@ mod tests {
             .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
             .await
             .unwrap();
-        assert_eq!(stored["status"], "allow");
+        assert_eq!(stored["status"], "resolved");
+        assert_eq!(stored["decision"], "allow");
+    }
+
+    #[tokio::test]
+    async fn intercept_required_call_writes_pending_and_returns_marked_pending_block() {
+        let bus = InMemoryStateBus::new();
+        let call = IncomingCall {
+            session_id: "s1".into(),
+            function_call_id: "tc-1".into(),
+            function_id: "shell::exec".into(),
+            args: json!({"command": "date"}),
+            approval_required: vec!["shell::exec".into()],
+            event_id: "evt".into(),
+            reply_stream: "replies".into(),
+        };
+
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["status"], "pending");
+        assert_eq!(reply["subscriber"], "approval-gate");
+        assert_eq!(reply["approval_gate"], true);
+        let stored = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
+        assert_eq!(stored["status"], "pending");
+        assert_eq!(stored["session_id"], "s1");
+        assert_eq!(stored["function_id"], "shell::exec");
+    }
+
+    #[tokio::test]
+    async fn intercept_non_required_call_returns_marked_allow_reply() {
+        let bus = InMemoryStateBus::new();
+        let call = IncomingCall {
+            session_id: "s1".into(),
+            function_call_id: "tc-1".into(),
+            function_id: "shell::fs::ls".into(),
+            args: json!({}),
+            approval_required: vec!["shell::exec".into()],
+            event_id: "evt".into(),
+            reply_stream: "replies".into(),
+        };
+
+        let reply = handle_intercept(&bus, STATE_SCOPE, &call, 1_000, 60_000).await;
+
+        assert_eq!(reply["block"], false);
+        assert_eq!(reply["subscriber"], "approval-gate");
+        assert_eq!(reply["approval_gate"], true);
+        assert!(bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn consume_returns_resolved_entries_once_and_marks_consumed() {
+        let bus = InMemoryStateBus::new();
+        let mut rec = build_pending_record(
+            "s1",
+            "tc-1",
+            "shell::exec",
+            &json!({"command": "date"}),
+            0,
+            60_000,
+        );
+        rec["status"] = json!("resolved");
+        rec["decision"] = json!("allow");
+        bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec)
+            .await
+            .unwrap();
+
+        let first = handle_consume(&bus, STATE_SCOPE, json!({ "session_id": "s1" })).await;
+        assert_eq!(first["ok"], true);
+        assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(first["entries"][0]["decision"], "allow");
+
+        let second = handle_consume(&bus, STATE_SCOPE, json!({ "session_id": "s1" })).await;
+        assert_eq!(second["entries"].as_array().unwrap().len(), 0);
+
+        let stored = bus
+            .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
+            .await
+            .unwrap();
+        assert_eq!(stored["status"], "consumed");
+    }
+
+    #[tokio::test]
+    async fn sweep_session_resolves_pending_as_deny_and_prevents_later_allow() {
+        let bus = InMemoryStateBus::new();
+        bus.set(
+            STATE_SCOPE,
+            &pending_key("s1", "tc-1"),
+            build_pending_record("s1", "tc-1", "shell::exec", &json!({}), 0, 60_000),
+        )
+        .await
+        .unwrap();
+
+        let sweep = handle_sweep_session(&bus, STATE_SCOPE, json!({ "session_id": "s1" })).await;
+        assert_eq!(sweep["ok"], true);
+        assert_eq!(sweep["swept"], 1);
+
+        let allow = handle_resolve(
+            &bus,
+            STATE_SCOPE,
+            json!({ "session_id": "s1", "function_call_id": "tc-1", "decision": "allow" }),
+        )
+        .await;
+        assert_eq!(allow["ok"], false);
+        assert_eq!(allow["error"], "already_resolved");
     }
 
     #[tokio::test]
@@ -675,7 +989,7 @@ mod tests {
         bus.set(
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
-            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+            build_pending_record("s1", "tc-1", "write", &json!({}), now_ms(), 60_000),
         )
         .await
         .unwrap();
@@ -697,7 +1011,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_already_resolved_entry() {
         let bus = InMemoryStateBus::new();
-        let mut rec = build_pending_record("tc-1", "write", &json!({}), 0, 60_000);
+        let mut rec = build_pending_record("s1", "tc-1", "write", &json!({}), 0, 60_000);
         rec["status"] = json!("allow");
         bus.set(STATE_SCOPE, &pending_key("s1", "tc-1"), rec)
             .await
@@ -719,11 +1033,11 @@ mod tests {
         bus.set(
             STATE_SCOPE,
             &pending_key("s1", "tc-1"),
-            build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+            build_pending_record("s1", "tc-1", "write", &json!({}), 0, 60_000),
         )
         .await
         .unwrap();
-        let mut resolved = build_pending_record("tc-2", "write", &json!({}), 0, 60_000);
+        let mut resolved = build_pending_record("s1", "tc-2", "write", &json!({}), 0, 60_000);
         resolved["status"] = json!("allow");
         bus.set(STATE_SCOPE, &pending_key("s1", "tc-2"), resolved)
             .await
@@ -731,7 +1045,7 @@ mod tests {
         bus.set(
             STATE_SCOPE,
             &pending_key("other", "tc-3"),
-            build_pending_record("tc-3", "write", &json!({}), 0, 60_000),
+            build_pending_record("other", "tc-3", "write", &json!({}), 0, 60_000),
         )
         .await
         .unwrap();
@@ -742,8 +1056,38 @@ mod tests {
         assert_eq!(items[0]["function_call_id"], "tc-1");
     }
 
-    use std::sync::Arc;
-    use std::time::Duration;
+    #[test]
+    fn state_list_values_accepts_raw_state_array() {
+        let out = state_list_values(json!([
+            {
+                "session_id": "s1",
+                "function_call_id": "tc-1",
+                "status": "pending"
+            }
+        ]));
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["function_call_id"], "tc-1");
+    }
+
+    #[test]
+    fn state_list_values_accepts_items_envelope_and_unwraps_values() {
+        let out = state_list_values(json!({
+            "items": [
+                {
+                    "key": "s1/tc-1",
+                    "value": {
+                        "session_id": "s1",
+                        "function_call_id": "tc-1",
+                        "status": "pending"
+                    }
+                }
+            ]
+        }));
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["function_call_id"], "tc-1");
+    }
 
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -753,66 +1097,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn await_decision_returns_allow_when_status_flips() {
-        let bus = Arc::new(InMemoryStateBus::new());
-        let key = pending_key("s1", "tc-1");
-        bus.set(
-            STATE_SCOPE,
-            &key,
-            build_pending_record("tc-1", "write", &json!({}), now_ms(), 5_000),
-        )
-        .await
-        .unwrap();
-
-        let bus2 = bus.clone();
-        let writer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let mut rec = bus2.get(STATE_SCOPE, &key).await.unwrap();
-            rec["status"] = json!("allow");
-            bus2.set(STATE_SCOPE, &key, rec).await.unwrap();
-        });
-
-        let decision = await_decision(&*bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 5_000).await;
-        writer.await.unwrap();
-        assert_eq!(decision, Decision::Allow);
-    }
-
-    #[tokio::test]
-    async fn await_decision_returns_deny_timeout_when_expired() {
-        let bus = InMemoryStateBus::new();
-        let key = pending_key("s1", "tc-1");
-        let _ = bus
-            .set(
-                STATE_SCOPE,
-                &key,
-                build_pending_record("tc-1", "write", &json!({}), 0, 0),
-            )
-            .await;
-        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() - 10).await;
-        match decision {
-            Decision::Deny { reason } => assert_eq!(reason, "timeout"),
-            other => panic!("expected Deny(timeout), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn await_decision_fail_closed_on_missing_record() {
-        let bus = InMemoryStateBus::new();
-        let decision = await_decision(&bus, STATE_SCOPE, "s1", "tc-1", now_ms() + 1_000).await;
-        match decision {
-            Decision::Deny { reason } => assert_eq!(reason, "state_unavailable"),
-            other => panic!("expected Deny(state_unavailable), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn resolve_deny_records_reason() {
         let bus = InMemoryStateBus::new();
         let _ = bus
             .set(
                 STATE_SCOPE,
                 &pending_key("s1", "tc-1"),
-                build_pending_record("tc-1", "write", &json!({}), 0, 60_000),
+                build_pending_record("s1", "tc-1", "write", &json!({}), now_ms(), 60_000),
             )
             .await;
 
@@ -833,7 +1124,8 @@ mod tests {
             .get(STATE_SCOPE, &pending_key("s1", "tc-1"))
             .await
             .unwrap();
-        assert_eq!(stored["status"], "deny");
+        assert_eq!(stored["status"], "resolved");
+        assert_eq!(stored["decision"], "deny");
         assert_eq!(stored["reason"], "user clicked cancel");
     }
 }
