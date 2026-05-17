@@ -20,10 +20,10 @@ use iii_sdk::{
 use serde_json::{json, Value};
 
 use crate::config::WorkerConfig;
-use crate::delivery::{handle_consume, handle_list_pending, handle_sweep_session};
+use crate::delivery::{handle_consume, handle_list_pending, handle_sweep_session, handle_tick_timeouts};
 use crate::intercept::handle_intercept;
 use crate::resolve::{handle_lookup_record, handle_resolve};
-use crate::rules;
+use crate::rules::{self, LayeredRules};
 use crate::state::{FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus};
 use crate::wire::{extract_call, pending_key};
 
@@ -33,6 +33,12 @@ pub const FN_LIST_PENDING: &str = "approval::list_pending";
 pub const FN_CONSUME: &str = "approval::consume";
 pub const FN_SWEEP_SESSION: &str = "approval::sweep_session";
 pub const FN_LOOKUP_RECORD: &str = "approval::lookup_record";
+/// Watchdog surface that reclaims expired Pending rows and stale InFlight
+/// rows across all sessions, then nudges the orchestrator via `run::resume`
+/// so the LLM's `pending_approval` placeholders get replaced with a
+/// `timed_out` outcome (finding #4). Intended to be driven by a periodic
+/// timer; can also be called on demand.
+pub const FN_TICK_TIMEOUTS: &str = "approval::tick_timeouts";
 
 /// Default `approval_state_scope` (matches [`WorkerConfig::default`]).
 pub const STATE_SCOPE: &str = "approvals";
@@ -46,14 +52,18 @@ pub struct Refs {
     pub consume: FunctionRef,
     pub sweep_session: FunctionRef,
     pub lookup_record: FunctionRef,
+    pub tick_timeouts: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
-    // Layered policy ruleset, wrapped in RwLock so cascade-on-`always:true`
-    // can push a runtime Allow rule (see resolve.rs::cascade_allow_for_session).
-    let policy_rules: Arc<RwLock<rules::Ruleset>> = Arc::new(RwLock::new(cfg.rules.clone()));
+    // Layered policy ruleset: a YAML-loaded global baseline + a per-session
+    // overlay updated at runtime by `cascade_allow_for_session`. Wrapped
+    // in RwLock so the cascade can push session-scoped Allow rules
+    // without blocking concurrent intercepts (see finding #2).
+    let policy_rules: Arc<RwLock<LayeredRules>> =
+        Arc::new(RwLock::new(LayeredRules::from_global(cfg.rules.clone())));
 
     let bus: Arc<dyn StateBus> = Arc::new(IiiStateBus(iii.clone()));
     let timeout_ms = cfg.default_timeout_ms;
@@ -177,43 +187,77 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                Ok::<_, IIIError>(
-                    handle_consume(bus.as_ref(), &scope, payload, now_ms).await,
-                )
+                Ok::<_, IIIError>(handle_consume(bus.as_ref(), &scope, payload, now_ms).await)
             }
         },
     ));
 
     let bus_for_sweep = bus.clone();
     let scope_sweep = state_scope.clone();
-    let sweep_session = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into()).with_description(
-            "Sweep all pending approvals for a session to timed_out. \
+    let sweep_session =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_SWEEP_SESSION.into()).with_description(
+                "Sweep all pending approvals for a session to timed_out. \
                  Called when a session is deleted."
-                .into(),
-        ),
-        move |payload: Value| {
-            let bus = bus_for_sweep.clone();
-            let scope = scope_sweep.clone();
-            async move {
-                Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope, payload).await)
-            }
-        },
-    ));
+                    .into(),
+            ),
+            move |payload: Value| {
+                let bus = bus_for_sweep.clone();
+                let scope = scope_sweep.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_sweep_session(bus.as_ref(), &scope, payload).await)
+                }
+            },
+        ));
 
     let bus_for_lookup = bus.clone();
     let scope_lookup = state_scope.clone();
-    let lookup_record = iii.register_function((
-        RegisterFunctionMessage::with_id(FN_LOOKUP_RECORD.into()).with_description(
-            "Return the approval state-store record for a session/function_call_id pair; \
+    let lookup_record =
+        iii.register_function((
+            RegisterFunctionMessage::with_id(FN_LOOKUP_RECORD.into()).with_description(
+                "Return the approval state-store record for a session/function_call_id pair; \
                  null when absent. Used by shell bypass validation."
+                    .into(),
+            ),
+            move |payload: Value| {
+                let bus = bus_for_lookup.clone();
+                let scope = scope_lookup.clone();
+                async move {
+                    Ok::<_, IIIError>(handle_lookup_record(bus.as_ref(), &scope, payload).await)
+                }
+            },
+        ));
+
+    // Watchdog: reclaim expired Pending + stale InFlight rows and wake
+    // the orchestrator for any affected sessions (finding #4).
+    let bus_for_tick = bus.clone();
+    let scope_tick = state_scope.clone();
+    let iii_for_tick = iii.clone();
+    let tick_timeouts = iii.register_function((
+        RegisterFunctionMessage::with_id(FN_TICK_TIMEOUTS.into()).with_description(
+            "Watchdog tick: flips expired Pending rows and stale InFlight rows to \
+             Done(TimedOut), then calls run::resume for each affected session so \
+             the orchestrator stitches the timed_out outcome into the LLM turn. \
+             Payload: {} or {scope_prefix: \"<session_id>/\"} for session-scoped \
+             ticks. Response: {ok, reclaimed: N, sessions_woken: [\"sess_a\", ...]}."
                 .into(),
         ),
         move |payload: Value| {
-            let bus = bus_for_lookup.clone();
-            let scope = scope_lookup.clone();
+            let bus = bus_for_tick.clone();
+            let scope = scope_tick.clone();
+            let iii = iii_for_tick.clone();
             async move {
-                Ok::<_, IIIError>(handle_lookup_record(bus.as_ref(), &scope, payload).await)
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let tick = handle_tick_timeouts(bus.as_ref(), &scope, payload, now_ms).await;
+                if let Some(sessions) = tick.get("sessions_woken").and_then(Value::as_array) {
+                    for session in sessions.iter().filter_map(Value::as_str) {
+                        publish_turn_step(&iii, session).await;
+                    }
+                }
+                Ok::<_, IIIError>(tick)
             }
         },
     ));
@@ -239,15 +283,18 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
 
-                // Take a snapshot of the rules ruleset under the read lock,
+                // Take a session-specific snapshot under the read lock,
                 // then drop the guard before any .await. std::sync::RwLock
                 // is not async-safe to hold across suspension points, and
                 // a held guard would block every concurrent intercept.
+                //
+                // Per-session snapshot (finding #2): `allow + always` rules
+                // pushed for OTHER sessions stay out of this call's view.
                 let rules_snapshot: rules::Ruleset = {
                     let guard = policy_rules
                         .read()
                         .expect("approval-gate policy rules lock poisoned");
-                    guard.clone()
+                    guard.snapshot_for(&call.session_id)
                 };
 
                 // One decision call. Verdict::Allow → {block:false}.
@@ -260,7 +307,8 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                     &rules_snapshot,
                     now_ms,
                     timeout_ms,
-                ).await;
+                )
+                .await;
 
                 if reply.get("status").and_then(Value::as_str) == Some("pending") {
                     write_event(
@@ -299,6 +347,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         consume,
         sweep_session,
         lookup_record,
+        tick_timeouts,
         subscriber_fn,
         subscriber_trigger,
     })

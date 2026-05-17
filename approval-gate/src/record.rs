@@ -14,6 +14,14 @@ use serde_json::Value;
 
 use crate::wire::Denial;
 
+/// How long an `InFlight` row may sit before lazy-flip reclaims it as
+/// `Done(TimedOut)`. Chosen so a legitimately slow invoke is not stolen
+/// from its caller, while a wedged or persistence-lost row still has a
+/// bounded orphan window. The reclaim covers finding #5: an executor
+/// invoke that succeeded but whose Done write failed leaves a row in
+/// InFlight indefinitely otherwise.
+pub const IN_FLIGHT_GRACE_MS: u64 = 600_000;
+
 /// Lifecycle status. Wire format is snake_case so iii-state dumps stay
 /// human-readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,8 +43,8 @@ pub enum Status {
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Outcome {
     Executed { result: Value },
-    Failed   { error: String },
-    Denied   { denial: Denial },
+    Failed { error: String },
+    Denied { denial: Denial },
     TimedOut,
 }
 
@@ -118,15 +126,38 @@ impl Record {
         }
     }
 
-    /// Lazy timeout flip. Returns `Some(flipped)` iff the row is Pending
-    /// AND `now_ms >= expires_at`. InFlight rows are owned by an
-    /// in-progress invoke and are never touched here. Done rows are
-    /// already terminal.
+    /// Lazy timeout flip. Returns `Some(flipped)` for two cases:
+    ///
+    /// 1. **Pending row past `expires_at`** — the operator never resolved
+    ///    in time. Flips to `Done(TimedOut)`.
+    /// 2. **InFlight row past `resolved_at + IN_FLIGHT_GRACE_MS`** — the
+    ///    invoke either succeeded with a lost Done write (see finding #5)
+    ///    or wedged inside the function executor. Flips to
+    ///    `Done(TimedOut)` so an external reclaim path can drain the
+    ///    orphan into the LLM history instead of leaving a permanent
+    ///    "Awaiting human approval" placeholder. The grace is generous
+    ///    so that a legitimately slow invoke is not stolen.
+    ///
+    /// Done rows are already terminal and never touched.
     pub fn flipped_to_timed_out_if_expired(&self, now_ms: u64) -> Option<Record> {
-        if self.status == Status::Pending && now_ms >= self.expires_at {
-            Some(self.clone().done_at(now_ms, Outcome::TimedOut))
-        } else {
-            None
+        match self.status {
+            Status::Pending if now_ms >= self.expires_at => {
+                Some(self.clone().done_at(now_ms, Outcome::TimedOut))
+            }
+            Status::InFlight => {
+                let resolved_at = self.resolved_at?;
+                let reclaim_at = resolved_at.saturating_add(IN_FLIGHT_GRACE_MS);
+                if now_ms >= reclaim_at {
+                    Some(Record {
+                        status: Status::Done,
+                        outcome: Some(Outcome::TimedOut),
+                        ..self.clone()
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -170,7 +201,13 @@ mod tests {
     #[test]
     fn pending_expires_at_saturates_on_overflow() {
         let r = Record::pending(
-            "tc-1".into(), "f".into(), json!({}), "s".into(), u64::MAX - 5, 100);
+            "tc-1".into(),
+            "f".into(),
+            json!({}),
+            "s".into(),
+            u64::MAX - 5,
+            100,
+        );
         assert_eq!(r.expires_at, u64::MAX);
     }
 
@@ -189,7 +226,9 @@ mod tests {
     #[test]
     fn done_stamps_outcome_and_preserves_in_flight_resolved_at() {
         let i = pending_record().in_flight(2_000);
-        let d = i.clone().done(Outcome::Executed { result: json!({"ok": true}) });
+        let d = i.clone().done(Outcome::Executed {
+            result: json!({"ok": true}),
+        });
         assert_eq!(d.status, Status::Done);
         assert!(matches!(d.outcome, Some(Outcome::Executed { .. })));
         // resolved_at was set at InFlight time and must NOT be re-stamped on Done.
@@ -200,7 +239,12 @@ mod tests {
     fn done_directly_from_pending_stamps_resolved_at() {
         // Deny path skips InFlight; we still need a resolved_at for ordering.
         let p = pending_record();
-        let d = p.done_at(3_000, Outcome::Denied { denial: Denial::UserRejected });
+        let d = p.done_at(
+            3_000,
+            Outcome::Denied {
+                denial: Denial::UserRejected,
+            },
+        );
         assert_eq!(d.status, Status::Done);
         assert_eq!(d.resolved_at, Some(3_000));
     }
@@ -208,9 +252,15 @@ mod tests {
     #[test]
     fn outcome_round_trip_via_json() {
         for o in [
-            Outcome::Executed { result: json!({"x": 1}) },
-            Outcome::Failed   { error:  "boom".into() },
-            Outcome::Denied   { denial: Denial::UserRejected },
+            Outcome::Executed {
+                result: json!({"x": 1}),
+            },
+            Outcome::Failed {
+                error: "boom".into(),
+            },
+            Outcome::Denied {
+                denial: Denial::UserRejected,
+            },
             Outcome::TimedOut,
         ] {
             let v = serde_json::to_value(&o).unwrap();
@@ -231,9 +281,9 @@ mod tests {
 
     #[test]
     fn record_round_trip_done_carries_outcome_and_resolved_at() {
-        let r = pending_record()
-            .in_flight(2_000)
-            .done(Outcome::Executed { result: json!({"out": "hi"}) });
+        let r = pending_record().in_flight(2_000).done(Outcome::Executed {
+            result: json!({"out": "hi"}),
+        });
         let v = r.to_value();
         let back = Record::from_value(v).expect("deserialize");
         assert_eq!(back.status, Status::Done);
@@ -250,7 +300,8 @@ mod tests {
     #[test]
     fn flip_returns_done_timed_out_for_expired_pending() {
         let r = pending_record();
-        let flipped = r.flipped_to_timed_out_if_expired(70_000)
+        let flipped = r
+            .flipped_to_timed_out_if_expired(70_000)
             .expect("expired pending should flip");
         assert_eq!(flipped.status, Status::Done);
         assert!(matches!(flipped.outcome, Some(Outcome::TimedOut)));
@@ -258,10 +309,25 @@ mod tests {
     }
 
     #[test]
-    fn flip_does_not_touch_in_flight_rows() {
+    fn flip_does_not_touch_in_flight_rows_inside_grace_window() {
         let r = pending_record().in_flight(2_000);
-        assert!(r.flipped_to_timed_out_if_expired(70_000).is_none(),
-            "InFlight rows are owned by an in-progress invoke; lazy flip must not steal them");
+        assert!(
+            r.flipped_to_timed_out_if_expired(70_000).is_none(),
+            "InFlight rows inside the grace window are owned by an in-progress \
+             invoke; lazy flip must not steal them"
+        );
+    }
+
+    #[test]
+    fn flip_reclaims_in_flight_rows_past_grace_window() {
+        let r = pending_record().in_flight(2_000);
+        // Well past resolved_at + IN_FLIGHT_GRACE_MS — the invoke has
+        // either wedged or its Done write was lost (see finding #5).
+        let flipped = r
+            .flipped_to_timed_out_if_expired(u64::MAX)
+            .expect("stale InFlight row must reclaim past grace");
+        assert_eq!(flipped.status, Status::Done);
+        assert!(matches!(flipped.outcome, Some(Outcome::TimedOut)));
     }
 
     #[test]

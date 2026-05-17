@@ -9,9 +9,9 @@ mod common;
 
 use std::sync::{Arc, RwLock};
 
-use approval_gate::rules::Ruleset;
 use approval_gate::{
-    handle_consume, handle_intercept, handle_resolve, FunctionExecutor, IncomingCall, STATE_SCOPE,
+    handle_consume, handle_intercept, handle_resolve, FunctionExecutor, IncomingCall, LayeredRules,
+    STATE_SCOPE,
 };
 use common::InMemoryStateBus;
 use serde_json::{json, Value};
@@ -78,7 +78,7 @@ async fn approved_call_executes_real_shell_handler_and_consumes_result() {
     let exec = ShellExec {
         cfg: shell_cfg(&["echo"], &[]),
     };
-    let policy_rules = RwLock::new(Ruleset::new());
+    let policy_rules = RwLock::new(LayeredRules::default());
 
     let incoming = call(
         "sess-backend-ok",
@@ -89,7 +89,7 @@ async fn approved_call_executes_real_shell_handler_and_consumes_result() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess-backend-ok"),
         1_000,
         60_000,
     )
@@ -134,7 +134,7 @@ async fn approved_call_records_failed_outcome_when_shell_policy_rejects() {
     let exec = ShellExec {
         cfg: shell_cfg(&["echo"], &["^echo blocked"]),
     };
-    let policy_rules = RwLock::new(Ruleset::new());
+    let policy_rules = RwLock::new(LayeredRules::default());
 
     let incoming = call(
         "sess-backend-denied-by-shell",
@@ -145,7 +145,10 @@ async fn approved_call_records_failed_outcome_when_shell_policy_rejects() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules
+            .read()
+            .unwrap()
+            .snapshot_for("sess-backend-denied-by-shell"),
         1_000,
         60_000,
     )

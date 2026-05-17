@@ -22,21 +22,78 @@
 //! `verdict_for` returns `Allow` under the new rule are driven through
 //! `approve_and_execute`.
 
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 
-use crate::record::{Record, Status, Outcome};
-use crate::rules::{self, Action, Rule, Ruleset};
+use crate::record::{Outcome, Record, Status};
+use crate::rules::{self, Action, LayeredRules, Rule};
 use crate::state::{FunctionExecutor, StateBus};
 use crate::wire::{pending_key, Denial, WireDecision};
+
+/// Process-local per-key serialization for `approval::resolve`.
+///
+/// Closes finding #3: two concurrent `approval::resolve` calls for the
+/// same `(session_id, function_call_id)` could both observe `Pending`
+/// before either's `InFlight` write landed and both call the executor.
+/// `StateBus` has no compare-and-set primitive (the iii state backend
+/// supports only unconditional set), so we serialize the read-then-write
+/// inside the worker process using a per-key async mutex. Cross-process
+/// races (two workers consuming the same scope) remain — out of scope
+/// for the current single-worker deployment.
+fn resolve_key_lock(key: &str) -> Arc<AsyncMutex<()>> {
+    static GUARDS: OnceLock<std::sync::Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
+        OnceLock::new();
+    let map = GUARDS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = map.lock().expect("resolve key-lock map poisoned");
+    guard
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+/// Augment the original args with the orchestrator-style context fields.
+///
+/// Closes finding #7: the normal `function_execute` path in
+/// `turn-orchestrator/src/states/functions.rs` adds these keys before
+/// dispatching; the approval path used to forward bare args, so target
+/// handlers behaved differently after an operator approval than they did
+/// on the auto-allowed path. This helper keeps the two shapes identical.
+fn augment_args(args: &Value, session_id: &str, function_call_id: &str, function_id: &str) -> Value {
+    let mut augmented = match args.clone() {
+        Value::Object(o) => Value::Object(o),
+        other => json!({ "arguments": other }),
+    };
+    if let Some(obj) = augmented.as_object_mut() {
+        obj.insert("session_id".into(), json!(session_id));
+        obj.insert("function_call_id".into(), json!(function_call_id));
+        obj.insert("function_id".into(), json!(function_id));
+        obj.insert(
+            "function_call".into(),
+            json!({
+                "id": function_call_id,
+                "function_id": function_id,
+                "arguments": args,
+            }),
+        );
+    }
+    augmented
+}
 
 /// Lookup a single approval record by session + call id (for shell bypass
 /// validation). Stays on the old free-form Value shape so shell-side
 /// readers don't break — shell strip in T13 deletes the callsite there.
 pub async fn handle_lookup_record(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
-    let function_call_id = payload.get("function_call_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let function_call_id = payload
+        .get("function_call_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() || function_call_id.is_empty() {
         return Value::Null;
     }
@@ -52,11 +109,14 @@ pub async fn handle_resolve(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
-    policy_rules: &RwLock<Ruleset>,
+    policy_rules: &RwLock<LayeredRules>,
     payload: Value,
     now_ms: u64,
 ) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let function_call_id = payload
         .get("function_call_id")
         .or_else(|| payload.get("tool_call_id"))
@@ -75,6 +135,14 @@ pub async fn handle_resolve(
     };
 
     let key = pending_key(session_id, function_call_id);
+
+    // Atomic guard for finding #3: serialize concurrent resolves for the
+    // same key. The lock is released when this function returns; a
+    // racer that arrives during the invoke sees the InFlight/Done row
+    // and returns a typed error.
+    let key_lock = resolve_key_lock(&key);
+    let _key_guard = key_lock.lock().await;
+
     let Some(raw) = bus.get(state_scope, &key).await else {
         return json!({ "ok": false, "error": "not_found" });
     };
@@ -92,9 +160,9 @@ pub async fn handle_resolve(
     // Dup-exec guard: only Pending rows are resolvable. InFlight means a
     // concurrent resolve is still mid-invoke; Done means terminal.
     match record.status {
-        Status::Pending  => { /* fall through */ }
+        Status::Pending => { /* fall through */ }
         Status::InFlight => return json!({ "ok": false, "error": "in_flight" }),
-        Status::Done     => return json!({ "ok": false, "error": "already_resolved" }),
+        Status::Done => return json!({ "ok": false, "error": "already_resolved" }),
     }
 
     match decision {
@@ -121,8 +189,16 @@ pub async fn handle_resolve(
             let args = record.args.clone();
 
             if let Err(err) = approve_and_execute(
-                bus, exec, state_scope, record, session_id, function_call_id, now_ms,
-            ).await {
+                bus,
+                exec,
+                state_scope,
+                record,
+                session_id,
+                function_call_id,
+                now_ms,
+            )
+            .await
+            {
                 tracing::error!("approval-gate: failed to execute approved call: {err}");
                 return json!({ "ok": false, "error": "state_write_failed" });
             }
@@ -130,13 +206,23 @@ pub async fn handle_resolve(
             // Cascade on `always:true`. Push a runtime Allow rule with the
             // ORIGINATOR'S EXACT PATTERN (via pattern_for), then sweep the
             // session's other Pending rows.
-            let cascaded = if payload.get("always").and_then(Value::as_bool).unwrap_or(false) {
+            let cascaded = if payload
+                .get("always")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 cascade_allow_for_session(
-                    bus, exec, state_scope, policy_rules,
-                    session_id, function_call_id,
-                    &function_id, &args,
+                    bus,
+                    exec,
+                    state_scope,
+                    policy_rules,
+                    session_id,
+                    function_call_id,
+                    &function_id,
+                    &args,
                     now_ms,
-                ).await
+                )
+                .await
             } else {
                 0
             };
@@ -162,14 +248,16 @@ async fn cascade_allow_for_session(
     bus: &dyn StateBus,
     exec: &dyn FunctionExecutor,
     state_scope: &str,
-    policy_rules: &RwLock<Ruleset>,
+    policy_rules: &RwLock<LayeredRules>,
     session_id: &str,
     originator_call_id: &str,
     originator_function_id: &str,
     originator_args: &Value,
     now_ms: u64,
 ) -> u64 {
-    // 1. Push the exact-pattern Allow rule under the write lock.
+    // 1. Push the exact-pattern Allow rule into THIS SESSION's overlay
+    //    (finding #2). The rule must not leak into other sessions — the
+    //    UI tooltip on `allow + always` promises session-local scope.
     //    pattern_for is the same extractor used at intercept time, so
     //    "always allow git status" means literally that argv shape — NOT
     //    a blanket "*" pattern that would auto-allow rm -rf /.
@@ -178,11 +266,14 @@ async fn cascade_allow_for_session(
         let mut guard = policy_rules
             .write()
             .expect("approval-gate policy rules lock poisoned");
-        guard.push(Rule {
-            permission: originator_function_id.to_string(),
-            pattern: pushed_pattern,
-            action: Action::Allow,
-        });
+        guard.push_session_rule(
+            session_id,
+            Rule {
+                permission: originator_function_id.to_string(),
+                pattern: pushed_pattern,
+                action: Action::Allow,
+            },
+        );
     }
 
     // 2. Snapshot the session's pending rows.
@@ -191,17 +282,27 @@ async fn cascade_allow_for_session(
 
     let mut cascaded = 0u64;
     for raw in session_rows {
-        let Some(record) = Record::from_value(raw) else { continue };
-        if record.session_id != session_id { continue; }                  // defensive
-        if record.function_call_id == originator_call_id { continue; }    // skip originator
-        if record.status != Status::Pending { continue; }                 // skip non-pending
+        let Some(record) = Record::from_value(raw) else {
+            continue;
+        };
+        if record.session_id != session_id {
+            continue;
+        } // defensive
+        if record.function_call_id == originator_call_id {
+            continue;
+        } // skip originator
+        if record.status != Status::Pending {
+            continue;
+        } // skip non-pending
 
-        // 3. Re-evaluate against the updated ruleset.
+        // 3. Re-evaluate against the per-session snapshot (includes the
+        //    just-pushed Allow rule for THIS session only).
         let verdict = {
             let guard = policy_rules
                 .read()
                 .expect("approval-gate policy rules lock poisoned");
-            crate::verdict_for(&record.function_id, &record.args, &guard)
+            let snapshot = guard.snapshot_for(session_id);
+            crate::verdict_for(&record.function_id, &record.args, &snapshot)
         };
         if !matches!(verdict, crate::Verdict::Allow) {
             continue;
@@ -210,9 +311,9 @@ async fn cascade_allow_for_session(
         // 4. Drive through the same approve_and_execute path as the
         //    user-driven allow (InFlight → invoke → Done).
         let cid = record.function_call_id.clone();
-        if let Err(err) = approve_and_execute(
-            bus, exec, state_scope, record, session_id, &cid, now_ms,
-        ).await {
+        if let Err(err) =
+            approve_and_execute(bus, exec, state_scope, record, session_id, &cid, now_ms).await
+        {
             tracing::warn!(
                 session_id, call_id = %cid,
                 "approval-gate: cascade auto-resolve failed: {err}",
@@ -250,9 +351,11 @@ pub(crate) async fn approve_and_execute(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Phase 2: invoke. Result/error captured on the record below.
+    // Phase 2: invoke. Augment args so the target sees the same shape
+    // it would on the normal `function_execute` path (finding #7).
+    let augmented = augment_args(&args, session_id, function_call_id, &function_id);
     let outcome = match exec
-        .invoke(&function_id, args, function_call_id, session_id)
+        .invoke(&function_id, augmented, function_call_id, session_id)
         .await
     {
         Ok(result) => Outcome::Executed { result },

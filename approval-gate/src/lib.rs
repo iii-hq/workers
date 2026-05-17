@@ -17,14 +17,16 @@ pub mod wire;
 
 pub use config::WorkerConfig;
 pub use delivery::{
-    handle_consume, handle_list_pending, handle_sweep_session, CONSUME_DEFAULT_LIMIT,
+    handle_consume, handle_list_pending, handle_sweep_session, handle_tick_timeouts,
+    CONSUME_DEFAULT_LIMIT,
 };
 pub use intercept::handle_intercept;
-pub use record::{Outcome, Record, Status};
+pub use record::{Outcome, Record, Status, IN_FLIGHT_GRACE_MS};
 pub use register::{
     register, Refs, FN_CONSUME, FN_LIST_PENDING, FN_LOOKUP_RECORD, FN_RESOLVE, FN_SWEEP_SESSION,
-    STATE_SCOPE,
+    FN_TICK_TIMEOUTS, STATE_SCOPE,
 };
+pub use rules::LayeredRules;
 pub use resolve::{handle_lookup_record, handle_resolve};
 pub use state::{FunctionExecutor, IiiFunctionExecutor, IiiStateBus, StateBus};
 pub use wire::{
@@ -60,4 +62,3 @@ pub(crate) fn verdict_for(
         None => Verdict::Ask,
     }
 }
-

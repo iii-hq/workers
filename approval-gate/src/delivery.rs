@@ -28,7 +28,10 @@ pub const CONSUME_DEFAULT_LIMIT: usize = 50;
 /// expired Pending rows are persisted as `Done(TimedOut)` and dropped
 /// from the response.
 pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "pending": [] });
     }
@@ -42,9 +45,13 @@ pub async fn handle_list_pending(bus: &dyn StateBus, state_scope: &str, payload:
 
     let mut pending = Vec::new();
     for raw in rows {
-        let Some(record) = Record::from_value(raw) else { continue };
-        if record.session_id != session_id { continue; }   // defensive
-        // Lazy flip + persist; expired rows leave the Pending list.
+        let Some(record) = Record::from_value(raw) else {
+            continue;
+        };
+        if record.session_id != session_id {
+            continue;
+        } // defensive
+          // Lazy flip + persist; expired rows leave the Pending list.
         if let Some(flipped) = record.flipped_to_timed_out_if_expired(now_ms) {
             let key = pending_key(session_id, &flipped.function_call_id);
             let _ = bus.set(state_scope, &key, flipped.to_value()).await;
@@ -76,7 +83,10 @@ pub async fn handle_consume(
     payload: Value,
     now_ms: u64,
 ) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id" });
     }
@@ -92,18 +102,26 @@ pub async fn handle_consume(
     // Phase 1: gather Done candidates without mutating state.
     let mut candidates: Vec<Record> = Vec::new();
     for raw in rows {
-        let Some(record) = Record::from_value(raw) else { continue };
+        let Some(record) = Record::from_value(raw) else {
+            continue;
+        };
         // Defensive session_id filter: some state-bus backends ignore the
         // prefix arg and return every row in the scope. Drop anything not
         // stamped with the session_id we're consuming for — otherwise a
         // faulty backend could cross-session delete.
-        if record.session_id != session_id { continue; }
+        if record.session_id != session_id {
+            continue;
+        }
         // Lazy flip (Pending → Done(TimedOut)). No persist needed — we're
         // about to delete this row.
-        let record = record.flipped_to_timed_out_if_expired(now_ms).unwrap_or(record);
+        let record = record
+            .flipped_to_timed_out_if_expired(now_ms)
+            .unwrap_or(record);
         // Only drain Done. Pending (awaiting operator) and InFlight
         // (invoke in progress) stay in state.
-        if record.status != Status::Done { continue; }
+        if record.status != Status::Done {
+            continue;
+        }
         candidates.push(record);
     }
 
@@ -114,14 +132,71 @@ pub async fn handle_consume(
     candidates.truncate(limit);
 
     // Phase 3: delete-and-return.
+    //
+    // `delete` now returns whether the key actually existed: only the
+    // caller whose delete removed the row is allowed to emit the entry.
+    // A concurrent consume that listed the same row before we deleted
+    // it will see `Ok(false)` from its own delete and skip the entry —
+    // closing finding #6 (the duplicate-stitch race).
     let mut entries: Vec<Value> = Vec::with_capacity(candidates.len());
     for record in candidates {
         let key = pending_key(session_id, &record.function_call_id);
-        if bus.delete(state_scope, &key).await.is_ok() {
-            entries.push(record.to_value());
+        match bus.delete(state_scope, &key).await {
+            Ok(true) => entries.push(record.to_value()),
+            Ok(false) => {
+                // Another consume already drained this row; skip.
+            }
+            Err(e) => tracing::warn!(error = %e, key, "approval-gate: consume delete failed"),
         }
     }
     json!({ "ok": true, "entries": entries, "omitted": omitted })
+}
+
+/// Watchdog tick (finding #4). Walk every row across the scope and:
+///   - flip expired `Pending` rows to `Done(TimedOut)`,
+///   - flip stale `InFlight` rows (past the grace window) to `Done(TimedOut)`,
+///   - return the unique set of `session_id`s touched so the caller
+///     (`register.rs`) can wake them via `run::resume`.
+///
+/// Without this surface the orchestrator never learns that a Pending row
+/// timed out — the LLM's `pending_approval` placeholder stays in the
+/// transcript forever. An optional `scope_prefix` payload key narrows
+/// the walk to one session for targeted ticks.
+pub async fn handle_tick_timeouts(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+    now_ms: u64,
+) -> Value {
+    let prefix = payload
+        .get("scope_prefix")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let rows = bus.list_prefix(state_scope, prefix).await;
+
+    let mut reclaimed = 0u64;
+    let mut sessions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for raw in rows {
+        let Some(record) = Record::from_value(raw) else {
+            continue;
+        };
+        if let Some(flipped) = record.flipped_to_timed_out_if_expired(now_ms) {
+            let key = pending_key(&flipped.session_id, &flipped.function_call_id);
+            if bus
+                .set(state_scope, &key, flipped.to_value())
+                .await
+                .is_ok()
+            {
+                reclaimed += 1;
+                sessions.insert(flipped.session_id);
+            }
+        }
+    }
+    json!({
+        "ok": true,
+        "reclaimed": reclaimed,
+        "sessions_woken": sessions.into_iter().collect::<Vec<_>>(),
+    })
 }
 
 /// Force-cancel every non-terminal row in a session by flipping it to
@@ -129,12 +204,11 @@ pub async fn handle_consume(
 /// still execute its function after the operator clicks Stop. Lazy
 /// timeout is not a substitute — default `expires_at` is 5 min and we
 /// cannot leave a 5-min stale-modal window after Stop.
-pub async fn handle_sweep_session(
-    bus: &dyn StateBus,
-    state_scope: &str,
-    payload: Value,
-) -> Value {
-    let session_id = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id", "swept": 0 });
     }
@@ -148,13 +222,23 @@ pub async fn handle_sweep_session(
     let mut swept = 0u64;
 
     for raw in rows {
-        let Some(record) = Record::from_value(raw) else { continue };
-        if record.session_id != session_id { continue; }       // defensive
-        if record.status == Status::Done { continue; }         // already terminal
+        let Some(record) = Record::from_value(raw) else {
+            continue;
+        };
+        if record.session_id != session_id {
+            continue;
+        } // defensive
+        if record.status == Status::Done {
+            continue;
+        } // already terminal
 
         let key = pending_key(session_id, &record.function_call_id);
         let timed_out = record.done_at(now_ms, Outcome::TimedOut);
-        if bus.set(state_scope, &key, timed_out.to_value()).await.is_ok() {
+        if bus
+            .set(state_scope, &key, timed_out.to_value())
+            .await
+            .is_ok()
+        {
             swept += 1;
         }
     }
@@ -175,39 +259,69 @@ mod tests {
     #[async_trait::async_trait]
     impl StateBus for InMemBus {
         async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
-            self.rows.lock().unwrap().insert((scope.into(), key.into()), value);
+            self.rows
+                .lock()
+                .unwrap()
+                .insert((scope.into(), key.into()), value);
             Ok(())
         }
         async fn get(&self, scope: &str, key: &str) -> Option<Value> {
-            self.rows.lock().unwrap().get(&(scope.into(), key.into())).cloned()
+            self.rows
+                .lock()
+                .unwrap()
+                .get(&(scope.into(), key.into()))
+                .cloned()
         }
         async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
-            self.rows.lock().unwrap()
+            self.rows
+                .lock()
+                .unwrap()
                 .iter()
                 .filter(|((s, k), _)| s == scope && k.starts_with(prefix))
                 .map(|(_, v)| v.clone())
                 .collect()
         }
-        async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
-            self.rows.lock().unwrap().remove(&(scope.into(), key.into()));
-            Ok(())
+        async fn delete(&self, scope: &str, key: &str) -> Result<bool, iii_sdk::IIIError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .remove(&(scope.into(), key.into()))
+                .is_some())
         }
     }
 
     async fn seed_done(bus: &InMemBus, session: &str, cid: &str, resolved_at: u64) {
         let r = Record::pending(
-            cid.into(), "shell::exec".into(),
-            json!({"command": "ls"}), session.into(), 0, 60_000,
-        ).in_flight(resolved_at).done(Outcome::Executed { result: json!({"cid": cid}) });
-        bus.set("approvals", &format!("{session}/{cid}"), r.to_value()).await.unwrap();
+            cid.into(),
+            "shell::exec".into(),
+            json!({"command": "ls"}),
+            session.into(),
+            0,
+            60_000,
+        )
+        .in_flight(resolved_at)
+        .done(Outcome::Executed {
+            result: json!({"cid": cid}),
+        });
+        bus.set("approvals", &format!("{session}/{cid}"), r.to_value())
+            .await
+            .unwrap();
     }
 
     async fn seed_pending(bus: &InMemBus, session: &str, cid: &str, expires_at: u64) {
         let mut r = Record::pending(
-            cid.into(), "shell::exec".into(),
-            json!({}), session.into(), 0, 60_000);
+            cid.into(),
+            "shell::exec".into(),
+            json!({}),
+            session.into(),
+            0,
+            60_000,
+        );
         r.expires_at = expires_at;
-        bus.set("approvals", &format!("{session}/{cid}"), r.to_value()).await.unwrap();
+        bus.set("approvals", &format!("{session}/{cid}"), r.to_value())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -215,8 +329,7 @@ mod tests {
         let bus = InMemBus::default();
         seed_done(&bus, "sess_a", "tc-1", 100).await;
         seed_done(&bus, "sess_a", "tc-2", 200).await;
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a"}), 1_000).await;
+        let reply = handle_consume(&bus, "approvals", json!({"session_id": "sess_a"}), 1_000).await;
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["omitted"], 0);
         let entries = reply["entries"].as_array().unwrap();
@@ -230,8 +343,7 @@ mod tests {
         let bus = InMemBus::default();
         seed_done(&bus, "sess_a", "tc-1", 100).await;
         seed_pending(&bus, "sess_a", "tc-2", 999_999).await;
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a"}), 1_000).await;
+        let reply = handle_consume(&bus, "approvals", json!({"session_id": "sess_a"}), 1_000).await;
         let entries = reply["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert!(bus.get("approvals", "sess_a/tc-2").await.is_some());
@@ -241,8 +353,7 @@ mod tests {
     async fn consume_lazy_flips_expired_pending_then_returns_and_deletes() {
         let bus = InMemBus::default();
         seed_pending(&bus, "sess_a", "tc-1", 500).await;
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a"}), 1_000).await;
+        let reply = handle_consume(&bus, "approvals", json!({"session_id": "sess_a"}), 1_000).await;
         let entries = reply["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["status"], "done");
@@ -256,8 +367,7 @@ mod tests {
         seed_done(&bus, "sess_a", "tc-z-late", 300).await;
         seed_done(&bus, "sess_a", "tc-a-early", 100).await;
         seed_done(&bus, "sess_a", "tc-m-mid", 200).await;
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a"}), 1_000).await;
+        let reply = handle_consume(&bus, "approvals", json!({"session_id": "sess_a"}), 1_000).await;
         let entries = reply["entries"].as_array().unwrap();
         assert_eq!(entries[0]["function_call_id"], "tc-a-early");
         assert_eq!(entries[1]["function_call_id"], "tc-m-mid");
@@ -270,8 +380,13 @@ mod tests {
         for i in 0..60 {
             seed_done(&bus, "sess_a", &format!("tc-{i:02}"), i as u64).await;
         }
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a", "limit": 50}), 1_000).await;
+        let reply = handle_consume(
+            &bus,
+            "approvals",
+            json!({"session_id": "sess_a", "limit": 50}),
+            1_000,
+        )
+        .await;
         let entries = reply["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 50);
         assert_eq!(reply["omitted"], 10);
@@ -291,41 +406,71 @@ mod tests {
     async fn consume_defensive_session_id_filter_drops_foreign_rows() {
         let bus = InMemBus::default();
         let r = Record::pending(
-            "tc-x".into(), "shell::exec".into(), json!({}),
-            "sess_b".into(),  // WRONG session in data
-            0, 60_000,
-        ).in_flight(100).done(Outcome::Executed { result: json!({}) });
-        bus.set("approvals", "sess_a/tc-x", r.to_value()).await.unwrap();
+            "tc-x".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_b".into(), // WRONG session in data
+            0,
+            60_000,
+        )
+        .in_flight(100)
+        .done(Outcome::Executed { result: json!({}) });
+        bus.set("approvals", "sess_a/tc-x", r.to_value())
+            .await
+            .unwrap();
 
-        let reply = handle_consume(&bus, "approvals",
-            json!({"session_id": "sess_a"}), 1_000).await;
+        let reply = handle_consume(&bus, "approvals", json!({"session_id": "sess_a"}), 1_000).await;
         let entries = reply["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 0);
-        assert!(bus.get("approvals", "sess_a/tc-x").await.is_some(),
-            "defensive: row stays in state, NOT deleted");
+        assert!(
+            bus.get("approvals", "sess_a/tc-x").await.is_some(),
+            "defensive: row stays in state, NOT deleted"
+        );
     }
 
     #[tokio::test]
     async fn sweep_flips_pending_and_done_untouched() {
         let bus = InMemBus::default();
         let pending = Record::pending(
-            "tc-1".into(), "shell::exec".into(), json!({}),
-            "sess_a".into(), 0, 60_000);
-        bus.set("approvals", "sess_a/tc-1", pending.to_value()).await.unwrap();
+            "tc-1".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_a".into(),
+            0,
+            60_000,
+        );
+        bus.set("approvals", "sess_a/tc-1", pending.to_value())
+            .await
+            .unwrap();
 
         let in_flight = Record::pending(
-            "tc-2".into(), "shell::exec".into(), json!({}),
-            "sess_a".into(), 0, 60_000).in_flight(500);
-        bus.set("approvals", "sess_a/tc-2", in_flight.to_value()).await.unwrap();
+            "tc-2".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_a".into(),
+            0,
+            60_000,
+        )
+        .in_flight(500);
+        bus.set("approvals", "sess_a/tc-2", in_flight.to_value())
+            .await
+            .unwrap();
 
         let done = Record::pending(
-            "tc-3".into(), "shell::exec".into(), json!({}),
-            "sess_a".into(), 0, 60_000)
-            .in_flight(100).done(Outcome::Executed { result: json!({}) });
-        bus.set("approvals", "sess_a/tc-3", done.to_value()).await.unwrap();
+            "tc-3".into(),
+            "shell::exec".into(),
+            json!({}),
+            "sess_a".into(),
+            0,
+            60_000,
+        )
+        .in_flight(100)
+        .done(Outcome::Executed { result: json!({}) });
+        bus.set("approvals", "sess_a/tc-3", done.to_value())
+            .await
+            .unwrap();
 
-        let reply = handle_sweep_session(&bus, "approvals",
-            json!({"session_id": "sess_a"})).await;
+        let reply = handle_sweep_session(&bus, "approvals", json!({"session_id": "sess_a"})).await;
         assert_eq!(reply["swept"], 2);
 
         let r1 = Record::from_value(bus.get("approvals", "sess_a/tc-1").await.unwrap()).unwrap();
@@ -333,8 +478,10 @@ mod tests {
         let r2 = Record::from_value(bus.get("approvals", "sess_a/tc-2").await.unwrap()).unwrap();
         assert!(matches!(r2.outcome, Some(Outcome::TimedOut)));
         let r3 = Record::from_value(bus.get("approvals", "sess_a/tc-3").await.unwrap()).unwrap();
-        assert!(matches!(r3.outcome, Some(Outcome::Executed { .. })),
-            "already-Done rows must not be re-stamped");
+        assert!(
+            matches!(r3.outcome, Some(Outcome::Executed { .. })),
+            "already-Done rows must not be re-stamped"
+        );
     }
 
     #[tokio::test]
@@ -342,20 +489,20 @@ mod tests {
         let bus = InMemBus::default();
         // tc-live: expires far in the future (year ~5138). tc-expired:
         // expires near epoch — definitely past now.
-        seed_pending(&bus, "sess_a", "tc-live",    u64::MAX).await;
+        seed_pending(&bus, "sess_a", "tc-live", u64::MAX).await;
         seed_pending(&bus, "sess_a", "tc-expired", 500).await;
         // Advance the system clock indirectly: just trust the inline now_ms
         // in handle_list_pending. expires_at=500 < now_ms, so it should flip.
         // Wait briefly to ensure SystemTime::now() > 500ms since UNIX_EPOCH
         // (it's well past 1970, so any current time satisfies this).
-        let reply = handle_list_pending(&bus, "approvals",
-            json!({"session_id": "sess_a"})).await;
+        let reply = handle_list_pending(&bus, "approvals", json!({"session_id": "sess_a"})).await;
         let pending = reply["pending"].as_array().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["function_call_id"], "tc-live");
 
         // Expired row is now persisted as Done(TimedOut).
-        let r = Record::from_value(bus.get("approvals", "sess_a/tc-expired").await.unwrap()).unwrap();
+        let r =
+            Record::from_value(bus.get("approvals", "sess_a/tc-expired").await.unwrap()).unwrap();
         assert!(matches!(r.outcome, Some(Outcome::TimedOut)));
     }
 }

@@ -92,12 +92,13 @@ impl StateBus for InMemoryStateBus {
             .map(|(_, v)| v.clone())
             .collect()
     }
-    async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
-        self.store
+    async fn delete(&self, scope: &str, key: &str) -> Result<bool, iii_sdk::IIIError> {
+        Ok(self
+            .store
             .lock()
             .unwrap()
-            .remove(&format!("{scope}/{key}"));
-        Ok(())
+            .remove(&format!("{scope}/{key}"))
+            .is_some())
     }
 }
 
@@ -107,12 +108,7 @@ pub struct FailingStateBus;
 
 #[async_trait::async_trait]
 impl StateBus for FailingStateBus {
-    async fn set(
-        &self,
-        _scope: &str,
-        _key: &str,
-        _value: Value,
-    ) -> Result<(), iii_sdk::IIIError> {
+    async fn set(&self, _scope: &str, _key: &str, _value: Value) -> Result<(), iii_sdk::IIIError> {
         Err(iii_sdk::IIIError::Runtime("kv unreachable".into()))
     }
     async fn get(&self, _scope: &str, _key: &str) -> Option<Value> {
@@ -121,7 +117,7 @@ impl StateBus for FailingStateBus {
     async fn list_prefix(&self, _scope: &str, _prefix: &str) -> Vec<Value> {
         Vec::new()
     }
-    async fn delete(&self, _scope: &str, _key: &str) -> Result<(), iii_sdk::IIIError> {
+    async fn delete(&self, _scope: &str, _key: &str) -> Result<bool, iii_sdk::IIIError> {
         Err(iii_sdk::IIIError::Runtime("kv unreachable".into()))
     }
 }

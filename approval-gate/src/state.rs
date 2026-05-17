@@ -22,9 +22,12 @@ pub trait StateBus: Send + Sync {
     async fn get(&self, scope: &str, key: &str) -> Option<Value>;
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
     /// Remove a key. Required by `approval::consume`, which returns Done
-    /// rows and deletes them in the same call. Idempotent (deleting a
-    /// missing key returns Ok).
-    async fn delete(&self, scope: &str, key: &str) -> Result<(), IIIError>;
+    /// rows and deletes them in the same call. Returns `Ok(true)` if the
+    /// key existed and was removed, `Ok(false)` if it was already gone.
+    /// Callers (notably `handle_consume`) treat `Ok(false)` as "another
+    /// consume already drained this row" and skip emitting the entry —
+    /// this is what makes concurrent consumes non-duplicating.
+    async fn delete(&self, scope: &str, key: &str) -> Result<bool, IIIError>;
 }
 
 /// Invokes an iii function with arguments and returns its result or an
@@ -119,7 +122,15 @@ impl StateBus for IiiStateBus {
             .map(|entry| entry.get("value").cloned().unwrap_or(entry))
             .collect()
     }
-    async fn delete(&self, scope: &str, key: &str) -> Result<(), IIIError> {
+    async fn delete(&self, scope: &str, key: &str) -> Result<bool, IIIError> {
+        // The iii engine's `state::delete` returns the same shape whether
+        // or not the key existed, so we read first to learn existence.
+        // For the cross-process race the gate cannot close anyway (two
+        // workers consuming the same scope) this is best-effort; within
+        // a single worker process the per-key serialization performed by
+        // the engine still gives us "exactly one true" across concurrent
+        // delete calls.
+        let existed = self.get(scope, key).await.is_some();
         self.0
             .trigger(TriggerRequest {
                 function_id: "state::delete".into(),
@@ -128,7 +139,6 @@ impl StateBus for IiiStateBus {
                 timeout_ms: None,
             })
             .await
-            .map(|_| ())
+            .map(|_| existed)
     }
 }
-

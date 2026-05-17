@@ -14,9 +14,10 @@
 mod common;
 
 use approval_gate::record::{Record, Status};
-use approval_gate::rules::{Action, Rule, Ruleset};
+use approval_gate::rules::{Action, Rule};
 use approval_gate::{
-    handle_consume, handle_intercept, handle_resolve, IncomingCall, StateBus, STATE_SCOPE,
+    handle_consume, handle_intercept, handle_resolve, IncomingCall, LayeredRules, StateBus,
+    STATE_SCOPE,
 };
 use common::{FakeExecutor, InMemoryStateBus};
 use serde_json::{json, Value};
@@ -34,8 +35,8 @@ fn call(session: &str, cid: &str, fn_id: &str, args: Value) -> IncomingCall {
     }
 }
 
-fn ruleset_with(rules: Vec<Rule>) -> Arc<RwLock<Ruleset>> {
-    Arc::new(RwLock::new(rules))
+fn ruleset_with(rules: Vec<Rule>) -> Arc<RwLock<LayeredRules>> {
+    Arc::new(RwLock::new(LayeredRules::from_global(rules)))
 }
 
 #[tokio::test]
@@ -57,7 +58,7 @@ async fn allow_path_end_to_end() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess_allow"),
         1_000,
         60_000,
     )
@@ -119,7 +120,7 @@ async fn deny_path_with_user_corrected_feedback_end_to_end() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess_deny"),
         1_000,
         60_000,
     )
@@ -179,7 +180,7 @@ async fn timeout_path_lazy_flips_on_consume_end_to_end() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess_timeout"),
         1_000, // now_ms
         1,     // timeout_ms → expires_at = 1_001
     )
@@ -223,7 +224,7 @@ async fn cascade_path_end_to_end() {
             &bus,
             STATE_SCOPE,
             &incoming,
-            &policy_rules.read().unwrap(),
+            &policy_rules.read().unwrap().snapshot_for("sess_cascade"),
             1_000,
             60_000,
         )
@@ -239,7 +240,7 @@ async fn cascade_path_end_to_end() {
         &bus,
         STATE_SCOPE,
         &different,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess_cascade"),
         1_000,
         60_000,
     )
@@ -277,14 +278,25 @@ async fn cascade_path_end_to_end() {
         assert_eq!(e["outcome"]["kind"], "executed");
     }
 
-    // Ruleset gained the runtime Allow rule with the exact pattern.
+    // Ruleset gained the runtime Allow rule with the exact pattern,
+    // pushed into THIS SESSION's overlay only (finding #2).
     let rs = policy_rules.read().unwrap();
-    let pushed = rs.last().expect("cascade must push a rule");
+    let session_overlay = rs
+        .per_session
+        .get("sess_cascade")
+        .expect("cascade must push a session-scoped rule");
+    let pushed = session_overlay
+        .last()
+        .expect("cascade must push exactly one rule");
     assert_eq!(pushed.action, Action::Allow);
     assert_eq!(pushed.permission, "shell::exec");
     assert_eq!(
         pushed.pattern, "echo go",
         "exact-pattern push (NOT blanket '*') — 'always allow echo go' does not grant rm -rf /",
+    );
+    assert!(
+        rs.global.is_empty(),
+        "global ruleset must stay untouched by the cascade",
     );
 
     let leftover = bus.list_prefix(STATE_SCOPE, "sess_cascade/").await;
@@ -315,7 +327,7 @@ async fn allow_rule_short_circuits_with_no_state_write() {
         &bus,
         STATE_SCOPE,
         &incoming,
-        &policy_rules.read().unwrap(),
+        &policy_rules.read().unwrap().snapshot_for("sess_pass"),
         1_000,
         60_000,
     )

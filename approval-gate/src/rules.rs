@@ -66,6 +66,57 @@ pub struct Rule {
 /// layers wins.
 pub type Ruleset = Vec<Rule>;
 
+/// Workspace-global rules + an overlay of per-session rules.
+///
+/// This is the runtime policy container the gate carries between intercept
+/// and resolve. The `global` ruleset is the operator-configured baseline
+/// (loaded from YAML) and applies to every session. The `per_session` map
+/// holds short-lived rules pushed at runtime — today the only producer is
+/// the `allow + always` cascade in `resolve::handle_resolve`, which scopes
+/// the auto-allow to the originating session_id so a click in one chat
+/// cannot silently bypass approval prompts in another.
+///
+/// Snapshots taken via [`LayeredRules::snapshot_for`] are flat `Ruleset`s
+/// so existing pure helpers ([`evaluate`], [`crate::verdict_for`]) need no
+/// changes to consume them.
+#[derive(Debug, Clone, Default)]
+pub struct LayeredRules {
+    pub global: Ruleset,
+    pub per_session: std::collections::HashMap<String, Ruleset>,
+}
+
+impl LayeredRules {
+    /// Construct a [`LayeredRules`] from a global ruleset only. Used at
+    /// worker startup when YAML config is the only source of rules.
+    pub fn from_global(global: Ruleset) -> Self {
+        Self {
+            global,
+            per_session: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Build the flat ruleset that applies to `session_id`: the global
+    /// rules followed by the session's overlay (last-match-wins, so the
+    /// overlay can override the global). Sessions with no overlay see
+    /// only `global`.
+    pub fn snapshot_for(&self, session_id: &str) -> Ruleset {
+        let mut out = self.global.clone();
+        if let Some(extra) = self.per_session.get(session_id) {
+            out.extend(extra.iter().cloned());
+        }
+        out
+    }
+
+    /// Append a rule to the per-session overlay. The rule applies ONLY
+    /// to that session — calls in other sessions will not see it.
+    pub fn push_session_rule(&mut self, session_id: &str, rule: Rule) {
+        self.per_session
+            .entry(session_id.to_string())
+            .or_default()
+            .push(rule);
+    }
+}
+
 /// True if `text` matches the wildcard `pattern`. Supports `*` (zero or
 /// more of any character) and literal text. Tiny on purpose — operators
 /// should be able to read a rule and know what it matches without a regex
@@ -116,7 +167,9 @@ where
 {
     rules
         .into_iter()
-        .filter(|r| wildcard_match(&r.permission, permission) && wildcard_match(&r.pattern, pattern))
+        .filter(|r| {
+            wildcard_match(&r.permission, permission) && wildcard_match(&r.pattern, pattern)
+        })
         .last()
 }
 
@@ -253,12 +306,7 @@ mod tests {
         // (passed last) overrides global.
         let global: Ruleset = vec![r("*", "*", Action::Allow)];
         let session: Ruleset = vec![r("shell::exec", "*", Action::Deny)];
-        let m = evaluate(
-            "shell::exec",
-            "*",
-            global.iter().chain(session.iter()),
-        )
-        .expect("match");
+        let m = evaluate("shell::exec", "*", global.iter().chain(session.iter())).expect("match");
         assert_eq!(m.action, Action::Deny);
 
         // For a permission only matched by global, global still wins.
@@ -314,14 +362,19 @@ mod tests {
 
     #[test]
     fn pattern_for_shell_exec_joins_command_with_args() {
-        let pat = pattern_for("shell::exec", &json!({"command": "git", "args": ["status"]}));
+        let pat = pattern_for(
+            "shell::exec",
+            &json!({"command": "git", "args": ["status"]}),
+        );
         assert_eq!(pat, "git status");
     }
 
     #[test]
     fn pattern_for_shell_exec_bg_joins_command_with_args() {
-        let pat = pattern_for("shell::exec_bg",
-            &json!({"command": "tail", "args": ["-f", "/var/log/x"]}));
+        let pat = pattern_for(
+            "shell::exec_bg",
+            &json!({"command": "tail", "args": ["-f", "/var/log/x"]}),
+        );
         assert_eq!(pat, "tail -f /var/log/x");
     }
 
@@ -361,11 +414,17 @@ mod tests {
     fn pattern_for_known_conflation_documented() {
         // Documented in spec: an arg containing a space conflates with two
         // separate args. This is acceptable for v1.
-        let with_inner_space = pattern_for("shell::exec",
-            &json!({"command": "git", "args": ["log", "--grep=foo bar"]}));
-        let split_args = pattern_for("shell::exec",
-            &json!({"command": "git", "args": ["log", "--grep=foo", "bar"]}));
-        assert_eq!(with_inner_space, split_args,
-            "v1 conflates space-in-arg with arg boundary; see spec");
+        let with_inner_space = pattern_for(
+            "shell::exec",
+            &json!({"command": "git", "args": ["log", "--grep=foo bar"]}),
+        );
+        let split_args = pattern_for(
+            "shell::exec",
+            &json!({"command": "git", "args": ["log", "--grep=foo", "bar"]}),
+        );
+        assert_eq!(
+            with_inner_space, split_args,
+            "v1 conflates space-in-arg with arg boundary; see spec"
+        );
     }
 }

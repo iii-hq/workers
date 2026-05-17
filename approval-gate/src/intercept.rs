@@ -151,12 +151,13 @@ mod tests {
                 .map(|(_, v)| v.clone())
                 .collect()
         }
-        async fn delete(&self, scope: &str, key: &str) -> Result<(), iii_sdk::IIIError> {
-            self.rows
+        async fn delete(&self, scope: &str, key: &str) -> Result<bool, iii_sdk::IIIError> {
+            Ok(self
+                .rows
                 .lock()
                 .unwrap()
-                .remove(&(scope.into(), key.into()));
-            Ok(())
+                .remove(&(scope.into(), key.into()))
+                .is_some())
         }
     }
 
@@ -336,8 +337,8 @@ mod tests {
             async fn list_prefix(&self, _: &str, _: &str) -> Vec<Value> {
                 Vec::new()
             }
-            async fn delete(&self, _: &str, _: &str) -> Result<(), iii_sdk::IIIError> {
-                Ok(())
+            async fn delete(&self, _: &str, _: &str) -> Result<bool, iii_sdk::IIIError> {
+                Ok(false)
             }
         }
         let rs: Ruleset = vec![];

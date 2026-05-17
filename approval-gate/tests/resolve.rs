@@ -7,8 +7,7 @@ mod common;
 use std::sync::{Mutex, RwLock};
 
 use approval_gate::record::{Outcome, Record, Status};
-use approval_gate::rules::Ruleset;
-use approval_gate::{handle_resolve, pending_key, StateBus, STATE_SCOPE};
+use approval_gate::{handle_resolve, pending_key, LayeredRules, StateBus, STATE_SCOPE};
 use common::{FakeExecutor, InMemoryStateBus};
 use serde_json::{json, Value};
 
@@ -28,8 +27,8 @@ async fn seed(bus: &InMemoryStateBus, record: Record) {
     bus.set(STATE_SCOPE, &key, record.to_value()).await.unwrap();
 }
 
-fn empty_rules() -> RwLock<Ruleset> {
-    RwLock::new(Vec::new())
+fn empty_rules() -> RwLock<LayeredRules> {
+    RwLock::new(LayeredRules::default())
 }
 
 #[tokio::test]
@@ -207,8 +206,8 @@ impl StateBus for ReturningFailSetBus {
         Vec::new()
     }
 
-    async fn delete(&self, _: &str, _: &str) -> Result<(), iii_sdk::IIIError> {
-        Ok(())
+    async fn delete(&self, _: &str, _: &str) -> Result<bool, iii_sdk::IIIError> {
+        Ok(false)
     }
 }
 
