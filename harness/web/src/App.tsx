@@ -114,6 +114,23 @@ export default function App() {
 
   const stream = useAgentStream(active);
 
+  // Wake-failure alerts (`approval_wake_failed` events) land in
+  // `stream.wakeFailures`. They're not removed by the event reducer
+  // (the gate may resend them on every retry of a stuck `run::resume`),
+  // so we keep a per-session dismissed set here and filter before
+  // rendering. Mirrors the existing `setError(null)` clear pattern.
+  // Reset on session change so a fresh chat starts with no leftovers.
+  const [dismissedWakeFailures, setDismissedWakeFailures] = useState<Set<number>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    setDismissedWakeFailures(new Set());
+  }, [active]);
+  const visibleWakeFailures = useMemo(
+    () => stream.wakeFailures.filter((w) => !dismissedWakeFailures.has(w.ts)),
+    [stream.wakeFailures, dismissedWakeFailures],
+  );
+
   // Live ambient status — header chip + foot chips + status tab.
   // The hook owns the rolling 200-event buffer and the per-page subscription
   // to all-sessions topics (cost/workers/approvals).
@@ -546,7 +563,14 @@ export default function App() {
               <ApprovalRow
                 sessionId={active ?? ""}
                 pending={stream.pendingApprovals}
-                wakeFailures={stream.wakeFailures}
+                wakeFailures={visibleWakeFailures}
+                onDismissWakeFailure={(w) =>
+                  setDismissedWakeFailures((prev) => {
+                    const next = new Set(prev);
+                    next.add(w.ts);
+                    return next;
+                  })
+                }
               />
               <Composer
                 disabled={composerDisabled}

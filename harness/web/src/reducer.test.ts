@@ -82,6 +82,46 @@ describe("reducer (entry-id keyed)", () => {
     expect(s.pendingApprovals.length).toBe(0);
   });
 
+  // Cascade: operator clicks "allow + always" on one card; the backend
+  // resolves the originator AND every other pending row with the same
+  // argv shape, emitting one approval_resolved event per cascaded row
+  // (see approval-gate/src/register.rs::emit_approval_resolved). The
+  // reducer must drain BOTH cards from pendingApprovals — otherwise the
+  // operator sees stale cards lingering after the backend already
+  // executed/denied the underlying calls.
+  it("cascade: allow+always resolves originator and cascaded pending cards", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_requested",
+      function_call_id: "t1",
+      function_id: "shell::exec",
+      args: { command: "echo", args: ["go"] },
+      expires_at: 0,
+    });
+    s = applyEvent(s, {
+      type: "approval_requested",
+      function_call_id: "t2",
+      function_id: "shell::exec",
+      args: { command: "echo", args: ["go"] },
+      expires_at: 0,
+    });
+    expect(s.pendingApprovals).toHaveLength(2);
+
+    s = applyEvent(s, {
+      type: "approval_resolved",
+      function_call_id: "t1",
+      decision: "allow",
+    });
+    expect(s.pendingApprovals).toHaveLength(1);
+    expect(s.pendingApprovals[0].function_call_id).toBe("t2");
+
+    s = applyEvent(s, {
+      type: "approval_resolved",
+      function_call_id: "t2",
+      decision: "allow",
+    });
+    expect(s.pendingApprovals).toHaveLength(0);
+  });
+
   it("messages without entry_id land in unkeyedMessages (backwards compat)", () => {
     const e = { type: "message_end", message: msg("legacy") } as AgentEvent;
     const s = applyEvent(INITIAL_STREAM_STATE, e);
