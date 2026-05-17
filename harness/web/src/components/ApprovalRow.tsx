@@ -37,6 +37,14 @@ function formatRemaining(ms: number): string {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
+function countdownTone(ms: number): "ok" | "warn" | "danger" | "expired" {
+  if (!Number.isFinite(ms)) return "ok";
+  if (ms <= 0) return "expired";
+  if (ms < 10_000) return "danger";
+  if (ms < 30_000) return "warn";
+  return "ok";
+}
+
 interface ApprovalCardProps {
   sessionId: string;
   approval: PendingApproval;
@@ -54,7 +62,10 @@ interface ApprovalCardProps {
 function ApprovalCard({ sessionId: _sessionId, approval, callId, fnId, busyId, onResolve }: ApprovalCardProps) {
   const remaining = useCountdown(approval.expires_at);
   const expired = remaining <= 0;
+  const tone = countdownTone(remaining);
   const [feedback, setFeedback] = useState("");
+  const titleId = `approval-title-${callId}`;
+  const busy = busyId === callId;
 
   const denyClick = () => {
     const trimmed = feedback.trim();
@@ -68,53 +79,65 @@ function ApprovalCard({ sessionId: _sessionId, approval, callId, fnId, busyId, o
   };
 
   return (
-    <div className={`approval ${expired ? "expired" : ""}`}>
-      <div className="approval-head">
+    <section
+      className="approval"
+      data-expired={expired || undefined}
+      data-busy={busy || undefined}
+      role="region"
+      aria-labelledby={titleId}
+    >
+      <header className="approval-head">
         <span className="approval-eyebrow">approval needed</span>
-        <span className="approval-title">{fnId}</span>
+        <span className="approval-title" id={titleId}>{fnId}</span>
         {approval.expires_at ? (
-          <span className="approval-countdown">{formatRemaining(remaining)}</span>
+          <span className="approval-countdown" data-tone={tone} aria-live="off">
+            {formatRemaining(remaining)}
+          </span>
         ) : null}
-      </div>
+      </header>
       <pre className="approval-args">{JSON.stringify(approval.args, null, 2)}</pre>
       <details className="approval-feedback">
-        <summary>add correction (optional, sent to the model on deny)</summary>
+        <summary>
+          <span className="approval-feedback-label">add a correction</span>
+          <span className="approval-feedback-hint">sent to the model on deny</span>
+        </summary>
         <textarea
+          className="approval-feedback-input"
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
-          placeholder="why? e.g. 'wrong directory, use /tmp/y'"
-          rows={2}
+          placeholder="e.g. wrong directory, use /tmp/y"
+          rows={3}
         />
       </details>
       <div className="approval-actions">
         <button
           type="button"
           className="approval-deny"
-          disabled={busyId === callId || expired}
+          disabled={busy || expired}
           onClick={denyClick}
         >
           deny
         </button>
         <button
           type="button"
-          className="approval-allow"
-          disabled={busyId === callId || expired}
-          onClick={() => onResolve(callId, "allow")}
-        >
-          allow
-        </button>
-        <button
-          type="button"
           className="approval-allow-always"
-          disabled={busyId === callId || expired}
+          disabled={busy || expired}
           title="Allow this and auto-approve other pending calls in this session that match the same pattern"
           onClick={() => onResolve(callId, "allow", { always: true })}
         >
           allow + always
         </button>
+        <button
+          type="button"
+          className="approval-allow"
+          disabled={busy || expired}
+          onClick={() => onResolve(callId, "allow")}
+        >
+          allow
+        </button>
       </div>
-      {expired ? <p className="approval-expired-note">this approval expired</p> : null}
-    </div>
+      {expired ? <p className="approval-expired-note">this approval has expired</p> : null}
+    </section>
   );
 }
 
@@ -149,7 +172,7 @@ export function ApprovalRow({ sessionId, pending }: Props) {
   };
 
   return (
-    <div className="approvals">
+    <div className="approvals" role="region" aria-label="pending approvals" aria-live="polite">
       {pending.map((a) => {
         const callId = a.function_call_id ?? a.tool_call_id;
         const fnId = a.function_id ?? a.tool_name ?? "";

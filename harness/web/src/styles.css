@@ -2454,3 +2454,390 @@ p.msg-text {
   margin: 0;
   padding: 0;
 }
+
+/* ─── approvals ──────────────────────────────────────────────────────────── */
+
+/*
+ * The agent has stopped and is asking permission. This is the most demanding
+ * moment in the app — calm everywhere else, present and warm here. The card
+ * sits inline between the messages and the composer; it deliberately does NOT
+ * become a modal. The accent (warm sienna) is the attention signal.
+ */
+
+.approvals {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-6) var(--space-4);
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
+}
+
+.approval {
+  display: grid;
+  max-width: 72ch;
+  background: var(--accent-wash);
+  border: 1px solid color-mix(in oklch, var(--accent) 38%, var(--rule-strong));
+  box-shadow: 0 1px 0 0 color-mix(in oklch, var(--accent) 14%, transparent);
+  animation: approval-enter 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes approval-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval {
+    animation: none;
+  }
+}
+
+.approval[data-expired] {
+  background: var(--paper-2);
+  border-color: var(--rule-strong);
+  box-shadow: none;
+  opacity: 0.72;
+}
+
+.approval[data-busy] {
+  cursor: progress;
+}
+
+/* head */
+
+.approval-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid color-mix(in oklch, var(--accent) 22%, var(--rule));
+}
+
+.approval-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--accent-ink);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.approval[data-expired] .approval-eyebrow {
+  color: var(--ink-3);
+}
+
+.approval-title {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-countdown {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  transition: color 200ms ease, border-color 200ms ease;
+}
+
+.approval-countdown[data-tone="warn"] {
+  color: var(--accent-ink);
+  border-color: color-mix(in oklch, var(--accent) 32%, transparent);
+}
+
+.approval-countdown[data-tone="danger"] {
+  color: var(--red);
+  border-color: color-mix(in oklch, var(--red) 32%, transparent);
+}
+
+.approval-countdown[data-tone="expired"] {
+  color: var(--ink-3);
+  text-transform: lowercase;
+  letter-spacing: 0.06em;
+}
+
+/* args */
+
+.approval-args {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 240px;
+  border-bottom: 1px solid color-mix(in oklch, var(--accent) 18%, var(--rule));
+}
+
+.approval[data-expired] .approval-args {
+  color: var(--ink-2);
+}
+
+/* feedback */
+
+.approval-feedback {
+  padding: var(--space-2) var(--space-4) var(--space-3);
+}
+
+.approval-feedback > summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 4px 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--ink-3);
+}
+
+.approval-feedback > summary::-webkit-details-marker {
+  display: none;
+}
+
+.approval-feedback > summary::before {
+  content: "+";
+  font-family: var(--mono);
+  font-size: 12px;
+  width: 1ch;
+  text-align: center;
+  color: var(--ink-faint);
+  transition: transform 160ms ease, color 120ms ease;
+}
+
+.approval-feedback[open] > summary::before {
+  content: "−";
+  color: var(--accent-ink);
+}
+
+.approval-feedback > summary:hover {
+  color: var(--ink);
+}
+
+.approval-feedback > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.approval-feedback-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.approval-feedback-hint {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+
+.approval-feedback-input {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  resize: vertical;
+  min-height: 64px;
+  outline-offset: 2px;
+  transition: border-color 120ms ease;
+}
+
+.approval-feedback-input::placeholder {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.approval-feedback-input:focus {
+  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+}
+
+/* actions */
+
+.approval-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid color-mix(in oklch, var(--accent) 18%, var(--rule));
+  background: color-mix(in oklch, var(--accent-wash) 60%, var(--paper));
+}
+
+.approval[data-expired] .approval-actions {
+  background: var(--paper-2);
+  border-top-color: var(--rule);
+}
+
+/* destructive — pushed left, set apart from the constructive group */
+.approval-deny {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--red);
+  border: 1px solid color-mix(in oklch, var(--red) 36%, var(--rule-strong));
+  border-radius: 0;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    transform 80ms ease;
+}
+
+.approval-deny:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--red) 10%, var(--paper));
+  border-color: var(--red);
+}
+
+.approval-deny:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* secondary — stronger commitment (extends scope), ink fill */
+.approval-allow-always {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    transform 80ms ease;
+}
+
+.approval-allow-always:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.approval-allow-always:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* primary — recommended path, brand accent fill */
+.approval-allow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 8px 18px;
+  background: var(--accent);
+  color: var(--paper);
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  cursor: pointer;
+  font-variant: small-caps;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 80ms ease;
+}
+
+.approval-allow:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}
+
+.approval-allow:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.approval-deny:focus-visible,
+.approval-allow:focus-visible,
+.approval-allow-always:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.approval-deny:disabled,
+.approval-allow:disabled,
+.approval-allow-always:disabled {
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--ink-faint);
+  border-color: var(--rule-strong);
+}
+
+.approval-allow:disabled {
+  background: var(--paper-3);
+}
+
+/* expired note + error */
+
+.approval-expired-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  background: var(--paper-2);
+}
+
+.approval-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--red);
+  background: color-mix(in oklch, var(--red) 8%, var(--paper));
+  border: 1px solid color-mix(in oklch, var(--red) 26%, var(--rule));
+}
+
+@media (max-width: 640px) {
+  .approvals {
+    padding: var(--space-3) var(--space-4);
+  }
+  .approval-actions {
+    flex-wrap: wrap;
+  }
+  .approval-deny {
+    margin-right: 0;
+    flex: 1 1 100%;
+    order: 3;
+  }
+  .approval-allow {
+    flex: 1 1 0;
+  }
+  .approval-allow-always {
+    flex: 1 1 0;
+  }
+}
