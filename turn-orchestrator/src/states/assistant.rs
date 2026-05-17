@@ -75,6 +75,7 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
 }
 
 pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow::Result<()> {
+    persistence::maybe_reload_after_compaction(iii, &record.session_id).await;
     let request = persistence::load_run_request(iii, &record.session_id).await;
     let messages = persistence::load_messages(iii, &record.session_id).await;
     let schemas = persistence::load_function_schemas(iii, &record.session_id).await;

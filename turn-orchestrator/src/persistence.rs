@@ -34,6 +34,82 @@ pub async fn load_messages(iii: &III, session_id: &str) -> Vec<AgentMessage> {
     serde_json::from_value(value).unwrap_or_default()
 }
 
+/// Rebuild the hot `session/<id>/messages` key from the session-tree when
+/// the `context-compaction` worker has stamped a fresh `last_compaction_at`
+/// since our last reload. The tree's `load_messages` already filters
+/// `Compaction` entries out of the active transcript, so this is the
+/// canonical way to consume a freshly-landed compaction.
+///
+/// No-op when no compaction is pending. Cheap (two `state::get`s on the
+/// fast path), so safe to call at the top of every turn.
+pub async fn maybe_reload_after_compaction(iii: &III, session_id: &str) {
+    let last_key = crate::state::last_compaction_at_key(session_id);
+    let watermark_key = crate::state::last_compaction_consumed_at_key(session_id);
+    let last = state_get(iii, &last_key)
+        .await
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if last == 0 {
+        return;
+    }
+    let consumed = state_get(iii, &watermark_key)
+        .await
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if last <= consumed {
+        return;
+    }
+    let resp = match iii
+        .trigger(TriggerRequest {
+            function_id: "session-tree::messages".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, %session_id, "reload-after-compaction: session-tree::messages failed");
+            return;
+        }
+    };
+    // `session-tree::messages` returns `{messages: [{entry_id, message}, ...]}`.
+    let Some(rows) = resp.get("messages").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut rebuilt: Vec<AgentMessage> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let msg = row.get("message").cloned().unwrap_or(JsonValue::Null);
+        if msg.is_null() {
+            continue;
+        }
+        match serde_json::from_value::<AgentMessage>(msg) {
+            Ok(m) => rebuilt.push(m),
+            Err(e) => {
+                tracing::warn!(error = %e, %session_id, "reload-after-compaction: failed to decode AgentMessage; aborting reload");
+                return;
+            }
+        }
+    }
+    if rebuilt.is_empty() {
+        return;
+    }
+    if let Ok(value) = serde_json::to_value(&rebuilt) {
+        state_set(iii, &messages_key(session_id), value).await;
+    }
+    // Reset the mirror watermark so future `save_messages` calls don't try
+    // to re-append messages the tree already has.
+    let mirror_key = crate::state::last_session_tree_len_key(session_id);
+    state_set(iii, &mirror_key, json!(rebuilt.len() as u64)).await;
+    state_set(iii, &watermark_key, json!(last)).await;
+    tracing::info!(
+        %session_id,
+        new_len = rebuilt.len(),
+        "context-compaction landed; reloaded messages from session-tree"
+    );
+}
+
 pub async fn save_messages(iii: &III, session_id: &str, messages: &[AgentMessage]) {
     let key = messages_key(session_id);
     if let Ok(value) = serde_json::to_value(messages) {
@@ -254,6 +330,23 @@ const EXECUTED_KEY: &str = "function_executed";
 const LEGACY_PREPARED_KEY: &str = "tool_prepared";
 const LEGACY_EXECUTED_KEY: &str = "tool_executed";
 
+/// Stash the full, untruncated payload for one function-call result. The
+/// truncated `FunctionResult` that the orchestrator persists into the
+/// message stream carries a `TruncationInfo` pointing back here; the model
+/// recovers the full payload via `agent_call(function="result::fetch")`.
+pub async fn save_full_result(iii: &III, session_id: &str, call_id: &str, payload: &Value) {
+    let key = staging_key(session_id, &format!("result/{call_id}"));
+    state_set(iii, &key, payload.clone()).await;
+}
+
+/// Fetch a previously-stashed full result. Returns `None` if no payload
+/// exists at the expected key (e.g. the result wasn't truncated, the
+/// call_id is wrong, or state retention pruned it).
+pub async fn load_full_result(iii: &III, session_id: &str, call_id: &str) -> Option<Value> {
+    let key = staging_key(session_id, &format!("result/{call_id}"));
+    state_get(iii, &key).await
+}
+
 fn staging_key(session_id: &str, suffix: &str) -> String {
     format!("session/{session_id}/{suffix}")
 }
@@ -387,6 +480,7 @@ mod tests {
             content: vec![ContentBlock::Text(TextContent { text: text.into() })],
             details: json!({ "text": text }),
             terminate: false,
+            truncated: None,
         }
     }
 

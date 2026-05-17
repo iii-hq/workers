@@ -18,7 +18,24 @@ fn state_keys_distinct_per_facet() {
         turn_orchestrator::cwd_key(s),
         turn_orchestrator::sandbox_id_key(s),
         turn_orchestrator::function_schemas_key(s),
+        turn_orchestrator::last_compaction_at_key(s),
+        turn_orchestrator::last_compaction_consumed_at_key(s),
     ];
     let unique: std::collections::HashSet<_> = keys.iter().collect();
     assert_eq!(unique.len(), keys.len(), "every facet has a distinct key");
+}
+
+#[test]
+fn compaction_watermark_keys_namespace_by_session() {
+    let s = "sess-9";
+    assert!(turn_orchestrator::last_compaction_at_key(s).contains(s));
+    assert!(turn_orchestrator::last_compaction_consumed_at_key(s).contains(s));
+    // The compactor writes `last_compaction_at`; the orchestrator advances
+    // `last_compaction_consumed_at`. If those names accidentally collided,
+    // the orchestrator could overwrite the compactor's stamp.
+    assert_ne!(
+        turn_orchestrator::last_compaction_at_key(s),
+        turn_orchestrator::last_compaction_consumed_at_key(s),
+        "compactor's stamp key must not collide with the orchestrator's watermark"
+    );
 }

@@ -446,6 +446,21 @@ fn merge_usage(usage: &serde_json::Value, into: &mut Usage) {
     {
         into.output += v;
     }
+    // OpenAI auto-caches prefixes >1024 tokens with no opt-in. The cached
+    // count surfaces nested under either `prompt_tokens_details.cached_tokens`
+    // (Chat Completions API) or `input_tokens_details.cached_tokens`
+    // (Responses API). Either path discounts the cached portion at 50% of
+    // input price; surfacing the count lets downstream cost calculation
+    // (e.g. llm-budget) reflect that.
+    for parent in ["prompt_tokens_details", "input_tokens_details"] {
+        if let Some(v) = usage
+            .get(parent)
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            into.cache_read += v;
+        }
+    }
 }
 
 fn map_finish_reason(reason: &str) -> StopReason {
@@ -503,4 +518,53 @@ fn build_final(state: &PartialState, model: &str, provider: &str) -> AssistantMe
 #[allow(dead_code)]
 fn _kept(_: harness_types::FunctionCall, _: fn(&str, Option<u16>) -> harness_types::ErrorKind) {
     let _ = classify_provider_error;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_types::Usage;
+
+    #[test]
+    fn merge_usage_extracts_chat_completions_cached_tokens() {
+        let mut u = Usage::default();
+        merge_usage(
+            &serde_json::json!({
+                "prompt_tokens": 1500,
+                "completion_tokens": 200,
+                "prompt_tokens_details": { "cached_tokens": 1200 }
+            }),
+            &mut u,
+        );
+        assert_eq!(u.input, 1500);
+        assert_eq!(u.output, 200);
+        assert_eq!(
+            u.cache_read, 1200,
+            "Chat Completions cached_tokens must flow into Usage.cache_read"
+        );
+    }
+
+    #[test]
+    fn merge_usage_extracts_responses_api_cached_tokens() {
+        let mut u = Usage::default();
+        merge_usage(
+            &serde_json::json!({
+                "input_tokens": 2000,
+                "output_tokens": 100,
+                "input_tokens_details": { "cached_tokens": 1700 }
+            }),
+            &mut u,
+        );
+        assert_eq!(u.cache_read, 1700);
+    }
+
+    #[test]
+    fn merge_usage_no_cache_field_leaves_cache_read_zero() {
+        let mut u = Usage::default();
+        merge_usage(
+            &serde_json::json!({ "prompt_tokens": 50, "completion_tokens": 25 }),
+            &mut u,
+        );
+        assert_eq!(u.cache_read, 0);
+    }
 }

@@ -45,17 +45,17 @@ CONFIG_FILE := $(HARNESS_DIR)/config.yaml
 # Local worker crates that need to be cargo-built and symlinked into
 # ~/.iii/workers/ so the engine spawns them on host instead of trying
 # `cargo run` inside libkrun (where cargo isn't installed).
-LOCAL_WORKERS := approval-gate auth-credentials hook-fanout iii-directory \
-                 llm-budget models-catalog policy-denylist provider-anthropic \
-                 provider-openai provider-router session shell turn-orchestrator \
-                 harness
+LOCAL_WORKERS := approval-gate auth-credentials context-compaction hook-fanout \
+                 iii-directory llm-budget models-catalog policy-denylist \
+                 provider-anthropic provider-openai provider-router session \
+                 shell turn-orchestrator harness
 
-.PHONY: help all build config observability engine verify web stop restart logs clean ensure-dirs
+.PHONY: help all build config observability engine compaction verify web stop restart logs clean ensure-dirs
 
 help:
 	@awk '/^[^#]/ && !/^$$/ {exit} /^#/ {sub(/^# ?/, ""); print}' $(firstword $(MAKEFILE_LIST))
 
-all: build config observability engine verify
+all: build config observability engine compaction verify
 
 ensure-dirs:
 	@mkdir -p $(PIDS_DIR) $(LOGS_DIR) $(HARNESS_DIR)/data/skills $(WORKERS_BIN)
@@ -101,6 +101,35 @@ observability: config
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> iii worker add iii-observability (idempotent)"
 	@cd "$(HARNESS_DIR)" && iii worker add iii-observability --no-wait
+
+# ─── compaction ──────────────────────────────────────────────────────────────
+
+# Spawn the `context-compaction` worker as a background process. Kept OUT of
+# `iii.worker.yaml` `dependencies:` because the upstream registry doesn't yet
+# know about it; that means `iii worker add` can't resolve it and it stays
+# absent from `EXPECTED_WORKERS` / `harness::status`. Mirrors the same
+# "optional, side-of-config" pattern used by `iii-observability`. The worker
+# is its own iii-sdk client — it connects to the engine over WS on its own
+# once started.
+#
+# Requires the engine to be up first. The PID file lives under $(PIDS_DIR)
+# alongside `engine.pid` / `web.pid` so `make stop` cleans it up uniformly.
+COMPACTION_BIN := $(WORKERS_BIN)/context-compaction
+compaction: ensure-dirs
+	@[[ -x "$(COMPACTION_BIN)" ]] || { echo "==> $(COMPACTION_BIN) missing; run 'make build' first"; exit 1; }
+	@if [[ -f "$(PIDS_DIR)/context-compaction.pid" ]] && kill -0 "$$(cat $(PIDS_DIR)/context-compaction.pid)" 2>/dev/null; then \
+	  echo "==> context-compaction already running (pid $$(cat $(PIDS_DIR)/context-compaction.pid))"; \
+	  exit 0; \
+	fi
+	@echo "==> starting context-compaction worker (engine=$(DEMO_ENGINE_WS))"
+	@{ nohup "$(COMPACTION_BIN)" --url "$(DEMO_ENGINE_WS)" > "$(LOGS_DIR)/context-compaction.log" 2>&1 & echo $$! > "$(PIDS_DIR)/context-compaction.pid"; }
+	@sleep 1
+	@if kill -0 "$$(cat $(PIDS_DIR)/context-compaction.pid)" 2>/dev/null; then \
+	  echo "    pid=$$(cat $(PIDS_DIR)/context-compaction.pid)  logs: make logs W=context-compaction"; \
+	else \
+	  echo "    [error] context-compaction exited immediately; tail $(LOGS_DIR)/context-compaction.log"; \
+	  exit 1; \
+	fi
 
 # ─── engine ──────────────────────────────────────────────────────────────────
 
@@ -154,7 +183,7 @@ web: ensure-dirs
 W ?= engine
 logs:
 	@case "$(W)" in \
-	  engine|web) exec tail -f "$(LOGS_DIR)/$(W).log" ;; \
+	  engine|web|context-compaction) exec tail -f "$(LOGS_DIR)/$(W).log" ;; \
 	  *) echo "==> tailing engine.log (filter for '$(W)')"; exec tail -f "$(LOGS_DIR)/engine.log" ;; \
 	esac
 

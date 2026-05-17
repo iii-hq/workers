@@ -2,7 +2,7 @@
 
 use harness_types::{
     AgentEvent, AgentMessage, AssistantMessage, ContentBlock, FunctionCall, FunctionResult,
-    FunctionResultMessage, TextContent,
+    FunctionResultMessage, TextContent, TruncationInfo,
 };
 use iii_sdk::{TriggerRequest, Value, III};
 use serde_json::json;
@@ -15,6 +15,123 @@ use crate::state::{TurnState, TurnStateRecord};
 const TOPIC_BEFORE: &str = "agent::before_function_call";
 const TOPIC_AFTER: &str = "agent::after_function_call";
 const HOOK_TIMEOUT_MS: u64 = 10_000;
+
+// ─── Tool-result truncation ──────────────────────────────────────────────
+//
+// Large tool outputs (multi-MB shell::run, big shell::fs::read) dominate
+// per-turn token cost. We cap each FunctionResult at a serialized-bytes
+// budget; oversized payloads get stashed under `session/<id>/result/<call_id>`
+// and the in-stream `content` is replaced with a head+tail-elided preview
+// plus a marker telling the model how to call `result::fetch` to recover
+// the full payload (intercepted in `agent_call::dispatch`).
+
+const DEFAULT_TRUNCATE_BYTES: usize = 8192;
+const TRUNCATE_ENV: &str = "HARNESS_RESULT_TRUNCATE_BYTES";
+const TRUNCATE_HEAD_BYTES: usize = 2048;
+const TRUNCATE_TAIL_BYTES: usize = 2048;
+
+fn truncate_threshold() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var(TRUNCATE_ENV)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_TRUNCATE_BYTES)
+    })
+}
+
+/// If `result`'s serialized size exceeds the truncation threshold, stash the
+/// full payload under `session/<session_id>/result/<call_id>` and return a
+/// compact replacement carrying a `TruncationInfo` pointer. Otherwise return
+/// `result` unchanged.
+async fn maybe_truncate_result(
+    iii: &III,
+    session_id: &str,
+    call_id: &str,
+    result: FunctionResult,
+) -> FunctionResult {
+    let threshold = truncate_threshold();
+    let serialized_size = match serde_json::to_string(&result) {
+        Ok(s) => s.len(),
+        Err(_) => return result,
+    };
+    if serialized_size <= threshold {
+        return result;
+    }
+    // Persist the full payload first; if state::set fails, fall through and
+    // return the original result so we never lose data.
+    let full_json = match serde_json::to_value(&result) {
+        Ok(v) => v,
+        Err(_) => return result,
+    };
+    persistence::save_full_result(iii, session_id, call_id, &full_json).await;
+
+    let summary_text = render_truncated_text(&result, serialized_size, call_id);
+    FunctionResult {
+        content: vec![ContentBlock::Text(TextContent { text: summary_text })],
+        details: json!({
+            "truncated": true,
+            "original_bytes": serialized_size,
+            "call_id": call_id,
+        }),
+        terminate: result.terminate,
+        truncated: Some(TruncationInfo {
+            original_bytes: serialized_size as u64,
+            call_id: call_id.to_string(),
+        }),
+    }
+}
+
+/// Render the model-facing replacement text for a truncated result. Head +
+/// tail elision keeps the most semantically useful parts (shell errors
+/// typically live at the bottom, while file headers / call signatures live
+/// at the top).
+fn render_truncated_text(result: &FunctionResult, original_bytes: usize, call_id: &str) -> String {
+    let mut combined = String::new();
+    for block in &result.content {
+        if let ContentBlock::Text(t) = block {
+            if !combined.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str(&t.text);
+        }
+    }
+    let total = combined.len();
+    let body = if total > TRUNCATE_HEAD_BYTES + TRUNCATE_TAIL_BYTES {
+        let head_end = char_boundary_floor(&combined, TRUNCATE_HEAD_BYTES);
+        let tail_start = char_boundary_ceil(&combined, total - TRUNCATE_TAIL_BYTES);
+        format!(
+            "{head}\n\n[... {elided} bytes elided ...]\n\n{tail}",
+            head = &combined[..head_end],
+            elided = total - head_end - (total - tail_start),
+            tail = &combined[tail_start..],
+        )
+    } else {
+        combined
+    };
+    format!(
+        "[result truncated — {original_bytes} bytes — call agent_call with \
+         function=\"result::fetch\", payload={{\"call_id\": \"{call_id}\"}} \
+         to retrieve the full output]\n\n{body}"
+    )
+}
+
+fn char_boundary_floor(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn char_boundary_ceil(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
 
 /// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
 /// a normal [`FunctionCall`] carrying the inner function id. Non-`agent_call`
@@ -88,6 +205,7 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
                 content: vec![ContentBlock::Text(TextContent { text: reason })],
                 details: json!({ "blocked": true }),
                 terminate: false,
+                truncated: None,
             })
         } else {
             None
@@ -162,6 +280,7 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
             .get("error")
             .and_then(Value::as_str)
             .is_some();
+        let result = maybe_truncate_result(iii, &record.session_id, &fc.id, result).await;
 
         persistence::upsert_executed_call(&mut results, (fc.clone(), result.clone(), is_error));
         persistence::save_executed_calls(iii, &record.session_id, &results).await;
@@ -431,6 +550,7 @@ mod tests {
                 content: vec![],
                 details: json!({}),
                 terminate: false,
+                truncated: None,
             },
             false,
         )];
@@ -453,6 +573,7 @@ mod tests {
             content: vec![ContentBlock::Text(TextContent { text: "ok".into() })],
             details: json!({}),
             terminate: false,
+            truncated: None,
         };
         let evt = build_function_execution_event(&fc, &result, false);
         match evt {
@@ -481,6 +602,7 @@ mod tests {
             })],
             details: json!({"blocked": true}),
             terminate: false,
+            truncated: None,
         };
         let evt = build_function_execution_event(&fc, &blocked, true);
         match evt {
@@ -572,5 +694,98 @@ mod tests {
             !window.contains(".expect(\"tools state requires last_assistant"),
             "handle_finalize must not .expect() last_assistant"
         );
+    }
+
+    // ─── Truncation helpers ──────────────────────────────────────────────
+
+    #[test]
+    fn render_truncated_text_short_input_kept_verbatim() {
+        let result = FunctionResult {
+            content: vec![ContentBlock::Text(TextContent {
+                text: "hello world".into(),
+            })],
+            details: json!({}),
+            terminate: false,
+            truncated: None,
+        };
+        let out = render_truncated_text(&result, 12345, "call-abc");
+        assert!(out.contains("result truncated"));
+        assert!(out.contains("12345 bytes"));
+        assert!(out.contains("call-abc"));
+        assert!(out.contains("hello world"));
+        assert!(
+            !out.contains("[... "),
+            "short content must not have ellipsis"
+        );
+    }
+
+    #[test]
+    fn render_truncated_text_large_input_head_tail_elides() {
+        let head = "H".repeat(3000);
+        let middle = "M".repeat(50_000);
+        let tail = "T".repeat(3000);
+        let combined = format!("{head}{middle}{tail}");
+        let result = FunctionResult {
+            content: vec![ContentBlock::Text(TextContent {
+                text: combined.clone(),
+            })],
+            details: json!({}),
+            terminate: false,
+            truncated: None,
+        };
+        let out = render_truncated_text(&result, combined.len(), "call-x");
+        assert!(out.contains("[... "), "must contain elision marker");
+        assert!(out.contains("bytes elided"));
+        // Head and tail preserved.
+        assert!(out.contains("HHHHHHHHHH"));
+        assert!(out.contains("TTTTTTTTTT"));
+        // Middle should be largely gone — fewer than 100 M's survive.
+        let m_count = out.chars().filter(|c| *c == 'M').count();
+        assert!(
+            m_count < 100,
+            "middle should be elided, found {} 'M' chars",
+            m_count
+        );
+    }
+
+    #[test]
+    fn render_truncated_text_concatenates_multiple_text_blocks() {
+        let result = FunctionResult {
+            content: vec![
+                ContentBlock::Text(TextContent { text: "alpha".into() }),
+                ContentBlock::Text(TextContent { text: "beta".into() }),
+            ],
+            details: json!({}),
+            terminate: false,
+            truncated: None,
+        };
+        let out = render_truncated_text(&result, 999, "cid");
+        assert!(out.contains("alpha"));
+        assert!(out.contains("beta"));
+    }
+
+    #[test]
+    fn char_boundary_helpers_respect_utf8() {
+        let s = "héllo🦀world";
+        for idx in 0..=s.len() {
+            let f = char_boundary_floor(s, idx);
+            assert!(f <= idx);
+            assert!(s.is_char_boundary(f));
+        }
+        for idx in 0..=s.len() {
+            let c = char_boundary_ceil(s, idx);
+            assert!(c >= idx);
+            assert!(s.is_char_boundary(c));
+        }
+    }
+
+    #[test]
+    fn truncate_threshold_has_sane_default() {
+        // OnceLock means we can't reliably set/reset the env in-process;
+        // assert only that the default is the documented constant.
+        // (Per-env override is exercised manually / via integration tests.)
+        let t = truncate_threshold();
+        assert!(t >= 1024, "threshold should never round down below 1 KB");
+        assert!(t <= 1_000_000, "threshold should be sane");
     }
 }

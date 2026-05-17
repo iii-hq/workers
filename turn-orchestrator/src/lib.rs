@@ -17,6 +17,7 @@ pub mod transitions;
 pub use config::TurnOrchestratorConfig;
 pub use register::register_with_iii;
 pub use state::{
-    cwd_index_key, cwd_key, function_schemas_key, messages_key, run_request_key, sandbox_id_key,
+    cwd_index_key, cwd_key, function_schemas_key, last_compaction_at_key,
+    last_compaction_consumed_at_key, messages_key, run_request_key, sandbox_id_key,
     tool_schemas_key, turn_state_key, TurnState, TurnStateRecord,
 };
