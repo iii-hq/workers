@@ -12,11 +12,36 @@
 //! - [`handle_sweep_session`] — force-cancellation for `run::stop`:
 //!   flips every Pending and InFlight row to `Done(TimedOut)`.
 
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::record::{Outcome, Record, Status};
 use crate::state::StateBus;
 use crate::wire::pending_key;
+
+/// Process-local per-session serialization for `handle_consume`.
+///
+/// Closes the in-process half of finding #6: two concurrent
+/// `approval::consume` calls for the same session could both observe a
+/// Done row in their list-prefix phase before either's delete landed,
+/// and the engine's `delete` is not atomic enough to discriminate the
+/// loser. The cross-process race (two workers subscribing to the same
+/// scope) is NOT closed here — it requires an engine-level atomic
+/// `delete-if-present` primitive (tracked separately). This lock is
+/// "belt and suspenders for the realistic single-worker shape".
+fn consume_session_lock(session_id: &str) -> Arc<AsyncMutex<()>> {
+    static GUARDS: OnceLock<std::sync::Mutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
+        OnceLock::new();
+    let map = GUARDS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = map.lock().expect("consume session-lock map poisoned");
+    guard
+        .entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
 
 /// Default per-call cap on `handle_consume`. Bounds the response size —
 /// `Outcome::Executed.result` can carry MB-sized stdout/stderr payloads,
@@ -90,6 +115,16 @@ pub async fn handle_consume(
     if session_id.is_empty() {
         return json!({ "ok": false, "error": "missing_session_id" });
     }
+
+    // Belt-and-suspenders for finding #6: serialize concurrent consumes
+    // for the same session within the worker process. The delete-bool
+    // path closes the engine-side race only when the bus actually
+    // discriminates winners; IiiStateBus does it via get-then-delete
+    // which is itself racy. This lock makes the in-process case
+    // deterministic regardless.
+    let session_lock = consume_session_lock(session_id);
+    let _session_guard = session_lock.lock().await;
+
     let limit = payload
         .get("limit")
         .and_then(Value::as_u64)

@@ -25,6 +25,10 @@ fn default_default_timeout_ms() -> u64 {
     300_000
 }
 
+fn default_tick_interval_ms() -> u64 {
+    15_000
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct WorkerConfig {
     #[serde(default = "default_topic")]
@@ -33,6 +37,14 @@ pub struct WorkerConfig {
     pub approval_state_scope: String,
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
+    /// How often the watchdog reclaims expired Pending + stale InFlight
+    /// rows and wakes the orchestrator (finding #4). 15s by default —
+    /// short enough that operator-perceived timeout latency stays small,
+    /// long enough not to spam the bus. Set to `0` to disable the
+    /// background loop (tests that drive `handle_tick_timeouts` directly
+    /// rely on this so the auto-tick doesn't fight assertions).
+    #[serde(default = "default_tick_interval_ms")]
+    pub tick_interval_ms: u64,
     /// Layered permission ruleset. Allow / Deny / Ask actions. Evaluated
     /// last-match-wins; the YAML's curated defaults ship at the bottom,
     /// operator overrides stack on top. See [`crate::rules`].
@@ -46,6 +58,7 @@ impl Default for WorkerConfig {
             topic: default_topic(),
             approval_state_scope: default_approval_state_scope(),
             default_timeout_ms: default_default_timeout_ms(),
+            tick_interval_ms: default_tick_interval_ms(),
             rules: Vec::new(),
         }
     }
@@ -73,7 +86,17 @@ mod tests {
         assert_eq!(cfg.topic, default_topic());
         assert_eq!(cfg.approval_state_scope, "approvals");
         assert_eq!(cfg.default_timeout_ms, 300_000);
+        assert_eq!(cfg.tick_interval_ms, 15_000);
         assert!(cfg.rules.is_empty());
+    }
+
+    #[test]
+    fn tick_interval_ms_zero_disables_auto_tick() {
+        let cfg: WorkerConfig = serde_yaml::from_str("tick_interval_ms: 0").unwrap();
+        assert_eq!(
+            cfg.tick_interval_ms, 0,
+            "tick_interval_ms=0 must round-trip — register() uses it to skip the loop",
+        );
     }
 
     #[test]
@@ -89,7 +112,8 @@ rules:
         assert_eq!(cfg.rules[0].pattern, "git status*");
         assert_eq!(cfg.rules[0].action, Action::Allow);
         assert_eq!(cfg.rules[1].action, Action::Ask);
-        let _ = Rule {  // smoke check on the imported type
+        let _ = Rule {
+            // smoke check on the imported type
             permission: "x".into(),
             pattern: "*".into(),
             action: Action::Deny,

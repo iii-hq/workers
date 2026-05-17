@@ -27,7 +27,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Trigger-model approval gate. Intercepts function calls listed in approval_required, returns a pending_approval tool result immediately, and executes the underlying function on approval::resolve. Resolutions stitch into the agent's next turn via approval::list_undelivered + approval::ack_delivered."
+        description: "Rules-driven approval gate. Subscribes to agent::before_function_call and decides every call via a layered ruleset: Allow → pass through, Deny → structured policy denial, Ask → write a Pending record and pause. Operators resolve pending rows via approval::resolve (with optional allow+always for session-scoped auto-allow). Done records drain into the next assistant turn via approval::consume. A built-in watchdog (approval::tick_timeouts) fires on a configurable interval to reclaim expired Pending and stale InFlight rows and wake the orchestrator via run::resume."
             .to_string(),
         default_config: default_config(),
         supported_targets: vec![env!("TARGET").to_string()],

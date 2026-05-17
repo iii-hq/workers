@@ -55,6 +55,21 @@ pub struct Refs {
     pub tick_timeouts: FunctionRef,
     pub subscriber_fn: FunctionRef,
     pub subscriber_trigger: iii_sdk::Trigger,
+    /// Background loop that fires `handle_tick_timeouts` on a fixed
+    /// interval (finding #4 auto-tick). `None` when
+    /// `cfg.tick_interval_ms == 0` (tests disable the loop so they can
+    /// drive ticks manually). Dropped with `Refs` → loop aborts.
+    pub tick_task: Option<TickTaskGuard>,
+}
+
+/// RAII guard around the auto-tick `tokio::task::JoinHandle`. Aborting on
+/// drop keeps tests from leaking background tasks between cases.
+pub struct TickTaskGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for TickTaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
@@ -229,7 +244,9 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         ));
 
     // Watchdog: reclaim expired Pending + stale InFlight rows and wake
-    // the orchestrator for any affected sessions (finding #4).
+    // the orchestrator for any affected sessions (finding #4). The
+    // function is callable on demand AND fired periodically by the
+    // background loop spawned below (when tick_interval_ms > 0).
     let bus_for_tick = bus.clone();
     let scope_tick = state_scope.clone();
     let iii_for_tick = iii.clone();
@@ -238,29 +255,50 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             "Watchdog tick: flips expired Pending rows and stale InFlight rows to \
              Done(TimedOut), then calls run::resume for each affected session so \
              the orchestrator stitches the timed_out outcome into the LLM turn. \
-             Payload: {} or {scope_prefix: \"<session_id>/\"} for session-scoped \
-             ticks. Response: {ok, reclaimed: N, sessions_woken: [\"sess_a\", ...]}."
+             Fires automatically every `tick_interval_ms` (config); also callable \
+             on demand. Payload: {} or {scope_prefix: \"<session_id>/\"} for \
+             session-scoped ticks. Response: {ok, reclaimed: N, sessions_woken: \
+             [\"sess_a\", ...]}."
                 .into(),
         ),
         move |payload: Value| {
             let bus = bus_for_tick.clone();
             let scope = scope_tick.clone();
             let iii = iii_for_tick.clone();
-            async move {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                let tick = handle_tick_timeouts(bus.as_ref(), &scope, payload, now_ms).await;
-                if let Some(sessions) = tick.get("sessions_woken").and_then(Value::as_array) {
-                    for session in sessions.iter().filter_map(Value::as_str) {
-                        publish_turn_step(&iii, session).await;
-                    }
-                }
-                Ok::<_, IIIError>(tick)
-            }
+            async move { Ok::<_, IIIError>(run_tick(&iii, bus.as_ref(), &scope, payload).await) }
         },
     ));
+
+    // Auto-tick loop. Calls `run_tick` directly (NOT via iii.trigger) so
+    // it keeps working if the bus is the thing that's down, and so it
+    // doesn't show up as orchestrator-driven traffic in observability.
+    let tick_task = if cfg.tick_interval_ms > 0 {
+        let interval = std::time::Duration::from_millis(cfg.tick_interval_ms);
+        let bus_for_loop = bus.clone();
+        let scope_for_loop = state_scope.clone();
+        let iii_for_loop = iii.clone();
+        let handle = tokio::spawn(async move {
+            // First fire after one interval — give the worker time to
+            // finish boot before adding bus traffic.
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // first tick fires immediately; absorb it
+            loop {
+                ticker.tick().await;
+                let _ = run_tick(
+                    &iii_for_loop,
+                    bus_for_loop.as_ref(),
+                    &scope_for_loop,
+                    json!({}),
+                )
+                .await;
+            }
+        });
+        Some(TickTaskGuard(handle))
+    } else {
+        tracing::info!("approval-gate: tick_interval_ms=0 — auto-tick disabled");
+        None
+    };
 
     let iii_for_sub = iii.clone();
     let bus_for_sub = bus.clone();
@@ -350,7 +388,25 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
         tick_timeouts,
         subscriber_fn,
         subscriber_trigger,
+        tick_task,
     })
+}
+
+/// Run one watchdog cycle and wake every session that had a row
+/// reclaimed. Shared by the registered function and the auto-tick loop
+/// so on-demand and scheduled ticks behave identically.
+async fn run_tick(iii: &III, bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let tick = handle_tick_timeouts(bus, state_scope, payload, now_ms).await;
+    if let Some(sessions) = tick.get("sessions_woken").and_then(Value::as_array) {
+        for session in sessions.iter().filter_map(Value::as_str) {
+            publish_turn_step(iii, session).await;
+        }
+    }
+    tick
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -420,6 +476,19 @@ pub(crate) async fn publish_turn_step(iii: &III, session_id: &str) {
         }
         Err(e) => {
             tracing::warn!(error = %e, %session_id, "approval-gate: run::resume failed");
+            // Surface the wake failure to the UI so a stuck orchestrator
+            // doesn't look like "approval went through, nothing happened".
+            // Without this the operator clicks allow, sees the card vanish,
+            // and the conversation silently stalls.
+            write_event(
+                iii,
+                session_id,
+                &json!({
+                    "type": "approval_wake_failed",
+                    "error": e.to_string(),
+                }),
+            )
+            .await;
         }
     }
 }

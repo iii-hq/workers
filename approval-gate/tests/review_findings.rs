@@ -422,13 +422,17 @@ async fn done_write_failure_must_not_orphan_in_flight_row() {
 async fn concurrent_consume_must_not_return_duplicate_rows() {
     use tokio::sync::Barrier;
 
-    struct InterleaveBus {
+    // Simulate the production backend's non-atomic delete: even after
+    // the row is gone, the iii state surface today can report
+    // `existed=true` to two concurrent callers because its delete is
+    // `get`-then-`delete`. The per-session mutex in `handle_consume`
+    // MUST close this gap on its own, without leaning on `delete`'s
+    // return value.
+    struct RacyDeleteBus {
         inner: InMemoryStateBus,
-        list_gate: Arc<Barrier>,
-        lists: Mutex<u32>,
     }
     #[async_trait::async_trait]
-    impl StateBus for InterleaveBus {
+    impl StateBus for RacyDeleteBus {
         async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
             self.inner.set(scope, key, value).await
         }
@@ -436,26 +440,18 @@ async fn concurrent_consume_must_not_return_duplicate_rows() {
             self.inner.get(scope, key).await
         }
         async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
-            let out = self.inner.list_prefix(scope, prefix).await;
-            let need_barrier = {
-                let mut n = self.lists.lock().unwrap();
-                *n += 1;
-                *n <= 2
-            };
-            if need_barrier {
-                self.list_gate.wait().await;
-            }
-            out
+            self.inner.list_prefix(scope, prefix).await
         }
         async fn delete(&self, scope: &str, key: &str) -> Result<bool, iii_sdk::IIIError> {
-            self.inner.delete(scope, key).await
+            // Always claim the row existed, even if it didn't. Models the
+            // iii backend's lack of an atomic delete-if-present primitive.
+            let _ = self.inner.delete(scope, key).await;
+            Ok(true)
         }
     }
 
-    let bus = Arc::new(InterleaveBus {
+    let bus = Arc::new(RacyDeleteBus {
         inner: InMemoryStateBus::new(),
-        list_gate: Arc::new(Barrier::new(2)),
-        lists: Mutex::new(0),
     });
 
     let done = pending_row("sess_D", "tc-d", "shell::exec", json!({}))
@@ -468,8 +464,13 @@ async fn concurrent_consume_must_not_return_duplicate_rows() {
         .await
         .unwrap();
 
+    // Start barrier so both consumes hit handle_consume at the same
+    // instant — exactly the race the per-session mutex must serialize.
+    let start = Arc::new(Barrier::new(2));
     let (bus1, bus2) = (bus.clone(), bus.clone());
+    let (s1, s2) = (start.clone(), start.clone());
     let t1 = tokio::spawn(async move {
+        s1.wait().await;
         handle_consume(
             bus1.as_ref(),
             STATE_SCOPE,
@@ -479,6 +480,7 @@ async fn concurrent_consume_must_not_return_duplicate_rows() {
         .await
     });
     let t2 = tokio::spawn(async move {
+        s2.wait().await;
         handle_consume(
             bus2.as_ref(),
             STATE_SCOPE,

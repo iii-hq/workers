@@ -21,12 +21,22 @@ pub trait StateBus: Send + Sync {
     async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), IIIError>;
     async fn get(&self, scope: &str, key: &str) -> Option<Value>;
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value>;
-    /// Remove a key. Required by `approval::consume`, which returns Done
-    /// rows and deletes them in the same call. Returns `Ok(true)` if the
-    /// key existed and was removed, `Ok(false)` if it was already gone.
-    /// Callers (notably `handle_consume`) treat `Ok(false)` as "another
-    /// consume already drained this row" and skip emitting the entry —
-    /// this is what makes concurrent consumes non-duplicating.
+    /// Remove a key. Returns `Ok(true)` if the key existed and was
+    /// removed, `Ok(false)` if it was already gone.
+    ///
+    /// ## Atomicity caveat (finding #6 follow-up)
+    ///
+    /// In-memory fakes implement this atomically via their backing
+    /// `HashMap::remove`. The production [`IiiStateBus`] does it as
+    /// `get`-then-`delete` because the iii state surface today exposes
+    /// no atomic "delete-if-present" primitive — two consumers can both
+    /// observe `Ok(true)` if they straddle each other's read/write.
+    ///
+    /// [`crate::delivery::handle_consume`] compensates with a
+    /// process-local per-session async mutex, which closes the
+    /// realistic single-worker race but does NOT cover the
+    /// multi-worker-same-scope deployment. The proper fix is an
+    /// engine-level atomic delete; tracked in iii-database backlog.
     async fn delete(&self, scope: &str, key: &str) -> Result<bool, IIIError>;
 }
 
@@ -101,7 +111,7 @@ impl StateBus for IiiStateBus {
             .filter(|v| !v.is_null())
     }
     async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
-        let resp = self
+        let resp = match self
             .0
             .trigger(TriggerRequest {
                 function_id: "state::list".into(),
@@ -110,7 +120,20 @@ impl StateBus for IiiStateBus {
                 timeout_ms: None,
             })
             .await
-            .unwrap_or_else(|_| json!({ "items": [] }));
+        {
+            Ok(v) => v,
+            Err(e) => {
+                // Surface the engine failure rather than masquerading as
+                // "no rows". A silent empty here hides watchdog ticks
+                // (finding #4 follow-up): every call reports
+                // `reclaimed: 0` and the orchestrator never wakes.
+                tracing::warn!(
+                    error = %e, scope, prefix,
+                    "approval-gate: state::list failed; returning empty result"
+                );
+                json!({ "items": [] })
+            }
+        };
         // Engine may return either {"items": [...]} or a plain Array.
         if let Some(arr) = resp.as_array() {
             return arr.clone();

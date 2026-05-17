@@ -22,6 +22,11 @@ config:
   topic: agent::before_function_call
   approval_state_scope: approvals
   default_timeout_ms: 300000
+  # Watchdog tick interval (ms). The gate spawns a background task that
+  # calls approval::tick_timeouts every interval to reclaim expired
+  # Pending and stale InFlight rows, then wakes the orchestrator via
+  # run::resume. Set to 0 to disable (tests drive ticks manually).
+  tick_interval_ms: 15000
 
   # Curated default ruleset. `before_function_call` fires for every tool
   # call; with no rules and no-match defaulting to Ask, an empty ruleset
