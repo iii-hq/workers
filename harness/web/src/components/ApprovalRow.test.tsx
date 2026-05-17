@@ -177,4 +177,96 @@ describe("ApprovalRow", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(/ws closed/i);
   });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Finding #2 follow-up: `approval_wake_failed` events from the gate
+  // must render an operator-visible alert. The card has already been
+  // removed by `approval_resolved`, so the alert is the only signal
+  // that the conversation didn't actually resume.
+  // ──────────────────────────────────────────────────────────────────
+
+  it("renders the wake-failure alert even when no approvals are pending", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[]}
+        wakeFailures={[{ error: "run::resume timed out", ts: Date.now() }]}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/conversation didn[’']?t resume/i);
+    expect(alert.textContent).toMatch(/run::resume timed out/);
+  });
+
+  it("renders multiple distinct wake-failure alerts side by side", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[]}
+        wakeFailures={[
+          { error: "boom", ts: 1 },
+          { error: "kaboom", ts: 2 },
+        ]}
+      />,
+    );
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0].textContent).toMatch(/boom/);
+    expect(alerts[1].textContent).toMatch(/kaboom/);
+  });
+
+  it("renders wake failures alongside live approval cards", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[approval()]}
+        wakeFailures={[{ error: "ws closed", ts: Date.now() }]}
+      />,
+    );
+    // Card + alert both present.
+    expect(screen.getByRole("region", { name: /pending approvals/i })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toMatch(/ws closed/);
+    expect(screen.getByRole("button", { name: "allow" })).toBeTruthy();
+  });
+
+  it("calls onDismissWakeFailure when the dismiss button is clicked", () => {
+    const onDismiss = vi.fn();
+    const failure = { error: "boom", ts: 42 };
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[]}
+        wakeFailures={[failure]}
+        onDismissWakeFailure={onDismiss}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    expect(onDismiss).toHaveBeenCalledWith(failure);
+  });
+
+  it("renders no dismiss button when no onDismissWakeFailure is provided", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[]}
+        wakeFailures={[{ error: "boom", ts: 1 }]}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
+  });
+
+  it("returns null only when both pending and wakeFailures are empty", () => {
+    const { container, rerender } = render(
+      <ApprovalRow sessionId="sess-1" pending={[]} wakeFailures={[]} />,
+    );
+    expect(container.firstChild).toBeNull();
+    rerender(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[]}
+        wakeFailures={[{ error: "x", ts: 1 }]}
+      />,
+    );
+    expect(container.firstChild).not.toBeNull();
+  });
 });

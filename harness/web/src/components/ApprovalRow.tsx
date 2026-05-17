@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
 import { bridge, BridgeError } from "../bridge";
-import type { PendingApproval } from "../types";
+import type { PendingApproval, WakeFailure } from "../types";
 
 interface Props {
   sessionId: string;
   pending: PendingApproval[];
+  /**
+   * Wake-failure alerts surfaced by approval-gate when `run::resume`
+   * fails after an approval was resolved. Finding #2 follow-up — without
+   * showing these, the operator sees the card disappear and assumes
+   * everything went through while the conversation has actually stalled.
+   */
+  wakeFailures?: WakeFailure[];
+  /** Optional dismissal callback so the consumer can clear alerts. */
+  onDismissWakeFailure?: (failure: WakeFailure) => void;
 }
 
 type ResolveDecision = "allow" | "deny";
@@ -167,11 +176,19 @@ function ApprovalCard({ sessionId: _sessionId, approval, callId, fnId, busyId, o
   );
 }
 
-export function ApprovalRow({ sessionId, pending }: Props) {
+export function ApprovalRow({
+  sessionId,
+  pending,
+  wakeFailures = [],
+  onDismissWakeFailure,
+}: Props) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  if (pending.length === 0) return null;
+  // Even when no approvals are pending we must keep this region mounted
+  // long enough to surface wake-failure alerts — those arrive AFTER
+  // approval_resolved has removed every card from `pending`.
+  if (pending.length === 0 && wakeFailures.length === 0) return null;
 
   const resolve = async (
     functionCallId: string,
@@ -209,6 +226,26 @@ export function ApprovalRow({ sessionId, pending }: Props) {
 
   return (
     <div className="approvals" role="region" aria-label="pending approvals" aria-live="polite">
+      {wakeFailures.map((w) => (
+        <div
+          key={`${w.ts}-${w.error}`}
+          className="approval-wake-failed"
+          role="alert"
+        >
+          <strong>Approval went through, but the conversation didn’t resume.</strong>
+          <span className="approval-wake-failed-detail"> {w.error}</span>
+          {onDismissWakeFailure ? (
+            <button
+              type="button"
+              className="approval-wake-failed-dismiss"
+              onClick={() => onDismissWakeFailure(w)}
+              aria-label="dismiss wake-failure alert"
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
+      ))}
       {pending.map((a) => {
         const callId = a.function_call_id ?? a.tool_call_id;
         const fnId = a.function_id ?? a.tool_name ?? "";

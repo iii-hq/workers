@@ -123,3 +123,70 @@ describe("reducer (entry-id keyed)", () => {
     },
   );
 });
+
+// ──────────────────────────────────────────────────────────────────
+// Finding #2 follow-up: approval_wake_failed events must land in
+// `state.wakeFailures` so the UI can surface them. Without this the
+// reducer's default branch drops the event and the operator sees
+// "approval went through" while the conversation has actually stalled.
+// ──────────────────────────────────────────────────────────────────
+
+describe("reducer — approval_wake_failed", () => {
+  it("records a wake-failure with its error text and a timestamp", () => {
+    const before = Date.now();
+    const s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "run::resume timed out",
+    });
+    expect(s.wakeFailures).toHaveLength(1);
+    expect(s.wakeFailures[0].error).toBe("run::resume timed out");
+    expect(s.wakeFailures[0].ts).toBeGreaterThanOrEqual(before);
+  });
+
+  it("dedups identical error strings so a retry storm doesn't flood the UI", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "ws closed",
+    });
+    s = applyEvent(s, { type: "approval_wake_failed", error: "ws closed" });
+    s = applyEvent(s, { type: "approval_wake_failed", error: "ws closed" });
+    expect(s.wakeFailures).toHaveLength(1);
+  });
+
+  it("keeps distinct error strings separate", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "ws closed",
+    });
+    s = applyEvent(s, {
+      type: "approval_wake_failed",
+      error: "engine restarted",
+    });
+    expect(s.wakeFailures.map((w) => w.error)).toEqual([
+      "ws closed",
+      "engine restarted",
+    ]);
+  });
+
+  it("falls back to a default error string when the event omits one", () => {
+    const s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "",
+    });
+    expect(s.wakeFailures).toHaveLength(1);
+    expect(s.wakeFailures[0].error).toMatch(/run::resume failed/i);
+  });
+
+  it("preserves wakeFailures when an unrelated event (approval_resolved) arrives", () => {
+    let s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_wake_failed",
+      error: "ws closed",
+    });
+    s = applyEvent(s, {
+      type: "approval_resolved",
+      function_call_id: "tc-1",
+      decision: "allow",
+    });
+    expect(s.wakeFailures).toHaveLength(1);
+  });
+});

@@ -241,6 +241,17 @@ export type AgentEvent =
       decision: "allow" | "deny";
       reason?: string | null;
       tool_call_id?: string;
+    }
+  | {
+      type: "approval_wake_failed";
+      /**
+       * `run::resume` failed after an approval was resolved. The card
+       * already vanished via approval_resolved, but the orchestrator
+       * isn't actually unstuck. Operator must see this — otherwise the
+       * conversation silently stalls. Backend source:
+       * `approval-gate/src/register.rs::publish_turn_step`.
+       */
+      error: string;
     };
 
 export interface PendingApproval {
@@ -252,12 +263,25 @@ export interface PendingApproval {
   expires_at?: number;
 }
 
+/**
+ * Backend told us `run::resume` failed for this session. The approved
+ * call's record is in state but the orchestrator never woke up to
+ * stitch it into the next turn. The operator needs to know — otherwise
+ * the conversation looks like "approval went through" but actually stalled.
+ */
+export interface WakeFailure {
+  error: string;
+  /** Local timestamp (ms) — used for sort + de-dup, not authoritative. */
+  ts: number;
+}
+
 export interface StreamState {
   messageMap: Map<EntryId, AgentMessage>;
   unkeyedMessages: AgentMessage[];   // backwards-compat for events without entry_id
   messageOrder: EntryId[];
   lastEntryId: EntryId | null;
   pendingApprovals: PendingApproval[];
+  wakeFailures: WakeFailure[];
   status: "idle" | "running" | "ended";
 }
 
@@ -267,5 +291,6 @@ export const INITIAL_STREAM_STATE: StreamState = {
   messageOrder: [],
   lastEntryId: null,
   pendingApprovals: [],
+  wakeFailures: [],
   status: "idle",
 };

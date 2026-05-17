@@ -146,6 +146,23 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
       };
     }
 
+    case "approval_wake_failed": {
+      // Surface the wake failure (finding #2 follow-up). The card has
+      // already been removed by the preceding approval_resolved — this
+      // event tells the operator the orchestrator didn't actually
+      // resume despite the resolve succeeding. Dedup by error string so
+      // the same outage doesn't paper the screen if approval-gate
+      // retries during a longer disruption.
+      const err = event.error || "run::resume failed";
+      if (state.wakeFailures.some((w) => w.error === err)) {
+        return state;
+      }
+      return {
+        ...state,
+        wakeFailures: [...state.wakeFailures, { error: err, ts: Date.now() }],
+      };
+    }
+
     case "turn_start":
     case "tool_execution_start":
     case "tool_execution_update":
