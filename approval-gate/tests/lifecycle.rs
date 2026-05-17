@@ -259,6 +259,19 @@ async fn cascade_path_end_to_end() {
         r["cascaded"], 1,
         "one extra row (tc-5) must have auto-resolved"
     );
+    // Cascaded call_ids must surface so register.rs can emit per-call
+    // approval_resolved events for the UI to clear stale cards.
+    let cascaded_ids = r["cascaded_call_ids"]
+        .as_array()
+        .expect("response must include cascaded_call_ids array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cascaded_ids,
+        vec!["tc-5"],
+        "only tc-5 (same argv shape as originator) cascade-resolves",
+    );
 
     // Executor called twice (originator + cascade).
     assert_eq!(exec.calls.lock().unwrap().len(), 2);

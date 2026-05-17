@@ -132,32 +132,37 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     if !session_id.is_empty() && !call_id.is_empty() {
-                        let key = pending_key(session_id, call_id);
-                        if let Some(final_rec) = bus.get(&scope_resolve, &key).await {
-                            let mut evt = json!({
-                                "type": "approval_resolved",
-                                "function_call_id": call_id,
-                                "tool_call_id": call_id,
-                            });
-                            if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
-                                evt["decision"] = match status {
-                                    "executed" | "approved" => json!("allow"),
-                                    _ => json!("deny"),
-                                };
-                                evt["status"] = json!(status);
+                        // 1. Originator's `approval_resolved` event.
+                        emit_approval_resolved(
+                            &iii,
+                            bus.as_ref(),
+                            &scope_resolve,
+                            session_id,
+                            call_id,
+                        )
+                        .await;
+
+                        // 2. One `approval_resolved` per cascade-resolved
+                        //    call (finding #2-cascade follow-up). Without
+                        //    these the UI cards for auto-resolved rows
+                        //    stay clickable until something else refreshes
+                        //    the pending list.
+                        if let Some(ids) =
+                            resp.get("cascaded_call_ids").and_then(Value::as_array)
+                        {
+                            for cid in ids.iter().filter_map(Value::as_str) {
+                                emit_approval_resolved(
+                                    &iii,
+                                    bus.as_ref(),
+                                    &scope_resolve,
+                                    session_id,
+                                    cid,
+                                )
+                                .await;
                             }
-                            if let Some(r) = final_rec.get("result") {
-                                evt["result"] = json!(r);
-                            }
-                            if let Some(e) = final_rec.get("error") {
-                                evt["error"] = json!(e);
-                            }
-                            if let Some(denial) = final_rec.get("denial") {
-                                evt["denial"] = denial.clone();
-                            }
-                            write_event(&iii, session_id, &evt).await;
                         }
-                        // Wake the orchestrator so it drains the resolved
+
+                        // 3. Wake the orchestrator so it drains the resolved
                         // record into the next assistant turn. Pending
                         // results carry `terminate: true`, so without this
                         // re-kick the conversation would stall after the
@@ -425,6 +430,47 @@ pub(crate) fn uuid_like() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{t:x}-{n:x}")
+}
+
+/// Emit an `approval_resolved` stream event for one `(session_id, call_id)`
+/// pair. Reads the post-write record from the state bus to populate the
+/// `decision` / `status` / `result` / `denial` fields, matching the
+/// shape the UI reducer expects. Used both for the originator of a
+/// resolve and for each cascade-resolved call so the operator's view
+/// stays consistent across allow+always (finding #2-cascade follow-up).
+pub(crate) async fn emit_approval_resolved(
+    iii: &III,
+    bus: &dyn StateBus,
+    state_scope: &str,
+    session_id: &str,
+    call_id: &str,
+) {
+    let key = pending_key(session_id, call_id);
+    let Some(final_rec) = bus.get(state_scope, &key).await else {
+        return;
+    };
+    let mut evt = json!({
+        "type": "approval_resolved",
+        "function_call_id": call_id,
+        "tool_call_id": call_id,
+    });
+    if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
+        evt["decision"] = match status {
+            "executed" | "approved" => json!("allow"),
+            _ => json!("deny"),
+        };
+        evt["status"] = json!(status);
+    }
+    if let Some(r) = final_rec.get("result") {
+        evt["result"] = json!(r);
+    }
+    if let Some(e) = final_rec.get("error") {
+        evt["error"] = json!(e);
+    }
+    if let Some(denial) = final_rec.get("denial") {
+        evt["denial"] = denial.clone();
+    }
+    write_event(iii, session_id, &evt).await;
 }
 
 /// Append `event` to the `agent::events` stream for `session_id`. Fire-

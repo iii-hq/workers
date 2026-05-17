@@ -206,7 +206,7 @@ pub async fn handle_resolve(
             // Cascade on `always:true`. Push a runtime Allow rule with the
             // ORIGINATOR'S EXACT PATTERN (via pattern_for), then sweep the
             // session's other Pending rows.
-            let cascaded = if payload
+            let cascaded_ids: Vec<String> = if payload
                 .get("always")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
@@ -224,14 +224,20 @@ pub async fn handle_resolve(
                 )
                 .await
             } else {
-                0
+                Vec::new()
             };
 
-            if cascaded > 0 {
-                json!({ "ok": true, "cascaded": cascaded })
-            } else {
-                json!({ "ok": true })
+            // Surface the cascaded call_ids so register.rs's subscriber
+            // can emit an `approval_resolved` stream event for each one
+            // (finding #2-cascade follow-up). Without this the UI cards
+            // for auto-resolved rows stay clickable until something else
+            // refreshes the pending list.
+            let mut resp = json!({ "ok": true });
+            if !cascaded_ids.is_empty() {
+                resp["cascaded"] = json!(cascaded_ids.len());
+                resp["cascaded_call_ids"] = json!(cascaded_ids);
             }
+            resp
         }
     }
 }
@@ -254,7 +260,7 @@ async fn cascade_allow_for_session(
     originator_function_id: &str,
     originator_args: &Value,
     now_ms: u64,
-) -> u64 {
+) -> Vec<String> {
     // 1. Push the exact-pattern Allow rule into THIS SESSION's overlay
     //    (finding #2). The rule must not leak into other sessions — the
     //    UI tooltip on `allow + always` promises session-local scope.
@@ -280,7 +286,7 @@ async fn cascade_allow_for_session(
     let prefix = format!("{session_id}/");
     let session_rows = bus.list_prefix(state_scope, &prefix).await;
 
-    let mut cascaded = 0u64;
+    let mut cascaded: Vec<String> = Vec::new();
     for raw in session_rows {
         let Some(record) = Record::from_value(raw) else {
             continue;
@@ -320,7 +326,7 @@ async fn cascade_allow_for_session(
             );
             continue;
         }
-        cascaded += 1;
+        cascaded.push(cid);
     }
     cascaded
 }
