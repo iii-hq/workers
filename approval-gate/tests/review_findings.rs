@@ -139,12 +139,26 @@ async fn allow_always_must_not_leak_across_sessions() {
 // invocation. The losing call must return a structured `{ok:false,
 // error:"in_flight"|"already_resolved"}` reply so the caller can
 // react.
+//
+// Determinism note: the earlier version of this test relied on
+// `tokio::Barrier` to align task entry, then trusted scheduler luck for
+// the read→check→write race to actually surface. That made the test
+// pass on a quiet CPU even with the per-key mutex removed. The version
+// below uses [`MaxConcurrentSetBus`] which inserts yield points inside
+// `set()` to deterministically widen the race window, and asserts on
+// `peak_concurrent_sets <= 1` — that property fails every run when the
+// guard is removed.
+//
+// Manual adversarial check: comment out
+//   `let _key_guard = key_lock.lock().await;`
+// in `approval-gate/src/resolve.rs` and re-run this test; it must fail
+// every time. Restore the line afterwards.
 // ────────────────────────────────────────────────────────────────────────
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_resolves_must_invoke_function_at_most_once() {
     use tokio::sync::Barrier;
 
-    let bus = Arc::new(InMemoryStateBus::new());
+    let bus = Arc::new(common::MaxConcurrentSetBus::new(8));
     let exec = Arc::new(FakeExecutor::default());
     let policy = Arc::new(RwLock::new(LayeredRules::default()));
 
@@ -157,6 +171,10 @@ async fn concurrent_resolves_must_invoke_function_at_most_once() {
     bus.set(STATE_SCOPE, "sess_X/tc-x", row.to_value())
         .await
         .unwrap();
+    // Seeding the row counts as a `set` call. Reset peak so the test
+    // only measures concurrency between the two resolves below.
+    bus.peak_concurrent_sets
+        .store(0, std::sync::atomic::Ordering::SeqCst);
 
     let payload = json!({
         "session_id": "sess_X",
@@ -165,8 +183,8 @@ async fn concurrent_resolves_must_invoke_function_at_most_once() {
     });
 
     // Start barrier so both tasks reach handle_resolve at the same
-    // instant. Without an atomic guard, the unprotected read-then-write
-    // race becomes overwhelmingly likely on a multi-thread runtime.
+    // instant. The bus's set-side yields then guarantee the race
+    // window is wide enough to be deterministically observed.
     let start = Arc::new(Barrier::new(2));
     let (bus1, bus2) = (bus.clone(), bus.clone());
     let (exec1, exec2) = (exec.clone(), exec.clone());
@@ -201,6 +219,16 @@ async fn concurrent_resolves_must_invoke_function_at_most_once() {
     let (r1, r2) = tokio::join!(t1, t2);
     let r1 = r1.unwrap();
     let r2 = r2.unwrap();
+
+    // Deterministic property: the bus never saw two `set()` calls in
+    // flight at the same time. Without the per-key mutex this would
+    // hit 2 every run (the yields keep both writes overlapping).
+    assert!(
+        bus.peak() <= 1,
+        "per-key mutex must serialize the read→check→write window; \
+         saw {} concurrent set() calls in flight",
+        bus.peak(),
+    );
 
     // Exactly one invoke.
     let invocations = exec.calls.lock().unwrap().len();
@@ -311,6 +339,88 @@ async fn timed_out_rows_must_have_a_wake_surface() {
         "expected the gate to expose a timeout-driven wake surface so \
          expired Pending rows can re-kick the orchestrator; today's \
          surfaces ({surfaces:?}) only fire on operator action",
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// FINDING #4 follow-up — `run_tick` must call `run::resume` for each
+// reclaimed session.
+//
+// `timed_out_rows_must_have_a_wake_surface` above pins the *contract*
+// (handle_tick_timeouts reports sessions_woken; a function-id constant
+// exists). The tests below pin the *behavior*: when `run_tick` runs it
+// actually invokes the orchestrator's `run::resume` for every session
+// in the list, and when the trigger fails the wake-failure event is
+// surfaced. They use a [`FakeWaker`] to observe the iii-side calls
+// without booting a real engine.
+// ────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn run_tick_calls_resume_for_each_woken_session() {
+    let bus = InMemoryStateBus::new();
+    let mut a = pending_row("sess_A", "tc-a", "shell::exec", json!({}));
+    a.expires_at = 1;
+    seed_pending(&bus, &a).await;
+    let mut b = pending_row("sess_B", "tc-b", "shell::exec", json!({}));
+    b.expires_at = 1;
+    seed_pending(&bus, &b).await;
+
+    let waker = common::FakeWaker::default();
+    let tick = approval_gate::run_tick(&waker, &bus, STATE_SCOPE, json!({})).await;
+    assert_eq!(tick["reclaimed"], 2);
+
+    let mut got = waker.resume_calls.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["sess_A".to_string(), "sess_B".to_string()],
+        "run_tick must call run::resume once per reclaimed session",
+    );
+    assert!(
+        waker.wake_failed_calls.lock().unwrap().is_empty(),
+        "no wake-failed events on the happy path",
+    );
+}
+
+#[tokio::test]
+async fn run_tick_writes_wake_failed_when_resume_errors() {
+    let bus = InMemoryStateBus::new();
+    let mut r = pending_row("sess_T", "tc-t", "shell::exec", json!({}));
+    r.expires_at = 1;
+    seed_pending(&bus, &r).await;
+
+    let waker = common::FakeWaker::default();
+    *waker.resume_response.lock().unwrap() = Some(Err("engine down".to_string()));
+
+    approval_gate::run_tick(&waker, &bus, STATE_SCOPE, json!({})).await;
+
+    assert_eq!(
+        *waker.resume_calls.lock().unwrap(),
+        vec!["sess_T".to_string()],
+        "run_tick must still attempt the wake even though it'll fail",
+    );
+    assert_eq!(
+        *waker.wake_failed_calls.lock().unwrap(),
+        vec![("sess_T".to_string(), "engine down".to_string())],
+        "wake failures must surface as approval_wake_failed events so the \
+         operator doesn't watch a silent stall",
+    );
+}
+
+#[tokio::test]
+async fn run_tick_skips_resume_when_no_rows_expired() {
+    let bus = InMemoryStateBus::new();
+    // Pending with a deadline well in the future.
+    let mut r = pending_row("sess_F", "tc-f", "shell::exec", json!({}));
+    r.expires_at = now_ms() + 60_000;
+    seed_pending(&bus, &r).await;
+
+    let waker = common::FakeWaker::default();
+    let tick = approval_gate::run_tick(&waker, &bus, STATE_SCOPE, json!({})).await;
+    assert_eq!(tick["reclaimed"], 0);
+    assert!(
+        waker.resume_calls.lock().unwrap().is_empty(),
+        "no expired rows ⇒ no wake calls",
     );
 }
 
@@ -568,4 +678,111 @@ async fn approved_invoke_must_augment_args_like_normal_path() {
         Some("shell::exec"),
     );
     assert_eq!(nested.get("arguments"), Some(&original_args));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// FINDING — `approval_resolved` event MUST derive `decision` from
+// `outcome.kind`, not `Record.status`.
+//
+// Reproducer for the validator's P2 finding: the previous
+// `emit_approval_resolved` read `final_rec.status` (always `"done"` for
+// terminal records) and matched it against `"executed"|"approved"`, so
+// every resolved approval emitted `decision: "deny"` — the cascade fix
+// just made the wrong payload happen N+1 times instead of once.
+//
+// Pin the corrected mapping via the pure helper so the bug can't return
+// without a test breaking:
+//   - outcome.kind == "executed"  → decision == "allow"
+//   - everything else (failed/denied/timed_out) → decision == "deny"
+// Also pin the wire shape: drop the redundant flat status/result/
+// error/denial fields in favor of a single nested `outcome`.
+// ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn approval_resolved_event_decision_is_allow_only_for_executed_outcome() {
+    let rec = pending_row("sess_A", "tc-1", "shell::exec", json!({}))
+        .in_flight(now_ms())
+        .done(Outcome::Executed {
+            result: json!({"stdout": "ok"}),
+        });
+    let evt = approval_gate::build_approval_resolved_event("tc-1", &rec.to_value());
+    assert_eq!(
+        evt["decision"], "allow",
+        "outcome.kind=executed must map to decision=allow",
+    );
+    assert_eq!(evt["function_call_id"], "tc-1");
+    assert_eq!(evt["tool_call_id"], "tc-1");
+    assert_eq!(
+        evt["outcome"]["kind"], "executed",
+        "full outcome must be carried for downstream consumers",
+    );
+    assert_eq!(
+        evt["outcome"]["detail"]["result"]["stdout"], "ok",
+        "outcome.detail must carry the full executor result",
+    );
+    // Wire shape pin: redundant flat fields are gone.
+    assert!(
+        evt.get("status").is_none(),
+        "flat `status` field must be removed (use outcome.kind)",
+    );
+    assert!(
+        evt.get("result").is_none(),
+        "flat `result` field must be removed (use outcome.detail.result)",
+    );
+}
+
+#[test]
+fn approval_resolved_event_decision_is_deny_for_failed_outcome() {
+    let rec = pending_row("sess_A", "tc-2", "shell::exec", json!({}))
+        .in_flight(now_ms())
+        .done(Outcome::Failed {
+            error: "spawn failed".into(),
+        });
+    let evt = approval_gate::build_approval_resolved_event("tc-2", &rec.to_value());
+    assert_eq!(
+        evt["decision"], "deny",
+        "outcome.kind=failed must map to decision=deny — not 'allow'",
+    );
+    assert_eq!(evt["outcome"]["kind"], "failed");
+    assert_eq!(evt["outcome"]["detail"]["error"], "spawn failed");
+}
+
+#[test]
+fn approval_resolved_event_decision_is_deny_for_denied_outcome() {
+    let rec = pending_row("sess_A", "tc-3", "shell::exec", json!({}))
+        .done_at(
+            now_ms(),
+            Outcome::Denied {
+                denial: approval_gate::Denial::UserRejected,
+            },
+        );
+    let evt = approval_gate::build_approval_resolved_event("tc-3", &rec.to_value());
+    assert_eq!(evt["decision"], "deny");
+    assert_eq!(evt["outcome"]["kind"], "denied");
+    assert_eq!(evt["outcome"]["detail"]["denial"]["kind"], "user_rejected");
+}
+
+#[test]
+fn approval_resolved_event_decision_is_deny_for_timed_out_outcome() {
+    let rec = pending_row("sess_A", "tc-4", "shell::exec", json!({}))
+        .done_at(now_ms(), Outcome::TimedOut);
+    let evt = approval_gate::build_approval_resolved_event("tc-4", &rec.to_value());
+    assert_eq!(evt["decision"], "deny");
+    assert_eq!(evt["outcome"]["kind"], "timed_out");
+}
+
+/// Regression for the previous bug: if `outcome` is missing entirely
+/// (shouldn't happen for terminal records, but defensive) decision must
+/// be `"deny"` — never silently emit `"allow"`.
+#[test]
+fn approval_resolved_event_defaults_decision_to_deny_when_outcome_missing() {
+    let evt = approval_gate::build_approval_resolved_event(
+        "tc-5",
+        &json!({ "status": "done" }),
+    );
+    assert_eq!(
+        evt["decision"], "deny",
+        "no outcome ⇒ deny (safety default); allow must require outcome.kind=executed",
+    );
+    assert!(evt.get("outcome").is_none());
 }

@@ -9,9 +9,10 @@
 #![allow(dead_code)] // Individual test binaries pull in subsets of these.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use approval_gate::{FunctionExecutor, IncomingCall, StateBus};
+use approval_gate::{FunctionExecutor, IncomingCall, OrchestratorWaker, StateBus};
 use serde_json::{json, Value};
 
 /// Records every invocation and replays a canned response. By default
@@ -102,6 +103,63 @@ impl StateBus for InMemoryStateBus {
     }
 }
 
+/// `StateBus` wrapper that observes the peak number of concurrent
+/// `set()` calls in flight at any moment AND inserts yield points
+/// inside `set()` to deterministically widen any check-and-set race
+/// window in the handler under test.
+///
+/// Used by the `concurrent_resolves_*` race test (finding #3): if the
+/// per-key mutex around the read→check→write critical section is in
+/// place, `peak_concurrent_sets` stays at 1 because the lock
+/// serializes the entire window. If the mutex is removed, the yields
+/// inside `set()` deterministically overlap the two `InFlight` writes
+/// and `peak_concurrent_sets` reaches 2. The test asserts `<=1` so
+/// removing the lock makes it fail every run, not just on a lucky
+/// scheduler.
+pub struct MaxConcurrentSetBus {
+    inner: InMemoryStateBus,
+    in_flight_sets: AtomicUsize,
+    pub peak_concurrent_sets: AtomicUsize,
+    pub set_yield_count: usize,
+}
+
+impl MaxConcurrentSetBus {
+    pub fn new(set_yield_count: usize) -> Self {
+        Self {
+            inner: InMemoryStateBus::new(),
+            in_flight_sets: AtomicUsize::new(0),
+            peak_concurrent_sets: AtomicUsize::new(0),
+            set_yield_count,
+        }
+    }
+    pub fn peak(&self) -> usize {
+        self.peak_concurrent_sets.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl StateBus for MaxConcurrentSetBus {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), iii_sdk::IIIError> {
+        let n = self.in_flight_sets.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak_concurrent_sets.fetch_max(n, Ordering::SeqCst);
+        for _ in 0..self.set_yield_count {
+            tokio::task::yield_now().await;
+        }
+        let out = self.inner.set(scope, key, value).await;
+        self.in_flight_sets.fetch_sub(1, Ordering::SeqCst);
+        out
+    }
+    async fn get(&self, scope: &str, key: &str) -> Option<Value> {
+        self.inner.get(scope, key).await
+    }
+    async fn list_prefix(&self, scope: &str, prefix: &str) -> Vec<Value> {
+        self.inner.list_prefix(scope, prefix).await
+    }
+    async fn delete(&self, scope: &str, key: &str) -> Result<bool, iii_sdk::IIIError> {
+        self.inner.delete(scope, key).await
+    }
+}
+
 /// `StateBus` whose `set` always errors. Used to exercise the gate's
 /// fail-closed behavior on transient kv outages.
 pub struct FailingStateBus;
@@ -143,4 +201,46 @@ pub fn sample_call() -> IncomingCall {
 /// tests stay independent — there's no shared mutable state.
 pub fn empty_policy_rules() -> std::sync::RwLock<approval_gate::rules::Ruleset> {
     std::sync::RwLock::new(approval_gate::rules::Ruleset::new())
+}
+
+/// Test-only [`OrchestratorWaker`] that records every `resume` and
+/// `write_wake_failed` call. Used by the run_tick behavioral tests to
+/// assert the watchdog actually wakes the orchestrator for each
+/// reclaimed session (instead of just flipping state and silently
+/// returning).
+pub struct FakeWaker {
+    pub resume_calls: Mutex<Vec<String>>,
+    pub wake_failed_calls: Mutex<Vec<(String, String)>>,
+    /// When `Some`, every `resume` returns this canned outcome instead
+    /// of the default `Ok(json!({}))`. Lets a test drive the
+    /// wake-failure branch deterministically.
+    pub resume_response: Mutex<Option<Result<Value, String>>>,
+}
+
+impl Default for FakeWaker {
+    fn default() -> Self {
+        Self {
+            resume_calls: Mutex::new(Vec::new()),
+            wake_failed_calls: Mutex::new(Vec::new()),
+            resume_response: Mutex::new(None),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl OrchestratorWaker for FakeWaker {
+    async fn resume(&self, session_id: &str) -> Result<Value, String> {
+        self.resume_calls.lock().unwrap().push(session_id.to_string());
+        self.resume_response
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| Ok(json!({})))
+    }
+    async fn write_wake_failed(&self, session_id: &str, error: &str) {
+        self.wake_failed_calls
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), error.to_string()));
+    }
 }

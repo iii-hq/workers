@@ -167,7 +167,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         // results carry `terminate: true`, so without this
                         // re-kick the conversation would stall after the
                         // operator clicks allow/deny.
-                        publish_turn_step(&iii, session_id).await;
+                        publish_turn_step(&IIIWaker { iii: &iii }, session_id).await;
                     }
                 }
                 Ok::<_, IIIError>(resp)
@@ -270,7 +270,10 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             let bus = bus_for_tick.clone();
             let scope = scope_tick.clone();
             let iii = iii_for_tick.clone();
-            async move { Ok::<_, IIIError>(run_tick(&iii, bus.as_ref(), &scope, payload).await) }
+            async move {
+                let waker = IIIWaker { iii: &iii };
+                Ok::<_, IIIError>(run_tick(&waker, bus.as_ref(), &scope, payload).await)
+            }
         },
     ));
 
@@ -290,8 +293,9 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
             ticker.tick().await; // first tick fires immediately; absorb it
             loop {
                 ticker.tick().await;
+                let waker = IIIWaker { iii: &iii_for_loop };
                 let _ = run_tick(
-                    &iii_for_loop,
+                    &waker,
                     bus_for_loop.as_ref(),
                     &scope_for_loop,
                     json!({}),
@@ -397,10 +401,68 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
     })
 }
 
+/// Two-method abstraction over the iii calls `publish_turn_step` makes
+/// when waking an orchestrator. Production code uses [`IIIWaker`];
+/// integration tests inject a fake to spy on `run::resume` calls and
+/// drive the wake-failure branch deterministically.
+#[async_trait::async_trait]
+pub trait OrchestratorWaker: Send + Sync {
+    /// Ask the orchestrator to resume the given session. `Ok` is the
+    /// trigger response; `Err` is the string-formatted trigger error.
+    async fn resume(&self, session_id: &str) -> Result<Value, String>;
+    /// Surface a wake failure to the operator's stream so a stuck
+    /// orchestrator doesn't look like "approval went through, nothing
+    /// happened". Fire-and-forget; the persisted record is the source
+    /// of truth.
+    async fn write_wake_failed(&self, session_id: &str, error: &str);
+}
+
+/// Production [`OrchestratorWaker`]: drives the iii client. Constructed
+/// per-call by the auto-tick loop and the registered `tick_timeouts`
+/// function — both ultimately funnel into [`publish_turn_step`].
+pub struct IIIWaker<'a> {
+    pub iii: &'a III,
+}
+
+#[async_trait::async_trait]
+impl<'a> OrchestratorWaker for IIIWaker<'a> {
+    async fn resume(&self, session_id: &str) -> Result<Value, String> {
+        self.iii
+            .trigger(TriggerRequest {
+                function_id: "run::resume".into(),
+                payload: json!({ "session_id": session_id }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+    async fn write_wake_failed(&self, session_id: &str, error: &str) {
+        write_event(
+            self.iii,
+            session_id,
+            &json!({
+                "type": "approval_wake_failed",
+                "error": error,
+            }),
+        )
+        .await;
+    }
+}
+
 /// Run one watchdog cycle and wake every session that had a row
 /// reclaimed. Shared by the registered function and the auto-tick loop
 /// so on-demand and scheduled ticks behave identically.
-async fn run_tick(iii: &III, bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
+///
+/// Public so integration tests can drive it through a fake
+/// [`OrchestratorWaker`] and assert the wake side-effects without
+/// booting a real iii engine.
+pub async fn run_tick(
+    waker: &dyn OrchestratorWaker,
+    bus: &dyn StateBus,
+    state_scope: &str,
+    payload: Value,
+) -> Value {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -408,7 +470,7 @@ async fn run_tick(iii: &III, bus: &dyn StateBus, state_scope: &str, payload: Val
     let tick = handle_tick_timeouts(bus, state_scope, payload, now_ms).await;
     if let Some(sessions) = tick.get("sessions_woken").and_then(Value::as_array) {
         for session in sessions.iter().filter_map(Value::as_str) {
-            publish_turn_step(iii, session).await;
+            publish_turn_step(waker, session).await;
         }
     }
     tick
@@ -433,11 +495,11 @@ pub(crate) fn uuid_like() -> String {
 }
 
 /// Emit an `approval_resolved` stream event for one `(session_id, call_id)`
-/// pair. Reads the post-write record from the state bus to populate the
-/// `decision` / `status` / `result` / `denial` fields, matching the
-/// shape the UI reducer expects. Used both for the originator of a
+/// pair. Reads the post-write record from the state bus, derives the
+/// event payload via [`build_approval_resolved_event`], then writes it
+/// to the agent::events stream. Used both for the originator of a
 /// resolve and for each cascade-resolved call so the operator's view
-/// stays consistent across allow+always (finding #2-cascade follow-up).
+/// stays consistent across allow+always.
 pub(crate) async fn emit_approval_resolved(
     iii: &III,
     bus: &dyn StateBus,
@@ -449,28 +511,44 @@ pub(crate) async fn emit_approval_resolved(
     let Some(final_rec) = bus.get(state_scope, &key).await else {
         return;
     };
+    let evt = build_approval_resolved_event(call_id, &final_rec);
+    write_event(iii, session_id, &evt).await;
+}
+
+/// Build the `approval_resolved` stream event payload from a terminal
+/// Record JSON. Pure helper — unit-tested below.
+///
+/// **Bug fix (P2):** the previous implementation read `final_rec.status`
+/// (always `"done"` for terminal records — see `Record::Status` in
+/// `record.rs`) and tried to match it against `"executed"|"approved"`,
+/// so every resolved approval emitted `decision: "deny"`. The actual
+/// outcome lives at `final_rec.outcome.kind` (one of `executed`,
+/// `failed`, `denied`, `timed_out`). This helper reads the right field.
+///
+/// **Wire shape change:** the redundant flat `status`/`result`/`error`/
+/// `denial` fields are dropped in favor of a single nested `outcome:
+/// { kind, detail }` carrying full fidelity for downstream consumers.
+/// UI consumers (`harness/web/src/reducer.ts`) only read
+/// `function_call_id`, so dropping the flats is safe.
+pub fn build_approval_resolved_event(call_id: &str, final_rec: &Value) -> Value {
     let mut evt = json!({
         "type": "approval_resolved",
         "function_call_id": call_id,
         "tool_call_id": call_id,
     });
-    if let Some(status) = final_rec.get("status").and_then(Value::as_str) {
-        evt["decision"] = match status {
-            "executed" | "approved" => json!("allow"),
-            _ => json!("deny"),
-        };
-        evt["status"] = json!(status);
+    let outcome = final_rec.get("outcome");
+    let outcome_kind = outcome
+        .and_then(|o| o.get("kind"))
+        .and_then(Value::as_str);
+    let decision = match outcome_kind {
+        Some("executed") => "allow",
+        _ => "deny",
+    };
+    evt["decision"] = json!(decision);
+    if let Some(o) = outcome {
+        evt["outcome"] = o.clone();
     }
-    if let Some(r) = final_rec.get("result") {
-        evt["result"] = json!(r);
-    }
-    if let Some(e) = final_rec.get("error") {
-        evt["error"] = json!(e);
-    }
-    if let Some(denial) = final_rec.get("denial") {
-        evt["denial"] = denial.clone();
-    }
-    write_event(iii, session_id, &evt).await;
+    evt
 }
 
 /// Append `event` to the `agent::events` stream for `session_id`. Fire-
@@ -503,20 +581,12 @@ pub(crate) async fn write_event(iii: &III, session_id: &str, event: &Value) {
 /// subscriber, so the resolved approval would never surface. `run::resume`
 /// resets a terminal record to `Provisioning` and re-kicks; against a
 /// still-running session it just re-kicks (idempotent).
-pub(crate) async fn publish_turn_step(iii: &III, session_id: &str) {
+pub(crate) async fn publish_turn_step(waker: &dyn OrchestratorWaker, session_id: &str) {
     if session_id.is_empty() {
         return;
     }
     tracing::info!(%session_id, "approval-gate: calling run::resume after approval resolve");
-    match iii
-        .trigger(TriggerRequest {
-            function_id: "run::resume".into(),
-            payload: json!({ "session_id": session_id }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-    {
+    match waker.resume(session_id).await {
         Ok(v) => {
             tracing::info!(%session_id, response = %v, "approval-gate: run::resume returned");
         }
@@ -526,15 +596,7 @@ pub(crate) async fn publish_turn_step(iii: &III, session_id: &str) {
             // doesn't look like "approval went through, nothing happened".
             // Without this the operator clicks allow, sees the card vanish,
             // and the conversation silently stalls.
-            write_event(
-                iii,
-                session_id,
-                &json!({
-                    "type": "approval_wake_failed",
-                    "error": e.to_string(),
-                }),
-            )
-            .await;
+            waker.write_wake_failed(session_id, &e).await;
         }
     }
 }

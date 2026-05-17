@@ -23,8 +23,9 @@ pub use delivery::{
 pub use intercept::handle_intercept;
 pub use record::{Outcome, Record, Status, IN_FLIGHT_GRACE_MS};
 pub use register::{
-    register, Refs, FN_CONSUME, FN_LIST_PENDING, FN_LOOKUP_RECORD, FN_RESOLVE, FN_SWEEP_SESSION,
-    FN_TICK_TIMEOUTS, STATE_SCOPE,
+    build_approval_resolved_event, register, run_tick, IIIWaker, OrchestratorWaker, Refs,
+    FN_CONSUME, FN_LIST_PENDING, FN_LOOKUP_RECORD, FN_RESOLVE, FN_SWEEP_SESSION, FN_TICK_TIMEOUTS,
+    STATE_SCOPE,
 };
 pub use rules::LayeredRules;
 pub use resolve::{handle_lookup_record, handle_resolve};
