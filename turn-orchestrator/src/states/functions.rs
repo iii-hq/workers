@@ -20,7 +20,21 @@ const HOOK_TIMEOUT_MS: u64 = 10_000;
 /// `block: true`. Pending replies produce a structured tool-result-style
 /// payload the LLM can recognise; non-pending blocked replies stay as a
 /// plain text reason.
-pub(crate) fn prefilled_result_for_block(merged: &Value, call_id: &str, function_id: &str) -> FunctionResult {
+///
+/// Two shapes terminate the turn:
+///   - `status: "pending"` — real result comes asynchronously via
+///     `approval::consume`; continuing would loop the model with a
+///     stale pending notice.
+///   - `denial.kind: "state_error"` — the hook bus or a subscriber's
+///     state-write failed (finding #1 fail-closed path). Continuing
+///     would let the model retry against an unhealthy substrate and
+///     potentially bypass the gate; we stop cleanly so the operator
+///     can investigate.
+pub(crate) fn prefilled_result_for_block(
+    merged: &Value,
+    call_id: &str,
+    function_id: &str,
+) -> FunctionResult {
     if merged.get("status").and_then(Value::as_str) == Some("pending") {
         let body = json!({
             "status": "pending_approval",
@@ -43,6 +57,11 @@ pub(crate) fn prefilled_result_for_block(merged: &Value, call_id: &str, function
             terminate: true,
         };
     }
+    let denial_kind = merged
+        .get("denial")
+        .and_then(|d| d.get("kind"))
+        .and_then(Value::as_str);
+    let state_error = denial_kind == Some("state_error");
     let reason = merged
         .get("reason")
         .and_then(Value::as_str)
@@ -50,9 +69,35 @@ pub(crate) fn prefilled_result_for_block(merged: &Value, call_id: &str, function
         .to_string();
     FunctionResult {
         content: vec![ContentBlock::Text(TextContent { text: reason })],
-        details: json!({ "blocked": true }),
-        terminate: false,
+        details: if state_error {
+            json!({ "blocked": true, "denial": merged.get("denial").cloned().unwrap_or(Value::Null) })
+        } else {
+            json!({ "blocked": true })
+        },
+        // Fail-closed transport / state errors terminate the turn so the
+        // model doesn't loop retrying against an unhealthy substrate.
+        terminate: state_error,
     }
+}
+
+/// Synthetic block reply used when `publish_collect` exhausts retries.
+/// Wire-compatible with what an `approval-gate` (or any other hook
+/// subscriber) would have returned for a state-bus outage. The shape
+/// reuses `Denial::StateError` so downstream stitching / audit treats
+/// hook-bus failures identically to subscriber-side state-write failures.
+pub(crate) fn fail_closed_block_reply(phase: &str, error: &str) -> Value {
+    json!({
+        "block": true,
+        "status": "denied",
+        "denial": {
+            "kind": "state_error",
+            "detail": {
+                "phase": phase,
+                "error": error,
+            },
+        },
+        "reason": format!("hook bus unavailable during {phase}: {error}"),
+    })
 }
 
 /// Map `tool_use {name: "agent_call", input: {function, payload}}` back to
@@ -105,14 +150,33 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     let mut prepared: Vec<(FunctionCall, Option<FunctionResult>)> =
         Vec::with_capacity(record.pending_function_calls.len());
     for fc in record.pending_function_calls.iter().cloned() {
-        let merged = publish_collect(
+        // Finding #1: a hook-bus outage used to silently fail OPEN —
+        // `publish_collect` returned `{}`, `block` defaulted to false,
+        // and the call ran without any subscriber having decided. We
+        // now retry briefly; if that still fails we synthesize a
+        // structured StateError block so the gate refuses the call and
+        // the turn terminates cleanly.
+        let merged = match publish_collect_with_retry(
             iii,
             TOPIC_BEFORE,
             build_before_function_call_payload(&record.session_id, &fc, &approval_required),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
         )
-        .await;
+        .await
+        {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    session_id = %record.session_id,
+                    function_call_id = %fc.id,
+                    function_id = %fc.function_id,
+                    "hook bus unavailable on agent::before_function_call — failing closed",
+                );
+                fail_closed_block_reply("hook_publish", &err.to_string())
+            }
+        };
         let blocked = merged
             .get("block")
             .and_then(Value::as_bool)
@@ -218,7 +282,7 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     let mut function_results: Vec<FunctionResultMessage> = Vec::with_capacity(executed.len());
     let mut all_terminate = !executed.is_empty();
     for (fc, mut result, is_error) in executed {
-        let merged = publish_collect(
+        let merged = publish_collect_best_effort(
             iii,
             TOPIC_AFTER,
             json!({ "function_call": &fc, "result": &result }),
@@ -352,29 +416,74 @@ pub(crate) fn build_finalize_lifecycle(
     out
 }
 
-async fn publish_collect(
+/// Bounded-retry publisher used by `handle_prepare`. Returns `Err` only
+/// after every attempt fails — callers fail-closed on `Err` (finding #1).
+/// Retries: 2 attempts total, fixed 100ms gap. Generous enough to ride
+/// over a ws blip; short enough that a real outage doesn't add seconds
+/// of latency to every call.
+async fn publish_collect_with_retry(
     iii: &III,
     topic: &str,
     inner: Value,
     merge_rule: &str,
     timeout_ms: u64,
-) -> Value {
+) -> anyhow::Result<Value> {
+    const ATTEMPTS: u32 = 2;
+    const BACKOFF_MS: u64 = 100;
     let payload = json!({
         "topic": topic,
         "payload": inner,
         "merge_rule": merge_rule,
         "timeout_ms": timeout_ms,
     });
-    iii.trigger(TriggerRequest {
-        function_id: "hook-fanout::publish_collect".into(),
-        payload,
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .ok()
-    .and_then(|v| v.get("merged").cloned())
-    .unwrap_or_else(|| json!({}))
+    let mut last_err: Option<String> = None;
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS)).await;
+        }
+        match iii
+            .trigger(TriggerRequest {
+                function_id: "hook-fanout::publish_collect".into(),
+                payload: payload.clone(),
+                action: None,
+                timeout_ms: None,
+            })
+            .await
+        {
+            Ok(v) => return Ok(v.get("merged").cloned().unwrap_or_else(|| json!({}))),
+            Err(e) => {
+                tracing::warn!(error = %e, attempt, topic, "hook-fanout::publish_collect failed");
+                last_err = Some(e.to_string());
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        last_err.unwrap_or_else(|| "publish_collect failed".to_string())
+    ))
+}
+
+/// Best-effort publisher used by `handle_finalize` (the AFTER hook). The
+/// function has already executed by the time this fires, so a bus blip
+/// must not terminate the turn — we log and fall back to the prior
+/// result. Different policy from `handle_prepare`; see finding #1.
+async fn publish_collect_best_effort(
+    iii: &III,
+    topic: &str,
+    inner: Value,
+    merge_rule: &str,
+    timeout_ms: u64,
+) -> Value {
+    match publish_collect_with_retry(iii, topic, inner, merge_rule, timeout_ms).await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                topic,
+                "after-hook publish failed; keeping prior result",
+            );
+            json!({})
+        }
+    }
 }
 
 #[cfg(test)]
@@ -676,7 +785,10 @@ mod tests {
         assert!(text.contains("tc-1"));
         // Stop the auto-loop: pending must terminate the turn so the
         // orchestrator waits for approval::resolve → re-kick.
-        assert!(fr.terminate, "pending_approval result must terminate the turn");
+        assert!(
+            fr.terminate,
+            "pending_approval result must terminate the turn"
+        );
     }
 
     #[test]
@@ -689,5 +801,90 @@ mod tests {
             _ => panic!("expected text block"),
         };
         assert_eq!(text, "policy::no");
+        assert!(
+            !fr.terminate,
+            "structured policy deny lets the model try something else",
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Finding #1: hook-bus failure must fail CLOSED.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fail_closed_block_reply_uses_state_error_shape() {
+        let v = fail_closed_block_reply("hook_publish", "ws disconnected");
+        assert_eq!(v["block"], true);
+        assert_eq!(v["status"], "denied");
+        assert_eq!(v["denial"]["kind"], "state_error");
+        assert_eq!(v["denial"]["detail"]["phase"], "hook_publish");
+        assert_eq!(v["denial"]["detail"]["error"], "ws disconnected");
+        assert!(v["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("hook bus unavailable")));
+    }
+
+    #[test]
+    fn prefilled_result_for_state_error_terminates_the_turn() {
+        // Failing closed must stop the loop — otherwise the model would
+        // keep retrying against an unhealthy substrate and could bypass
+        // the gate once a subscriber recovers mid-turn.
+        let merged = fail_closed_block_reply("hook_publish", "boom");
+        let fr = prefilled_result_for_block(&merged, "tc-1", "shell::exec");
+        assert!(
+            fr.terminate,
+            "state_error block must terminate the turn (finding #1)",
+        );
+        assert_eq!(fr.details["denial"]["kind"], "state_error");
+        let text = match &fr.content[0] {
+            ContentBlock::Text(t) => &t.text,
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("hook bus unavailable"));
+    }
+
+    /// REGRESSION: `handle_prepare` must route hook failures through
+    /// `fail_closed_block_reply`, NOT silently default `block` to false.
+    #[test]
+    fn handle_prepare_fails_closed_on_publish_collect_error() {
+        let src = include_str!("functions.rs");
+        let start = src
+            .find("pub async fn handle_prepare")
+            .expect("handle_prepare exists");
+        let window = &src[start..start + src[start..].len().min(4000)];
+        assert!(
+            window.contains("publish_collect_with_retry"),
+            "handle_prepare must use the retrying publisher",
+        );
+        assert!(
+            window.contains("fail_closed_block_reply"),
+            "handle_prepare must fail closed on publish_collect error",
+        );
+        // The retrying variant returns Result; the bare `publish_collect`
+        // (unwrap-or-{}) shape is the regression we're guarding against.
+        assert!(
+            !window.contains("publish_collect(\n"),
+            "handle_prepare must not call the fail-open publish_collect",
+        );
+    }
+
+    /// REGRESSION: `handle_finalize`'s AFTER hook must NOT terminate the
+    /// turn on publish failure — the function already ran; we keep the
+    /// prior result and log.
+    #[test]
+    fn handle_finalize_uses_best_effort_after_hook() {
+        let src = include_str!("functions.rs");
+        let start = src
+            .find("pub async fn handle_finalize")
+            .expect("handle_finalize exists");
+        let window = &src[start..start + src[start..].len().min(2500)];
+        assert!(
+            window.contains("publish_collect_best_effort"),
+            "handle_finalize must use the best-effort publisher (no fail-closed)",
+        );
+        assert!(
+            !window.contains("fail_closed_block_reply"),
+            "handle_finalize must not fail closed — the function already ran",
+        );
     }
 }
