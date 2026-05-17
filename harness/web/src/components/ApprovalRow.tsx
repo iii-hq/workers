@@ -37,6 +37,32 @@ function formatRemaining(ms: number): string {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
+/**
+ * Map an `ok:false` reply from `approval::resolve` to an operator-readable
+ * line. The gate's typed errors mean distinct things — generic copy here
+ * would hide the multi-window race that `already_resolved` exists to signal.
+ */
+function messageForResolveError(error: string | undefined, decision: ResolveDecision): string {
+  switch (error) {
+    case "timed_out":
+      return "this approval expired before you could resolve it";
+    case "already_resolved":
+      return "another window already resolved this approval";
+    case "in_flight":
+      return "this approval is mid-execution and can no longer be changed";
+    case "not_found":
+      return "approval record not found (already drained?)";
+    case "missing_id":
+    case "bad_decision":
+    case "bad_denial":
+      return `bad ${decision} payload: ${error}`;
+    case "state_write_failed":
+      return "state bus rejected the write — try again";
+    default:
+      return error ? `resolve failed: ${error}` : "resolve failed";
+  }
+}
+
 function countdownTone(ms: number): "ok" | "warn" | "danger" | "expired" {
   if (!Number.isFinite(ms)) return "ok";
   if (ms <= 0) return "expired";
@@ -163,7 +189,17 @@ export function ApprovalRow({ sessionId, pending }: Props) {
     if (opts.always) payload.always = true;
     if (opts.denial) payload.denial = opts.denial;
     try {
-      await bridge<{ ok: boolean; cascaded?: number }>("approval::resolve", payload);
+      const resp = await bridge<{ ok: boolean; cascaded?: number; error?: string }>(
+        "approval::resolve",
+        payload,
+      );
+      // Finding #8: the bridge call succeeds at transport level even
+      // when the gate returned ok:false (timed_out / already_resolved /
+      // in_flight / not_found). Without surfacing that the operator
+      // sees the card vanish and assumes the decision went through.
+      if (!resp?.ok) {
+        setErr(messageForResolveError(resp?.error, decision));
+      }
     } catch (e) {
       setErr(e instanceof BridgeError ? e.message : String(e));
     } finally {
