@@ -48,6 +48,7 @@ pub async fn execute(
     let envelope = build_publish_envelope(&topic, &event_id, inner.clone());
     let started_at = Instant::now();
     let mut publish_failed = false;
+    let mut publish_error: Option<String> = None;
     if let Err(e) = iii
         .trigger(TriggerRequest {
             function_id: "iii::durable::publish".into(),
@@ -59,6 +60,7 @@ pub async fn execute(
     {
         tracing::warn!(error = %e, %topic, "hook-fanout::publish_collect: publish trigger failed");
         publish_failed = true;
+        publish_error = Some(e.to_string());
     }
 
     let deadline = started_at + Duration::from_millis(timeout_ms.max(min_timeout));
@@ -131,11 +133,48 @@ pub async fn execute(
         MergeRule::PipelineLastWins => merge_pipeline_last_wins(inner.clone(), &replies),
     };
 
-    Ok(json!({
+    Ok(build_response(
+        &event_id,
+        replies,
+        merged,
+        publish_failed,
+        publish_error.as_deref(),
+    ))
+}
+
+/// Pure response builder. Splits out the JSON assembly so we can unit-test
+/// the safety-critical `publish_failed` surface without booting an iii
+/// engine. Callers in turn-orchestrator branch on `publish.ok == false`
+/// to fail closed (finding #1 follow-up): a publish that the durable
+/// substrate refused to deliver MUST NOT look identical to a publish
+/// that delivered to zero subscribers.
+pub(crate) fn build_response(
+    event_id: &str,
+    replies: Vec<Value>,
+    merged: Value,
+    publish_failed: bool,
+    publish_error: Option<&str>,
+) -> Value {
+    let mut out = json!({
         "event_id": event_id,
         "replies": replies,
         "merged": merged,
-    }))
+    });
+    // Always include the `publish` block — present even on success
+    // (`{ok: true}`) so consumers don't have to guess between "field
+    // absent because old worker" and "publish actually succeeded".
+    let publish = match (publish_failed, publish_error) {
+        (false, _) => json!({ "ok": true }),
+        (true, Some(err)) => json!({ "ok": false, "error": err }),
+        (true, None) => json!({ "ok": false }),
+    };
+    out["publish"] = publish;
+    // Top-level flag preserved for one release as a legacy/audit aid;
+    // new consumers should branch on `publish.ok`.
+    if publish_failed {
+        out["publish_failed"] = json!(true);
+    }
+    out
 }
 
 pub fn register(iii: &Arc<III>, config: &Arc<WorkerConfig>) {
@@ -372,6 +411,45 @@ mod tests {
         let now = start + Duration::from_millis(150);
         let reason = decide_exit(0, None, 0, Duration::from_millis(0), None, now, deadline);
         assert_eq!(reason, Some("deadline_no_replies"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Finding #1 follow-up: publish_failed must be visible in the
+    // response so consumers (turn-orchestrator) can fail closed.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn build_response_marks_publish_ok_on_success() {
+        let out = build_response(
+            "evt-1",
+            vec![json!({ "block": false })],
+            json!({ "block": false }),
+            false,
+            None,
+        );
+        assert_eq!(out["event_id"], "evt-1");
+        assert_eq!(out["publish"]["ok"], true);
+        assert!(out["publish"]["error"].is_null());
+        assert!(
+            !out.as_object().unwrap().contains_key("publish_failed"),
+            "publish_failed top-level flag only appears on failure",
+        );
+    }
+
+    #[test]
+    fn build_response_marks_publish_failed_with_error_text() {
+        let out = build_response("evt-2", vec![], json!({ "block": false }), true, Some("ws closed"));
+        assert_eq!(out["publish"]["ok"], false);
+        assert_eq!(out["publish"]["error"], "ws closed");
+        assert_eq!(
+            out["publish_failed"], true,
+            "legacy top-level flag stays for one release",
+        );
+        // Critical safety property: the response can be merged-shape
+        // identical to "no subscribers blocked" — the ONLY distinguisher
+        // is the publish.ok field. Without it the orchestrator can't tell
+        // a broken bus from a green policy decision.
+        assert_eq!(out["merged"]["block"], false);
     }
 
     /// Precedence sanity: when expected_replies AND quiescence AND

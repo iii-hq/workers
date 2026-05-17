@@ -421,6 +421,14 @@ pub(crate) fn build_finalize_lifecycle(
 /// Retries: 2 attempts total, fixed 100ms gap. Generous enough to ride
 /// over a ws blip; short enough that a real outage doesn't add seconds
 /// of latency to every call.
+///
+/// Two failure modes are treated identically and both retry:
+///   1. `iii.trigger` itself returns `Err` (the bus refused the call).
+///   2. `iii.trigger` returns `Ok` but the response body shows
+///      `publish.ok == false` (hook-fanout's publish to subscribers
+///      failed; without surfacing this the orchestrator can't tell a
+///      broken substrate from a green "no subscriber blocked" merge —
+///      finding #1 follow-up).
 async fn publish_collect_with_retry(
     iii: &III,
     topic: &str,
@@ -450,7 +458,14 @@ async fn publish_collect_with_retry(
             })
             .await
         {
-            Ok(v) => return Ok(v.get("merged").cloned().unwrap_or_else(|| json!({}))),
+            Ok(v) => {
+                if let Some(err) = publish_failure_from_response(&v) {
+                    tracing::warn!(error = %err, attempt, topic, "hook-fanout reports publish.ok=false");
+                    last_err = Some(err);
+                    continue;
+                }
+                return Ok(v.get("merged").cloned().unwrap_or_else(|| json!({})));
+            }
             Err(e) => {
                 tracing::warn!(error = %e, attempt, topic, "hook-fanout::publish_collect failed");
                 last_err = Some(e.to_string());
@@ -460,6 +475,33 @@ async fn publish_collect_with_retry(
     Err(anyhow::anyhow!(
         last_err.unwrap_or_else(|| "publish_collect failed".to_string())
     ))
+}
+
+/// Inspect a `hook-fanout::publish_collect` response for the
+/// `publish.ok == false` signal (or its legacy `publish_failed: true`
+/// shape). Returns `Some(error_message)` when the publish failed.
+///
+/// Pure helper — unit tested below. Centralizing this lets the retry
+/// loop fail-closed without re-implementing the response schema.
+pub(crate) fn publish_failure_from_response(v: &Value) -> Option<String> {
+    // Modern shape: `publish: { ok: false, error: "..." }`.
+    if let Some(publish) = v.get("publish") {
+        if publish.get("ok").and_then(Value::as_bool) == Some(false) {
+            return Some(
+                publish
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("publish failed")
+                    .to_string(),
+            );
+        }
+    }
+    // Legacy shape: top-level `publish_failed: true`. Drop after one
+    // release once every hook-fanout in the fleet emits `publish`.
+    if v.get("publish_failed").and_then(Value::as_bool) == Some(true) {
+        return Some("publish failed (legacy publish_failed flag)".to_string());
+    }
+    None
 }
 
 /// Best-effort publisher used by `handle_finalize` (the AFTER hook). The
@@ -865,6 +907,78 @@ mod tests {
         assert!(
             !window.contains("publish_collect(\n"),
             "handle_prepare must not call the fail-open publish_collect",
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Finding #1 follow-up: hook-fanout can return Ok with publish_failed.
+    // The retry helper MUST treat that as a transient error, not a green
+    // "no subscriber blocked" decision.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn publish_failure_from_response_detects_modern_publish_block() {
+        let v = json!({
+            "event_id": "e1",
+            "replies": [],
+            "merged": { "block": false },
+            "publish": { "ok": false, "error": "ws closed" },
+        });
+        assert_eq!(
+            publish_failure_from_response(&v).as_deref(),
+            Some("ws closed"),
+        );
+    }
+
+    #[test]
+    fn publish_failure_from_response_detects_legacy_top_level_flag() {
+        let v = json!({
+            "merged": { "block": false },
+            "publish_failed": true,
+        });
+        assert!(
+            publish_failure_from_response(&v).is_some(),
+            "legacy `publish_failed: true` must still trigger fail-closed",
+        );
+    }
+
+    #[test]
+    fn publish_failure_from_response_returns_none_on_success() {
+        let v = json!({
+            "merged": { "block": false },
+            "publish": { "ok": true },
+        });
+        assert!(publish_failure_from_response(&v).is_none());
+    }
+
+    /// Critical safety property: a successful trigger that returned an
+    /// empty-merge response WITHOUT a publish marker is treated as a
+    /// real green decision. Without this branch we'd treat every
+    /// no-subscriber call as a fail-closed event.
+    #[test]
+    fn publish_failure_from_response_treats_absent_marker_as_success() {
+        let v = json!({
+            "merged": { "block": false },
+            // No publish block; older fleet shape pre-fix.
+        });
+        assert!(publish_failure_from_response(&v).is_none());
+    }
+
+    /// REGRESSION: the retry loop in `publish_collect_with_retry` must
+    /// consult `publish_failure_from_response`. Without this the
+    /// hook-fanout-side `publish_failed=true` path silently degrades to
+    /// `{ block: false }` and the gate fails OPEN.
+    #[test]
+    fn publish_collect_with_retry_consults_publish_failure_helper() {
+        let src = include_str!("functions.rs");
+        let start = src
+            .find("async fn publish_collect_with_retry")
+            .expect("retry helper exists");
+        let window = &src[start..start + src[start..].len().min(2500)];
+        assert!(
+            window.contains("publish_failure_from_response"),
+            "publish_collect_with_retry must inspect the response for \
+             publish_failed (finding #1 follow-up)",
         );
     }
 
