@@ -17,14 +17,16 @@ async fn seed(handle: JobHandle) -> String {
     }
 }
 
-/// Build a test config. `_allow` is ignored after T13 (shell no longer
-/// consults an allowlist — policy lives in approval-gate). The parameter
-/// stays for call-site source compatibility until the tests are pruned.
-fn cfg_with_allow(_allow: &[&str]) -> Arc<ShellConfig> {
+/// Build a test config with `allow` populated as the shell-side allowlist.
+/// Empty `allow` (the default in most call sites that don't care about
+/// policy) leaves the list empty → pass-through, matching today's default
+/// where the approval-gate (when present) is the sole policy layer.
+fn cfg_with_allow(allow: &[&str]) -> Arc<ShellConfig> {
     let c = ShellConfig {
         max_timeout_ms: 5000,
         default_timeout_ms: 1500,
         max_output_bytes: 4096,
+        allowlist: allow.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
     };
     Arc::new(c)
@@ -102,12 +104,39 @@ fn exec_request_rejects_array_command_with_helpful_error() {
     );
 }
 
-// `exec_handler_rejects_unlisted_command` deleted in T13 — shell no
-// longer enforces an allowlist; policy lives in approval-gate's rules
-// layer. The equivalent assertion under the new model is that an
-// `Action::Deny` rule for `shell::exec` + matching pattern returns a
-// structured Denial::Policy at intercept time (see approval-gate's
-// intercept tests).
+/// With a non-empty shell-side allowlist, an unlisted command is rejected
+/// at the shell boundary before spawn — this is the fallback floor for
+/// standalone deployments where no approval-gate sits upstream.
+#[tokio::test]
+async fn exec_handler_rejects_unlisted_command() {
+    let cfg = cfg_with_allow(&["echo"]);
+    let err = functions::exec::handle(
+        cfg,
+        fresh_iii(),
+        typed::<ExecRequest>(json!({"command": "nmap", "args": ["scanme.nmap.org"]})),
+    )
+    .await
+    .expect_err("unlisted command must be rejected");
+    assert!(err.contains("not in allowlist"), "got: {err}");
+}
+
+/// With both shell-side lists empty (today's default), every argv runs —
+/// the approval-gate, when wired upstream, remains sole authority.
+#[tokio::test]
+async fn exec_handler_passthrough_when_lists_empty() {
+    let cfg = cfg_with_allow(&[]);
+    let r = resp(
+        functions::exec::handle(
+            cfg,
+            fresh_iii(),
+            typed::<ExecRequest>(json!({"command": "echo", "args": ["pass"]})),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(r["exit_code"], 0);
+    assert_eq!(r["stdout"], "pass\n");
+}
 
 /// `args[i]` validation is per-index; a non-string element must be rejected
 /// with a message that names which index failed and what it actually was.

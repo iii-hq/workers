@@ -16,12 +16,15 @@ pub async fn handle(
     iii: iii_sdk::III,
     req: ExecBgRequest,
 ) -> Result<ExecBgResponse, String> {
-    // Plain executor (T13). All policy lives in approval-gate's rules
-    // layer; shell trusts its caller. `parse_argv`'s two-mode contract:
+    // `parse_argv`'s two-mode contract:
     //   None → tokenize `command` via shell-words
     //   Some(_) → use args verbatim
+    // After argv is built, `is_command_allowed` consults the optional
+    // shell-side allow/deny lists. Both empty (default) = pass-through;
+    // the approval-gate, when wired upstream, remains sole authority.
     let argv = parse_argv(&req.command, req.args.as_ref())
         .map_err(|e| format!("argv: {e}"))?;
+    cfg.is_command_allowed(&argv)?;
 
     match req.target {
         Target::Host => spawn_host_job(cfg, argv).await,

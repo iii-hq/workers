@@ -31,7 +31,10 @@ workers:
       working_dir: ./data
       inherit_env: false
       allowed_env: [PATH, HOME, LANG, HARNESS_TEST_VAR]
-      # T13: shell allowlist/denylist_patterns are gone (see config.yaml).
+      # allowlist/denylist_patterns are optional on ShellConfig and left
+      # empty here — the harness exercises pass-through semantics. Standalone
+      # operators (no approval-gate upstream) can populate either list to get
+      # a shell-side policy floor.
       max_concurrent_jobs: 2
       job_retention_secs: 2
       fs:

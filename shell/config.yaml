@@ -9,60 +9,22 @@ allowed_env:
   - LANG
   - LC_ALL
   - TERM
-# Default allowlist is intentionally read-only. Tools that can shell out
-# (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, cargo
-# build.rs, node -e, python3 -c, npm run, env <cmd>) are left out on
-# purpose — add them per deployment after you've decided on the threat
-# model. This worker is NOT a sandbox. Use `printenv` for read-only env
-# inspection; `env` is excluded because `env <cmd>` execs arbitrary
-# programs while passing argv[0]=="env" through the allowlist gate.
-allowlist:
-  - ls
-  - cat
-  - pwd
-  - echo
-  - grep
-  - wc
-  - head
-  - tail
-  - sort
-  - uniq
-  - cut
-  - date
-  - whoami
-  - hostname
-  - which
-  - jq
-  - uname
-  - df
-  - du
-  - ps
-  - printenv
-  - basename
-  - dirname
-# Denylist patterns are advisory, not a security boundary. They run as
-# regex against `argv.join(" ")`, so a caller invoking an allowlisted
-# shell or interpreter (sh, node, python, etc.) can bypass any pattern
-# by constructing the forbidden token at runtime — variables, eval,
-# IFS tricks, base64, etc. Treat these as a tripwire for honest
-# mistakes; the actual security boundary is the sandbox backend.
-denylist_patterns:
-  - "rm\\s+-rf\\s+/"
-  - ":\\(\\)\\s*\\{\\s*:\\|"
-  - "mkfs"
-  - "dd\\s+if="
-  - "shutdown"
-  - "reboot"
-  - "/etc/passwd"
-  - "/etc/shadow"
-  # Sub-execution / write escapes for commonly-added tools
-  - "\\bfind\\b[^|;&]*-exec(dir)?\\b"
-  - "\\bawk\\b[^|;&]*system\\s*\\("
-  - "\\bsed\\b[^|;&]*(-i\\b|\\be\\b)"
-  - "\\bcurl\\b[^|;&]*(file://|-o\\s|--output-dir\\b|-F\\s+@)"
-  - "\\bgit\\b[^|;&]*(--upload-pack|--receive-pack|core\\.pager|core\\.hooksPath|GIT_SSH_COMMAND)"
-  - "\\b(node|python3?)\\b[^|;&]*\\s-(e|c)\\b"
-  - "\\bnpm\\b[^|;&]*\\brun\\b"
+# Optional shell-side allowlist. Empty (default) = no upper bound from
+# this layer — when the approval-gate is wired upstream (the standard
+# playground/harness deployment) it remains sole authority on which
+# commands run. Standalone operators (no gate upstream) can populate
+# this with arity-aware prefixes (`ls`, `git checkout`, `npm run dev`)
+# to get a fallback floor; unlisted argv are rejected before spawn with
+# `"command 'X' not in allowlist"`. Reminder: this worker is NOT a
+# sandbox — the real boundary is the sandbox backend.
+allowlist: []
+# Optional regex denylist evaluated against `argv.join(" ")`. Empty
+# (default) = nothing rejected at this layer. Hits short-circuit before
+# the allowlist check, so a denylisted argv is rejected even when it
+# satisfies an allowlist entry. Advisory, not a security boundary —
+# any allowlisted shell/interpreter can construct forbidden tokens at
+# runtime (variables, eval, IFS, base64). Treat as a tripwire.
+denylist_patterns: []
 max_concurrent_jobs: 16
 job_retention_secs: 3600
 

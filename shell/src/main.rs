@@ -4,6 +4,7 @@ use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod arity;
 mod config;
 mod exec;
 mod exec_dispatch;
