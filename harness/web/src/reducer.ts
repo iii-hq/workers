@@ -39,9 +39,17 @@ function upsertMessage(state: StreamState, entryId: EntryId, message: AgentMessa
 }
 
 function unkeyedKey(m: AgentMessage): string {
-  // Content-hash key. Same role + timestamp + content-length collapse to one
-  // entry, so reconnect replays and message_end echoes don't duplicate.
-  // Matches the pre-Phase-B dedupe approach.
+  // Function results carry a stable `function_call_id` (or legacy
+  // `tool_call_id`) — use that as the dedupe key so two race-emitted
+  // MessageEnd events with different timestamps still collapse. Falls
+  // back to role+timestamp+content-length for non-function messages.
+  if (m.role === "tool_result" || m.role === "function_result") {
+    const callId =
+      ("function_call_id" in m && m.function_call_id) ||
+      ("tool_call_id" in m && (m as { tool_call_id?: string }).tool_call_id) ||
+      "";
+    if (callId) return `${m.role}:call:${callId}`;
+  }
   return `${m.role}:${m.timestamp ?? 0}:${JSON.stringify(m.content).length}`;
 }
 

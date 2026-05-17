@@ -13,6 +13,7 @@ use crate::state::TurnStateRecord;
 
 pub const FUNCTION_ID: &str = "run::start";
 pub const SYNC_FUNCTION_ID: &str = "run::start_and_wait";
+pub const RESUME_FUNCTION_ID: &str = "run::resume";
 pub const STEP_TOPIC: &str = "turn::step_requested";
 
 pub async fn execute(iii: III, payload: Value) -> Result<Value, IIIError> {
@@ -132,6 +133,52 @@ pub async fn execute_sync(
     }
 }
 
+/// Pure helper: build the resume-side replacement for a terminal record.
+///
+/// `run::resume` is the entry point approval-gate calls when an approval
+/// completes after the original turn has already torn down (state =
+/// Stopped). A bare `turn::step_requested` re-kick is a no-op against a
+/// terminal record (see `subscriber::execute` early-out on
+/// `is_terminal()`), so the stitched approval result would sit in state
+/// forever, invisible. Building a fresh `Provisioning` record lets the
+/// state machine re-enter `handle_streaming`, which drains
+/// `approval::consume` into the next assistant turn.
+///
+/// `max_turns` is carried over from the prior record so resume respects
+/// the original budget.
+pub(crate) fn build_resume_record(
+    session_id: &str,
+    max_turns: Option<u32>,
+) -> TurnStateRecord {
+    TurnStateRecord::new(session_id, max_turns)
+}
+
+/// `run::resume` — wake an idled session so a freshly-resolved approval
+/// (or any other side-channel update) can drain into the next assistant
+/// turn. Idempotent against a non-terminal record: it just re-kicks
+/// `turn::step_requested` without resetting state.
+pub async fn execute_resume(iii: III, payload: Value) -> Result<Value, IIIError> {
+    let session_id = required_str(&payload, "session_id")?;
+
+    let existing = persistence::load_record(&iii, &session_id).await;
+    let is_terminal = existing
+        .as_ref()
+        .map(|r| r.is_terminal())
+        .unwrap_or(false);
+
+    if is_terminal {
+        let max_turns = existing.and_then(|r| r.max_turns);
+        let fresh = build_resume_record(&session_id, max_turns);
+        persistence::save_record(&iii, &fresh).await;
+    }
+    publish_step(&iii, &session_id).await;
+    Ok(json!({
+        "ok": true,
+        "session_id": session_id,
+        "resumed": is_terminal,
+    }))
+}
+
 pub async fn publish_step(iii: &III, session_id: &str) {
     if let Err(e) = iii
         .trigger(TriggerRequest {
@@ -170,6 +217,19 @@ pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
             let iii = iii_sync.clone();
             let cfg = cfg_sync.clone();
             async move { execute_sync(iii, cfg, payload).await }
+        },
+    ));
+    let iii_resume = iii.clone();
+    iii.register_function((
+        RegisterFunctionMessage::with_id(RESUME_FUNCTION_ID.to_string()).with_description(
+            "Resume an idled session so a freshly-resolved approval drains \
+             into the next assistant turn. No-op kick when the session is \
+             still active; resets to Provisioning when terminal."
+                .to_string(),
+        ),
+        move |payload: Value| {
+            let iii = iii_resume.clone();
+            async move { execute_resume(iii, payload).await }
         },
     ));
 }
@@ -235,6 +295,50 @@ mod tests {
 
         assert_eq!(request["cwd"], Value::Null);
         assert_eq!(request["cwd_hash"], Value::Null);
+    }
+
+    /// Repro of the "single pending_approval stays forever" symptom:
+    /// after a `pending_approval` ends the turn, the record's state is
+    /// `Stopped`. A bare `turn::step_requested` (from approval-gate's
+    /// re-kick) hits `is_terminal()` in the subscriber and returns no-op
+    /// — so the resolved approval never reaches `consume_approval_stitch`.
+    /// Resuming the conversation needs a FRESH record. `build_resume_record`
+    /// is that reset, and this test pins its shape.
+    #[test]
+    fn build_resume_record_creates_fresh_provisioning_record() {
+        let r = build_resume_record("sess-pending", Some(16));
+        assert_eq!(r.session_id, "sess-pending");
+        assert_eq!(
+            r.state,
+            crate::state::TurnState::Provisioning,
+            "resume must restart from Provisioning so handle_streaming \
+             runs and consume_approval_stitch drains the resolved record"
+        );
+        assert_eq!(r.max_turns, Some(16));
+        assert_eq!(r.turn_count, 0);
+        assert!(r.last_assistant.is_none());
+        assert!(r.pending_function_calls.is_empty());
+        assert!(!r.turn_end_emitted);
+        assert!(!r.is_terminal());
+    }
+
+    /// Pin the fix: a Stopped record + run::resume yields a non-terminal
+    /// record that the subscriber will actually process, instead of the
+    /// pre-fix no-op against the Stopped state.
+    #[test]
+    fn build_resume_record_unblocks_a_stopped_record() {
+        let mut stopped =
+            crate::state::TurnStateRecord::new("sess-pending", Some(16));
+        stopped.transition_to(crate::state::TurnState::Stopped);
+        assert!(stopped.is_terminal(), "precondition: was Stopped");
+
+        let resumed = build_resume_record(&stopped.session_id, stopped.max_turns);
+        assert!(
+            !resumed.is_terminal(),
+            "resume must produce a non-terminal record so subscriber::execute \
+             advances past its is_terminal() early-out"
+        );
+        assert_eq!(resumed.max_turns, stopped.max_turns);
     }
 
     #[test]

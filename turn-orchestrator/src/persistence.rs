@@ -36,11 +36,31 @@ pub async fn load_messages(iii: &III, session_id: &str) -> Vec<AgentMessage> {
 
 pub async fn save_messages(iii: &III, session_id: &str, messages: &[AgentMessage]) {
     let key = messages_key(session_id);
-    if let Ok(value) = serde_json::to_value(messages) {
+    // Dedupe FunctionResult by function_call_id, keeping the first
+    // occurrence. Two concurrent turn::step handlers can each append the
+    // same prefilled "pending_approval" result before either saves,
+    // because there is no atomic load+save at the storage layer; this
+    // collapses the race-induced duplicate at write time so the UI and
+    // the next-turn history-load both see exactly one entry per call.
+    let mut seen_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deduped: Vec<AgentMessage> = messages
+        .iter()
+        .filter(|m| match m {
+            AgentMessage::FunctionResult(fr) => seen_call_ids.insert(fr.function_call_id.clone()),
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    let to_save = if deduped.len() == messages.len() {
+        messages
+    } else {
+        &deduped[..]
+    };
+    if let Ok(value) = serde_json::to_value(to_save) {
         state_set(iii, &key, value).await;
     }
     // Best-effort mirror to session-tree. Failure does not abort the turn.
-    mirror_messages_to_session_tree(iii, session_id, messages).await;
+    mirror_messages_to_session_tree(iii, session_id, to_save).await;
 }
 
 async fn mirror_messages_to_session_tree(iii: &III, session_id: &str, messages: &[AgentMessage]) {

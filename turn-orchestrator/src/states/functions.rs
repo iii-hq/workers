@@ -33,7 +33,14 @@ pub(crate) fn prefilled_result_for_block(merged: &Value, call_id: &str, function
                 text: serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
             })],
             details: json!({ "pending_approval": true, "call_id": call_id }),
-            terminate: false,
+            // Stop the loop. Without this the orchestrator would treat the
+            // turn as continuable, start another assistant turn, and the
+            // model would see the pending notice as an error and call a
+            // different function — looping with no progress. The real
+            // result lands in a future turn via approval::consume after
+            // the operator resolves; approval-gate re-kicks the turn by
+            // publishing `turn::step_requested` from `approval::resolve`.
+            terminate: true,
         };
     }
     let reason = merged
@@ -101,7 +108,7 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         let merged = publish_collect(
             iii,
             TOPIC_BEFORE,
-            build_before_function_call_payload(&fc, &approval_required),
+            build_before_function_call_payload(&record.session_id, &fc, &approval_required),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
         )
@@ -142,9 +149,20 @@ pub async fn handle_execute(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         )
         .await;
         if let Some(blocked) = prefilled {
-            persistence::upsert_executed_call(&mut results, (fc.clone(), blocked.clone(), true));
+            // Pending approvals are an awaiting state, not an error — the
+            // real result will be stitched on resolve. Only hard blocks
+            // (deny / generic block) should render as red in the UI.
+            let is_error = !blocked
+                .details
+                .get("pending_approval")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            persistence::upsert_executed_call(
+                &mut results,
+                (fc.clone(), blocked.clone(), is_error),
+            );
             persistence::save_executed_calls(iii, &record.session_id, &results).await;
-            let evt = build_function_execution_event(&fc, &blocked, true);
+            let evt = build_function_execution_event(&fc, &blocked, is_error);
             events::emit(iii, &record.session_id, &evt).await;
             continue;
         }
@@ -225,10 +243,29 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
     }
 
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
+    let already_persisted: std::collections::HashSet<String> = messages
+        .iter()
+        .filter_map(|m| match m {
+            AgentMessage::FunctionResult(fr) => Some(fr.function_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut appended = false;
     for r in &function_results {
+        if already_persisted.contains(&r.function_call_id) {
+            // Two turn::step handlers can race when an approval re-kick
+            // lands while the original chain is still finalizing — both
+            // see state=FunctionFinalize and run this block. Without this
+            // guard the persisted history grows a duplicate FunctionResult
+            // per pending call, and the UI renders the same block twice.
+            continue;
+        }
         messages.push(AgentMessage::FunctionResult(r.clone()));
+        appended = true;
     }
-    persistence::save_messages(iii, &record.session_id, &messages).await;
+    if appended {
+        persistence::save_messages(iii, &record.session_id, &messages).await;
+    }
 
     let Some(last_assistant) = record.last_assistant.clone() else {
         tracing::warn!(
@@ -240,10 +277,15 @@ pub async fn handle_finalize(iii: &III, record: &mut TurnStateRecord) -> anyhow:
         record.transition_to(TurnState::TearingDown);
         return Ok(());
     };
-    for evt in build_finalize_lifecycle(&last_assistant, &function_results) {
-        events::emit(iii, &record.session_id, &evt).await;
+    // Guard against the same race as the message-append above: emit
+    // MessageStart/MessageEnd/TurnEnd only once even when a second
+    // handler re-enters handle_finalize for the same turn.
+    if !record.turn_end_emitted {
+        for evt in build_finalize_lifecycle(&last_assistant, &function_results) {
+            events::emit(iii, &record.session_id, &evt).await;
+        }
+        record.turn_end_emitted = true;
     }
-    record.turn_end_emitted = true;
 
     record.function_results = function_results;
     record.pending_function_calls.clear();
@@ -262,11 +304,17 @@ pub(crate) fn executed_staging_for_new_prepare_batch(
 }
 
 /// Pure helper: inner payload for the `agent::before_function_call` topic.
+///
+/// `session_id` is included because `approval-gate::extract_call` requires
+/// it to key the pending record; without it the gate silently passes every
+/// call through.
 pub(crate) fn build_before_function_call_payload(
+    session_id: &str,
     fc: &FunctionCall,
     approval_required: &[String],
 ) -> Value {
     json!({
+        "session_id": session_id,
         "function_call": fc,
         "approval_required": approval_required,
     })
@@ -532,7 +580,7 @@ mod tests {
             arguments: json!({"path": "/tmp/x"}),
         };
         let approval_required = vec!["shell::fs::write".to_string()];
-        let inner = build_before_function_call_payload(&fc, &approval_required);
+        let inner = build_before_function_call_payload("sess-a", &fc, &approval_required);
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(inner["approval_required"], json!(["shell::fs::write"]),);
     }
@@ -544,8 +592,22 @@ mod tests {
             function_id: "shell::fs::ls".into(),
             arguments: json!({}),
         };
-        let inner = build_before_function_call_payload(&fc, &[]);
+        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
         assert_eq!(inner["approval_required"], json!([]));
+    }
+
+    /// Regression: the approval-gate subscriber requires `session_id` to key
+    /// its pending record. Dropping it from the payload makes the gate
+    /// silently pass every call through.
+    #[test]
+    fn before_function_call_payload_includes_session_id() {
+        let fc = FunctionCall {
+            id: "tc-1".into(),
+            function_id: "shell::fs::write".into(),
+            arguments: json!({}),
+        };
+        let inner = build_before_function_call_payload("sess-xyz", &fc, &[]);
+        assert_eq!(inner["session_id"], "sess-xyz");
     }
 
     #[test]
@@ -577,7 +639,7 @@ mod tests {
             function_id: "shell::fs::ls".into(),
             arguments: json!({"path": "/tmp"}),
         };
-        let inner = build_before_function_call_payload(&fc, &[]);
+        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(inner["function_call"]["function_id"], "shell::fs::ls");
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
@@ -612,6 +674,9 @@ mod tests {
         };
         assert!(text.contains("pending_approval"));
         assert!(text.contains("tc-1"));
+        // Stop the auto-loop: pending must terminate the turn so the
+        // orchestrator waits for approval::resolve → re-kick.
+        assert!(fr.terminate, "pending_approval result must terminate the turn");
     }
 
     #[test]

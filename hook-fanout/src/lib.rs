@@ -47,10 +47,13 @@ pub struct PublishCollectResponse {
 pub fn merge_first_block_wins(replies: &[Value]) -> Value {
     for reply in replies {
         if reply.get("block").and_then(Value::as_bool).unwrap_or(false) {
-            return serde_json::json!({
-                "block": true,
-                "reason": reply.get("reason").cloned().unwrap_or(Value::Null),
-            });
+            // Forward the full reply so downstream consumers see the
+            // subscriber's structured fields (status, denial, call_id,
+            // function_id) — not just block+reason. The approval-gate's
+            // "pending" status in particular has to survive this merge so
+            // turn-orchestrator can emit a `pending_approval` prefilled
+            // result instead of a generic "blocked" one.
+            return reply.clone();
         }
     }
     serde_json::json!({ "block": false })
@@ -148,6 +151,30 @@ mod tests {
 
         assert_eq!(merged["block"], true);
         assert_eq!(merged["reason"], "first");
+    }
+
+    /// Regression: the approval-gate replies with `block:true, status:"pending"`
+    /// and turn-orchestrator branches on `status` to emit a `pending_approval`
+    /// prefilled result instead of a generic "blocked" one. Dropping `status`
+    /// in the merge makes every approved call look like a hard block.
+    #[test]
+    fn first_block_wins_forwards_full_blocker_reply() {
+        let replies = vec![
+            json!({ "block": false }),
+            json!({
+                "block": true,
+                "status": "pending",
+                "call_id": "tc-1",
+                "function_id": "shell::fs::write",
+            }),
+        ];
+
+        let merged = merge_first_block_wins(&replies);
+
+        assert_eq!(merged["block"], true);
+        assert_eq!(merged["status"], "pending");
+        assert_eq!(merged["call_id"], "tc-1");
+        assert_eq!(merged["function_id"], "shell::fs::write");
     }
 
     #[test]

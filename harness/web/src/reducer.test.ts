@@ -88,4 +88,38 @@ describe("reducer (entry-id keyed)", () => {
     expect(s.unkeyedMessages.length).toBe(1);
     expect(s.messageMap.size).toBe(0);
   });
+
+  it(
+    "function results race-emitted with different timestamps dedupe by function_call_id",
+    () => {
+      // Repro: two turn::step handlers race past handle_finalize's
+      // turn_end_emitted guard and each emit a MessageEnd for the same
+      // pending_approval prefilled result. The timestamps differ
+      // (chrono::Utc::now is called inside each handler). Without keying
+      // unkeyedMessages on function_call_id, both events land in the
+      // visible list and the user sees the same pending block twice.
+      const pendingResult = (timestamp: number): AgentMessage => ({
+        role: "function_result",
+        content: [
+          {
+            type: "text",
+            text: '{\n  "status": "pending_approval",\n  "call_id": "toolu_01A5w9bqCaPSrLL44HUMgy1G",\n  "function_id": "engine::functions::list",\n  "message": "Awaiting human approval. The result will be reported in a future turn."\n}',
+          },
+        ],
+        function_call_id: "toolu_01A5w9bqCaPSrLL44HUMgy1G",
+        function_id: "engine::functions::list",
+        is_error: false,
+        timestamp,
+      });
+      let s = applyEvent(INITIAL_STREAM_STATE, {
+        type: "message_end",
+        message: pendingResult(1_700_000_000_001),
+      } as AgentEvent);
+      s = applyEvent(s, {
+        type: "message_end",
+        message: pendingResult(1_700_000_000_042),
+      } as AgentEvent);
+      expect(s.unkeyedMessages.length).toBe(1);
+    },
+  );
 });

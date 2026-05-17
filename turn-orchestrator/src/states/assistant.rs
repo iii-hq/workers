@@ -90,6 +90,7 @@ pub async fn handle_awaiting(iii: &III, record: &mut TurnStateRecord) -> anyhow:
 pub(crate) async fn consume_approval_stitch(
     iii: &III,
     session_id: &str,
+    messages: &mut Vec<AgentMessage>,
 ) -> (Vec<AgentMessage>, Option<String>) {
     let resp = iii
         .trigger(TriggerRequest {
@@ -114,10 +115,94 @@ pub(crate) async fn consume_approval_stitch(
     if entries.is_empty() && omitted == 0 {
         return (Vec::new(), None);
     }
+    // Update each placeholder `pending_approval` FunctionResult in history
+    // with the real outcome BEFORE stitching/saving. Without this the chat
+    // permanently shows "Awaiting human approval..." for calls the user
+    // already resolved, and the LLM sees a stale pending notice next turn.
+    resolve_pending_function_results(messages, &entries);
     let stitched = crate::states::approval_stitching::stitch_entries(&entries);
     let msgs = stitched_strings_to_messages(stitched, chrono::Utc::now().timestamp_millis());
     let summary = crate::states::approval_stitching::omission_summary_message(omitted);
     (msgs, summary)
+}
+
+/// Replace the placeholder `pending_approval` FunctionResult body with the
+/// real outcome for each entry returned by `approval::consume`. Matches by
+/// `function_call_id`. No-op for results whose `details.pending_approval`
+/// is not `true` — those came from non-gated paths and already carry a real
+/// result.
+///
+/// Entry shape (see approval_stitching.rs):
+///   `{ function_call_id, function_id, args, outcome: { kind, detail } }`
+/// `outcome.kind` is `executed | failed | denied | timed_out`.
+pub(crate) fn resolve_pending_function_results(
+    messages: &mut Vec<AgentMessage>,
+    entries: &[Value],
+) {
+    for entry in entries {
+        let Some(call_id) = entry
+            .get("function_call_id")
+            .or_else(|| entry.get("call_id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let outcome = entry.get("outcome").cloned().unwrap_or(Value::Null);
+        let outcome_kind = outcome
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let detail = outcome.get("detail").cloned().unwrap_or(Value::Null);
+
+        let (text, is_error) = match outcome_kind.as_str() {
+            "executed" => {
+                let result = detail.get("result").cloned().unwrap_or(Value::Null);
+                let text = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| result.to_string());
+                (text, false)
+            }
+            "failed" => {
+                let err = detail.get("error").and_then(Value::as_str).unwrap_or("");
+                (format!("function failed: {err}"), true)
+            }
+            "denied" => {
+                let kind = detail
+                    .get("denial")
+                    .and_then(|d| d.get("kind"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("denied");
+                (format!("approval denied: {kind}"), true)
+            }
+            "timed_out" => ("approval timed out before resolution".to_string(), true),
+            _ => continue,
+        };
+
+        for msg in messages.iter_mut() {
+            let AgentMessage::FunctionResult(fr) = msg else {
+                continue;
+            };
+            if fr.function_call_id != call_id {
+                continue;
+            }
+            let still_pending = fr
+                .details
+                .get("pending_approval")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !still_pending {
+                continue;
+            }
+            fr.content = vec![ContentBlock::Text(TextContent { text: text.clone() })];
+            fr.details = json!({
+                "resolved_via_approval_gate": true,
+                "outcome": outcome_kind,
+                "call_id": call_id,
+            });
+            fr.is_error = is_error;
+            break;
+        }
+    }
 }
 
 /// Wrap each stitched approval-info string into an `AgentMessage::User`.
@@ -178,7 +263,7 @@ pub async fn handle_streaming(iii: &III, record: &mut TurnStateRecord) -> anyhow
     let request = persistence::load_run_request(iii, &record.session_id).await;
     let mut messages = persistence::load_messages(iii, &record.session_id).await;
     let (stitch_msgs, summary) =
-        consume_approval_stitch(iii, &record.session_id).await;
+        consume_approval_stitch(iii, &record.session_id, &mut messages).await;
     let stitched_nonempty = !stitch_msgs.is_empty() || summary.is_some();
     merge_stitched_into_history(&mut messages, stitch_msgs);
     append_summary_message(
@@ -296,7 +381,161 @@ fn extract_function_calls(assistant: &AssistantMessage) -> Vec<FunctionCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_types::TextContent;
+    use harness_types::{FunctionResultMessage, TextContent};
+
+    fn pending_function_result(call_id: &str, fn_id: &str) -> AgentMessage {
+        AgentMessage::FunctionResult(FunctionResultMessage {
+            function_call_id: call_id.into(),
+            function_id: fn_id.into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: "{\"status\":\"pending_approval\"}".into(),
+            })],
+            details: json!({ "pending_approval": true, "call_id": call_id }),
+            is_error: false,
+            timestamp: 0,
+        })
+    }
+
+    fn consume_entry(call_id: &str, fn_id: &str, kind: &str, detail: Value) -> Value {
+        json!({
+            "function_call_id": call_id,
+            "function_id": fn_id,
+            "args": {},
+            "session_id": "sess_test",
+            "expires_at": u64::MAX,
+            "status": "done",
+            "outcome": { "kind": kind, "detail": detail },
+        })
+    }
+
+    fn function_result_text(msg: &AgentMessage) -> String {
+        let AgentMessage::FunctionResult(fr) = msg else {
+            panic!("expected FunctionResult, got {msg:?}");
+        };
+        match fr.content.first() {
+            Some(ContentBlock::Text(t)) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    /// Regression: the orchestrator stamps a placeholder
+    /// `pending_approval` FunctionResult when the approval-gate blocks a
+    /// call (functions.rs:23-44). After the user resolves the approval,
+    /// the gate runs the function and the executed result comes back via
+    /// `approval::consume`. Before this fix the executed payload was only
+    /// surfaced as a separate `[approval-gate]` user message, leaving the
+    /// function_result row stuck on "Awaiting human approval…" forever.
+    /// This test pins the in-place replacement so the chat reflects the
+    /// real outcome and the LLM doesn't see the stale notice next turn.
+    #[test]
+    fn resolve_pending_function_results_replaces_executed_placeholder() {
+        let mut messages = vec![pending_function_result("c1", "shell::fs::write")];
+        let entries = vec![consume_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({ "result": { "ok": true, "bytes_written": 42 } }),
+        )];
+
+        resolve_pending_function_results(&mut messages, &entries);
+
+        let text = function_result_text(&messages[0]);
+        assert!(
+            !text.contains("pending_approval"),
+            "stale pending body must be replaced, got: {text}"
+        );
+        assert!(text.contains("bytes_written"), "executed result missing: {text}");
+        let AgentMessage::FunctionResult(fr) = &messages[0] else {
+            unreachable!()
+        };
+        assert!(!fr.is_error, "executed outcome must not render as error");
+        assert_eq!(fr.details["outcome"], json!("executed"));
+        assert!(
+            fr.details.get("pending_approval").is_none(),
+            "pending_approval marker must be cleared so subsequent resume \
+             passes don't try to resolve it again"
+        );
+    }
+
+    #[test]
+    fn resolve_pending_function_results_marks_failed_as_error() {
+        let mut messages = vec![pending_function_result("c1", "shell::fs::write")];
+        let entries = vec![consume_entry(
+            "c1",
+            "shell::fs::write",
+            "failed",
+            json!({ "error": "EACCES" }),
+        )];
+        resolve_pending_function_results(&mut messages, &entries);
+        let AgentMessage::FunctionResult(fr) = &messages[0] else {
+            unreachable!()
+        };
+        assert!(fr.is_error, "failed outcome must render as error");
+        let text = function_result_text(&messages[0]);
+        assert!(text.contains("EACCES"), "failure message missing: {text}");
+    }
+
+    #[test]
+    fn resolve_pending_function_results_marks_denied_as_error() {
+        let mut messages = vec![pending_function_result("c1", "shell::fs::write")];
+        let entries = vec![consume_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({ "denial": { "kind": "user_rejected" } }),
+        )];
+        resolve_pending_function_results(&mut messages, &entries);
+        let AgentMessage::FunctionResult(fr) = &messages[0] else {
+            unreachable!()
+        };
+        assert!(fr.is_error);
+        let text = function_result_text(&messages[0]);
+        assert!(text.contains("user_rejected"), "denial reason missing: {text}");
+    }
+
+    #[test]
+    fn resolve_pending_function_results_skips_non_pending() {
+        // FunctionResult without the pending_approval marker came from a
+        // non-gated path (direct execute). Must not be touched even if a
+        // consume entry happens to share its call_id — we'd otherwise
+        // clobber a real result with a re-stitched payload.
+        let real = AgentMessage::FunctionResult(FunctionResultMessage {
+            function_call_id: "c1".into(),
+            function_id: "shell::fs::write".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: "original-real-result".into(),
+            })],
+            details: json!({ "blocked": false }),
+            is_error: false,
+            timestamp: 0,
+        });
+        let mut messages = vec![real];
+        let entries = vec![consume_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({ "result": { "ok": true } }),
+        )];
+        resolve_pending_function_results(&mut messages, &entries);
+        assert_eq!(function_result_text(&messages[0]), "original-real-result");
+    }
+
+    #[test]
+    fn resolve_pending_function_results_no_op_when_no_match() {
+        let mut messages = vec![pending_function_result("c1", "shell::fs::write")];
+        let entries = vec![consume_entry(
+            "c-other",
+            "shell::fs::write",
+            "executed",
+            json!({ "result": {} }),
+        )];
+        resolve_pending_function_results(&mut messages, &entries);
+        let text = function_result_text(&messages[0]);
+        assert!(
+            text.contains("pending_approval"),
+            "unrelated entry must not touch the placeholder, got: {text}"
+        );
+    }
 
     fn assistant_text() -> AssistantMessage {
         AssistantMessage {
