@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 /// Per-call timeout for engine triggers in this test suite. 2s is enough for
-/// the engine to dispatch and return for `harness::status` / `bridge::trigger`
+/// the engine to dispatch and return for `harness::status` / `harness::call`
 /// / `engine::traces::*` in a local engine; tests that need a longer budget
 /// should declare their own override.
 const TRIGGER_TIMEOUT_MS: u64 = 2_000;
@@ -24,7 +24,7 @@ const EXPORTER_FLUSH_INTERVAL_MS: u64 = 100;
 
 /// Same retry pattern but expanded for the test that runs under parallel-test
 /// pressure on the shared exporter. 30×200ms = 6s tolerance for eviction and
-/// dispatch jitter; matched to the `bridge_trigger_missing_function_id`
+/// dispatch jitter; matched to the `harness_call_missing_function_id`
 /// error path which competes with other tests for exporter capacity.
 const EXPORTER_FLUSH_RETRIES_UNDER_LOAD: u32 = 30;
 const EXPORTER_FLUSH_INTERVAL_UNDER_LOAD_MS: u64 = 200;
@@ -118,8 +118,8 @@ async fn call_status(iii: &iii_sdk::III, session: &str, message: Option<&str>) -
     .expect("call harness::status")
 }
 
-/// Helper: invoke `harness::status` via `bridge::trigger` (the HTTP envelope
-/// path that browsers actually use). The outer wrapper around bridge::trigger
+/// Helper: invoke `harness::status` via `harness::call` (the HTTP envelope
+/// path that browsers actually use). The outer wrapper around `harness::call`
 /// echoes `traceparent` / `x-iii-message-id` into response headers; the inner
 /// `harness::status` returns its raw shape directly.
 async fn call_status_via_bridge(iii: &iii_sdk::III, session: &str, message: Option<&str>) -> Value {
@@ -129,18 +129,18 @@ async fn call_status_via_bridge(iii: &iii_sdk::III, session: &str, message: Opti
         payload["message_id"] = Value::String(m.to_string());
     }
     iii.trigger(TriggerRequest {
-        function_id: "bridge::trigger".into(),
+        function_id: "harness::call".into(),
         payload,
         action: None,
         timeout_ms: Some(TRIGGER_TIMEOUT_MS),
     })
     .await
-    .expect("call bridge::trigger -> harness::status")
+    .expect("call harness::call -> harness::status")
 }
 
 #[tokio::test]
 #[serial_test::serial(harness_trace)]
-async fn bridge_trigger_echoes_message_id_when_provided() {
+async fn harness_call_echoes_message_id_when_provided() {
     let Some((iii, _url)) = boot_or_skip().await else {
         return;
     };
@@ -151,7 +151,7 @@ async fn bridge_trigger_echoes_message_id_when_provided() {
 
 #[tokio::test]
 #[serial_test::serial(harness_trace)]
-async fn bridge_trigger_omits_message_id_header_when_absent() {
+async fn harness_call_omits_message_id_header_when_absent() {
     // Option A: when the caller doesn't supply a message_id and baggage
     // is empty, no x-iii-message-id header is emitted. Plumbing calls
     // stay out of `Group by message`.
@@ -335,20 +335,20 @@ async fn engine_traces_tree_returns_root_and_children() {
 
 #[tokio::test]
 #[serial_test::serial(harness_trace)]
-async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
+async fn harness_call_missing_function_id_still_emits_traced_error() {
     let Some((iii, _url)) = boot_or_skip().await else {
         return;
     };
     let session = format!("err-session-{}", uuid::Uuid::new_v4());
 
-    // Probe: send a well-formed bridge::trigger first and confirm we get a
+    // Probe: send a well-formed harness::call first and confirm we get a
     // traceparent back. If not, observability is down and the rest of this
     // test cannot record/query spans — skip. Use a different session so the
     // probe span doesn't collide with the error span during disambiguation.
     let probe_session = format!("probe-{}", uuid::Uuid::new_v4());
     let probe = iii
         .trigger(TriggerRequest {
-            function_id: "bridge::trigger".into(),
+            function_id: "harness::call".into(),
             payload: json!({
                 "function_id": "harness::status",
                 "payload": {},
@@ -359,18 +359,18 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
             timeout_ms: Some(TRIGGER_TIMEOUT_MS),
         })
         .await
-        .expect("probe bridge::trigger");
+        .expect("probe harness::call");
     if probe["headers"].get("traceparent").is_none() {
         skip_or_panic_otel("observability worker not active");
         return;
     }
 
-    // bridge::trigger expects { function_id, payload }. We deliberately omit
+    // harness::call expects { function_id, payload }. We deliberately omit
     // function_id. The handler returns IIIError::Handler("missing function_id"),
     // but the span we opened around the handler should still be recorded.
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "bridge::trigger".into(),
+            function_id: "harness::call".into(),
             payload: json!({ "session_id": session, "message_id": "M-err" }),
             action: None,
             timeout_ms: Some(TRIGGER_TIMEOUT_MS),
@@ -387,7 +387,7 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
             .trigger(TriggerRequest {
                 function_id: "engine::traces::list".into(),
                 payload: json!({
-                    "name": "harness.bridge.trigger",
+                    "name": "harness.call",
                     "search_all_spans": true,
                     "limit": 500,
                 }),
@@ -409,14 +409,14 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
 
     let Some(spans) = found else {
         skip_or_panic_otel(
-            "no harness.bridge.trigger spans landed in memory exporter (harness OTel exporter \
+            "no harness.call spans landed in memory exporter (harness OTel exporter \
              may not be wired to the engine in this run)",
         );
         return;
     };
     // `name + search_all_spans` may match many traces; disambiguate by walking
-    // each candidate's tree and finding the one whose harness.bridge.trigger
-    // child carries our test session_id.
+    // each candidate's tree and finding the one whose harness.call child
+    // carries our test session_id.
 
     #[allow(clippy::items_after_statements)]
     fn find_named<'a>(node: &'a Value, name: &str) -> Option<&'a Value> {
@@ -454,7 +454,7 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
             continue;
         };
         for root in roots {
-            if let Some(child) = find_named(root, "harness.bridge.trigger") {
+            if let Some(child) = find_named(root, "harness.call") {
                 if span_has_attr(child, "iii.session.id", &session) {
                     matched_child = Some(child.clone());
                     break 'outer;
@@ -465,7 +465,7 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
 
     let Some(child) = matched_child else {
         skip_or_panic_otel(&format!(
-            "matched no harness.bridge.trigger span with session_id={session} (memory exporter \
+            "matched no harness.call span with session_id={session} (memory exporter \
              likely evicted it under parallel test traffic; the span DID record per the \
              retry-loop hit on name)"
         ));
@@ -475,70 +475,8 @@ async fn bridge_trigger_missing_function_id_still_emits_traced_error() {
     let status = child["status"].as_str().unwrap_or("");
     assert!(
         status.eq_ignore_ascii_case("error"),
-        "expected Status::error on the failed harness.bridge.trigger span; got {status:?}"
+        "expected Status::error on the failed harness.call span; got {status:?}"
     );
-}
-
-/// `bridge::events` is the SSE path. The handler returns an envelope
-/// (`status_code` + `headers` + body string with seed events), and
-/// `with_envelope_span` merges `traceparent` + `x-iii-message-id` into the
-/// envelope's `headers`. This test asserts both headers arrive verbatim for
-/// the seed-pump phase. When T12 wires live-tail, the wrapper-shrinking
-/// follow-up must keep this assertion passing — if it fails after live-tail,
-/// the wrapper is no longer recording the right scope.
-#[tokio::test]
-#[serial_test::serial(harness_trace)]
-async fn bridge_events_sse_emits_traceparent_and_message_id_headers() {
-    let Some((iii, _url)) = boot_or_skip().await else {
-        return;
-    };
-    let session = format!("sse-session-{}", uuid::Uuid::new_v4());
-
-    let env = iii
-        .trigger(TriggerRequest {
-            function_id: "bridge::events".into(),
-            payload: json!({
-                "query_params": { "session_id": &session, "message_id": "M-sse" },
-            }),
-            action: None,
-            timeout_ms: Some(TRIGGER_TIMEOUT_MS),
-        })
-        .await
-        .expect("call bridge::events");
-
-    // bridge::events returns the HTTP envelope.
-    assert_eq!(
-        env["status_code"].as_u64(),
-        Some(200),
-        "bridge::events envelope shape; got {env:?}"
-    );
-    let headers = &env["headers"];
-    assert_eq!(
-        headers["content-type"], "text/event-stream",
-        "SSE content-type preserved alongside the trace headers"
-    );
-
-    // x-iii-message-id is echoed verbatim whenever the envelope path is taken.
-    assert_eq!(
-        headers["x-iii-message-id"], "M-sse",
-        "x-iii-message-id should echo the caller-supplied id"
-    );
-
-    // traceparent is only present when the iii-observability worker is active.
-    // The require-OTel gate matches the other SSE-adjacent tests.
-    let Some(tp) = headers.get("traceparent").and_then(Value::as_str) else {
-        skip_or_panic_otel("bridge::events traceparent: observability worker not active");
-        return;
-    };
-    // Format: 00-<32 hex>-<16 hex>-01
-    assert!(
-        tp.starts_with("00-"),
-        "traceparent should start with version 00-; got {tp}"
-    );
-    let parts: Vec<&str> = tp.split('-').collect();
-    assert_eq!(parts.len(), 4, "traceparent has 4 hyphen-separated parts");
-    assert_eq!(parts[1].len(), 32, "trace_id is 32 hex chars; got {tp}");
-    assert_eq!(parts[2].len(), 16, "span_id is 16 hex chars; got {tp}");
 }
 
 #[cfg(test)]
