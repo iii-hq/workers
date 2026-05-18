@@ -29,7 +29,7 @@ export async function step(
     case 'function_prepare':
       return handlePrepare(iii, rec);
     case 'function_execute':
-      return handleExecute(iii, rec);
+      return handleExecute(iii, cfg, rec);
     case 'function_awaiting_approval':
       return handleAwaitingApproval(iii, rec);
     case 'function_finalize':

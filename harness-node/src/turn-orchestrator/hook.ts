@@ -48,6 +48,7 @@ export async function consultBefore(
   function_call: FunctionCall,
   approval_required: string[],
   session_id?: string,
+  _policy_function_id?: string,
 ): Promise<HookOutcome> {
   // PR #150: include session_id at the inner-payload root so approval-gate's
   // extractCall can route it. Without this, the gate sees a null session_id,

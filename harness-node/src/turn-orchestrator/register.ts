@@ -28,7 +28,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   const cfg = await loadConfig(ctx.configPath);
   const orchestratorCfg = loadOrchestratorConfig(cfg);
   registerRunStart(iii, orchestratorCfg);
-  registerAgentCall(iii);
+  registerAgentCall(iii, orchestratorCfg.policy_function_id);
   registerSubscriber(iii, orchestratorCfg);
 
   // Reactive abort wake. Mirrors the pattern in

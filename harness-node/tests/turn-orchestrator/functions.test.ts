@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as agentCallModule from '../../src/turn-orchestrator/agent-call.js';
+import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import { handleExecute } from '../../src/turn-orchestrator/states/functions.js';
+
+const cfg: TurnOrchestratorConfig = {
+  policy_function_id: 'policy::check_permissions',
+  sync_default_timeout_ms: 120_000,
+  system_default_skills: [],
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -34,7 +41,7 @@ describe('handleExecute new flow', () => {
     vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({ approval_required: [] });
 
-    await handleExecute(iii, rec);
+    await handleExecute(iii, cfg, rec);
 
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
@@ -64,7 +71,7 @@ describe('handleExecute new flow', () => {
 
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
 
-    await handleExecute(iii, rec);
+    await handleExecute(iii, cfg, rec);
 
     expect(consultBeforeSpy).not.toHaveBeenCalled();
     const triggerCalls = triggerSpy.mock.calls.map(
@@ -95,7 +102,7 @@ describe('handleExecute new flow', () => {
     vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({ approval_required: [] });
 
-    await handleExecute(iii, rec);
+    await handleExecute(iii, cfg, rec);
 
     const shellCalls = triggerSpy.mock.calls.filter(
       (call) => (call[0] as { function_id: string }).function_id === 'shell::run',

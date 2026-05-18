@@ -4,6 +4,7 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
+import type { TurnOrchestratorConfig } from '../config.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
   AgentMessage,
@@ -51,7 +52,11 @@ export async function handlePrepare(iii: ISdk, rec: TurnStateRecord): Promise<vo
   transitionTo(rec, 'function_execute');
 }
 
-export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+export async function handleExecute(
+  iii: ISdk,
+  cfg: TurnOrchestratorConfig,
+  rec: TurnStateRecord,
+): Promise<void> {
   const runRequest = await persistence.loadRunRequest(iii, rec.session_id);
   const approval_required = Array.isArray(runRequest.approval_required)
     ? (runRequest.approval_required as string[]).filter((x) => typeof x === 'string')
@@ -124,7 +129,13 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const out = await dispatchWithHook(iii, augmentedFc, approval_required, rec.session_id);
+    const out = await dispatchWithHook(
+      iii,
+      augmentedFc,
+      approval_required,
+      rec.session_id,
+      cfg.policy_function_id,
+    );
 
     if (out.kind === 'pending') {
       rec.awaiting_approval = rec.awaiting_approval ?? [];

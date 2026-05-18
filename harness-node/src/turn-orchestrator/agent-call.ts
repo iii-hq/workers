@@ -105,7 +105,8 @@ export async function dispatchWithHook(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
-  session_id?: string,
+  session_id: string | undefined,
+  policy_function_id: string,
 ): Promise<DispatchResult> {
   if (!function_call.function_id || function_call.function_id.length === 0) {
     return {
@@ -116,7 +117,13 @@ export async function dispatchWithHook(
       }),
     };
   }
-  const outcome = await consultBefore(iii, function_call, approval_required, session_id);
+  const outcome = await consultBefore(
+    iii,
+    function_call,
+    approval_required,
+    session_id,
+    policy_function_id,
+  );
   if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
   if (outcome.kind === 'pending') {
     return { kind: 'pending' };
@@ -163,6 +170,7 @@ export async function dispatch(
   session_id: string,
   fn: unknown,
   payload: unknown,
+  policy_function_id: string,
 ): Promise<FunctionResult> {
   if (typeof fn !== 'string' || fn.length === 0) {
     return errorResult({
@@ -175,7 +183,7 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  const out = await dispatchWithHook(iii, fc, [], session_id);
+  const out = await dispatchWithHook(iii, fc, [], session_id, policy_function_id);
   if (out.kind === 'pending') {
     return errorResult({
       error: 'awaiting_approval',
@@ -186,7 +194,7 @@ export async function dispatch(
   return out.result;
 }
 
-export function register(iii: ISdk): void {
+export function register(iii: ISdk, policy_function_id: string): void {
   iii.registerFunction(
     FUNCTION_ID,
     async (payload: unknown) => {
@@ -194,7 +202,7 @@ export function register(iii: ISdk): void {
       const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';
       const fn = obj.function;
       const inner = obj.payload ?? {};
-      return await dispatch(iii, session_id, fn, inner);
+      return await dispatch(iii, session_id, fn, inner, policy_function_id);
     },
     {
       description:
