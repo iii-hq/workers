@@ -5,7 +5,6 @@
 
 import { requireString } from '../runtime/handler.js';
 import type { ISdk } from '../runtime/iii.js';
-import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { TurnOrchestratorConfig } from './config.js';
@@ -16,21 +15,6 @@ import { newRecord } from './state.js';
 
 export const FUNCTION_ID = 'run::start';
 export const SYNC_FUNCTION_ID = 'run::start_and_wait';
-export const STEP_TOPIC = 'turn::step_requested';
-
-export async function publishStep(iii: ISdk, session_id: string): Promise<void> {
-  try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: STEP_TOPIC, data: { session_id } },
-    });
-  } catch (err) {
-    logger.warn('turn::step_requested publish failed', {
-      session_id,
-      err: String(err),
-    });
-  }
-}
 
 function buildRunRequest(payload: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -77,7 +61,6 @@ export async function execute(iii: ISdk, payload: unknown): Promise<{ session_id
   for (const evt of buildInitialEventPlan(initial_messages)) {
     await emit(iii, session_id, evt);
   }
-  await publishStep(iii, session_id);
   return { session_id };
 }
 

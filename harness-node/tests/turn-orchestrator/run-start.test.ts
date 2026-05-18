@@ -23,7 +23,7 @@ describe('run-start constants', () => {
 });
 
 describe('execute', () => {
-  it('saves initial session state and publishes the first step', async () => {
+  it('saves initial session state to wake the reactive step trigger', async () => {
     const { iii, calls } = fakeIii();
 
     await execute(iii, {
@@ -33,12 +33,21 @@ describe('execute', () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }], timestamp: 1 }],
     });
 
-    const stateSets = calls.filter((c) => c.function_id === 'state::set');
-    expect(stateSets.length).toBeGreaterThan(0);
+    // The reactive wake is now state-driven: the turn_state write at
+    // state='provisioning' is what the on-record-written trigger picks up.
+    // run-start no longer self-publishes turn::step_requested.
+    const turnStateSet = calls.find(
+      (c) =>
+        c.function_id === 'state::set' &&
+        (c.payload as { scope?: string; key?: string }).scope === 'agent' &&
+        (c.payload as { scope?: string; key?: string }).key === 'session/s1/turn_state',
+    );
+    expect(turnStateSet).toBeDefined();
+    expect((turnStateSet?.payload as { value: { state: string } }).value.state).toBe(
+      'provisioning',
+    );
+
     const publish = calls.find((c) => c.function_id === 'iii::durable::publish');
-    expect(publish?.payload).toEqual({
-      topic: 'turn::step_requested',
-      data: { session_id: 's1' },
-    });
+    expect(publish).toBeUndefined();
   });
 });
