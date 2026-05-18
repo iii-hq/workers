@@ -16,18 +16,12 @@ import { FUNCTION_ID, HOOK_REPLY_STREAM, REPLY_HANDLER_FN_ID, parseMergeRule } f
 export type PublishCollectConfig = {
   default_timeout_ms: number;
   min_timeout_ms: number;
-  /**
-   * Retained for back-compat in config wiring; unused in the reactive
-   * implementation. The waiter is event-driven, not interval-driven.
-   */
-  poll_interval_ms: number;
   quiescence_ms: number;
 };
 
 export const DEFAULT_CONFIG: PublishCollectConfig = {
   default_timeout_ms: 10_000,
   min_timeout_ms: 50,
-  poll_interval_ms: 0,
   quiescence_ms: 200,
 };
 
