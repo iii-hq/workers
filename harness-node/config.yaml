@@ -11,6 +11,7 @@ permissions_path: "./iii-permissions.yaml"
 sync_default_timeout_ms: 120000
 system_default_skills:
   - "iii://iii-directory/index"
+policy_function_id: "policy::check_permissions"
 
 # approval-gate
 approval_gate:

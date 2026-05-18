@@ -7,10 +7,8 @@ describe('loadOrchestratorConfig', () => {
     expect(cfg.policy_function_id).toBe('policy::check_permissions');
   });
 
-  it('lets turn_orchestrator.policy_function_id override the default', () => {
-    const cfg = loadOrchestratorConfig({
-      turn_orchestrator: { policy_function_id: 'custom::policy' },
-    });
+  it('lets policy_function_id override the default', () => {
+    const cfg = loadOrchestratorConfig({ policy_function_id: 'custom::policy' });
     expect(cfg.policy_function_id).toBe('custom::policy');
   });
 });
