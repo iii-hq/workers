@@ -44,21 +44,6 @@ export async function handleResolve(
   return { ok: true };
 }
 
-export async function handleListPending(
-  bus: StateBus,
-  state_scope: string,
-  payload: unknown,
-): Promise<unknown> {
-  const obj = (payload ?? {}) as Record<string, unknown>;
-  const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';
-  if (!session_id) return { pending: [] };
-  const all = await bus.listPrefix(state_scope, `${session_id}/`);
-  const pending = all.filter(
-    (v) => v && typeof v === 'object' && (v as Record<string, unknown>).status === 'pending',
-  );
-  return { pending };
-}
-
 export async function resumeSession(iii: ISdk, session_id: string): Promise<void> {
   await iii.trigger<unknown, unknown>({
     function_id: 'iii::durable::publish',

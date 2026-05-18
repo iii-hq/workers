@@ -145,10 +145,6 @@ rules:
   - directory::prompts::get
   - directory::prompts::download
 
-  # ─── Approval listing (read-only) ───────────────────────────────────
-
-  - approval::list_pending
-
   # ─── Add operator-defined rules below ───────────────────────────────
   #
   # Examples:

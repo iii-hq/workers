@@ -4,8 +4,6 @@
  */
 
 export const FN_RESOLVE = 'approval::resolve';
-export const FN_LIST_PENDING = 'approval::list_pending';
-export const FN_CONSUME = 'approval::consume';
 export const FN_SWEEP_SESSION = 'approval::sweep_session';
 export const STATE_SCOPE = 'approvals';
 export const DENIAL_SCHEMA_VERSION = 1;

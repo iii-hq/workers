@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FN_CONSUME,
-  FN_LIST_PENDING,
   FN_RESOLVE,
   FN_SWEEP_SESSION,
   blockReplyFor,
@@ -41,11 +39,9 @@ describe('buildPendingRecord', () => {
   });
 });
 
-describe('FN_CONSUME / FN_SWEEP_SESSION constants', () => {
-  it('exposes existing and new approval-gate iii function ids', () => {
+describe('approval-gate function constants', () => {
+  it('exposes active approval-gate iii function ids', () => {
     expect(FN_RESOLVE).toBe('approval::resolve');
-    expect(FN_LIST_PENDING).toBe('approval::list_pending');
-    expect(FN_CONSUME).toBe('approval::consume');
     expect(FN_SWEEP_SESSION).toBe('approval::sweep_session');
   });
 });

@@ -1,12 +1,11 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
-import { handleConsume } from './consume.js';
 import { handleGateEvent } from './gate-subscriber.js';
-import { handleListPending, handleResolveWithEvents } from './pending.js';
+import { handleResolveWithEvents } from './pending.js';
 import { IiiStateBus } from './state-bus.js';
 import { handleSweepSession } from './sweep.js';
-import { FN_CONSUME, FN_LIST_PENDING, FN_RESOLVE, FN_SWEEP_SESSION } from './types.js';
+import { FN_RESOLVE, FN_SWEEP_SESSION } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
   const cfg = loadApprovalGateConfig(await loadConfig(ctx.configPath));
@@ -18,20 +17,8 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
       handleResolveWithEvents(iii, bus, cfg.approval_state_scope, payload),
     {
       description:
-        'Flip a pending approval entry to allow or deny, emit approval_resolved, and wake the paused session via run::resume.',
+        'Flip an approval to allow or deny, emit approval_resolved, and wake the paused session via turn::step_requested.',
     },
-  );
-
-  iii.registerFunction(
-    FN_LIST_PENDING,
-    async (payload: unknown) => handleListPending(bus, cfg.approval_state_scope, payload),
-    { description: 'Return pending approvals for a session.' },
-  );
-
-  iii.registerFunction(
-    FN_CONSUME,
-    async (payload: unknown) => handleConsume(bus, cfg.approval_state_scope, payload),
-    { description: 'Return resolved approval decisions for a session once.' },
   );
 
   iii.registerFunction(
@@ -44,8 +31,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     'policy::approval_gate',
     async (envelope: unknown) => handleGateEvent({ iii, bus, cfg }, envelope),
     {
-      description:
-        'Consult policy::check_permissions and either allow, deny, or return a pending approval reply.',
+      description: 'Consult policy::check_permissions and reply allow, deny, or pending.',
     },
   );
 
