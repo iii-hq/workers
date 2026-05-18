@@ -35,7 +35,6 @@ export function MessageList({ messages, onResolveApproval }: MessageListProps) {
      pendingApproval and scroll it into view exactly once per pending id.
      (We dedupe via lastPendingIdRef so React's re-renders don't keep
      forcing the scroll while the user is reading the request body.) */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: messages is the trigger.
   useEffect(() => {
     const newestPending = [...messages]
       .reverse()

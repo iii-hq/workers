@@ -31,20 +31,17 @@ export function Message({ message, onResolveApproval }: MessageProps) {
     case 'function-call': {
       const sessionId = message.sessionId
       const functionCallId = message.functionCallId
-      const canResolve = !!onResolveApproval && !!sessionId && !!functionCallId
+      let onApprove: (() => Promise<void>) | undefined
+      let onDeny: (() => Promise<void>) | undefined
+      if (onResolveApproval && sessionId && functionCallId) {
+        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
+        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+      }
       return (
         <FunctionCallMessage
           message={message}
-          onApprove={
-            canResolve
-              ? () => onResolveApproval?.(sessionId!, functionCallId!, 'allow')
-              : undefined
-          }
-          onDeny={
-            canResolve
-              ? () => onResolveApproval?.(sessionId!, functionCallId!, 'deny')
-              : undefined
-          }
+          onApprove={onApprove}
+          onDeny={onDeny}
         />
       )
     }

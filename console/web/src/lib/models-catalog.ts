@@ -1,5 +1,5 @@
-import { getIiiClient } from '@/lib/iii-client'
 import { makeCatalogModelKey } from '@/lib/catalog-model-key'
+import { getIiiClient } from '@/lib/iii-client'
 import type { ModelOption } from '@/types/chat'
 
 /** Wire shape returned by `models::list` over the iii bus. */
