@@ -16,7 +16,6 @@ policy_function_id: "policy::check_permissions"
 # approval-gate
 approval_gate:
   approval_state_scope: "approvals"
-  policy_function_id: "policy::check_permissions"
 
 # session worker
 session:
