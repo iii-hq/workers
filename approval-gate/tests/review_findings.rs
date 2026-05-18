@@ -1,10 +1,9 @@
 //! Tests that pin the **expected, correct** behavior for each finding
 //! raised in the approval-gate review.
 //!
-//! These tests are written red — they FAIL on the current code because
-//! the bugs are still present, and they should PASS once each finding
-//! is fixed. Each test header references the finding number and states
-//! the invariant in positive form.
+//! These tests are regression coverage for fixes that have landed. Each
+//! test header references the finding number and states the invariant in
+//! positive form so future changes break loudly if they regress it.
 //!
 //! Findings covered here (Rust / backend):
 //!   - #2 `allow + always` must be session-scoped (UI contract)
@@ -14,6 +13,8 @@
 //!   - #6 Concurrent `approval::consume` must not return the same row twice
 //!   - #7 Approved execution must augment args the same way the normal
 //!         `function_execute` path does
+//!   - approval_resolved decision must describe the operator decision,
+//!         not executor success/failure
 //!
 //! Findings #1 (hook fail-open) and #8 (UI ignores `ok:false`) live
 //! outside this crate (turn-orchestrator and harness/web respectively)
@@ -30,6 +31,10 @@ use approval_gate::{
 };
 use common::{FakeExecutor, InMemoryStateBus};
 use serde_json::{json, Value};
+
+fn ask_all_rules() -> LayeredRules {
+    LayeredRules::from_global(Some(Vec::new()))
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -72,7 +77,7 @@ async fn seed_pending(bus: &InMemoryStateBus, r: &Record) {
 async fn allow_always_must_not_leak_across_sessions() {
     let bus = InMemoryStateBus::new();
     let exec = FakeExecutor::default();
-    let policy = RwLock::new(LayeredRules::default());
+    let policy = RwLock::new(ask_all_rules());
 
     let sess_a_pending = pending_row(
         "sess_A",
@@ -160,7 +165,7 @@ async fn concurrent_resolves_must_invoke_function_at_most_once() {
 
     let bus = Arc::new(common::MaxConcurrentSetBus::new(8));
     let exec = Arc::new(FakeExecutor::default());
-    let policy = Arc::new(RwLock::new(LayeredRules::default()));
+    let policy = Arc::new(RwLock::new(ask_all_rules()));
 
     let row = pending_row(
         "sess_X",
@@ -238,8 +243,7 @@ async fn concurrent_resolves_must_invoke_function_at_most_once() {
     );
 
     // Exactly one ok-true reply; the other must be a typed loss.
-    let ok_count =
-        [&r1, &r2].iter().filter(|r| r["ok"] == true).count();
+    let ok_count = [&r1, &r2].iter().filter(|r| r["ok"] == true).count();
     assert_eq!(
         ok_count, 1,
         "exactly one resolve wins; the other must return ok:false with a typed error",
@@ -296,13 +300,7 @@ async fn timed_out_rows_must_have_a_wake_surface() {
     // Drive the watchdog directly: it must reclaim the expired row and
     // report the affected session so the registered function can call
     // `run::resume` for it (see register.rs).
-    let tick = approval_gate::handle_tick_timeouts(
-        &bus,
-        STATE_SCOPE,
-        json!({}),
-        now_ms(),
-    )
-    .await;
+    let tick = approval_gate::handle_tick_timeouts(&bus, STATE_SCOPE, json!({}), now_ms()).await;
     assert_eq!(tick["ok"], true);
     assert_eq!(
         tick["reclaimed"], 1,
@@ -310,19 +308,18 @@ async fn timed_out_rows_must_have_a_wake_surface() {
     );
     let sessions = tick["sessions_woken"].as_array().unwrap();
     assert_eq!(
-        sessions.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+        sessions
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>(),
         vec!["sess_T"],
         "watchdog must report sess_T so the orchestrator gets woken",
     );
 
-    // Contract: the gate must expose at least one public function id
-    // whose name signals a timeout-driven wake/tick/watchdog/sweep
-    // surface. Today only `sweep_session` exists and it has zero callers
-    // in the live tree — it's not auto-driven by timeouts. A fix is
-    // expected to add (or wire) one of these:
-    //   - `approval::tick_timeouts`     — periodic flip-and-wake fan-out
-    //   - `approval::wake_timeouts`     — explicit per-session wake
-    //   - `approval::watchdog_*`        — background reaper surface
+    // Contract: the gate exposes a public timeout-driven wake surface.
+    // `approval::tick_timeouts` is the chosen shape: it performs the
+    // flip-and-wake fan-out directly and is also called by the auto-tick
+    // loop registered in approval-gate/src/register.rs.
     let surfaces = [
         approval_gate::FN_RESOLVE,
         approval_gate::FN_LIST_PENDING,
@@ -331,9 +328,9 @@ async fn timed_out_rows_must_have_a_wake_surface() {
         approval_gate::FN_LOOKUP_RECORD,
         approval_gate::FN_TICK_TIMEOUTS,
     ];
-    let has_wake_surface = surfaces.iter().any(|s| {
-        s.contains("tick") || s.contains("wake") || s.contains("watchdog")
-    });
+    let has_wake_surface = surfaces
+        .iter()
+        .any(|s| s.contains("tick") || s.contains("wake") || s.contains("watchdog"));
     assert!(
         has_wake_surface,
         "expected the gate to expose a timeout-driven wake surface so \
@@ -475,7 +472,7 @@ async fn done_write_failure_must_not_orphan_in_flight_row() {
         sets: Mutex::new(0),
     };
     let exec = FakeExecutor::default();
-    let policy = RwLock::new(LayeredRules::default());
+    let policy = RwLock::new(ask_all_rules());
 
     let row = pending_row("sess_F", "tc-f", "shell::exec", json!({}));
     bus.inner
@@ -512,8 +509,7 @@ async fn done_write_failure_must_not_orphan_in_flight_row() {
     assert!(
         reclaimed.is_some(),
         "lazy-flip must reclaim stale InFlight rows once enough time has \
-         passed; today it ignores InFlight entirely, leaving the row \
-         orphaned",
+         passed so executor-side failures cannot leave the row orphaned",
     );
     let reclaimed = reclaimed.unwrap();
     assert_eq!(reclaimed.status, Status::Done);
@@ -532,12 +528,11 @@ async fn done_write_failure_must_not_orphan_in_flight_row() {
 async fn concurrent_consume_must_not_return_duplicate_rows() {
     use tokio::sync::Barrier;
 
-    // Simulate the production backend's non-atomic delete: even after
-    // the row is gone, the iii state surface today can report
-    // `existed=true` to two concurrent callers because its delete is
-    // `get`-then-`delete`. The per-session mutex in `handle_consume`
-    // MUST close this gap on its own, without leaning on `delete`'s
-    // return value.
+    // Simulate a non-atomic delete surface: even after the row is gone,
+    // a state backend can report `existed=true` to two concurrent
+    // callers if delete is implemented as get-then-delete. The
+    // per-session mutex in `handle_consume` MUST close this gap on its
+    // own, without leaning on `delete`'s return value.
     struct RacyDeleteBus {
         inner: InMemoryStateBus,
     }
@@ -627,7 +622,7 @@ async fn concurrent_consume_must_not_return_duplicate_rows() {
 async fn approved_invoke_must_augment_args_like_normal_path() {
     let bus = InMemoryStateBus::new();
     let exec = FakeExecutor::default();
-    let policy = RwLock::new(LayeredRules::default());
+    let policy = RwLock::new(ask_all_rules());
 
     let original_args = json!({ "command": "git", "args": ["status"] });
     let row = pending_row("sess_A", "tc-1", "shell::exec", original_args.clone());
@@ -692,8 +687,8 @@ async fn approved_invoke_must_augment_args_like_normal_path() {
 //
 // Pin the corrected mapping via the pure helper so the bug can't return
 // without a test breaking:
-//   - outcome.kind == "executed"  → decision == "allow"
-//   - everything else (failed/denied/timed_out) → decision == "deny"
+//   - outcome.kind == "executed"|"failed" → decision == "allow"
+//   - denied/timed_out                    → decision == "deny"
 // Also pin the wire shape: drop the redundant flat status/result/
 // error/denial fields in favor of a single nested `outcome`.
 // ────────────────────────────────────────────────────────────────────────
@@ -732,7 +727,7 @@ fn approval_resolved_event_decision_is_allow_only_for_executed_outcome() {
 }
 
 #[test]
-fn approval_resolved_event_decision_is_deny_for_failed_outcome() {
+fn approval_resolved_event_decision_is_allow_for_failed_outcome() {
     let rec = pending_row("sess_A", "tc-2", "shell::exec", json!({}))
         .in_flight(now_ms())
         .done(Outcome::Failed {
@@ -740,8 +735,9 @@ fn approval_resolved_event_decision_is_deny_for_failed_outcome() {
         });
     let evt = approval_gate::build_approval_resolved_event("tc-2", &rec.to_value());
     assert_eq!(
-        evt["decision"], "deny",
-        "outcome.kind=failed must map to decision=deny — not 'allow'",
+        evt["decision"], "allow",
+        "outcome.kind=failed means the operator allowed execution; \
+         outcome.kind carries the target failure",
     );
     assert_eq!(evt["outcome"]["kind"], "failed");
     assert_eq!(evt["outcome"]["detail"]["error"], "spawn failed");
@@ -749,13 +745,12 @@ fn approval_resolved_event_decision_is_deny_for_failed_outcome() {
 
 #[test]
 fn approval_resolved_event_decision_is_deny_for_denied_outcome() {
-    let rec = pending_row("sess_A", "tc-3", "shell::exec", json!({}))
-        .done_at(
-            now_ms(),
-            Outcome::Denied {
-                denial: approval_gate::Denial::UserRejected,
-            },
-        );
+    let rec = pending_row("sess_A", "tc-3", "shell::exec", json!({})).done_at(
+        now_ms(),
+        Outcome::Denied {
+            denial: approval_gate::Denial::UserRejected,
+        },
+    );
     let evt = approval_gate::build_approval_resolved_event("tc-3", &rec.to_value());
     assert_eq!(evt["decision"], "deny");
     assert_eq!(evt["outcome"]["kind"], "denied");
@@ -776,10 +771,7 @@ fn approval_resolved_event_decision_is_deny_for_timed_out_outcome() {
 /// be `"deny"` — never silently emit `"allow"`.
 #[test]
 fn approval_resolved_event_defaults_decision_to_deny_when_outcome_missing() {
-    let evt = approval_gate::build_approval_resolved_event(
-        "tc-5",
-        &json!({ "status": "done" }),
-    );
+    let evt = approval_gate::build_approval_resolved_event("tc-5", &json!({ "status": "done" }));
     assert_eq!(
         evt["decision"], "deny",
         "no outcome ⇒ deny (safety default); allow must require outcome.kind=executed",

@@ -42,8 +42,8 @@ pub fn omission_summary_message(omitted: u64) -> Option<String> {
 /// Render an approval-gate `Denial` (tagged `{ kind, detail }`) as one or
 /// more indented lines for the stitched LLM message. Each kind gets a
 /// shape it can act on:
-/// - `policy`   → "policy denied by rule <perm>:<pat>" (rule-based deny;
-///   names the matched rule so the model knows what to avoid)
+/// - `approval_rule_denied` / `policy` → "policy denied by rule <perm>:<pat>"
+///   (names the matched rule so the model knows what to avoid)
 /// - `user_rejected`  → "user rejected this call" (no feedback)
 /// - `user_corrected` → "user rejected with feedback: <text>"
 ///   (the high-value variant — model gets actionable correction)
@@ -53,6 +53,17 @@ fn render_denial_lines(denial: &Value) -> Vec<String> {
     let kind = denial.get("kind").and_then(Value::as_str).unwrap_or("");
     let detail = denial.get("detail").cloned().unwrap_or(Value::Null);
     match kind {
+        "approval_rule_denied" => {
+            let rule = detail.get("rule").unwrap_or(&Value::Null);
+            let perm = rule.get("permission").and_then(Value::as_str).unwrap_or("");
+            let pat = rule.get("pattern").and_then(Value::as_str).unwrap_or("");
+            let reason = rule.get("reason").and_then(Value::as_str);
+            let mut lines = vec![format!("  policy denied by rule {perm} : {pat}")];
+            if let Some(reason) = reason.filter(|r| !r.is_empty()) {
+                lines.push(format!("  rule reason: {reason}"));
+            }
+            lines
+        }
         "policy" => {
             let perm = detail
                 .get("rule_permission")
@@ -87,10 +98,13 @@ fn render_denial_lines(denial: &Value) -> Vec<String> {
 fn stitch_one(entry: &Value) -> String {
     let call_id = entry
         .get("function_call_id")
-        .or_else(|| entry.get("call_id"))   // legacy fallback
+        .or_else(|| entry.get("call_id")) // legacy fallback
         .and_then(Value::as_str)
         .unwrap_or("?");
-    let fn_id = entry.get("function_id").and_then(Value::as_str).unwrap_or("?");
+    let fn_id = entry
+        .get("function_id")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
 
     let outcome = entry.get("outcome").cloned().unwrap_or(Value::Null);
     let outcome_kind = outcome.get("kind").and_then(Value::as_str).unwrap_or("?");
@@ -183,7 +197,7 @@ mod tests {
         } else {
             Value::Object(extras_obj)
         };
-        let kind = old_status;  // executed | failed | denied | timed_out
+        let kind = old_status; // executed | failed | denied | timed_out
         json!({
             "function_call_id": call_id,
             "function_id": fn_id,
@@ -198,7 +212,12 @@ mod tests {
     #[test]
     fn stitch_entries_emits_one_message_per_entry() {
         let entries = vec![
-            make_entry("c1", "shell::fs::write", "executed", json!({"result": {"ok": true}})),
+            make_entry(
+                "c1",
+                "shell::fs::write",
+                "executed",
+                json!({"result": {"ok": true}}),
+            ),
             make_entry(
                 "c2",
                 "shell::fs::mkdir",
@@ -212,8 +231,12 @@ mod tests {
 
     #[test]
     fn stitch_entries_executed_includes_result_line() {
-        let entries = vec![make_entry("c1", "shell::fs::write", "executed",
-            json!({"result": {"ok": true}}))];
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({"result": {"ok": true}}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: allow"));
         assert!(msg.contains("outcome: executed"));
@@ -224,8 +247,12 @@ mod tests {
 
     #[test]
     fn stitch_entries_failed_includes_error_line_no_result() {
-        let entries = vec![make_entry("c1", "shell::fs::write", "failed",
-            json!({"error": "EACCES"}))];
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "failed",
+            json!({"error": "EACCES"}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: allow"));
         assert!(msg.contains("outcome: failed"));
@@ -287,6 +314,33 @@ mod tests {
     }
 
     #[test]
+    fn stitch_entries_denied_approval_rule_names_matching_rule() {
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "denied",
+            json!({
+                "denial": {
+                    "kind": "approval_rule_denied",
+                    "detail": {
+                        "rule": {
+                            "source": "global",
+                            "index": 0,
+                            "permission": "shell::exec",
+                            "pattern": "rm -rf*",
+                            "action": "deny",
+                            "reason": "destructive command"
+                        }
+                    }
+                }
+            }),
+        )];
+        let msg = &stitch_entries(&entries)[0];
+        assert!(msg.contains("policy denied by rule shell::exec : rm -rf*"));
+        assert!(msg.contains("rule reason: destructive command"));
+    }
+
+    #[test]
     fn stitch_entries_denied_state_error_surfaces_phase_and_error() {
         let entries = vec![make_entry(
             "c1",
@@ -307,12 +361,7 @@ mod tests {
 
     #[test]
     fn stitch_entries_timed_out_omits_denial_block() {
-        let entries = vec![make_entry(
-            "c1",
-            "shell::fs::write",
-            "timed_out",
-            json!({}),
-        )];
+        let entries = vec![make_entry("c1", "shell::fs::write", "timed_out", json!({}))];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("decision: timeout"));
         assert!(msg.contains("outcome: timed_out"));
@@ -328,8 +377,12 @@ mod tests {
 
     #[test]
     fn stitch_entries_is_deterministic_for_same_input() {
-        let entries = vec![make_entry("c1", "shell::fs::write", "executed",
-            json!({"result": {"ok": true}}))];
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({"result": {"ok": true}}),
+        )];
         let a = stitch_entries(&entries);
         let b = stitch_entries(&entries);
         assert_eq!(a, b);
@@ -338,8 +391,12 @@ mod tests {
     #[test]
     fn stitch_entries_truncates_args_over_512_chars() {
         let big = "x".repeat(600);
-        let entries = vec![make_entry("c1", "shell::fs::write", "executed",
-            json!({"args": {"blob": big}, "result": {"ok": true}}))];
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({"args": {"blob": big}, "result": {"ok": true}}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("… (truncated)"));
     }
@@ -347,8 +404,12 @@ mod tests {
     #[test]
     fn stitch_entries_truncates_result_over_512_chars() {
         let big = "y".repeat(600);
-        let entries = vec![make_entry("c1", "shell::fs::write", "executed",
-            json!({"result": {"blob": big}}))];
+        let entries = vec![make_entry(
+            "c1",
+            "shell::fs::write",
+            "executed",
+            json!({"result": {"blob": big}}),
+        )];
         let msg = &stitch_entries(&entries)[0];
         assert!(msg.contains("result:"));
         assert!(msg.contains("… (truncated)"));

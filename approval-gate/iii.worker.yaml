@@ -7,9 +7,9 @@ bin: approval-gate
 description: |
   Hook subscriber on agent::before_function_call. Decides every LLM-initiated
   function call via a layered rules engine. Allow → pass through. Deny →
-  structured Denial::Policy. Ask → write a Pending record and wait for
-  approval::resolve. The classifier surface and __from_approval marker are gone;
-  policy lives entirely in the rules layer.
+  structured ApprovalRuleDenied. Ask → write a Pending record and wait for
+  approval::resolve. Omitted rules disable policy; explicit rules enable
+  first-match approval policy.
 
 runtime:
   kind: rust
@@ -27,34 +27,3 @@ config:
   # Pending and stale InFlight rows, then wakes the orchestrator via
   # run::resume. Set to 0 to disable (tests drive ticks manually).
   tick_interval_ms: 15000
-
-  # Curated default ruleset. `before_function_call` fires for every tool
-  # call; with no rules and no-match defaulting to Ask, an empty ruleset
-  # would prompt for every read-only function. The defaults below
-  # auto-allow safe reads and ask for everything that writes/executes/
-  # mutates. Operators stack their own rules on top — last-match wins.
-  rules:
-    # Read-only filesystem / introspection
-    - { permission: "fs::read",   pattern: "*", action: allow }
-    - { permission: "fs::list",   pattern: "*", action: allow }
-    - { permission: "fs::stat",   pattern: "*", action: allow }
-    - { permission: "fs::glob",   pattern: "*", action: allow }
-    - { permission: "fs::grep",   pattern: "*", action: allow }
-
-    # Read-only git
-    - { permission: "shell::exec", pattern: "git status*",  action: allow }
-    - { permission: "shell::exec", pattern: "git log*",     action: allow }
-    - { permission: "shell::exec", pattern: "git diff*",    action: allow }
-    - { permission: "shell::exec", pattern: "git show*",    action: allow }
-    - { permission: "shell::exec", pattern: "git branch*",  action: allow }
-    - { permission: "shell::exec", pattern: "git remote*",  action: allow }
-
-    # Approval API — the gate must not gate itself
-    - { permission: "approval::*", pattern: "*", action: allow }
-
-    # All remaining shell exec calls → ask
-    - { permission: "shell::exec",    pattern: "*", action: ask }
-    - { permission: "shell::exec_bg", pattern: "*", action: ask }
-
-    # Catch-all: anything else → ask. (Operator overrides go above.)
-    - { permission: "*", pattern: "*", action: ask }

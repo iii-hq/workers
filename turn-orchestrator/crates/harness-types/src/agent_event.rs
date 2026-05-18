@@ -13,12 +13,25 @@ pub enum ApprovalDecision {
     Deny,
 }
 
+/// Rule metadata emitted by approval-gate for audit/UI display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRuleMatch {
+    pub source: String,
+    pub index: usize,
+    pub permission: String,
+    pub pattern: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Structured deny payload carried on the `approval_resolved` event.
 /// Mirrors the `Denial` type emitted by approval-gate so downstream
 /// consumers (UI, audit, the LLM via stitching) can branch on `kind`
 /// instead of parsing a free-form reason string.
 ///
 /// Wire shape (serde tag=kind, content=detail, snake_case):
+///   `{ "kind": "approval_rule_denied", "detail": { "rule": { ... } } }`
 ///   `{ "kind": "policy",         "detail": { "classifier_reason": "...", "classifier_fn": "..." } }`
 ///   `{ "kind": "user_rejected",  "detail": null }`
 ///   `{ "kind": "user_corrected", "detail": { "feedback": "..." } }`
@@ -26,6 +39,9 @@ pub enum ApprovalDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Denial {
+    ApprovalRuleDenied {
+        rule: ApprovalRuleMatch,
+    },
     Policy {
         classifier_reason: String,
         classifier_fn: String,
@@ -108,6 +124,10 @@ pub enum AgentEvent {
         args: serde_json::Value,
         /// Unix milliseconds. After this point the gate auto-denies.
         expires_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<ApprovalRuleMatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// Approval gate has resolved a previously-requested approval.
     ApprovalResolved {
@@ -119,6 +139,10 @@ pub enum AgentEvent {
         /// (timed_out is self-describing via the persisted record status).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         denial: Option<Denial>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<ApprovalRuleMatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 
@@ -167,6 +191,8 @@ mod tests {
             function_id: "shell::filesystem::write".into(),
             args: serde_json::json!({ "path": "/tmp/x" }),
             expires_at: 1_700_000_000_000,
+            rule: None,
+            reason: None,
         };
         let json = serde_json::to_value(&evt).unwrap();
         assert_eq!(json["type"], "approval_requested");
@@ -183,6 +209,8 @@ mod tests {
             denial: Some(Denial::UserCorrected {
                 feedback: "try git diff first".into(),
             }),
+            rule: None,
+            reason: None,
         };
         let json = serde_json::to_value(&evt).unwrap();
         assert_eq!(json["type"], "approval_resolved");
@@ -196,6 +224,8 @@ mod tests {
             function_call_id: "tc-9".into(),
             decision: ApprovalDecision::Allow,
             denial: None,
+            rule: None,
+            reason: None,
         };
         let json = serde_json::to_value(&none_denial).unwrap();
         assert_eq!(json["decision"], "allow");
@@ -215,6 +245,26 @@ mod tests {
         assert_eq!(v["kind"], "policy");
         assert_eq!(v["detail"]["classifier_reason"], "command matches denylist");
         assert_eq!(v["detail"]["classifier_fn"], "shell::classify_argv");
+        let back: Denial = serde_json::from_value(v).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn denial_approval_rule_serializes_with_rule_detail() {
+        let d = Denial::ApprovalRuleDenied {
+            rule: ApprovalRuleMatch {
+                source: "global".into(),
+                index: 0,
+                permission: "shell::exec".into(),
+                pattern: "rm -rf*".into(),
+                action: "deny".into(),
+                reason: Some("destructive command".into()),
+            },
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["kind"], "approval_rule_denied");
+        assert_eq!(v["detail"]["rule"]["permission"], "shell::exec");
+        assert_eq!(v["detail"]["rule"]["reason"], "destructive command");
         let back: Denial = serde_json::from_value(v).unwrap();
         assert_eq!(back, d);
     }

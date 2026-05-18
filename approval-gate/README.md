@@ -1,8 +1,8 @@
 # approval-gate
 
-Rules-driven safety gate for LLM-initiated function calls. Subscribes to `agent::before_function_call`; for every call it consults a layered ruleset and replies on the hook envelope with one of three verdicts: **Allow** → pass through, **Deny** → structured `Denial::Policy`, **Ask** → write a Pending record and pause. Operators resolve pending rows via `approval::resolve`; resolved rows are stitched into the next assistant turn via `approval::consume`. A built-in watchdog (`approval::tick_timeouts`) fires on a configurable interval so expired Pending rows and stale InFlight rows are reclaimed and the orchestrator gets woken via `run::resume`.
+Rules-driven safety gate for LLM-initiated function calls. Subscribes to `agent::before_function_call`; for every call it consults a first-match ruleset and replies on the hook envelope with one of three verdicts: **Allow** → pass through, **Deny** → structured `ApprovalRuleDenied`, **Ask** → write a Pending record and pause. Operators resolve pending rows via `approval::resolve`; resolved rows are stitched into the next assistant turn via `approval::consume`. A built-in watchdog (`approval::tick_timeouts`) fires on a configurable interval so expired Pending rows and stale InFlight rows are reclaimed and the orchestrator gets woken via `run::resume`.
 
-`approval_required` from the run-request payload is read but no longer authoritative — policy decisions come entirely from the rules engine.
+`approval_required` from the run-request payload is tolerated for mixed deployments but ignored — policy decisions come entirely from `rules:`.
 
 ## Install
 
@@ -66,7 +66,20 @@ topic: agent::before_function_call   # subscribe trigger topic
 approval_state_scope: approvals      # state:: scope for approval records
 default_timeout_ms: 300000           # Pending-row TTL → auto deny after 5 min
 tick_interval_ms: 15000              # watchdog cadence; 0 disables the loop
-rules: [ ... ]                       # curated layered ruleset (see file)
+```
+
+No `rules:` key means policy is disabled and non-approval calls allow through. An explicit empty list (`rules: []`) means policy is enabled and no-match falls back to Ask. Rule order is first match wins, so place specific allow/deny entries before a catch-all ask.
+
+Example local harness preset:
+
+```yaml
+rules:
+  - { permission: "fs::read", pattern: "*", action: allow }
+  - { permission: "shell::exec", pattern: "git status*", action: allow }
+  - { permission: "approval::*", pattern: "*", action: allow }
+  - { permission: "harness::call", pattern: "*", action: deny, reason: "harness dispatch cannot bypass approval policy" }
+  - { permission: "shell::exec", pattern: "*", action: ask }
+  - { permission: "*", pattern: "*", action: ask }
 ```
 
 Engines may nest the block under `config:` exactly like [`policy-denylist`](../policy-denylist/README.md). Overrides:
@@ -87,7 +100,7 @@ Other defaults and serde aliases live in [`src/config.rs`](src/config.rs).
 | `approval::resolve` | Operator decision (`allow` / `deny`) for one pending `(session_id, function_call_id)`. Returns `{ok, cascaded?}`. On `allow + always: true`, pushes a session-scoped Allow rule and cascade-resolves the rest of the session's pending rows matching the same exact-argv pattern. |
 | `approval::consume` | Atomic drain: returns Done rows for a session and deletes them in the same call. Pending and InFlight rows stay in state. Pending rows past `expires_at` are lazy-flipped before return. Required payload: `{session_id, limit?}`. Response: `{ok, entries, omitted}`. |
 | `approval::list_pending` | UI-facing read: returns the current Pending rows for a session. Applies lazy-timeout flip on read. |
-| `approval::sweep_session` | Force-cancel every non-terminal row for a session. Intended for `run::stop`. |
+| `approval::sweep_session` | Force-cancel every non-terminal row for session stop/abort cleanup. |
 | `approval::lookup_record` | Single-row lookup by `(session_id, function_call_id)`; returns null when absent. |
 | `approval::tick_timeouts` | Watchdog tick: flips expired Pending + stale InFlight rows, returns `sessions_woken`, and the registered closure fires `run::resume` for each. Fires automatically every `tick_interval_ms` and is also callable on demand. |
 

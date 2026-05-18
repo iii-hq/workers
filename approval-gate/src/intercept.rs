@@ -17,7 +17,7 @@
 use serde_json::{json, Value};
 
 use crate::record::{Record, Status};
-use crate::rules::Ruleset;
+use crate::rules::RulesSnapshot;
 use crate::state::StateBus;
 use crate::wire::{pending_key, Denial, IncomingCall};
 
@@ -29,27 +29,55 @@ pub async fn handle_intercept(
     bus: &dyn StateBus,
     state_scope: &str,
     call: &IncomingCall,
-    rules: &Ruleset,
+    rules: &RulesSnapshot,
     now_ms: u64,
     timeout_ms: u64,
 ) -> Value {
     // 1. Rules pre-check.
     match crate::verdict_for(&call.function_id, &call.args, rules) {
-        crate::Verdict::Allow => return json!({ "block": false }),
-        crate::Verdict::Deny(denial) => {
-            return json!({
+        crate::Verdict::Allow { rule } => {
+            let mut reply = json!({ "block": false });
+            if let Some(rule) = rule {
+                reply["rule"] = serde_json::to_value(&rule).unwrap_or(Value::Null);
+                if let Some(reason) = &rule.reason {
+                    reply["reason"] = json!(reason);
+                }
+            }
+            return reply;
+        }
+        crate::Verdict::Deny { denial, rule } => {
+            let mut reply = json!({
                 "block": true,
                 "status": "denied",
                 "denial": denial,
                 "call_id": call.function_call_id,
                 "function_id": call.function_id,
             });
+            if let Some(rule) = rule {
+                reply["rule"] = serde_json::to_value(&rule).unwrap_or(Value::Null);
+                if let Some(reason) = &rule.reason {
+                    reply["reason"] = json!(reason);
+                }
+            }
+            return reply;
         }
-        crate::Verdict::Ask => { /* fall through */ }
+        crate::Verdict::Ask { rule } => {
+            let key = pending_key(&call.session_id, &call.function_call_id);
+            return ask_with_rule(bus, state_scope, call, key, rule, now_ms, timeout_ms).await;
+        }
     }
+}
 
+async fn ask_with_rule(
+    bus: &dyn StateBus,
+    state_scope: &str,
+    call: &IncomingCall,
+    key: String,
+    rule: Option<crate::rules::RuleMatch>,
+    now_ms: u64,
+    timeout_ms: u64,
+) -> Value {
     // 2. Replay defense — never overwrite an existing row.
-    let key = pending_key(&call.session_id, &call.function_call_id);
     if let Some(existing_raw) = bus.get(state_scope, &key).await {
         if let Some(existing) = Record::from_value(existing_raw) {
             return match existing.status {
@@ -80,13 +108,14 @@ pub async fn handle_intercept(
     }
 
     // 3. Fresh Pending write.
-    let record = Record::pending(
+    let record = Record::pending_with_rule(
         call.function_call_id.clone(),
         call.function_id.clone(),
         call.args.clone(),
         call.session_id.clone(),
         now_ms,
         timeout_ms,
+        rule.clone(),
     );
     if let Err(err) = bus.set(state_scope, &key, record.to_value()).await {
         tracing::error!(
@@ -106,19 +135,26 @@ pub async fn handle_intercept(
             "function_id": call.function_id,
         });
     }
-    json!({
+    let mut reply = json!({
         "block":       true,
         "status":      "pending",
         "call_id":     call.function_call_id,
         "function_id": call.function_id,
-    })
+    });
+    if let Some(rule) = rule {
+        reply["rule"] = serde_json::to_value(&rule).unwrap_or(Value::Null);
+        if let Some(reason) = &rule.reason {
+            reply["reason"] = json!(reason);
+        }
+    }
+    reply
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::record::{Outcome, Record};
-    use crate::rules::{Action, Rule};
+    use crate::rules::{Action, Rule, RulesSnapshot, Ruleset};
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -173,14 +209,26 @@ mod tests {
         }
     }
 
+    fn policy(rules: Ruleset) -> RulesSnapshot {
+        RulesSnapshot {
+            global: Some(rules),
+            session: Vec::new(),
+        }
+    }
+
+    fn r(permission: &str, pattern: &str, action: Action) -> Rule {
+        Rule {
+            permission: permission.to_string(),
+            pattern: pattern.to_string(),
+            action,
+            reason: None,
+        }
+    }
+
     #[tokio::test]
     async fn allow_rule_returns_block_false_no_state_write() {
         let bus = InMemBus::default();
-        let rs: Ruleset = vec![Rule {
-            permission: "shell::exec".into(),
-            pattern: "git status*".into(),
-            action: Action::Allow,
-        }];
+        let rs = policy(vec![r("shell::exec", "git status*", Action::Allow)]);
         let c = call(
             "tc-1",
             "shell::exec",
@@ -194,11 +242,7 @@ mod tests {
     #[tokio::test]
     async fn rules_are_authoritative_over_approval_required_list() {
         let bus = InMemBus::default();
-        let rs: Ruleset = vec![Rule {
-            permission: "shell::exec".into(),
-            pattern: "git status*".into(),
-            action: Action::Allow,
-        }];
+        let rs = policy(vec![r("shell::exec", "git status*", Action::Allow)]);
         let mut c = call(
             "tc-1",
             "shell::exec",
@@ -216,13 +260,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_approval_required_does_not_enable_policy_when_rules_are_omitted() {
+        let bus = InMemBus::default();
+        let rs = RulesSnapshot {
+            global: None,
+            session: Vec::new(),
+        };
+        let mut c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["push"]}),
+        );
+        c.approval_required = vec!["shell::exec".into()];
+
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+
+        assert_eq!(
+            reply["block"], false,
+            "omitted rules disable policy; legacy approval_required must not re-enable ask behavior",
+        );
+        assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_approval_required_cannot_bypass_a_matching_deny_rule() {
+        let bus = InMemBus::default();
+        let rs = policy(vec![r("shell::exec", "git push", Action::Deny)]);
+        let mut c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["push"]}),
+        );
+        c.approval_required = vec!["approval::resolve".into()];
+
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+
+        assert_eq!(reply["block"], true);
+        assert_eq!(reply["status"], "denied");
+        assert_eq!(reply["denial"]["kind"], "approval_rule_denied");
+        assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
+    }
+
+    #[tokio::test]
     async fn deny_rule_returns_block_true_structured_policy_denial() {
         let bus = InMemBus::default();
-        let rs: Ruleset = vec![Rule {
-            permission: "shell::exec".into(),
-            pattern: "rm -rf*".into(),
-            action: Action::Deny,
-        }];
+        let rs = policy(vec![r("shell::exec", "rm -rf*", Action::Deny)]);
         let c = call(
             "tc-1",
             "shell::exec",
@@ -230,16 +312,19 @@ mod tests {
         );
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["block"], true);
-        assert_eq!(reply["denial"]["kind"], "policy");
-        assert_eq!(reply["denial"]["detail"]["rule_permission"], "shell::exec");
-        assert_eq!(reply["denial"]["detail"]["rule_pattern"], "rm -rf*");
+        assert_eq!(reply["denial"]["kind"], "approval_rule_denied");
+        assert_eq!(
+            reply["denial"]["detail"]["rule"]["permission"],
+            "shell::exec"
+        );
+        assert_eq!(reply["denial"]["detail"]["rule"]["pattern"], "rm -rf*");
         assert!(bus.list_prefix("approvals", "sess_a/").await.is_empty());
     }
 
     #[tokio::test]
     async fn no_match_defaults_to_ask_writes_pending() {
         let bus = InMemBus::default();
-        let rs: Ruleset = vec![];
+        let rs = policy(vec![]);
         let c = call(
             "tc-1",
             "shell::exec",
@@ -257,9 +342,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ask_rule_metadata_is_returned_and_persisted() {
+        let bus = InMemBus::default();
+        let rs = policy(vec![Rule {
+            permission: "shell::exec".into(),
+            pattern: "*".into(),
+            action: Action::Ask,
+            reason: Some("shell commands require review".into()),
+        }]);
+        let c = call(
+            "tc-1",
+            "shell::exec",
+            json!({"command": "git", "args": ["push"]}),
+        );
+        let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
+        assert_eq!(reply["status"], "pending");
+        assert_eq!(reply["reason"], "shell commands require review");
+        assert_eq!(reply["rule"]["permission"], "shell::exec");
+
+        let stored = bus
+            .get("approvals", "sess_a/tc-1")
+            .await
+            .expect("pending row");
+        let record = Record::from_value(stored).unwrap();
+        assert_eq!(
+            record.reason.as_deref(),
+            Some("shell commands require review")
+        );
+        assert_eq!(record.rule.as_ref().map(|r| r.pattern.as_str()), Some("*"));
+    }
+
+    #[tokio::test]
     async fn replay_on_pending_returns_in_flight_no_state_churn() {
         let bus = InMemBus::default();
-        let rs: Ruleset = vec![];
+        let rs = policy(vec![]);
         let c = call("tc-1", "shell::exec", json!({"command": "ls"}));
 
         handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
@@ -290,7 +406,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rs: Ruleset = vec![];
+        let rs = policy(vec![]);
         let c = call("tc-1", "shell::exec", json!({}));
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["replay"], "in_flight");
@@ -316,7 +432,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rs: Ruleset = vec![];
+        let rs = policy(vec![]);
         let c = call("tc-1", "shell::exec", json!({}));
         let reply = handle_intercept(&bus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["replay"], "already_resolved");
@@ -341,7 +457,7 @@ mod tests {
                 Ok(false)
             }
         }
-        let rs: Ruleset = vec![];
+        let rs = policy(vec![]);
         let c = call("tc-1", "shell::exec", json!({}));
         let reply = handle_intercept(&FailBus, "approvals", &c, &rs, 1_000, 60_000).await;
         assert_eq!(reply["block"], true);

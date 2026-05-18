@@ -129,24 +129,6 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
     let raw = std::mem::take(&mut record.pending_function_calls);
     record.pending_function_calls = raw.into_iter().map(unwrap_agent_call).collect();
 
-    // run_request is immutable for a session; loading it here on every retry of
-    // FunctionPrepare is wasteful but correct. Cache on TurnStateRecord if hot.
-    let run_request = persistence::load_run_request(iii, &record.session_id).await;
-    let approval_required: Vec<String> = run_request
-        .get("approval_required")
-        .and_then(|v| match serde_json::from_value::<Vec<String>>(v.clone()) {
-            Ok(list) => Some(list),
-            Err(err) => {
-                tracing::warn!(
-                    %err,
-                    session_id = %record.session_id,
-                    "approval_required malformed in run_request; treating as empty"
-                );
-                None
-            }
-        })
-        .unwrap_or_default();
-
     let mut prepared: Vec<(FunctionCall, Option<FunctionResult>)> =
         Vec::with_capacity(record.pending_function_calls.len());
     for fc in record.pending_function_calls.iter().cloned() {
@@ -159,12 +141,13 @@ pub async fn handle_prepare(iii: &III, record: &mut TurnStateRecord) -> anyhow::
         let merged = match publish_collect_with_retry(
             iii,
             TOPIC_BEFORE,
-            build_before_function_call_payload(&record.session_id, &fc, &approval_required),
+            build_before_function_call_payload(&record.session_id, &fc),
             "first_block_wins",
             HOOK_TIMEOUT_MS,
-            // require_reply=true: TOPIC_BEFORE is safety-critical. An
-            // empty-replies response (subscriber down / slow / crashed)
-            // must fail closed, not silently green-light the call.
+            // require_reply=true: TOPIC_BEFORE is safety-critical. A response
+            // without an approval-gate reply (gate down / slow / crashed)
+            // must fail closed, not silently green-light the call because
+            // some other subscriber replied.
             true,
         )
         .await
@@ -376,15 +359,10 @@ pub(crate) fn executed_staging_for_new_prepare_batch(
 /// `session_id` is included because `approval-gate::extract_call` requires
 /// it to key the pending record; without it the gate silently passes every
 /// call through.
-pub(crate) fn build_before_function_call_payload(
-    session_id: &str,
-    fc: &FunctionCall,
-    approval_required: &[String],
-) -> Value {
+pub(crate) fn build_before_function_call_payload(session_id: &str, fc: &FunctionCall) -> Value {
     json!({
         "session_id": session_id,
         "function_call": fc,
-        "approval_required": approval_required,
     })
 }
 
@@ -508,15 +486,12 @@ async fn publish_collect_with_retry<P: HookPublisher + ?Sized>(
 ///      failed end-to-end).
 ///   2. Legacy top-level `publish_failed: true` (hook-fanout pre-modern
 ///      shape; drop after one release).
-///   3. **Zero-replies on a safety-critical caller**: when
+///   3. **Missing approval-gate reply on a safety-critical caller**: when
 ///      `require_reply` is true (used by `handle_prepare` for the
-///      `agent::before_function_call` hook), an Ok response whose
-///      `replies` array is empty means "publish succeeded, but no
-///      subscriber actually decided." Without this branch the gate
-///      fails OPEN any time approval-gate is unsubscribed, slow, or
-///      crashed mid-handle — `merge_first_block_wins([])` yields
-///      `{block: false}` indistinguishable from a green policy
-///      decision.
+///      `agent::before_function_call` hook), an Ok response must include
+///      the approval-gate subscriber marker. A reply from another
+///      subscriber (for example policy-denylist's `{block:false}`) is not
+///      enough to prove the approval gate made a decision.
 ///
 /// Pure helper — unit tested below. Centralizing this lets the retry
 /// loop fail-closed without re-implementing the response schema.
@@ -538,20 +513,25 @@ pub(crate) fn publish_failure_from_response(v: &Value, require_reply: bool) -> O
     if v.get("publish_failed").and_then(Value::as_bool) == Some(true) {
         return Some("publish failed (legacy publish_failed flag)".to_string());
     }
-    // Zero-replies on a safety-critical caller — see doc-comment.
+    // Missing approval-gate reply on a safety-critical caller — see doc-comment.
     if require_reply {
-        let reply_count = v
+        let approval_gate_replied = v
             .get("replies")
             .and_then(Value::as_array)
-            .map(|a| a.len())
-            .unwrap_or(0);
-        if reply_count == 0 {
+            .map(|replies| replies.iter().any(is_approval_gate_reply))
+            .unwrap_or(false);
+        if !approval_gate_replied {
             return Some(
-                "publish succeeded but no subscriber replied — failing closed".to_string(),
+                "publish succeeded but approval-gate did not reply — failing closed".to_string(),
             );
         }
     }
     None
+}
+
+fn is_approval_gate_reply(reply: &Value) -> bool {
+    reply.get("approval_gate").and_then(Value::as_bool) == Some(true)
+        || reply.get("subscriber").and_then(Value::as_str) == Some("approval-gate")
 }
 
 /// Best-effort publisher used by `handle_finalize` (the AFTER hook). The
@@ -777,27 +757,18 @@ mod tests {
     }
 
     #[test]
-    fn before_function_call_payload_carries_approval_required() {
+    fn before_function_call_payload_excludes_legacy_approval_required() {
         let fc = FunctionCall {
             id: "tc-1".into(),
             function_id: "shell::fs::write".into(),
             arguments: json!({"path": "/tmp/x"}),
         };
-        let approval_required = vec!["shell::fs::write".to_string()];
-        let inner = build_before_function_call_payload("sess-a", &fc, &approval_required);
+        let inner = build_before_function_call_payload("sess-a", &fc);
         assert_eq!(inner["function_call"]["id"], "tc-1");
-        assert_eq!(inner["approval_required"], json!(["shell::fs::write"]),);
-    }
-
-    #[test]
-    fn before_function_call_payload_has_empty_approval_required_when_none_configured() {
-        let fc = FunctionCall {
-            id: "tc-1".into(),
-            function_id: "shell::fs::ls".into(),
-            arguments: json!({}),
-        };
-        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
-        assert_eq!(inner["approval_required"], json!([]));
+        assert!(
+            inner.get("approval_required").is_none(),
+            "rules are owned by approval-gate config; run_request approval_required is ignored"
+        );
     }
 
     /// Regression: the approval-gate subscriber requires `session_id` to key
@@ -810,7 +781,7 @@ mod tests {
             function_id: "shell::fs::write".into(),
             arguments: json!({}),
         };
-        let inner = build_before_function_call_payload("sess-xyz", &fc, &[]);
+        let inner = build_before_function_call_payload("sess-xyz", &fc);
         assert_eq!(inner["session_id"], "sess-xyz");
     }
 
@@ -843,11 +814,11 @@ mod tests {
             function_id: "shell::fs::ls".into(),
             arguments: json!({"path": "/tmp"}),
         };
-        let inner = build_before_function_call_payload("sess-a", &fc, &[]);
+        let inner = build_before_function_call_payload("sess-a", &fc);
         assert_eq!(inner["function_call"]["id"], "tc-1");
         assert_eq!(inner["function_call"]["function_id"], "shell::fs::ls");
         assert_eq!(inner["function_call"]["arguments"], json!({"path": "/tmp"}));
-        assert!(inner.get("approval_required").is_some());
+        assert!(inner.get("approval_required").is_none());
     }
 
     #[test]
@@ -981,19 +952,19 @@ mod tests {
         let v = json!({
             "merged": { "block": false },
             "publish": { "ok": true },
-            "replies": [{ "block": false }],
+            "replies": [{ "block": false, "subscriber": "approval-gate" }],
         });
         assert!(publish_failure_from_response(&v, false).is_none());
         assert!(
             publish_failure_from_response(&v, true).is_none(),
-            "require_reply=true still passes when ≥1 reply exists",
+            "require_reply=true passes when the approval-gate reply is present",
         );
     }
 
     /// Critical safety property: a successful trigger that returned an
     /// empty-merge response WITHOUT a publish marker is treated as a
     /// real green decision when require_reply=false. The same shape
-    /// must fail closed when require_reply=true (zero-replies path).
+    /// must fail closed when require_reply=true (no approval-gate reply).
     #[test]
     fn publish_failure_from_response_treats_absent_marker_as_success_lenient() {
         let v = json!({
@@ -1007,9 +978,10 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // NEW finding (P1): zero-replies on a safety-critical caller must
-    // fail closed. Pre-fix the helper returned None here and the gate
-    // green-lit the call when approval-gate was unsubscribed or slow.
+    // Regression: the safety-critical caller must fail closed when
+    // approval-gate did not reply. The helper must not accept another
+    // subscriber's non-blocking reply as proof that approval-gate is
+    // healthy.
     // ──────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1023,8 +995,7 @@ mod tests {
         assert!(
             publish_failure_from_response(&v, true).is_some(),
             "safety-critical caller (TOPIC_BEFORE) must fail closed when \
-             no subscriber replied — `merge_first_block_wins([])` yields \
-             {{block:false}} that is indistinguishable from a green policy decision",
+             approval-gate did not reply",
         );
     }
 
@@ -1043,16 +1014,31 @@ mod tests {
     }
 
     #[test]
-    fn publish_failure_from_response_passes_when_any_reply_landed_with_required() {
+    fn publish_failure_from_response_passes_when_approval_gate_replied_with_required() {
         let v = json!({
             "event_id": "e1",
-            "replies": [{ "block": false }],
+            "replies": [{ "block": false, "approval_gate": true }],
             "merged": { "block": false },
             "publish": { "ok": true },
         });
         assert!(
             publish_failure_from_response(&v, true).is_none(),
             "one healthy reply satisfies require_reply=true (approval-gate said allow)",
+        );
+    }
+
+    #[test]
+    fn publish_failure_from_response_fails_when_only_non_gate_subscriber_replied() {
+        let v = json!({
+            "event_id": "e1",
+            "replies": [{ "block": false, "subscriber": "policy-denylist" }],
+            "merged": { "block": false },
+            "publish": { "ok": true },
+        });
+        assert!(
+            publish_failure_from_response(&v, true).is_some(),
+            "TOPIC_BEFORE must require approval-gate specifically; a denylist \
+             allow reply alone cannot prove the approval gate is healthy",
         );
     }
 
@@ -1113,9 +1099,10 @@ mod tests {
             if script.len() > 1 {
                 script.remove(0)
             } else {
-                script.first().cloned().unwrap_or_else(|| {
-                    Err("FakePublisher script empty".to_string())
-                })
+                script
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| Err("FakePublisher script empty".to_string()))
             }
         }
     }
@@ -1233,13 +1220,12 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // NEW finding (P1): zero-replies fail-closed at the helper level.
-    // Pre-fix, the helper accepted any `publish.ok=true` response —
-    // even with empty replies — and `merge_first_block_wins([])`
-    // produced `{block:false}`. The retry helper must now treat that
-    // exact response as a transient failure when called by the safety-
-    // critical path (TOPIC_BEFORE / handle_prepare), and retry / surface
-    // Err just like a publish-level failure.
+    // Regression: zero replies fail closed at the helper level. Empty
+    // replies plus `publish.ok=true` would otherwise merge to
+    // `{block:false}`. The retry helper treats that exact response as a
+    // transient failure when called by the safety-critical path
+    // (TOPIC_BEFORE / handle_prepare), and retries or surfaces Err just
+    // like a publish-level failure.
     // ──────────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1262,10 +1248,7 @@ mod tests {
         let err = out.expect_err(
             "require_reply=true: zero replies must surface as Err, not green-light the call",
         );
-        assert!(
-            err.to_string().to_lowercase().contains("no subscriber"),
-            "Err must explain why we failed closed (got: {err})",
-        );
+        assert!(err.to_string().to_lowercase().contains("approval-gate"));
         assert!(
             publisher.call_count() >= 2,
             "zero-replies path must retry like any other transient failure, got {} calls",
@@ -1310,7 +1293,11 @@ mod tests {
             })),
             Ok(json!({
                 "event_id": "e1",
-                "replies": [{ "block": true, "status": "pending" }],
+                "replies": [{
+                    "block": true,
+                    "status": "pending",
+                    "subscriber": "approval-gate"
+                }],
                 "merged": { "block": true, "status": "pending" },
                 "publish": { "ok": true },
             })),
@@ -1331,7 +1318,7 @@ mod tests {
     }
 
     /// REGRESSION: `handle_prepare` MUST use require_reply=true. A revert
-    /// to false would silently bring back the zero-replies fail-open
+    /// to false would silently bring back the missing-approval-gate fail-open
     /// path. Source-level scan catches that without needing to drive a
     /// full orchestrator turn.
     #[test]
@@ -1346,7 +1333,7 @@ mod tests {
         assert!(
             window.contains("// require_reply=true"),
             "handle_prepare must pass require_reply=true to publish_collect_with_retry \
-             (fail-closed on zero-replies path)",
+             (fail-closed on missing approval-gate reply)",
         );
     }
 

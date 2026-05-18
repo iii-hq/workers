@@ -9,8 +9,8 @@
 //!   them in the same call. Defensive `session_id` filter; cap +
 //!   `omitted` counter; sort by `resolved_at` for deterministic LLM
 //!   replay across multi-row consumes (cascade case).
-//! - [`handle_sweep_session`] — force-cancellation for `run::stop`:
-//!   flips every Pending and InFlight row to `Done(TimedOut)`.
+//! - [`handle_sweep_session`] — force-cancellation for session-stop
+//!   cleanup: flips every Pending and InFlight row to `Done(TimedOut)`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -217,11 +217,7 @@ pub async fn handle_tick_timeouts(
         };
         if let Some(flipped) = record.flipped_to_timed_out_if_expired(now_ms) {
             let key = pending_key(&flipped.session_id, &flipped.function_call_id);
-            if bus
-                .set(state_scope, &key, flipped.to_value())
-                .await
-                .is_ok()
-            {
+            if bus.set(state_scope, &key, flipped.to_value()).await.is_ok() {
                 reclaimed += 1;
                 sessions.insert(flipped.session_id);
             }
@@ -235,10 +231,11 @@ pub async fn handle_tick_timeouts(
 }
 
 /// Force-cancel every non-terminal row in a session by flipping it to
-/// `Done(TimedOut)`. Called from `run::stop` so a stale UI modal cannot
-/// still execute its function after the operator clicks Stop. Lazy
-/// timeout is not a substitute — default `expires_at` is 5 min and we
-/// cannot leave a 5-min stale-modal window after Stop.
+/// `Done(TimedOut)`. This is the cleanup primitive for session stop or
+/// abort flows so a stale UI modal cannot still execute its function
+/// after the operator stops the run. Lazy timeout is not a substitute:
+/// default `expires_at` is 5 min and stop/abort must close that window
+/// immediately.
 pub async fn handle_sweep_session(bus: &dyn StateBus, state_scope: &str, payload: Value) -> Value {
     let session_id = payload
         .get("session_id")

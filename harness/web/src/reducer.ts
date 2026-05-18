@@ -128,6 +128,8 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
         function_id: name,
         args: event.args,
         expires_at: event.expires_at,
+        rule: event.rule ?? null,
+        reason: event.reason ?? event.rule?.reason ?? null,
       };
       if (state.pendingApprovals.some((a) => a.function_call_id === entry.function_call_id)) {
         return state;
@@ -150,12 +152,20 @@ export function applyEvent(state: StreamState, event: AgentEvent): StreamState {
       // Surface the wake failure (finding #2 follow-up). The card has
       // already been removed by the preceding approval_resolved — this
       // event tells the operator the orchestrator didn't actually
-      // resume despite the resolve succeeding. Dedup by error string so
-      // the same outage doesn't paper the screen if approval-gate
-      // retries during a longer disruption.
+      // resume despite the resolve succeeding. Collapse by error string
+      // so the same outage doesn't paper the screen, but refresh the
+      // timestamp on repeats so a dismissed alert can reappear if the
+      // same failure happens again later in the session.
       const err = event.error || "run::resume failed";
-      if (state.wakeFailures.some((w) => w.error === err)) {
-        return state;
+      const existing = state.wakeFailures.find((w) => w.error === err);
+      if (existing) {
+        const ts = Math.max(Date.now(), existing.ts + 1);
+        return {
+          ...state,
+          wakeFailures: state.wakeFailures.map((w) =>
+            w.error === err ? { ...w, ts } : w,
+          ),
+        };
       }
       return {
         ...state,

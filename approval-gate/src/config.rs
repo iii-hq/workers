@@ -4,8 +4,8 @@
 //!   - `topic` — hook bus topic the gate subscribes to.
 //!   - `approval_state_scope` — iii-state scope for approval records.
 //!   - `default_timeout_ms` — Pending-row TTL.
-//!   - `rules` — the layered ruleset (default + operator-shipped),
-//!     evaluated in order with last-match winning.
+//!   - `rules` — optional first-match approval policy. Omitted disables
+//!     the policy; explicit `rules: []` enables ask-all fallback.
 //!
 //! Deleted in T12: `interceptors`, `sweeper_interval_ms`,
 //! `InterceptorRule` (the classifier surface is gone).
@@ -45,11 +45,11 @@ pub struct WorkerConfig {
     /// rely on this so the auto-tick doesn't fight assertions).
     #[serde(default = "default_tick_interval_ms")]
     pub tick_interval_ms: u64,
-    /// Layered permission ruleset. Allow / Deny / Ask actions. Evaluated
-    /// last-match-wins; the YAML's curated defaults ship at the bottom,
-    /// operator overrides stack on top. See [`crate::rules`].
-    #[serde(default)]
-    pub rules: crate::rules::Ruleset,
+    /// Optional permission ruleset. `None` means policy disabled and the
+    /// gate allows all non-approval calls. `Some(vec![])` means policy
+    /// enabled with no matches, so the fail-closed no-match path asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<crate::rules::Ruleset>,
 }
 
 impl Default for WorkerConfig {
@@ -59,7 +59,7 @@ impl Default for WorkerConfig {
             approval_state_scope: default_approval_state_scope(),
             default_timeout_ms: default_default_timeout_ms(),
             tick_interval_ms: default_tick_interval_ms(),
-            rules: Vec::new(),
+            rules: None,
         }
     }
 }
@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(cfg.approval_state_scope, "approvals");
         assert_eq!(cfg.default_timeout_ms, 300_000);
         assert_eq!(cfg.tick_interval_ms, 15_000);
-        assert!(cfg.rules.is_empty());
+        assert!(cfg.rules.is_none());
     }
 
     #[test]
@@ -107,16 +107,18 @@ rules:
   - { permission: "shell::exec", pattern: "*",            action: ask }
 "#;
         let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.rules.len(), 2);
-        assert_eq!(cfg.rules[0].permission, "shell::exec");
-        assert_eq!(cfg.rules[0].pattern, "git status*");
-        assert_eq!(cfg.rules[0].action, Action::Allow);
-        assert_eq!(cfg.rules[1].action, Action::Ask);
+        let rules = cfg.rules.expect("explicit rules are preserved");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].permission, "shell::exec");
+        assert_eq!(rules[0].pattern, "git status*");
+        assert_eq!(rules[0].action, Action::Allow);
+        assert_eq!(rules[1].action, Action::Ask);
         let _ = Rule {
             // smoke check on the imported type
             permission: "x".into(),
             pattern: "*".into(),
             action: Action::Deny,
+            reason: None,
         };
     }
 
@@ -131,6 +133,23 @@ rules:
         assert_eq!(cfg.topic, "agent::hook");
         assert_eq!(cfg.approval_state_scope, "myscope");
         assert_eq!(cfg.default_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn explicit_empty_rules_enables_policy() {
+        let cfg: WorkerConfig = serde_yaml::from_str("rules: []").unwrap();
+        assert_eq!(cfg.rules, Some(Vec::new()));
+    }
+
+    #[test]
+    fn malformed_rules_fail_deserialization() {
+        let bad = serde_yaml::from_str::<WorkerConfig>(
+            r#"
+rules:
+  - { permission: "shell::exec", pattern: "*", action: allow, typo: true }
+"#,
+        );
+        assert!(bad.is_err());
     }
 
     #[test]

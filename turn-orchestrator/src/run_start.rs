@@ -71,10 +71,6 @@ fn build_run_request(payload: &Value) -> Value {
         "provider": payload.get("provider").cloned().unwrap_or_else(|| json!("")),
         "model": payload.get("model").cloned().unwrap_or_else(|| json!("")),
         "system_prompt": payload.get("system_prompt").cloned().unwrap_or_else(|| json!("")),
-        "approval_required": payload
-            .get("approval_required")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
         "image": payload.get("image").cloned().unwrap_or_else(|| json!("python")),
         "idle_timeout_secs": payload.get("idle_timeout_secs").cloned().unwrap_or_else(|| json!(300)),
         "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
@@ -146,10 +142,7 @@ pub async fn execute_sync(
 ///
 /// `max_turns` is carried over from the prior record so resume respects
 /// the original budget.
-pub(crate) fn build_resume_record(
-    session_id: &str,
-    max_turns: Option<u32>,
-) -> TurnStateRecord {
+pub(crate) fn build_resume_record(session_id: &str, max_turns: Option<u32>) -> TurnStateRecord {
     TurnStateRecord::new(session_id, max_turns)
 }
 
@@ -161,10 +154,7 @@ pub async fn execute_resume(iii: III, payload: Value) -> Result<Value, IIIError>
     let session_id = required_str(&payload, "session_id")?;
 
     let existing = persistence::load_record(&iii, &session_id).await;
-    let is_terminal = existing
-        .as_ref()
-        .map(|r| r.is_terminal())
-        .unwrap_or(false);
+    let is_terminal = existing.as_ref().map(|r| r.is_terminal()).unwrap_or(false);
 
     if is_terminal {
         let max_turns = existing.and_then(|r| r.max_turns);
@@ -327,8 +317,7 @@ mod tests {
     /// pre-fix no-op against the Stopped state.
     #[test]
     fn build_resume_record_unblocks_a_stopped_record() {
-        let mut stopped =
-            crate::state::TurnStateRecord::new("sess-pending", Some(16));
+        let mut stopped = crate::state::TurnStateRecord::new("sess-pending", Some(16));
         stopped.transition_to(crate::state::TurnState::Stopped);
         assert!(stopped.is_terminal(), "precondition: was Stopped");
 
@@ -342,17 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn build_run_request_propagates_approval_required() {
+    fn build_run_request_ignores_legacy_approval_required() {
         let request = build_run_request(&json!({
             "approval_required": ["shell::fs::write"],
         }));
-        assert_eq!(request["approval_required"], json!(["shell::fs::write"]),);
-    }
-
-    #[test]
-    fn build_run_request_defaults_approval_required_to_empty() {
-        let request = build_run_request(&json!({}));
-        assert_eq!(request["approval_required"], json!([]));
+        assert!(request.get("approval_required").is_none());
     }
 
     #[test]

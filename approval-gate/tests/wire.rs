@@ -1,6 +1,8 @@
-//! Wire-shape helpers: extract_call envelope parsing, block_reply_for
-//! hook reply, IncomingCall::requires_approval semantics.
+//! Wire-shape helpers: extract_call envelope parsing and block_reply_for
+//! hook replies. Legacy `approval_required` is parsed for tolerance but
+//! does not drive policy.
 
+use approval_gate::rules::{Action, RuleMatch, RuleSource};
 use approval_gate::*;
 use serde_json::json;
 
@@ -41,26 +43,6 @@ fn extract_call_accepts_legacy_tool_call_envelope_with_name() {
 }
 
 #[test]
-fn requires_approval_only_for_listed_functions() {
-    let call = IncomingCall {
-        session_id: "s1".into(),
-        function_call_id: "tc-1".into(),
-        function_id: "ls".into(),
-        args: json!({}),
-        approval_required: vec!["write".into()],
-        event_id: "e".into(),
-        reply_stream: "r".into(),
-    };
-    assert!(!call.requires_approval());
-
-    let call2 = IncomingCall {
-        function_id: "write".into(),
-        ..call
-    };
-    assert!(call2.requires_approval());
-}
-
-#[test]
 fn block_reply_for_decision_allow_does_not_block() {
     let reply = block_reply_for(&Decision::Allow);
     assert_eq!(reply["block"], false);
@@ -75,15 +57,28 @@ fn block_reply_for_deny_emits_structured_denial() {
 }
 
 #[test]
-fn block_reply_for_policy_deny_carries_classifier_detail() {
-    let reply = block_reply_for(&Decision::Deny(Denial::Policy {
-        rule_permission: "shell::exec".into(),
-        rule_pattern: "rm -rf*".into(),
+fn block_reply_for_approval_rule_deny_carries_rule_detail() {
+    let reply = block_reply_for(&Decision::Deny(Denial::ApprovalRuleDenied {
+        rule: RuleMatch {
+            source: RuleSource::Global,
+            index: 0,
+            permission: "shell::exec".into(),
+            pattern: "rm -rf*".into(),
+            action: Action::Deny,
+            reason: Some("destructive command".into()),
+        },
     }));
     assert_eq!(reply["block"], true);
-    assert_eq!(reply["denial"]["kind"], "policy");
-    assert_eq!(reply["denial"]["detail"]["rule_permission"], "shell::exec");
-    assert_eq!(reply["denial"]["detail"]["rule_pattern"], "rm -rf*");
+    assert_eq!(reply["denial"]["kind"], "approval_rule_denied");
+    assert_eq!(
+        reply["denial"]["detail"]["rule"]["permission"],
+        "shell::exec"
+    );
+    assert_eq!(reply["denial"]["detail"]["rule"]["pattern"], "rm -rf*");
+    assert_eq!(
+        reply["denial"]["detail"]["rule"]["reason"],
+        "destructive command"
+    );
 }
 
 #[test]
@@ -106,6 +101,34 @@ fn extract_call_returns_none_when_function_call_absent() {
         "payload": { "session_id": "s1", "approval_required": ["write"] }
     });
     assert!(extract_call(&envelope).is_none());
+}
+
+#[test]
+fn parse_call_error_preserves_reply_routing_when_call_fields_are_bad() {
+    let envelope = json!({
+        "event_id": "evt-1",
+        "reply_stream": "rs-1",
+        "payload": { "session_id": "s1" }
+    });
+    let err = parse_call(&envelope).unwrap_err();
+    assert_eq!(err.phase, "extract_call");
+    assert_eq!(err.event_id.as_deref(), Some("evt-1"));
+    assert_eq!(err.reply_stream.as_deref(), Some("rs-1"));
+    assert!(err.error.contains("function_call"));
+}
+
+#[test]
+fn parse_call_error_without_reply_routing_can_only_hard_block_locally() {
+    let envelope = json!({
+        "payload": {
+            "session_id": "s1",
+            "function_call": { "id": "tc-1", "function_id": "write", "arguments": {} }
+        }
+    });
+    let err = parse_call(&envelope).unwrap_err();
+    assert_eq!(err.event_id, None);
+    assert_eq!(err.reply_stream, None);
+    assert!(err.error.contains("event_id"));
 }
 
 #[test]

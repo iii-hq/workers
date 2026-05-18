@@ -78,7 +78,7 @@ async fn approved_call_executes_real_shell_handler_and_consumes_result() {
     let exec = ShellExec {
         cfg: shell_cfg(&["echo"], &[]),
     };
-    let policy_rules = RwLock::new(LayeredRules::default());
+    let policy_rules = RwLock::new(LayeredRules::from_global(Some(Vec::new())));
 
     let incoming = call(
         "sess-backend-ok",
@@ -134,7 +134,7 @@ async fn approved_call_records_failed_outcome_when_shell_policy_rejects() {
     let exec = ShellExec {
         cfg: shell_cfg(&["echo"], &["^echo blocked"]),
     };
-    let policy_rules = RwLock::new(LayeredRules::default());
+    let policy_rules = RwLock::new(LayeredRules::from_global(Some(Vec::new())));
 
     let incoming = call(
         "sess-backend-denied-by-shell",

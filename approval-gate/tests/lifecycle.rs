@@ -36,7 +36,7 @@ fn call(session: &str, cid: &str, fn_id: &str, args: Value) -> IncomingCall {
 }
 
 fn ruleset_with(rules: Vec<Rule>) -> Arc<RwLock<LayeredRules>> {
-    Arc::new(RwLock::new(LayeredRules::from_global(rules)))
+    Arc::new(RwLock::new(LayeredRules::from_global(Some(rules))))
 }
 
 #[tokio::test]
@@ -308,7 +308,7 @@ async fn cascade_path_end_to_end() {
         "exact-pattern push (NOT blanket '*') — 'always allow echo go' does not grant rm -rf /",
     );
     assert!(
-        rs.global.is_empty(),
+        rs.global.as_ref().is_some_and(Vec::is_empty),
         "global ruleset must stay untouched by the cascade",
     );
 
@@ -328,6 +328,7 @@ async fn allow_rule_short_circuits_with_no_state_write() {
         permission: "shell::exec".into(),
         pattern: "git status*".into(),
         action: Action::Allow,
+        reason: None,
     }]);
 
     let incoming = call(

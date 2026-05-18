@@ -2048,6 +2048,7 @@ name = "turn-orchestrator"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "harness-types",

@@ -41,6 +41,7 @@ PIDS_DIR       := $(DEMO_DIR)/pids
 LOGS_DIR       := $(DEMO_DIR)/logs
 
 CONFIG_FILE := $(HARNESS_DIR)/config.yaml
+APPROVAL_GATE_RULES := $(HARNESS_DIR)/approval-gate-rules.yaml
 
 # Local worker crates that need to be cargo-built and symlinked into
 # ~/.iii/workers/ so the engine spawns them on host instead of trying
@@ -85,10 +86,12 @@ build: ensure-dirs
 # resolves and spawns them transparently.
 config: $(CONFIG_FILE)
 
-$(CONFIG_FILE): $(HARNESS_DIR)/iii.worker.yaml
+$(CONFIG_FILE): $(HARNESS_DIR)/iii.worker.yaml $(APPROVAL_GATE_RULES) $(HARNESS_DIR)/scripts/apply-approval-gate-rules.py
 	@command -v iii >/dev/null || { echo "iii CLI not found"; exit 1; }
 	@echo "==> generating $@ via iii worker add"
 	@cd "$(HARNESS_DIR)" && iii worker add . --no-wait
+	@echo "==> injecting approval-gate harness rules"
+	@python3 "$(HARNESS_DIR)/scripts/apply-approval-gate-rules.py" --config "$@" --rules "$(APPROVAL_GATE_RULES)"
 
 # ─── observability ───────────────────────────────────────────────────────────
 

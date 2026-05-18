@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import appSource from "./App.tsx?raw";
 import { applyEvent } from "./reducer";
 import { INITIAL_STREAM_STATE, type AgentEvent, type AgentMessage } from "./types";
 
@@ -80,6 +81,32 @@ describe("reducer (entry-id keyed)", () => {
       decision: "allow",
     });
     expect(s.pendingApprovals.length).toBe(0);
+  });
+
+  it("approval_requested preserves rule metadata and reason", () => {
+    const s = applyEvent(INITIAL_STREAM_STATE, {
+      type: "approval_requested",
+      function_call_id: "t1",
+      function_id: "shell::exec",
+      args: { command: "git", args: ["push"] },
+      expires_at: 0,
+      reason: "shell writes require review",
+      rule: {
+        source: "global",
+        index: 4,
+        permission: "shell::exec",
+        pattern: "*",
+        action: "ask",
+      },
+    });
+    expect(s.pendingApprovals[0].reason).toBe("shell writes require review");
+    expect(s.pendingApprovals[0].rule?.permission).toBe("shell::exec");
+    expect(s.pendingApprovals[0].rule?.index).toBe(4);
+  });
+
+  it("app run::start payload no longer sends approval_required", () => {
+    expect(appSource).not.toMatch(/approval_required\s*:/);
+    expect(appSource).not.toMatch(/APPROVAL_REQUIRED/);
   });
 
   // Cascade: operator clicks "allow + always" on one card; the backend
@@ -191,6 +218,31 @@ describe("reducer — approval_wake_failed", () => {
     s = applyEvent(s, { type: "approval_wake_failed", error: "ws closed" });
     s = applyEvent(s, { type: "approval_wake_failed", error: "ws closed" });
     expect(s.wakeFailures).toHaveLength(1);
+  });
+
+  it("refreshes a duplicate wake-failure timestamp so dismissed repeats reappear", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1_000);
+      let s = applyEvent(INITIAL_STREAM_STATE, {
+        type: "approval_wake_failed",
+        error: "engine down",
+      });
+      expect(s.wakeFailures[0].ts).toBe(1_000);
+
+      // Same millisecond on purpose: the reducer must still advance the
+      // timestamp beyond the dismissed key.
+      now.mockReturnValue(1_000);
+      s = applyEvent(s, {
+        type: "approval_wake_failed",
+        error: "engine down",
+      });
+
+      expect(s.wakeFailures).toHaveLength(1);
+      expect(s.wakeFailures[0].ts).toBe(1_001);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("keeps distinct error strings separate", () => {

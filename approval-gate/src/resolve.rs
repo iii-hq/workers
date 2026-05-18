@@ -61,7 +61,12 @@ fn resolve_key_lock(key: &str) -> Arc<AsyncMutex<()>> {
 /// dispatching; the approval path used to forward bare args, so target
 /// handlers behaved differently after an operator approval than they did
 /// on the auto-allowed path. This helper keeps the two shapes identical.
-fn augment_args(args: &Value, session_id: &str, function_call_id: &str, function_id: &str) -> Value {
+fn augment_args(
+    args: &Value,
+    session_id: &str,
+    function_call_id: &str,
+    function_id: &str,
+) -> Value {
     let mut augmented = match args.clone() {
         Value::Object(o) => Value::Object(o),
         other => json!({ "arguments": other }),
@@ -267,7 +272,9 @@ async fn cascade_allow_for_session(
     //    pattern_for is the same extractor used at intercept time, so
     //    "always allow git status" means literally that argv shape — NOT
     //    a blanket "*" pattern that would auto-allow rm -rf /.
-    let pushed_pattern = rules::pattern_for(originator_function_id, originator_args);
+    let Some(pushed_pattern) = rules::pattern_for(originator_function_id, originator_args) else {
+        return Vec::new();
+    };
     {
         let mut guard = policy_rules
             .write()
@@ -278,6 +285,7 @@ async fn cascade_allow_for_session(
                 permission: originator_function_id.to_string(),
                 pattern: pushed_pattern,
                 action: Action::Allow,
+                reason: Some("allowed for this session by operator".to_string()),
             },
         );
     }
@@ -310,7 +318,7 @@ async fn cascade_allow_for_session(
             let snapshot = guard.snapshot_for(session_id);
             crate::verdict_for(&record.function_id, &record.args, &snapshot)
         };
-        if !matches!(verdict, crate::Verdict::Allow) {
+        if !matches!(verdict, crate::Verdict::Allow { .. }) {
             continue;
         }
 

@@ -80,6 +80,13 @@ function countdownTone(ms: number): "ok" | "warn" | "danger" | "expired" {
   return "ok";
 }
 
+function ruleExplanation(approval: PendingApproval): string | null {
+  if (approval.reason) return approval.reason;
+  const rule = approval.rule;
+  if (!rule) return null;
+  return `${rule.action} rule ${rule.permission} · ${rule.pattern}`;
+}
+
 interface ApprovalCardProps {
   sessionId: string;
   approval: PendingApproval;
@@ -101,6 +108,7 @@ function ApprovalCard({ sessionId: _sessionId, approval, callId, fnId, busyId, o
   const [feedback, setFeedback] = useState("");
   const titleId = `approval-title-${callId}`;
   const busy = busyId === callId;
+  const explanation = ruleExplanation(approval);
 
   const denyClick = () => {
     const trimmed = feedback.trim();
@@ -130,6 +138,7 @@ function ApprovalCard({ sessionId: _sessionId, approval, callId, fnId, busyId, o
           </span>
         ) : null}
       </header>
+      {explanation ? <p className="approval-rule-reason">{explanation}</p> : null}
       <pre className="approval-args">{JSON.stringify(approval.args, null, 2)}</pre>
       <details className="approval-feedback">
         <summary>

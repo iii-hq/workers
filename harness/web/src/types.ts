@@ -55,7 +55,7 @@ export interface SessionRow {
 
 // Per-session working directory. Advisory-only — surfaced in the system prompt
 // so the agent prefers paths under cwd. Path scoping/enforcement belongs to
-// `policy-denylist`, not the UI.
+// the worker-side approval/policy layer, not the UI.
 export interface Workspace {
   cwd: string;
   set_at: number;
@@ -80,6 +80,15 @@ export interface AuthStatus {
   configured: boolean;
   source: "stored" | "environment" | "fallback" | "runtime" | null;
   label: string | null;
+}
+
+export interface ApprovalRuleMatch {
+  source: "global" | "session" | string;
+  index: number;
+  permission: string;
+  pattern: string;
+  action: "allow" | "deny" | "ask" | string;
+  reason?: string | null;
 }
 
 // llm-budget shapes (subset of workers/llm-budget/src/store.rs)
@@ -231,6 +240,8 @@ export type AgentEvent =
       function_id: string;
       args: unknown;
       expires_at: number;
+      rule?: ApprovalRuleMatch | null;
+      reason?: string | null;
       /** Legacy keys — optional for one release of mixed clients. */
       tool_call_id?: string;
       tool_name?: string;
@@ -240,6 +251,7 @@ export type AgentEvent =
       function_call_id: string;
       decision: "allow" | "deny";
       reason?: string | null;
+      rule?: ApprovalRuleMatch | null;
       tool_call_id?: string;
     }
   | {
@@ -261,6 +273,8 @@ export interface PendingApproval {
   tool_name?: string;
   args?: unknown;
   expires_at?: number;
+  rule?: ApprovalRuleMatch | null;
+  reason?: string | null;
 }
 
 /**

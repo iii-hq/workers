@@ -91,6 +91,9 @@ async fn main() -> Result<()> {
     let mut cfg = match load_config(&cli.config) {
         Ok(c) => c,
         Err(e) => {
+            if std::path::Path::new(&cli.config).exists() {
+                return Err(e).context("approval-gate config is present but malformed");
+            }
             tracing::warn!(
                 error = %e,
                 path = %cli.config,

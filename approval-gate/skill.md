@@ -1,6 +1,6 @@
 # approval-gate
 
-Subscriber on `agent::before_function_call` that holds calls whose ids appear in `approval_required`, streams `approval_requested` events, and clears when the UI invokes `approval::resolve` or the timeout lapses.
+Subscriber on `agent::before_function_call` that evaluates first-match approval rules, streams `approval_requested` events for ask decisions, and clears when the UI invokes `approval::resolve` or the timeout lapses.
 
 - [`approval-gate`](iii://approval-gate/index)
   - [`approval::resolve`](iii://approval-gate/resolve) — record `allow` or `deny` for a blocked function call ID in a session

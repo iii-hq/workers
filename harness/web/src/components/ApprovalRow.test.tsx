@@ -96,6 +96,47 @@ describe("ApprovalRow", () => {
     });
   });
 
+  it("renders approval rule reason when provided", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[
+          approval({
+            reason: "shell writes require review",
+            rule: {
+              source: "global",
+              index: 3,
+              permission: "shell::exec",
+              pattern: "*",
+              action: "ask",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("shell writes require review")).toBeTruthy();
+  });
+
+  it("renders a fallback rule explanation when no reason is provided", () => {
+    render(
+      <ApprovalRow
+        sessionId="sess-1"
+        pending={[
+          approval({
+            rule: {
+              source: "global",
+              index: 3,
+              permission: "shell::exec",
+              pattern: "git push*",
+              action: "ask",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("ask rule shell::exec · git push*")).toBeTruthy();
+  });
+
   it("disables every action when the approval is expired", () => {
     vi.useFakeTimers();
     vi.setSystemTime(100_000);

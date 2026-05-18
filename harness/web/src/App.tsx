@@ -37,11 +37,8 @@ type Tab = "chat" | "cost" | "files" | "status";
 // does not send `tools` or `system_prompt` on `run::start` (override still
 // accepted if you pass a non-empty `system_prompt` for experiments).
 //
-// Permission still lives in `policy-denylist`, which subscribes to
-// `agent::before_function_call` and refuses by function id. Set its env var when
-// starting the worker, e.g.:
-//   POLICY_DENIED_FUNCTIONS=shell::fs::rm,shell::fs::sed,shell::fs::edit,shell::fs::chmod,shell::fs::mv
-// (Legacy `POLICY_DENIED_TOOLS` is still read if the new name is unset.)
+// Approval and deny policy live in worker config. The client sends no
+// approval_required list; approval-gate owns ask/allow/deny from rules.
 
 // Providers we have actual workers for in iii.worker.yaml. Don't add others
 // here — they'd appear in the UI but every send would error with "function
@@ -53,11 +50,6 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<Provider, string> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-5",
 };
-
-const APPROVAL_REQUIRED = [
-  "shell::fs::write",
-  "shell::fs::mkdir",
-];
 
 function newSessionId(): string {
   const d = new Date();
@@ -361,7 +353,6 @@ export default function App() {
           provider,
           model,
           messages: fullHistory,
-          approval_required: APPROVAL_REQUIRED,
           ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
         },
       });

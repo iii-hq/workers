@@ -2575,6 +2575,16 @@ p.msg-text {
 
 /* args */
 
+.approval-rule-reason {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in oklch, var(--accent) 10%, var(--paper));
+  border-bottom: 1px solid color-mix(in oklch, var(--accent) 18%, var(--rule));
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .approval-args {
   margin: 0;
   padding: var(--space-3) var(--space-4);

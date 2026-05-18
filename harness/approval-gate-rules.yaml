@@ -1,0 +1,28 @@
+rules:
+  # Read-only filesystem / introspection
+  - { permission: "fs::read", pattern: "*", action: allow }
+  - { permission: "fs::list", pattern: "*", action: allow }
+  - { permission: "fs::stat", pattern: "*", action: allow }
+  - { permission: "fs::glob", pattern: "*", action: allow }
+  - { permission: "fs::grep", pattern: "*", action: allow }
+
+  # Read-only git
+  - { permission: "shell::exec", pattern: "git status*", action: allow }
+  - { permission: "shell::exec", pattern: "git log*", action: allow }
+  - { permission: "shell::exec", pattern: "git diff*", action: allow }
+  - { permission: "shell::exec", pattern: "git show*", action: allow }
+  - { permission: "shell::exec", pattern: "git branch*", action: allow }
+  - { permission: "shell::exec", pattern: "git remote*", action: allow }
+
+  # Approval API — the gate must not gate itself
+  - { permission: "approval::*", pattern: "*", action: allow }
+
+  # The local harness wrapper must not become an approval bypass.
+  - { permission: "harness::call", pattern: "*", action: deny, reason: "harness dispatch cannot bypass approval policy" }
+
+  # All remaining shell exec calls → ask
+  - { permission: "shell::exec", pattern: "*", action: ask }
+  - { permission: "shell::exec_bg", pattern: "*", action: ask }
+
+  # Catch-all: anything else → ask. Operator overrides go above.
+  - { permission: "*", pattern: "*", action: ask }

@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::rules::RuleMatch;
 use crate::wire::Denial;
 
 /// How long an `InFlight` row may sit before lazy-flip reclaims it as
@@ -67,6 +68,10 @@ pub struct Record {
     /// lex-monotonic and can't substitute.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<RuleMatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Record {
@@ -89,6 +94,32 @@ impl Record {
             status: Status::Pending,
             outcome: None,
             resolved_at: None,
+            rule: None,
+            reason: None,
+        }
+    }
+
+    pub fn pending_with_rule(
+        function_call_id: String,
+        function_id: String,
+        args: Value,
+        session_id: String,
+        now_ms: u64,
+        timeout_ms: u64,
+        rule: Option<RuleMatch>,
+    ) -> Self {
+        let reason = rule.as_ref().and_then(|r| r.reason.clone());
+        Self {
+            rule,
+            reason,
+            ..Self::pending(
+                function_call_id,
+                function_id,
+                args,
+                session_id,
+                now_ms,
+                timeout_ms,
+            )
         }
     }
 

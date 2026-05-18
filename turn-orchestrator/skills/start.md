@@ -13,6 +13,6 @@
 - The call returns immediately with `{ "session_id": "..." }` once the run is enqueued; the orchestrator drives subsequent turns asynchronously.
 - `session_id` is the resume handle. Re-using a `session_id` resumes the persisted state rather than starting a fresh run.
 - Live progress flows on the `agent::events` stream. Subscribe with `stream:join` and a `group_id` matching the session id to receive `agent_start`, `turn_start`, `message_*`, `turn_end`, and `agent_end` frames.
-- `approval_required` gates specific tool ids on a human-in-the-loop turn before they execute.
+- Approval policy is owned by approval-gate `rules:` config; `run::start` does not carry per-run approval lists.
 - `cwd_hash` lets independent sessions share a cached environment when their working directories match. Pair it with `cwd` rather than letting them drift.
 - A bad `config.yaml` does not block boot; the worker logs a warning and falls back to defaults.

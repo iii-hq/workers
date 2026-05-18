@@ -180,10 +180,8 @@ impl StateBus for FailingStateBus {
     }
 }
 
-/// A canonical `shell::fs::write` call gated by the run's
-/// `approval_required` list. Most handler tests use this so the only
-/// thing they need to vary is the session/call id + whether the run
-/// opts in.
+/// A canonical `shell::fs::write` call. The legacy `approval_required`
+/// payload is present only to prove the gate ignores it for policy.
 pub fn sample_call() -> IncomingCall {
     IncomingCall {
         session_id: "s1".into(),
@@ -196,11 +194,9 @@ pub fn sample_call() -> IncomingCall {
     }
 }
 
-/// Empty runtime ruleset for handler tests that don't care about the
-/// cascade-on-`always` path. Each call freshly constructs the lock so
-/// tests stay independent — there's no shared mutable state.
-pub fn empty_policy_rules() -> std::sync::RwLock<approval_gate::rules::Ruleset> {
-    std::sync::RwLock::new(approval_gate::rules::Ruleset::new())
+/// Explicit empty global ruleset: policy enabled with ask-all fallback.
+pub fn empty_policy_rules() -> std::sync::RwLock<approval_gate::LayeredRules> {
+    std::sync::RwLock::new(approval_gate::LayeredRules::from_global(Some(Vec::new())))
 }
 
 /// Test-only [`OrchestratorWaker`] that records every `resume` and
@@ -230,7 +226,10 @@ impl Default for FakeWaker {
 #[async_trait::async_trait]
 impl OrchestratorWaker for FakeWaker {
     async fn resume(&self, session_id: &str) -> Result<Value, String> {
-        self.resume_calls.lock().unwrap().push(session_id.to_string());
+        self.resume_calls
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
         self.resume_response
             .lock()
             .unwrap()

@@ -24,6 +24,7 @@ path = "src/main.rs"
 harness-types = { path = "crates/harness-types" }
 iii-sdk = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"

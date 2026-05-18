@@ -23,13 +23,14 @@ If the config file is missing or malformed the worker logs a warning and falls b
 | `system_prompt` | string | no | `""` | System prompt. |
 | `messages` | array | no | `[]` | Initial conversation history (`AgentMessage` array). |
 | `max_turns` | integer | no | unlimited | Stop after this many assistant turns. |
-| `approval_required` | string[] | no | `[]` | Tool names requiring human approval before execution. |
 | `image` | string | no | `"python"` | Sandbox image for `shell::*` tools. |
 | `idle_timeout_secs` | integer | no | `300` | Sandbox idle timeout. |
 | `cwd` | string | no | null | Working-directory path for the sandbox. |
 | `cwd_hash` | string | no | null | SHA hash of `cwd`; used to resume sessions sharing the same environment. |
 
 `run::start` returns `{ "session_id": "..." }`. `run::start_and_wait` additionally accepts `timeout_ms` (default `120000`) and returns `{ "session_id", "messages", "turn_count" }` once the run terminates.
+
+Approval policy is not configured on `run::start`. `approval-gate` evaluates its own `rules:` config on `agent::before_function_call`; legacy `approval_required` payload fields are ignored.
 
 ## Output stream: `agent::events`
 

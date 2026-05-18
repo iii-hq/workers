@@ -63,18 +63,6 @@ mod tests {
             serde_json::from_value(build_manifest().default_config).unwrap();
 
         assert_eq!(actual, expected);
-        assert!(
-            actual.rules.iter().any(|r| {
-                r.permission == "approval::*"
-                    && r.pattern == "*"
-                    && r.action == crate::rules::Action::Allow
-            }),
-            "manifest defaults must include the self-allow rule from iii.worker.yaml",
-        );
-        assert_eq!(
-            actual.rules.last().map(|r| r.action),
-            Some(crate::rules::Action::Ask),
-            "manifest defaults must preserve the catch-all ask rule",
-        );
+        assert!(actual.rules.is_none(), "package defaults stay policy-free");
     }
 }

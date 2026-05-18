@@ -2,7 +2,7 @@
 
 Internal hook responder registered as a `durable:subscriber` listener to your configured hook topic (`agent::before_function_call` by default).
 
-`(envelope) → { block?, reason? }` — parses `approval_required`, writes pending state, emits `approval_requested` + `approval_resolved`, and awaits `approval::resolve`. Callers orchestrate this via turns; routing workers publish the envelopes.
+`(envelope) → { block?, reason?, rule? }` — parses the hook envelope, evaluates approval-gate rules, writes pending state for ask decisions, emits `approval_requested` + `approval_resolved`, and awaits `approval::resolve`. Legacy `approval_required` input is tolerated but ignored. Callers orchestrate this via turns; routing workers publish the envelopes.
 
 ## When to use
 

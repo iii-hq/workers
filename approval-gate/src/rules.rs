@@ -3,22 +3,17 @@
 //!
 //! ## Shape
 //!
-//! A [`Rule`] pairs a permission glob (matched against the iii function id)
-//! with a pattern glob (matched against a caller-supplied pattern string,
-//! always `"*"` in v1 — see [`evaluate`] for the forward-compatible call
-//! shape). An [`Action`] tells the gate what to do on match:
-//! [`Action::Allow`] passes the call through, [`Action::Deny`] short-circuits
-//! with a policy [`crate::Denial`], [`Action::Ask`] falls back to the existing
-//! per-function [`crate::config::InterceptorRule`] flow.
+//! A [`Rule`] pairs a permission glob with a pattern glob over the call's
+//! declared subject: shell argv for `shell::exec*`, declared filesystem paths
+//! for `shell::fs::*`, and the canonical function id for non-shell tools.
+//! [`Action::Allow`] passes the call through, [`Action::Deny`] hard-blocks,
+//! and [`Action::Ask`] writes a pending approval row.
 //!
 //! ## Layering
 //!
-//! Operators stack rules — a workspace-default ruleset, plus a per-session
-//! override, plus an operator-pinned global. [`evaluate`] flattens N
-//! rulesets in caller order and returns the **last** matching rule.
-//! Last-wins is the standard policy-stacking semantic: a more-specific
-//! later layer overrides an earlier permissive default without surgery on
-//! the earlier list.
+//! Global config is evaluated with **first match wins**. Per-session rules
+//! created by `allow + always` are a guarded overlay: they may auto-allow
+//! calls that would otherwise ask, but never override a matching global deny.
 //!
 //! ## Wildcard match
 //!
@@ -28,8 +23,9 @@
 //! keep the rule language operator-readable. `*` is greedy via dynamic
 //! programming so `"a*b*c"` matches `"axxxbxxxc"` correctly.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::path::Path;
 
 /// Decision a [`Rule`] expresses when it matches an incoming call.
 ///
@@ -45,26 +41,99 @@ pub enum Action {
 
 /// A single permission rule.
 ///
-/// `permission` is matched against the iii function id (e.g. `shell::exec`,
-/// `shell::fs::*`). `pattern` is matched against a caller-supplied pattern
-/// string; in v1 every call site passes `"*"`, so `pattern: "*"` is the
-/// only useful value today. The field is kept on the type so the forward
-/// path to per-function pattern extractors (shell::exec → joined argv,
-/// shell::fs::* → path) is a config-level change, not a schema break.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `permission` is matched against the canonical iii function id (for example
+/// `shell::exec`, `shell::fs::*`). `pattern` is matched against a subject
+/// extracted from the call arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Rule {
     /// Wildcard pattern matched against the iii function id.
     pub permission: String,
-    /// Wildcard pattern matched against a caller-supplied pattern string.
-    /// In v1 callers pass `"*"`; setting `pattern: "*"` here matches them.
+    /// Wildcard/glob pattern matched against argv, declared path, or function id.
     pub pattern: String,
     pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
-/// A list of rules, evaluated in order. Stacked rulesets are flattened by
-/// [`evaluate`] in caller order so the **last** matching rule across all
-/// layers wins.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuleWire {
+    permission: String,
+    pattern: String,
+    action: Action,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl TryFrom<RuleWire> for Rule {
+    type Error = String;
+
+    fn try_from(raw: RuleWire) -> Result<Self, Self::Error> {
+        if raw.permission.is_empty() {
+            return Err("rule.permission must not be empty; use \"*\" for wildcard".to_string());
+        }
+        if raw.pattern.is_empty() {
+            return Err("rule.pattern must not be empty; use \"*\" for wildcard".to_string());
+        }
+        Ok(Self {
+            permission: raw.permission,
+            pattern: raw.pattern,
+            action: raw.action,
+            reason: raw.reason,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Rule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        RuleWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// A list of rules, evaluated in order. The first matching rule wins.
 pub type Ruleset = Vec<Rule>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleSource {
+    Global,
+    Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleMatch {
+    pub source: RuleSource,
+    pub index: usize,
+    pub permission: String,
+    pub pattern: String,
+    pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl RuleMatch {
+    fn from_rule(source: RuleSource, index: usize, rule: &Rule) -> Self {
+        Self {
+            source,
+            index,
+            permission: rule.permission.clone(),
+            pattern: rule.pattern.clone(),
+            action: rule.action,
+            reason: rule.reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RulesSnapshot {
+    pub global: Option<Ruleset>,
+    pub session: Ruleset,
+}
 
 /// Workspace-global rules + an overlay of per-session rules.
 ///
@@ -77,34 +146,35 @@ pub type Ruleset = Vec<Rule>;
 /// cannot silently bypass approval prompts in another.
 ///
 /// Snapshots taken via [`LayeredRules::snapshot_for`] are flat `Ruleset`s
-/// so existing pure helpers ([`evaluate`], [`crate::verdict_for`]) need no
-/// changes to consume them.
+/// so `verdict_for` can apply the guarded session overlay without mutating
+/// global policy.
 #[derive(Debug, Clone, Default)]
 pub struct LayeredRules {
-    pub global: Ruleset,
+    pub global: Option<Ruleset>,
     pub per_session: std::collections::HashMap<String, Ruleset>,
 }
 
 impl LayeredRules {
     /// Construct a [`LayeredRules`] from a global ruleset only. Used at
     /// worker startup when YAML config is the only source of rules.
-    pub fn from_global(global: Ruleset) -> Self {
+    pub fn from_global(global: Option<Ruleset>) -> Self {
         Self {
             global,
             per_session: std::collections::HashMap::new(),
         }
     }
 
-    /// Build the flat ruleset that applies to `session_id`: the global
-    /// rules followed by the session's overlay (last-match-wins, so the
-    /// overlay can override the global). Sessions with no overlay see
-    /// only `global`.
-    pub fn snapshot_for(&self, session_id: &str) -> Ruleset {
-        let mut out = self.global.clone();
-        if let Some(extra) = self.per_session.get(session_id) {
-            out.extend(extra.iter().cloned());
+    /// Build the rules snapshot that applies to `session_id`: optional
+    /// global rules plus that session's `allow + always` overlay.
+    pub fn snapshot_for(&self, session_id: &str) -> RulesSnapshot {
+        RulesSnapshot {
+            global: self.global.clone(),
+            session: self
+                .per_session
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default(),
         }
-        out
     }
 
     /// Append a rule to the per-session overlay. The rule applies ONLY
@@ -150,7 +220,7 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
     dp[np][nt]
 }
 
-/// Find the **last** rule in `rules` whose `permission` and `pattern`
+/// Find the **first** rule in `rules` whose `permission` and `pattern`
 /// both wildcard-match the given inputs. Takes any iterator of rule
 /// references so callers can pass a single [`Ruleset`] directly
 /// (`&Vec<Rule>` is `IntoIterator<Item = &Rule>`) or chain several layers
@@ -170,45 +240,268 @@ where
         .filter(|r| {
             wildcard_match(&r.permission, permission) && wildcard_match(&r.pattern, pattern)
         })
-        .last()
+        .next()
 }
 
-/// Per-function pattern extractor. The pattern is the second axis a rule
-/// matches on (alongside `function_id`); for `shell::exec` we derive it
-/// from `{command, args}` so operators can write rules like
-/// `permission: "shell::exec", pattern: "git status*"` and get
-/// argv-level granularity. Other function ids default to `"*"`, which
-/// matches only wildcard rules.
-pub fn pattern_for(function_id: &str, args: &Value) -> String {
-    match function_id {
-        "shell::exec" | "shell::exec_bg" => extract_shell_pattern(args),
-        _ => "*".to_string(),
+pub fn evaluate_context(
+    rules: &Ruleset,
+    source: RuleSource,
+    ctx: &MatchContext,
+) -> Option<RuleMatch> {
+    rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| rule_matches_context(rule, ctx))
+        .map(|(idx, rule)| RuleMatch::from_rule(source, idx, rule))
+}
+
+pub fn any_matching_deny(
+    rules: &Ruleset,
+    source: RuleSource,
+    ctx: &MatchContext,
+) -> Option<RuleMatch> {
+    rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| rule.action == Action::Deny && rule_matches_context(rule, ctx))
+        .map(|(idx, rule)| RuleMatch::from_rule(source, idx, rule))
+}
+
+fn rule_matches_context(rule: &Rule, ctx: &MatchContext) -> bool {
+    let rule_permission = canonical_permission(&rule.permission);
+    if !wildcard_match(&rule_permission, &ctx.permission) {
+        return false;
+    }
+    if ctx.malformed {
+        return rule.pattern == "*" && rule.action != Action::Allow;
+    }
+    match ctx.kind {
+        MatchKind::Fs => match rule.action {
+            Action::Deny => ctx
+                .subjects
+                .iter()
+                .any(|subject| glob_matches_path(&rule.pattern, subject)),
+            Action::Allow | Action::Ask => {
+                !ctx.subjects.is_empty()
+                    && ctx
+                        .subjects
+                        .iter()
+                        .all(|subject| glob_matches_path(&rule.pattern, subject))
+            }
+        },
+        MatchKind::Exec | MatchKind::Generic => ctx
+            .subjects
+            .iter()
+            .any(|subject| wildcard_match(&rule.pattern, subject)),
     }
 }
 
-/// Shell ExecRequest is `{ command: String, args: Option<Vec<String>> }`
-/// per `shell/src/functions/types.rs`. There is no `argv` field. Two
-/// modes:
-///   - `args = None` → `command` is a shell-words string, use as-is.
-///   - `args = Some(list)` → join `command + " " + list.join(" ")`.
-/// Malformed input (missing/non-string command) falls back to `"*"` so
-/// the row matches only wildcard rules.
-///
-/// Known conflation: argv `[git, log, "--grep=foo bar"]` joins to
-/// `"git log --grep=foo bar"`, same pattern string as
-/// `[git, log, "--grep=foo", bar]`. Documented; acceptable for v1.
-fn extract_shell_pattern(args: &Value) -> String {
-    let cmd = args.get("command").and_then(Value::as_str);
-    let argv = args.get("args").and_then(Value::as_array);
-    match (cmd, argv) {
-        (Some(c), Some(arr)) if !arr.is_empty() => {
-            let mut parts = vec![c.to_string()];
-            parts.extend(arr.iter().filter_map(Value::as_str).map(str::to_string));
-            parts.join(" ")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchKind {
+    Exec,
+    Fs,
+    Generic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchContext {
+    pub permission: String,
+    pub subjects: Vec<String>,
+    pub kind: MatchKind,
+    pub malformed: bool,
+}
+
+pub fn match_context(function_id: &str, args: &Value) -> MatchContext {
+    let permission = canonical_permission(function_id);
+    match permission.as_str() {
+        "shell::exec" | "shell::exec_bg" => exec_context(&permission, args),
+        id if id.starts_with("shell::fs::") => fs_context(id, args),
+        _ => MatchContext {
+            permission: permission.clone(),
+            subjects: vec![permission],
+            kind: MatchKind::Generic,
+            malformed: false,
+        },
+    }
+}
+
+/// Exact pattern used by allow+always session overlays. Malformed calls
+/// produce `None` so the overlay cannot accidentally widen into `*`.
+pub fn pattern_for(function_id: &str, args: &Value) -> Option<String> {
+    let ctx = match_context(function_id, args);
+    if ctx.malformed {
+        return None;
+    }
+    ctx.subjects.first().cloned()
+}
+
+pub fn canonical_permission(permission: &str) -> String {
+    match permission {
+        "fs::list" => "shell::fs::ls".to_string(),
+        p if p.starts_with("fs::") => format!("shell::fs::{}", &p["fs::".len()..]),
+        other => other.to_string(),
+    }
+}
+
+fn exec_context(permission: &str, args: &Value) -> MatchContext {
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return malformed_context(permission, MatchKind::Exec);
+    };
+    let argv = match args.get("args") {
+        None | Some(Value::Null) => match shell_words::split(command) {
+            Ok(argv) => argv,
+            Err(_) => return malformed_context(permission, MatchKind::Exec),
+        },
+        Some(Value::Array(arr)) => {
+            let mut argv = vec![command.to_string()];
+            for item in arr {
+                let Some(s) = item.as_str() else {
+                    return malformed_context(permission, MatchKind::Exec);
+                };
+                argv.push(s.to_string());
+            }
+            argv
         }
-        (Some(c), _) => c.to_string(),
-        _ => "*".to_string(),
+        Some(_) => return malformed_context(permission, MatchKind::Exec),
+    };
+    if argv.is_empty() {
+        return malformed_context(permission, MatchKind::Exec);
     }
+    let exact = argv.join(" ");
+    let mut basename = argv.clone();
+    if let Some(first) = basename.first_mut() {
+        if let Some(name) = Path::new(first).file_name().and_then(|s| s.to_str()) {
+            *first = name.to_string();
+        }
+    }
+    let basename = basename.join(" ");
+    let mut subjects = vec![exact];
+    if subjects[0] != basename {
+        subjects.push(basename);
+    }
+    MatchContext {
+        permission: permission.to_string(),
+        subjects,
+        kind: MatchKind::Exec,
+        malformed: false,
+    }
+}
+
+fn fs_context(permission: &str, args: &Value) -> MatchContext {
+    let mut subjects = Vec::new();
+    let mut malformed = false;
+    let mut push_string = |field: &str| match args.get(field).and_then(Value::as_str) {
+        Some(v) => subjects.push(v.to_string()),
+        None => malformed = true,
+    };
+    match permission {
+        "shell::fs::mv" => {
+            push_string("src");
+            push_string("dst");
+        }
+        "shell::fs::sed" => {
+            if let Some(files) = args.get("files") {
+                let Some(arr) = files.as_array() else {
+                    return malformed_context(permission, MatchKind::Fs);
+                };
+                for item in arr {
+                    let Some(s) = item.as_str() else {
+                        return malformed_context(permission, MatchKind::Fs);
+                    };
+                    subjects.push(s.to_string());
+                }
+            }
+            if let Some(path) = args.get("path") {
+                match path.as_str() {
+                    Some(s) => subjects.push(s.to_string()),
+                    None => malformed = true,
+                }
+            }
+            if subjects.is_empty() {
+                malformed = true;
+            }
+        }
+        _ => push_string("path"),
+    }
+    MatchContext {
+        permission: permission.to_string(),
+        subjects,
+        kind: MatchKind::Fs,
+        malformed,
+    }
+}
+
+fn malformed_context(permission: &str, kind: MatchKind) -> MatchContext {
+    MatchContext {
+        permission: permission.to_string(),
+        subjects: Vec::new(),
+        kind,
+        malformed: true,
+    }
+}
+
+fn glob_matches_path(pattern: &str, relpath: &str) -> bool {
+    if pattern.contains('/') {
+        glob_match(pattern, relpath)
+    } else {
+        let base = relpath.rsplit('/').next().unwrap_or(relpath);
+        glob_match(pattern, base)
+    }
+}
+
+fn glob_match(pattern: &str, path: &str) -> bool {
+    if pattern == "**" {
+        return true;
+    }
+    if let Some(rest) = pattern.strip_prefix("**/") {
+        let base = path.rsplit('/').next().unwrap_or(path);
+        return glob_match_simple(rest, base) || glob_match_simple(rest, path);
+    }
+    glob_match_simple(pattern, path)
+}
+
+fn glob_match_simple(pattern: &str, path: &str) -> bool {
+    let p = pattern.as_bytes();
+    let t = path.as_bytes();
+    let mut pi = 0usize;
+    let mut ti = 0usize;
+    let mut star_pi: Option<usize> = None;
+    let mut star_ti = 0usize;
+    while ti < t.len() {
+        let pc = p.get(pi).copied();
+        let tc = t[ti];
+        match pc {
+            Some(b'*') => {
+                star_pi = Some(pi);
+                star_ti = ti;
+                pi += 1;
+            }
+            Some(b'?') if tc != b'/' => {
+                pi += 1;
+                ti += 1;
+            }
+            Some(c) if c == tc => {
+                pi += 1;
+                ti += 1;
+            }
+            _ => {
+                if let Some(sp) = star_pi {
+                    if t[star_ti] == b'/' {
+                        return false;
+                    }
+                    pi = sp + 1;
+                    star_ti += 1;
+                    ti = star_ti;
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 #[cfg(test)]
@@ -220,6 +513,7 @@ mod tests {
             permission: permission.to_string(),
             pattern: pattern.to_string(),
             action,
+            reason: None,
         }
     }
 
@@ -286,8 +580,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_last_wins_within_single_ruleset() {
-        // Two matching rules in the same ruleset; the later one wins.
+    fn evaluate_first_wins_within_single_ruleset() {
+        // Two matching rules in the same ruleset; the earlier one wins.
         let rs: Ruleset = vec![
             r("shell::*", "*", Action::Allow),
             r("shell::exec", "*", Action::Deny),
@@ -295,19 +589,20 @@ mod tests {
         let m = evaluate("shell::exec", "*", &rs).expect("match");
         assert_eq!(
             m.action,
-            Action::Deny,
-            "more-specific later rule must override earlier permissive default"
+            Action::Allow,
+            "first matching rule must win so catch-all rules can safely sit last"
         );
     }
 
     #[test]
-    fn evaluate_last_wins_across_layered_rulesets() {
-        // global allows everything; session denies shell::exec. Session
-        // (passed last) overrides global.
+    fn evaluate_chained_iterators_stay_simple_first_match_only() {
+        // `evaluate` is a low-level iterator helper: it does not implement
+        // production global/session overlay semantics. Guarded session allow
+        // is handled by verdict_for.
         let global: Ruleset = vec![r("*", "*", Action::Allow)];
         let session: Ruleset = vec![r("shell::exec", "*", Action::Deny)];
         let m = evaluate("shell::exec", "*", global.iter().chain(session.iter())).expect("match");
-        assert_eq!(m.action, Action::Deny);
+        assert_eq!(m.action, Action::Allow);
 
         // For a permission only matched by global, global still wins.
         let m2 = evaluate(
@@ -348,6 +643,26 @@ mod tests {
     }
 
     #[test]
+    fn rule_rejects_unknown_fields() {
+        let err = serde_yaml::from_str::<Rule>(
+            r#"{ permission: "shell::exec", pattern: "*", action: ask, typo: true }"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn rule_rejects_empty_permission_and_pattern() {
+        let err = serde_yaml::from_str::<Rule>(r#"{ permission: "", pattern: "*", action: ask }"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("permission"), "{err}");
+
+        let err = serde_yaml::from_str::<Rule>(r#"{ permission: "*", pattern: "", action: ask }"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("pattern"), "{err}");
+    }
+
+    #[test]
     fn action_yaml_round_trip() {
         for a in [Action::Allow, Action::Deny, Action::Ask] {
             let y = serde_yaml::to_string(&a).unwrap();
@@ -366,7 +681,7 @@ mod tests {
             "shell::exec",
             &json!({"command": "git", "args": ["status"]}),
         );
-        assert_eq!(pat, "git status");
+        assert_eq!(pat.as_deref(), Some("git status"));
     }
 
     #[test]
@@ -375,7 +690,7 @@ mod tests {
             "shell::exec_bg",
             &json!({"command": "tail", "args": ["-f", "/var/log/x"]}),
         );
-        assert_eq!(pat, "tail -f /var/log/x");
+        assert_eq!(pat.as_deref(), Some("tail -f /var/log/x"));
     }
 
     #[test]
@@ -383,48 +698,201 @@ mod tests {
         // shell::exec supports the "command is a shell-words string" mode
         // (args: None). The pattern is just the command string.
         let pat = pattern_for("shell::exec", &json!({"command": "git status"}));
-        assert_eq!(pat, "git status");
+        assert_eq!(pat.as_deref(), Some("git status"));
     }
 
     #[test]
-    fn pattern_for_shell_exec_empty_args_list_treated_as_no_args() {
+    fn pattern_for_shell_exec_empty_args_list_is_verbatim_program_only() {
         let pat = pattern_for("shell::exec", &json!({"command": "ls", "args": []}));
-        assert_eq!(pat, "ls");
+        assert_eq!(pat.as_deref(), Some("ls"));
     }
 
     #[test]
-    fn pattern_for_shell_exec_missing_command_falls_back_to_star() {
+    fn pattern_for_shell_exec_missing_command_returns_none() {
         let pat = pattern_for("shell::exec", &json!({"args": ["foo"]}));
-        assert_eq!(pat, "*");
+        assert_eq!(pat, None);
     }
 
     #[test]
-    fn pattern_for_shell_exec_completely_malformed_args_falls_back_to_star() {
+    fn pattern_for_shell_exec_completely_malformed_args_returns_none() {
         let pat = pattern_for("shell::exec", &json!(null));
-        assert_eq!(pat, "*");
+        assert_eq!(pat, None);
     }
 
     #[test]
-    fn pattern_for_non_shell_function_id_returns_star() {
+    fn pattern_for_non_shell_function_id_returns_function_id() {
         let pat = pattern_for("http::fetch", &json!({"url": "https://x"}));
-        assert_eq!(pat, "*");
+        assert_eq!(pat.as_deref(), Some("http::fetch"));
     }
 
     #[test]
-    fn pattern_for_known_conflation_documented() {
-        // Documented in spec: an arg containing a space conflates with two
-        // separate args. This is acceptable for v1.
-        let with_inner_space = pattern_for(
+    fn exec_args_presence_controls_shell_words_vs_verbatim_command() {
+        let shell_words = match_context("shell::exec", &json!({"command": "echo 'hello world'"}));
+        assert_eq!(shell_words.subjects, vec!["echo hello world"]);
+
+        let present_args = match_context(
             "shell::exec",
-            &json!({"command": "git", "args": ["log", "--grep=foo bar"]}),
-        );
-        let split_args = pattern_for(
-            "shell::exec",
-            &json!({"command": "git", "args": ["log", "--grep=foo", "bar"]}),
+            &json!({"command": "echo 'hello world'", "args": []}),
         );
         assert_eq!(
-            with_inner_space, split_args,
-            "v1 conflates space-in-arg with arg boundary; see spec"
+            present_args.subjects,
+            vec!["echo 'hello world'"],
+            "when args is present, command is treated as argv[0] verbatim instead of shell-split",
+        );
+
+        let shell_split_rule = vec![r("shell::exec", "echo hello world", Action::Allow)];
+        assert!(evaluate_context(&shell_split_rule, RuleSource::Global, &shell_words).is_some());
+        assert!(
+            evaluate_context(&shell_split_rule, RuleSource::Global, &present_args).is_none(),
+            "present args must not accidentally match the absent-args shell-split subject",
+        );
+
+        let verbatim_rule = vec![r("shell::exec", "echo 'hello world'", Action::Allow)];
+        assert!(evaluate_context(&verbatim_rule, RuleSource::Global, &present_args).is_some());
+    }
+
+    #[test]
+    fn exec_match_uses_shell_words_and_basename_subjects() {
+        let split = match_context(
+            "shell::exec",
+            &json!({"command": "git commit -m 'hi there'"}),
+        );
+        assert_eq!(split.subjects, vec!["git commit -m hi there"]);
+
+        let path_cmd = match_context(
+            "shell::exec",
+            &json!({"command": "/usr/bin/git", "args": ["status"]}),
+        );
+        assert_eq!(
+            path_cmd.subjects,
+            vec!["/usr/bin/git status", "git status"],
+            "path-qualified exec subjects must keep both exact argv and basename-normalized argv",
+        );
+
+        let full_path = vec![r("shell::exec", "/usr/bin/git status", Action::Allow)];
+        let m =
+            evaluate_context(&full_path, RuleSource::Global, &path_cmd).expect("exact path match");
+        assert_eq!(m.action, Action::Allow);
+
+        let basename = vec![r("shell::exec", "git status", Action::Allow)];
+        let m = evaluate_context(&basename, RuleSource::Global, &path_cmd).expect("basename match");
+        assert_eq!(m.action, Action::Allow);
+    }
+
+    #[test]
+    fn evaluate_context_supports_aliases_and_catch_all_last() {
+        let rs = vec![r("fs::read", "*", Action::Allow), r("*", "*", Action::Ask)];
+        let ctx = match_context("shell::fs::read", &json!({"path": "/tmp/a"}));
+        let m = evaluate_context(&rs, RuleSource::Global, &ctx).expect("match");
+        assert_eq!(m.action, Action::Allow);
+        assert_eq!(m.index, 0);
+    }
+
+    #[test]
+    fn fs_mv_allow_requires_all_paths_but_deny_matches_any() {
+        let ctx = match_context(
+            "shell::fs::mv",
+            &json!({"src": "/safe/a", "dst": "/other/b"}),
+        );
+        let allow = vec![r("shell::fs::mv", "/safe/*", Action::Allow)];
+        assert!(evaluate_context(&allow, RuleSource::Global, &ctx).is_none());
+
+        let deny = vec![r("shell::fs::mv", "/safe/*", Action::Deny)];
+        let m = evaluate_context(&deny, RuleSource::Global, &ctx).expect("deny matches src");
+        assert_eq!(m.action, Action::Deny);
+    }
+
+    #[test]
+    fn fs_declared_scope_handles_grep_and_sed_paths() {
+        let grep = match_context("shell::fs::grep", &json!({"path": "src/lib.rs"}));
+        let allow = vec![r("fs::grep", "src/*", Action::Allow)];
+        assert_eq!(
+            evaluate_context(&allow, RuleSource::Global, &grep)
+                .expect("grep declared path")
+                .action,
+            Action::Allow
+        );
+
+        let sed = match_context(
+            "shell::fs::sed",
+            &json!({"files": ["src/lib.rs", "src/main.rs"], "path": "src/extra.rs"}),
+        );
+        let src_only = vec![r("shell::fs::sed", "src/*", Action::Ask)];
+        assert_eq!(
+            evaluate_context(&src_only, RuleSource::Global, &sed)
+                .expect("all declared sed paths are under src")
+                .action,
+            Action::Ask
+        );
+
+        let one_file = vec![r("shell::fs::sed", "main.rs", Action::Allow)];
+        assert!(
+            evaluate_context(&one_file, RuleSource::Global, &sed).is_none(),
+            "allow/ask must match all declared paths, not only one file"
+        );
+    }
+
+    #[test]
+    fn malformed_exec_matches_only_ask_or_deny_wildcard() {
+        let ctx = match_context("shell::exec", &json!({"command": "git", "args": [3]}));
+        assert!(ctx.malformed);
+        let allow = vec![r("shell::exec", "*", Action::Allow)];
+        assert!(evaluate_context(&allow, RuleSource::Global, &ctx).is_none());
+
+        let specific_deny = vec![r("shell::exec", "git*", Action::Deny)];
+        assert!(
+            evaluate_context(&specific_deny, RuleSource::Global, &ctx).is_none(),
+            "malformed argv has no trustworthy subject for specific patterns",
+        );
+
+        let ask = vec![r("shell::exec", "*", Action::Ask)];
+        assert_eq!(
+            evaluate_context(&ask, RuleSource::Global, &ctx)
+                .expect("ask wildcard")
+                .action,
+            Action::Ask
+        );
+
+        let deny = vec![r("shell::exec", "*", Action::Deny)];
+        assert_eq!(
+            evaluate_context(&deny, RuleSource::Global, &ctx)
+                .expect("deny wildcard")
+                .action,
+            Action::Deny
+        );
+    }
+
+    #[test]
+    fn malformed_fs_scope_matches_only_ask_or_deny_wildcard() {
+        let ctx = match_context(
+            "shell::fs::sed",
+            &json!({"files": ["src/lib.rs", 3], "path": "src/main.rs"}),
+        );
+        assert!(ctx.malformed);
+
+        let allow = vec![r("shell::fs::sed", "*", Action::Allow)];
+        assert!(evaluate_context(&allow, RuleSource::Global, &ctx).is_none());
+
+        let specific_deny = vec![r("shell::fs::sed", "src/*", Action::Deny)];
+        assert!(
+            evaluate_context(&specific_deny, RuleSource::Global, &ctx).is_none(),
+            "malformed filesystem envelopes must not apply path-specific rules to partial data",
+        );
+
+        let ask = vec![r("shell::fs::sed", "*", Action::Ask)];
+        assert_eq!(
+            evaluate_context(&ask, RuleSource::Global, &ctx)
+                .expect("ask wildcard")
+                .action,
+            Action::Ask
+        );
+
+        let deny = vec![r("shell::fs::sed", "*", Action::Deny)];
+        assert_eq!(
+            evaluate_context(&deny, RuleSource::Global, &ctx)
+                .expect("deny wildcard")
+                .action,
+            Action::Deny
         );
     }
 }
