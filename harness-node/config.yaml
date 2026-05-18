@@ -9,7 +9,6 @@ permissions_path: "./iii-permissions.yaml"
 
 # turn-orchestrator
 sync_default_timeout_ms: 120000
-sync_poll_interval_ms: 50
 system_default_skills:
   - "iii://iii-directory/index"
 

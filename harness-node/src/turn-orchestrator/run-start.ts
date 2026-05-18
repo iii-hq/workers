@@ -10,8 +10,9 @@ import type { AgentEvent } from '../types/agent-event.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { TurnOrchestratorConfig } from './config.js';
 import { emit } from './events.js';
+import { clearTerminalWaiter, installTerminalWaiter } from './on-terminal.js';
 import * as persistence from './persistence.js';
-import { isTerminal, newRecord } from './state.js';
+import { newRecord } from './state.js';
 
 export const FUNCTION_ID = 'run::start';
 export const SYNC_FUNCTION_ID = 'run::start_and_wait';
@@ -86,25 +87,35 @@ export async function executeSync(
   payload: unknown,
 ): Promise<{ session_id: string; messages: AgentMessage[]; turn_count: number }> {
   const obj = (payload ?? {}) as Record<string, unknown>;
+  const session_id = requireString(obj, 'session_id');
   const timeout_ms =
     typeof obj.timeout_ms === 'number' ? obj.timeout_ms : cfg.sync_default_timeout_ms;
-  const { session_id } = await execute(iii, payload);
-  const deadline = Date.now() + timeout_ms;
-  for (;;) {
-    const rec = await persistence.loadRecord(iii, session_id);
-    if (rec && isTerminal(rec)) {
-      const messages = await persistence.loadMessages(iii, session_id);
-      return { session_id, messages, turn_count: rec.turn_count };
-    }
-    if (Date.now() >= deadline) {
+
+  // Install the waiter BEFORE kicking the run so the terminal turn_state
+  // write — which fires the `turn::on_terminal_state` state trigger — is
+  // guaranteed to find an entry to resolve.
+  const terminal = installTerminalWaiter(session_id);
+  try {
+    await execute(iii, payload);
+
+    const winner = await new Promise<'terminal' | 'timeout'>((resolve) => {
+      const timer = setTimeout(() => resolve('timeout'), timeout_ms);
+      terminal.then(() => {
+        clearTimeout(timer);
+        resolve('terminal');
+      });
+    });
+
+    if (winner === 'timeout') {
       throw new Error(`run::start_and_wait timed out after ${timeout_ms} ms`);
     }
-    await sleep(cfg.sync_poll_interval_ms);
-  }
-}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+    const rec = await persistence.loadRecord(iii, session_id);
+    const messages = await persistence.loadMessages(iii, session_id);
+    return { session_id, messages, turn_count: rec?.turn_count ?? 0 };
+  } finally {
+    clearTerminalWaiter(session_id);
+  }
 }
 
 export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
