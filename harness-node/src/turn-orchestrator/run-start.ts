@@ -137,9 +137,11 @@ export function buildResumePlan(existing: TurnStateRecord): TurnStateRecord | nu
  * - terminal record → save fresh resume record + publish a step + return
  *   `{ok:true, session_id, resumed:true}`.
  * - active record → return `{ok:true, session_id, resumed:false}` WITHOUT
- *   any state writes or step publish. The approval-gate's `resume_session`
- *   poll will retry every 250 ms for up to 30 s until the record reaches
- *   terminal naturally.
+ *   any state writes or step publish. The orchestrator's durable
+ *   subscriber on `turn::step_requested` will rebuild the resume record
+ *   when the record reaches terminal naturally — see
+ *   `turn-orchestrator/subscriber.ts::execute` (the `buildResumePlan`
+ *   branch).
  */
 export async function executeResume(
   iii: ISdk,

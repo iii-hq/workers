@@ -1,24 +1,38 @@
 /**
- * `hook-fanout::publish_collect` handler. Mirrors
- * `hook-fanout/src/handler.rs::execute`.
+ * `hook-fanout::publish_collect` handler.
  *
- * Flow:
- * 1. mint event_id, build envelope, publish via `iii::durable::publish`.
- * 2. poll `stream::list HOOK_REPLY_STREAM group_id=event_id` every
- *    `poll_interval_ms` until `decideExit` returns a reason.
- * 3. apply the merge rule and return `{ event_id, replies, merged }`.
+ * Reactive flow using iii's native `stream` trigger (no polling):
+ * 1. Worker boot: `register()` wires one globally-registered handler
+ *    (`hook-fanout::reply_handler`) and a single `stream` trigger on
+ *    `agent::hook_reply`. Every `stream::set` on that stream invokes the
+ *    handler, which routes the reply into an in-process `pending` map
+ *    keyed by `group_id` (= event_id).
+ * 2. Per call: mint `event_id`, install a Collector in `pending`,
+ *    publish the envelope via `iii::durable::publish`, await a Promise
+ *    resolved by whichever of these fires first:
+ *      - expected_replies threshold met
+ *      - quiescence_ms elapsed since the most recent reply
+ *      - effective_timeout deadline
+ *    Subscribers keep writing to `agent::hook_reply` exactly as before
+ *    (no writer-side change).
+ * 3. On exit, remove the Collector from `pending` and apply the merge
+ *    rule.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { type ExitReason, decideExit } from './exit.js';
+import type { ExitReason } from './exit.js';
 import { mergeFieldMerge, mergeFirstBlockWins, mergePipelineLastWins } from './merge.js';
-import { FUNCTION_ID, HOOK_REPLY_STREAM, parseMergeRule } from './types.js';
+import { FUNCTION_ID, HOOK_REPLY_STREAM, REPLY_HANDLER_FN_ID, parseMergeRule } from './types.js';
 
 export type PublishCollectConfig = {
   default_timeout_ms: number;
   min_timeout_ms: number;
+  /**
+   * Retained for back-compat in config wiring; unused in the reactive
+   * implementation. The waiter is event-driven, not interval-driven.
+   */
   poll_interval_ms: number;
   quiescence_ms: number;
 };
@@ -26,7 +40,7 @@ export type PublishCollectConfig = {
 export const DEFAULT_CONFIG: PublishCollectConfig = {
   default_timeout_ms: 10_000,
   min_timeout_ms: 50,
-  poll_interval_ms: 25,
+  poll_interval_ms: 0,
   quiescence_ms: 200,
 };
 
@@ -45,36 +59,12 @@ export function buildPublishEnvelope(
   };
 }
 
-function collectStreamItems(
-  raw: unknown,
-  collected: unknown[],
-  lastIndex: { value: number },
-): void {
-  let items: unknown[] | null = null;
-  if (Array.isArray(raw)) items = raw;
-  else if (raw && typeof raw === 'object') {
-    const inner = (raw as Record<string, unknown>).items;
-    if (Array.isArray(inner)) items = inner;
-  }
-  if (!items) return;
-  for (let i = lastIndex.value; i < items.length; i++) {
-    const item = items[i];
-    const payload =
-      item && typeof item === 'object' && 'data' in (item as Record<string, unknown>)
-        ? (item as Record<string, unknown>).data
-        : item;
-    collected.push(payload);
-  }
-  lastIndex.value = items.length;
-}
-
 /**
- * Build the publish-collect response envelope. Mirrors
- * `hook-fanout/src/handler.rs::build_response` (PR #150).
+ * Build the publish-collect response envelope.
  *
- * Adds `publish.{ok,error}` and `publish_failed:true` markers so the
- * orchestrator's `publishFailureFromResponse` helper can fail-closed when
- * a publish errored or the expected subscriber didn't reply.
+ * `publish.{ok,error}` and `publish_failed:true` markers let the
+ * orchestrator's `publishFailureFromResponse` helper fail-closed when a
+ * publish errored or the expected subscriber didn't reply.
  */
 export function buildResponse(
   event_id: string,
@@ -96,6 +86,75 @@ export function buildResponse(
   };
   if (publishFailed) out.publish_failed = true;
   return out;
+}
+
+type Collector = {
+  replies: unknown[];
+  expected_replies: number | undefined;
+  quiescence_ms: number;
+  resolve: ((reason: ExitReason) => void) | null;
+  quiescenceTimer: ReturnType<typeof setTimeout> | null;
+  deadlineTimer: ReturnType<typeof setTimeout> | null;
+};
+
+const pending = new Map<string, Collector>();
+
+function clearTimers(c: Collector): void {
+  if (c.quiescenceTimer) {
+    clearTimeout(c.quiescenceTimer);
+    c.quiescenceTimer = null;
+  }
+  if (c.deadlineTimer) {
+    clearTimeout(c.deadlineTimer);
+    c.deadlineTimer = null;
+  }
+}
+
+function settle(c: Collector, reason: ExitReason): void {
+  if (!c.resolve) return;
+  const resolve = c.resolve;
+  c.resolve = null;
+  clearTimers(c);
+  resolve(reason);
+}
+
+function deliverReply(c: Collector, payload: unknown): void {
+  c.replies.push(payload);
+  if (c.expected_replies !== undefined && c.replies.length >= c.expected_replies) {
+    settle(c, 'expected_replies');
+    return;
+  }
+  if (c.quiescence_ms > 0) {
+    if (c.quiescenceTimer) clearTimeout(c.quiescenceTimer);
+    c.quiescenceTimer = setTimeout(() => {
+      settle(c, 'quiescence');
+    }, c.quiescence_ms);
+  }
+}
+
+/**
+ * Stream trigger handler. Fires on every `stream::set` to
+ * `agent::hook_reply`. Dispatches the reply to the pending Collector for
+ * this `group_id`; ignores frames for unknown event_ids (e.g. late
+ * arrivals after a publish_collect already exited).
+ *
+ * Exported for tests; production wiring goes through `register()`.
+ */
+export async function handleStreamReply(frame: unknown): Promise<unknown> {
+  if (!frame || typeof frame !== 'object') return null;
+  const obj = frame as Record<string, unknown>;
+  const group_id =
+    (typeof obj.groupId === 'string' && obj.groupId) ||
+    (typeof obj.group_id === 'string' && obj.group_id) ||
+    null;
+  if (!group_id) return null;
+  const inner =
+    obj.event && typeof obj.event === 'object' && 'data' in (obj.event as Record<string, unknown>)
+      ? (obj.event as Record<string, unknown>).data
+      : (obj.data ?? obj);
+  const c = pending.get(group_id);
+  if (c) deliverReply(c, inner);
+  return null;
 }
 
 export async function execute(
@@ -127,91 +186,100 @@ export async function execute(
     typeof obj.quiescence_ms === 'number' ? obj.quiescence_ms : cfg.quiescence_ms;
 
   const event_id = randomUUID();
-  const envelope = buildPublishEnvelope(topic, event_id, inner);
   const started_at = Date.now();
-  let publish_failed = false;
+  const effective_timeout = Math.max(timeout_ms, cfg.min_timeout_ms);
+
+  const collector: Collector = {
+    replies: [],
+    expected_replies,
+    quiescence_ms,
+    resolve: null,
+    quiescenceTimer: null,
+    deadlineTimer: null,
+  };
+  pending.set(event_id, collector);
+
   let publish_error: string | undefined;
   try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: envelope,
+    const exit_reason = await new Promise<ExitReason>((resolve) => {
+      collector.resolve = resolve;
+      collector.deadlineTimer = setTimeout(() => {
+        settle(collector, collector.replies.length === 0 ? 'deadline_no_replies' : 'deadline');
+      }, effective_timeout);
+
+      // Publish AFTER the collector is installed so an early reply can't
+      // miss the Map lookup. iii::durable::publish enqueues; dispatch is
+      // async on the bus, so there is no real race either way — but
+      // installed-first is unambiguously correct.
+      (async () => {
+        try {
+          const envelope = buildPublishEnvelope(topic, event_id, inner);
+          await iii.trigger<unknown, unknown>({
+            function_id: 'iii::durable::publish',
+            payload: envelope,
+          });
+        } catch (err) {
+          logger.warn('hook-fanout::publish_collect: publish trigger failed', {
+            topic,
+            err: String(err),
+          });
+          publish_error = err instanceof Error ? err.message : String(err);
+        }
+      })();
     });
-  } catch (err) {
-    logger.warn('hook-fanout::publish_collect: publish trigger failed', {
+
+    const elapsed_ms = Date.now() - started_at;
+    logger.info('hook-fanout::publish_collect completed', {
       topic,
-      err: String(err),
+      replies: collector.replies.length,
+      elapsed_ms,
+      exit_reason,
+      publish_failed: publish_error !== undefined,
     });
-    publish_failed = true;
-    publish_error = err instanceof Error ? err.message : String(err);
-  }
 
-  const effective_timeout = Math.max(timeout_ms, cfg.min_timeout_ms);
-  const deadline_ms = started_at + effective_timeout;
-  const replies: unknown[] = [];
-  const lastIndex = { value: 0 };
-  let last_reply_at_ms: number | undefined;
-  let exit_reason: ExitReason = 'deadline_no_replies';
-
-  // poll loop
-  for (;;) {
-    const before_len = replies.length;
-    try {
-      const value = await iii.trigger<unknown, unknown>({
-        function_id: 'stream::list',
-        payload: { stream_name: HOOK_REPLY_STREAM, group_id: event_id },
-      });
-      collectStreamItems(value, replies, lastIndex);
-    } catch (err) {
-      logger.debug('hook-fanout: stream::list poll failed', { err: String(err) });
+    let merged: unknown;
+    switch (merge_rule) {
+      case 'first_block_wins':
+        merged = mergeFirstBlockWins(collector.replies);
+        break;
+      case 'field_merge':
+        merged = mergeFieldMerge(inner, collector.replies);
+        break;
+      case 'pipeline_last_wins':
+        merged = mergePipelineLastWins(inner, collector.replies);
+        break;
     }
-    const now_ms = Date.now();
-    if (replies.length > before_len) last_reply_at_ms = now_ms;
-    const reason = decideExit({
-      replies_count: replies.length,
-      expected_replies,
-      quiescence_ms,
-      last_reply_at_ms,
-      now_ms,
-      deadline_ms,
-    });
-    if (reason !== null) {
-      exit_reason = reason;
-      break;
-    }
-    await sleep(cfg.poll_interval_ms);
+
+    return buildResponse(
+      event_id,
+      collector.replies,
+      merged,
+      publish_error !== undefined,
+      publish_error,
+    );
+  } finally {
+    clearTimers(collector);
+    pending.delete(event_id);
   }
-
-  const elapsed_ms = Date.now() - started_at;
-  logger.info('hook-fanout::publish_collect completed', {
-    topic,
-    replies: replies.length,
-    elapsed_ms,
-    exit_reason,
-    publish_failed,
-  });
-
-  let merged: unknown;
-  switch (merge_rule) {
-    case 'first_block_wins':
-      merged = mergeFirstBlockWins(replies);
-      break;
-    case 'field_merge':
-      merged = mergeFieldMerge(inner, replies);
-      break;
-    case 'pipeline_last_wins':
-      merged = mergePipelineLastWins(inner, replies);
-      break;
-  }
-
-  return buildResponse(event_id, replies, merged, publish_failed, publish_error);
 }
 
 export function register(iii: ISdk, cfg: PublishCollectConfig): void {
+  iii.registerFunction(REPLY_HANDLER_FN_ID, handleStreamReply, {
+    description:
+      'Internal: routes agent::hook_reply stream events to pending publish_collect calls.',
+  });
+  try {
+    iii.registerTrigger({
+      type: 'stream',
+      function_id: REPLY_HANDLER_FN_ID,
+      config: { stream_name: HOOK_REPLY_STREAM },
+    });
+  } catch (err) {
+    logger.warn('hook-fanout reply stream trigger registration failed', {
+      err: String(err),
+    });
+  }
   iii.registerFunction(FUNCTION_ID, async (payload: unknown) => execute(iii, cfg, payload), {
     description: 'Publish a topic, collect subscriber replies until timeout, apply merge_rule.',
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
