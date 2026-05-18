@@ -11,27 +11,15 @@
 
 import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
 import { parsePolicyReply } from '../approval-gate/policy-consult.js';
+import { DENIAL_SCHEMA_VERSION } from '../approval-gate/types.js';
+import type { DenialEnvelope } from '../approval-gate/types.js';
 import type { ISdk } from '../runtime/iii.js';
+export type { DeniedBy, DenialEnvelope } from '../approval-gate/types.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
 
 export const TOPIC_AFTER = 'agent::after_function_call';
 export const HOOK_TIMEOUT_MS = 10_000;
-export const DENIAL_SCHEMA_VERSION = 1;
-
-export type DeniedBy = 'permissions' | 'user' | 'gate_unavailable';
-
-export type DenialEnvelope = {
-  schema_version: number;
-  status: 'denied';
-  denied_by: DeniedBy;
-  function_id: string;
-  rule_id?: string;
-  rule_action?: 'deny';
-  matched_constraint?: { field: string; operator: string; value: unknown };
-  args_excerpt?: unknown;
-  reason: string;
-};
 
 export type HookOutcome =
   | { kind: 'allow' }
@@ -52,15 +40,17 @@ export async function consultBefore(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
+  // session_id is accepted for future correlation; the current policy wire format only uses function_id + args.
   session_id: string | undefined,
   policy_function_id: string,
 ): Promise<HookOutcome> {
   let raw: unknown;
   try {
+    // 5s matches the prior gate-subscriber → policy hop; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
     raw = await iii.trigger<unknown, unknown>({
       function_id: policy_function_id,
       payload: { function_id: function_call.function_id, args: function_call.arguments },
-      timeoutMs: HOOK_TIMEOUT_MS,
+      timeoutMs: 5_000,
     });
   } catch (err) {
     logger.warn('policy consult failed; checking legacy approval_required fallback', {

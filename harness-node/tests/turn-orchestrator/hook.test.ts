@@ -39,7 +39,7 @@ describe('consultBefore (direct policy call)', () => {
     expect(outcome.kind).toBe('pending');
   });
 
-  it('falls back to legacy approval_required substring when policy is unreachable', async () => {
+  it('falls back to legacy approval_required list when policy is unreachable', async () => {
     const iii = fakeIii(() => {
       throw new Error('policy worker down');
     });
