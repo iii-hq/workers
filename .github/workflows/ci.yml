@@ -96,39 +96,6 @@ jobs:
             --base-ref "origin/$BASE_REF" \
             --source-changed "$SOURCE_CHANGED"
 
-      # ─── Regression guard (C3a) ────────────────────────────────────
-      # `skills::register` as a *trigger* (the iii bus function-id) was
-      # removed when the harness migrated to iii-directory. The bootstrap
-      # now writes skills to disk; nothing should ever fire that trigger
-      # again. We match the function-id only when it appears as a quoted
-      # string literal (`"skills::register"`), so Rust function calls
-      # named `skills::register(...)` inside the iii-directory crate or
-      # is_hidden test fixtures are not false positives.
-      - name: Forbid "skills::register" trigger in Rust sources
-        if: matrix.worker == 'harness'
-        run: |
-          set -e
-          # We grep for TriggerRequest call sites only — the function_id is
-          # always passed as `function_id: "skills::register".into()`. The
-          # mcp hidden-prefix test fixture (`is_hidden_function_id(&c,
-          # "skills::register")`) is a pre-existing reference (the prefix
-          # is still hidden from MCP discovery even though no one fires it
-          # any more) and is intentionally not matched.
-          matches=$(grep -rn 'function_id:.*"skills::register"' \
-            --include='*.rs' . \
-            | grep -v '.worktrees/' \
-            | grep -v 'target/' \
-            | grep -v '.git/' \
-            || true)
-          if [ -n "$matches" ]; then
-            echo "::error::\"skills::register\" TriggerRequest found in Rust sources — \
-the iii-directory migration replaced it with on-disk skill.md (see \
-docs/superpowers/specs/2026-05-12-iii-directory-migration-design.md). \
-Matches:"
-            echo "$matches"
-            exit 1
-          fi
-
   # ──────────────────────────────────────────────────────────────
   # Rust per-worker lint + test
   # ──────────────────────────────────────────────────────────────

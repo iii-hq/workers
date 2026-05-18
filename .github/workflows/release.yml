@@ -4,31 +4,16 @@ on:
   push:
     tags:
       - 'acp/v*'
-      - 'approval-gate/v*'
-      - 'auth-credentials/v*'
-      - 'context-compaction/v*'
-      # harness/v* is handled by release-harness-bundle.yml (single-dispatch fan-out).
-      - 'hook-fanout/v*'
       - 'iii-database/v*'
+      - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
       - 'llm-budget/v*'
       - 'mcp/v*'
-      - 'models-catalog/v*'
-      - 'oauth-anthropic/v*'
-      - 'oauth-openai-codex/v*'
-      - 'policy-denylist/v*'
-      - 'proof/v*'
-      - 'provider-anthropic/v*'
-      - 'provider-openai/v*'
-      - 'provider-router/v*'
-      - 'session/v*'
       - 'shell/v*'
-      - 'iii-directory/v*'
       - 'storage/v*'
       - 'todo-worker/v*'
       - 'todo-worker-python/v*'
-      - 'turn-orchestrator/v*'
   workflow_dispatch:
     inputs:
       tag:
