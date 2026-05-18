@@ -18,7 +18,7 @@ workers.
 
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
-| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::*` / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
+| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `harness::status` / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::call`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Hook subscriber on `agent::before_function_call`; consults policy and pauses for user resolution. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
 | session | [src/session/](harness-node/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness-node/docs/workers/session.md) |
@@ -56,7 +56,8 @@ flowchart LR
     state["iii engine state::* / stream::* / iii::durable::*"]
   end
 
-  client -- "run::start" --> turnOrch
+  client -- "harness::call(run::start, ...)" --> harness
+  harness -- "iii.trigger run::start" --> turnOrch
   client -- "ui::subscribe / harness::status" --> harness
 
   turnOrch -- "provider::*::stream" --> provAnth
@@ -211,7 +212,7 @@ lookups.
 
 | Folder | Purpose |
 |---|---|
-| [src/runtime/](harness-node/src/runtime/) | Cross-worker SDK helpers. `worker.ts` parses CLI flags and bootstraps an SDK connection; `config.ts` loads `config.yaml`; `state.ts` / `stream.ts` wrap the iii engine's state/stream surface; `ids.ts` mints UUID-like ids; `otel.ts` provides a pino logger and OTel stub; `handler.ts` exposes `unwrapBody` / `requireString`. |
+| [src/runtime/](harness-node/src/runtime/) | Cross-worker SDK helpers. `worker.ts` parses CLI flags, bootstraps an SDK connection, and wraps it in a `Proxy` so every `registerFunction` is auto-instrumented (see [Telemetry & trace correlation](#telemetry--trace-correlation)); `config.ts` loads `config.yaml`; `state.ts` / `stream.ts` wrap the iii engine's state/stream surface; `ids.ts` mints UUID-like ids; `otel.ts` wires `iii-sdk` OTel via `initHarnessOtel`, exposes `instrumentHandler` (per-call span + baggage propagation), and bridges every pino log to an OTel log auto-correlated to the active span; `handler.ts` exposes `unwrapBody` / `requireString`. |
 | [src/types/](harness-node/src/types/) | Wire types that mirror `harness/crates/harness-types/src/*.rs`. `agent-event.ts`, `agent-message.ts`, `content.ts`, `function.ts`, `stream-event.ts`, `thinking.ts`, `provider.ts`, plus `wire.ts` for envelope helpers. |
 
 ## Boot ordering & dependencies
@@ -239,6 +240,88 @@ flowchart TD
 
 Edges are extracted from each worker's `iii.worker.yaml` `dependencies:`
 block.
+
+## Telemetry & trace correlation
+
+Every harness-node function is automatically instrumented with an OTel span
+tagged with `iii.session.id` / `iii.message.id` / `iii.function.id`. This is
+what the engine's `engine::traces::group_by` reads to populate "Group by
+Session" / "Group by Message" / "Group by Function" in the traces UI; without
+the IDs on every span, those groupings return empty.
+
+**The single chokepoint.** [src/runtime/worker.ts](harness-node/src/runtime/worker.ts)
+calls `initHarnessOtel(serviceName, engineWsUrl)` before opening the SDK,
+then wraps the `ISdk` in a `Proxy` that intercepts `registerFunction(id,
+handler, opts)`. The local function handler is replaced with
+`instrumentHandler(id, handler)` before being passed through to the real
+SDK. HTTP invocation configs (objects, not functions) pass through
+unchanged because there is no local handler to wrap. No per-worker
+`register.ts` knows or needs to know that this is happening, so no future
+worker can accidentally skip the wrap.
+
+**What `instrumentHandler` does per call.** See
+[src/runtime/otel.ts](harness-node/src/runtime/otel.ts). On every
+invocation it opens a `harness.<function_id>` SERVER span, extracts
+`session_id` / `message_id` from the input body (with baggage fallback
+for nested calls so a downstream `iii.trigger` inherits the IDs of its
+parent), stamps the three `iii.*` attributes onto the span, and runs the
+handler inside an OTel context that pushes those IDs as baggage. It also
+records three lifecycle events that populate the EVENTS tab in the
+traces UI:
+
+- `iii.invocation.input` — redacted + truncated input JSON.
+- `iii.invocation.output` — redacted + truncated result JSON (or
+  `{error: ...}` on failure).
+- `exception` — standard OTel event, only on throw, so the ERRORS tab
+  picks the failure up.
+
+Payload capture is gated on the `III_DISABLE_TRACE_PAYLOADS` env var
+(matches the Rust `iii-sdk` semantics — set to `1` or `true` to suppress
+payloads while keeping spans).
+
+**Why baggage matters.** The engine relies on per-span attributes for
+grouping, but only the outermost handler call sees the
+`session_id`/`message_id` in its body. Pushing them as baggage means
+every nested `iii.trigger` span (e.g. `harness.run::start` →
+`harness.provider::anthropic::stream`) inherits the IDs automatically
+via the iii-sdk's `BaggageSpanProcessor`. No manual plumbing per
+call-site.
+
+**Log bridge.** Pino keeps writing to stderr (devs still see logs in their
+terminal during `pnpm dev:<worker>`). On top of that, every
+`logger.info/warn/error` also emits an OTel log via `iii-sdk/telemetry`'s
+`getLogger()`, which auto-correlates the log to the currently active
+span. This is what populates the LOGS tab in the traces UI for every
+harness-node span. When `initHarnessOtel` failed to boot (e.g.
+`OTEL_ENABLED=false`), the OTel side is a quiet no-op and pino continues
+to write to stderr unchanged.
+
+**`harness::call` as the WS ingestion bridge.** Browser-originated calls
+hit `harness::call` (see [src/harness/call.ts](harness-node/src/harness/call.ts)),
+NOT `run::start` directly. The wrapping `instrumentHandler` reads
+`session_id`/`message_id` from the outer body and seeds baggage; the
+handler then forwards to `iii.trigger` with the inner `function_id` /
+`payload`. This is the symmetric counterpart of the Rust harness's HTTP
+`harness::call` route (`workers/harness/src/lib.rs:103-159`) and means
+the span tree looks the same regardless of whether the request landed
+on a Rust or Node deployment.
+
+```mermaid
+sequenceDiagram
+  participant Web as console/web
+  participant Call as harness::call
+  participant Wrap as instrumentHandler
+  participant Inner as run::start (turn-orchestrator)
+  participant Trace as engine traces UI
+
+  Web->>Call: {function_id:"run::start", session_id, message_id, payload}
+  Wrap->>Wrap: open span "harness.harness::call", stamp ids, push baggage
+  Call->>Inner: iii.trigger(run::start, payload) -- baggage propagated
+  Wrap->>Wrap: open span "harness.run::start", inherit ids from baggage
+  Inner-->>Call: result
+  Call-->>Web: {status_code:200, body:result}
+  Wrap->>Trace: spans + iii.invocation.{input,output} events + correlated logs
+```
 
 ## Configuration
 
