@@ -13,6 +13,7 @@ export type TurnState =
   | 'assistant_finished'
   | 'function_prepare'
   | 'function_execute'
+  | 'function_awaiting_approval'
   | 'function_finalize'
   | 'steering_check'
   | 'tearing_down'
