@@ -1,6 +1,6 @@
 export type Mode = 'plan' | 'ask' | 'agent'
 
-/** Composite `provider::<catalog_model_id>` (matches harness-node models-catalog). */
+// Composite key shape: `<provider>::<catalog_model_id>`.
 export const CATALOG_MODEL_KEY_SEP = '::' as const
 
 export type ModelId = string
@@ -10,10 +10,8 @@ export interface ModelOption {
   label: string
 }
 
-/**
- * When the engine is down or mock backend runs, picker still needs options.
- * Ids mirror the seeded catalog (`harness-node/.../models.json`).
- */
+// Fallback picker options for when the live catalog is unreachable; ids
+// must match the seeded catalog under harness-node.
 export const STATIC_MODEL_OPTIONS: ModelOption[] = [
   { id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5`, label: 'gpt-5' },
   {
@@ -44,7 +42,6 @@ export interface Attachment {
   name: string
   size: number
   type: string
-  /** present only for previewable text/image attachments under ~1MB */
   dataUrl?: string
 }
 
@@ -81,11 +78,8 @@ export interface FunctionCallMessage extends BaseMessage {
   output?: unknown
   durationMs?: number
   running?: boolean
-  /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
-  /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */
   functionCallId?: string
-  /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
   sessionId?: string
 }
 
@@ -95,11 +89,7 @@ export type Message =
   | ThoughtMessage
   | FunctionCallMessage
 
-/**
- * Loose patch shape passed to updateMessage(). Lists every patchable field
- * across every Message variant; consumers pass only what they need. `id`,
- * `role`, and `createdAt` are never patchable.
- */
+// `id`, `role`, and `createdAt` are never patchable.
 export interface MessagePatch {
   content?: string
   attachments?: Attachment[]
@@ -110,7 +100,6 @@ export interface MessagePatch {
   running?: boolean
   output?: unknown
   pendingApproval?: boolean
-  /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
   functionCallId?: string
   sessionId?: string
 }
@@ -118,7 +107,8 @@ export interface MessagePatch {
 export interface Conversation {
   id: string
   title: string
-  /** flips to true after the user explicitly renames; otherwise auto-derived */
+  // True after the user explicitly renames; otherwise titles are
+  // auto-derived from the first user message.
   titleManual?: boolean
   model: ModelId
   mode: Mode

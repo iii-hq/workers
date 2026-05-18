@@ -8,11 +8,6 @@ import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/cha
 interface FunctionCallMessageProps {
   message: FunctionCallMessageType
   defaultOpen?: boolean
-  /**
-   * Approve handler. May be sync or async; the component shows a
-   * `submitting…` state while the promise resolves and a red error row
-   * if it rejects. Wire the actual `approval::resolve` call here.
-   */
   onApprove?: () => void | Promise<void>
   onDeny?: () => void | Promise<void>
 }
@@ -36,12 +31,8 @@ function isPrimitive(v: unknown): v is Primitive {
   )
 }
 
-/**
- * `null`, `undefined`, `""`, `[]`, and `{}` count as empty so we can render a
- * compact "· empty" header instead of a noisy `{}` JSON block. `null` is
- * intentionally treated as empty (the user-facing concept is "no input"); the
- * primitive `null` rendering would otherwise show the literal text "null".
- */
+// `null` is treated as empty (the user-facing concept is "no input"),
+// otherwise the primitive rendering would show the literal text "null".
 function isEmptyValue(v: unknown): boolean {
   if (v === null || v === undefined) return true
   if (typeof v === 'string') return v.length === 0
@@ -87,9 +78,8 @@ export function FunctionCallMessage({
     setSubmitting(kind)
     try {
       await handler()
-      // Leave `submitting` set; the message patches once the resurrected
-      // execution emits real events (pendingApproval flips off, output
-      // arrives), at which point this whole pending block stops rendering.
+      // Leave `submitting` set: the pending block unmounts once
+      // pendingApproval flips off and output arrives.
     } catch (err) {
       setSubmitting(null)
       setSubmitError(err instanceof Error ? err.message : String(err))

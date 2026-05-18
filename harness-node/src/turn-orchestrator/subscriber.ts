@@ -1,8 +1,3 @@
-/**
- * `turn::step` durable subscriber. Mirrors
- * `turn-orchestrator/src/subscriber.rs`.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnOrchestratorConfig } from './config.js';

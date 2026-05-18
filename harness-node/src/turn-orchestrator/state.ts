@@ -1,8 +1,3 @@
-/**
- * TurnState + TurnStateRecord + state-key helpers. Mirrors
- * `turn-orchestrator/src/state.rs`.
- */
-
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { FunctionCall } from '../types/function.js';
 

@@ -1,8 +1,3 @@
-/**
- * Approval resolution helpers. `approval::resolve` now writes the final
- * decision record directly to the same key the paused turn reads.
- */
-
 import { requireString } from '../runtime/handler.js';
 import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';

@@ -1,9 +1,3 @@
-/**
- * `router::abort` side-effects. The abort path writes the per-session abort
- * signal and, when a turn is paused on approvals, writes one aborted decision
- * per pending call. The approvals-scope state trigger wakes the orchestrator.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';

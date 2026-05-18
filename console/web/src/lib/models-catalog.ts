@@ -2,7 +2,6 @@ import { makeCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ModelOption } from '@/types/chat'
 
-/** Wire shape returned by `models::list` over the iii bus. */
 export interface CatalogModelRow {
   id: string
   provider: string
@@ -28,7 +27,6 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   return out
 }
 
-/** Sorted picker options derived from catalog rows. */
 export function catalogRowsToModelOptions(
   rows: CatalogModelRow[],
 ): ModelOption[] {

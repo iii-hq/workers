@@ -1,8 +1,3 @@
-/**
- * Session tree wire types. Mirror
- * `session/src/tree/mod.rs::{SessionEntry, SessionMeta, TreeNode, …}`.
- */
-
 import type { AgentMessage } from '../../types/agent-message.js';
 
 export type CompactionDetails = {
@@ -54,14 +49,6 @@ export function entryParent(e: SessionEntry): string | null {
   return e.parent_id ?? null;
 }
 
-/**
- * Returns the entry's wall-clock timestamp. Mirrors
- * `session/src/tree/mod.rs::SessionEntry::timestamp` (PR #150).
- *
- * Used by `IiiStateSessionStore.loadEntries` to sort entries by
- * `(timestamp, id)` so resumed approval replies that arrive with newer
- * timestamps but older ids land in the correct transcript position.
- */
 export function entryTimestamp(e: SessionEntry): number {
   return e.timestamp;
 }

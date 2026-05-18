@@ -56,7 +56,9 @@ export interface ConversationsApi {
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
 }
 
-/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). `catalogReady` gates the migration so it doesn't run against `STATIC_MODEL_OPTIONS` before the live catalog has loaded. */
+// Non-matching `conversation.model` values are migrated to the first
+// catalog key; `catalogReady` gates the migration so it doesn't run
+// against `STATIC_MODEL_OPTIONS` before the live catalog loads.
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -68,9 +70,7 @@ export function useConversations(
 
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     const loaded = loadConversations()
-    /* Always boot with at least one empty conversation so the chat surface
-       has something to render. Done in the initializer so StrictMode's
-       double-invoke can't create two. */
+    // Done in the initializer so StrictMode's double-invoke can't create two.
     return loaded.length > 0
       ? loaded
       : [emptyConversation(loadLastModel() ?? DEFAULT_MODEL)]
@@ -80,7 +80,7 @@ export function useConversations(
     return stored
   })
 
-  /* Persist on every mutation. Debounced via microtask to avoid thrashing. */
+  // Debounced via rAF to avoid thrashing storage.
   const persistRef = useRef<number | null>(null)
   useEffect(() => {
     if (persistRef.current) cancelAnimationFrame(persistRef.current)
@@ -92,10 +92,9 @@ export function useConversations(
     }
   }, [conversations])
 
-  /* Migrate persisted model ids once catalog-backed keys are known. Gated on
-     catalogReady so we don't rewrite catalog-only picks (e.g. claude-haiku-4-5)
-     against STATIC_MODEL_OPTIONS during the brief window before the real
-     catalog fetch resolves. Also reconciles the persisted last-model slot. */
+  // Wait for catalogReady before rewriting model ids — otherwise
+  // catalog-only picks (e.g. claude-haiku-4-5) get clobbered to a
+  // STATIC_MODEL_OPTIONS entry during the brief load window.
   useEffect(() => {
     if (!catalogSig) return
     if (catalogReady === false) return
@@ -121,7 +120,6 @@ export function useConversations(
     saveActiveId(activeId)
   }, [activeId])
 
-  /* Ensure there's always a sensible "active" pointer at the start. */
   useEffect(() => {
     if (conversations.length === 0) return
     if (!activeId || !conversations.some((c) => c.id === activeId)) {

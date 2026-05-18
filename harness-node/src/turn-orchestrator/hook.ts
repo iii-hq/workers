@@ -1,12 +1,3 @@
-/**
- * `agent::before_function_call` hook. Mirrors
- * `turn-orchestrator/src/hook.rs`.
- *
- * Fail-closed: any hook failure (timeout, error, no subscriber) returns
- * `Deny` with `denied_by: gate_unavailable` so dispatch never silently
- * allows a call.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
@@ -49,9 +40,9 @@ export async function consultBefore(
   approval_required: string[],
   session_id?: string,
 ): Promise<HookOutcome> {
-  // PR #150: include session_id at the inner-payload root so approval-gate's
-  // extractCall can route it. Without this, the gate sees a null session_id,
-  // returns {block:false}, and the call passes through unapproved.
+  // session_id must sit at the inner-payload root so the gate's
+  // extractCall can route the envelope; without it the gate returns
+  // {block:false} and the call passes through unapproved.
   const inner = session_id
     ? { session_id, function_call, approval_required }
     : { function_call, approval_required };
@@ -119,4 +110,3 @@ export async function publishAfter(
     return null;
   }
 }
-// reload marker 1779108905

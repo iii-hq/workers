@@ -1,8 +1,3 @@
-/**
- * Wire types shared across the gate, the orchestrator hook, and the
- * provider serialisers. Mirrors `approval-gate/src/lib.rs`.
- */
-
 export const FN_RESOLVE = 'approval::resolve';
 export const STATE_SCOPE = 'approvals';
 export const DENIAL_SCHEMA_VERSION = 1;
@@ -52,12 +47,9 @@ export type GateBlockReply =
   | { block: false; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true }
   | { block: true; reason: string; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true };
 
-/**
- * Mirrors `approval-gate/src/lib.rs::block_reply_for`. Allow and Deny replies
- * both carry the `subscriber` + `approval_gate` flags so the orchestrator's
- * `publish_failure_from_response` can detect that approval-gate actually
- * replied (fail-closed if no such reply is present).
- */
+// Allow and deny replies both carry `subscriber` + `approval_gate` so the
+// orchestrator can verify the gate actually replied; absence of those
+// markers means fail-closed.
 export function blockReplyFor(decision: GateDecision): GateBlockReply {
   if (decision.kind === 'allow') {
     return { block: false, subscriber: SUBSCRIBER_NAME, approval_gate: true };

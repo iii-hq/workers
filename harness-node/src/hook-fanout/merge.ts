@@ -1,9 +1,3 @@
-/**
- * Merge-rule implementations. Ports
- * `hook-fanout/src/lib.rs::merge_*` verbatim. Pure JSON manipulation —
- * easy to unit-test without a live engine.
- */
-
 export function mergeFirstBlockWins(replies: unknown[]): Record<string, unknown> {
   for (const reply of replies) {
     if (
@@ -11,10 +5,8 @@ export function mergeFirstBlockWins(replies: unknown[]): Record<string, unknown>
       reply !== null &&
       (reply as Record<string, unknown>).block === true
     ) {
-      // PR #150: preserve the FULL blocking reply verbatim so the
-      // orchestrator can read `status` (pending vs denied) and
-      // `subscriber`/`approval_gate` markers. Clone to avoid downstream
-      // mutation leaking back into the source reply.
+      // Clone so the orchestrator gets the full reply (status, subscriber,
+      // approval_gate markers, denial envelope) without aliasing the source.
       return { ...(reply as Record<string, unknown>) };
     }
   }

@@ -76,7 +76,6 @@ export function Select<T extends string>({
         aria-hidden="true"
         className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none"
       >
-        {/* hand-drawn caret — a single ink chevron, no curves */}
         <svg
           width="8"
           height="6"

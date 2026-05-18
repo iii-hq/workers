@@ -1,36 +1,3 @@
-/**
- * Real backend: iii-browser-sdk + harness fanout.
- *
- * Each `stream()` call:
- *   1. Mints a fresh `session_id` (Phase 1 is one-shot; multi-turn session
- *      persistence is Phase 4).
- *   2. Registers a per-`ui::session::event::<browser_id>` handler that
- *      enqueues envelopes whose `session_id` matches.
- *   3. Calls `ui::subscribe { browser_id, session_id }` so the harness
- *      fanout starts forwarding this session's events to us.
- *   4. Fires `run::start { session_id, provider, model, mode, messages }`
- *      against turn-orchestrator. The harness owns the system prompt; the
- *      console only ships the mode and lets the harness prepend the
- *      matching mode paragraph to its identity preamble.
- *   5. Pumps the queue through `translateAgentEvent`, yielding each
- *      resulting `StreamEvent`. Terminates on the `agent_end` envelope.
- *
- * Honors `opts.signal`: if the caller aborts, the generator returns and
- * the `finally` runs `ui::unsubscribe` and unregisters the handler.
- *
- * Phase 2.B (§D): the per-call `approval_required` array no longer
- * exists. Permissions are owned by the harness's `iii-permissions.yaml`
- * (loaded from the harness cwd; watched for changes). The chat surface
- * just describes the desired mode — the operator owns policy.
- *
- * Remaining caveats (each is a deliberate Phase 2/3/4 target — see
- * `PHASE-2-PLAN.md`):
- *   - Assistant body arrives as a single `assistant-token` (no per-token
- *     streaming yet; Phase 2.A wires `message_update`).
- *   - Provider/model selection uses the models-catalog via the picker; legacy
- *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
- */
-
 import { getIiiClient } from '@/lib/iii-client'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import type { Mode, ModelId } from '@/types/chat'
@@ -43,14 +10,8 @@ interface RunParams {
   model: string
 }
 
-/**
- * Map console model selection onto turn-orchestrator's `provider` / `model`
- * fields. The system prompt is no longer the console's concern — the
- * harness owns it and is fed `mode` directly on `run::start`.
- *
- * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
- * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
- */
+// Legacy heuristic ids (no `::`) map `claude*` → anthropic, `gemini*` →
+// google, everything else → openai.
 function resolveRunParams(model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
   if (parsed) {
@@ -103,10 +64,8 @@ async function* realStream(
 
     const { provider, model: modelId } = resolveRunParams(model)
 
-    // Fire-and-forget: run::start kicks off the turn-orchestrator state
-    // machine; events arrive via the ui::session::event handler above.
-    // Errors here are non-fatal at the contract level (the UI surfaces
-    // them via the assistant stream); log and let the loop fall through.
+    // Fire-and-forget: events flow back via ui::session::event. Errors
+    // here are surfaced through the assistant stream, not the caller.
     void client
       .call('run::start', {
         session_id: sessionId,

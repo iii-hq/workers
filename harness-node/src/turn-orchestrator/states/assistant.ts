@@ -1,8 +1,3 @@
-/**
- * `awaiting_assistant`, `assistant_streaming`, `assistant_finished`. Phase 2.A
- * channel-based streaming lives in `handleStreaming`.
- */
-
 import type { ISdk, StreamChannelRef } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentEvent } from '../../types/agent-event.js';
@@ -88,12 +83,6 @@ function syntheticErrorAssistant(
   };
 }
 
-/**
- * Strip iii-sdk's `IIIInvocationError: invocation_failed: ` framing from
- * a thrown trigger error so the user-visible message is just the
- * underlying cause (e.g. "auth::get_token returned no credential for
- * provider=openai").
- */
 function formatProviderError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw
@@ -116,7 +105,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   const decision = decide({ provider, model });
   const targetFn = targetFunctionId(decision);
 
-  // Open a channel; provider writes AssistantMessageEvent JSON into it.
   let channel: Awaited<ReturnType<ISdk['createChannel']>>;
   try {
     channel = await iii.createChannel();
@@ -144,8 +132,8 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
       fn();
     }
   });
-  // iii-sdk@0.12.0's ChannelReader.onMessage doesn't open the read-side
-  // WebSocket — only stream.read / readAll do. Without this resume(), the
+  // iii-sdk's ChannelReader.onMessage doesn't open the read-side
+  // WebSocket — only stream.read / readAll do. Without resume() the
   // provider's writes are dropped engine-side and the queue stays empty.
   channel.reader.stream.resume();
 
@@ -157,9 +145,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     tools,
   );
 
-  // Capture the trigger error (if any) so the synthetic assistant message
-  // below carries the *actual* cause (e.g. "no credential for
-  // provider=openai") instead of a generic "channel closed without final".
   let triggerError: string | null = null;
   const triggerPromise = iii
     .trigger<unknown, unknown>({
@@ -219,7 +204,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
           }
           continue;
         }
-        // Terminal event: capture final message and break out.
         if (event.type === 'done') final = event.message;
         else final = event.error;
         done = true;
@@ -237,11 +221,9 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   if (finalMsg) {
     rec.last_assistant = finalMsg;
   } else {
-    // Trigger failed or channel closed without a terminal frame. The
-    // provider didn't get to stream any text_delta events, so the UI
-    // never populated its renderer. Emit a synthetic message_update
-    // carrying the error as a text_delta so the existing UI translator
-    // (which assumes deltas drive the chat text) shows the error.
+    // Provider never emitted a terminal frame, so the UI translator —
+    // which only renders text via deltas — would show nothing. Synthesise
+    // a delta carrying the error so the failure is visible.
     const errorText = triggerError ?? 'provider channel closed without final';
     const synthetic = syntheticErrorAssistant(decision.provider, decision.model, errorText);
     await emit(iii, rec.session_id, {
@@ -309,4 +291,3 @@ export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<v
     transitionTo(rec, 'function_prepare');
   }
 }
-// reload 1779112003

@@ -1,17 +1,3 @@
-/**
- * Session storage backend.
- *
- * - `InMemoryStore` is the test/replay backend.
- * - `IiiStateSessionStore` mirrors
- *   `session/src/tree/store_iii_state.rs`. Storage layout:
- *
- *     scope `session_tree:<session_id>`, key `<entry_id>` → SessionEntry
- *     scope `session_tree_meta`, key `<session_id>`     → SessionMeta
- *
- * `state::list` returns values without keys, so we re-sort entries by
- * `(timestamp, id)` after reading (matches the Rust crate, post PR #150).
- */
-
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
 import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } from './types.js';
@@ -113,9 +99,9 @@ export class IiiStateSessionStore implements SessionStore {
     const arr = pickArray(resp);
     if (!arr) throw new SessionError('storage', 'state::list returned non-array');
     const entries = arr.map((v) => unwrapValue<SessionEntry>(v));
-    // PR #150: sort by (timestamp, id) so resumed approval replies that
-    // arrive after the session paused appear in correct transcript order
-    // even when their entry ids are non-monotonic.
+    // Sort by (timestamp, id) so resumed approval replies — which arrive
+    // with newer timestamps but non-monotonic ids — land in the right
+    // transcript position.
     entries.sort((a, b) => {
       const t = entryTimestamp(a) - entryTimestamp(b);
       if (t !== 0) return t;

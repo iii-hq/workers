@@ -1,11 +1,3 @@
-/**
- * `hook-fanout::publish_collect` handler. A single `stream` trigger on
- * `agent::hook_reply` routes every reply into an in-process `pending` map
- * keyed by `event_id`. Each call installs a Collector, publishes the
- * envelope, and resolves on whichever fires first: expected_replies met,
- * quiescence_ms elapsed since the last reply, or effective_timeout.
- */
-
 import { randomUUID } from 'node:crypto';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
@@ -106,14 +98,7 @@ function deliverReply(c: Collector, payload: unknown): void {
   }
 }
 
-/**
- * Stream trigger handler. Fires on every `stream::set` to
- * `agent::hook_reply`. Dispatches the reply to the pending Collector for
- * this `group_id`; ignores frames for unknown event_ids (e.g. late
- * arrivals after a publish_collect already exited).
- *
- * Exported for tests; production wiring goes through `register()`.
- */
+// Exported for tests; production wiring goes through `register()`.
 export async function handleStreamReply(frame: unknown): Promise<unknown> {
   if (!frame || typeof frame !== 'object') return null;
   const obj = frame as Record<string, unknown>;
@@ -182,9 +167,7 @@ export async function execute(
       }, effective_timeout);
 
       // Publish AFTER the collector is installed so an early reply can't
-      // miss the Map lookup. iii::durable::publish enqueues; dispatch is
-      // async on the bus, so there is no real race either way — but
-      // installed-first is unambiguously correct.
+      // miss the Map lookup.
       (async () => {
         try {
           const envelope = buildPublishEnvelope(topic, event_id, inner);

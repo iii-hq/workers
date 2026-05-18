@@ -1,21 +1,3 @@
-/**
- * `policy::approval_gate` durable subscriber. Mirrors the body of
- * `approval-gate/src/lib.rs::register::subscriber_fn` post-PR #150.
- *
- * Flow:
- *  1. extract the incoming call from the durable envelope
- *  2. consult policy (allow / deny / needs_approval). Allow and Deny both
- *     return immediately with a marked block reply (subscriber +
- *     approval_gate flags so the orchestrator's `publishFailureFromResponse`
- *     can detect that the gate actually replied — fail-closed).
- *  3. needs_approval: emit `approval_requested` and return a pending block
- *     envelope. The orchestrator owns pending-call state on its turn record.
- *
- * Note: `approval_resolved` events are written by `handleResolveWithEvents`
- * (in `pending.ts`) when the human resolves, not from this subscriber. This
- * subscriber returns synchronously without waiting for the human decision.
- */
-
 import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
 import { streamSet } from '../runtime/stream.js';
@@ -53,7 +35,6 @@ export async function handleGateEvent(
   const call = extractCall(envelope);
   if (!call) return { block: false };
 
-  // Step 1: consult policy.
   const outcome = await consultPolicyOrFallback(ctx.iii, ctx.cfg, call);
 
   if (outcome.kind === 'allow') {
@@ -123,7 +104,8 @@ async function consultPolicyOrFallback(
 ): Promise<PolicyOutcome> {
   const o = await consultPolicy(iii, cfg.policy_function_id, call.function_id, call.args);
   if (o !== null) return o;
-  // Legacy fallback: synthesize from approval_required.
+  // Legacy fallback for callers that still pass approval_required without
+  // a policy function.
   if (call.approval_required.includes(call.function_id)) {
     return { kind: 'needs_approval' };
   }

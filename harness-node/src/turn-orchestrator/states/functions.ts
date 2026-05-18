@@ -1,8 +1,3 @@
-/**
- * `function_prepare`, `function_execute`, `function_finalize`. Mirrors
- * `turn-orchestrator/src/states/functions.rs`.
- */
-
 import type { ISdk } from '../../runtime/iii.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
@@ -101,7 +96,6 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       continue;
     }
 
-    // Augment the per-call args with session/fc context — same as Rust.
     let augmented_args: unknown;
     if (fc.arguments && typeof fc.arguments === 'object' && !Array.isArray(fc.arguments)) {
       augmented_args = { ...(fc.arguments as Record<string, unknown>) };
@@ -140,9 +134,9 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     const result = out.result;
     const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
-    // Kick off persistence in parallel with the user-facing emit so the UI's
-    // fcall-end lands ~one trigger round-trip sooner. We still await both
-    // before the next iteration so ordering and durability are preserved.
+    // Parallelise the save with the user-facing emit so fcall-end reaches
+    // the UI one trigger round-trip sooner; both are awaited before the
+    // next iteration to preserve ordering.
     const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
     await savePromise;

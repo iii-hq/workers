@@ -1,35 +1,3 @@
-/**
- * Pure translator from iii `AgentEvent` (the wire shape on
- * `agent::events`) to console/web's `StreamEvent` contract documented in
- * `PLAYGROUND.md`.
- *
- * Phase 2.A: `turn-orchestrator` now emits `MessageUpdate` events with a
- * provider `AssistantMessageEvent` payload for every non-terminal frame,
- * so token-by-token streaming flows through the `message_update` branch
- * below. The terminal `MessageStart`/`MessageEnd` for the assistant
- * message are still emitted, but `translateMessageStart` no longer
- * re-emits the body (the deltas already populated the renderer); it
- * just emits any function-call blocks that ride on the same message.
- *
- * Wire mapping:
- *   - `text_delta`     → `assistant-token { token: delta }`
- *   - `thinking_start` → `thought-start`
- *   - `thinking_delta` → `thought-token { token: delta }`
- *   - `thinking_end`   → `thought-end { durationMs: 0 }`
- *   - other LLM events (text_start/text_end, functioncall_*, usage,
- *     stop, done, error) → no UI signal.
- *
- * Other events:
- *   - `function_execution_start` → `fcall-start` (with args).
- *   - `function_execution_end`   → `fcall-end` (with result).
- *   - `approval_requested` → `fcall-start` with `pendingApproval: true`.
- *   - `approval_resolved` deny → synthetic `fcall-end`.
- *   - `approval_resolved` allow → noop (the matching exec_start follows).
- *   - `agent_end` → `assistant-end`.
- *   - `agent_start` / `turn_start` / `turn_end` / `message_end` /
- *     `function_execution_update` → noop.
- */
-
 import type {
   AgentEvent,
   AgentMessage,
@@ -50,10 +18,9 @@ export function translateAgentEvent(
       return []
 
     case 'message_end':
-      // Per-turn boundary: signal `assistant-end` so consumers can finalize
-      // the streaming assistant message and reset their per-turn pointer.
-      // Without this, multi-turn agents (text → fcall → text → ...) merge
-      // every turn's text into the first assistant message.
+      // Emit assistant-end at each turn boundary, otherwise multi-turn
+      // agents (text → fcall → text → ...) would merge every turn's
+      // text into the first assistant message.
       if (event.message.role === 'assistant') {
         return [{ kind: 'assistant-end' }]
       }
@@ -119,14 +86,8 @@ export function translateAgentEvent(
   }
 }
 
-/**
- * Phase 2.A: translate a provider `AssistantMessageEvent` (carried inside
- * `AgentEvent.MessageUpdate.llm_event`) into the StreamEvent contract.
- * Non-terminal text and thinking deltas drive the renderer; everything
- * else is silently dropped — the terminal `Done`/`Error` event is
- * mirrored by a `MessageEnd` (and ultimately by `agent_end` →
- * `assistant-end`), so we don't need to surface them here.
- */
+// Done/Error events terminate via MessageEnd → agent_end → assistant-end,
+// so we only surface the non-terminal text and thinking deltas here.
 function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
   switch (llm.type) {
     case 'text_delta':
@@ -145,25 +106,17 @@ function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
 }
 
 function translateMessageStart(message: AgentMessage): StreamEvent[] {
-  // User prompts and tool/function results aren't surfaced as backend-driven
-  // StreamEvents — the consumer renders the user message itself and the
-  // tool result rides on `fcall-end`'s output.
   if (message.role !== 'assistant') {
     return []
   }
-  // Phase 2.A: assistant text and thinking already streamed via
-  // `message_update`; don't double-emit them here. We only forward
-  // function-call / image blocks, which don't ride on the streamed
-  // delta path. (Function calls actually arrive on
-  // `function_execution_start`, but the assistant message technically
-  // owns them too — keeping the early return below preserves the
-  // historical contract for non-streaming providers that emit a single
-  // `MessageStart` with the full body.)
+  // If the provider streamed deltas, message_update already populated the
+  // renderer — re-emitting the body here would duplicate everything. We
+  // only fall through for non-streaming providers that ship the full body
+  // in a single MessageStart.
   const hasStreamableContent = message.content.some(
     (b) => b.type === 'text' || b.type === 'thinking',
   )
   if (hasStreamableContent) {
-    // The provider streamed; nothing to re-emit.
     return []
   }
   const out: StreamEvent[] = []
@@ -190,9 +143,8 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
     case 'functionCall':
     case 'functionResult':
     case 'image':
-      // FunctionCall/Result blocks ride on dedicated AgentEvents
-      // (function_execution_start/end); images aren't part of the
-      // StreamEvent contract today.
+      // FunctionCall/Result blocks ride on function_execution_start/end;
+      // images aren't part of the StreamEvent contract.
       return
   }
 }

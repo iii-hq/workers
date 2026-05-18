@@ -53,7 +53,6 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       const conversationId = conversation.id
 
-      /* user turn */
       const userMsg: UserMessage = {
         id: uid(),
         role: 'user',
@@ -68,13 +67,12 @@ export function ChatView({
       abortRef.current = controller
       setIsStreaming(true)
 
-      /* per-turn pointers so we know which id to patch when events arrive */
       let thoughtId: string | null = null
       let thoughtBuffer = ''
       let fcallId: string | null = null
-      // PR #150: same iii function_call_id can fire fcall-start twice
-      // (once for function_execution_start, once for approval_requested).
-      // Map UI message id → iii function_call_id so dedupe is reliable.
+      // The same iii function_call_id can fire fcall-start twice (once for
+      // function_execution_start, once for approval_requested); map UI
+      // message id → iii function_call_id so dedupe is reliable.
       const fcallMap = new Map<string, string>()
       let assistantId: string | null = null
       let assistantBuffer = ''
@@ -165,7 +163,6 @@ export function ChatView({
                 running: false,
                 pendingApproval: false,
               })
-              /* reset so a subsequent fcall-start gets a fresh slot */
               fcallMap.delete(fcallId)
               fcallId = null
               break
@@ -203,8 +200,8 @@ export function ChatView({
               break
             }
           }
-          // Any inbound activity event re-arms the STREAMING pill
-          // (the backend stream stays alive across multiple turns now).
+          // Backend stream stays alive across turns; any activity event
+          // re-arms the STREAMING pill.
           if (
             event.kind === 'fcall-start' ||
             event.kind === 'assistant-token' ||
@@ -214,15 +211,12 @@ export function ChatView({
           }
         }
       } catch (err) {
-        /* AbortError (caller aborted, or backend threw one) is a benign
-           cancellation. Anything else gets surfaced for debugging — backends
-           are expected to express semantic failures via fcall-end payloads
-           rather than thrown errors. */
+        // AbortError is a benign cancellation; anything else is a real bug
+        // since backends report semantic failures via fcall-end payloads.
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
         }
       } finally {
-        /* defensive cleanup: if we aborted mid-stream, clear streaming flags. */
         if (thoughtId) {
           onPatchMessage(conversationId, thoughtId, { streaming: false })
         }
@@ -250,13 +244,10 @@ export function ChatView({
     abortRef.current?.abort()
   }, [])
 
-  /* "agent is thinking" indicator: stream is active but no streaming
-     thought/assistant message is currently visible. Covers two gaps:
-     (a) right after submit, before the first token/thought/fcall arrives;
-     (b) after each fcall-end, while the harness transitions through
-     function_finalize → steering_check → next turn's provider stream.
-     A streaming assistant/thought message renders its own "thinking…"
-     shimmer when content is empty, so we don't double-render those. */
+  // Show the "agent is thinking" shimmer when the stream is alive but
+  // nothing is currently rendering its own — i.e. right after submit and
+  // between fcall-end and the next provider stream. A streaming
+  // assistant/thought message already shows its own shimmer.
   const isThinking =
     isStreaming &&
     (() => {

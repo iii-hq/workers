@@ -1,21 +1,3 @@
-/**
- * Reactive abort wake. A `state` trigger on `scope: 'agent'` filtered by
- * the abort_signal key shape (`session/<id>/abort_signal`) and a
- * `new_value === true` write fires this adapter, which publishes
- * `turn::step_requested` so the orchestrator's FSM advances to
- * `steering_check` and observes the abort flag promptly.
- *
- * Without this wake, a session mid-streaming would only check
- * `abort_signal` after the current step completes naturally. The reactive
- * trigger doesn't preempt the running step (durable subscriber publishes
- * queue), but it guarantees the orchestrator runs another FSM step as
- * soon as the current one finishes — which is the earliest moment we
- * can safely react.
- *
- * Mirror of the canonical pattern in
- * `harness-node/src/harness/fanout/sessions-poll.ts`.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 

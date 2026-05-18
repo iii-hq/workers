@@ -1,8 +1,3 @@
-/**
- * `run::start` and `run::start_and_wait`. Mirrors
- * `turn-orchestrator/src/run_start.rs`.
- */
-
 import { requireString } from '../runtime/handler.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
@@ -91,9 +86,8 @@ export async function executeSync(
   const timeout_ms =
     typeof obj.timeout_ms === 'number' ? obj.timeout_ms : cfg.sync_default_timeout_ms;
 
-  // Install the waiter BEFORE kicking the run so the terminal turn_state
-  // write — which fires the `turn::on_terminal_state` state trigger — is
-  // guaranteed to find an entry to resolve.
+  // Install the waiter before kicking the run so the terminal state
+  // write is guaranteed to find an entry to resolve.
   const terminal = installTerminalWaiter(session_id);
   try {
     await execute(iii, payload);

@@ -1,14 +1,3 @@
-/**
- * Reactive wake for `run::start_and_wait`. A `state` trigger on
- * `scope: 'agent'` filtered to `session/<id>/turn_state` writes whose
- * `new_value.state === 'stopped'` fires this handler, which resolves the
- * in-process waiter installed by `executeSync`. Replaces the previous
- * `sleep(sync_poll_interval_ms)` polling loop.
- *
- * Mirror of the canonical pattern in `on-abort-signal.ts` and the
- * approval-gate's `on-decision-written.ts`.
- */
-
 export const HANDLER_FN_ID = 'turn::on_terminal_state';
 export const CONDITION_FN_ID = 'turn::is_terminal_state_write';
 

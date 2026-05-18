@@ -1,7 +1,3 @@
-/**
- * State load/save helpers. Mirrors `turn-orchestrator/src/persistence.rs`.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';

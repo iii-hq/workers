@@ -5,9 +5,6 @@ import { Message } from './Message'
 
 interface MessageListProps {
   messages: MessageType[]
-  /** Show "thinking…" shimmer at the bottom while the agent is between
-      visible outputs (after submit, or between fcall-end and the next
-      turn's first token). */
   isThinking?: boolean
   onResolveApproval?: (
     sessionId: string,
@@ -25,9 +22,7 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement>(null)
   const lastPendingIdRef = useRef<string | null>(null)
 
-  /* Auto-scroll only when the user is already near the bottom. The effect body
-     reads layout off refs but the trigger we care about is "messages changed"
-     or "thinking flipped", so list both explicitly. */
+  // Only auto-scroll when the user is already near the bottom.
   // biome-ignore lint/correctness/useExhaustiveDependencies: messages and isThinking are the triggers, not values read in the body.
   useEffect(() => {
     const c = containerRef.current
@@ -38,11 +33,9 @@ export function MessageList({
     }
   }, [messages, isThinking])
 
-  /* PR #150: a fresh approval modal demands attention even if the user
-     has scrolled up reading earlier content. Find the newest message with
-     pendingApproval and scroll it into view exactly once per pending id.
-     (We dedupe via lastPendingIdRef so React's re-renders don't keep
-     forcing the scroll while the user is reading the request body.) */
+  // A fresh approval prompt scrolls into view once even if the user
+  // scrolled away; lastPendingIdRef dedupes so re-renders don't keep
+  // hijacking the scroll while they read the request.
   useEffect(() => {
     const newestPending = [...messages]
       .reverse()
@@ -53,7 +46,6 @@ export function MessageList({
     }
     if (newestPending.id === lastPendingIdRef.current) return
     lastPendingIdRef.current = newestPending.id
-    // defer one frame so the DOM has the new node before we scroll
     requestAnimationFrame(() => {
       const node = containerRef.current?.querySelector(
         `[data-message-id="${newestPending.id}"]`,

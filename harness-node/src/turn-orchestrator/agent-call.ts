@@ -1,13 +1,3 @@
-/**
- * `agent::call` dispatcher + chokepoint. Mirrors
- * `turn-orchestrator/src/agent_call.rs`.
- *
- * `dispatchWithHook` is the single chokepoint: every agent-issued tool
- * call goes through `consultBefore` before reaching the inner trigger.
- * Fail-closed: a hook timeout / error / missing subscriber denies the
- * call with a `gate_unavailable` envelope (Phase 2.B §F).
- */
-
 import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
 import type { ContentBlock } from '../types/content.js';

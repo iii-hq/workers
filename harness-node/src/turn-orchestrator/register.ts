@@ -25,8 +25,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerAgentCall(iii);
   registerSubscriber(iii, orchestratorCfg);
 
-  // Reactive abort wake. Mirrors the pattern in
-  // harness/fanout/sessions-poll.ts (post c59210788c).
   iii.registerFunction(ABORT_CONDITION_FN, async (event: unknown) => isAbortSignalWrite(event), {
     description:
       'Condition: state event sets session/<id>/abort_signal = true (state:created or state:updated).',
@@ -50,10 +48,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     },
   });
 
-  // Reactive `run::start_and_wait` wake. The condition matches terminal
-  // turn_state writes; the handler resolves the in-process waiter
-  // installed by executeSync. Replaces the old sync_poll_interval_ms
-  // sleep loop.
   iii.registerFunction(
     TERMINAL_CONDITION_FN,
     async (event: unknown) => isTerminalStateWrite(event),
@@ -82,6 +76,5 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     },
   });
 
-  // Bootstrap best-effort skill download in the background.
   void bootstrap.run(iii, orchestratorCfg);
 }

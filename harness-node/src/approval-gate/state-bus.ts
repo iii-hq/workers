@@ -1,7 +1,3 @@
-/**
- * Iii-backed state bus + an in-memory implementation for tests.
- */
-
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 
@@ -40,8 +36,8 @@ export class IiiStateBus implements StateBus {
         function_id: 'state::list',
         payload: { scope, prefix },
       });
-      // The engine's state::list returns the values directly as an array.
-      // Earlier harness versions returned `{items: [...]}` so accept both.
+      // state::list returns the values directly as an array; older
+      // harness versions wrapped them in `{items: [...]}`, accept both.
       const items = Array.isArray(resp)
         ? resp
         : Array.isArray((resp as { items?: unknown[] } | null)?.items)
