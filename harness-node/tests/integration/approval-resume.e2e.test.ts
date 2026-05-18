@@ -15,7 +15,7 @@ function fakeIii(): { iii: ISdk; publishes: Array<{ topic: string; data: unknown
         if (p.scope === 'approvals') {
           queueMicrotask(() => {
             void handleDecisionWritten(iii as unknown as ISdk, {
-              event_type: old_value == null ? 'created' : 'updated',
+              event_type: old_value == null ? 'state:created' : 'state:updated',
               scope: p.scope,
               key: p.key,
               old_value,
