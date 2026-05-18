@@ -4,8 +4,43 @@ import {
   buildPublishEnvelope,
   buildResponse,
   execute,
+  handleStreamReply,
 } from '../../src/hook-fanout/publish-collect.js';
 import { HOOK_REPLY_STREAM } from '../../src/hook-fanout/types.js';
+
+type FakeSdk = {
+  iii: Parameters<typeof execute>[0];
+  triggerCalls: Array<{ function_id: string; payload: unknown }>;
+};
+
+function makeFakeSdk(opts: {
+  onPublish?: (envelope: unknown) => void | Promise<void>;
+  /** Auto-deliver these replies as soon as the publish trigger is invoked. */
+  autoReplies?: unknown[];
+}): FakeSdk {
+  const triggerCalls: Array<{ function_id: string; payload: unknown }> = [];
+  const iii = {
+    trigger: async (req: { function_id: string; payload: unknown }) => {
+      triggerCalls.push(req);
+      if (req.function_id === 'iii::durable::publish') {
+        const envelope = req.payload as Record<string, unknown>;
+        if (opts.onPublish) await opts.onPublish(envelope);
+        if (opts.autoReplies) {
+          const data = envelope.data as Record<string, unknown>;
+          const event_id = data.event_id as string;
+          for (const reply of opts.autoReplies) {
+            // Simulate the stream trigger firing for each subscriber's
+            // `stream::set` write on `agent::hook_reply`.
+            await handleStreamReply({ group_id: event_id, data: reply });
+          }
+        }
+        return null;
+      }
+      return null;
+    },
+  } as unknown as Parameters<typeof execute>[0];
+  return { iii, triggerCalls };
+}
 
 describe('buildPublishEnvelope', () => {
   it('embeds event_id and reply_stream alongside the payload', () => {
@@ -23,54 +58,80 @@ describe('buildPublishEnvelope', () => {
 });
 
 describe('publish-collect execute', () => {
-  it('returns merged first_block_wins reply when one subscriber blocks', async () => {
-    let publishedCount = 0;
-    let listCount = 0;
-    const fakeSdk = {
-      trigger: async (req: { function_id: string }) => {
-        if (req.function_id === 'iii::durable::publish') {
-          publishedCount++;
-          return null;
-        }
-        if (req.function_id === 'stream::list') {
-          listCount++;
-          // First poll is empty, second returns a denial.
-          if (listCount < 2) return { items: [] };
-          return {
-            items: [
-              {
-                data: { block: true, reason: 'no', denial: { status: 'denied' } },
-              },
-            ],
-          };
-        }
-        return null;
-      },
-    } as unknown as Parameters<typeof execute>[0];
+  it('returns merged first_block_wins reply when a subscriber delivers a denial', async () => {
+    const denial = { block: true, reason: 'no', denial: { status: 'denied' } };
+    const fake = makeFakeSdk({ autoReplies: [denial] });
 
-    const out = await execute(
-      fakeSdk,
-      { ...DEFAULT_CONFIG, poll_interval_ms: 1 },
+    const out = (await execute(
+      fake.iii,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10 },
       {
         topic: 'agent::before_function_call',
         payload: {},
         merge_rule: 'first_block_wins',
-        timeout_ms: 1000,
-        quiescence_ms: 50,
+        timeout_ms: 1_000,
+        quiescence_ms: 10,
       },
-    );
+    )) as Record<string, unknown>;
 
-    expect(publishedCount).toBe(1);
-    expect(out.replies.length).toBe(1);
+    const publishCount = fake.triggerCalls.filter(
+      (c) => c.function_id === 'iii::durable::publish',
+    ).length;
+    expect(publishCount).toBe(1);
+    expect((out.replies as unknown[]).length).toBe(1);
     expect(out.merged).toMatchObject({ block: true });
   });
 
+  it('exits on expected_replies threshold without waiting for quiescence', async () => {
+    const fake = makeFakeSdk({ autoReplies: [{ block: false }, { block: false }] });
+
+    const started = Date.now();
+    const out = (await execute(
+      fake.iii,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10_000 },
+      {
+        topic: 'agent::before_function_call',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 10_000,
+        expected_replies: 2,
+        quiescence_ms: 10_000,
+      },
+    )) as Record<string, unknown>;
+    const elapsed = Date.now() - started;
+
+    expect((out.replies as unknown[]).length).toBe(2);
+    // Should be near-instant: no polling, no quiescence wait.
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it('ignores stream frames for unknown event_ids', async () => {
+    // Pre-publish: the global handler should silently drop frames whose
+    // group_id matches no pending Collector.
+    await handleStreamReply({ group_id: 'nope', data: { block: true } });
+
+    const fake = makeFakeSdk({ autoReplies: [{ block: false }] });
+    const out = (await execute(
+      fake.iii,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10 },
+      {
+        topic: 'agent::before_function_call',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 200,
+        quiescence_ms: 10,
+      },
+    )) as Record<string, unknown>;
+
+    // Only the intended reply lands.
+    expect((out.replies as unknown[]).length).toBe(1);
+    expect((out.replies as Array<Record<string, unknown>>)[0].block).toBe(false);
+  });
+
   it('throws on unknown merge_rule', async () => {
-    const noop = {
-      trigger: async () => null,
-    } as unknown as Parameters<typeof execute>[0];
+    const fake = makeFakeSdk({});
     await expect(
-      execute(noop, DEFAULT_CONFIG, {
+      execute(fake.iii, DEFAULT_CONFIG, {
         topic: 't',
         payload: {},
         merge_rule: 'weird',
@@ -79,36 +140,24 @@ describe('publish-collect execute', () => {
   });
 
   it('throws on missing topic', async () => {
-    const noop = {
-      trigger: async () => null,
-    } as unknown as Parameters<typeof execute>[0];
+    const fake = makeFakeSdk({});
     await expect(
-      execute(noop, DEFAULT_CONFIG, { payload: {}, merge_rule: 'first_block_wins' }),
+      execute(fake.iii, DEFAULT_CONFIG, { payload: {}, merge_rule: 'first_block_wins' }),
     ).rejects.toThrow(/topic/);
   });
 
   it('includes publish:{ok:true} and no publish_failed when publish succeeds', async () => {
-    let listCount = 0;
-    const fakeSdk = {
-      trigger: async (req: { function_id: string }) => {
-        if (req.function_id === 'iii::durable::publish') return null;
-        if (req.function_id === 'stream::list') {
-          listCount++;
-          return listCount < 2 ? { items: [] } : { items: [{ data: { block: false } }] };
-        }
-        return null;
-      },
-    } as unknown as Parameters<typeof execute>[0];
+    const fake = makeFakeSdk({ autoReplies: [{ block: false }] });
 
     const out = (await execute(
-      fakeSdk,
-      { ...DEFAULT_CONFIG, poll_interval_ms: 1 },
+      fake.iii,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10 },
       {
         topic: 'agent::before_function_call',
         payload: {},
         merge_rule: 'first_block_wins',
         timeout_ms: 200,
-        quiescence_ms: 50,
+        quiescence_ms: 10,
       },
     )) as Record<string, unknown>;
 
@@ -117,23 +166,21 @@ describe('publish-collect execute', () => {
   });
 
   it('includes publish:{ok:false,error} and publish_failed:true when publish throws', async () => {
-    const fakeSdk = {
-      trigger: async (req: { function_id: string }) => {
-        if (req.function_id === 'iii::durable::publish') throw new Error('ws closed');
-        if (req.function_id === 'stream::list') return { items: [] };
-        return null;
+    const fake = makeFakeSdk({
+      onPublish: () => {
+        throw new Error('ws closed');
       },
-    } as unknown as Parameters<typeof execute>[0];
+    });
 
     const out = (await execute(
-      fakeSdk,
-      { ...DEFAULT_CONFIG, poll_interval_ms: 1 },
+      fake.iii,
+      { ...DEFAULT_CONFIG, min_timeout_ms: 10 },
       {
         topic: 'agent::before_function_call',
         payload: {},
         merge_rule: 'first_block_wins',
-        timeout_ms: 200,
-        quiescence_ms: 50,
+        timeout_ms: 50,
+        quiescence_ms: 10,
       },
     )) as Record<string, unknown>;
 
@@ -141,6 +188,70 @@ describe('publish-collect execute', () => {
     expect(publish.ok).toBe(false);
     expect(publish.error).toBe('ws closed');
     expect(out.publish_failed).toBe(true);
+  });
+});
+
+describe('handleStreamReply frame shapes', () => {
+  it('accepts both groupId and group_id', async () => {
+    const fakeCamel = makeFakeSdk({});
+    // Manually publish and dispatch via camelCase
+    const publishCalls: unknown[] = [];
+    const iiiCamel = {
+      trigger: async (req: { function_id: string; payload: unknown }) => {
+        if (req.function_id === 'iii::durable::publish') {
+          publishCalls.push(req.payload);
+          const env = req.payload as Record<string, unknown>;
+          const data = env.data as Record<string, unknown>;
+          await handleStreamReply({ groupId: data.event_id, data: { block: false } });
+        }
+        return null;
+      },
+    } as unknown as Parameters<typeof execute>[0];
+    void fakeCamel;
+
+    const out = (await execute(
+      iiiCamel,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10 },
+      {
+        topic: 't',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 200,
+        quiescence_ms: 10,
+      },
+    )) as Record<string, unknown>;
+    expect((out.replies as unknown[]).length).toBe(1);
+  });
+
+  it('unwraps event.data when present', async () => {
+    const iiiSdk = {
+      trigger: async (req: { function_id: string; payload: unknown }) => {
+        if (req.function_id === 'iii::durable::publish') {
+          const env = req.payload as Record<string, unknown>;
+          const data = env.data as Record<string, unknown>;
+          await handleStreamReply({
+            group_id: data.event_id,
+            event: { data: { block: true, reason: 'wrapped' } },
+          });
+        }
+        return null;
+      },
+    } as unknown as Parameters<typeof execute>[0];
+
+    const out = (await execute(
+      iiiSdk,
+      { ...DEFAULT_CONFIG, quiescence_ms: 10 },
+      {
+        topic: 't',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 200,
+        quiescence_ms: 10,
+      },
+    )) as Record<string, unknown>;
+    const replies = out.replies as Array<Record<string, unknown>>;
+    expect(replies[0].block).toBe(true);
+    expect(replies[0].reason).toBe('wrapped');
   });
 });
 
