@@ -91,7 +91,7 @@ describe('approval resume reactive trigger', () => {
     expect(stepTriggers[0]).toMatchObject({ session_id: 'sess-x' });
   });
 
-  it('writing session/<sid>/abort_signal=true triggers turn::step directly', async () => {
+  it('writing session/<sid>/abort_signal=true wakes turn::step (via durable publish)', async () => {
     const { iii, stepTriggers } = fakeIii();
 
     await iii.trigger({

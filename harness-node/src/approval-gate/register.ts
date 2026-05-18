@@ -50,7 +50,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     async (event: unknown) => handleDecisionWritten(iii, event),
     {
       description:
-        'State trigger adapter on scope=approvals; extracts session_id from key and publishes turn::step_requested.',
+        'State trigger adapter on scope=approvals; extracts session_id from key and invokes turn::step directly.',
     },
   );
 
