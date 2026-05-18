@@ -189,7 +189,7 @@ describe('approval-resume end-to-end contract', () => {
     // Step 4: confirm consume returns the resolved entry once and marks it consumed.
     const drained = await consumeResolvedApprovalEntries(backend.iii, session_id);
     expect(drained).toHaveLength(1);
-    expect(drained[0]?.[1]).toBeNull(); // allow → no prefilled
+    expect(drained[0]?.blocked).toBeNull(); // allow -> no prefilled
     const stored = (await bus.get(STATE_SCOPE, pendingKey(session_id, function_call_id))) as Record<
       string,
       unknown

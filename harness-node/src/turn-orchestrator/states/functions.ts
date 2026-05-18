@@ -15,6 +15,7 @@ import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import { TOOL_NAME, dispatchWithHook, isErrorResult } from '../agent-call.js';
 import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
+import type { PreparedEntry } from '../persistence.js';
 import * as persistence from '../persistence.js';
 import { type TurnState, type TurnStateRecord, transitionTo } from '../state.js';
 
@@ -128,10 +129,8 @@ export function publishFailureFromResponse(
  * - `decision: 'deny'` → emit a denial FunctionResult; the LLM sees
  *   `approval denied: <reason>` or `approval timed out` and continues.
  */
-export function preparedCallsFromApprovalEntries(
-  entries: unknown[],
-): Array<readonly [FunctionCall, FunctionResult | null]> {
-  const out: Array<readonly [FunctionCall, FunctionResult | null]> = [];
+export function preparedCallsFromApprovalEntries(entries: unknown[]): PreparedEntry[] {
+  const out: PreparedEntry[] = [];
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue;
     const e = entry as Record<string, unknown>;
@@ -146,7 +145,7 @@ export function preparedCallsFromApprovalEntries(
     const fc: FunctionCall = { id: function_call_id, function_id, arguments: args };
 
     if (decision === 'allow') {
-      out.push([fc, null] as const);
+      out.push({ function_call: fc, blocked: null });
       continue;
     }
 
@@ -166,7 +165,7 @@ export function preparedCallsFromApprovalEntries(
       },
       terminate: false,
     };
-    out.push([fc, result] as const);
+    out.push({ function_call: fc, blocked: result });
   }
   return out;
 }
@@ -179,7 +178,7 @@ export function preparedCallsFromApprovalEntries(
 export async function consumeResolvedApprovalEntries(
   iii: ISdk,
   session_id: string,
-): Promise<Array<readonly [FunctionCall, FunctionResult | null]>> {
+): Promise<PreparedEntry[]> {
   const response = (await iii.trigger<unknown, unknown>({
     function_id: APPROVAL_CONSUME_FN,
     payload: { session_id },
@@ -241,8 +240,10 @@ export async function handlePrepare(iii: ISdk, rec: TurnStateRecord): Promise<vo
   const raw = rec.pending_function_calls;
   rec.pending_function_calls = raw.map(unwrapAgentCall);
 
-  const prepared: Array<readonly [FunctionCall, FunctionResult | null]> =
-    rec.pending_function_calls.map((fc) => [fc, null] as const);
+  const prepared: PreparedEntry[] = rec.pending_function_calls.map((fc) => ({
+    function_call: fc,
+    blocked: null,
+  }));
 
   await persistence.saveRecord(iii, rec);
   await persistence.saveExecutedCalls(iii, rec.session_id, []);
@@ -260,7 +261,8 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
   const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
   const results = await persistence.loadExecutedCalls(iii, rec.session_id);
 
-  for (const [fc] of prepared) {
+  for (const entry of prepared) {
+    const fc = entry.function_call;
     await emit(iii, rec.session_id, {
       type: 'function_execution_start',
       function_call_id: fc.id,

@@ -125,12 +125,12 @@ describe('preparedCallsFromApprovalEntries', () => {
       },
     ]);
     expect(out).toHaveLength(1);
-    expect(out[0]?.[0]).toEqual({
+    expect(out[0]?.function_call).toEqual({
       id: 'tc-1',
       function_id: 'shell::exec',
       arguments: { command: 'date' },
     });
-    expect(out[0]?.[1]).toBeNull();
+    expect(out[0]?.blocked).toBeNull();
   });
 
   it('maps deny entries to prefilled denial FunctionResult', () => {
@@ -143,7 +143,7 @@ describe('preparedCallsFromApprovalEntries', () => {
         reason: 'user',
       },
     ]);
-    const result = out[0]?.[1];
+    const result = out[0]?.blocked;
     expect(result).not.toBeNull();
     if (!result) return;
     expect((result.content[0] as { text: string }).text).toMatch(/approval denied/);
@@ -161,7 +161,7 @@ describe('preparedCallsFromApprovalEntries', () => {
         reason: 'timed_out',
       },
     ]);
-    const result = out[0]?.[1];
+    const result = out[0]?.blocked;
     expect(result).not.toBeNull();
     if (!result) return;
     expect((result.content[0] as { text: string }).text).toMatch(/approval timed out/);
@@ -196,7 +196,7 @@ describe('consumeResolvedApprovalEntries', () => {
     }));
     const out = await consumeResolvedApprovalEntries(iii, 's1');
     expect(out).toHaveLength(1);
-    expect(out[0]?.[1]).toBeNull(); // allow → no prefilled
+    expect(out[0]?.blocked).toBeNull(); // allow -> no prefilled
   });
 
   it('throws when the trigger throws', async () => {
