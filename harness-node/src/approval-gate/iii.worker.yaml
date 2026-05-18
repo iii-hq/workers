@@ -1,0 +1,14 @@
+iii: v1
+name: approval-gate
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-approval-gate
+description: Hook subscriber on agent::before_function_call that consults policy::check_permissions and pauses for approval::resolve when a call matches no rule.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/approval-gate/main.js --config ./config.yaml

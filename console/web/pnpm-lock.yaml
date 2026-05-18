@@ -20,6 +20,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      iii-browser-sdk:
+        specifier: ^0.12.0
+        version: 0.12.0
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -614,6 +617,9 @@ packages:
 
   html-url-attributes@3.0.1:
     resolution: {integrity: sha512-ol6UPyBWqsrO6EJySPz2O7ZSr856WDrEzM5zMqp+FJJLGMW35cLYmmZnl0vztAZxRUoNZJFTCohfjuIJ8I4QBQ==}
+
+  iii-browser-sdk@0.12.0:
+    resolution: {integrity: sha512-Z8L/YEjBMtqBNKCxt12xn28K9BkWiKMXTJxF1N9tJ2+y7qDMMncDTyOfsymNfRO5usKmIXldhzbk3dicJ1tT2w==}
 
   inline-style-parser@0.2.7:
     resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
@@ -1581,6 +1587,8 @@ snapshots:
       '@types/hast': 3.0.4
 
   html-url-attributes@3.0.1: {}
+
+  iii-browser-sdk@0.12.0: {}
 
   inline-style-parser@0.2.7: {}
 

@@ -1,0 +1,40 @@
+# Default config for the harness-node bundle. Each worker reads only the
+# fields it cares about; unknown fields are ignored.
+
+engine_url: "ws://127.0.0.1:49134"
+
+# Path to the operator permissions file, loaded by the harness worker at
+# boot and watched via chokidar. Phase 2.B — see PHASE-2-PLAN.md §5.
+permissions_path: "./iii-permissions.yaml"
+
+# turn-orchestrator
+sync_default_timeout_ms: 120000
+sync_poll_interval_ms: 50
+system_default_skills:
+  - "iii://iii-directory/index"
+
+# approval-gate
+approval_gate:
+  topic: "agent::before_function_call"
+  approval_state_scope: "approvals"
+  default_timeout_ms: 300000
+  policy_function_id: "policy::check_permissions"
+
+# session worker
+session:
+  store_backend: "iii_state"   # or "memory"
+  state_scope: "agent"
+
+# auth-credentials
+auth_credentials:
+  store_path: "~/.iii/auth-credentials.json"
+
+# provider-anthropic
+provider_anthropic:
+  default_max_tokens: 8192
+  default_api_url: "https://api.anthropic.com/v1/messages"
+
+# provider-openai
+provider_openai:
+  default_max_tokens: 8192
+  default_api_url: "https://api.openai.com/v1/chat/completions"

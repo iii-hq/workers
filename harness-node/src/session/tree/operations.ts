@@ -1,0 +1,452 @@
+/**
+ * Pure session-tree operations. Ports of
+ * `session/src/tree/mod.rs::{create_session, append_message, active_path,
+ * load_messages, …, fork, clone_session, compact, tree, export_html}`.
+ */
+
+import { randomUUID } from 'node:crypto';
+import type { AgentContext, AgentMessage } from '../../types/agent-message.js';
+import type { SessionStore } from './store.js';
+import {
+  type CompactionDetails,
+  type ListOrder,
+  type ListSessionsResult,
+  type MessageWithEntryId,
+  type ReconcileResult,
+  type SessionEntry,
+  SessionError,
+  type SessionListRow,
+  type SessionMeta,
+  type TreeNode,
+} from './types.js';
+
+const FORK_SUMMARY_THRESHOLD = 50;
+
+export async function createSession(
+  store: SessionStore,
+  display_name?: string,
+  cwd?: string,
+): Promise<string> {
+  const session_id = randomUUID();
+  const now = Date.now();
+  await store.create({
+    session_id,
+    display_name,
+    cwd,
+    created_at: now,
+    updated_at: now,
+    branch_count: 1,
+  });
+  return session_id;
+}
+
+export async function ensureSession(
+  store: SessionStore,
+  session_id: string,
+  display_name?: string,
+  cwd?: string,
+): Promise<string> {
+  try {
+    await store.loadMeta(session_id);
+    return session_id;
+  } catch (err) {
+    if (!(err instanceof SessionError) || err.kind !== 'not_found') throw err;
+  }
+  const now = Date.now();
+  await store.create({
+    session_id,
+    display_name,
+    cwd,
+    created_at: now,
+    updated_at: now,
+    branch_count: 0,
+  });
+  return session_id;
+}
+
+export async function appendMessage(
+  store: SessionStore,
+  session_id: string,
+  parent_id: string | null,
+  message: AgentMessage,
+): Promise<string> {
+  const id = randomUUID();
+  const entry: SessionEntry = {
+    type: 'message',
+    id,
+    parent_id,
+    message,
+    timestamp: Date.now(),
+  };
+  await store.append(session_id, entry);
+  return id;
+}
+
+export async function activePath(
+  store: SessionStore,
+  session_id: string,
+  leaf?: string,
+): Promise<string[]> {
+  const entries = await store.loadEntries(session_id);
+  if (entries.length === 0) return [];
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const last = entries.at(-1);
+  if (!last) return [];
+  const start = leaf ?? last.id;
+  const path: string[] = [];
+  let cursor: string | null = start;
+  while (cursor !== null) {
+    path.push(cursor);
+    const next: string | null = byId.get(cursor)?.parent_id ?? null;
+    cursor = next;
+  }
+  path.reverse();
+  return path;
+}
+
+export async function loadMessages(
+  store: SessionStore,
+  session_id: string,
+  leaf?: string,
+): Promise<AgentMessage[]> {
+  const entries = await store.loadEntries(session_id);
+  const path = await activePath(store, session_id, leaf);
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const out: AgentMessage[] = [];
+  for (const id of path) {
+    const e = byId.get(id);
+    if (e?.type === 'message') out.push(e.message);
+  }
+  return out;
+}
+
+export async function loadMessagesWithEntryIds(
+  store: SessionStore,
+  session_id: string,
+  leaf?: string,
+): Promise<MessageWithEntryId[]> {
+  const entries = await store.loadEntries(session_id);
+  const path = await activePath(store, session_id, leaf);
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const out: MessageWithEntryId[] = [];
+  for (const id of path) {
+    const e = byId.get(id);
+    if (e?.type === 'message') out.push({ entry_id: id, message: e.message });
+  }
+  return out;
+}
+
+export async function reconcile(
+  store: SessionStore,
+  session_id: string,
+  state_snapshot: AgentMessage[],
+): Promise<ReconcileResult> {
+  const treePairs = await loadMessagesWithEntryIds(store, session_id);
+  const tree_count_before = treePairs.length;
+  const state_count = state_snapshot.length;
+  if (state_snapshot.length <= treePairs.length) {
+    return { state_count, tree_count_before, tree_count_after: tree_count_before, repaired: 0 };
+  }
+  let lastId: string | null = treePairs.at(-1)?.entry_id ?? null;
+  let repaired = 0;
+  for (const msg of state_snapshot.slice(treePairs.length)) {
+    lastId = await appendMessage(store, session_id, lastId, msg);
+    repaired++;
+  }
+  return {
+    state_count,
+    tree_count_before,
+    tree_count_after: tree_count_before + repaired,
+    repaired,
+  };
+}
+
+export async function loadContext(
+  store: SessionStore,
+  session_id: string,
+  leaf: string | undefined,
+  system_prompt: string,
+): Promise<AgentContext> {
+  const messages = await loadMessages(store, session_id, leaf);
+  return { system_prompt, messages, functions: [] };
+}
+
+export async function listSessions(
+  store: SessionStore,
+  limit?: number,
+  offset?: number,
+  order: ListOrder = 'desc',
+): Promise<ListSessionsResult> {
+  const metas = await store.list();
+  metas.sort((a, b) =>
+    order === 'desc' ? b.updated_at - a.updated_at : a.updated_at - b.updated_at,
+  );
+  const total = metas.length;
+  const page = metas.slice(offset ?? 0, (offset ?? 0) + (limit ?? metas.length));
+  const sessions: SessionListRow[] = [];
+  for (const meta of page) {
+    let entries: SessionEntry[] = [];
+    try {
+      entries = await store.loadEntries(meta.session_id);
+    } catch {
+      // ignore
+    }
+    sessions.push({
+      session_id: meta.session_id,
+      created_at: meta.created_at,
+      updated_at: meta.updated_at,
+      entry_count: entries.length,
+      display_name: meta.display_name,
+      cwd: meta.cwd,
+      last_message_summary: extractSummary(entries),
+    });
+  }
+  return { sessions, total };
+}
+
+function extractSummary(entries: SessionEntry[]): string | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (!e || e.type !== 'message') continue;
+    const msg = e.message;
+    if (msg.role === 'function_result' || msg.role === 'custom') return undefined;
+    for (const block of msg.content) {
+      if (block.type === 'text') return block.text.slice(0, 80);
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function withId<T extends SessionEntry>(entry: T, new_id: string): T {
+  return { ...entry, id: new_id };
+}
+
+function withParent<T extends SessionEntry>(entry: T, new_parent: string | null): T {
+  return { ...entry, parent_id: new_parent };
+}
+
+export async function fork(
+  store: SessionStore,
+  source_session_id: string,
+  from_entry_id: string,
+): Promise<string> {
+  const entries = await store.loadEntries(source_session_id);
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  if (!byId.has(from_entry_id)) {
+    throw new SessionError('entry_not_found', from_entry_id);
+  }
+  const path = await activePath(store, source_session_id, from_entry_id);
+  const sourceMeta = await store.loadMeta(source_session_id);
+  const new_session_id = await createSession(
+    store,
+    sourceMeta.display_name ? `${sourceMeta.display_name} (fork)` : undefined,
+    sourceMeta.cwd,
+  );
+  if (path.length > FORK_SUMMARY_THRESHOLD) {
+    const summary_id = randomUUID();
+    await store.append(new_session_id, {
+      type: 'branch_summary',
+      id: summary_id,
+      parent_id: null,
+      summary: `Forked from session ${source_session_id} at entry ${from_entry_id}: ${path.length} entries collapsed.`,
+      from_id: from_entry_id,
+      timestamp: Date.now(),
+    });
+    return new_session_id;
+  }
+  const idMap = new Map<string, string>();
+  for (const oldId of path) {
+    const original = byId.get(oldId);
+    if (!original) throw new SessionError('entry_not_found', oldId);
+    const new_id = randomUUID();
+    const new_parent = original.parent_id ? (idMap.get(original.parent_id) ?? null) : null;
+    const copied = withParent(withId(original, new_id), new_parent);
+    await store.append(new_session_id, copied);
+    idMap.set(oldId, new_id);
+  }
+  return new_session_id;
+}
+
+export async function cloneSession(
+  store: SessionStore,
+  source_session_id: string,
+): Promise<string> {
+  const entries = await store.loadEntries(source_session_id);
+  const sourceMeta = await store.loadMeta(source_session_id);
+  const new_session_id = await createSession(
+    store,
+    sourceMeta.display_name ? `${sourceMeta.display_name} (clone)` : undefined,
+    sourceMeta.cwd,
+  );
+  const idMap = new Map<string, string>();
+  for (const e of entries) idMap.set(e.id, randomUUID());
+  for (const e of entries) {
+    const new_id = idMap.get(e.id);
+    if (!new_id) continue;
+    const new_parent = e.parent_id ? (idMap.get(e.parent_id) ?? null) : null;
+    await store.append(new_session_id, withParent(withId(e, new_id), new_parent));
+  }
+  return new_session_id;
+}
+
+export async function compact(
+  store: SessionStore,
+  session_id: string,
+  summary: string,
+  details: CompactionDetails,
+  parent_id: string | null,
+  tokens_before: number,
+): Promise<string> {
+  let resolvedParent = parent_id;
+  if (resolvedParent === null) {
+    const path = await activePath(store, session_id);
+    resolvedParent = path.at(-1) ?? null;
+  }
+  const id = randomUUID();
+  await store.append(session_id, {
+    type: 'compaction',
+    id,
+    parent_id: resolvedParent,
+    summary,
+    tokens_before,
+    details,
+    timestamp: Date.now(),
+  });
+  return id;
+}
+
+export async function tree(store: SessionStore, session_id: string): Promise<TreeNode> {
+  const entries = await store.loadEntries(session_id);
+  if (entries.length === 0) {
+    throw new SessionError('entry_not_found', `session ${session_id} has no entries`);
+  }
+  const childrenByParent = new Map<string | null, SessionEntry[]>();
+  for (const e of entries) {
+    const key = e.parent_id ?? null;
+    const list = childrenByParent.get(key) ?? [];
+    list.push(e);
+    childrenByParent.set(key, list);
+  }
+  const roots = childrenByParent.get(null) ?? [];
+  if (roots.length === 0) {
+    throw new SessionError('entry_not_found', `session ${session_id} has no root entry`);
+  }
+  childrenByParent.delete(null);
+  const root = roots[0];
+  if (!root) {
+    throw new SessionError('entry_not_found', `session ${session_id} has no root entry`);
+  }
+  return buildNode(root, childrenByParent);
+}
+
+function buildNode(entry: SessionEntry, byParent: Map<string | null, SessionEntry[]>): TreeNode {
+  const kids = byParent.get(entry.id) ?? [];
+  byParent.delete(entry.id);
+  return { entry, children: kids.map((c) => buildNode(c, byParent)) };
+}
+
+// ── HTML export ────────────────────────────────────────────────────────────
+
+export async function exportHtml(
+  store: SessionStore,
+  session_id: string,
+  branch_leaf?: string,
+): Promise<string> {
+  const entries = await store.loadEntries(session_id);
+  const path = await activePath(store, session_id, branch_leaf);
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const body = path
+    .map((id) => byId.get(id))
+    .filter((e): e is SessionEntry => Boolean(e))
+    .map((e) => renderEntryHtml(e))
+    .join('');
+  const title = htmlEscape(session_id);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>session ${title}</title>
+<style>
+  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace; margin: 0; padding: 24px; }
+  .session { max-width: 920px; margin: 0 auto; }
+  .entry { padding: 12px 16px; margin: 12px 0; border-radius: 6px; border-left: 3px solid #30363d; white-space: pre-wrap; word-wrap: break-word; }
+  .role { font-weight: 600; font-size: 0.78em; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; margin-bottom: 6px; }
+  .user { background: #0b2730; border-left-color: #06b6d4; color: #67e8f9; }
+  .assistant { background: #161b22; border-left-color: #c9d1d9; color: #f0f6fc; }
+  .tool-result { background: #161b22; border-left-color: #6e7681; color: #8b949e; opacity: 0.85; }
+  .thinking { font-style: italic; opacity: 0.75; border-left-color: #a371f7; }
+  .custom { background: #161b22; border-left-color: #d29922; }
+  .summary { background: #1c1d23; border-left-color: #f0883e; }
+  .compaction { background: #1c1d23; border-left-color: #2ea043; }
+  pre { margin: 0; font-family: inherit; }
+</style>
+</head>
+<body>
+<div class="session">
+${body}</div>
+</body>
+</html>`;
+}
+
+function renderEntryHtml(entry: SessionEntry): string {
+  if (entry.type === 'message') return renderMessageHtml(entry.message);
+  if (entry.type === 'custom_message') {
+    const text = entry.display ?? JSON.stringify(entry.content);
+    return `<div class="entry custom"><div class="role">custom · ${htmlEscape(entry.custom_type)}</div><pre>${htmlEscape(text)}</pre></div>\n`;
+  }
+  if (entry.type === 'branch_summary') {
+    return `<div class="entry summary"><div class="role">branch summary · from ${htmlEscape(entry.from_id)}</div><pre>${htmlEscape(entry.summary)}</pre></div>\n`;
+  }
+  // compaction
+  const read = (entry.details.read_files ?? []).map(htmlEscape).join(', ');
+  const modified = (entry.details.modified_files ?? []).map(htmlEscape).join(', ');
+  return `<div class="entry compaction"><div class="role">compaction · ${entry.tokens_before} tokens before</div><pre>${htmlEscape(entry.summary)}\n\nread: ${read}\nmodified: ${modified}</pre></div>\n`;
+}
+
+function renderMessageHtml(msg: AgentMessage): string {
+  if (msg.role === 'user')
+    return `<div class="entry user"><div class="role">user</div>${renderBlocksHtml(msg.content)}</div>\n`;
+  if (msg.role === 'assistant')
+    return `<div class="entry assistant"><div class="role">assistant · ${htmlEscape(msg.model)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
+  if (msg.role === 'function_result')
+    return `<div class="entry tool-result"><div class="role">function result · ${htmlEscape(msg.function_id)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
+  // custom
+  const text = msg.display ?? JSON.stringify(msg.content);
+  return `<div class="entry custom"><div class="role">custom · ${htmlEscape(msg.custom_type)}</div><pre>${htmlEscape(text)}</pre></div>\n`;
+}
+
+function renderBlocksHtml(blocks: import('../../types/content.js').ContentBlock[]): string {
+  let out = '';
+  for (const b of blocks) {
+    switch (b.type) {
+      case 'text':
+        out += `<pre>${htmlEscape(b.text)}</pre>`;
+        break;
+      case 'thinking':
+        out += `<div class="thinking"><pre>${htmlEscape(b.text)}</pre></div>`;
+        break;
+      case 'image':
+        out += `<pre>[image: ${htmlEscape(b.mime)}]</pre>`;
+        break;
+      case 'function_call':
+        out += `<pre>function call: ${htmlEscape(b.function_id)} ${htmlEscape(JSON.stringify(b.arguments))}</pre>`;
+        break;
+      case 'function_result':
+        out += renderBlocksHtml(b.content);
+        break;
+    }
+  }
+  return out;
+}
+
+function htmlEscape(s: string): string {
+  return s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+export type { SessionMeta };

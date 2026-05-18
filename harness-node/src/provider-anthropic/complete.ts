@@ -1,0 +1,33 @@
+/**
+ * Legacy `provider::anthropic::complete`. Drains the stream and returns
+ * the final AssistantMessage. Used by the Phase 1 `router::stream_assistant`
+ * code path; left in place for back-compat.
+ */
+
+import { requireString } from '../runtime/handler.js';
+import type { ISdk } from '../runtime/iii.js';
+import type { AgentMessage } from '../types/agent-message.js';
+import type { AgentFunction } from '../types/function.js';
+import { buildConfig } from './auth.js';
+import type { WorkerConfig } from './config.js';
+import { collect, streamAnthropic } from './stream.js';
+
+export function register(iii: ISdk, worker: WorkerConfig): void {
+  iii.registerFunction(
+    'provider::anthropic::complete',
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const model = requireString(obj, 'model');
+      const system_prompt = typeof obj.system_prompt === 'string' ? obj.system_prompt : '';
+      const messages = Array.isArray(obj.messages) ? (obj.messages as AgentMessage[]) : [];
+      const tools = Array.isArray(obj.tools) ? (obj.tools as AgentFunction[]) : [];
+      const cfg = await buildConfig(iii, worker, model);
+      const events = streamAnthropic({ cfg, system_prompt, messages, tools });
+      return await collect(events);
+    },
+    {
+      description:
+        'Legacy: drain a streamed Anthropic completion and return the final AssistantMessage.',
+    },
+  );
+}

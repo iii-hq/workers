@@ -1,21 +1,187 @@
+/**
+ * Real backend: iii-browser-sdk + harness fanout.
+ *
+ * Each `stream()` call:
+ *   1. Mints a fresh `session_id` (Phase 1 is one-shot; multi-turn session
+ *      persistence is Phase 4).
+ *   2. Registers a per-`ui::session::event::<browser_id>` handler that
+ *      enqueues envelopes whose `session_id` matches.
+ *   3. Calls `ui::subscribe { browser_id, session_id }` so the harness
+ *      fanout starts forwarding this session's events to us.
+ *   4. Fires `run::start { session_id, provider, model, system_prompt,
+ *      messages }` against turn-orchestrator.
+ *   5. Pumps the queue through `translateAgentEvent`, yielding each
+ *      resulting `StreamEvent`. Terminates on the `agent_end` envelope.
+ *
+ * Honors `opts.signal`: if the caller aborts, the generator returns and
+ * the `finally` runs `ui::unsubscribe` and unregisters the handler.
+ *
+ * Phase 2.B (§D): the per-call `approval_required` array no longer
+ * exists. Permissions are owned by the harness's `iii-permissions.yaml`
+ * (loaded from the harness cwd; watched for changes). The chat surface
+ * just describes the desired mode — the operator owns policy.
+ *
+ * Remaining caveats (each is a deliberate Phase 2/3/4 target — see
+ * `PHASE-2-PLAN.md`):
+ *   - Assistant body arrives as a single `assistant-token` (no per-token
+ *     streaming yet; Phase 2.A wires `message_update`).
+ *   - Approvals surface as `pendingApproval: true` but the UI can't yet
+ *     resolve them (Phase 3 adds approve/deny buttons calling
+ *     `approval::resolve`).
+ *   - Provider/system_prompt selection is a coarse mapping (see
+ *     `resolveRunParams`); a proper picker integration is Phase 4.
+ */
+
+import { getIiiClient } from '@/lib/iii-client'
 import type { Mode, ModelId } from '@/types/chat'
+import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
+import { translateAgentEvent } from './translate'
 import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
 
+interface RunParams {
+  provider: string
+  model: string
+  systemPrompt: string
+}
+
 /**
- * Placeholder for the eventual real backend. Wire your provider here while
- * preserving the StreamEvent contract documented in PLAYGROUND.md, and the
- * playground will exercise the new implementation without changes.
+ * Map console/web's `Mode` + `ModelId` onto turn-orchestrator's
+ * `provider` / `model` / `system_prompt` fields. Phase 4 wires the model
+ * picker to a proper config. Permissions are no longer driven from
+ * here — see Phase 2.B (§D); the harness owns `iii-permissions.yaml`.
  */
-// biome-ignore lint/correctness/useYield: stub backend; throws before yielding.
+function resolveRunParams(mode: Mode, model: ModelId): RunParams {
+  const provider = model.startsWith('claude')
+    ? 'anthropic'
+    : model.startsWith('gemini')
+      ? 'google'
+      : 'openai'
+
+  const systemPrompt =
+    mode === 'plan'
+      ? 'You are an analytical planner. Reason briefly, then produce a concise numbered plan; do not execute tools unless asked.'
+      : mode === 'ask'
+        ? 'You answer the user directly without invoking tools. Be concise; prefer one or two paragraphs.'
+        : 'You are an autonomous agent. Use the available functions to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.'
+
+  return { provider, model, systemPrompt }
+}
+
 async function* realStream(
-  _prompt: string,
-  _mode: Mode,
-  _model: ModelId,
-  _opts?: ChatStreamOptions,
+  prompt: string,
+  mode: Mode,
+  model: ModelId,
+  opts?: ChatStreamOptions,
 ): AsyncGenerator<StreamEvent> {
-  throw new Error(
-    'backend not configured — see chat-app/PLAYGROUND.md for the streaming contract',
-  )
+  const signal = opts?.signal
+  const client = await getIiiClient()
+  const sessionId = `console-${crypto.randomUUID()}`
+
+  const queue: AgentEvent[] = []
+  let resolveNext: (() => void) | null = null
+  const wake = () => {
+    const r = resolveNext
+    resolveNext = null
+    r?.()
+  }
+
+  const off = client.on<SessionEventEnvelope>('ui::session::event', (env) => {
+    if (!env || env.session_id !== sessionId || !env.event) return
+    // #region debug-instrumentation
+    fetch(
+      'http://127.0.0.1:7806/ingest/e8ef8147-0d15-474f-9b85-6d1770aaadc3',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Debug-Session-Id': '54c0cd',
+        },
+        body: JSON.stringify({
+          sessionId: '54c0cd',
+          hypothesisId: 'H5',
+          location: 'console/web/src/lib/backend/real.ts:on(ui::session::event)',
+          message: 'frontend received session event',
+          data: {
+            session_id: env.session_id,
+            event_type: (env.event as { type?: string })?.type,
+          },
+          timestamp: Date.now(),
+        }),
+      },
+    ).catch(() => {})
+    // #endregion
+    queue.push(env.event)
+    wake()
+  })
+
+  // Wake any pending await when the caller aborts so the loop can exit.
+  const onAbort = () => wake()
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  let subscribed = false
+
+  try {
+    await client.call('ui::subscribe', {
+      browser_id: client.browserId,
+      session_id: sessionId,
+    })
+    subscribed = true
+
+    const {
+      provider,
+      model: modelId,
+      systemPrompt,
+    } = resolveRunParams(mode, model)
+
+    // Fire-and-forget: run::start kicks off the turn-orchestrator state
+    // machine; events arrive via the ui::session::event handler above.
+    // Errors here are non-fatal at the contract level (the UI surfaces
+    // them via the assistant stream); log and let the loop fall through.
+    void client
+      .call('run::start', {
+        session_id: sessionId,
+        provider,
+        model: modelId,
+        system_prompt: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: prompt }],
+            timestamp: Date.now(),
+          },
+        ],
+      })
+      .catch((err) => {
+        console.warn('[real-backend] run::start failed', err)
+      })
+
+    while (true) {
+      if (signal?.aborted) return
+      while (queue.length === 0) {
+        if (signal?.aborted) return
+        await new Promise<void>((resolve) => {
+          resolveNext = resolve
+        })
+      }
+      const event = queue.shift()
+      if (!event) continue
+      for (const streamEvent of translateAgentEvent(event)) {
+        yield streamEvent
+      }
+      if (event.type === 'agent_end') return
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+    off()
+    if (subscribed) {
+      await client
+        .call('ui::unsubscribe', {
+          browser_id: client.browserId,
+          session_id: sessionId,
+        })
+        .catch(() => {})
+    }
+  }
 }
 
 export const realBackend: ChatBackend = {

@@ -1,0 +1,20 @@
+iii: v1
+name: turn-orchestrator
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-turn-orchestrator
+description: Durable run::start state machine that drives each agent turn through provisioning, assistant, function-execute, steering, and tearing-down.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/turn-orchestrator/main.js --config ./config.yaml
+
+dependencies:
+  session: "^0.2.0"
+  hook-fanout: "^0.2.0"
+  provider-anthropic: "^0.2.0"
+  provider-openai: "^0.2.0"
