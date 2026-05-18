@@ -57,6 +57,7 @@ file at the workspace root is symlinked into this folder.
 
 ## Layout
 
+- `docs/` — architecture documentation: [`docs/architecture.md`](docs/architecture.md) is the system overview; one file per worker lives under [`docs/workers/`](docs/workers/).
 - `src/types/` — wire types (mirrors `harness/crates/harness-types`).
 - `src/runtime/` — cross-worker SDK helpers (worker bootstrap, state/stream wrappers, OTel stub).
 - `src/<worker>/` — one folder per worker. Each `register.ts` composes the worker's bus surface from per-feature files; each `main.ts` is the binary entry-point.
