@@ -1,29 +1,81 @@
-import { describe, expect, it } from 'vitest';
-import { abortSideEffects } from '../../src/turn-orchestrator/abort.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { ISdk } from '../../src/runtime/iii.js';
+import { performAbortSideEffects } from '../../src/turn-orchestrator/abort.js';
+import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { newRecord } from '../../src/turn-orchestrator/state.js';
 
-describe('abortSideEffects', () => {
-  it('returns state::set abort_signal followed by approval::sweep_session', () => {
-    const effects = abortSideEffects('sess-a');
-    expect(effects).toHaveLength(2);
+describe('performAbortSideEffects', () => {
+  it('sets the abort_signal flag', async () => {
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(null);
 
-    expect(effects[0]).toEqual({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-a/abort_signal',
-        value: true,
-      },
-    });
+    await performAbortSideEffects(iii, 's1');
 
-    expect(effects[1]).toEqual({
-      function_id: 'approval::sweep_session',
-      payload: { session_id: 'sess-a' },
-    });
+    const setCalls = triggers.filter((t) => t.function_id === 'state::set');
+    expect(
+      setCalls.some(
+        (c) => (c.payload as Record<string, unknown>).key === 'session/s1/abort_signal',
+      ),
+    ).toBe(true);
   });
 
-  it('namespaces the abort key with the supplied session_id', () => {
-    const effects = abortSideEffects('other-session');
-    expect((effects[0]?.payload as { key: string }).key).toBe('session/other-session/abort_signal');
-    expect((effects[1]?.payload as { session_id: string }).session_id).toBe('other-session');
+  it('skips approval cleanup when record state is not function_awaiting_approval', async () => {
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+    const rec = newRecord('s1');
+    rec.state = 'assistant_streaming';
+    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
+
+    await performAbortSideEffects(iii, 's1');
+
+    const approvalWrites = triggers
+      .filter((t) => t.function_id === 'state::set')
+      .map((t) => t.payload as Record<string, unknown>)
+      .filter((p) => p.scope === 'approvals');
+    expect(approvalWrites).toHaveLength(0);
+    expect(triggers.some((t) => t.function_id === 'approval::sweep_session')).toBe(false);
+  });
+
+  it('writes aborted decisions and does not publish when paused on approval', async () => {
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+    const rec = newRecord('s1');
+    rec.state = 'function_awaiting_approval';
+    rec.awaiting_approval = [
+      { function_call_id: 'fc-1', function_id: 'shell::run', args: {} },
+      { function_call_id: 'fc-2', function_id: 'shell::run', args: {} },
+    ];
+    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
+
+    await performAbortSideEffects(iii, 's1');
+
+    const approvalWrites = triggers
+      .filter((t) => t.function_id === 'state::set')
+      .map((t) => t.payload as Record<string, unknown>)
+      .filter((p) => p.scope === 'approvals');
+    expect(approvalWrites).toHaveLength(2);
+    expect(approvalWrites.map((p) => p.key).sort()).toEqual(['s1/fc-1', 's1/fc-2']);
+    for (const write of approvalWrites) {
+      expect(write.value).toMatchObject({ decision: 'aborted', reason: 'session_aborted' });
+    }
+
+    const publishes = triggers.filter((t) => t.function_id === 'iii::durable::publish');
+    expect(publishes).toHaveLength(0);
   });
 });
