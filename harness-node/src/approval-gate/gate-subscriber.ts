@@ -1,34 +1,34 @@
 /**
  * `policy::approval_gate` durable subscriber. Mirrors the body of
- * `approval-gate/src/lib.rs::register::subscriber_fn`.
+ * `approval-gate/src/lib.rs::register::subscriber_fn` post-PR #150.
+ *
+ * Flow:
+ *  1. extract the incoming call from the durable envelope
+ *  2. consult policy (allow / deny / needs_approval). Allow and Deny both
+ *     return immediately with a marked block reply (subscriber +
+ *     approval_gate flags so the orchestrator's `publishFailureFromResponse`
+ *     can detect that the gate actually replied — fail-closed).
+ *  3. needs_approval: delegate to `handleIntercept`, which writes the
+ *     pending record (fail-closed on state-bus failure) and returns a
+ *     pending/denied block envelope. We additionally emit the
+ *     `approval_requested` lifecycle event when the entry reaches pending.
+ *
+ * Note: `approval_resolved` and `approval_wake_failed` events are emitted
+ * by `handleResolveWithEvents` (in `pending.ts`) when the human resolves,
+ * not from this subscriber. This subscriber returns synchronously without
+ * waiting for the human decision.
  */
 
 import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
 import { streamSet } from '../runtime/stream.js';
 import type { ApprovalGateConfig } from './config.js';
-import { permissionsDenyEnvelope, userDenyEnvelope } from './denial.js';
-import { awaitDecision } from './pending.js';
+import { permissionsDenyEnvelope } from './denial.js';
+import { emitApprovalRequested } from './events.js';
+import { handleIntercept } from './intercept.js';
 import { type PolicyOutcome, consultPolicy } from './policy-consult.js';
 import type { StateBus } from './state-bus.js';
-import {
-  type DenialEnvelope,
-  type IncomingCall,
-  buildPendingRecord,
-  extractCall,
-  pendingKey,
-} from './types.js';
-
-const HOOK_REPLY_STREAM = 'agent::hook_reply';
-
-async function writeEvent(iii: ISdk, session_id: string, event: unknown): Promise<void> {
-  await streamSet(iii, {
-    stream_name: 'agent::events',
-    group_id: session_id,
-    item_id: `approval-${uuidLike()}`,
-    data: event,
-  });
-}
+import { type IncomingCall, SUBSCRIBER_NAME, blockReplyFor, extractCall } from './types.js';
 
 async function writeHookReply(
   iii: ISdk,
@@ -43,14 +43,6 @@ async function writeHookReply(
     item_id: uuidLike(),
     data: reply,
   });
-}
-
-function blockReplyForAllow(): { block: false } {
-  return { block: false };
-}
-
-function blockReplyForDeny(envelope: DenialEnvelope): { block: true; denial: DenialEnvelope } {
-  return { block: true, denial: envelope };
 }
 
 export type GateHandlerContext = {
@@ -70,10 +62,11 @@ export async function handleGateEvent(
   const outcome = await consultPolicyOrFallback(ctx.iii, ctx.cfg, call);
 
   if (outcome.kind === 'allow') {
-    const reply = blockReplyForAllow();
+    const reply = blockReplyFor({ kind: 'allow' });
     await writeHookReply(ctx.iii, call.reply_stream, call.event_id, reply);
     return reply;
   }
+
   if (outcome.kind === 'deny') {
     const env = permissionsDenyEnvelope(
       call.function_id,
@@ -81,76 +74,54 @@ export async function handleGateEvent(
       outcome.matched_constraint,
       call.args,
     );
-    await writeEvent(ctx.iii, call.session_id, {
-      type: 'function_call_denied',
-      function_call_id: call.function_call_id,
-      tool_call_id: call.function_call_id,
-      function_id: call.function_id,
-      tool_name: call.function_id,
+    const reply = {
+      block: true,
+      reason: env.reason,
       denial: env,
+      subscriber: SUBSCRIBER_NAME,
+      approval_gate: true,
+    };
+    await streamSet(ctx.iii, {
+      stream_name: 'agent::events',
+      group_id: call.session_id,
+      item_id: `approval-${uuidLike()}`,
+      data: {
+        type: 'function_call_denied',
+        function_call_id: call.function_call_id,
+        tool_call_id: call.function_call_id,
+        function_id: call.function_id,
+        tool_name: call.function_id,
+        denial: env,
+      },
     });
-    const reply = blockReplyForDeny(env);
     await writeHookReply(ctx.iii, call.reply_stream, call.event_id, reply);
     return reply;
   }
 
-  // Step 2: pause-and-wait flow.
+  // Step 2: pause flow via handleIntercept (fail-closed on state-bus failure).
+  // The policy worker already decided `needs_approval`, so we MUST intercept
+  // even if the run's approval_required list is empty (e.g. `agent::call`
+  // dispatches with []). Synthesize membership so handleIntercept's
+  // requiresApproval gate doesn't short-circuit back to allow.
+  const callForIntercept: IncomingCall = call.approval_required.includes(call.function_id)
+    ? call
+    : { ...call, approval_required: [...call.approval_required, call.function_id] };
   const now = Date.now();
-  const expires_at = now + ctx.cfg.default_timeout_ms;
-  const record = buildPendingRecord(
-    call.function_call_id,
-    call.function_id,
-    call.args,
+  const reply = await handleIntercept(
+    ctx.bus,
+    ctx.cfg.approval_state_scope,
+    callForIntercept,
     now,
     ctx.cfg.default_timeout_ms,
   );
-  try {
-    await ctx.bus.set(
-      ctx.cfg.approval_state_scope,
-      pendingKey(call.session_id, call.function_call_id),
-      record,
-    );
-  } catch {
-    const reply = blockReplyForAllow();
-    await writeHookReply(ctx.iii, call.reply_stream, call.event_id, reply);
-    return reply;
+  if ((reply as Record<string, unknown>).status === 'pending') {
+    await emitApprovalRequested(ctx.iii, call.session_id, {
+      function_call_id: call.function_call_id,
+      function_id: call.function_id,
+      args: call.args,
+      expires_at: now + ctx.cfg.default_timeout_ms,
+    });
   }
-  await writeEvent(ctx.iii, call.session_id, {
-    type: 'approval_requested',
-    function_call_id: call.function_call_id,
-    tool_call_id: call.function_call_id,
-    function_id: call.function_id,
-    tool_name: call.function_id,
-    args: call.args,
-    expires_at,
-  });
-  const awaited = await awaitDecision(
-    ctx.bus,
-    ctx.cfg.approval_state_scope,
-    call.session_id,
-    call.function_call_id,
-    expires_at,
-  );
-  let reply: { block: false } | { block: true; denial: DenialEnvelope };
-  let decisionStr: 'allow' | 'deny';
-  let reasonForEvent: string | null;
-  if (awaited.kind === 'allow') {
-    reply = blockReplyForAllow();
-    decisionStr = 'allow';
-    reasonForEvent = null;
-  } else {
-    const env = userDenyEnvelope(call.function_id, awaited.reason, call.args);
-    reply = blockReplyForDeny(env);
-    decisionStr = 'deny';
-    reasonForEvent = awaited.reason;
-  }
-  await writeEvent(ctx.iii, call.session_id, {
-    type: 'approval_resolved',
-    function_call_id: call.function_call_id,
-    tool_call_id: call.function_call_id,
-    decision: decisionStr,
-    reason: reasonForEvent,
-  });
   await writeHookReply(ctx.iii, call.reply_stream, call.event_id, reply);
   return reply;
 }

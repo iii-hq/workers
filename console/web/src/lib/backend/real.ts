@@ -42,7 +42,7 @@ import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
 interface RunParams {
   provider: string
   model: string
-  systemPrompt: string
+  systemPrompt?: string
 }
 
 /**
@@ -68,14 +68,14 @@ function resolveRunParams(mode: Mode, model: ModelId): RunParams {
         : 'openai'
   }
 
-  const systemPrompt =
-    mode === 'plan'
-      ? 'You are an analytical planner. Reason briefly, then produce a concise numbered plan; do not execute tools unless asked.'
-      : mode === 'ask'
-        ? 'You answer the user directly without invoking tools. Be concise; prefer one or two paragraphs.'
-        : 'You are an autonomous agent. Use the available functions to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.'
+  // const systemPrompt =
+  //   mode === 'plan'
+  //     ? 'You are an analytical planner. Reason briefly, then produce a concise numbered plan; do not execute tools unless asked.'
+  //     : mode === 'ask'
+  //       ? 'You answer the user directly without invoking tools. Be concise; prefer one or two paragraphs.'
+  //       : 'You are an autonomous agent. Use the available functions to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.'
 
-  return { provider, model: modelId, systemPrompt }
+  return { provider, model: modelId }
 }
 
 async function* realStream(
@@ -143,6 +143,19 @@ async function* realStream(
         console.warn('[real-backend] run::start failed', err)
       })
 
+    // PR #150 resume + multi-turn iteration: the stream must outlive any
+    // single `agent_end`. After the first agent_end the LLM can:
+    //   1) be resurrected via approval::resolve (handled by orchestrator's
+    //      subscriber rebuilding the terminal record), then
+    //   2) iterate — making MORE tool calls that may themselves hit the
+    //      approval gate (more `approval_requested` events).
+    // If the stream exited on the first agent_end, the UI would miss every
+    // subsequent approval modal.
+    //
+    // So: stay subscribed until the caller aborts (component unmount,
+    // stop button, new conversation). Yield each event. The UI's status
+    // pill flips between STREAMING / READY based on the latest event
+    // type, not on the generator's lifetime.
     while (true) {
       if (signal?.aborted) return
       while (queue.length === 0) {
@@ -153,10 +166,9 @@ async function* realStream(
       }
       const event = queue.shift()
       if (!event) continue
-      for (const streamEvent of translateAgentEvent(event)) {
+      for (const streamEvent of translateAgentEvent(event, sessionId)) {
         yield streamEvent
       }
-      if (event.type === 'agent_end') return
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)
@@ -172,7 +184,21 @@ async function* realStream(
   }
 }
 
+async function realResolveApproval(
+  sessionId: string,
+  functionCallId: string,
+  decision: 'allow' | 'deny',
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.call('approval::resolve', {
+    session_id: sessionId,
+    function_call_id: functionCallId,
+    decision,
+  })
+}
+
 export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
+  resolveApproval: realResolveApproval,
 }

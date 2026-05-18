@@ -36,12 +36,17 @@ export class IiiStateBus implements StateBus {
 
   async listPrefix(scope: string, prefix: string): Promise<unknown[]> {
     try {
-      const resp = await this.iii.trigger<unknown, { items?: unknown[] }>({
+      const resp = await this.iii.trigger<unknown, unknown>({
         function_id: 'state::list',
         payload: { scope, prefix },
       });
-      const items = resp?.items;
-      if (!Array.isArray(items)) return [];
+      // The engine's state::list returns the values directly as an array.
+      // Earlier harness versions returned `{items: [...]}` so accept both.
+      const items = Array.isArray(resp)
+        ? resp
+        : Array.isArray((resp as { items?: unknown[] } | null)?.items)
+          ? ((resp as { items: unknown[] }).items as unknown[])
+          : [];
       return items.map((entry) => {
         if (entry && typeof entry === 'object' && 'value' in (entry as Record<string, unknown>)) {
           return (entry as Record<string, unknown>).value;

@@ -11,15 +11,11 @@ export function mergeFirstBlockWins(replies: unknown[]): Record<string, unknown>
       reply !== null &&
       (reply as Record<string, unknown>).block === true
     ) {
-      const r = reply as Record<string, unknown>;
-      const out: Record<string, unknown> = {
-        block: true,
-        reason: r.reason ?? null,
-      };
-      // Preserve denial envelope when subscriber returned one — used by
-      // approval-gate to thread DenialEnvelope through to the orchestrator.
-      if (r.denial !== undefined) out.denial = r.denial;
-      return out;
+      // PR #150: preserve the FULL blocking reply verbatim so the
+      // orchestrator can read `status` (pending vs denied) and
+      // `subscriber`/`approval_gate` markers. Clone to avoid downstream
+      // mutation leaking back into the source reply.
+      return { ...(reply as Record<string, unknown>) };
     }
   }
   return { block: false };

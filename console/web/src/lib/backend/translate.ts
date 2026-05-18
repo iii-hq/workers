@@ -38,7 +38,10 @@ import type {
 } from '@/types/iii-agent-event'
 import type { StreamEvent } from './types'
 
-export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
+export function translateAgentEvent(
+  event: AgentEvent,
+  sessionId?: string,
+): StreamEvent[] {
   switch (event.type) {
     case 'agent_start':
     case 'turn_start':
@@ -59,10 +62,28 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
           kind: 'fcall-start',
           functionId: event.function_id,
           input: event.args,
+          functionCallId: event.function_call_id,
+          sessionId,
         },
       ]
 
-    case 'function_execution_end':
+    case 'function_execution_end': {
+      // PR #150: the orchestrator emits this even when the prefilled
+      // result is a pending-approval placeholder (terminate:true, no
+      // real dispatch yet). The accompanying `approval_requested` event
+      // already produced an fcall-start with pendingApproval:true; we
+      // must suppress this fcall-end so the UI keeps the approve/deny
+      // buttons visible until the user resolves and the resurrected
+      // dispatch emits real execution_start/end events.
+      const details = (event.result as { details?: unknown } | undefined)
+        ?.details
+      if (
+        details &&
+        typeof details === 'object' &&
+        (details as Record<string, unknown>).pending_approval === true
+      ) {
+        return []
+      }
       return [
         {
           kind: 'fcall-end',
@@ -70,6 +91,7 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
           durationMs: 0,
         },
       ]
+    }
 
     case 'approval_requested':
       return [
@@ -78,6 +100,8 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
           functionId: event.function_id,
           input: event.args,
           pendingApproval: true,
+          functionCallId: event.function_call_id,
+          sessionId,
         },
       ]
 

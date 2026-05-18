@@ -1,45 +1,15 @@
 /**
- * Pending-record utilities + the await-decision poll loop. Mirrors
- * `approval-gate/src/lib.rs::{handle_resolve, handle_list_pending,
- * await_decision}`.
+ * Pending-record utilities, resolve handler, and the resume-session polling
+ * loop. Mirrors `approval-gate/src/lib.rs::{handle_resolve, handle_list_pending,
+ * resume_session}` (post PR #150).
  */
 
 import { requireString } from '../runtime/handler.js';
+import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { emitApprovalResolved, emitApprovalWakeFailed } from './events.js';
 import type { StateBus } from './state-bus.js';
 import { pendingKey } from './types.js';
-
-const POLL_INTERVAL_MS = 250;
-
-export type AwaitedDecision = { kind: 'allow' } | { kind: 'deny'; reason: string };
-
-export async function awaitDecision(
-  bus: StateBus,
-  state_scope: string,
-  session_id: string,
-  function_call_id: string,
-  expires_at: number,
-): Promise<AwaitedDecision> {
-  const key = pendingKey(session_id, function_call_id);
-  for (;;) {
-    const rec = await bus.get(state_scope, key);
-    if (!rec || typeof rec !== 'object') {
-      return { kind: 'deny', reason: 'state_unavailable' };
-    }
-    const r = rec as Record<string, unknown>;
-    if (r.status === 'allow') return { kind: 'allow' };
-    if (r.status === 'deny') {
-      const reason = typeof r.reason === 'string' ? r.reason : 'user';
-      return { kind: 'deny', reason };
-    }
-    if (Date.now() >= expires_at) return { kind: 'deny', reason: 'timeout' };
-    await sleep(POLL_INTERVAL_MS);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 export async function handleResolve(
   bus: StateBus,
@@ -67,8 +37,30 @@ export async function handleResolve(
   }
   const e = { ...(existing as Record<string, unknown>) };
   if (e.status !== 'pending') return { ok: false, error: 'already_resolved' };
-  e.status = decision;
+
+  const now = Date.now();
+  const expires_at = typeof e.expires_at === 'number' ? e.expires_at : Number.POSITIVE_INFINITY;
+  if (now >= expires_at) {
+    e.status = 'resolved';
+    e.decision = 'deny';
+    e.reason = 'timed_out';
+    e.resolved_at = now;
+    try {
+      await bus.set(state_scope, key, e);
+    } catch (err) {
+      logger.error('approval-gate: failed to persist timed_out state', {
+        session_id,
+        function_call_id,
+        err: String(err),
+      });
+    }
+    return { ok: false, error: 'timed_out' };
+  }
+
+  e.status = 'resolved';
+  e.decision = decision;
   if (typeof obj.reason === 'string') e.reason = obj.reason;
+  e.resolved_at = now;
   try {
     await bus.set(state_scope, key, e);
   } catch (err) {
@@ -91,6 +83,87 @@ export async function handleListPending(
     (v) => v && typeof v === 'object' && (v as Record<string, unknown>).status === 'pending',
   );
   return { pending };
+}
+
+const STEP_TOPIC = 'turn::step_requested';
+
+/**
+ * Wakes the orchestrator after an approval was resolved. iii-native:
+ * fire-and-forget `iii::durable::publish` on `turn::step_requested`. The
+ * orchestrator's existing durable subscriber on that topic wakes, detects
+ * the terminal record itself (via `buildResumePlan`), rebuilds it, and
+ * walks the FSM into `handle_awaiting` which consumes the resolved entry.
+ *
+ * Replaces the prior 250 ms polling loop against `run::resume`. iii has
+ * no `wait_until(state)` primitive but it does have durable pub/sub, so
+ * we use that: one publish, no client-side waiting, no RPC ping-pong.
+ *
+ * Throws only if the publish trigger itself fails. The caller (the
+ * resolve wrapper) catches the rejection and emits
+ * `approval_wake_failed`.
+ */
+export async function resumeSession(iii: ISdk, session_id: string): Promise<void> {
+  // No explicit timeout — `iii::durable::publish` enqueues into the bus
+  // without waiting for subscribers, so it returns in single-digit ms.
+  // iii's default trigger timeout is the right backstop for an unhealthy
+  // bus; we don't try to tune it here.
+  await iii.trigger<unknown, unknown>({
+    function_id: 'iii::durable::publish',
+    payload: {
+      topic: STEP_TOPIC,
+      data: { session_id },
+    },
+  });
+}
+
+/**
+ * Closure-style wrapper used during `register`. Calls `handleResolve`; on
+ * success, emits `approval_resolved` and triggers `resumeSession`. On wake
+ * failure, emits `approval_wake_failed`. Mirrors the closure in
+ * `approval-gate/src/lib.rs::register` around `FN_RESOLVE`.
+ */
+export async function handleResolveWithEvents(
+  iii: ISdk,
+  bus: StateBus,
+  state_scope: string,
+  payload: unknown,
+): Promise<unknown> {
+  const out = await handleResolve(bus, state_scope, payload);
+  const result = out as Record<string, unknown>;
+  if (result.ok !== true) return out;
+
+  const obj = (payload ?? {}) as Record<string, unknown>;
+  const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';
+  const function_call_id =
+    (typeof obj.function_call_id === 'string' && obj.function_call_id) ||
+    (typeof obj.tool_call_id === 'string' && obj.tool_call_id) ||
+    '';
+  if (!session_id || !function_call_id) return out;
+
+  const stored = (await bus.get(state_scope, pendingKey(session_id, function_call_id))) as Record<
+    string,
+    unknown
+  > | null;
+  const decision =
+    stored?.decision === 'allow' || stored?.decision === 'deny'
+      ? (stored.decision as 'allow' | 'deny')
+      : 'deny';
+  const reason = typeof stored?.reason === 'string' ? (stored.reason as string) : null;
+
+  await emitApprovalResolved(iii, session_id, {
+    function_call_id,
+    decision,
+    reason,
+  });
+
+  try {
+    await resumeSession(iii, session_id);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await emitApprovalWakeFailed(iii, session_id, error);
+  }
+
+  return out;
 }
 
 // Re-export for ergonomic imports

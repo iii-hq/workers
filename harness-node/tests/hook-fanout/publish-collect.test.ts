@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONFIG,
   buildPublishEnvelope,
+  buildResponse,
   execute,
 } from '../../src/hook-fanout/publish-collect.js';
 import { HOOK_REPLY_STREAM } from '../../src/hook-fanout/types.js';
@@ -84,5 +85,82 @@ describe('publish-collect execute', () => {
     await expect(
       execute(noop, DEFAULT_CONFIG, { payload: {}, merge_rule: 'first_block_wins' }),
     ).rejects.toThrow(/topic/);
+  });
+
+  it('includes publish:{ok:true} and no publish_failed when publish succeeds', async () => {
+    let listCount = 0;
+    const fakeSdk = {
+      trigger: async (req: { function_id: string }) => {
+        if (req.function_id === 'iii::durable::publish') return null;
+        if (req.function_id === 'stream::list') {
+          listCount++;
+          return listCount < 2 ? { items: [] } : { items: [{ data: { block: false } }] };
+        }
+        return null;
+      },
+    } as unknown as Parameters<typeof execute>[0];
+
+    const out = (await execute(
+      fakeSdk,
+      { ...DEFAULT_CONFIG, poll_interval_ms: 1 },
+      {
+        topic: 'agent::before_function_call',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 200,
+        quiescence_ms: 50,
+      },
+    )) as Record<string, unknown>;
+
+    expect(out.publish).toEqual({ ok: true });
+    expect(out).not.toHaveProperty('publish_failed');
+  });
+
+  it('includes publish:{ok:false,error} and publish_failed:true when publish throws', async () => {
+    const fakeSdk = {
+      trigger: async (req: { function_id: string }) => {
+        if (req.function_id === 'iii::durable::publish') throw new Error('ws closed');
+        if (req.function_id === 'stream::list') return { items: [] };
+        return null;
+      },
+    } as unknown as Parameters<typeof execute>[0];
+
+    const out = (await execute(
+      fakeSdk,
+      { ...DEFAULT_CONFIG, poll_interval_ms: 1 },
+      {
+        topic: 'agent::before_function_call',
+        payload: {},
+        merge_rule: 'first_block_wins',
+        timeout_ms: 200,
+        quiescence_ms: 50,
+      },
+    )) as Record<string, unknown>;
+
+    const publish = out.publish as Record<string, unknown>;
+    expect(publish.ok).toBe(false);
+    expect(publish.error).toBe('ws closed');
+    expect(out.publish_failed).toBe(true);
+  });
+});
+
+describe('buildResponse', () => {
+  it('marks publish ok on success and omits publish_failed', () => {
+    const out = buildResponse('evt-1', [{ block: false }], { block: false }, false);
+    expect(out.event_id).toBe('evt-1');
+    expect(out.publish).toEqual({ ok: true });
+    expect(out).not.toHaveProperty('publish_failed');
+  });
+
+  it('marks publish failed with error text and sets publish_failed:true', () => {
+    const out = buildResponse('evt-2', [], { block: false }, true, 'ws closed');
+    expect(out.publish).toEqual({ ok: false, error: 'ws closed' });
+    expect(out.publish_failed).toBe(true);
+  });
+
+  it('marks publish failed without error text when none provided', () => {
+    const out = buildResponse('evt-3', [], { block: false }, true);
+    expect(out.publish).toEqual({ ok: false });
+    expect(out.publish_failed).toBe(true);
   });
 });

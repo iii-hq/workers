@@ -15,6 +15,7 @@ import { type TurnStateRecord, isTerminal, newRecord } from './state.js';
 
 export const FUNCTION_ID = 'run::start';
 export const SYNC_FUNCTION_ID = 'run::start_and_wait';
+export const RESUME_FUNCTION_ID = 'run::resume';
 export const STEP_TOPIC = 'turn::step_requested';
 
 export async function publishStep(iii: ISdk, session_id: string): Promise<void> {
@@ -106,6 +107,59 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Builds a fresh resume record. Mirrors
+ * `turn-orchestrator/src/run_start.rs::build_resume_record` (PR #150).
+ *
+ * Returns a brand-new `provisioning` record that preserves the previous
+ * `turn_count` and `max_turns` — the session resumes "in place" rather
+ * than restarting from zero.
+ */
+export function buildResumeRecord(existing: TurnStateRecord): TurnStateRecord {
+  const fresh = newRecord(existing.session_id, existing.max_turns);
+  fresh.turn_count = existing.turn_count;
+  return fresh;
+}
+
+/**
+ * Returns a resume record only when the existing record is terminal.
+ * Mirrors `build_resume_plan`.
+ */
+export function buildResumePlan(existing: TurnStateRecord): TurnStateRecord | null {
+  return isTerminal(existing) ? buildResumeRecord(existing) : null;
+}
+
+/**
+ * `run::resume` handler. Mirrors `execute_resume`.
+ *
+ * - missing session_id → throws (IIIError equivalent).
+ * - unknown session → throws "unknown session: {id}".
+ * - terminal record → save fresh resume record + publish a step + return
+ *   `{ok:true, session_id, resumed:true}`.
+ * - active record → return `{ok:true, session_id, resumed:false}` WITHOUT
+ *   any state writes or step publish. The approval-gate's `resume_session`
+ *   poll will retry every 250 ms for up to 30 s until the record reaches
+ *   terminal naturally.
+ */
+export async function executeResume(
+  iii: ISdk,
+  payload: unknown,
+): Promise<{ ok: true; session_id: string; resumed: boolean }> {
+  const obj = (payload ?? {}) as Record<string, unknown>;
+  const session_id = requireString(obj, 'session_id');
+  const existing = await persistence.loadRecord(iii, session_id);
+  if (!existing) {
+    throw new Error(`unknown session: ${session_id}`);
+  }
+  const plan = buildResumePlan(existing);
+  if (!plan) {
+    return { ok: true, session_id, resumed: false };
+  }
+  await persistence.saveRecord(iii, plan);
+  await publishStep(iii, session_id);
+  return { ok: true, session_id, resumed: true };
+}
+
 export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
   iii.registerFunction(FUNCTION_ID, async (payload: unknown) => execute(iii, payload), {
     description: 'Start a durable agent session and return immediately.',
@@ -115,6 +169,13 @@ export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
     async (payload: unknown) => executeSync(iii, cfg, payload),
     {
       description: 'Start a durable agent session and block until terminal (test/dev convenience).',
+    },
+  );
+  iii.registerFunction(
+    RESUME_FUNCTION_ID,
+    async (payload: unknown) => executeResume(iii, payload),
+    {
+      description: 'Resume an idled approval session and publish a turn step.',
     },
   );
 }

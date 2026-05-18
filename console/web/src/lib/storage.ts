@@ -2,6 +2,7 @@ import { type Conversation, isKnownRole, type Message } from '@/types/chat'
 
 const CONVERSATIONS_KEY = 'iii-chat-conversations'
 const ACTIVE_KEY = 'iii-chat-active'
+const LAST_MODEL_KEY = 'iii-chat-last-model'
 
 export function loadConversations(): Conversation[] {
   try {
@@ -38,6 +39,23 @@ export function saveActiveId(id: string | null): void {
   try {
     if (id) localStorage.setItem(ACTIVE_KEY, id)
     else localStorage.removeItem(ACTIVE_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
+export function loadLastModel(): string | null {
+  try {
+    return localStorage.getItem(LAST_MODEL_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function saveLastModel(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(LAST_MODEL_KEY, id)
+    else localStorage.removeItem(LAST_MODEL_KEY)
   } catch {
     /* best-effort */
   }

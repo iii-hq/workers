@@ -15,8 +15,48 @@ import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
 import { buildInput, decide, targetFunctionId } from '../provider-router.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
+import { consumeResolvedApprovalEntries } from './functions.js';
+
+/**
+ * True when the run was started with at least one function id in
+ * `approval_required`. Mirrors
+ * `turn-orchestrator/src/states/assistant.rs::approval_required_enabled` (PR #150).
+ *
+ * Gates the per-turn `approval::consume` call so idle runs without any
+ * approval-required functions pay zero overhead.
+ */
+export function approvalRequiredEnabled(request: unknown): boolean {
+  if (!request || typeof request !== 'object') return false;
+  const arr = (request as Record<string, unknown>).approval_required;
+  return Array.isArray(arr) && arr.length > 0;
+}
 
 export async function handleAwaiting(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  // PR #150: at the top of every turn, check whether any approvals were
+  // just resolved while we were idle. If so, stage them as prepared calls
+  // and jump straight into function_execute — skipping the LLM round-trip
+  // and resurrecting the turn that paused.
+  //
+  // We used to gate this on `approvalRequiredEnabled(request)` (i.e.
+  // non-empty `approval_required`) but console/web (per its docstring)
+  // intentionally sends `approval_required: []` — policy is the single
+  // source of truth via `iii-permissions.yaml`. So we always call consume;
+  // it returns `entries: []` cheaply when nothing's resolved.
+  try {
+    const prepared = await consumeResolvedApprovalEntries(iii, rec.session_id);
+    if (prepared.length > 0) {
+      await persistence.saveExecutedCalls(iii, rec.session_id, []);
+      await persistence.savePreparedCalls(iii, rec.session_id, prepared);
+      transitionTo(rec, 'function_execute');
+      return;
+    }
+  } catch (err) {
+    logger.warn('approval::consume failed; continuing without resolved approvals', {
+      session_id: rec.session_id,
+      err: String(err),
+    });
+  }
+
   if (rec.max_turns !== undefined && rec.turn_count >= rec.max_turns) {
     const cap = rec.max_turns ?? 0;
     const exhausted: AssistantMessage = {
@@ -309,3 +349,4 @@ export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<v
     transitionTo(rec, 'function_prepare');
   }
 }
+// reload 1779112003

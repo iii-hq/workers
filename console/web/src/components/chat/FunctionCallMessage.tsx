@@ -8,8 +8,13 @@ import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/cha
 interface FunctionCallMessageProps {
   message: FunctionCallMessageType
   defaultOpen?: boolean
-  onApprove?: () => void
-  onDeny?: () => void
+  /**
+   * Approve handler. May be sync or async; the component shows a
+   * `submitting…` state while the promise resolves and a red error row
+   * if it rejects. Wire the actual `approval::resolve` call here.
+   */
+  onApprove?: () => void | Promise<void>
+  onDeny?: () => void | Promise<void>
 }
 
 function formatJson(value: unknown): string {
@@ -56,6 +61,24 @@ export function FunctionCallMessage({
   const pending = !!message.pendingApproval
   const running = !!message.running
   const [open, setOpen] = useState(!!defaultOpen || pending)
+  const [submitting, setSubmitting] = useState<'approve' | 'deny' | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const runResolve = async (kind: 'approve' | 'deny') => {
+    const handler = kind === 'approve' ? onApprove : onDeny
+    if (!handler || submitting) return
+    setSubmitError(null)
+    setSubmitting(kind)
+    try {
+      await handler()
+      // Leave `submitting` set; the message patches once the resurrected
+      // execution emits real events (pendingApproval flips off, output
+      // arrives), at which point this whole pending block stops rendering.
+    } catch (err) {
+      setSubmitting(null)
+      setSubmitError(err instanceof Error ? err.message : String(err))
+    }
+  }
 
   useEffect(() => {
     if (pending) setOpen(true)
@@ -68,7 +91,7 @@ export function FunctionCallMessage({
       : 'ink'
 
   return (
-    <div className="border border-rule bg-bg">
+    <div className="border border-rule bg-bg" data-message-id={message.id}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -122,13 +145,33 @@ export function FunctionCallMessage({
       ) : null}
 
       {pending ? (
-        <div className="border-t border-rule-2 px-3 py-2 flex items-center gap-2">
-          <Button variant="primary" size="sm" onClick={onApprove}>
-            approve
-          </Button>
-          <Button variant="pill" size="sm" onClick={onDeny}>
-            deny
-          </Button>
+        <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void runResolve('approve')}
+              disabled={!onApprove || !!submitting}
+            >
+              {submitting === 'approve' ? 'approving…' : 'approve'}
+            </Button>
+            <Button
+              variant="pill"
+              size="sm"
+              onClick={() => void runResolve('deny')}
+              disabled={!onDeny || !!submitting}
+            >
+              {submitting === 'deny' ? 'denying…' : 'deny'}
+            </Button>
+            {submitting ? (
+              <span className="font-mono text-[12px] text-ink-faint">
+                waiting for the agent to resume…
+              </span>
+            ) : null}
+          </div>
+          {submitError ? (
+            <div className="font-mono text-[12px] text-warn">{submitError}</div>
+          ) : null}
         </div>
       ) : null}
     </div>

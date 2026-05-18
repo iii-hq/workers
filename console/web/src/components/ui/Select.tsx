@@ -6,19 +6,28 @@ interface SelectOption<T extends string> {
   label: string
 }
 
+interface SelectGroup<T extends string> {
+  label: string
+  options: SelectOption<T>[]
+}
+
 interface SelectProps<T extends string>
   extends Omit<
     React.SelectHTMLAttributes<HTMLSelectElement>,
     'onChange' | 'value' | 'defaultValue'
   > {
   value: T
-  options: SelectOption<T>[]
+  options?: SelectOption<T>[]
+  groups?: SelectGroup<T>[]
   onChange: (next: T) => void
 }
+
+export type { SelectGroup, SelectOption }
 
 export function Select<T extends string>({
   value,
   options,
+  groups,
   onChange,
   className,
   disabled,
@@ -39,11 +48,29 @@ export function Select<T extends string>({
         onChange={(e) => onChange(e.currentTarget.value as T)}
         className="appearance-none bg-transparent pr-5 outline-none cursor-pointer lowercase"
       >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value} className="text-ink bg-bg">
-            {opt.label}
-          </option>
-        ))}
+        {groups
+          ? groups.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.options.map((opt) => (
+                  <option
+                    key={opt.value}
+                    value={opt.value}
+                    className="text-ink bg-bg"
+                  >
+                    {opt.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))
+          : (options ?? []).map((opt) => (
+              <option
+                key={opt.value}
+                value={opt.value}
+                className="text-ink bg-bg"
+              >
+                {opt.label}
+              </option>
+            ))}
       </select>
       <span
         aria-hidden="true"

@@ -68,11 +68,41 @@ function collectStreamItems(
   lastIndex.value = items.length;
 }
 
+/**
+ * Build the publish-collect response envelope. Mirrors
+ * `hook-fanout/src/handler.rs::build_response` (PR #150).
+ *
+ * Adds `publish.{ok,error}` and `publish_failed:true` markers so the
+ * orchestrator's `publishFailureFromResponse` helper can fail-closed when
+ * a publish errored or the expected subscriber didn't reply.
+ */
+export function buildResponse(
+  event_id: string,
+  replies: unknown[],
+  merged: unknown,
+  publishFailed: boolean,
+  publishError?: string,
+): Record<string, unknown> {
+  const publish: Record<string, unknown> = publishFailed
+    ? publishError !== undefined
+      ? { ok: false, error: publishError }
+      : { ok: false }
+    : { ok: true };
+  const out: Record<string, unknown> = {
+    event_id,
+    replies,
+    merged,
+    publish,
+  };
+  if (publishFailed) out.publish_failed = true;
+  return out;
+}
+
 export async function execute(
   iii: ISdk,
   cfg: PublishCollectConfig,
   payload: unknown,
-): Promise<{ event_id: string; replies: unknown[]; merged: unknown }> {
+): Promise<Record<string, unknown>> {
   if (!payload || typeof payload !== 'object') {
     throw new Error('hook-fanout::publish_collect: payload must be an object');
   }
@@ -100,6 +130,7 @@ export async function execute(
   const envelope = buildPublishEnvelope(topic, event_id, inner);
   const started_at = Date.now();
   let publish_failed = false;
+  let publish_error: string | undefined;
   try {
     await iii.trigger<unknown, unknown>({
       function_id: 'iii::durable::publish',
@@ -111,6 +142,7 @@ export async function execute(
       err: String(err),
     });
     publish_failed = true;
+    publish_error = err instanceof Error ? err.message : String(err);
   }
 
   const effective_timeout = Math.max(timeout_ms, cfg.min_timeout_ms);
@@ -171,7 +203,7 @@ export async function execute(
       break;
   }
 
-  return { event_id, replies, merged };
+  return buildResponse(event_id, replies, merged, publish_failed, publish_error);
 }
 
 export function register(iii: ISdk, cfg: PublishCollectConfig): void {

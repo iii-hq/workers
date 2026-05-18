@@ -83,6 +83,10 @@ export interface FunctionCallMessage extends BaseMessage {
   running?: boolean
   /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
+  /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */
+  functionCallId?: string
+  /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
+  sessionId?: string
 }
 
 export type Message =
@@ -106,6 +110,9 @@ export interface MessagePatch {
   running?: boolean
   output?: unknown
   pendingApproval?: boolean
+  /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
+  functionCallId?: string
+  sessionId?: string
 }
 
 export interface Conversation {

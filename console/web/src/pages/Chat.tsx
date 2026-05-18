@@ -24,7 +24,7 @@ export function Chat() {
     setMode,
     appendMessage,
     updateMessage,
-  } = useConversations(catalogKeys)
+  } = useConversations(catalogKeys, !catalogLoading)
 
   return (
     <div className="flex-1 flex min-h-0">

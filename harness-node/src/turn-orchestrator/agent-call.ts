@@ -100,6 +100,7 @@ export async function dispatchWithHook(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
+  session_id?: string,
 ): Promise<FunctionResult> {
   if (!function_call.function_id || function_call.function_id.length === 0) {
     return errorResult({
@@ -107,8 +108,15 @@ export async function dispatchWithHook(
       message: 'agent_call requires a non-empty `function` string field',
     });
   }
-  const outcome = await consultBefore(iii, function_call, approval_required);
+  const outcome = await consultBefore(iii, function_call, approval_required, session_id);
   if (outcome.kind === 'deny') return denialResult(outcome.denial);
+  if (outcome.kind === 'pending') {
+    // Surface as a terminating pending placeholder so the LLM stops and
+    // handleFinalize's replacePendingApprovalPlaceholders can swap in the
+    // real result on resume.
+    const { prefilledResultForBlock } = await import('./states/functions.js');
+    return prefilledResultForBlock(outcome.merged, function_call.id, function_call.function_id);
+  }
 
   try {
     const value = await iii.trigger<unknown, unknown>({
@@ -139,7 +147,7 @@ export async function dispatchWithHook(
 
 export async function dispatch(
   iii: ISdk,
-  _session_id: string,
+  session_id: string,
   fn: unknown,
   payload: unknown,
 ): Promise<FunctionResult> {
@@ -154,7 +162,7 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  return dispatchWithHook(iii, fc, []);
+  return dispatchWithHook(iii, fc, [], session_id);
 }
 
 export function register(iii: ISdk): void {

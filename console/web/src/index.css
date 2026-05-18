@@ -88,6 +88,16 @@
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-ink-ghost);
   }
+
+  /* flatten the native optgroup label so it doesn't introduce bold/italic
+     into a mono-lowercase picker. chrome/firefox honor these; safari ignores
+     most optgroup styling and will keep its italic default — accepted. */
+  select optgroup {
+    font-style: normal;
+    font-weight: 400;
+    color: var(--color-ink-faint);
+    font-family: inherit;
+  }
 }
 
 @keyframes pulse-dot {
