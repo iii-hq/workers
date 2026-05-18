@@ -337,7 +337,8 @@ async function readDecision(
 }
 
 function denialResultFromDecision(decision: ApprovalDecisionRecord): FunctionResult {
-  const reason = decision.reason ?? (decision.decision === 'aborted' ? 'session_aborted' : 'denied');
+  const reason =
+    decision.reason ?? (decision.decision === 'aborted' ? 'session_aborted' : 'denied');
   const message =
     decision.decision === 'aborted'
       ? `Function call aborted: ${reason}`

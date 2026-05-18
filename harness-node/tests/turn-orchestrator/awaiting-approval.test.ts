@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import { handleAwaitingApproval } from '../../src/turn-orchestrator/states/functions.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
+import { handleAwaitingApproval } from '../../src/turn-orchestrator/states/functions.js';
 
 function fakeIii(stateGetImpl: (scope: string, key: string) => unknown): ISdk {
   return {
