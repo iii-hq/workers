@@ -21,6 +21,12 @@ import { type TurnState, type TurnStateRecord, transitionTo } from '../state.js'
 
 const APPROVAL_CONSUME_FN = 'approval::consume';
 const APPROVAL_CONSUME_TIMEOUT_MS = 5_000;
+const APPROVAL_STATE_SCOPE = 'approvals';
+
+type ApprovalDecisionRecord = {
+  decision: 'allow' | 'deny' | 'aborted';
+  reason: string | null;
+};
 
 /**
  * Pure helper. Converts a merged blocking reply from the before-hook into a
@@ -308,6 +314,86 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
   }
   transitionTo(rec, 'function_finalize');
+}
+
+async function readDecision(
+  iii: ISdk,
+  session_id: string,
+  function_call_id: string,
+): Promise<ApprovalDecisionRecord | null> {
+  const key = `${session_id}/${function_call_id}`;
+  const raw = await iii.trigger<unknown, unknown>({
+    function_id: 'state::get',
+    payload: { scope: APPROVAL_STATE_SCOPE, key },
+  });
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const decision = obj.decision;
+  if (decision !== 'allow' && decision !== 'deny' && decision !== 'aborted') return null;
+  return {
+    decision,
+    reason: typeof obj.reason === 'string' ? obj.reason : null,
+  };
+}
+
+function denialResultFromDecision(decision: ApprovalDecisionRecord): FunctionResult {
+  const reason = decision.reason ?? (decision.decision === 'aborted' ? 'session_aborted' : 'denied');
+  const message =
+    decision.decision === 'aborted'
+      ? `Function call aborted: ${reason}`
+      : `Permission denied by user: ${reason}`;
+  return {
+    content: [text(message)],
+    details: {
+      approval_denied: true,
+      decision: decision.decision,
+      reason,
+    },
+    terminate: false,
+  };
+}
+
+export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const awaiting = rec.awaiting_approval ?? [];
+  if (awaiting.length === 0) {
+    transitionTo(rec, 'function_execute');
+    return;
+  }
+
+  const decisions = await Promise.all(
+    awaiting.map((entry) => readDecision(iii, rec.session_id, entry.function_call_id)),
+  );
+
+  if (decisions.some((decision) => decision === null)) {
+    return;
+  }
+
+  const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
+  for (let i = 0; i < awaiting.length; i++) {
+    const entry = awaiting[i];
+    const decision = decisions[i];
+    if (!entry || !decision) continue;
+    const idx = prepared.findIndex(
+      (preparedEntry) => preparedEntry.function_call.id === entry.function_call_id,
+    );
+    if (idx < 0) continue;
+    const current = prepared[idx];
+    if (!current) continue;
+    if (decision.decision === 'allow') {
+      prepared[idx] = { ...current, pre_approved: true, blocked: null };
+    } else {
+      prepared[idx] = {
+        ...current,
+        pre_approved: false,
+        blocked: denialResultFromDecision(decision),
+      };
+    }
+  }
+
+  await persistence.savePreparedCalls(iii, rec.session_id, prepared);
+
+  rec.awaiting_approval = [];
+  transitionTo(rec, 'function_execute');
 }
 
 function buildFunctionExecutionEnd(
