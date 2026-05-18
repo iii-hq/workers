@@ -1,5 +1,6 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
+import { register as registerCall } from './call.js';
 import { loadHarnessConfig } from './config.js';
 import { spawnPumps } from './fanout/index.js';
 import { register as registerFs } from './fs.js';
@@ -12,6 +13,7 @@ export async function register(iii: ISdk, ctx: { configPath: string; url: string
   const cfg = await loadConfig(ctx.configPath);
   const harness = loadHarnessConfig(cfg);
   registerStatus(iii);
+  registerCall(iii);
   const fanoutState = new FanoutState();
   registerSubscriptions(iii, fanoutState);
   spawnPumps(iii, fanoutState);

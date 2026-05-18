@@ -19,7 +19,7 @@
 
 import { Command } from 'commander';
 import { type ISdk, registerWorker } from 'iii-sdk';
-import { logger } from './otel.js';
+import { initHarnessOtel, instrumentHandler, logger } from './otel.js';
 
 export type RegisterFn = (iii: ISdk, ctx: { configPath: string; url: string }) => Promise<unknown>;
 
@@ -63,13 +63,18 @@ export const DEFAULT_CONFIG_PATH = './config.yaml';
 export async function runWorker(opts: RunWorkerOptions): Promise<WorkerHandle> {
   logger.info('worker starting', { name: opts.name, url: opts.url, config: opts.configPath });
 
-  const iii = registerWorker(opts.url, { workerName: opts.name });
+  // Boot OTel before opening the SDK so the very first registerFunction
+  // call already sees a live tracer. Idempotent across composite startups.
+  initHarnessOtel(opts.name, opts.url);
+
+  const rawIii = registerWorker(opts.url, { workerName: opts.name });
+  const iii = instrumentSdk(rawIii);
   let refs: unknown = null;
   try {
     refs = await opts.register(iii, { configPath: opts.configPath, url: opts.url });
   } catch (err) {
     logger.error('worker register failed', { name: opts.name, err: String(err) });
-    await iii.shutdown().catch(() => {});
+    await rawIii.shutdown().catch(() => {});
     throw err;
   }
 
@@ -79,11 +84,42 @@ export async function runWorker(opts: RunWorkerOptions): Promise<WorkerHandle> {
       // Keep refs alive until shutdown so unregister handles aren't GC'd.
       void refs;
       logger.info('worker shutting down', { name: opts.name });
-      await iii.shutdown().catch((err) => {
+      await rawIii.shutdown().catch((err) => {
         logger.warn('shutdown failed', { name: opts.name, err: String(err) });
       });
     },
   };
+}
+
+/**
+ * Wrap an `ISdk` so every `registerFunction(functionId, handler, opts)`
+ * call is intercepted and the local handler is replaced with one that
+ * runs inside an OTel span tagged with `iii.session.id` / `iii.message.id`
+ * / `iii.function.id`. HTTP invocation configs (objects, not functions)
+ * pass through unchanged — there's no local handler to wrap.
+ *
+ * This is the single point of correctness for trace correlation: every
+ * harness-node `register.ts` calls `iii.registerFunction(...)` on an SDK
+ * instance that flowed out of this function, so no per-callsite changes
+ * are needed and no new register.ts can accidentally skip the wrap.
+ */
+function instrumentSdk(iii: ISdk): ISdk {
+  return new Proxy(iii, {
+    get(target, prop, receiver) {
+      if (prop === 'registerFunction') {
+        return function instrumentedRegisterFunction(
+          functionId: string,
+          handler: Parameters<ISdk['registerFunction']>[1],
+          options?: Parameters<ISdk['registerFunction']>[2],
+        ) {
+          const wrappedHandler =
+            typeof handler === 'function' ? instrumentHandler(functionId, handler) : handler;
+          return target.registerFunction(functionId, wrappedHandler, options);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 }
 
 export async function bootstrapWorker(opts: BootstrapOptions): Promise<void> {

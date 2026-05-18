@@ -1,8 +1,10 @@
-import { useCallback, useRef, useState } from 'react'
+import { Copy } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Prompt } from '@/components/ui/Prompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { uid } from '@/hooks/use-conversations'
 import type { ChatBackend } from '@/lib/backend'
+import { makeSessionId } from '@/lib/session-id'
 import type {
   AssistantMessage,
   Conversation,
@@ -48,6 +50,24 @@ export function ChatView({
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  // Stable across all turns of this conversation. Matches what the
+  // engine sees on every `run::start` and on every span's
+  // `iii.session.id` attribute, so the value displayed in the header
+  // is exactly what the traces UI shows when grouping by session.
+  const sessionId = useMemo(
+    () => makeSessionId(conversation.id),
+    [conversation.id],
+  )
+
+  const handleCopySessionId = useCallback(() => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return
+    void navigator.clipboard.writeText(sessionId).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }, [sessionId])
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
@@ -84,7 +104,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           conversation.model,
-          { signal: controller.signal },
+          { signal: controller.signal, sessionId },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -240,6 +260,7 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      sessionId,
       backend,
       onAppendMessage,
       onPatchMessage,
@@ -277,10 +298,32 @@ export function ChatView({
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
       <header className="flex items-center justify-between px-9 py-3 border-b border-rule">
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2">
+        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0">
           <Prompt symbol="$">{conversation.model}</Prompt>
           <span className="text-ink-ghost">·</span>
           <span className="text-ink-faint">{conversation.mode}</span>
+          <span className="text-ink-ghost">·</span>
+          <button
+            type="button"
+            onClick={handleCopySessionId}
+            title={
+              copied
+                ? `copied ${sessionId}`
+                : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
+            }
+            className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
+          >
+            <span className="truncate font-mono text-[11px] tabular-nums">
+              {sessionId}
+            </span>
+            {copied ? (
+              <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
+                copied
+              </span>
+            ) : (
+              <Copy className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+            )}
+          </button>
         </div>
         <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em]">
           <StatusDot

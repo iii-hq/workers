@@ -2,16 +2,23 @@
  * Real backend: iii-browser-sdk + harness fanout.
  *
  * Each `stream()` call:
- *   1. Mints a fresh `session_id` (Phase 1 is one-shot; multi-turn session
- *      persistence is Phase 4).
+ *   1. Reads `opts.sessionId` (stable across all turns of a chat
+ *      conversation) and mints a fresh `message_id` (one per send).
+ *      Mirrors `workers/harness/web/src/App.tsx` `send()` — the same
+ *      session_id is reused for every turn, the message_id is new per
+ *      user message. Both flow into the engine via baggage so the
+ *      traces UI can group spans by session AND by message.
+ *      If `opts.sessionId` is missing (legacy callers), falls back to
+ *      a fresh `console-<uuid>` so behavior is at least well-defined.
  *   2. Registers a per-`ui::session::event::<browser_id>` handler that
  *      enqueues envelopes whose `session_id` matches.
  *   3. Calls `ui::subscribe { browser_id, session_id }` so the harness
  *      fanout starts forwarding this session's events to us.
- *   4. Fires `run::start { session_id, provider, model, mode, messages }`
- *      against turn-orchestrator. The harness owns the system prompt; the
- *      console only ships the mode and lets the harness prepend the
- *      matching mode paragraph to its identity preamble.
+ *   4. Fires `run::start { session_id, message_id, provider, model,
+ *      mode, messages }` against turn-orchestrator. The harness owns
+ *      the system prompt; the console only ships the mode and lets the
+ *      harness prepend the matching mode paragraph to its identity
+ *      preamble.
  *   5. Pumps the queue through `translateAgentEvent`, yielding each
  *      resulting `StreamEvent`. Terminates on the `agent_end` envelope.
  *
@@ -31,8 +38,9 @@
  *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
+import { getIiiClient } from '@/lib/iii-client'
+import { newMessageId } from '@/lib/session-id'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
 import { translateAgentEvent } from './translate'
@@ -72,7 +80,10 @@ async function* realStream(
 ): AsyncGenerator<StreamEvent> {
   const signal = opts?.signal
   const client = await getIiiClient()
-  const sessionId = `console-${crypto.randomUUID()}`
+  // Prefer the caller-supplied conversation-scoped session_id; fall back
+  // to a fresh per-call id only when the caller hasn't been updated yet.
+  const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
+  const messageId = newMessageId()
 
   const queue: AgentEvent[] = []
   let resolveNext: (() => void) | null = null
@@ -103,26 +114,38 @@ async function* realStream(
 
     const { provider, model: modelId } = resolveRunParams(model)
 
-    // Fire-and-forget: run::start kicks off the turn-orchestrator state
-    // machine; events arrive via the ui::session::event handler above.
-    // Errors here are non-fatal at the contract level (the UI surfaces
-    // them via the assistant stream); log and let the loop fall through.
+    // Route the turn-orchestrator kick-off through `harness::call` so the
+    // harness wraps the inner trigger with an instrumented span that
+    // seeds `iii.session.id` / `iii.message.id` as baggage. Without this
+    // wrapper, the engine's `engine::traces::group_by` returns empty
+    // results for "Group by session" / "Group by message" because the
+    // engine's own `handle_invocation` / `call run::start` spans aren't
+    // inside any baggage context. Mirrors `workers/harness/web/src/App.tsx`
+    // `send()` (it uses the HTTP bridge — we use the WS bus). Errors are
+    // non-fatal at the contract level (the UI surfaces them through the
+    // assistant stream); log and let the loop fall through.
     void client
-      .call('run::start', {
+      .call('harness::call', {
+        function_id: 'run::start',
         session_id: sessionId,
-        provider,
-        model: modelId,
-        mode,
-        messages: [
-          {
-            role: 'user',
-            content: [{ type: 'text', text: prompt }],
-            timestamp: Date.now(),
-          },
-        ],
+        message_id: messageId,
+        payload: {
+          session_id: sessionId,
+          message_id: messageId,
+          provider,
+          model: modelId,
+          mode,
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: prompt }],
+              timestamp: Date.now(),
+            },
+          ],
+        },
       })
       .catch((err) => {
-        console.warn('[real-backend] run::start failed', err)
+        console.warn('[real-backend] harness::call run::start failed', err)
       })
 
     while (true) {
