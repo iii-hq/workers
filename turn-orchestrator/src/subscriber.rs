@@ -7,6 +7,7 @@ use std::sync::Arc;
 use iii_sdk::{IIIError, RegisterFunctionMessage, Value, III};
 use serde_json::json;
 
+use crate::awaiting::AwaitingApproval;
 use crate::config::TurnOrchestratorConfig;
 use crate::persistence;
 use crate::run_start::publish_step;
@@ -17,6 +18,7 @@ pub const FUNCTION_ID: &str = "turn::step";
 pub async fn execute(
     iii: III,
     cfg: Arc<TurnOrchestratorConfig>,
+    awaiting: AwaitingApproval,
     payload: Value,
 ) -> Result<Value, IIIError> {
     let session_id = extract_session_id(&payload).ok_or_else(|| {
@@ -46,7 +48,11 @@ pub async fn execute(
         })?;
     persistence::save_record(&iii, &record).await;
 
-    if !record.is_terminal() {
+    if record.is_terminal() {
+        // Wake any `run::resume` racing the executor — it can now
+        // observe the terminal record and rebuild a resume plan.
+        awaiting.signal(&session_id);
+    } else {
         publish_step(&iii, &session_id).await;
     }
     Ok(json!({
@@ -56,9 +62,10 @@ pub async fn execute(
     }))
 }
 
-pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
+pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>, awaiting: AwaitingApproval) {
     let iii_for_handler = iii.clone();
     let cfg_for_handler = Arc::clone(cfg);
+    let awaiting_for_handler = awaiting;
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string()).with_description(
             "Run one durable state machine transition for a session.".to_string(),
@@ -66,7 +73,8 @@ pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
         move |payload: Value| {
             let iii = iii_for_handler.clone();
             let cfg = Arc::clone(&cfg_for_handler);
-            async move { execute(iii, cfg, payload).await }
+            let awaiting = awaiting_for_handler.clone();
+            async move { execute(iii, cfg, awaiting, payload).await }
         },
     ));
 }
@@ -89,14 +97,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subscriber_register_accepts_config_arc() {
-        // Compile-time pin: register() must take an Arc<TurnOrchestratorConfig>.
-        // This guards against silently dropping config plumbing.
+    fn subscriber_register_accepts_config_arc_and_awaiting() {
+        // Compile-time pin: register() must take an Arc<TurnOrchestratorConfig>
+        // and an AwaitingApproval so the signal-on-terminal-save plumbing
+        // can't get silently dropped.
         fn _assert_signature(
             iii: &iii_sdk::III,
             cfg: &std::sync::Arc<crate::config::TurnOrchestratorConfig>,
+            awaiting: crate::awaiting::AwaitingApproval,
         ) {
-            super::register(iii, cfg);
+            super::register(iii, cfg, awaiting);
         }
     }
 

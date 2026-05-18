@@ -6,6 +6,7 @@ use harness_types::{AgentEvent, AgentMessage};
 use iii_sdk::{IIIError, RegisterFunctionMessage, TriggerRequest, Value, III};
 use serde_json::json;
 
+use crate::awaiting::AwaitingApproval;
 use crate::config::TurnOrchestratorConfig;
 use crate::events;
 use crate::persistence;
@@ -143,22 +144,67 @@ pub(crate) fn build_resume_plan(existing: &TurnStateRecord) -> Option<TurnStateR
     existing.is_terminal().then(|| build_resume_record(existing))
 }
 
-pub async fn execute_resume(iii: III, payload: Value) -> Result<Value, IIIError> {
+/// Max time `execute_resume` will wait for the executor to park the
+/// session. The happy path completes within milliseconds — this is the
+/// failure ceiling, not the expected latency.
+const RESUME_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub async fn execute_resume(
+    iii: III,
+    awaiting: AwaitingApproval,
+    payload: Value,
+) -> Result<Value, IIIError> {
     let session_id = required_str(&payload, "session_id")?;
-    let existing = persistence::load_record(&iii, &session_id)
+
+    if let Some(plan) = try_resume_now(&iii, &session_id).await? {
+        return finish_resume(&iii, &awaiting, &session_id, plan).await;
+    }
+
+    // Arm a Notified future *before* the second load so a signal that
+    // fires between the two checks is captured. Same lost-wake guard
+    // pattern as tokio::sync::Notify's documented usage.
+    let slot = awaiting.slot(&session_id);
+    let notified = slot.notified();
+    tokio::pin!(notified);
+
+    if let Some(plan) = try_resume_now(&iii, &session_id).await? {
+        return finish_resume(&iii, &awaiting, &session_id, plan).await;
+    }
+
+    match tokio::time::timeout(RESUME_WAIT_TIMEOUT, notified).await {
+        Ok(()) => {
+            if let Some(plan) = try_resume_now(&iii, &session_id).await? {
+                finish_resume(&iii, &awaiting, &session_id, plan).await
+            } else {
+                Ok(json!({
+                    "ok": true,
+                    "session_id": session_id,
+                    "resumed": false,
+                }))
+            }
+        }
+        Err(_) => Err(IIIError::Handler(format!(
+            "run::resume timed out waiting for session {session_id} to park"
+        ))),
+    }
+}
+
+async fn try_resume_now(iii: &III, session_id: &str) -> Result<Option<TurnStateRecord>, IIIError> {
+    let existing = persistence::load_record(iii, session_id)
         .await
         .ok_or_else(|| IIIError::Handler(format!("unknown session: {session_id}")))?;
+    Ok(build_resume_plan(&existing))
+}
 
-    let Some(resume_record) = build_resume_plan(&existing) else {
-        return Ok(json!({
-            "ok": true,
-            "session_id": session_id,
-            "resumed": false,
-        }));
-    };
-
-    persistence::save_record(&iii, &resume_record).await;
-    publish_step(&iii, &session_id).await;
+async fn finish_resume(
+    iii: &III,
+    awaiting: &AwaitingApproval,
+    session_id: &str,
+    plan: TurnStateRecord,
+) -> Result<Value, IIIError> {
+    persistence::save_record(iii, &plan).await;
+    publish_step(iii, session_id).await;
+    awaiting.clear(session_id);
     Ok(json!({
         "ok": true,
         "session_id": session_id,
@@ -183,7 +229,7 @@ pub async fn publish_step(iii: &III, session_id: &str) {
     }
 }
 
-pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
+pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>, awaiting: AwaitingApproval) {
     let iii_async = iii.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(FUNCTION_ID.to_string())
@@ -207,13 +253,15 @@ pub fn register(iii: &III, cfg: &Arc<TurnOrchestratorConfig>) {
         },
     ));
     let iii_resume = iii.clone();
+    let awaiting_resume = awaiting.clone();
     iii.register_function((
         RegisterFunctionMessage::with_id(RESUME_FUNCTION_ID.to_string()).with_description(
             "Resume an idled approval session and publish a turn step.".to_string(),
         ),
         move |payload: Value| {
             let iii = iii_resume.clone();
-            async move { execute_resume(iii, payload).await }
+            let awaiting = awaiting_resume.clone();
+            async move { execute_resume(iii, awaiting, payload).await }
         },
     ));
 }

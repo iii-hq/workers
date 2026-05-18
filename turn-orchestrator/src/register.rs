@@ -7,6 +7,7 @@ use iii_sdk::{RegisterTriggerInput, III};
 use serde_json::json;
 
 use crate::agent_call;
+use crate::awaiting::AwaitingApproval;
 use crate::config::TurnOrchestratorConfig;
 use crate::run_start::{self, STEP_TOPIC};
 use crate::subscriber::{self, FUNCTION_ID as STEP_FN_ID};
@@ -15,9 +16,10 @@ pub async fn register_with_iii(
     iii: &Arc<III>,
     cfg: &Arc<TurnOrchestratorConfig>,
 ) -> anyhow::Result<()> {
-    run_start::register(iii, cfg);
+    let awaiting = AwaitingApproval::new();
+    run_start::register(iii, cfg, awaiting.clone());
     agent_call::register(iii);
-    subscriber::register(iii, cfg);
+    subscriber::register(iii, cfg, awaiting);
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "durable:subscriber".into(),

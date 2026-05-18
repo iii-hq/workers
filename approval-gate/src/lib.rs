@@ -530,7 +530,7 @@ pub fn register(iii: &III, cfg: &WorkerConfig) -> anyhow::Result<Refs> {
                         )
                         .await;
                     }
-                    if let Err(err) = resume_session(&iii, &session_id).await {
+                    if let Err(err) = trigger_resume(&iii, &session_id).await {
                         write_event(
                             &iii,
                             &session_id,
@@ -658,28 +658,25 @@ fn approval_resolved_event(function_call_id: &str, record: &Value) -> Value {
     })
 }
 
-async fn resume_session(iii: &III, session_id: &str) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let response = iii
-            .trigger(TriggerRequest {
-                function_id: "run::resume".into(),
-                payload: json!({ "session_id": session_id }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await
-            .map_err(|err| err.to_string())?;
+/// Fire `run::resume` once and rely on the handler to block in-process
+/// until the executor parks the session. The 35 s ceiling sits just
+/// above the server-side 30 s wait so a server timeout surfaces as
+/// `resumed=false` rather than as a transport timeout here.
+async fn trigger_resume(iii: &III, session_id: &str) -> Result<(), String> {
+    let response = iii
+        .trigger(TriggerRequest {
+            function_id: "run::resume".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(35_000),
+        })
+        .await
+        .map_err(|err| err.to_string())?;
 
-        if response.get("resumed").and_then(Value::as_bool) == Some(true) {
-            return Ok(());
-        }
-
-        if std::time::Instant::now() >= deadline {
-            return Err("run::resume did not reopen approval turn before timeout".to_string());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    if response.get("resumed").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
     }
+    Err("run::resume did not reopen approval turn".to_string())
 }
 
 #[cfg(test)]

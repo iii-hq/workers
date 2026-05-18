@@ -1,6 +1,7 @@
 //! Durable session state machine. See plan doc for details.
 
 pub mod agent_call;
+pub mod awaiting;
 pub mod bootstrap;
 pub mod config;
 pub mod events;
@@ -13,6 +14,8 @@ pub mod states;
 pub mod subscriber;
 pub mod system_prompt;
 pub mod transitions;
+
+pub use awaiting::AwaitingApproval;
 
 pub use config::TurnOrchestratorConfig;
 pub use register::register_with_iii;
