@@ -60,7 +60,6 @@ interface WaterfallChartProps {
 interface DisplayState {
   expandedIds: Set<string>
   showCriticalPath: boolean
-  hoveredSpanId: string | null
   scrollPosition: number
 }
 
@@ -68,15 +67,20 @@ type DisplayAction =
   | { type: 'TOGGLE_SPAN'; spanId: string }
   | { type: 'SET_ALL_EXPANDED'; ids: Set<string> }
   | { type: 'SET_CRITICAL_PATH'; value: boolean }
-  | { type: 'SET_HOVERED_SPAN'; spanId: string | null }
   | { type: 'SET_SCROLL'; position: number }
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
   showCriticalPath: false,
-  hoveredSpanId: null,
   scrollPosition: 0,
 }
+
+// Note: `hoveredSpanId` used to live here, but mouse-sweep over the
+// chart fired one dispatch per row entered/exited — each one a full
+// re-render of every visible row. For a 2000+-span trace that froze
+// the page on mouse-move. The only consumer of the JS hover state was
+// row-background styling, which Tailwind's `hover:bg-panel` already
+// provides via CSS. Keeping the state was redundant work.
 
 function displayReducer(
   state: DisplayState,
@@ -96,9 +100,11 @@ function displayReducer(
       return { ...state, expandedIds: action.ids }
     case 'SET_CRITICAL_PATH':
       return { ...state, showCriticalPath: action.value }
-    case 'SET_HOVERED_SPAN':
-      return { ...state, hoveredSpanId: action.spanId }
     case 'SET_SCROLL':
+      // Cheap no-op when nothing changed — avoids a full re-render
+      // when the rAF-throttled scroll handler fires the same scrollTop
+      // twice in a row (e.g. when the user reaches a scroll boundary).
+      if (state.scrollPosition === action.position) return state
       return { ...state, scrollPosition: action.position }
   }
 }
@@ -147,7 +153,7 @@ export function WaterfallChart({
     displayReducer,
     initialDisplayState,
   )
-  const { expandedIds, showCriticalPath, hoveredSpanId, scrollPosition } =
+  const { expandedIds, showCriticalPath, scrollPosition } =
     displayState
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState(0)
@@ -277,9 +283,31 @@ export function WaterfallChart({
     [spanTree, expandedIds, hideEngineRouting, collapseEngineRoutingPairs],
   )
 
+  // rAF-throttled scroll. The native `scroll` event fires far above the
+  // browser's paint rate (trackpads can emit ~120Hz, freewheel scroll on
+  // macOS gets even noisier). Dispatching on every event triggered a full
+  // chart re-render each time — on a 2000+-span trace that flooded the
+  // main thread and the page felt frozen. Coalescing to one update per
+  // animation frame keeps state in sync with what the user can actually
+  // see while letting the browser handle the bulk of the visual scroll.
+  const scrollRafRef = useRef<number | null>(null)
+  const pendingScrollRef = useRef<number>(0)
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    dispatch({ type: 'SET_SCROLL', position: e.currentTarget.scrollTop })
+    pendingScrollRef.current = e.currentTarget.scrollTop
+    if (scrollRafRef.current !== null) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      dispatch({ type: 'SET_SCROLL', position: pendingScrollRef.current })
+    })
   }
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
+      }
+    }
+  }, [])
 
   const toggleExpand = (spanId: string) => {
     dispatch({ type: 'TOGGLE_SPAN', spanId })
@@ -432,7 +460,6 @@ export function WaterfallChart({
             const isExpanded = expandedIds.has(span.span_id)
             const isCritical = showCriticalPath && span.isCriticalPath
             const isSelected = selectedSpanId === span.span_id
-            const isHovered = hoveredSpanId === span.span_id
             const isEngineDim = !isSelected && isEngineRoutingSpan(span)
             const kindIndicator = getSpanKindIndicator(span.kind)
             const displayLabel = formatSpanLabel(span)
@@ -453,13 +480,13 @@ export function WaterfallChart({
             // row-level severity stripe: faint alert wash + 2px accent rail
             // for error rows, accent rail for the selected row. Only one
             // accent moment per region so selection takes priority.
+            // Hover is pure CSS (`hover:bg-panel`) — see the
+            // DisplayState comment for why we don't track it in JS.
             const rowChrome = isSelected
               ? 'bg-panel border-l-2 border-l-accent'
               : isError
                 ? 'bg-alert/5 border-l-2 border-l-alert'
-                : isHovered
-                  ? 'bg-panel'
-                  : 'hover:bg-panel'
+                : 'hover:bg-panel'
 
             return (
               // Row is a `<div role="button">`, not a `<button>`, because it
@@ -483,12 +510,6 @@ export function WaterfallChart({
                     onSpanClick(span)
                   }
                 }}
-                onMouseEnter={() =>
-                  dispatch({ type: 'SET_HOVERED_SPAN', spanId: span.span_id })
-                }
-                onMouseLeave={() =>
-                  dispatch({ type: 'SET_HOVERED_SPAN', spanId: null })
-                }
               >
                 <div
                   className={cn(
