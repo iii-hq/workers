@@ -5,16 +5,20 @@ import { Message } from './Message'
 
 interface MessageListProps {
   messages: MessageType[]
+  /** Show "thinking…" shimmer at the bottom while the agent is between
+      visible outputs (after submit, or between fcall-end and the next
+      turn's first token). */
+  isThinking?: boolean
 }
 
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, isThinking }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   /* Auto-scroll only when the user is already near the bottom. The effect body
-     reads layout off refs but the trigger we care about is "messages changed",
-     so list it explicitly. */
-  // biome-ignore lint/correctness/useExhaustiveDependencies: messages is the trigger, not a value read in the body.
+     reads layout off refs but the trigger we care about is "messages changed"
+     or "thinking flipped", so list both explicitly. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: messages and isThinking are the triggers, not values read in the body.
   useEffect(() => {
     const c = containerRef.current
     if (!c) return
@@ -22,7 +26,7 @@ export function MessageList({ messages }: MessageListProps) {
     if (distanceFromBottom < 200) {
       bottomRef.current?.scrollIntoView({ block: 'end' })
     }
-  }, [messages])
+  }, [messages, isThinking])
 
   if (messages.length === 0) {
     return <EmptyState />
@@ -34,6 +38,11 @@ export function MessageList({ messages }: MessageListProps) {
         {messages.map((m) => (
           <Message key={m.id} message={m} />
         ))}
+        {isThinking ? (
+          <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
+            thinking…
+          </div>
+        ) : null}
         <div ref={bottomRef} />
       </div>
     </div>
