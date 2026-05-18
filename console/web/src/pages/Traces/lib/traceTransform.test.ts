@@ -5,7 +5,8 @@
 // would benefit from richer fixture coverage in a follow-up.
 
 import { describe, expect, it } from 'vitest'
-import { calculateDurationMs, toMs } from './traceTransform'
+import type { SpanTreeNode } from '../api/traces'
+import { calculateDurationMs, toMs, treeToWaterfallData } from './traceTransform'
 
 const NS_PER_MS = 1_000_000
 // NANO_THRESHOLD in the module is Jan 1 2100 in ms (4102444800000).
@@ -75,5 +76,66 @@ describe('calculateDurationMs', () => {
 
   it('returns 0 when start equals end', () => {
     expect(calculateDurationMs(100, 100)).toBe(0)
+  })
+})
+
+describe('treeToWaterfallData', () => {
+  // Regression test for the "loading forever" bug on huge traces.
+  //
+  // The previous implementation used recursion in `flattenTree` and
+  // `calculateDepths.getDepth` plus `Math.min(...arr)` /
+  // `Math.max(...arr)` spreads. For a deeply nested 8000+-span trace
+  // (long-running workflow, recursive crawl, RAG pipeline with
+  // chained tool calls), the JS call stack overflowed at ~5-15k
+  // frames in V8. The throw happened inside the React render of
+  // `buildWaterfall(data)`, the chart never materialized, and the
+  // user was left staring at a "loading…" header indefinitely.
+  //
+  // 12_000 was picked because it sits above V8's typical default
+  // stack limit for the previous recursive call shape on commonly
+  // shipped Chrome/Node versions; the old code reliably threw, the
+  // new iterative implementation completes in ~10 ms.
+  it('handles a deeply nested chain without overflowing the call stack', () => {
+    const DEPTH = 12_000
+
+    // Build the chain iteratively (recursive construction would itself
+    // overflow — that's the point of the test).
+    let leaf: SpanTreeNode = {
+      trace_id: 't1',
+      span_id: `s${DEPTH - 1}`,
+      name: `s${DEPTH - 1}`,
+      start_time_unix_nano: DEPTH,
+      end_time_unix_nano: DEPTH + 1,
+      status: 'ok',
+      attributes: [],
+      events: [],
+      links: [],
+      children: [],
+    }
+    for (let i = DEPTH - 2; i >= 0; i--) {
+      leaf = {
+        trace_id: 't1',
+        span_id: `s${i}`,
+        parent_span_id: i === 0 ? undefined : `s${i - 1}`,
+        name: `s${i}`,
+        start_time_unix_nano: i,
+        end_time_unix_nano: DEPTH + 2,
+        status: 'ok',
+        attributes: [],
+        events: [],
+        links: [],
+        children: [leaf],
+      }
+    }
+
+    const wf = treeToWaterfallData([leaf])
+    expect(wf).not.toBeNull()
+    expect(wf?.span_count).toBe(DEPTH)
+    expect(wf?.spans[0].depth).toBe(0)
+    expect(wf?.spans[DEPTH - 1].depth).toBe(DEPTH - 1)
+  })
+
+  it('returns null for empty roots', () => {
+    expect(treeToWaterfallData([])).toBeNull()
   })
 })

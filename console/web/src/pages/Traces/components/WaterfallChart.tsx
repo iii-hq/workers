@@ -462,15 +462,27 @@ export function WaterfallChart({
                   : 'hover:bg-panel'
 
             return (
-              <button
+              // Row is a `<div role="button">`, not a `<button>`, because it
+              // contains a nested `<button>` for expand/collapse (and HTML
+              // forbids nested buttons — React surfaces it as a hydration
+              // error). Enter/Space activate selection to match button
+              // semantics for keyboard users.
+              <div
                 key={span.span_id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 className={cn(
                   'grid gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
                   rowChrome,
                 )}
                 style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
                 onClick={() => onSpanClick(span)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSpanClick(span)
+                  }
+                }}
                 onMouseEnter={() =>
                   dispatch({ type: 'SET_HOVERED_SPAN', spanId: span.span_id })
                 }
@@ -571,7 +583,7 @@ export function WaterfallChart({
                     title={`${span.name} — ${formatDuration(span.duration_ms)}`}
                   />
                 </div>
-              </button>
+              </div>
             )
           })}
             </div>

@@ -38,31 +38,41 @@ export interface WaterfallData {
 }
 
 /**
- * Calculate span depth in the tree
+ * Calculate span depth in the tree.
+ *
+ * Iterative on purpose: for a deeply nested trace (e.g. an 8000-span
+ * long-running workflow where each span is a child of the previous
+ * one), a recursive parent walk blows the V8 call stack at ~5-15k
+ * frames. The previous recursive `getDepth(span)` would throw
+ * `RangeError: Maximum call stack size exceeded` and the React render
+ * that called it would crash, leaving the user staring at "loading…".
  */
 function calculateDepths(spans: StoredSpan[]): Map<string, number> {
   const depths = new Map<string, number>()
   const spanMap = new Map(spans.map((s) => [s.span_id, s]))
 
-  function getDepth(span: StoredSpan): number {
-    if (depths.has(span.span_id)) {
-      return depths.get(span.span_id) ?? 0
+  for (const seed of spans) {
+    if (depths.has(seed.span_id)) continue
+    // Walk up to a span with a known depth (or a root), pushing each
+    // unvisited ancestor. Then resolve depths in reverse on the way
+    // back down. Cycle guard via `visiting` prevents infinite loops if
+    // the engine ever returns a malformed parent chain.
+    const chain: StoredSpan[] = []
+    const visiting = new Set<string>()
+    let cursor: StoredSpan | undefined = seed
+    while (cursor !== undefined && !depths.has(cursor.span_id) && !visiting.has(cursor.span_id)) {
+      visiting.add(cursor.span_id)
+      chain.push(cursor)
+      const parentId: string | undefined = cursor.parent_span_id
+      cursor = parentId !== undefined ? spanMap.get(parentId) : undefined
     }
-
-    if (!span.parent_span_id || !spanMap.has(span.parent_span_id)) {
-      depths.set(span.span_id, 0)
-      return 0
+    // Base depth: 0 if we hit a root (no parent in the set or a cycle).
+    let base =
+      cursor !== undefined && depths.has(cursor.span_id) ? (depths.get(cursor.span_id) ?? 0) : -1
+    for (let i = chain.length - 1; i >= 0; i--) {
+      base += 1
+      depths.set(chain[i].span_id, base)
     }
-
-    const parentSpan = spanMap.get(span.parent_span_id)
-    const parentDepth = parentSpan ? getDepth(parentSpan) : 0
-    const depth = parentDepth + 1
-    depths.set(span.span_id, depth)
-    return depth
-  }
-
-  for (const span of spans) {
-    getDepth(span)
   }
 
   return depths
@@ -150,11 +160,18 @@ export function toWaterfallData(
     return null
   }
 
-  // Calculate trace boundaries (in milliseconds)
-  const minStart = Math.min(
-    ...traceSpans.map((s) => toMs(s.start_time_unix_nano)),
-  )
-  const maxEnd = Math.max(...traceSpans.map((s) => toMs(s.end_time_unix_nano)))
+  // Calculate trace boundaries (in milliseconds). Reduce-based instead
+  // of `Math.min(...arr)` because spread arguments hit a hard cap
+  // (~65-125k items in V8) and the spread itself uses stack — both
+  // foot-guns for traces with many spans.
+  let minStart = Number.POSITIVE_INFINITY
+  let maxEnd = Number.NEGATIVE_INFINITY
+  for (const s of traceSpans) {
+    const start = toMs(s.start_time_unix_nano)
+    const end = toMs(s.end_time_unix_nano)
+    if (start < minStart) minStart = start
+    if (end > maxEnd) maxEnd = end
+  }
   const totalDurationMs = maxEnd - minStart
 
   // Calculate depths
@@ -219,15 +236,35 @@ export function toWaterfallData(
  * Flatten a SpanTreeNode tree into a flat list of StoredSpan-like objects
  * Depth is computed naturally from tree nesting level
  */
+/**
+ * Flatten a span tree into a depth-tagged list, in DFS order.
+ *
+ * Iterative on purpose: an 8000-span trace with a deep parent chain
+ * (long-running workflow, recursive crawl, RAG pipeline with nested
+ * tool calls) would blow the V8 call stack via the previous
+ * `result.push(...flattenTree(children, depth+1))` recursion. The
+ * spread itself was a second hazard — `arr.push(...big)` fails with
+ * "Maximum call stack size exceeded" once the spread argument count
+ * exceeds the engine's argument limit (~65-125k in V8).
+ */
 function flattenTree(
   nodes: SpanTreeNode[],
-  depth: number = 0,
 ): Array<{ span: SpanTreeNode; depth: number }> {
   const result: Array<{ span: SpanTreeNode; depth: number }> = []
-  for (const node of nodes) {
+  // Use an explicit stack of (node, depth) frames. Push children in
+  // reverse so the first child is popped first, preserving DFS order.
+  const stack: Array<{ node: SpanTreeNode; depth: number }> = []
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    stack.push({ node: nodes[i], depth: 0 })
+  }
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop() as { node: SpanTreeNode; depth: number }
     result.push({ span: node, depth })
-    if (node.children && node.children.length > 0) {
-      result.push(...flattenTree(node.children, depth + 1))
+    const children = node.children
+    if (children && children.length > 0) {
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push({ node: children[i], depth: depth + 1 })
+      }
     }
   }
   return result
@@ -253,13 +290,17 @@ export function treeToWaterfallData(
     return null
   }
 
-  // Calculate trace boundaries (in milliseconds)
-  const minStart = Math.min(
-    ...flatSpans.map((s) => toMs(s.span.start_time_unix_nano)),
-  )
-  const maxEnd = Math.max(
-    ...flatSpans.map((s) => toMs(s.span.end_time_unix_nano)),
-  )
+  // Calculate trace boundaries (in milliseconds). Reduce-based for the
+  // same reason as `toWaterfallData` above: avoid the spread argument
+  // cap for traces with many spans.
+  let minStart = Number.POSITIVE_INFINITY
+  let maxEnd = Number.NEGATIVE_INFINITY
+  for (const { span } of flatSpans) {
+    const start = toMs(span.start_time_unix_nano)
+    const end = toMs(span.end_time_unix_nano)
+    if (start < minStart) minStart = start
+    if (end > maxEnd) maxEnd = end
+  }
   const totalDurationMs = maxEnd - minStart
 
   // Convert to VisualizationSpan format

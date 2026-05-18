@@ -261,13 +261,35 @@ function TraceCard({
 
   const waterfall = data ? buildWaterfall(data) : undefined
   const resolvedSpanCount = waterfall?.span_count ?? expectedSpans ?? 0
-  const headerLabel =
-    waterfall?.spans[0]?.name ??
-    (open ? 'loading…' : expectedSpans ? `click to load (${expectedSpans} spans)` : 'click to load')
+  // Header label distinguishes every card state explicitly so a
+  // resolved-but-empty fetch doesn't look identical to "still loading"
+  // (which is what users saw on huge traces before — engine returned
+  // data, `treeToWaterfallData` produced no spans, and the header sat
+  // on "loading…" indefinitely).
+  const dataResolvedEmpty = data !== undefined && !waterfall
+  const headerLabel = waterfall?.spans[0]?.name
+    ? waterfall.spans[0].name
+    : !open
+      ? expectedSpans
+        ? `click to load (${expectedSpans} spans)`
+        : 'click to load'
+      : isLoading
+        ? 'loading…'
+        : error
+          ? 'load failed'
+          : dataResolvedEmpty
+            ? '(empty trace)'
+            : 'loading…'
   const durationMs = waterfall?.total_duration_ms ?? 0
   const tracePreview = traceId.slice(0, 12)
   const errorMessage =
-    error instanceof Error ? error.message : error ? 'failed to load' : null
+    error instanceof Error
+      ? error.message
+      : error
+        ? 'failed to load'
+        : dataResolvedEmpty
+          ? 'engine returned trace data but the tree was empty — try refreshing or check the engine logs'
+          : null
 
   return (
     <div className="border-b border-rule">
