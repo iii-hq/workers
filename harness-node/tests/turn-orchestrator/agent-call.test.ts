@@ -80,7 +80,7 @@ describe('isErrorResult', () => {
 
 describe('dispatchWithHook returns DispatchResult', () => {
   it('returns kind:pending when consultBefore returns pending', async () => {
-    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending', merged: {} });
+    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending' });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,

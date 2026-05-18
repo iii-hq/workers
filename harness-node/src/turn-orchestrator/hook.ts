@@ -1,25 +1,30 @@
 /**
- * `agent::before_function_call` hook. Mirrors
- * `turn-orchestrator/src/hook.rs`.
+ * Approval consultation. Calls `policy::check_permissions` directly and maps
+ * the reply to allow / deny / pending. Fail-closed on transport errors:
+ * unreachable policy → deny with `gate_unavailable`, unless the call appears
+ * in the legacy `approval_required` list (then treat as pending so the user
+ * can resolve it).
  *
- * Fail-closed: any hook failure (timeout, error, no subscriber) returns
- * `Deny` with `denied_by: gate_unavailable` so dispatch never silently
- * allows a call.
+ * `publishAfter` still goes through hook-fanout because the after-hook is a
+ * pluggable merge point with multiple potential consumers.
  */
 
+import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
+import { parsePolicyReply } from '../approval-gate/policy-consult.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
 
-export const TOPIC_BEFORE = 'agent::before_function_call';
 export const TOPIC_AFTER = 'agent::after_function_call';
 export const HOOK_TIMEOUT_MS = 10_000;
 export const DENIAL_SCHEMA_VERSION = 1;
 
+export type DeniedBy = 'permissions' | 'user' | 'gate_unavailable';
+
 export type DenialEnvelope = {
   schema_version: number;
   status: 'denied';
-  denied_by: 'permissions' | 'user' | 'gate_unavailable';
+  denied_by: DeniedBy;
   function_id: string;
   rule_id?: string;
   rule_action?: 'deny';
@@ -30,7 +35,7 @@ export type DenialEnvelope = {
 
 export type HookOutcome =
   | { kind: 'allow' }
-  | { kind: 'pending'; merged: Record<string, unknown> }
+  | { kind: 'pending' }
   | { kind: 'deny'; denial: DenialEnvelope | Record<string, unknown> };
 
 export function gateUnavailableEnvelope(function_id: string, reason: string): DenialEnvelope {
@@ -48,55 +53,54 @@ export async function consultBefore(
   function_call: FunctionCall,
   approval_required: string[],
   session_id: string | undefined,
-  _policy_function_id: string,
+  policy_function_id: string,
 ): Promise<HookOutcome> {
-  // PR #150: include session_id at the inner-payload root so approval-gate's
-  // extractCall can route it. Without this, the gate sees a null session_id,
-  // returns {block:false}, and the call passes through unapproved.
-  const inner = session_id
-    ? { session_id, function_call, approval_required }
-    : { function_call, approval_required };
-  const payload = {
-    topic: TOPIC_BEFORE,
-    payload: inner,
-    merge_rule: 'first_block_wins',
-    timeout_ms: HOOK_TIMEOUT_MS,
-  };
-  let merged: Record<string, unknown>;
+  let raw: unknown;
   try {
-    const resp = await iii.trigger<unknown, { merged?: unknown }>({
-      function_id: 'hook-fanout::publish_collect',
-      payload,
+    raw = await iii.trigger<unknown, unknown>({
+      function_id: policy_function_id,
+      payload: { function_id: function_call.function_id, args: function_call.arguments },
+      timeoutMs: HOOK_TIMEOUT_MS,
     });
-    merged =
-      resp?.merged && typeof resp.merged === 'object'
-        ? (resp.merged as Record<string, unknown>)
-        : {};
   } catch (err) {
-    logger.warn('before_function_call hook failed; failing closed', {
+    logger.warn('policy consult failed; checking legacy approval_required fallback', {
       function_id: function_call.function_id,
       err: String(err),
     });
+    if (approval_required.includes(function_call.function_id)) {
+      return { kind: 'pending' };
+    }
     return {
       kind: 'deny',
       denial: gateUnavailableEnvelope(
         function_call.function_id,
-        `permission gate did not respond: ${String(err)}`,
+        `policy unreachable: ${String(err)}`,
       ),
     };
   }
-  const blocked = merged.block === true;
-  if (!blocked) return { kind: 'allow' };
-  if (merged.status === 'pending') {
-    return { kind: 'pending', merged };
+
+  const decision = parsePolicyReply(raw);
+  if (decision.kind === 'allow') return { kind: 'allow' };
+  if (decision.kind === 'deny') {
+    return {
+      kind: 'deny',
+      denial: permissionsDenyEnvelope(
+        function_call.function_id,
+        decision.rule_id,
+        decision.matched_constraint,
+        function_call.arguments,
+      ),
+    };
   }
-  const denial =
-    (merged.denial as DenialEnvelope | undefined) ??
-    gateUnavailableEnvelope(
-      function_call.function_id,
-      typeof merged.reason === 'string' ? merged.reason : 'Permission denied.',
-    );
-  return { kind: 'deny', denial };
+  // needs_approval. Honor the legacy per-run approval_required allowlist: if
+  // the caller pre-declared their own list and this function isn't on it,
+  // gate-subscriber used to return `allow` (see prior gate-subscriber.ts
+  // legacy fallback). Preserve that behavior here so no caller observes a
+  // change in semantics.
+  if (approval_required.length > 0 && !approval_required.includes(function_call.function_id)) {
+    return { kind: 'allow' };
+  }
+  return { kind: 'pending' };
 }
 
 export async function publishAfter(
@@ -120,4 +124,3 @@ export async function publishAfter(
     return null;
   }
 }
-// reload marker 1779108905
