@@ -2,7 +2,12 @@ import type { ISdk } from '../runtime/iii.js'
 import type { TurnOrchestratorConfig } from './config.js'
 import type { TurnStateRecord } from './state.js'
 import { handleAwaiting, handleFinished, handleStreaming } from './states/assistant.js'
-import { handleExecute, handleFinalize, handlePrepare } from './states/functions.js'
+import {
+  handleAwaitingApproval,
+  handleExecute,
+  handleFinalize,
+  handlePrepare,
+} from './states/functions.js'
 import { handleProvisioning } from './states/provisioning.js'
 import { handleSteering } from './states/steering.js'
 import { handleTearingDown } from './states/tearing-down.js'
@@ -22,6 +27,8 @@ export async function step(iii: ISdk, cfg: TurnOrchestratorConfig, rec: TurnStat
       return handlePrepare(iii, rec)
     case 'function_execute':
       return handleExecute(iii, rec)
+    case 'function_awaiting_approval':
+      return handleAwaitingApproval(iii, rec)
     case 'function_finalize':
       return handleFinalize(iii, rec)
     case 'steering_check':

@@ -191,7 +191,11 @@ async function stagingGetWithLegacy(
   return Array.isArray(legacy) ? legacy : [];
 }
 
-export type PreparedEntry = { function_call: FunctionCall; blocked: FunctionResult | null };
+export type PreparedEntry = {
+  function_call: FunctionCall;
+  blocked: FunctionResult | null;
+  pre_approved?: boolean;
+};
 export type ExecutedEntry = {
   function_call: FunctionCall;
   result: FunctionResult;
@@ -201,25 +205,27 @@ export type ExecutedEntry = {
 export async function savePreparedCalls(
   iii: ISdk,
   session_id: string,
-  prepared: Array<readonly [FunctionCall, FunctionResult | null]>,
+  prepared: PreparedEntry[],
 ): Promise<void> {
-  const payload = prepared.map(([fc, blocked]) => ({ function_call: fc, blocked }));
+  const payload = prepared.map((e) => ({
+    function_call: e.function_call,
+    blocked: e.blocked,
+    pre_approved: e.pre_approved ?? false,
+  }));
   await stateSet(iii, stagingKey(session_id, PREPARED_KEY), payload);
 }
 
-export async function loadPreparedCalls(
-  iii: ISdk,
-  session_id: string,
-): Promise<Array<readonly [FunctionCall, FunctionResult | null]>> {
+export async function loadPreparedCalls(iii: ISdk, session_id: string): Promise<PreparedEntry[]> {
   const items = await stagingGetWithLegacy(iii, session_id, PREPARED_KEY, LEGACY_PREPARED_KEY);
-  const out: Array<readonly [FunctionCall, FunctionResult | null]> = [];
+  const out: PreparedEntry[] = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
     const obj = it as Record<string, unknown>;
     const fc = (obj.function_call ?? obj.tool_call) as FunctionCall | undefined;
     if (!fc) continue;
     const blocked = (obj.blocked as FunctionResult | null) ?? null;
-    out.push([fc, blocked] as const);
+    const pre_approved = obj.pre_approved === true;
+    out.push({ function_call: fc, blocked, pre_approved });
   }
   return out;
 }

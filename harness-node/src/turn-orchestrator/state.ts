@@ -13,10 +13,17 @@ export type TurnState =
   | 'assistant_finished'
   | 'function_prepare'
   | 'function_execute'
+  | 'function_awaiting_approval'
   | 'function_finalize'
   | 'steering_check'
   | 'tearing_down'
   | 'stopped';
+
+export type AwaitingApprovalEntry = {
+  function_call_id: string;
+  function_id: string;
+  args: unknown;
+};
 
 export type TurnStateRecord = {
   session_id: string;
@@ -29,6 +36,7 @@ export type TurnStateRecord = {
   turn_end_emitted: boolean;
   started_at_ms: number;
   updated_at_ms: number;
+  awaiting_approval?: AwaitingApprovalEntry[];
 };
 
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {

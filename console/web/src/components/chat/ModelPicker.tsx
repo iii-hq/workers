@@ -1,5 +1,9 @@
-import { Select } from '@/components/ui/Select'
-import type { ModelId, ModelOption } from '@/types/chat'
+import { Select, type SelectGroup } from '@/components/ui/Select'
+import {
+  CATALOG_MODEL_KEY_SEP,
+  type ModelId,
+  type ModelOption,
+} from '@/types/chat'
 
 interface ModelPickerProps {
   value: ModelId
@@ -8,6 +12,19 @@ interface ModelPickerProps {
   disabled?: boolean
   loading?: boolean
   className?: string
+}
+
+function groupByProvider(options: ModelOption[]): SelectGroup<ModelId>[] {
+  const byProvider = new Map<string, { value: ModelId; label: string }[]>()
+  for (const opt of options) {
+    const provider = opt.id.split(CATALOG_MODEL_KEY_SEP)[0] || '—'
+    const bucket = byProvider.get(provider) ?? []
+    bucket.push({ value: opt.id, label: opt.label })
+    byProvider.set(provider, bucket)
+  }
+  return [...byProvider.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, opts]) => ({ label, options: opts }))
 }
 
 export function ModelPicker({
@@ -27,7 +44,7 @@ export function ModelPicker({
   return (
     <Select<ModelId>
       value={safeValue}
-      options={pickerOptions.map((m) => ({ value: m.id, label: m.label }))}
+      groups={groupByProvider(pickerOptions)}
       onChange={onChange}
       disabled={disabled || loading}
       aria-label={loading ? 'model (loading catalog)' : 'model'}

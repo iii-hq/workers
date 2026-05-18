@@ -4,9 +4,9 @@
  */
 
 export const FN_RESOLVE = 'approval::resolve';
-export const FN_LIST_PENDING = 'approval::list_pending';
 export const STATE_SCOPE = 'approvals';
 export const DENIAL_SCHEMA_VERSION = 1;
+export const SUBSCRIBER_NAME = 'approval-gate';
 
 export type DeniedBy = 'permissions' | 'user' | 'gate_unavailable';
 
@@ -46,19 +46,27 @@ export function pendingKey(session_id: string, function_call_id: string): string
   return `${session_id}/${function_call_id}`;
 }
 
-export function buildPendingRecord(
-  function_call_id: string,
-  function_id: string,
-  args: unknown,
-  now_ms: number,
-  timeout_ms: number,
-): Record<string, unknown> {
+export type GateDecision = { kind: 'allow' } | { kind: 'deny'; reason: string };
+
+export type GateBlockReply =
+  | { block: false; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true }
+  | { block: true; reason: string; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true };
+
+/**
+ * Mirrors `approval-gate/src/lib.rs::block_reply_for`. Allow and Deny replies
+ * both carry the `subscriber` + `approval_gate` flags so the orchestrator's
+ * `publish_failure_from_response` can detect that approval-gate actually
+ * replied (fail-closed if no such reply is present).
+ */
+export function blockReplyFor(decision: GateDecision): GateBlockReply {
+  if (decision.kind === 'allow') {
+    return { block: false, subscriber: SUBSCRIBER_NAME, approval_gate: true };
+  }
   return {
-    function_call_id,
-    function_id,
-    args,
-    status: 'pending',
-    expires_at: now_ms + timeout_ms,
+    block: true,
+    reason: `approval-gate: ${decision.reason}`,
+    subscriber: SUBSCRIBER_NAME,
+    approval_gate: true,
   };
 }
 

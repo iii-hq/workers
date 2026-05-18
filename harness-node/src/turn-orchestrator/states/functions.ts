@@ -10,12 +10,21 @@ import type {
   AssistantMessage,
   FunctionResultMessage,
 } from '../../types/agent-message.js';
+import { text } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import { TOOL_NAME, dispatchWithHook, isErrorResult } from '../agent-call.js';
 import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
+import type { PreparedEntry } from '../persistence.js';
 import * as persistence from '../persistence.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
+
+const APPROVAL_STATE_SCOPE = 'approvals';
+
+type ApprovalDecisionRecord = {
+  decision: 'allow' | 'deny' | 'aborted';
+  reason: string | null;
+};
 
 function unwrapAgentCall(fc: FunctionCall): FunctionCall {
   if (fc.function_id !== TOOL_NAME) return fc;
@@ -30,8 +39,10 @@ export async function handlePrepare(iii: ISdk, rec: TurnStateRecord): Promise<vo
   const raw = rec.pending_function_calls;
   rec.pending_function_calls = raw.map(unwrapAgentCall);
 
-  const prepared: Array<readonly [FunctionCall, FunctionResult | null]> =
-    rec.pending_function_calls.map((fc) => [fc, null] as const);
+  const prepared: PreparedEntry[] = rec.pending_function_calls.map((fc) => ({
+    function_call: fc,
+    blocked: null,
+  }));
 
   await persistence.saveRecord(iii, rec);
   await persistence.saveExecutedCalls(iii, rec.session_id, []);
@@ -49,13 +60,15 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
   const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
   const results = await persistence.loadExecutedCalls(iii, rec.session_id);
 
-  for (const [fc] of prepared) {
+  for (const entry of prepared) {
+    const fc = entry.function_call;
     await emit(iii, rec.session_id, {
       type: 'function_execution_start',
       function_call_id: fc.id,
       function_id: fc.function_id,
       args: fc.arguments,
     });
+
     const existing = persistence.findExecutedCall(results, fc.id);
     if (existing) {
       await emit(
@@ -65,6 +78,29 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       );
       continue;
     }
+
+    if (entry.pre_approved === true) {
+      const value = await iii.trigger<unknown, unknown>({
+        function_id: fc.function_id,
+        payload: fc.arguments ?? {},
+      });
+      const result = decodeOrPassthroughResult(value);
+      const is_error = isErrorResult(result);
+      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+      await persistence.saveExecutedCalls(iii, rec.session_id, results);
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      continue;
+    }
+
+    if (entry.blocked) {
+      const result = entry.blocked;
+      const is_error = true;
+      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+      await persistence.saveExecutedCalls(iii, rec.session_id, results);
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      continue;
+    }
+
     // Augment the per-call args with session/fc context — same as Rust.
     let augmented_args: unknown;
     if (fc.arguments && typeof fc.arguments === 'object' && !Array.isArray(fc.arguments)) {
@@ -88,8 +124,21 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const result = await dispatchWithHook(iii, augmentedFc, approval_required);
-    const is_error = isErrorResult(result);
+    const out = await dispatchWithHook(iii, augmentedFc, approval_required, rec.session_id);
+
+    if (out.kind === 'pending') {
+      rec.awaiting_approval = rec.awaiting_approval ?? [];
+      rec.awaiting_approval.push({
+        function_call_id: fc.id,
+        function_id: fc.function_id,
+        args: fc.arguments,
+      });
+      transitionTo(rec, 'function_awaiting_approval');
+      return;
+    }
+
+    const result = out.result;
+    const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
     // Kick off persistence in parallel with the user-facing emit so the UI's
     // fcall-end lands ~one trigger round-trip sooner. We still await both
@@ -99,6 +148,108 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     await savePromise;
   }
   transitionTo(rec, 'function_finalize');
+}
+
+function decodeOrPassthroughResult(value: unknown): FunctionResult {
+  if (
+    value &&
+    typeof value === 'object' &&
+    Array.isArray((value as Record<string, unknown>).content)
+  ) {
+    const obj = value as Record<string, unknown>;
+    return {
+      content: obj.content as FunctionResult['content'],
+      details: obj.details ?? {},
+      terminate: typeof obj.terminate === 'boolean' ? obj.terminate : false,
+    };
+  }
+  const textBody = typeof value === 'string' ? value : JSON.stringify(value);
+  return {
+    content: [text(textBody)],
+    details: value,
+    terminate: false,
+  };
+}
+
+async function readDecision(
+  iii: ISdk,
+  session_id: string,
+  function_call_id: string,
+): Promise<ApprovalDecisionRecord | null> {
+  const key = `${session_id}/${function_call_id}`;
+  const raw = await iii.trigger<unknown, unknown>({
+    function_id: 'state::get',
+    payload: { scope: APPROVAL_STATE_SCOPE, key },
+  });
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const decision = obj.decision;
+  if (decision !== 'allow' && decision !== 'deny' && decision !== 'aborted') return null;
+  return {
+    decision,
+    reason: typeof obj.reason === 'string' ? obj.reason : null,
+  };
+}
+
+function denialResultFromDecision(decision: ApprovalDecisionRecord): FunctionResult {
+  const reason =
+    decision.reason ?? (decision.decision === 'aborted' ? 'session_aborted' : 'denied');
+  const message =
+    decision.decision === 'aborted'
+      ? `Function call aborted: ${reason}`
+      : `Permission denied by user: ${reason}`;
+  return {
+    content: [text(message)],
+    details: {
+      approval_denied: true,
+      decision: decision.decision,
+      reason,
+    },
+    terminate: false,
+  };
+}
+
+export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const awaiting = rec.awaiting_approval ?? [];
+  if (awaiting.length === 0) {
+    transitionTo(rec, 'function_execute');
+    return;
+  }
+
+  const decisions = await Promise.all(
+    awaiting.map((entry) => readDecision(iii, rec.session_id, entry.function_call_id)),
+  );
+
+  if (decisions.some((decision) => decision === null)) {
+    return;
+  }
+
+  const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
+  for (let i = 0; i < awaiting.length; i++) {
+    const entry = awaiting[i];
+    const decision = decisions[i];
+    if (!entry || !decision) continue;
+    const idx = prepared.findIndex(
+      (preparedEntry) => preparedEntry.function_call.id === entry.function_call_id,
+    );
+    if (idx < 0) continue;
+    const current = prepared[idx];
+    if (!current) continue;
+    if (decision.decision === 'allow') {
+      prepared[idx] = { ...current, pre_approved: true, blocked: null };
+    } else {
+      prepared[idx] = {
+        ...current,
+        pre_approved: false,
+        blocked: denialResultFromDecision(decision),
+      };
+    }
+  }
+
+  await persistence.savePreparedCalls(iii, rec.session_id, prepared);
+
+  rec.awaiting_approval = [];
+  transitionTo(rec, 'function_execute');
 }
 
 function buildFunctionExecutionEnd(
@@ -161,7 +312,7 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
   if (!asst) {
     rec.function_results = function_results;
     rec.pending_function_calls = [];
-    transitionTo(rec, 'tearing_down');
+    transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
     return;
   }
   for (const evt of buildFinalizeLifecycle(asst, function_results)) {

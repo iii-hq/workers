@@ -22,6 +22,27 @@ describe('mergeFirstBlockWins', () => {
     expect((merged as { denial?: unknown }).denial).toEqual(denial);
   });
 
+  it('preserves the full blocking reply verbatim (PR #150 clone-preserve)', () => {
+    const replies = [
+      { block: false },
+      {
+        block: true,
+        status: 'pending',
+        function_call_id: 'call-1',
+        function_id: 'shell::exec',
+        subscriber: 'approval-gate',
+        approval_gate: true,
+      },
+    ];
+    const merged = mergeFirstBlockWins(replies);
+    expect(merged.block).toBe(true);
+    expect(merged.status).toBe('pending');
+    expect(merged.function_call_id).toBe('call-1');
+    expect(merged.function_id).toBe('shell::exec');
+    expect(merged.subscriber).toBe('approval-gate');
+    expect(merged.approval_gate).toBe(true);
+  });
+
   it('defaults to no block', () => {
     expect(mergeFirstBlockWins([{}, { block: false }])).toEqual({ block: false });
   });

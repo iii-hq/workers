@@ -11,7 +11,7 @@ import type { AgentMessage } from '../types/agent-message.js';
 import type { TurnOrchestratorConfig } from './config.js';
 import { emit } from './events.js';
 import * as persistence from './persistence.js';
-import { type TurnStateRecord, isTerminal, newRecord } from './state.js';
+import { isTerminal, newRecord } from './state.js';
 
 export const FUNCTION_ID = 'run::start';
 export const SYNC_FUNCTION_ID = 'run::start_and_wait';

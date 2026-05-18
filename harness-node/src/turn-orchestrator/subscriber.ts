@@ -40,7 +40,9 @@ export async function execute(
     logger.warn('turn::step_requested for unknown session', { session_id });
     return { ok: false, reason: 'unknown_session' };
   }
-  if (isTerminal(rec)) return { ok: true, terminal: true };
+  if (isTerminal(rec)) {
+    return { ok: true, terminal: true };
+  }
   const from_state = rec.state;
   try {
     await step(iii, cfg, rec);
@@ -48,7 +50,9 @@ export async function execute(
     throw new Error(`transition from ${from_state} failed: ${String(err)}`);
   }
   await persistence.saveRecord(iii, rec);
-  if (!isTerminal(rec)) await publishStep(iii, session_id);
+  if (!isTerminal(rec) && rec.state !== 'function_awaiting_approval') {
+    await publishStep(iii, session_id);
+  }
   return { ok: true, from_state, to_state: rec.state };
 }
 

@@ -13,9 +13,14 @@ import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
   message: MessageType
+  onResolveApproval?: (
+    sessionId: string,
+    functionCallId: string,
+    decision: 'allow' | 'deny',
+  ) => Promise<void>
 }
 
-export function Message({ message }: MessageProps) {
+export function Message({ message, onResolveApproval }: MessageProps) {
   switch (message.role) {
     case 'user':
       return <UserMessage message={message} />
@@ -23,8 +28,23 @@ export function Message({ message }: MessageProps) {
       return <AssistantMessage message={message} />
     case 'thought':
       return <ThoughtMessage message={message} />
-    case 'function-call':
-      return <FunctionCallMessage message={message} />
+    case 'function-call': {
+      const sessionId = message.sessionId
+      const functionCallId = message.functionCallId
+      let onApprove: (() => Promise<void>) | undefined
+      let onDeny: (() => Promise<void>) | undefined
+      if (onResolveApproval && sessionId && functionCallId) {
+        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
+        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+      }
+      return (
+        <FunctionCallMessage
+          message={message}
+          onApprove={onApprove}
+          onDeny={onDeny}
+        />
+      )
+    }
   }
 }
 
