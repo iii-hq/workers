@@ -13,7 +13,7 @@ describe('handleDecisionWritten', () => {
     } as unknown as ISdk;
 
     const event = {
-      event_type: 'updated',
+      event_type: 'state:updated',
       scope: 'approvals',
       key: 'sess-abc/fc-1',
       old_value: null,
@@ -41,7 +41,7 @@ describe('handleDecisionWritten', () => {
     } as unknown as ISdk;
 
     await handleDecisionWritten(iii, {
-      event_type: 'updated',
+      event_type: 'state:updated',
       scope: 'approvals',
       key: 'sess-1/sub/path',
       old_value: null,
@@ -55,7 +55,7 @@ describe('handleDecisionWritten', () => {
   it('no-ops when the key has no slash separator', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     await handleDecisionWritten(iii, {
-      event_type: 'updated',
+      event_type: 'state:updated',
       scope: 'approvals',
       key: 'malformed-no-slash',
       old_value: null,
@@ -67,11 +67,36 @@ describe('handleDecisionWritten', () => {
 
   it('no-ops when the key is missing or not a string', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    await handleDecisionWritten(iii, { event_type: 'updated', scope: 'approvals' } as unknown);
+    await handleDecisionWritten(iii, {
+      event_type: 'state:updated',
+      scope: 'approvals',
+    } as unknown);
     expect(iii.trigger).not.toHaveBeenCalled();
 
     await handleDecisionWritten(iii, null);
     expect(iii.trigger).not.toHaveBeenCalled();
+  });
+
+  it('handles state:created events (first decision write)', async () => {
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+
+    await handleDecisionWritten(iii, {
+      event_type: 'state:created',
+      scope: 'approvals',
+      key: 'sess-xyz/fc-1',
+      old_value: null,
+      new_value: { decision: 'allow', reason: null },
+      message_type: 'state',
+    });
+
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]?.payload).toMatchObject({ data: { session_id: 'sess-xyz' } });
   });
 
   it('ignores deleted events', async () => {
