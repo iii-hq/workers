@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { TurnState } from '../../src/turn-orchestrator/state.js';
+import type {
+  AwaitingApprovalEntry,
+  TurnState,
+  TurnStateRecord,
+} from '../../src/turn-orchestrator/state.js';
 import {
   isTerminal,
   messagesKey,
@@ -35,6 +39,25 @@ describe('function_awaiting_approval state', () => {
     const rec = newRecord('s1');
     transitionTo(rec, 'function_awaiting_approval' as TurnState);
     expect(isTerminal(rec)).toBe(false);
+  });
+});
+
+describe('awaiting_approval field', () => {
+  it('defaults to undefined on fresh records', () => {
+    const rec: TurnStateRecord = newRecord('s1');
+    expect(rec.awaiting_approval).toBeUndefined();
+  });
+
+  it('accepts AwaitingApprovalEntry items', () => {
+    const rec: TurnStateRecord = newRecord('s1');
+    const entry: AwaitingApprovalEntry = {
+      function_call_id: 'fc-1',
+      function_id: 'shell::run',
+      args: { command: 'ls' },
+    };
+    rec.awaiting_approval = [entry];
+    expect(rec.awaiting_approval).toHaveLength(1);
+    expect(rec.awaiting_approval[0].function_call_id).toBe('fc-1');
   });
 });
 

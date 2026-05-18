@@ -19,6 +19,12 @@ export type TurnState =
   | 'tearing_down'
   | 'stopped';
 
+export type AwaitingApprovalEntry = {
+  function_call_id: string;
+  function_id: string;
+  args: unknown;
+};
+
 export type TurnStateRecord = {
   session_id: string;
   state: TurnState;
@@ -30,6 +36,7 @@ export type TurnStateRecord = {
   turn_end_emitted: boolean;
   started_at_ms: number;
   updated_at_ms: number;
+  awaiting_approval?: AwaitingApprovalEntry[];
 };
 
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
