@@ -27,9 +27,6 @@
  * `PHASE-2-PLAN.md`):
  *   - Assistant body arrives as a single `assistant-token` (no per-token
  *     streaming yet; Phase 2.A wires `message_update`).
- *   - Approvals surface as `pendingApproval: true` but the UI can't yet
- *     resolve them (Phase 3 adds approve/deny buttons calling
- *     `approval::resolve`).
  *   - Provider/model selection uses the models-catalog via the picker; legacy
  *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
  */
@@ -138,7 +135,7 @@ async function* realStream(
       }
       const event = queue.shift()
       if (!event) continue
-      for (const streamEvent of translateAgentEvent(event)) {
+      for (const streamEvent of translateAgentEvent(event, sessionId)) {
         yield streamEvent
       }
       if (event.type === 'agent_end') return
@@ -157,7 +154,21 @@ async function* realStream(
   }
 }
 
+async function realResolveApproval(
+  sessionId: string,
+  functionCallId: string,
+  decision: 'allow' | 'deny',
+): Promise<void> {
+  const client = await getIiiClient()
+  await client.call('approval::resolve', {
+    session_id: sessionId,
+    function_call_id: functionCallId,
+    decision,
+  })
+}
+
 export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
+  resolveApproval: realResolveApproval,
 }
