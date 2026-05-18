@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ISdk } from '../../src/runtime/iii.js';
 import {
   STEP_TOPIC,
   handleAbortSignalWrite,
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
-import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('isAbortSignalWrite condition', () => {
   it('matches session/<id>/abort_signal with new_value === true', () => {
