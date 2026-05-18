@@ -5,8 +5,7 @@ import { handleGateEvent } from './gate-subscriber.js';
 import { TRIGGER_FN_ID as ON_DECISION_FN, handleDecisionWritten } from './on-decision-written.js';
 import { handleResolveWithEvents } from './pending.js';
 import { IiiStateBus } from './state-bus.js';
-import { handleSweepSession } from './sweep.js';
-import { FN_RESOLVE, FN_SWEEP_SESSION } from './types.js';
+import { FN_RESOLVE } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
   const cfg = loadApprovalGateConfig(await loadConfig(ctx.configPath));
@@ -20,12 +19,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
       description:
         'Flip an approval to allow or deny. Writing the decision is itself the wake-up event.',
     },
-  );
-
-  iii.registerFunction(
-    FN_SWEEP_SESSION,
-    async (payload: unknown) => handleSweepSession(bus, cfg.approval_state_scope, payload),
-    { description: "Resolve a session's pending approvals as denied (used on abort)." },
   );
 
   iii.registerFunction(

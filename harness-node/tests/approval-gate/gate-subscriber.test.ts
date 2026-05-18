@@ -26,7 +26,6 @@ function fakeIii(handler: (call: TriggerCall) => unknown = () => undefined): {
 
 const cfg: ApprovalGateConfig = {
   approval_state_scope: STATE_SCOPE,
-  default_timeout_ms: 60_000,
   policy_function_id: 'policy::check_permissions',
   topic: 'agent::before_function_call',
 };

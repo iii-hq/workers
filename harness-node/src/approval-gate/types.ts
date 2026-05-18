@@ -4,7 +4,6 @@
  */
 
 export const FN_RESOLVE = 'approval::resolve';
-export const FN_SWEEP_SESSION = 'approval::sweep_session';
 export const STATE_SCOPE = 'approvals';
 export const DENIAL_SCHEMA_VERSION = 1;
 export const SUBSCRIBER_NAME = 'approval-gate';
@@ -45,25 +44,6 @@ export function pendingKey(session_id: string, function_call_id: string): string
   if (session_id.includes('/')) throw new Error('session_id must not contain "/"');
   if (function_call_id.includes('/')) throw new Error('function_call_id must not contain "/"');
   return `${session_id}/${function_call_id}`;
-}
-
-export function buildPendingRecord(
-  session_id: string,
-  function_call_id: string,
-  function_id: string,
-  args: unknown,
-  now_ms: number,
-  timeout_ms: number,
-): Record<string, unknown> {
-  return {
-    session_id,
-    function_call_id,
-    function_id,
-    args,
-    status: 'pending',
-    created_at: now_ms,
-    expires_at: now_ms + timeout_ms,
-  };
 }
 
 export type GateDecision = { kind: 'allow' } | { kind: 'deny'; reason: string };
