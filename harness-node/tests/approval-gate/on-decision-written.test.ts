@@ -77,7 +77,7 @@ describe('handleDecisionWritten', () => {
   it('ignores deleted events', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     await handleDecisionWritten(iii, {
-      event_type: 'deleted',
+      event_type: 'state:deleted', // engine value, see iii structs.rs
       scope: 'approvals',
       key: 'sess-abc/fc-1',
       old_value: { decision: 'allow', reason: null },

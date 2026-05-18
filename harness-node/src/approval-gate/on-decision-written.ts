@@ -13,7 +13,7 @@ export const TRIGGER_FN_ID = 'approval::on_decision_written';
 export async function handleDecisionWritten(iii: ISdk, event: unknown): Promise<void> {
   if (!event || typeof event !== 'object') return;
   const obj = event as Record<string, unknown>;
-  if (obj.event_type === 'deleted') return;
+  if (obj.event_type !== 'state:created' && obj.event_type !== 'state:updated') return;
 
   const key = obj.key;
   if (typeof key !== 'string' || key.length === 0) return;
