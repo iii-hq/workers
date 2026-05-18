@@ -5,8 +5,8 @@
 //! - Scope `session_tree:<session_id>`, key `<entry_id>`, value `SessionEntry`
 //! - Scope `session_tree_meta`, key `<session_id>`, value `SessionMeta`
 //!
-//! `state::list` returns values without keys, so each entry's `id` field is
-//! used to recover ordering when loading entries (Task E12).
+//! `state::list` returns values without keys, so each entry's timestamp is
+//! used to recover append ordering when loading entries (Task E12).
 
 use std::sync::Arc;
 
@@ -109,7 +109,11 @@ impl SessionStore for IiiStateSessionStore {
                     .map_err(|e| SessionError::Storage(format!("deserialize SessionEntry: {e}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by(|a, b| a.id().cmp(b.id()));
+        entries.sort_by(|a, b| {
+            a.timestamp()
+                .cmp(&b.timestamp())
+                .then_with(|| a.id().cmp(b.id()))
+        });
         Ok(entries)
     }
 
@@ -364,11 +368,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_entries_lists_session_scope_and_sorts() -> anyhow::Result<()> {
-        let e1 = sample_entry("01");
-        let e2 = sample_entry("02");
-        // Mock returns entries in REVERSE order; load_entries must sort by id.
-        let response = serde_json::json!([serde_json::to_value(&e2)?, serde_json::to_value(&e1)?,]);
+    async fn load_entries_lists_session_scope_and_sorts_by_timestamp() -> anyhow::Result<()> {
+        let mut later = sample_entry("aaa-later-id");
+        let mut earlier = sample_entry("zzz-earlier-id");
+        if let SessionEntry::CustomMessage { timestamp, .. } = &mut later {
+            *timestamp = 2;
+        }
+        if let SessionEntry::CustomMessage { timestamp, .. } = &mut earlier {
+            *timestamp = 1;
+        }
+        // Mock returns entries in reverse append order. The ids intentionally
+        // sort opposite the timestamps, so UUID/id ordering would pick the
+        // wrong active leaf after reload.
+        let response = serde_json::json!([
+            serde_json::to_value(&later)?,
+            serde_json::to_value(&earlier)?,
+        ]);
         let mock = Arc::new(MockTrigger::new(vec![Ok(response)]));
         let store = IiiStateSessionStore::new(mock.clone());
 
@@ -377,8 +392,8 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].id(), "01");
-        assert_eq!(entries[1].id(), "02");
+        assert_eq!(entries[0].id(), "zzz-earlier-id");
+        assert_eq!(entries[1].id(), "aaa-later-id");
 
         let calls = mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);

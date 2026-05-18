@@ -100,6 +100,15 @@ impl SessionEntry {
         }
     }
 
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Message { timestamp, .. }
+            | Self::CustomMessage { timestamp, .. }
+            | Self::BranchSummary { timestamp, .. }
+            | Self::Compaction { timestamp, .. } => *timestamp,
+        }
+    }
+
     /// Replace the entry's id, returning a new entry.
     fn with_id(mut self, new_id: String) -> Self {
         match &mut self {
