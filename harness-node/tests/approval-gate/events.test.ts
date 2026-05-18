@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  emitApprovalRequested,
-  emitApprovalResolved,
-  emitApprovalWakeFailed,
-} from '../../src/approval-gate/events.js';
+import { emitApprovalRequested, emitApprovalResolved } from '../../src/approval-gate/events.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
 type TriggerCall = { function_id: string; payload: unknown };
@@ -26,7 +22,6 @@ describe('approval-gate events', () => {
       function_call_id: 'tc-1',
       function_id: 'shell::exec',
       args: { command: 'date' },
-      expires_at: 61_000,
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.function_id).toBe('stream::set');
@@ -39,7 +34,7 @@ describe('approval-gate events', () => {
     expect(data.tool_call_id).toBe('tc-1');
     expect(data.function_id).toBe('shell::exec');
     expect(data.tool_name).toBe('shell::exec');
-    expect(data.expires_at).toBe(61_000);
+    expect(data).not.toHaveProperty('expires_at');
   });
 
   it('emitApprovalResolved writes the expected envelope', async () => {
@@ -55,13 +50,5 @@ describe('approval-gate events', () => {
     expect(data.tool_call_id).toBe('tc-1');
     expect(data.decision).toBe('allow');
     expect(data.reason).toBeNull();
-  });
-
-  it('emitApprovalWakeFailed writes the expected envelope with error string', async () => {
-    const { iii, calls } = fakeIii();
-    await emitApprovalWakeFailed(iii, 's1', 'resume timeout');
-    const data = (calls[0]?.payload as Record<string, unknown>).data as Record<string, unknown>;
-    expect(data.type).toBe('approval_wake_failed');
-    expect(data.error).toBe('resume timeout');
   });
 });

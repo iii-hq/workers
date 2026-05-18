@@ -1,22 +1,9 @@
 /**
- * `hook-fanout::publish_collect` handler.
- *
- * Reactive flow using iii's native `stream` trigger (no polling):
- * 1. Worker boot: `register()` wires one globally-registered handler
- *    (`hook-fanout::reply_handler`) and a single `stream` trigger on
- *    `agent::hook_reply`. Every `stream::set` on that stream invokes the
- *    handler, which routes the reply into an in-process `pending` map
- *    keyed by `group_id` (= event_id).
- * 2. Per call: mint `event_id`, install a Collector in `pending`,
- *    publish the envelope via `iii::durable::publish`, await a Promise
- *    resolved by whichever of these fires first:
- *      - expected_replies threshold met
- *      - quiescence_ms elapsed since the most recent reply
- *      - effective_timeout deadline
- *    Subscribers keep writing to `agent::hook_reply` exactly as before
- *    (no writer-side change).
- * 3. On exit, remove the Collector from `pending` and apply the merge
- *    rule.
+ * `hook-fanout::publish_collect` handler. A single `stream` trigger on
+ * `agent::hook_reply` routes every reply into an in-process `pending` map
+ * keyed by `event_id`. Each call installs a Collector, publishes the
+ * envelope, and resolves on whichever fires first: expected_replies met,
+ * quiescence_ms elapsed since the last reply, or effective_timeout.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -59,13 +46,6 @@ export function buildPublishEnvelope(
   };
 }
 
-/**
- * Build the publish-collect response envelope.
- *
- * `publish.{ok,error}` and `publish_failed:true` markers let the
- * orchestrator's `publishFailureFromResponse` helper fail-closed when a
- * publish errored or the expected subscriber didn't reply.
- */
 export function buildResponse(
   event_id: string,
   replies: unknown[],

@@ -17,7 +17,6 @@ system_default_skills:
 approval_gate:
   topic: "agent::before_function_call"
   approval_state_scope: "approvals"
-  default_timeout_ms: 300000
   policy_function_id: "policy::check_permissions"
 
 # session worker

@@ -67,23 +67,7 @@ export function translateAgentEvent(
         },
       ]
 
-    case 'function_execution_end': {
-      // PR #150: the orchestrator emits this even when the prefilled
-      // result is a pending-approval placeholder (terminate:true, no
-      // real dispatch yet). The accompanying `approval_requested` event
-      // already produced an fcall-start with pendingApproval:true; we
-      // must suppress this fcall-end so the UI keeps the approve/deny
-      // buttons visible until the user resolves and the resurrected
-      // dispatch emits real execution_start/end events.
-      const details = (event.result as { details?: unknown } | undefined)
-        ?.details
-      if (
-        details &&
-        typeof details === 'object' &&
-        (details as Record<string, unknown>).pending_approval === true
-      ) {
-        return []
-      }
+    case 'function_execution_end':
       return [
         {
           kind: 'fcall-end',
@@ -91,7 +75,6 @@ export function translateAgentEvent(
           durationMs: 0,
         },
       ]
-    }
 
     case 'approval_requested':
       return [

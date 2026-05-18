@@ -1,12 +1,16 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
-import { handleConsume } from './consume.js';
 import { handleGateEvent } from './gate-subscriber.js';
-import { handleListPending, handleResolveWithEvents } from './pending.js';
+import {
+  CONDITION_FN_ID as ON_DECISION_CONDITION,
+  TRIGGER_FN_ID as ON_DECISION_FN,
+  handleDecisionWritten,
+  isDecisionWrite,
+} from './on-decision-written.js';
+import { handleResolveWithEvents } from './pending.js';
 import { IiiStateBus } from './state-bus.js';
-import { handleSweepSession } from './sweep.js';
-import { FN_CONSUME, FN_LIST_PENDING, FN_RESOLVE, FN_SWEEP_SESSION } from './types.js';
+import { FN_RESOLVE } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
   const cfg = loadApprovalGateConfig(await loadConfig(ctx.configPath));
@@ -18,34 +22,15 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
       handleResolveWithEvents(iii, bus, cfg.approval_state_scope, payload),
     {
       description:
-        'Flip a pending approval entry to allow or deny, emit approval_resolved, and wake the paused session via run::resume.',
+        'Flip an approval to allow or deny. Writing the decision is itself the wake-up event.',
     },
-  );
-
-  iii.registerFunction(
-    FN_LIST_PENDING,
-    async (payload: unknown) => handleListPending(bus, cfg.approval_state_scope, payload),
-    { description: 'Return pending approvals for a session.' },
-  );
-
-  iii.registerFunction(
-    FN_CONSUME,
-    async (payload: unknown) => handleConsume(bus, cfg.approval_state_scope, payload),
-    { description: 'Return resolved approval decisions for a session once.' },
-  );
-
-  iii.registerFunction(
-    FN_SWEEP_SESSION,
-    async (payload: unknown) => handleSweepSession(bus, cfg.approval_state_scope, payload),
-    { description: "Resolve a session's pending approvals as denied (used on abort)." },
   );
 
   iii.registerFunction(
     'policy::approval_gate',
     async (envelope: unknown) => handleGateEvent({ iii, bus, cfg }, envelope),
     {
-      description:
-        'Consult policy::check_permissions and either allow, deny, or pause via handleIntercept (intercept-at-gate, fail-closed).',
+      description: 'Consult policy::check_permissions and reply allow, deny, or pending.',
     },
   );
 
@@ -53,5 +38,28 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     type: 'durable:subscriber',
     function_id: 'policy::approval_gate',
     config: { topic: cfg.topic },
+  });
+
+  iii.registerFunction(ON_DECISION_CONDITION, async (event: unknown) => isDecisionWrite(event), {
+    description:
+      'Condition: state event is a real approval decision write (state:created or state:updated, new_value.decision present).',
+  });
+
+  iii.registerFunction(
+    ON_DECISION_FN,
+    async (event: unknown) => handleDecisionWritten(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=approvals; extracts session_id from key and publishes turn::step_requested.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: ON_DECISION_FN,
+    config: {
+      scope: cfg.approval_state_scope,
+      condition_function_id: ON_DECISION_CONDITION,
+    },
   });
 }

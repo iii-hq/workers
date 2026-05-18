@@ -8,15 +8,12 @@
  *     return immediately with a marked block reply (subscriber +
  *     approval_gate flags so the orchestrator's `publishFailureFromResponse`
  *     can detect that the gate actually replied — fail-closed).
- *  3. needs_approval: delegate to `handleIntercept`, which writes the
- *     pending record (fail-closed on state-bus failure) and returns a
- *     pending/denied block envelope. We additionally emit the
- *     `approval_requested` lifecycle event when the entry reaches pending.
+ *  3. needs_approval: emit `approval_requested` and return a pending block
+ *     envelope. The orchestrator owns pending-call state on its turn record.
  *
- * Note: `approval_resolved` and `approval_wake_failed` events are emitted
- * by `handleResolveWithEvents` (in `pending.ts`) when the human resolves,
- * not from this subscriber. This subscriber returns synchronously without
- * waiting for the human decision.
+ * Note: `approval_resolved` events are emitted by `handleResolveWithEvents`
+ * (in `pending.ts`) when the human resolves, not from this subscriber. This
+ * subscriber returns synchronously without waiting for the human decision.
  */
 
 import { uuidLike } from '../runtime/ids.js';
@@ -25,7 +22,6 @@ import { streamSet } from '../runtime/stream.js';
 import type { ApprovalGateConfig } from './config.js';
 import { permissionsDenyEnvelope } from './denial.js';
 import { emitApprovalRequested } from './events.js';
-import { handleIntercept } from './intercept.js';
 import { type PolicyOutcome, consultPolicy } from './policy-consult.js';
 import type { StateBus } from './state-bus.js';
 import { type IncomingCall, SUBSCRIBER_NAME, blockReplyFor, extractCall } from './types.js';
@@ -98,30 +94,17 @@ export async function handleGateEvent(
     return reply;
   }
 
-  // Step 2: pause flow via handleIntercept (fail-closed on state-bus failure).
-  // The policy worker already decided `needs_approval`, so we MUST intercept
-  // even if the run's approval_required list is empty (e.g. `agent::call`
-  // dispatches with []). Synthesize membership so handleIntercept's
-  // requiresApproval gate doesn't short-circuit back to allow.
-  const callForIntercept: IncomingCall = call.approval_required.includes(call.function_id)
-    ? call
-    : { ...call, approval_required: [...call.approval_required, call.function_id] };
-  const now = Date.now();
-  const reply = await handleIntercept(
-    ctx.bus,
-    ctx.cfg.approval_state_scope,
-    callForIntercept,
-    now,
-    ctx.cfg.default_timeout_ms,
-  );
-  if ((reply as Record<string, unknown>).status === 'pending') {
-    await emitApprovalRequested(ctx.iii, call.session_id, {
-      function_call_id: call.function_call_id,
-      function_id: call.function_id,
-      args: call.args,
-      expires_at: now + ctx.cfg.default_timeout_ms,
-    });
-  }
+  await emitApprovalRequested(ctx.iii, call.session_id, {
+    function_call_id: call.function_call_id,
+    function_id: call.function_id,
+    args: call.args,
+  });
+  const reply = {
+    block: true,
+    status: 'pending' as const,
+    subscriber: SUBSCRIBER_NAME,
+    approval_gate: true,
+  };
   await writeHookReply(ctx.iii, call.reply_stream, call.event_id, reply);
   return reply;
 }

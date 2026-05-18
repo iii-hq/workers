@@ -1,22 +1,3 @@
-/**
- * Reactive sessions fanout via a native iii `state` trigger.
- *
- * Wiring:
- *   - A condition function (`harness::session::is_create_event`) filters
- *     state events to "session record created" — `event_type === 'created'`
- *     AND `key` matches `session/<id>/turn_state`. The engine evaluates the
- *     condition server-side and only fires the handler when it returns true.
- *   - A handler function (`harness::fanout::session_created`) receives the
- *     `StateEventData` (`{event_type, scope, key, old_value, new_value}`)
- *     and pushes `ui::sessions::changed::<browser_id>` to all-session
- *     subscribers.
- *   - A `state` trigger on `scope=agent` binds the two together.
- *
- * No polling, no hand-rolled lifecycle topic, no diff against a prev set
- * — the engine already knows when a session record was newly created and
- * delivers the value directly to the handler.
- */
-
 import type { ISdk, Trigger } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
 import type { FanoutState } from '../ui-subscribe.js';
@@ -88,18 +69,12 @@ export function spawnSessionsPoll(iii: ISdk, state: FanoutState): () => void {
   return () => {
     try {
       trigger?.unregister();
-    } catch {
-      // ignore
-    }
+    } catch {}
     try {
       handlerRef.unregister();
-    } catch {
-      // ignore
-    }
+    } catch {}
     try {
       conditionRef.unregister();
-    } catch {
-      // ignore
-    }
+    } catch {}
   };
 }

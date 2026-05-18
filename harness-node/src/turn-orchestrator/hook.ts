@@ -86,10 +86,6 @@ export async function consultBefore(
   }
   const blocked = merged.block === true;
   if (!blocked) return { kind: 'allow' };
-  // PR #150: distinguish pending (awaiting human approval) from hard deny.
-  // Pending replies carry `status: 'pending'` and must be surfaced as a
-  // terminating prefilled placeholder so the LLM stops and the UI can
-  // render an approval prompt instead of treating it as an error.
   if (merged.status === 'pending') {
     return { kind: 'pending', merged };
   }

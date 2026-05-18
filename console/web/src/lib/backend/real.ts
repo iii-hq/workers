@@ -32,8 +32,8 @@
  *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
+import { getIiiClient } from '@/lib/iii-client'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
 import { translateAgentEvent } from './translate'
@@ -52,7 +52,7 @@ interface RunParams {
  * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
  * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
  */
-function resolveRunParams(mode: Mode, model: ModelId): RunParams {
+function resolveRunParams(_mode: Mode, model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
   let provider: string
   let modelId: string

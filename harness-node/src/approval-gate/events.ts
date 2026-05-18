@@ -1,7 +1,6 @@
 /**
  * Approval-gate lifecycle events. Mirrors the `approval_requested`,
- * `approval_resolved`, and `approval_wake_failed` payloads that
- * `approval-gate/src/lib.rs::register` writes via `write_event` (Rust).
+ * and `approval_resolved` payloads written via `write_event`.
  */
 
 import { uuidLike } from '../runtime/ids.js';
@@ -23,7 +22,6 @@ export type ApprovalRequestedPayload = {
   function_call_id: string;
   function_id: string;
   args: unknown;
-  expires_at: number;
 };
 
 export async function emitApprovalRequested(
@@ -38,7 +36,6 @@ export async function emitApprovalRequested(
     function_id: payload.function_id,
     tool_name: payload.function_id,
     args: payload.args,
-    expires_at: payload.expires_at,
   });
 }
 
@@ -59,16 +56,5 @@ export async function emitApprovalResolved(
     tool_call_id: payload.function_call_id,
     decision: payload.decision,
     reason: payload.reason,
-  });
-}
-
-export async function emitApprovalWakeFailed(
-  iii: ISdk,
-  session_id: string,
-  error: string,
-): Promise<void> {
-  await writeEvent(iii, session_id, {
-    type: 'approval_wake_failed',
-    error,
   });
 }
