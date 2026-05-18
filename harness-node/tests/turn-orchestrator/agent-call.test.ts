@@ -87,6 +87,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
       { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
       [],
       's1',
+      'policy::check_permissions',
     );
     expect(out.kind).toBe('pending');
   });
@@ -108,6 +109,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
       { id: 'fc-1', function_id: 'shell::run', arguments: {} },
       [],
       's1',
+      'policy::check_permissions',
     );
     expect(out.kind).toBe('deny');
     if (out.kind === 'deny') {
