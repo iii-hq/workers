@@ -35,6 +35,22 @@ export interface ChatStreamOptions {
   signal?: AbortSignal
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
+  /**
+   * Stable session_id for the chat conversation. All `stream()` calls
+   * for the same conversation must pass the same value so the engine
+   * groups every turn under one session in the traces UI.
+   *
+   * The real backend uses it as `session_id` in `ui::subscribe` and
+   * `run::start`; the mock backend ignores it. When omitted, the real
+   * backend falls back to a fresh `console-<uuid>` so callers that
+   * haven't been updated yet still work (with the pre-fix behavior of
+   * one session per send).
+   *
+   * Mirrors the `harness/web` strategy: see
+   * `workers/harness/web/src/App.tsx` `newSessionId()` and the
+   * `active ?? draftId ?? newSessionId()` plumbing.
+   */
+  sessionId?: string
 }
 
 export interface ChatBackend {

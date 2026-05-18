@@ -19,6 +19,7 @@ that drive transitions; its fan-out trigger is a passive stream subscriber.
 ## Registered functions
 
 - `harness::status` — Returns the harness bundle name, version, and the list of expected runtime workers.
+- `harness::call` — Forward `{function_id, session_id?, message_id?, payload}` to `iii.trigger` and return the result wrapped in an HTTP-style `{status_code, headers, body}` envelope. Used by console/web so the harness span wrapper can seed `iii.session.id` / `iii.message.id` baggage from the outer body (see [architecture.md § Telemetry & trace correlation](harness-node/docs/architecture.md#telemetry--trace-correlation)). Port of `workers/harness/src/lib.rs:103-159`.
 - `ui::subscribe` — Register a browser's interest in a session (or all sessions if session_id is null).
 - `ui::unsubscribe` — Remove a browser's subscription to a session (or its all-sessions sub if session_id is null).
 - `harness::fs::read_inline` — Read a host file via shell::fs::read, drain its channel, and return a `{content:[{text}], details:{size, truncated, bytes_read}}` envelope (max 256 KiB inline by default).
@@ -80,6 +81,7 @@ worker.
 | [src/harness/register.ts](harness-node/src/harness/register.ts) | Composes the worker's bus surface; called by both `main.ts` and the composite [src/index.ts](harness-node/src/index.ts). |
 | [src/harness/config.ts](harness-node/src/harness/config.ts) | Loads `engine_url` + `permissions_path` from `config.yaml`. |
 | [src/harness/status.ts](harness-node/src/harness/status.ts) | `harness::status` handler. |
+| [src/harness/call.ts](harness-node/src/harness/call.ts) | `harness::call` handler — WS ingestion bridge for browser-originated calls. Forwards `{function_id, payload}` to `iii.trigger`; the wrapping `instrumentHandler` (see `runtime/otel.ts`) reads `session_id`/`message_id` from the outer body and seeds baggage. Port of `workers/harness/src/lib.rs:103-159`. |
 | [src/harness/expected-workers.ts](harness-node/src/harness/expected-workers.ts) | List of workers `harness::status` reports as expected. |
 | [src/harness/ui-subscribe.ts](harness-node/src/harness/ui-subscribe.ts) | In-memory `FanoutState` plus `ui::subscribe` / `ui::unsubscribe`. |
 | [src/harness/fs.ts](harness-node/src/harness/fs.ts) | `harness::fs::read_inline` — wraps `shell::fs::read` and inlines the channel into the legacy `{content, details}` envelope. |

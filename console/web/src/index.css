@@ -177,6 +177,63 @@
     -16px 4px 36px -10px rgba(0, 0, 0, 0.22);
 }
 
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@utility skeleton-pulse {
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes trace-flash {
+  0% {
+    background-color: color-mix(
+      in oklab,
+      var(--color-accent) 12%,
+      var(--color-bg)
+    );
+  }
+  100% {
+    background-color: var(--color-bg);
+  }
+}
+
+@utility trace-flash {
+  animation: trace-flash 600ms ease-out forwards;
+}
+
+/* xyflow overrides — keep node/edge chrome on the schematic palette */
+.react-flow {
+  background-color: var(--color-bg);
+  --xy-background-color: var(--color-bg);
+  --xy-node-color: var(--color-ink);
+  --xy-node-border: var(--color-rule);
+  --xy-node-background-color: var(--color-bg);
+  --xy-edge-stroke: var(--color-ink);
+  --xy-edge-stroke-width: 1px;
+  --xy-handle-background-color: var(--color-ink);
+  --xy-handle-border-color: var(--color-bg);
+  --xy-controls-button-background-color: var(--color-bg);
+  --xy-controls-button-color: var(--color-ink);
+  --xy-controls-button-border-color: var(--color-rule);
+}
+
+.react-flow__controls,
+.react-flow__controls-button {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
 /* lexical editor surface — keep it boring so it inherits the rest of the system */
 .composer-editor {
   outline: none;

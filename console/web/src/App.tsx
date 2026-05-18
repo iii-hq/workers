@@ -5,6 +5,7 @@ import { Wordmark } from '@/components/ui/Wordmark'
 import { useHashRoute, type View } from '@/hooks/use-hash-route'
 import { type Theme, useTheme } from '@/hooks/use-theme'
 import { Chat } from '@/pages/Chat'
+import { Traces } from '@/pages/Traces'
 
 const PLAYGROUND_ENABLED = !!import.meta.env.VITE_PLAYGROUND
 
@@ -26,10 +27,14 @@ const Playground = PLAYGROUND_ENABLED
 const VIEW_OPTIONS: { value: View; label: string }[] = PLAYGROUND_ENABLED
   ? [
       { value: 'chat', label: 'chat' },
+      { value: 'traces', label: 'traces' },
       { value: 'playground', label: 'playground' },
       { value: 'examples', label: 'examples' },
     ]
-  : [{ value: 'chat', label: 'chat' }]
+  : [
+      { value: 'chat', label: 'chat' },
+      { value: 'traces', label: 'traces' },
+    ]
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -44,7 +49,9 @@ export function App() {
         onThemeChange={setTheme}
       />
       <Suspense fallback={<RouteFallback />}>
-        {view === 'examples' && Examples ? (
+        {view === 'traces' ? (
+          <Traces />
+        ) : view === 'examples' && Examples ? (
           <Examples />
         ) : view === 'playground' && Playground ? (
           <Playground />
@@ -69,17 +76,15 @@ function Header({ view, onViewChange, theme, onThemeChange }: HeaderProps) {
       <div className="flex items-center gap-3">
         <Wordmark />
         <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
-          chat
+          {view}
         </span>
       </div>
       <div className="flex items-center gap-3">
-        {VIEW_OPTIONS.length > 1 ? (
-          <ModeToggle<View>
-            value={view}
-            onChange={onViewChange}
-            options={VIEW_OPTIONS}
-          />
-        ) : null}
+        <ModeToggle<View>
+          value={view}
+          onChange={onViewChange}
+          options={VIEW_OPTIONS}
+        />
         <ModeToggle<Theme>
           value={theme}
           onChange={onThemeChange}

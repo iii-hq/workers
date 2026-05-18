@@ -47,6 +47,7 @@
     "iii-context-compaction": "./dist/context-compaction/main.js"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "chokidar": "^3.6.0",
     "commander": "^12.1.0",
     "iii-sdk": "^0.12.0",
@@ -58,6 +59,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@opentelemetry/context-async-hooks": "^1.30.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
+    "@opentelemetry/sdk-trace-node": "^1.30.0",
     "@types/node": "^22.10.5",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.2",
