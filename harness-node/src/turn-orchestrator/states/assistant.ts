@@ -144,6 +144,10 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
       fn();
     }
   });
+  // iii-sdk@0.12.0's ChannelReader.onMessage doesn't open the read-side
+  // WebSocket — only stream.read / readAll do. Without this resume(), the
+  // provider's writes are dropped engine-side and the queue stays empty.
+  channel.reader.stream.resume();
 
   const input: ProviderStreamInput = buildInput(
     decision,
