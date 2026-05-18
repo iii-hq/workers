@@ -6,9 +6,9 @@ import {
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
 
-function fakeIii(): { iii: ISdk; publishes: Array<{ topic: string; data: unknown }> } {
+function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
   const stateStore = new Map<string, unknown>();
-  const publishes: Array<{ topic: string; data: unknown }> = [];
+  const stepTriggers: Array<{ session_id: string }> = [];
   const iii = {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       if (function_id === 'state::set') {
@@ -51,8 +51,17 @@ function fakeIii(): { iii: ISdk; publishes: Array<{ topic: string; data: unknown
         return stateStore.get(`${p.scope}/${p.key}`) ?? null;
       }
 
+      if (function_id === 'turn::step') {
+        stepTriggers.push(payload as { session_id: string });
+        return null;
+      }
+
+      // abort-signal handler still uses durable publish — capture it here too
       if (function_id === 'iii::durable::publish') {
-        publishes.push(payload as { topic: string; data: unknown });
+        const p = payload as { topic: string; data: { session_id: string } };
+        if (p.topic === 'turn::step_requested') {
+          stepTriggers.push({ session_id: p.data.session_id });
+        }
         return null;
       }
 
@@ -60,12 +69,12 @@ function fakeIii(): { iii: ISdk; publishes: Array<{ topic: string; data: unknown
     }),
   };
 
-  return { iii: iii as unknown as ISdk, publishes };
+  return { iii: iii as unknown as ISdk, stepTriggers };
 }
 
 describe('approval resume reactive trigger', () => {
-  it('writing a decision to approvals/<sid>/<cid> automatically publishes turn::step_requested', async () => {
-    const { iii, publishes } = fakeIii();
+  it('writing a decision to approvals/<sid>/<cid> automatically triggers turn::step directly', async () => {
+    const { iii, stepTriggers } = fakeIii();
 
     await iii.trigger({
       function_id: 'state::set',
@@ -78,15 +87,12 @@ describe('approval resume reactive trigger', () => {
 
     await Promise.resolve();
 
-    expect(publishes).toHaveLength(1);
-    expect(publishes[0]).toMatchObject({
-      topic: 'turn::step_requested',
-      data: { session_id: 'sess-x' },
-    });
+    expect(stepTriggers).toHaveLength(1);
+    expect(stepTriggers[0]).toMatchObject({ session_id: 'sess-x' });
   });
 
-  it('writing session/<sid>/abort_signal=true publishes turn::step_requested', async () => {
-    const { iii, publishes } = fakeIii();
+  it('writing session/<sid>/abort_signal=true triggers turn::step directly', async () => {
+    const { iii, stepTriggers } = fakeIii();
 
     await iii.trigger({
       function_id: 'state::set',
@@ -99,15 +105,12 @@ describe('approval resume reactive trigger', () => {
 
     await Promise.resolve();
 
-    expect(publishes).toHaveLength(1);
-    expect(publishes[0]).toMatchObject({
-      topic: 'turn::step_requested',
-      data: { session_id: 'sess-abort' },
-    });
+    expect(stepTriggers).toHaveLength(1);
+    expect(stepTriggers[0]).toMatchObject({ session_id: 'sess-abort' });
   });
 
-  it('writing session/<sid>/abort_signal=false does NOT publish (condition rejects clears)', async () => {
-    const { iii, publishes } = fakeIii();
+  it('writing session/<sid>/abort_signal=false does NOT trigger (condition rejects clears)', async () => {
+    const { iii, stepTriggers } = fakeIii();
 
     // Seed a previous true so this update sets it to false.
     await iii.trigger({
@@ -115,7 +118,7 @@ describe('approval resume reactive trigger', () => {
       payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: true },
     });
     await Promise.resolve();
-    publishes.length = 0; // drop the first wake
+    stepTriggers.length = 0; // drop the first wake
 
     await iii.trigger({
       function_id: 'state::set',
@@ -123,11 +126,11 @@ describe('approval resume reactive trigger', () => {
     });
     await Promise.resolve();
 
-    expect(publishes).toHaveLength(0);
+    expect(stepTriggers).toHaveLength(0);
   });
 
-  it('writing an unrelated agent-scope key does NOT publish', async () => {
-    const { iii, publishes } = fakeIii();
+  it('writing an unrelated agent-scope key does NOT trigger', async () => {
+    const { iii, stepTriggers } = fakeIii();
 
     await iii.trigger({
       function_id: 'state::set',
@@ -139,6 +142,6 @@ describe('approval resume reactive trigger', () => {
     });
     await Promise.resolve();
 
-    expect(publishes).toHaveLength(0);
+    expect(stepTriggers).toHaveLength(0);
   });
 });
