@@ -45,7 +45,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     async (envelope: unknown) => handleGateEvent({ iii, bus, cfg }, envelope),
     {
       description:
-        'Consult policy::check_permissions and either allow, deny, or pause via handleIntercept (intercept-at-gate, fail-closed).',
+        'Consult policy::check_permissions and either allow, deny, or return a pending approval reply.',
     },
   );
 
