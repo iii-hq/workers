@@ -1,7 +1,7 @@
 import type { LexicalEditor } from 'lexical'
 import { useCallback, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import type { Attachment, Mode, ModelId } from '@/types/chat'
+import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { LexicalShell } from './LexicalShell'
@@ -16,6 +16,8 @@ export interface ComposerSubmitPayload {
 interface ComposerProps {
   mode: Mode
   model: ModelId
+  modelOptions: ModelOption[]
+  catalogLoading?: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
@@ -30,6 +32,8 @@ interface ComposerProps {
 export function Composer({
   mode,
   model,
+  modelOptions,
+  catalogLoading,
   onModeChange,
   onModelChange,
   onSubmit,
@@ -95,8 +99,10 @@ export function Composer({
         <div className="flex-1" />
         <ModelPicker
           value={model}
+          options={modelOptions}
           onChange={onModelChange}
           disabled={isStreaming}
+          loading={catalogLoading}
         />
         {isStreaming ? (
           <Button

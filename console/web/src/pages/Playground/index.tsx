@@ -5,6 +5,7 @@ import type { ChatBackend, StreamEvent } from '@/lib/backend'
 import {
   type Conversation,
   DEFAULT_MODEL,
+  STATIC_MODEL_OPTIONS,
   type Message,
   type MessagePatch,
   type Mode,
@@ -127,6 +128,7 @@ export function Playground() {
           key={convo.id}
           conversation={convo}
           backend={tappedBackend}
+          modelOptions={STATIC_MODEL_OPTIONS}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
           onAppendMessage={appendMessage}

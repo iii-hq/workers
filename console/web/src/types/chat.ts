@@ -1,22 +1,33 @@
 export type Mode = 'plan' | 'ask' | 'agent'
 
-export type ModelId =
-  | 'gpt-5.5-medium'
-  | 'claude-opus-4.7-thinking'
-  | 'gemini-2.5-pro'
-  | 'composer-2-fast'
+/** Composite `provider::<catalog_model_id>` (matches harness-node models-catalog). */
+export const CATALOG_MODEL_KEY_SEP = '::' as const
+
+export type ModelId = string
 
 export interface ModelOption {
   id: ModelId
   label: string
 }
 
-export const MODELS: ModelOption[] = [
-  { id: 'gpt-5.5-medium', label: 'gpt-5.5 medium' },
-  { id: 'claude-opus-4.7-thinking', label: 'claude opus 4.7 thinking' },
-  { id: 'gemini-2.5-pro', label: 'gemini 2.5 pro' },
-  { id: 'composer-2-fast', label: 'composer 2 fast' },
+/**
+ * When the engine is down or mock backend runs, picker still needs options.
+ * Ids mirror the seeded catalog (`harness-node/.../models.json`).
+ */
+export const STATIC_MODEL_OPTIONS: ModelOption[] = [
+  { id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5`, label: 'gpt-5' },
+  {
+    id: `anthropic${CATALOG_MODEL_KEY_SEP}claude-opus-4-7`,
+    label: 'claude opus 4.7',
+  },
+  {
+    id: `google${CATALOG_MODEL_KEY_SEP}gemini-2-5-pro`,
+    label: 'gemini 2.5 pro',
+  },
+  { id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5-mini`, label: 'gpt-5 mini' },
 ]
+
+export const DEFAULT_MODEL: ModelId = STATIC_MODEL_OPTIONS[0].id
 
 export const MODES: { id: Mode; label: string }[] = [
   { id: 'plan', label: 'plan' },
@@ -24,7 +35,6 @@ export const MODES: { id: Mode; label: string }[] = [
   { id: 'agent', label: 'agent' },
 ]
 
-export const DEFAULT_MODEL: ModelId = 'gpt-5.5-medium'
 export const DEFAULT_MODE: Mode = 'agent'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'

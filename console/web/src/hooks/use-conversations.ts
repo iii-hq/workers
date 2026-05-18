@@ -52,7 +52,15 @@ export interface ConversationsApi {
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
 }
 
-export function useConversations(): ConversationsApi {
+/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). */
+export function useConversations(
+  catalogKeysForValidation?: readonly string[],
+): ConversationsApi {
+  const catalogSig =
+    catalogKeysForValidation && catalogKeysForValidation.length > 0
+      ? [...catalogKeysForValidation].sort().join('\u0001')
+      : ''
+
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     const loaded = loadConversations()
     /* Always boot with at least one empty conversation so the chat surface
@@ -76,6 +84,23 @@ export function useConversations(): ConversationsApi {
       if (persistRef.current) cancelAnimationFrame(persistRef.current)
     }
   }, [conversations])
+
+  /* Migrate persisted model ids once catalog-backed keys are known. */
+  useEffect(() => {
+    if (!catalogSig) return
+    const keys = catalogSig.split('\u0001')
+    const valid = new Set(keys)
+    const fallback = keys[0]
+    setConversations((prev) => {
+      let changed = false
+      const next = prev.map((c) => {
+        if (valid.has(c.model)) return c
+        changed = true
+        return { ...c, model: fallback, updatedAt: Date.now() }
+      })
+      return changed ? next : prev
+    })
+  }, [catalogSig])
 
   useEffect(() => {
     saveActiveId(activeId)
