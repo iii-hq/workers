@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { $createFunctionMentionNode } from '@/components/chat/lexical/FunctionMentionNode'
 import type { Attachment, Mode, ModelId } from '@/types/chat'
+import { STATIC_MODEL_OPTIONS } from '@/types/chat'
 import { Section, VariantCard } from '../Section'
 
 const noop = () => {}
@@ -34,7 +35,7 @@ function seedWithText() {
 
 export function ComposerVariantsSection() {
   const [mode, setMode] = useState<Mode>('agent')
-  const [model, setModel] = useState<ModelId>('gpt-5.5-medium')
+  const [model, setModel] = useState<ModelId>(STATIC_MODEL_OPTIONS[0].id)
 
   return (
     <Section
@@ -48,6 +49,7 @@ export function ComposerVariantsSection() {
           <Composer
             mode={mode}
             model={model}
+            modelOptions={STATIC_MODEL_OPTIONS}
             onModeChange={setMode}
             onModelChange={setModel}
             onSubmit={noop}
@@ -57,7 +59,8 @@ export function ComposerVariantsSection() {
         <VariantCard label="pre-seeded with plain text">
           <Composer
             mode="ask"
-            model="claude-opus-4.7-thinking"
+            model="anthropic::claude-opus-4-7"
+            modelOptions={STATIC_MODEL_OPTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -71,7 +74,8 @@ export function ComposerVariantsSection() {
         >
           <Composer
             mode="agent"
-            model="gpt-5.5-medium"
+            model="openai::gpt-5"
+            modelOptions={STATIC_MODEL_OPTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -82,7 +86,8 @@ export function ComposerVariantsSection() {
         <VariantCard label="with attachments">
           <Composer
             mode="agent"
-            model="gpt-5.5-medium"
+            model="openai::gpt-5"
+            modelOptions={STATIC_MODEL_OPTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -93,7 +98,8 @@ export function ComposerVariantsSection() {
         <VariantCard label="disabled (streaming)">
           <Composer
             mode="plan"
-            model="composer-2-fast"
+            model="openai::gpt-5-mini"
+            modelOptions={STATIC_MODEL_OPTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}

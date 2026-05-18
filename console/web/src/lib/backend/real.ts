@@ -28,11 +28,12 @@
  *   - Approvals surface as `pendingApproval: true` but the UI can't yet
  *     resolve them (Phase 3 adds approve/deny buttons calling
  *     `approval::resolve`).
- *   - Provider/system_prompt selection is a coarse mapping (see
- *     `resolveRunParams`); a proper picker integration is Phase 4.
+ *   - Provider/model selection uses the models-catalog via the picker; legacy
+ *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
  */
 
 import { getIiiClient } from '@/lib/iii-client'
+import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
 import { translateAgentEvent } from './translate'
@@ -45,17 +46,27 @@ interface RunParams {
 }
 
 /**
- * Map console/web's `Mode` + `ModelId` onto turn-orchestrator's
- * `provider` / `model` / `system_prompt` fields. Phase 4 wires the model
- * picker to a proper config. Permissions are no longer driven from
- * here — see Phase 2.B (§D); the harness owns `iii-permissions.yaml`.
+ * Map console `Mode` + model selection onto turn-orchestrator's
+ * `provider` / `model` / `system_prompt` fields.
+ *
+ * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
+ * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
  */
 function resolveRunParams(mode: Mode, model: ModelId): RunParams {
-  const provider = model.startsWith('claude')
-    ? 'anthropic'
-    : model.startsWith('gemini')
-      ? 'google'
-      : 'openai'
+  const parsed = parseCatalogModelKey(model)
+  let provider: string
+  let modelId: string
+  if (parsed) {
+    provider = parsed.provider
+    modelId = parsed.id
+  } else {
+    modelId = model
+    provider = model.startsWith('claude')
+      ? 'anthropic'
+      : model.startsWith('gemini')
+        ? 'google'
+        : 'openai'
+  }
 
   const systemPrompt =
     mode === 'plan'
@@ -64,7 +75,7 @@ function resolveRunParams(mode: Mode, model: ModelId): RunParams {
         ? 'You answer the user directly without invoking tools. Be concise; prefer one or two paragraphs.'
         : 'You are an autonomous agent. Use the available functions to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.'
 
-  return { provider, model, systemPrompt }
+  return { provider, model: modelId, systemPrompt }
 }
 
 async function* realStream(

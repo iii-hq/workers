@@ -2,11 +2,16 @@ import { ChatView } from '@/components/chat/ChatView'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Prompt } from '@/components/ui/Prompt'
 import { useConversations } from '@/hooks/use-conversations'
+import { useModelPickerSource } from '@/hooks/use-model-picker-source'
 import { getDefaultBackend } from '@/lib/backend'
 
 const backend = getDefaultBackend()
 
 export function Chat() {
+  const { modelOptions, catalogKeys, catalogLoading } = useModelPickerSource(
+    backend.id,
+  )
+
   const {
     conversations,
     activeId,
@@ -19,7 +24,7 @@ export function Chat() {
     setMode,
     appendMessage,
     updateMessage,
-  } = useConversations()
+  } = useConversations(catalogKeys)
 
   return (
     <div className="flex-1 flex min-h-0">
@@ -37,6 +42,8 @@ export function Chat() {
           key={active.id}
           conversation={active}
           backend={backend}
+          modelOptions={modelOptions}
+          catalogLoading={catalogLoading}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
           onAppendMessage={appendMessage}
