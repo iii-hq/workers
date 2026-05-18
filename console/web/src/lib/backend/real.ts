@@ -32,8 +32,8 @@
  *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
  */
 
-import { getIiiClient } from '@/lib/iii-client'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
+import { getIiiClient } from '@/lib/iii-client'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
 import { translateAgentEvent } from './translate'
