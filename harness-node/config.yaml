@@ -15,7 +15,6 @@ policy_function_id: "policy::check_permissions"
 
 # approval-gate
 approval_gate:
-  topic: "agent::before_function_call"
   approval_state_scope: "approvals"
   policy_function_id: "policy::check_permissions"
 

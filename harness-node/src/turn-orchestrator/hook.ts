@@ -46,7 +46,7 @@ export async function consultBefore(
 ): Promise<HookOutcome> {
   let raw: unknown;
   try {
-    // 5s matches the prior gate-subscriber → policy hop; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
+    // 5s is a safe budget for a synchronous policy check; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
     raw = await iii.trigger<unknown, unknown>({
       function_id: policy_function_id,
       payload: { function_id: function_call.function_id, args: function_call.arguments },
@@ -84,9 +84,7 @@ export async function consultBefore(
   }
   // needs_approval. Honor the legacy per-run approval_required allowlist: if
   // the caller pre-declared their own list and this function isn't on it,
-  // gate-subscriber used to return `allow` (see prior gate-subscriber.ts
-  // legacy fallback). Preserve that behavior here so no caller observes a
-  // change in semantics.
+  // return allow so no caller observes a change in semantics.
   if (approval_required.length > 0 && !approval_required.includes(function_call.function_id)) {
     return { kind: 'allow' };
   }

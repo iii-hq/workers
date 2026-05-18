@@ -8,11 +8,10 @@ import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { streamSet } from '../runtime/stream.js';
-import type { StateBus } from './state-bus.js';
 import { pendingKey } from './types.js';
 
 export async function handleResolve(
-  bus: StateBus,
+  iii: ISdk,
   state_scope: string,
   payload: unknown,
 ): Promise<unknown> {
@@ -35,7 +34,10 @@ export async function handleResolve(
   const key = pendingKey(session_id, function_call_id);
 
   try {
-    await bus.set(state_scope, key, { decision, reason });
+    await iii.trigger<unknown, unknown>({
+      function_id: 'state::set',
+      payload: { scope: state_scope, key, value: { decision, reason } },
+    });
   } catch (err) {
     logger.error('approval-gate: failed to write resolved state', { err: String(err) });
     return { ok: false, error: 'state_write_failed' };
@@ -45,11 +47,10 @@ export async function handleResolve(
 
 export async function handleResolveWithEvents(
   iii: ISdk,
-  bus: StateBus,
   state_scope: string,
   payload: unknown,
 ): Promise<unknown> {
-  const out = await handleResolve(bus, state_scope, payload);
+  const out = await handleResolve(iii, state_scope, payload);
   const result = out as Record<string, unknown>;
   if (result.ok !== true) return out;
 

@@ -1,44 +1,72 @@
 import { describe, expect, it, vi } from 'vitest';
 import { handleResolve, handleResolveWithEvents } from '../../src/approval-gate/pending.js';
-import { InMemoryStateBus } from '../../src/approval-gate/state-bus.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
+function fakeIii(): {
+  iii: ISdk;
+  setCalls: Array<{ scope: string; key: string; value: unknown }>;
+  streamSets: unknown[];
+} {
+  const setCalls: Array<{ scope: string; key: string; value: unknown }> = [];
+  const streamSets: unknown[] = [];
+  const iii = {
+    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+      if (function_id === 'state::set') {
+        setCalls.push(payload as { scope: string; key: string; value: unknown });
+        return null;
+      }
+      if (function_id === 'stream::set') {
+        streamSets.push(payload);
+        return null;
+      }
+      return null;
+    }),
+  } as unknown as ISdk;
+  return { iii, setCalls, streamSets };
+}
+
 describe('handleResolve (simplified)', () => {
-  it('writes { decision, reason } to the state-bus on allow', async () => {
-    const bus = new InMemoryStateBus();
-    const out = await handleResolve(bus, 'approvals', {
+  it('writes { decision, reason } to state via state::set on allow', async () => {
+    const { iii, setCalls } = fakeIii();
+    const out = await handleResolve(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'allow',
     });
     expect(out).toEqual({ ok: true });
-    expect(await bus.get('approvals', 's1/fc-1')).toEqual({ decision: 'allow', reason: null });
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0]).toEqual({
+      scope: 'approvals',
+      key: 's1/fc-1',
+      value: { decision: 'allow', reason: null },
+    });
   });
 
   it('preserves a reason when provided on deny', async () => {
-    const bus = new InMemoryStateBus();
-    const out = await handleResolve(bus, 'approvals', {
+    const { iii, setCalls } = fakeIii();
+    const out = await handleResolve(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'deny',
       reason: 'user cancelled',
     });
     expect(out).toEqual({ ok: true });
-    expect(await bus.get('approvals', 's1/fc-1')).toEqual({
-      decision: 'deny',
-      reason: 'user cancelled',
+    expect(setCalls[0]).toEqual({
+      scope: 'approvals',
+      key: 's1/fc-1',
+      value: { decision: 'deny', reason: 'user cancelled' },
     });
   });
 
   it('returns missing_id when ids are absent', async () => {
-    const bus = new InMemoryStateBus();
-    const out = await handleResolve(bus, 'approvals', { decision: 'allow' });
+    const { iii } = fakeIii();
+    const out = await handleResolve(iii, 'approvals', { decision: 'allow' });
     expect(out).toEqual({ ok: false, error: 'missing_id' });
   });
 
   it('returns bad_decision when decision is invalid', async () => {
-    const bus = new InMemoryStateBus();
-    const out = await handleResolve(bus, 'approvals', {
+    const { iii } = fakeIii();
+    const out = await handleResolve(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'maybe',
@@ -46,10 +74,10 @@ describe('handleResolve (simplified)', () => {
     expect(out).toEqual({ ok: false, error: 'bad_decision' });
   });
 
-  it('returns state_write_failed when bus.set throws', async () => {
-    const bus = new InMemoryStateBus();
-    vi.spyOn(bus, 'set').mockRejectedValue(new Error('boom'));
-    const out = await handleResolve(bus, 'approvals', {
+  it('returns state_write_failed when state::set throws', async () => {
+    const { iii } = fakeIii();
+    (iii.trigger as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'));
+    const out = await handleResolve(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'allow',
@@ -60,7 +88,6 @@ describe('handleResolve (simplified)', () => {
 
 describe('handleResolveWithEvents', () => {
   it('emits approval_resolved on success but does not publish turn::step_requested', async () => {
-    const bus = new InMemoryStateBus();
     const triggers: Array<{ function_id: string; payload: unknown }> = [];
     const iii = {
       trigger: vi.fn(
@@ -71,7 +98,7 @@ describe('handleResolveWithEvents', () => {
       ),
     } as unknown as ISdk;
 
-    await handleResolveWithEvents(iii, bus, 'approvals', {
+    await handleResolveWithEvents(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'allow',
@@ -94,10 +121,10 @@ describe('handleResolveWithEvents', () => {
   });
 
   it('does not publish when state write fails', async () => {
-    const bus = new InMemoryStateBus();
-    vi.spyOn(bus, 'set').mockRejectedValue(new Error('boom'));
-    const iii = { trigger: vi.fn() } as unknown as ISdk;
-    const out = await handleResolveWithEvents(iii, bus, 'approvals', {
+    const iii = {
+      trigger: vi.fn().mockRejectedValue(new Error('boom')),
+    } as unknown as ISdk;
+    const out = await handleResolveWithEvents(iii, 'approvals', {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'allow',

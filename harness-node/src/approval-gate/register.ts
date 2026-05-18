@@ -1,7 +1,6 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
-import { handleGateEvent } from './gate-subscriber.js';
 import {
   CONDITION_FN_ID as ON_DECISION_CONDITION,
   TRIGGER_FN_ID as ON_DECISION_FN,
@@ -9,36 +8,20 @@ import {
   isDecisionWrite,
 } from './on-decision-written.js';
 import { handleResolveWithEvents } from './pending.js';
-import { IiiStateBus } from './state-bus.js';
 import { FN_RESOLVE } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
   const cfg = loadApprovalGateConfig(await loadConfig(ctx.configPath));
-  const bus = new IiiStateBus(iii);
 
   iii.registerFunction(
     FN_RESOLVE,
     async (payload: unknown) =>
-      handleResolveWithEvents(iii, bus, cfg.approval_state_scope, payload),
+      handleResolveWithEvents(iii, cfg.approval_state_scope, payload),
     {
       description:
         'Flip an approval to allow or deny. Writing the decision is itself the wake-up event.',
     },
   );
-
-  iii.registerFunction(
-    'policy::approval_gate',
-    async (envelope: unknown) => handleGateEvent({ iii, bus, cfg }, envelope),
-    {
-      description: 'Consult policy::check_permissions and reply allow, deny, or pending.',
-    },
-  );
-
-  iii.registerTrigger({
-    type: 'durable:subscriber',
-    function_id: 'policy::approval_gate',
-    config: { topic: cfg.topic },
-  });
 
   iii.registerFunction(ON_DECISION_CONDITION, async (event: unknown) => isDecisionWrite(event), {
     description:
