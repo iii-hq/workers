@@ -275,6 +275,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       function_id: fc.function_id,
       args: fc.arguments,
     });
+
     const existing = persistence.findExecutedCall(results, fc.id);
     if (existing) {
       await emit(
@@ -284,6 +285,29 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       );
       continue;
     }
+
+    if (entry.pre_approved === true) {
+      const value = await iii.trigger<unknown, unknown>({
+        function_id: fc.function_id,
+        payload: fc.arguments ?? {},
+      });
+      const result = decodeOrPassthroughResult(value);
+      const is_error = isErrorResult(result);
+      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+      await persistence.saveExecutedCalls(iii, rec.session_id, results);
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      continue;
+    }
+
+    if (entry.blocked) {
+      const result = entry.blocked;
+      const is_error = true;
+      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+      await persistence.saveExecutedCalls(iii, rec.session_id, results);
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      continue;
+    }
+
     // Augment the per-call args with session/fc context — same as Rust.
     let augmented_args: unknown;
     if (fc.arguments && typeof fc.arguments === 'object' && !Array.isArray(fc.arguments)) {
@@ -307,13 +331,47 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const result = await dispatchWithHook(iii, augmentedFc, approval_required, rec.session_id);
-    const is_error = isErrorResult(result);
+    const out = await dispatchWithHook(iii, augmentedFc, approval_required, rec.session_id);
+
+    if (out.kind === 'pending') {
+      rec.awaiting_approval = rec.awaiting_approval ?? [];
+      rec.awaiting_approval.push({
+        function_call_id: fc.id,
+        function_id: fc.function_id,
+        args: fc.arguments,
+      });
+      transitionTo(rec, 'function_awaiting_approval');
+      return;
+    }
+
+    const result = out.result;
+    const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
     await persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
   }
   transitionTo(rec, 'function_finalize');
+}
+
+function decodeOrPassthroughResult(value: unknown): FunctionResult {
+  if (
+    value &&
+    typeof value === 'object' &&
+    Array.isArray((value as Record<string, unknown>).content)
+  ) {
+    const obj = value as Record<string, unknown>;
+    return {
+      content: obj.content as FunctionResult['content'],
+      details: obj.details ?? {},
+      terminate: typeof obj.terminate === 'boolean' ? obj.terminate : false,
+    };
+  }
+  const textBody = typeof value === 'string' ? value : JSON.stringify(value);
+  return {
+    content: [text(textBody)],
+    details: value,
+    terminate: false,
+  };
 }
 
 async function readDecision(
