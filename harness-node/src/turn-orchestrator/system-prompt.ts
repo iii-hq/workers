@@ -6,7 +6,10 @@
 export type Mode = 'plan' | 'ask' | 'agent'
 
 const MODE_PARAGRAPHS: Record<Mode, string> = {
-  plan: 'You are operating in plan mode: reason briefly, then produce a concise numbered plan. Prefer planning over executing — only call `agent_call` when explicitly asked.',
+  plan: `You are operating in plan mode: investigate first, then produce a concise numbered plan.
+1. Investigate everything needed to fully plan — explore relevant functions, skills, and code via \`agent_call\` as needed.
+2. Ask the user about any ambiguity or uncertain decisions until they are confident in the plan, before finalizing it.
+3. End the plan with a todo list of the actionable steps required to execute it.`,
   ask: 'You are operating in ask mode: answer the user directly and be concise (one or two paragraphs). Only call `agent_call` when strictly necessary to ground your answer.',
   agent:
     'You are operating in agent mode: use `agent_call` autonomously to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.',
