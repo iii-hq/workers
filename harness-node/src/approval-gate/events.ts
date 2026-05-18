@@ -23,7 +23,6 @@ export type ApprovalRequestedPayload = {
   function_call_id: string;
   function_id: string;
   args: unknown;
-  expires_at: number;
 };
 
 export async function emitApprovalRequested(
@@ -38,7 +37,6 @@ export async function emitApprovalRequested(
     function_id: payload.function_id,
     tool_name: payload.function_id,
     args: payload.args,
-    expires_at: payload.expires_at,
   });
 }
 

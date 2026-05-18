@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ApprovalGateConfig } from '../../src/approval-gate/config.js';
 import { handleGateEvent } from '../../src/approval-gate/gate-subscriber.js';
-import { InMemoryStateBus, type StateBus } from '../../src/approval-gate/state-bus.js';
+import { InMemoryStateBus } from '../../src/approval-gate/state-bus.js';
 import { STATE_SCOPE, pendingKey } from '../../src/approval-gate/types.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
@@ -43,18 +43,6 @@ function approvalRequiredEnvelope() {
   };
 }
 
-class ThrowingStateBus implements StateBus {
-  async get(): Promise<unknown> {
-    return null;
-  }
-  async set(): Promise<void> {
-    throw new Error('boom');
-  }
-  async listPrefix(): Promise<unknown[]> {
-    return [];
-  }
-}
-
 describe('handleGateEvent (post PR #150)', () => {
   it('returns {block:false} for an envelope it cannot parse', async () => {
     const { iii } = fakeIii();
@@ -65,7 +53,7 @@ describe('handleGateEvent (post PR #150)', () => {
     expect(reply.block).toBe(false);
   });
 
-  it('writes a pending record and emits approval_requested for a needs_approval call', async () => {
+  it('does not write to state-bus on needs_approval; only emits event and returns pending', async () => {
     const bus = new InMemoryStateBus();
     const { iii, calls } = fakeIii((call) => {
       if (call.function_id === 'policy::check_permissions') return null; // legacy fallback
@@ -81,11 +69,7 @@ describe('handleGateEvent (post PR #150)', () => {
     expect(reply.subscriber).toBe('approval-gate');
     expect(reply.approval_gate).toBe(true);
 
-    const stored = (await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))) as Record<
-      string,
-      unknown
-    >;
-    expect(stored.status).toBe('pending');
+    expect(await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))).toBeNull();
 
     const requestedEvent = calls
       .filter((c) => c.function_id === 'stream::set')
@@ -93,23 +77,32 @@ describe('handleGateEvent (post PR #150)', () => {
       .find((d) => d.type === 'approval_requested');
     expect(requestedEvent).toBeDefined();
     expect(requestedEvent?.function_call_id).toBe('tc-1');
+    expect(requestedEvent).not.toHaveProperty('expires_at');
   });
 
-  it('returns a fail-closed denial envelope when the state bus write throws', async () => {
+  it('stays stateless when policy needs approval even if approval_required is empty', async () => {
+    const bus = new InMemoryStateBus();
     const { iii } = fakeIii((call) => {
-      if (call.function_id === 'policy::check_permissions') return null;
+      if (call.function_id === 'policy::check_permissions') {
+        return { decision: 'needs_approval' };
+      }
       return undefined;
     });
-    const reply = (await handleGateEvent(
-      { iii, bus: new ThrowingStateBus(), cfg },
-      approvalRequiredEnvelope(),
-    )) as Record<string, unknown>;
+    const envelope = {
+      event_id: 'evt-1',
+      reply_stream: 'rs-1',
+      payload: {
+        session_id: 's1',
+        function_call: { id: 'tc-1', function_id: 'shell::exec', arguments: { command: 'date' } },
+        approval_required: [],
+      },
+    };
+    const reply = (await handleGateEvent({ iii, bus, cfg }, envelope)) as Record<string, unknown>;
 
     expect(reply.block).toBe(true);
-    expect(reply.status).toBe('denied');
+    expect(reply.status).toBe('pending');
     expect(reply.approval_gate).toBe(true);
-    const denial = reply.denial as Record<string, unknown>;
-    expect(denial.kind).toBe('state_error');
+    expect(await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))).toBeNull();
   });
 
   it('returns a marked allow reply when policy explicitly returns allow', async () => {
@@ -137,7 +130,7 @@ describe('handleGateEvent (post PR #150)', () => {
     expect(await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))).toBeNull();
   });
 
-  it('intercepts on needs_approval even when approval_required is empty (policy is source of truth)', async () => {
+  it('returns pending on needs_approval even when approval_required is empty (policy is source of truth)', async () => {
     const bus = new InMemoryStateBus();
     const { iii } = fakeIii((call) => {
       if (call.function_id === 'policy::check_permissions') {
@@ -158,11 +151,7 @@ describe('handleGateEvent (post PR #150)', () => {
 
     expect(reply.block).toBe(true);
     expect(reply.status).toBe('pending');
-    const stored = (await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))) as Record<
-      string,
-      unknown
-    >;
-    expect(stored?.status).toBe('pending');
+    expect(await bus.get(STATE_SCOPE, pendingKey('s1', 'tc-1'))).toBeNull();
   });
 
   it('returns a deny envelope when policy denies', async () => {

@@ -26,7 +26,6 @@ describe('approval-gate events', () => {
       function_call_id: 'tc-1',
       function_id: 'shell::exec',
       args: { command: 'date' },
-      expires_at: 61_000,
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.function_id).toBe('stream::set');
@@ -39,7 +38,7 @@ describe('approval-gate events', () => {
     expect(data.tool_call_id).toBe('tc-1');
     expect(data.function_id).toBe('shell::exec');
     expect(data.tool_name).toBe('shell::exec');
-    expect(data.expires_at).toBe(61_000);
+    expect(data).not.toHaveProperty('expires_at');
   });
 
   it('emitApprovalResolved writes the expected envelope', async () => {
