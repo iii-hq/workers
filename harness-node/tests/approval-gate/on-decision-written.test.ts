@@ -103,17 +103,32 @@ describe('handleDecisionWritten', () => {
     expect(triggers[0]?.payload).toMatchObject({ data: { session_id: 'sess-xyz' } });
   });
 
-  it('ignores deleted events', async () => {
-    const iii = { trigger: vi.fn() } as unknown as ISdk;
+  it('still publishes when handed a state:deleted event directly (condition would have blocked at engine)', async () => {
+    // Documents that the handler is no longer the filter — the condition is.
+    // In production, the engine ensures this never happens because the
+    // condition function returns false for state:deleted. This test asserts
+    // the handler doesn't have defensive double-filtering that would mask
+    // a regression in registration wiring.
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+
     await handleDecisionWritten(iii, {
-      event_type: 'state:deleted', // engine value, see iii structs.rs
+      event_type: 'state:deleted',
       scope: 'approvals',
-      key: 'sess-abc/fc-1',
+      key: 'sess-x/fc-1',
       old_value: { decision: 'allow', reason: null },
       new_value: null,
       message_type: 'state',
     });
-    expect(iii.trigger).not.toHaveBeenCalled();
+
+    // No filter in the handler → publishes anyway. Production safety comes from
+    // the condition function registered alongside this handler.
+    expect(triggers).toHaveLength(1);
   });
 });
 
