@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleDecisionWritten, STEP_TOPIC } from '../../src/approval-gate/on-decision-written.js';
+import { STEP_TOPIC, handleDecisionWritten } from '../../src/approval-gate/on-decision-written.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('handleDecisionWritten', () => {

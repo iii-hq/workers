@@ -10,8 +10,6 @@ import { emitApprovalResolved } from './events.js';
 import type { StateBus } from './state-bus.js';
 import { pendingKey } from './types.js';
 
-const STEP_TOPIC = 'turn::step_requested';
-
 export async function handleResolve(
   bus: StateBus,
   state_scope: string,
@@ -44,13 +42,6 @@ export async function handleResolve(
   return { ok: true };
 }
 
-export async function resumeSession(iii: ISdk, session_id: string): Promise<void> {
-  await iii.trigger<unknown, unknown>({
-    function_id: 'iii::durable::publish',
-    payload: { topic: STEP_TOPIC, data: { session_id } },
-  });
-}
-
 export async function handleResolveWithEvents(
   iii: ISdk,
   bus: StateBus,
@@ -74,7 +65,6 @@ export async function handleResolveWithEvents(
   const reason = typeof obj.reason === 'string' ? obj.reason : null;
 
   await emitApprovalResolved(iii, session_id, { function_call_id, decision, reason });
-  await resumeSession(iii, session_id);
 
   return out;
 }

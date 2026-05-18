@@ -2,7 +2,7 @@ import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
 import { handleGateEvent } from './gate-subscriber.js';
-import { handleDecisionWritten, TRIGGER_FN_ID as ON_DECISION_FN } from './on-decision-written.js';
+import { TRIGGER_FN_ID as ON_DECISION_FN, handleDecisionWritten } from './on-decision-written.js';
 import { handleResolveWithEvents } from './pending.js';
 import { IiiStateBus } from './state-bus.js';
 import { handleSweepSession } from './sweep.js';

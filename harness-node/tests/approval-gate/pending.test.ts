@@ -59,7 +59,7 @@ describe('handleResolve (simplified)', () => {
 });
 
 describe('handleResolveWithEvents', () => {
-  it('emits approval_resolved and publishes turn::step_requested on success', async () => {
+  it('emits approval_resolved on success but does not publish turn::step_requested', async () => {
     const bus = new InMemoryStateBus();
     const triggers: Array<{ function_id: string; payload: unknown }> = [];
     const iii = {
@@ -79,12 +79,7 @@ describe('handleResolveWithEvents', () => {
 
     const fns = triggers.map((t) => t.function_id);
     expect(fns).toContain('stream::set');
-    expect(fns).toContain('iii::durable::publish');
-    const pub = triggers.find((t) => t.function_id === 'iii::durable::publish');
-    expect(pub?.payload).toMatchObject({
-      topic: 'turn::step_requested',
-      data: { session_id: 's1' },
-    });
+    expect(fns).not.toContain('iii::durable::publish');
   });
 
   it('does not publish when state write fails', async () => {
