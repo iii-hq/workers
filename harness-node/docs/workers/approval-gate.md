@@ -72,8 +72,11 @@ Bound to `agent::events` so the UI can render the gate's lifecycle:
 
 | Event type | When | Written by |
 |---|---|---|
-| `approval_requested` | needs_approval outcome (detected by orchestrator) | `consultBefore` in `hook.ts` via state handler |
 | `approval_resolved` | `approval::resolve` succeeds | `handleResolveWithEvents` in `pending.ts` |
+
+Pending approvals themselves are not emitted as a stream event; the UI
+discovers them by reading the orchestrator's `turn_state` record
+(`awaiting_approval` field) when the turn parks in `function_awaiting_approval`.
 
 ## Configuration
 
@@ -104,7 +107,7 @@ no explicit dependency block (the gate reads/writes iii state).
 | [src/approval-gate/main.ts](harness-node/src/approval-gate/main.ts) | Binary entry point (`iii-approval-gate`). |
 | [src/approval-gate/register.ts](harness-node/src/approval-gate/register.ts) | Registers `approval::resolve` and the decision-written trigger pair. |
 | [src/approval-gate/config.ts](harness-node/src/approval-gate/config.ts) | Loads the `approval_gate` config section. |
-| [src/approval-gate/types.ts](harness-node/src/approval-gate/types.ts) | Wire types: `IncomingCall`, `DenialEnvelope`, `MatchedConstraint`, `GateBlockReply`. |
+| [src/approval-gate/types.ts](harness-node/src/approval-gate/types.ts) | Wire types and constants: `DenialEnvelope`, `MatchedConstraint`, `WireDecision`, `DeniedBy`, `FN_RESOLVE`, `STATE_SCOPE`, `pendingKey`. |
 | [src/approval-gate/policy-consult.ts](harness-node/src/approval-gate/policy-consult.ts) | Calls `policy::check_permissions` and decodes the decision (imported by the orchestrator's `hook.ts`). |
 | [src/approval-gate/pending.ts](harness-node/src/approval-gate/pending.ts) | `handleResolve` writes `{decision, reason}` to `approvals/<sid>/<cid>`; `handleResolveWithEvents` adds the `approval_resolved` agent event. |
 | [src/approval-gate/on-decision-written.ts](harness-node/src/approval-gate/on-decision-written.ts) | State trigger adapter — `approval::is_decision_write` (condition) + `approval::on_decision_written` (handler) — directly triggers `turn::step` when a decision lands. |
