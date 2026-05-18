@@ -98,29 +98,6 @@ async function* realStream(
 
   const off = client.on<SessionEventEnvelope>('ui::session::event', (env) => {
     if (!env || env.session_id !== sessionId || !env.event) return
-    // #region debug-instrumentation
-    fetch(
-      'http://127.0.0.1:7806/ingest/e8ef8147-0d15-474f-9b85-6d1770aaadc3',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Debug-Session-Id': '54c0cd',
-        },
-        body: JSON.stringify({
-          sessionId: '54c0cd',
-          hypothesisId: 'H5',
-          location: 'console/web/src/lib/backend/real.ts:on(ui::session::event)',
-          message: 'frontend received session event',
-          data: {
-            session_id: env.session_id,
-            event_type: (env.event as { type?: string })?.type,
-          },
-          timestamp: Date.now(),
-        }),
-      },
-    ).catch(() => {})
-    // #endregion
     queue.push(env.event)
     wake()
   })
