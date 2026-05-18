@@ -52,7 +52,7 @@ interface RunParams {
  * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
  * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
  */
-function resolveRunParams(mode: Mode, model: ModelId): RunParams {
+function resolveRunParams(_mode: Mode, model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
   let provider: string
   let modelId: string
