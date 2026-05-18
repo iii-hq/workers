@@ -1,0 +1,19 @@
+iii: v1
+name: context-compaction
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-context-compaction
+description: Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd, summarises older turns via provider::<name>::stream, and writes a session-tree Compaction entry so the next turn reads a compressed transcript.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/context-compaction/main.js
+
+dependencies:
+  session: "^0.2.0"
+  provider-anthropic: "^0.2.0"
+  provider-openai: "^0.2.0"

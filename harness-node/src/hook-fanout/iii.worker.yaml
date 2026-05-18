@@ -1,0 +1,17 @@
+iii: v1
+name: hook-fanout
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-hook-fanout
+description: Generic publish-collect primitive on the iii bus (hook-fanout::publish_collect).
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/hook-fanout/main.js
+
+dependencies:
+  iii-stream: "^0.11.0"

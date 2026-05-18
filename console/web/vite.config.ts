@@ -10,4 +10,16 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    proxy: {
+      // iii-browser-sdk hits ws(s)://${host}/iii/ws by default; the proxy
+      // forwards to the local engine WebSocket on :49134 in dev.
+      '/iii/ws': {
+        target: 'ws://127.0.0.1:49134',
+        ws: true,
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/iii\/ws/, ''),
+      },
+    },
+  },
 })

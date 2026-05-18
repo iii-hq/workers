@@ -11,6 +11,7 @@ import type {
   MessagePatch,
   Mode,
   ModelId,
+  ModelOption,
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
@@ -27,6 +28,8 @@ function isAbortError(err: unknown): boolean {
 interface ChatViewProps {
   conversation: Conversation
   backend: ChatBackend
+  modelOptions: ModelOption[]
+  catalogLoading?: boolean
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onAppendMessage: (id: string, message: Message) => void
@@ -36,6 +39,8 @@ interface ChatViewProps {
 export function ChatView({
   conversation,
   backend,
+  modelOptions,
+  catalogLoading,
   onUpdateModel,
   onUpdateMode,
   onAppendMessage,
@@ -225,6 +230,8 @@ export function ChatView({
           <Composer
             mode={conversation.mode}
             model={conversation.model}
+            modelOptions={modelOptions}
+            catalogLoading={catalogLoading}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             onSubmit={handleSubmit}

@@ -43,7 +43,7 @@ const userWithAttachments: UserMessage = {
 const assistantComplete: AssistantMessage = {
   id: 'a1',
   role: 'assistant',
-  model: 'claude-opus-4.7-thinking',
+  model: 'anthropic::claude-opus-4-7',
   mode: 'plan',
   content: `## the plan
 
@@ -64,7 +64,7 @@ engine.on('echo', (input) => ({ text: input.text }))
 const assistantStreaming: AssistantMessage = {
   id: 'a2',
   role: 'assistant',
-  model: 'gpt-5.5-medium',
+  model: 'openai::gpt-5',
   mode: 'ask',
   content:
     'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
@@ -75,7 +75,7 @@ const assistantStreaming: AssistantMessage = {
 const assistantThinking: AssistantMessage = {
   id: 'a3',
   role: 'assistant',
-  model: 'claude-opus-4.7-thinking',
+  model: 'anthropic::claude-opus-4-7',
   mode: 'agent',
   content: '',
   streaming: true,
