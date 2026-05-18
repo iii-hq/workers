@@ -11,10 +11,9 @@
  *  3. needs_approval: emit `approval_requested` and return a pending block
  *     envelope. The orchestrator owns pending-call state on its turn record.
  *
- * Note: `approval_resolved` and `approval_wake_failed` events are emitted
- * by `handleResolveWithEvents` (in `pending.ts`) when the human resolves,
- * not from this subscriber. This subscriber returns synchronously without
- * waiting for the human decision.
+ * Note: `approval_resolved` events are emitted by `handleResolveWithEvents`
+ * (in `pending.ts`) when the human resolves, not from this subscriber. This
+ * subscriber returns synchronously without waiting for the human decision.
  */
 
 import { uuidLike } from '../runtime/ids.js';

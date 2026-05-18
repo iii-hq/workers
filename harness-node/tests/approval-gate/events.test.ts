@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  emitApprovalRequested,
-  emitApprovalResolved,
-  emitApprovalWakeFailed,
-} from '../../src/approval-gate/events.js';
+import { emitApprovalRequested, emitApprovalResolved } from '../../src/approval-gate/events.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
 type TriggerCall = { function_id: string; payload: unknown };
@@ -54,13 +50,5 @@ describe('approval-gate events', () => {
     expect(data.tool_call_id).toBe('tc-1');
     expect(data.decision).toBe('allow');
     expect(data.reason).toBeNull();
-  });
-
-  it('emitApprovalWakeFailed writes the expected envelope with error string', async () => {
-    const { iii, calls } = fakeIii();
-    await emitApprovalWakeFailed(iii, 's1', 'resume timeout');
-    const data = (calls[0]?.payload as Record<string, unknown>).data as Record<string, unknown>;
-    expect(data.type).toBe('approval_wake_failed');
-    expect(data.error).toBe('resume timeout');
   });
 });
