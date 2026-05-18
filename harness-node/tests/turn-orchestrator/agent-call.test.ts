@@ -1,11 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ISdk } from '../../src/runtime/iii.js';
 import type { DispatchResult } from '../../src/turn-orchestrator/agent-call.js';
 import {
   FUNCTION_ID,
   TOOL_NAME,
   agentCallTool,
+  dispatchWithHook,
   isErrorResult,
 } from '../../src/turn-orchestrator/agent-call.js';
+import * as hookModule from '../../src/turn-orchestrator/hook.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('agent_call tool schema', () => {
   it('returns a stable schema with the required `function` field', () => {
@@ -68,5 +75,57 @@ describe('isErrorResult', () => {
 
   it('does not flag normal envelopes', () => {
     expect(isErrorResult({ content: [], details: { ok: true }, terminate: false })).toBe(false);
+  });
+});
+
+describe('dispatchWithHook returns DispatchResult', () => {
+  it('returns kind:pending when consultBefore returns pending', async () => {
+    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending', merged: {} });
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    const out = await dispatchWithHook(
+      iii,
+      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
+      [],
+      's1',
+    );
+    expect(out.kind).toBe('pending');
+  });
+
+  it('returns kind:deny on hard deny', async () => {
+    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({
+      kind: 'deny',
+      denial: {
+        schema_version: 1,
+        status: 'denied',
+        denied_by: 'permissions',
+        function_id: 'x',
+        reason: 'nope',
+      },
+    });
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    const out = await dispatchWithHook(
+      iii,
+      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      [],
+      's1',
+    );
+    expect(out.kind).toBe('deny');
+    if (out.kind === 'deny') {
+      expect(out.result.details).toMatchObject({ status: 'denied' });
+    }
+  });
+
+  it('returns kind:result on allow + successful dispatch', async () => {
+    vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
+    const iii = {
+      trigger: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as ISdk;
+    const out = await dispatchWithHook(
+      iii,
+      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      [],
+      's1',
+    );
+    expect(out.kind).toBe('result');
   });
 });

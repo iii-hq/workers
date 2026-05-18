@@ -106,21 +106,20 @@ export async function dispatchWithHook(
   function_call: FunctionCall,
   approval_required: string[],
   session_id?: string,
-): Promise<FunctionResult> {
+): Promise<DispatchResult> {
   if (!function_call.function_id || function_call.function_id.length === 0) {
-    return errorResult({
-      error: 'missing_function',
-      message: 'agent_call requires a non-empty `function` string field',
-    });
+    return {
+      kind: 'result',
+      result: errorResult({
+        error: 'missing_function',
+        message: 'agent_call requires a non-empty `function` string field',
+      }),
+    };
   }
   const outcome = await consultBefore(iii, function_call, approval_required, session_id);
-  if (outcome.kind === 'deny') return denialResult(outcome.denial);
+  if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
   if (outcome.kind === 'pending') {
-    // Surface as a terminating pending placeholder so the LLM stops and
-    // handleFinalize's replacePendingApprovalPlaceholders can swap in the
-    // real result on resume.
-    const { prefilledResultForBlock } = await import('./states/functions.js');
-    return prefilledResultForBlock(outcome.merged, function_call.id, function_call.function_id);
+    return { kind: 'pending' };
   }
 
   try {
@@ -128,25 +127,34 @@ export async function dispatchWithHook(
       function_id: function_call.function_id,
       payload: function_call.arguments ?? {},
     });
-    return decodeOrPassthrough(value);
+    return { kind: 'result', result: decodeOrPassthrough(value) };
   } catch (err) {
     if (isFunctionNotFound(err)) {
-      return errorResult({
-        error: 'function_not_found',
-        function: function_call.function_id,
-        hint: 'load the relevant skill via directory::skills::get, or check the function id',
-      });
+      return {
+        kind: 'result',
+        result: errorResult({
+          error: 'function_not_found',
+          function: function_call.function_id,
+          hint: 'load the relevant skill via directory::skills::get, or check the function id',
+        }),
+      };
     }
     if (isTimeout(err)) {
-      return errorResult({
-        error: 'timeout',
-        function: function_call.function_id,
-        message: String(err),
-      });
+      return {
+        kind: 'result',
+        result: errorResult({
+          error: 'timeout',
+          function: function_call.function_id,
+          message: String(err),
+        }),
+      };
     }
-    return denialResult(
-      gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
-    );
+    return {
+      kind: 'deny',
+      result: denialResult(
+        gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
+      ),
+    };
   }
 }
 
@@ -167,7 +175,15 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  return dispatchWithHook(iii, fc, [], session_id);
+  const out = await dispatchWithHook(iii, fc, [], session_id);
+  if (out.kind === 'pending') {
+    return errorResult({
+      error: 'awaiting_approval',
+      function: fc.function_id,
+      message: 'This call requires human approval. Approve via the console and retry.',
+    });
+  }
+  return out.result;
 }
 
 export function register(iii: ISdk): void {
