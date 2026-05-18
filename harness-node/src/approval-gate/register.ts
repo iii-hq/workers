@@ -2,7 +2,12 @@ import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
 import { handleGateEvent } from './gate-subscriber.js';
-import { TRIGGER_FN_ID as ON_DECISION_FN, handleDecisionWritten } from './on-decision-written.js';
+import {
+  CONDITION_FN_ID as ON_DECISION_CONDITION,
+  TRIGGER_FN_ID as ON_DECISION_FN,
+  handleDecisionWritten,
+  isDecisionWrite,
+} from './on-decision-written.js';
 import { handleResolveWithEvents } from './pending.js';
 import { IiiStateBus } from './state-bus.js';
 import { FN_RESOLVE } from './types.js';
@@ -35,6 +40,11 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     config: { topic: cfg.topic },
   });
 
+  iii.registerFunction(ON_DECISION_CONDITION, async (event: unknown) => isDecisionWrite(event), {
+    description:
+      'Condition: state event is a real approval decision write (state:created or state:updated, new_value.decision present).',
+  });
+
   iii.registerFunction(
     ON_DECISION_FN,
     async (event: unknown) => handleDecisionWritten(iii, event),
@@ -47,6 +57,9 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   iii.registerTrigger({
     type: 'state',
     function_id: ON_DECISION_FN,
-    config: { scope: cfg.approval_state_scope },
+    config: {
+      scope: cfg.approval_state_scope,
+      condition_function_id: ON_DECISION_CONDITION,
+    },
   });
 }

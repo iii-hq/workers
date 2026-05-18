@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { STEP_TOPIC, handleDecisionWritten } from '../../src/approval-gate/on-decision-written.js';
+import {
+  STEP_TOPIC,
+  handleDecisionWritten,
+  isDecisionWrite,
+} from '../../src/approval-gate/on-decision-written.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('handleDecisionWritten', () => {
@@ -110,5 +114,77 @@ describe('handleDecisionWritten', () => {
       message_type: 'state',
     });
     expect(iii.trigger).not.toHaveBeenCalled();
+  });
+});
+
+describe('isDecisionWrite condition', () => {
+  it('returns true for state:created with a decision in new_value', () => {
+    expect(
+      isDecisionWrite({
+        event_type: 'state:created',
+        scope: 'approvals',
+        key: 'sess/fc',
+        old_value: null,
+        new_value: { decision: 'allow', reason: null },
+        message_type: 'state',
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true for state:updated with a decision in new_value', () => {
+    expect(
+      isDecisionWrite({
+        event_type: 'state:updated',
+        scope: 'approvals',
+        key: 'sess/fc',
+        old_value: { decision: 'allow', reason: null },
+        new_value: { decision: 'deny', reason: 'user' },
+        message_type: 'state',
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false for state:deleted', () => {
+    expect(
+      isDecisionWrite({
+        event_type: 'state:deleted',
+        scope: 'approvals',
+        key: 'sess/fc',
+        old_value: { decision: 'allow', reason: null },
+        new_value: null,
+        message_type: 'state',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when new_value has no decision field', () => {
+    expect(
+      isDecisionWrite({
+        event_type: 'state:updated',
+        scope: 'approvals',
+        key: 'sess/fc',
+        old_value: null,
+        new_value: { somethingElse: true },
+        message_type: 'state',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when new_value is missing', () => {
+    expect(
+      isDecisionWrite({
+        event_type: 'state:created',
+        scope: 'approvals',
+        key: 'sess/fc',
+        old_value: null,
+        new_value: null,
+        message_type: 'state',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false for non-object input', () => {
+    expect(isDecisionWrite(null)).toBe(false);
+    expect(isDecisionWrite('whatever')).toBe(false);
   });
 });
