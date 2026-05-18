@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   loadActiveId,
   loadConversations,
+  loadLastModel,
   saveActiveId,
   saveConversations,
+  saveLastModel,
 } from '@/lib/storage'
 import {
   type Conversation,
@@ -25,12 +27,14 @@ function deriveTitle(text: string): string {
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
 
-function emptyConversation(): Conversation {
+function emptyConversation(
+  defaultModel: ModelId = DEFAULT_MODEL,
+): Conversation {
   const now = Date.now()
   return {
     id: uid(),
     title: 'new chat',
-    model: DEFAULT_MODEL,
+    model: defaultModel,
     mode: DEFAULT_MODE,
     messages: [],
     createdAt: now,
@@ -52,9 +56,10 @@ export interface ConversationsApi {
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
 }
 
-/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). */
+/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). `catalogReady` gates the migration so it doesn't run against `STATIC_MODEL_OPTIONS` before the live catalog has loaded. */
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
+  catalogReady?: boolean,
 ): ConversationsApi {
   const catalogSig =
     catalogKeysForValidation && catalogKeysForValidation.length > 0
@@ -66,7 +71,9 @@ export function useConversations(
     /* Always boot with at least one empty conversation so the chat surface
        has something to render. Done in the initializer so StrictMode's
        double-invoke can't create two. */
-    return loaded.length > 0 ? loaded : [emptyConversation()]
+    return loaded.length > 0
+      ? loaded
+      : [emptyConversation(loadLastModel() ?? DEFAULT_MODEL)]
   })
   const [activeId, setActiveId] = useState<string | null>(() => {
     const stored = loadActiveId()
@@ -85,9 +92,13 @@ export function useConversations(
     }
   }, [conversations])
 
-  /* Migrate persisted model ids once catalog-backed keys are known. */
+  /* Migrate persisted model ids once catalog-backed keys are known. Gated on
+     catalogReady so we don't rewrite catalog-only picks (e.g. claude-haiku-4-5)
+     against STATIC_MODEL_OPTIONS during the brief window before the real
+     catalog fetch resolves. Also reconciles the persisted last-model slot. */
   useEffect(() => {
     if (!catalogSig) return
+    if (catalogReady === false) return
     const keys = catalogSig.split('\u0001')
     const valid = new Set(keys)
     const fallback = keys[0]
@@ -100,7 +111,11 @@ export function useConversations(
       })
       return changed ? next : prev
     })
-  }, [catalogSig])
+    const lastModel = loadLastModel()
+    if (lastModel && !valid.has(lastModel)) {
+      saveLastModel(fallback)
+    }
+  }, [catalogSig, catalogReady])
 
   useEffect(() => {
     saveActiveId(activeId)
@@ -127,7 +142,7 @@ export function useConversations(
   )
 
   const createNew = useCallback(() => {
-    const next = emptyConversation()
+    const next = emptyConversation(loadLastModel() ?? DEFAULT_MODEL)
     setConversations((list) => [next, ...list])
     setActiveId(next.id)
     return next.id
@@ -152,8 +167,10 @@ export function useConversations(
   }, [])
 
   const setModel = useCallback(
-    (id: string, model: ModelId) =>
-      patchConversation(id, (c) => ({ ...c, model, updatedAt: Date.now() })),
+    (id: string, model: ModelId) => {
+      patchConversation(id, (c) => ({ ...c, model, updatedAt: Date.now() }))
+      saveLastModel(model)
+    },
     [patchConversation],
   )
 

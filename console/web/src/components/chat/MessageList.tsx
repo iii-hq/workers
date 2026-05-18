@@ -9,11 +9,21 @@ interface MessageListProps {
       visible outputs (after submit, or between fcall-end and the next
       turn's first token). */
   isThinking?: boolean
+  onResolveApproval?: (
+    sessionId: string,
+    functionCallId: string,
+    decision: 'allow' | 'deny',
+  ) => Promise<void>
 }
 
-export function MessageList({ messages, isThinking }: MessageListProps) {
+export function MessageList({
+  messages,
+  isThinking,
+  onResolveApproval,
+}: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const lastPendingIdRef = useRef<string | null>(null)
 
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"
@@ -28,6 +38,37 @@ export function MessageList({ messages, isThinking }: MessageListProps) {
     }
   }, [messages, isThinking])
 
+  /* PR #150: a fresh approval modal demands attention even if the user
+     has scrolled up reading earlier content. Find the newest message with
+     pendingApproval and scroll it into view exactly once per pending id.
+     (We dedupe via lastPendingIdRef so React's re-renders don't keep
+     forcing the scroll while the user is reading the request body.) */
+  useEffect(() => {
+    const newestPending = [...messages]
+      .reverse()
+      .find((m) => m.role === 'function-call' && m.pendingApproval === true)
+    if (!newestPending) {
+      lastPendingIdRef.current = null
+      return
+    }
+    if (newestPending.id === lastPendingIdRef.current) return
+    lastPendingIdRef.current = newestPending.id
+    // defer one frame so the DOM has the new node before we scroll
+    requestAnimationFrame(() => {
+      const node = containerRef.current?.querySelector(
+        `[data-message-id="${newestPending.id}"]`,
+      )
+      if (node && 'scrollIntoView' in node) {
+        ;(node as HTMLElement).scrollIntoView({
+          block: 'center',
+          behavior: 'smooth',
+        })
+      } else {
+        bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+      }
+    })
+  }, [messages])
+
   if (messages.length === 0) {
     return <EmptyState />
   }
@@ -36,7 +77,11 @@ export function MessageList({ messages, isThinking }: MessageListProps) {
     <div ref={containerRef} className="flex-1 overflow-y-auto px-9 py-8">
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
         {messages.map((m) => (
-          <Message key={m.id} message={m} />
+          <Message
+            key={m.id}
+            message={m}
+            onResolveApproval={onResolveApproval}
+          />
         ))}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">

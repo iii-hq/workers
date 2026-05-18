@@ -17,6 +17,11 @@ import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './h
 export const TOOL_NAME = 'agent_call';
 export const FUNCTION_ID = 'agent::call';
 
+export type DispatchResult =
+  | { kind: 'result'; result: FunctionResult }
+  | { kind: 'deny'; result: FunctionResult }
+  | { kind: 'pending' };
+
 export function agentCallTool(): unknown {
   return {
     name: TOOL_NAME,
@@ -100,46 +105,62 @@ export async function dispatchWithHook(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
-): Promise<FunctionResult> {
+  session_id?: string,
+): Promise<DispatchResult> {
   if (!function_call.function_id || function_call.function_id.length === 0) {
-    return errorResult({
-      error: 'missing_function',
-      message: 'agent_call requires a non-empty `function` string field',
-    });
+    return {
+      kind: 'result',
+      result: errorResult({
+        error: 'missing_function',
+        message: 'agent_call requires a non-empty `function` string field',
+      }),
+    };
   }
-  const outcome = await consultBefore(iii, function_call, approval_required);
-  if (outcome.kind === 'deny') return denialResult(outcome.denial);
+  const outcome = await consultBefore(iii, function_call, approval_required, session_id);
+  if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
+  if (outcome.kind === 'pending') {
+    return { kind: 'pending' };
+  }
 
   try {
     const value = await iii.trigger<unknown, unknown>({
       function_id: function_call.function_id,
       payload: function_call.arguments ?? {},
     });
-    return decodeOrPassthrough(value);
+    return { kind: 'result', result: decodeOrPassthrough(value) };
   } catch (err) {
     if (isFunctionNotFound(err)) {
-      return errorResult({
-        error: 'function_not_found',
-        function: function_call.function_id,
-        hint: 'load the relevant skill via directory::skills::get, or check the function id',
-      });
+      return {
+        kind: 'result',
+        result: errorResult({
+          error: 'function_not_found',
+          function: function_call.function_id,
+          hint: 'load the relevant skill via directory::skills::get, or check the function id',
+        }),
+      };
     }
     if (isTimeout(err)) {
-      return errorResult({
-        error: 'timeout',
-        function: function_call.function_id,
-        message: String(err),
-      });
+      return {
+        kind: 'result',
+        result: errorResult({
+          error: 'timeout',
+          function: function_call.function_id,
+          message: String(err),
+        }),
+      };
     }
-    return denialResult(
-      gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
-    );
+    return {
+      kind: 'deny',
+      result: denialResult(
+        gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
+      ),
+    };
   }
 }
 
 export async function dispatch(
   iii: ISdk,
-  _session_id: string,
+  session_id: string,
   fn: unknown,
   payload: unknown,
 ): Promise<FunctionResult> {
@@ -154,7 +175,15 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  return dispatchWithHook(iii, fc, []);
+  const out = await dispatchWithHook(iii, fc, [], session_id);
+  if (out.kind === 'pending') {
+    return errorResult({
+      error: 'awaiting_approval',
+      function: fc.function_id,
+      message: 'This call requires human approval. Approve via the console and retry.',
+    });
+  }
+  return out.result;
 }
 
 export function register(iii: ISdk): void {

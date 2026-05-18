@@ -30,6 +30,7 @@ export type DenialEnvelope = {
 
 export type HookOutcome =
   | { kind: 'allow' }
+  | { kind: 'pending'; merged: Record<string, unknown> }
   | { kind: 'deny'; denial: DenialEnvelope | Record<string, unknown> };
 
 export function gateUnavailableEnvelope(function_id: string, reason: string): DenialEnvelope {
@@ -46,8 +47,14 @@ export async function consultBefore(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
+  session_id?: string,
 ): Promise<HookOutcome> {
-  const inner = { function_call, approval_required };
+  // PR #150: include session_id at the inner-payload root so approval-gate's
+  // extractCall can route it. Without this, the gate sees a null session_id,
+  // returns {block:false}, and the call passes through unapproved.
+  const inner = session_id
+    ? { session_id, function_call, approval_required }
+    : { function_call, approval_required };
   const payload = {
     topic: TOPIC_BEFORE,
     payload: inner,
@@ -79,6 +86,9 @@ export async function consultBefore(
   }
   const blocked = merged.block === true;
   if (!blocked) return { kind: 'allow' };
+  if (merged.status === 'pending') {
+    return { kind: 'pending', merged };
+  }
   const denial =
     (merged.denial as DenialEnvelope | undefined) ??
     gateUnavailableEnvelope(
@@ -109,3 +119,4 @@ export async function publishAfter(
     return null;
   }
 }
+// reload marker 1779108905

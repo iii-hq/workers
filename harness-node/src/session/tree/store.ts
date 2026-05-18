@@ -9,12 +9,12 @@
  *     scope `session_tree_meta`, key `<session_id>`     → SessionMeta
  *
  * `state::list` returns values without keys, so we re-sort entries by
- * `id` after reading (matches the Rust crate).
+ * `(timestamp, id)` after reading (matches the Rust crate, post PR #150).
  */
 
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
-import { type SessionEntry, SessionError, type SessionMeta } from './types.js';
+import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } from './types.js';
 
 export interface SessionStore {
   create(meta: SessionMeta): Promise<void>;
@@ -113,7 +113,14 @@ export class IiiStateSessionStore implements SessionStore {
     const arr = pickArray(resp);
     if (!arr) throw new SessionError('storage', 'state::list returned non-array');
     const entries = arr.map((v) => unwrapValue<SessionEntry>(v));
-    entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    // PR #150: sort by (timestamp, id) so resumed approval replies that
+    // arrive after the session paused appear in correct transcript order
+    // even when their entry ids are non-monotonic.
+    entries.sort((a, b) => {
+      const t = entryTimestamp(a) - entryTimestamp(b);
+      if (t !== 0) return t;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
     return entries;
   }
 

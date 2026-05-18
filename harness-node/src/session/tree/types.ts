@@ -54,6 +54,18 @@ export function entryParent(e: SessionEntry): string | null {
   return e.parent_id ?? null;
 }
 
+/**
+ * Returns the entry's wall-clock timestamp. Mirrors
+ * `session/src/tree/mod.rs::SessionEntry::timestamp` (PR #150).
+ *
+ * Used by `IiiStateSessionStore.loadEntries` to sort entries by
+ * `(timestamp, id)` so resumed approval replies that arrive with newer
+ * timestamps but older ids land in the correct transcript position.
+ */
+export function entryTimestamp(e: SessionEntry): number {
+  return e.timestamp;
+}
+
 export type SessionMeta = {
   session_id: string;
   display_name?: string;

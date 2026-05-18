@@ -5,11 +5,11 @@ import type { ChatBackend, StreamEvent } from '@/lib/backend'
 import {
   type Conversation,
   DEFAULT_MODEL,
-  STATIC_MODEL_OPTIONS,
   type Message,
   type MessagePatch,
   type Mode,
   type ModelId,
+  STATIC_MODEL_OPTIONS,
 } from '@/types/chat'
 import { EventLog, type EventLogHandle } from './EventLog'
 import { ScenarioPicker } from './ScenarioPicker'

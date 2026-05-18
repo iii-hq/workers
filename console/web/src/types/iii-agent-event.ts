@@ -204,8 +204,6 @@ export type AgentEvent =
       function_call_id: string
       function_id: string
       args: unknown
-      /** Unix milliseconds; gate auto-denies past this point. */
-      expires_at: number
     }
   | {
       type: 'approval_resolved'

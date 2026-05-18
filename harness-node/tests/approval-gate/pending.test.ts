@@ -1,118 +1,111 @@
-import { describe, expect, it } from 'vitest';
-import {
-  awaitDecision,
-  handleListPending,
-  handleResolve,
-} from '../../src/approval-gate/pending.js';
+import { describe, expect, it, vi } from 'vitest';
+import { handleResolve, handleResolveWithEvents } from '../../src/approval-gate/pending.js';
 import { InMemoryStateBus } from '../../src/approval-gate/state-bus.js';
-import { buildPendingRecord, pendingKey } from '../../src/approval-gate/types.js';
+import type { ISdk } from '../../src/runtime/iii.js';
 
-describe('handleResolve', () => {
-  it('flips status from pending to allow', async () => {
+describe('handleResolve (simplified)', () => {
+  it('writes { decision, reason } to the state-bus on allow', async () => {
     const bus = new InMemoryStateBus();
-    await bus.set(
-      'approvals',
-      pendingKey('s1', 'tc-1'),
-      buildPendingRecord('tc-1', 'write', {}, 0, 60_000),
-    );
-    const out = (await handleResolve(bus, 'approvals', {
-      function_call_id: 'tc-1',
+    const out = await handleResolve(bus, 'approvals', {
       session_id: 's1',
+      function_call_id: 'fc-1',
       decision: 'allow',
-    })) as Record<string, unknown>;
-    expect(out.ok).toBe(true);
-    const stored = (await bus.get('approvals', pendingKey('s1', 'tc-1'))) as Record<
-      string,
-      unknown
-    >;
-    expect(stored.status).toBe('allow');
+    });
+    expect(out).toEqual({ ok: true });
+    expect(await bus.get('approvals', 's1/fc-1')).toEqual({ decision: 'allow', reason: null });
   });
 
-  it('rejects already-resolved entries', async () => {
+  it('preserves a reason when provided on deny', async () => {
     const bus = new InMemoryStateBus();
-    const rec = buildPendingRecord('tc-1', 'write', {}, 0, 60_000);
-    rec.status = 'allow';
-    await bus.set('approvals', pendingKey('s1', 'tc-1'), rec);
-    const out = (await handleResolve(bus, 'approvals', {
+    const out = await handleResolve(bus, 'approvals', {
       session_id: 's1',
-      function_call_id: 'tc-1',
+      function_call_id: 'fc-1',
       decision: 'deny',
-    })) as Record<string, unknown>;
-    expect(out.ok).toBe(false);
-    expect(out.error).toBe('already_resolved');
+      reason: 'user cancelled',
+    });
+    expect(out).toEqual({ ok: true });
+    expect(await bus.get('approvals', 's1/fc-1')).toEqual({
+      decision: 'deny',
+      reason: 'user cancelled',
+    });
   });
 
-  it('errors on missing id or bad decision', async () => {
+  it('returns missing_id when ids are absent', async () => {
     const bus = new InMemoryStateBus();
-    expect(((await handleResolve(bus, 'approvals', {})) as Record<string, unknown>).error).toBe(
-      'missing_id',
-    );
-    expect(
-      (
-        (await handleResolve(bus, 'approvals', {
-          session_id: 's1',
-          function_call_id: 'tc-1',
-          decision: 'weird',
-        })) as Record<string, unknown>
-      ).error,
-    ).toBe('bad_decision');
+    const out = await handleResolve(bus, 'approvals', { decision: 'allow' });
+    expect(out).toEqual({ ok: false, error: 'missing_id' });
   });
-});
 
-describe('handleListPending', () => {
-  it('returns only pending entries for the session', async () => {
+  it('returns bad_decision when decision is invalid', async () => {
     const bus = new InMemoryStateBus();
-    await bus.set(
-      'approvals',
-      pendingKey('s1', 'tc-1'),
-      buildPendingRecord('tc-1', 'write', {}, 0, 60_000),
-    );
-    const resolved = buildPendingRecord('tc-2', 'write', {}, 0, 60_000);
-    resolved.status = 'allow';
-    await bus.set('approvals', pendingKey('s1', 'tc-2'), resolved);
-    await bus.set(
-      'approvals',
-      pendingKey('other', 'tc-3'),
-      buildPendingRecord('tc-3', 'write', {}, 0, 60_000),
-    );
-    const out = (await handleListPending(bus, 'approvals', { session_id: 's1' })) as {
-      pending: Array<Record<string, unknown>>;
-    };
-    expect(out.pending).toHaveLength(1);
-    expect(out.pending[0]?.function_call_id).toBe('tc-1');
+    const out = await handleResolve(bus, 'approvals', {
+      session_id: 's1',
+      function_call_id: 'fc-1',
+      decision: 'maybe',
+    });
+    expect(out).toEqual({ ok: false, error: 'bad_decision' });
+  });
+
+  it('returns state_write_failed when bus.set throws', async () => {
+    const bus = new InMemoryStateBus();
+    vi.spyOn(bus, 'set').mockRejectedValue(new Error('boom'));
+    const out = await handleResolve(bus, 'approvals', {
+      session_id: 's1',
+      function_call_id: 'fc-1',
+      decision: 'allow',
+    });
+    expect(out).toEqual({ ok: false, error: 'state_write_failed' });
   });
 });
 
-describe('awaitDecision', () => {
-  it('returns Allow when status flips', async () => {
+describe('handleResolveWithEvents', () => {
+  it('emits approval_resolved on success but does not publish turn::step_requested', async () => {
     const bus = new InMemoryStateBus();
-    const key = pendingKey('s1', 'tc-1');
-    await bus.set('approvals', key, buildPendingRecord('tc-1', 'write', {}, Date.now(), 5_000));
-    setTimeout(async () => {
-      const rec = (await bus.get('approvals', key)) as Record<string, unknown>;
-      rec.status = 'allow';
-      await bus.set('approvals', key, rec);
-    }, 30);
-    const out = await awaitDecision(bus, 'approvals', 's1', 'tc-1', Date.now() + 5_000);
-    expect(out.kind).toBe('allow');
+    const triggers: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+          triggers.push({ function_id, payload });
+          return null;
+        },
+      ),
+    } as unknown as ISdk;
+
+    await handleResolveWithEvents(iii, bus, 'approvals', {
+      session_id: 's1',
+      function_call_id: 'fc-1',
+      decision: 'allow',
+      reason: 'looks good',
+    });
+
+    const fns = triggers.map((t) => t.function_id);
+    expect(fns).toContain('stream::set');
+    expect(fns).not.toContain('iii::durable::publish');
+
+    const resolved = triggers
+      .filter((t) => t.function_id === 'stream::set')
+      .map((t) => (t.payload as Record<string, unknown>).data as Record<string, unknown>)
+      .find((d) => d.type === 'approval_resolved');
+    expect(resolved).toBeDefined();
+    expect(resolved?.function_call_id).toBe('fc-1');
+    expect(resolved?.tool_call_id).toBe('fc-1');
+    expect(resolved?.decision).toBe('allow');
+    expect(resolved?.reason).toBe('looks good');
   });
 
-  it('times out when expires_at passes with status still pending', async () => {
+  it('does not publish when state write fails', async () => {
     const bus = new InMemoryStateBus();
-    await bus.set(
-      'approvals',
-      pendingKey('s1', 'tc-1'),
-      buildPendingRecord('tc-1', 'write', {}, 0, 0),
+    vi.spyOn(bus, 'set').mockRejectedValue(new Error('boom'));
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    const out = await handleResolveWithEvents(iii, bus, 'approvals', {
+      session_id: 's1',
+      function_call_id: 'fc-1',
+      decision: 'allow',
+    });
+    expect((out as Record<string, unknown>).ok).toBe(false);
+    const fns = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as { function_id: string }).function_id,
     );
-    const out = await awaitDecision(bus, 'approvals', 's1', 'tc-1', Date.now() - 10);
-    expect(out.kind).toBe('deny');
-    if (out.kind === 'deny') expect(out.reason).toBe('timeout');
-  });
-
-  it('fails closed on missing record', async () => {
-    const bus = new InMemoryStateBus();
-    const out = await awaitDecision(bus, 'approvals', 's1', 'tc-1', Date.now() + 1_000);
-    expect(out.kind).toBe('deny');
-    if (out.kind === 'deny') expect(out.reason).toBe('state_unavailable');
+    expect(fns).not.toContain('iii::durable::publish');
   });
 });

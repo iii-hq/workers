@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildPendingRecord, extractCall, pendingKey } from '../../src/approval-gate/types.js';
+import {
+  FN_RESOLVE,
+  blockReplyFor,
+  extractCall,
+  pendingKey,
+} from '../../src/approval-gate/types.js';
 
 describe('pendingKey', () => {
   it('joins session and call ids', () => {
@@ -11,15 +16,28 @@ describe('pendingKey', () => {
   });
 });
 
-describe('buildPendingRecord', () => {
-  it('sets status pending and computes expires_at', () => {
-    const r = buildPendingRecord('tc-1', 'write', { x: 1 }, 1_000_000, 60_000) as Record<
-      string,
-      unknown
-    >;
-    expect(r.status).toBe('pending');
-    expect(r.function_call_id).toBe('tc-1');
-    expect(r.expires_at).toBe(1_060_000);
+describe('approval-gate function constants', () => {
+  it('exposes active approval-gate iii function ids', () => {
+    expect(FN_RESOLVE).toBe('approval::resolve');
+  });
+});
+
+describe('blockReplyFor', () => {
+  it('marks allow replies with subscriber and approval_gate flags', () => {
+    expect(blockReplyFor({ kind: 'allow' })).toEqual({
+      block: false,
+      subscriber: 'approval-gate',
+      approval_gate: true,
+    });
+  });
+
+  it('marks deny replies with reason, subscriber, and approval_gate flags', () => {
+    expect(blockReplyFor({ kind: 'deny', reason: 'denied by policy' })).toEqual({
+      block: true,
+      reason: 'approval-gate: denied by policy',
+      subscriber: 'approval-gate',
+      approval_gate: true,
+    });
   });
 });
 

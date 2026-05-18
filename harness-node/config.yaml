@@ -9,7 +9,6 @@ permissions_path: "./iii-permissions.yaml"
 
 # turn-orchestrator
 sync_default_timeout_ms: 120000
-sync_poll_interval_ms: 50
 system_default_skills:
   - "iii://iii-directory/index"
 
@@ -17,7 +16,6 @@ system_default_skills:
 approval_gate:
   topic: "agent::before_function_call"
   approval_state_scope: "approvals"
-  default_timeout_ms: 300000
   policy_function_id: "policy::check_permissions"
 
 # session worker

@@ -61,30 +61,41 @@ flowchart LR
 
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
-  turnOrch -- "agent::call (chokepoint)" --> approval
+  turnOrch -- "agent::call → hook-fanout::publish_collect" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
 
+  hook -- "publish agent::before_function_call" --> state
+  state -- "durable:subscriber" --> approval
   approval -- "policy::check_permissions" --> harness
-  approval -- "subscribes agent::before_function_call" --> state
+  approval -- "stream::set agent::hook_reply" --> hook
+  hook -- "stream trigger on agent::hook_reply" --> hook
+
+  client -- "approval::resolve" --> approval
+  approval -- "state::set approvals/<sid>/<cid>" --> state
+  state -- "state trigger (scope=approvals)" --> approval
+  approval -- "publish turn::step_requested" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
+  state -- "state trigger (scope=agent, abort_signal)" --> turnOrch
+  state -- "state trigger (scope=agent, turn_state created)" --> harness
   harness -- "ui::session::event::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
-
-  approval -- "hook-fanout::publish_collect" -.optional.-> hook
 ```
 
 ## Turn FSM
 
 [src/turn-orchestrator/state.ts](harness-node/src/turn-orchestrator/state.ts)
-defines a 10-state durable FSM. Every transition is driven by the
+defines an 11-state durable FSM. Every transition is driven by the
 `turn::step` durable subscriber, which is woken by a publish to the
-`turn::step_requested` topic.
+`turn::step_requested` topic — either by the orchestrator itself
+(re-publish at the end of a step), by the approval-gate's
+`approvals` state trigger (when a human decision lands), or by the
+orchestrator's own `abort_signal` state trigger.
 
 ```mermaid
 stateDiagram-v2
@@ -95,7 +106,10 @@ stateDiagram-v2
   assistant_finished --> function_prepare: has function calls
   assistant_finished --> steering_check: no function calls
   function_prepare --> function_execute
-  function_execute --> function_finalize
+  function_execute --> function_finalize: all calls resolved (allow/deny)
+  function_execute --> function_awaiting_approval: any call needs_approval
+  function_awaiting_approval --> function_awaiting_approval: decision(s) still missing
+  function_awaiting_approval --> function_execute: all decisions written
   function_finalize --> steering_check
   steering_check --> awaiting_assistant: continue
   steering_check --> tearing_down: stop or max turns
@@ -105,31 +119,58 @@ stateDiagram-v2
 
 ## Approval flow
 
+The gate replies synchronously to every `agent::before_function_call`
+event — `allow`, `deny`, or `pending`. There is no in-gate polling;
+resume is driven by a `state` trigger on the `approvals` scope. The
+orchestrator parks the turn in `function_awaiting_approval` until that
+trigger fires and re-publishes `turn::step_requested`.
+
 ```mermaid
 sequenceDiagram
-  participant Turn as turn-orchestrator
+  participant Turn as turn-orchestrator (FSM)
+  participant Hook as hook-fanout::publish_collect
   participant Bus as iii bus (state::* + stream::*)
   participant Gate as approval-gate (policy::approval_gate)
   participant Harness as harness (policy::check_permissions)
   participant User
 
-  Turn->>Bus: publish agent::before_function_call (via hook-fanout-style envelope)
+  Turn->>Hook: publish_collect("agent::before_function_call", call)
+  Hook->>Bus: iii::durable::publish
   Bus-->>Gate: durable:subscriber wakes
   Gate->>Harness: policy::check_permissions(function_id, args)
   alt rule.action == allow
     Harness-->>Gate: allow
-    Gate-->>Bus: reply allow
+    Gate-->>Hook: {block:false, subscriber, approval_gate}
+    Hook-->>Turn: merged.allow → dispatch the call
   else rule.action == deny
     Harness-->>Gate: deny + DenialEnvelope
-    Gate-->>Bus: reply deny
+    Gate->>Bus: stream::set agent::events (function_call_denied)
+    Gate-->>Hook: {block:true, denial, subscriber, approval_gate}
+    Hook-->>Turn: merged.deny → DenialResult
   else no rule (needs_approval)
     Harness-->>Gate: needs_approval
-    Gate->>Bus: state::set approvals/<sid>/<call_id> = pending
-    User->>Bus: approval::resolve(decision)
-    Gate-->>Bus: reply allow or deny (poll-loop)
+    Gate->>Bus: stream::set agent::events (approval_requested)
+    Gate-->>Hook: {block:true, status:"pending", subscriber, approval_gate}
+    Hook-->>Turn: merged.pending → park in function_awaiting_approval
+    Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
+    User->>Gate: approval::resolve(decision, reason)
+    Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
+    Gate->>Bus: stream::set agent::events (approval_resolved)
+    Note over Gate,Turn: state trigger on scope=approvals<br/>(approval::is_decision_write → approval::on_decision_written)<br/>publishes turn::step_requested
+    Bus-->>Turn: durable wake → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
+    Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute
   end
-  Bus-->>Turn: hook reply
 ```
+
+Fail-closed: if `iii::durable::publish` errors or no subscriber replies,
+`hook-fanout::publish_collect` returns `publish_failed: true` and
+`consultBefore` denies the call with a `gate_unavailable` envelope.
+
+Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
+the orchestrator through its own `agent`-scope state trigger) and, if the
+turn is paused on approvals, also writes one
+`{decision: 'aborted', reason: 'session_aborted'}` record per pending
+call so the approvals state trigger releases the parked step.
 
 ## Kernel deny list
 
@@ -163,8 +204,8 @@ Bare-string allow rules: `harness::status`, `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,
 `auth::list_providers`, `auth::status`, `oauth::anthropic::status`,
 `oauth::openai-codex::status`, the `directory::engine::*` introspection
-surface, the `directory::skills::*` and `directory::prompts::*` lookups, and
-`approval::list_pending`.
+surface, and the `directory::skills::*` and `directory::prompts::*`
+lookups.
 
 ## Shared modules
 

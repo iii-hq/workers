@@ -53,7 +53,6 @@ export type AgentEvent =
       function_call_id: string;
       function_id: string;
       args: unknown;
-      expires_at: number;
     }
   | {
       type: 'approval_resolved';

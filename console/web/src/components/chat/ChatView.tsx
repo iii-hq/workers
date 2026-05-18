@@ -72,6 +72,10 @@ export function ChatView({
       let thoughtId: string | null = null
       let thoughtBuffer = ''
       let fcallId: string | null = null
+      // PR #150: same iii function_call_id can fire fcall-start twice
+      // (once for function_execution_start, once for approval_requested).
+      // Map UI message id → iii function_call_id so dedupe is reliable.
+      const fcallMap = new Map<string, string>()
       let assistantId: string | null = null
       let assistantBuffer = ''
 
@@ -114,10 +118,21 @@ export function ChatView({
               break
             }
             case 'fcall-start': {
-              /* Defensive turn boundary: if a provider emits fcall-start
-                 before the assistant's message_end, finalize the in-flight
-                 assistant message so the next turn's text doesn't merge
-                 into it. */
+              if (event.functionCallId) {
+                const existing = [...fcallMap.entries()].find(
+                  ([, fcid]) => fcid === event.functionCallId,
+                )?.[0]
+                if (existing) {
+                  onPatchMessage(conversationId, existing, {
+                    pendingApproval: event.pendingApproval,
+                    running: !event.pendingApproval,
+                    functionCallId: event.functionCallId,
+                    sessionId: event.sessionId,
+                  })
+                  fcallId = existing
+                  break
+                }
+              }
               if (assistantId) {
                 onPatchMessage(conversationId, assistantId, {
                   streaming: false,
@@ -132,9 +147,13 @@ export function ChatView({
                 input: event.input,
                 running: !event.pendingApproval,
                 pendingApproval: event.pendingApproval,
+                functionCallId: event.functionCallId,
+                sessionId: event.sessionId,
                 createdAt: Date.now(),
               }
               fcallId = msg.id
+              if (event.functionCallId)
+                fcallMap.set(msg.id, event.functionCallId)
               onAppendMessage(conversationId, msg)
               break
             }
@@ -147,6 +166,7 @@ export function ChatView({
                 pendingApproval: false,
               })
               /* reset so a subsequent fcall-start gets a fresh slot */
+              fcallMap.delete(fcallId)
               fcallId = null
               break
             }
@@ -172,16 +192,25 @@ export function ChatView({
               break
             }
             case 'assistant-end': {
-              if (!assistantId) break
-              onPatchMessage(conversationId, assistantId, { streaming: false })
-              /* Per-turn boundary: clear pointers so the next turn's first
-                 token creates a brand-new assistant message instead of
-                 appending to this one. translate.ts emits assistant-end on
-                 every assistant message_end, not just the final agent_end. */
+              if (assistantId) {
+                onPatchMessage(conversationId, assistantId, {
+                  streaming: false,
+                })
+              }
+              setIsStreaming(false)
               assistantId = null
               assistantBuffer = ''
               break
             }
+          }
+          // Any inbound activity event re-arms the STREAMING pill
+          // (the backend stream stays alive across multiple turns now).
+          if (
+            event.kind === 'fcall-start' ||
+            event.kind === 'assistant-token' ||
+            event.kind === 'thought-start'
+          ) {
+            setIsStreaming(true)
           }
         }
       } catch (err) {
@@ -264,7 +293,21 @@ export function ChatView({
         </div>
       </header>
 
-      <MessageList messages={conversation.messages} isThinking={isThinking} />
+      <MessageList
+        messages={conversation.messages}
+        isThinking={isThinking}
+        onResolveApproval={
+          backend.resolveApproval
+            ? async (sessionId, functionCallId, decision) => {
+                await backend.resolveApproval?.(
+                  sessionId,
+                  functionCallId,
+                  decision,
+                )
+              }
+            : undefined
+        }
+      />
 
       <footer className="px-9 pb-6 pt-2">
         <div className="mx-auto max-w-[760px]">

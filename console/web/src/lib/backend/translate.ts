@@ -38,7 +38,10 @@ import type {
 } from '@/types/iii-agent-event'
 import type { StreamEvent } from './types'
 
-export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
+export function translateAgentEvent(
+  event: AgentEvent,
+  sessionId?: string,
+): StreamEvent[] {
   switch (event.type) {
     case 'agent_start':
     case 'turn_start':
@@ -68,6 +71,8 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
           kind: 'fcall-start',
           functionId: event.function_id,
           input: event.args,
+          functionCallId: event.function_call_id,
+          sessionId,
         },
       ]
 
@@ -87,6 +92,8 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
           functionId: event.function_id,
           input: event.args,
           pendingApproval: true,
+          functionCallId: event.function_call_id,
+          sessionId,
         },
       ]
 

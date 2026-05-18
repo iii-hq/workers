@@ -1,4 +1,5 @@
 export const FUNCTION_ID = 'hook-fanout::publish_collect';
+export const REPLY_HANDLER_FN_ID = 'hook-fanout::reply_handler';
 export const HOOK_REPLY_STREAM = 'agent::hook_reply';
 
 export type MergeRule = 'first_block_wins' | 'field_merge' | 'pipeline_last_wins';

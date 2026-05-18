@@ -53,11 +53,13 @@ None — this worker is a pure storage surface.
 
 | Scope | Key shape | Value |
 |---|---|---|
-| `session_tree:<session_id>` | `<entry_id>` | `SessionEntry` (Message or Compaction). |
+| `session_tree:<session_id>` | `<entry_id>` | `SessionEntry` — one of `message`, `custom_message`, `branch_summary`, `compaction`. Every variant carries `id`, `parent_id`, and an explicit `timestamp`. |
 | `session_tree_meta` | `<session_id>` | `SessionMeta` (display_name, cwd, created_at, updated_at, branch_count). |
 
-`state::list` returns values without keys, so entries are re-sorted by
-`id` after reading.
+`state::list` returns values without keys, so entries are re-sorted in
+`loadEntries` by `(timestamp, id)` rather than `id` alone — this keeps
+resumed approval replies in the correct transcript position when their
+ids are non-monotonic relative to wall-clock order.
 
 `session-inbox::*` (under the configured `session.state_scope`, default
 `agent`):
@@ -92,7 +94,7 @@ From [src/session/iii.worker.yaml](harness-node/src/session/iii.worker.yaml):
 | [src/session/tree/register.ts](harness-node/src/session/tree/register.ts) | Registers all 11 `session-tree::*` functions; exports `FUNCTION_IDS`. |
 | [src/session/tree/operations.ts](harness-node/src/session/tree/operations.ts) | Pure tree algorithms: create, fork, clone, compact, active path, messages, reconcile, tree, export_html, list. |
 | [src/session/tree/store.ts](harness-node/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
-| [src/session/tree/types.ts](harness-node/src/session/tree/types.ts) | `SessionEntry`, `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`. |
+| [src/session/tree/types.ts](harness-node/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |
 | [src/session/inbox/handlers.ts](harness-node/src/session/inbox/handlers.ts) | Registers the three `session-inbox::*` functions. |
 | [src/session/inbox/key.ts](harness-node/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "session/<sid>/<name>"`. |
 | [src/session/iii.worker.yaml](harness-node/src/session/iii.worker.yaml) | Worker manifest. |

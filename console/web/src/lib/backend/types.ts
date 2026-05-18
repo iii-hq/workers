@@ -22,6 +22,10 @@ export type StreamEvent =
       functionId: string
       input: unknown
       pendingApproval?: boolean
+      /** iii function_call_id — needed to resolve approval. */
+      functionCallId?: string
+      /** iii session_id owning this call — needed to resolve approval. */
+      sessionId?: string
     }
   | { kind: 'fcall-end'; output: unknown; durationMs: number }
   | { kind: 'assistant-token'; token: string }
@@ -42,4 +46,14 @@ export interface ChatBackend {
     model: ModelId,
     opts?: ChatStreamOptions,
   ): AsyncGenerator<StreamEvent>
+  /**
+   * Resolve a pending approval. Returns when the iii bus accepts the
+   * decision; the actual session resume happens asynchronously via
+   * approval-gate's `resume_session` poll.
+   */
+  resolveApproval?(
+    sessionId: string,
+    functionCallId: string,
+    decision: 'allow' | 'deny',
+  ): Promise<void>
 }

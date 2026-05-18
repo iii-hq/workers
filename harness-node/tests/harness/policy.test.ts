@@ -250,7 +250,6 @@ describe('shipped iii-permissions.yaml default', () => {
       'models::list',
       'auth::status',
       'directory::engine::functions::list',
-      'approval::list_pending',
     ]) {
       expect(perms.check(fid, {}).kind).toBe('allow');
     }
