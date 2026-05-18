@@ -4,7 +4,11 @@ import { agentCallTool } from '../agent-call.js';
 import type { TurnOrchestratorConfig } from '../config.js';
 import * as persistence from '../persistence.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-import { type DefaultSkillBody, buildSystemPrompt, defaultSkillBody } from '../system-prompt.js';
+import { type DefaultSkillBody, type Mode, buildSystemPrompt, defaultSkillBody } from '../system-prompt.js';
+
+function asMode(value: unknown): Mode | null {
+  return value === 'plan' || value === 'ask' || value === 'agent' ? value : null;
+}
 
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -40,6 +44,7 @@ export async function handleProvisioning(
   const overrideRaw = request.system_prompt;
   const override = typeof overrideRaw === 'string' && overrideRaw.length > 0 ? overrideRaw : null;
   const cwd = typeof request.cwd === 'string' ? (request.cwd as string) : null;
+  const mode = asMode(request.mode);
 
   const bodies: DefaultSkillBody[] = [];
   for (const uri of cfg.system_default_skills) {
@@ -47,7 +52,7 @@ export async function handleProvisioning(
     const body = await fetchSkill(iii, id);
     bodies.push(defaultSkillBody(uri, body));
   }
-  const prompt = buildSystemPrompt(bodies, cwd, override);
+  const prompt = buildSystemPrompt(bodies, cwd, override, mode);
 
   const updated = { ...request, system_prompt: prompt };
   await persistence.saveRunRequest(iii, rec.session_id, updated);

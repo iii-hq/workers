@@ -8,8 +8,10 @@
  *      enqueues envelopes whose `session_id` matches.
  *   3. Calls `ui::subscribe { browser_id, session_id }` so the harness
  *      fanout starts forwarding this session's events to us.
- *   4. Fires `run::start { session_id, provider, model, system_prompt,
- *      messages }` against turn-orchestrator.
+ *   4. Fires `run::start { session_id, provider, model, mode, messages }`
+ *      against turn-orchestrator. The harness owns the system prompt; the
+ *      console only ships the mode and lets the harness prepend the
+ *      matching mode paragraph to its identity preamble.
  *   5. Pumps the queue through `translateAgentEvent`, yielding each
  *      resulting `StreamEvent`. Terminates on the `agent_end` envelope.
  *
@@ -42,40 +44,27 @@ import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
 interface RunParams {
   provider: string
   model: string
-  systemPrompt: string
 }
 
 /**
- * Map console `Mode` + model selection onto turn-orchestrator's
- * `provider` / `model` / `system_prompt` fields.
+ * Map console model selection onto turn-orchestrator's `provider` / `model`
+ * fields. The system prompt is no longer the console's concern — the
+ * harness owns it and is fed `mode` directly on `run::start`.
  *
  * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
  * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
  */
-function resolveRunParams(mode: Mode, model: ModelId): RunParams {
+function resolveRunParams(model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
-  let provider: string
-  let modelId: string
   if (parsed) {
-    provider = parsed.provider
-    modelId = parsed.id
-  } else {
-    modelId = model
-    provider = model.startsWith('claude')
-      ? 'anthropic'
-      : model.startsWith('gemini')
-        ? 'google'
-        : 'openai'
+    return { provider: parsed.provider, model: parsed.id }
   }
-
-  const systemPrompt =
-    mode === 'plan'
-      ? 'You are an analytical planner. Reason briefly, then produce a concise numbered plan; do not execute tools unless asked.'
-      : mode === 'ask'
-        ? 'You answer the user directly without invoking tools. Be concise; prefer one or two paragraphs.'
-        : 'You are an autonomous agent. Use the available functions to satisfy the request. Stop when you have a final answer or hit an irrecoverable error.'
-
-  return { provider, model: modelId, systemPrompt }
+  const provider = model.startsWith('claude')
+    ? 'anthropic'
+    : model.startsWith('gemini')
+      ? 'google'
+      : 'openai'
+  return { provider, model }
 }
 
 async function* realStream(
@@ -115,11 +104,7 @@ async function* realStream(
     })
     subscribed = true
 
-    const {
-      provider,
-      model: modelId,
-      systemPrompt,
-    } = resolveRunParams(mode, model)
+    const { provider, model: modelId } = resolveRunParams(model)
 
     // Fire-and-forget: run::start kicks off the turn-orchestrator state
     // machine; events arrive via the ui::session::event handler above.
@@ -130,7 +115,7 @@ async function* realStream(
         session_id: sessionId,
         provider,
         model: modelId,
-        system_prompt: systemPrompt,
+        mode,
         messages: [
           {
             role: 'user',

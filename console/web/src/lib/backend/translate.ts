@@ -43,8 +43,17 @@ export function translateAgentEvent(event: AgentEvent): StreamEvent[] {
     case 'agent_start':
     case 'turn_start':
     case 'turn_end':
-    case 'message_end':
     case 'function_execution_update':
+      return []
+
+    case 'message_end':
+      // Per-turn boundary: signal `assistant-end` so consumers can finalize
+      // the streaming assistant message and reset their per-turn pointer.
+      // Without this, multi-turn agents (text → fcall → text → ...) merge
+      // every turn's text into the first assistant message.
+      if (event.message.role === 'assistant') {
+        return [{ kind: 'assistant-end' }]
+      }
       return []
 
     case 'message_update':

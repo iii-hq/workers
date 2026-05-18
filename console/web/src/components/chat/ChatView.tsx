@@ -114,6 +114,17 @@ export function ChatView({
               break
             }
             case 'fcall-start': {
+              /* Defensive turn boundary: if a provider emits fcall-start
+                 before the assistant's message_end, finalize the in-flight
+                 assistant message so the next turn's text doesn't merge
+                 into it. */
+              if (assistantId) {
+                onPatchMessage(conversationId, assistantId, {
+                  streaming: false,
+                })
+                assistantId = null
+                assistantBuffer = ''
+              }
               const msg: FunctionCallMessage = {
                 id: uid(),
                 role: 'function-call',
@@ -163,6 +174,12 @@ export function ChatView({
             case 'assistant-end': {
               if (!assistantId) break
               onPatchMessage(conversationId, assistantId, { streaming: false })
+              /* Per-turn boundary: clear pointers so the next turn's first
+                 token creates a brand-new assistant message instead of
+                 appending to this one. translate.ts emits assistant-end on
+                 every assistant message_end, not just the final agent_end. */
+              assistantId = null
+              assistantBuffer = ''
               break
             }
           }
@@ -204,6 +221,30 @@ export function ChatView({
     abortRef.current?.abort()
   }, [])
 
+  /* "agent is thinking" indicator: stream is active but no streaming
+     thought/assistant message is currently visible. Covers two gaps:
+     (a) right after submit, before the first token/thought/fcall arrives;
+     (b) after each fcall-end, while the harness transitions through
+     function_finalize → steering_check → next turn's provider stream.
+     A streaming assistant/thought message renders its own "thinking…"
+     shimmer when content is empty, so we don't double-render those. */
+  const isThinking =
+    isStreaming &&
+    (() => {
+      const last =
+        conversation.messages[conversation.messages.length - 1] ?? null
+      if (!last) return true
+      if (last.role === 'user') return true
+      if (
+        last.role === 'function-call' &&
+        !last.running &&
+        !last.pendingApproval
+      ) {
+        return true
+      }
+      return false
+    })()
+
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
       <header className="flex items-center justify-between px-9 py-3 border-b border-rule">
@@ -223,7 +264,7 @@ export function ChatView({
         </div>
       </header>
 
-      <MessageList messages={conversation.messages} />
+      <MessageList messages={conversation.messages} isThinking={isThinking} />
 
       <footer className="px-9 pb-6 pt-2">
         <div className="mx-auto max-w-[760px]">

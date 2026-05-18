@@ -31,6 +31,22 @@ function isPrimitive(v: unknown): v is Primitive {
   )
 }
 
+/**
+ * `null`, `undefined`, `""`, `[]`, and `{}` count as empty so we can render a
+ * compact "· empty" header instead of a noisy `{}` JSON block. `null` is
+ * intentionally treated as empty (the user-facing concept is "no input"); the
+ * primitive `null` rendering would otherwise show the literal text "null".
+ */
+function isEmptyValue(v: unknown): boolean {
+  if (v === null || v === undefined) return true
+  if (typeof v === 'string') return v.length === 0
+  if (Array.isArray(v)) return v.length === 0
+  if (typeof v === 'object') {
+    return Object.keys(v as Record<string, unknown>).length === 0
+  }
+  return false
+}
+
 function singlePrimitiveField(
   v: unknown,
 ): { key: string; value: Primitive } | null {
@@ -142,8 +158,23 @@ interface ValuePaneProps {
 }
 
 function ValuePane({ label, value, bordered }: ValuePaneProps) {
-  const primitive = isPrimitive(value)
-  const single = !primitive ? singlePrimitiveField(value) : null
+  const empty = isEmptyValue(value)
+  const primitive = !empty && isPrimitive(value)
+  const single = !empty && !primitive ? singlePrimitiveField(value) : null
+
+  if (empty) {
+    return (
+      <div className={cn(bordered && 'border-t border-rule-2')}>
+        <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          {label}
+          <span className="text-ink-ghost normal-case tracking-normal">
+            {' '}
+            · empty
+          </span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={cn(bordered && 'border-t border-rule-2')}>

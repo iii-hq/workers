@@ -91,8 +91,12 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     const result = await dispatchWithHook(iii, augmentedFc, approval_required);
     const is_error = isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
-    await persistence.saveExecutedCalls(iii, rec.session_id, results);
+    // Kick off persistence in parallel with the user-facing emit so the UI's
+    // fcall-end lands ~one trigger round-trip sooner. We still await both
+    // before the next iteration so ordering and durability are preserved.
+    const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+    await savePromise;
   }
   transitionTo(rec, 'function_finalize');
 }
