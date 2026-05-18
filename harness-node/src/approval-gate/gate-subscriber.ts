@@ -11,7 +11,7 @@
  *  3. needs_approval: emit `approval_requested` and return a pending block
  *     envelope. The orchestrator owns pending-call state on its turn record.
  *
- * Note: `approval_resolved` events are emitted by `handleResolveWithEvents`
+ * Note: `approval_resolved` events are written by `handleResolveWithEvents`
  * (in `pending.ts`) when the human resolves, not from this subscriber. This
  * subscriber returns synchronously without waiting for the human decision.
  */
@@ -21,7 +21,6 @@ import type { ISdk } from '../runtime/iii.js';
 import { streamSet } from '../runtime/stream.js';
 import type { ApprovalGateConfig } from './config.js';
 import { permissionsDenyEnvelope } from './denial.js';
-import { emitApprovalRequested } from './events.js';
 import { type PolicyOutcome, consultPolicy } from './policy-consult.js';
 import type { StateBus } from './state-bus.js';
 import { type IncomingCall, SUBSCRIBER_NAME, blockReplyFor, extractCall } from './types.js';
@@ -94,10 +93,18 @@ export async function handleGateEvent(
     return reply;
   }
 
-  await emitApprovalRequested(ctx.iii, call.session_id, {
-    function_call_id: call.function_call_id,
-    function_id: call.function_id,
-    args: call.args,
+  await streamSet(ctx.iii, {
+    stream_name: 'agent::events',
+    group_id: call.session_id,
+    item_id: `approval-${uuidLike()}`,
+    data: {
+      type: 'approval_requested',
+      function_call_id: call.function_call_id,
+      tool_call_id: call.function_call_id,
+      function_id: call.function_id,
+      tool_name: call.function_id,
+      args: call.args,
+    },
   });
   const reply = {
     block: true,

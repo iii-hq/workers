@@ -4,9 +4,10 @@
  */
 
 import { requireString } from '../runtime/handler.js';
+import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { emitApprovalResolved } from './events.js';
+import { streamSet } from '../runtime/stream.js';
 import type { StateBus } from './state-bus.js';
 import { pendingKey } from './types.js';
 
@@ -64,7 +65,18 @@ export async function handleResolveWithEvents(
       : 'deny';
   const reason = typeof obj.reason === 'string' ? obj.reason : null;
 
-  await emitApprovalResolved(iii, session_id, { function_call_id, decision, reason });
+  await streamSet(iii, {
+    stream_name: 'agent::events',
+    group_id: session_id,
+    item_id: `approval-${uuidLike()}`,
+    data: {
+      type: 'approval_resolved',
+      function_call_id,
+      tool_call_id: function_call_id,
+      decision,
+      reason,
+    },
+  });
 
   return out;
 }

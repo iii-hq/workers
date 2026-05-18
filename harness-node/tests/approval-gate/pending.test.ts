@@ -75,11 +75,22 @@ describe('handleResolveWithEvents', () => {
       session_id: 's1',
       function_call_id: 'fc-1',
       decision: 'allow',
+      reason: 'looks good',
     });
 
     const fns = triggers.map((t) => t.function_id);
     expect(fns).toContain('stream::set');
     expect(fns).not.toContain('iii::durable::publish');
+
+    const resolved = triggers
+      .filter((t) => t.function_id === 'stream::set')
+      .map((t) => (t.payload as Record<string, unknown>).data as Record<string, unknown>)
+      .find((d) => d.type === 'approval_resolved');
+    expect(resolved).toBeDefined();
+    expect(resolved?.function_call_id).toBe('fc-1');
+    expect(resolved?.tool_call_id).toBe('fc-1');
+    expect(resolved?.decision).toBe('allow');
+    expect(resolved?.reason).toBe('looks good');
   });
 
   it('does not publish when state write fails', async () => {
