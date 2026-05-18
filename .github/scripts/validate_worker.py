@@ -32,15 +32,8 @@ import _lib  # noqa: E402
 # Workers the harness materialises into ./data/skills/<name>/index.md on
 # boot via skills::download. Must match harness/src/skills.rs::BOOTSTRAP_NAMES.
 BOOTSTRAP_WORKERS = frozenset({
-    "harness",
     "iii-directory",
-    "auth-credentials",
-    "turn-orchestrator",
-    "approval-gate",
     "shell",
-    "models-catalog",
-    "llm-budget",
-    "session",
 })
 
 SKILL_MD_SIZE_CAP = 256 * 1024  # 256 KiB
@@ -166,17 +159,17 @@ def main(argv: list[str] | None = None) -> int:
         if not skill_md.exists():
             hard(
                 f"{worker}/skill.md is missing — bundled workers must ship one "
-                f"(see AGENTS-NEW-WORKER.md §10)"
+                f"(see binary-worker.md)"
             )
         elif skill_md.stat().st_size == 0:
             hard(
                 f"{worker}/skill.md is empty — must contain the H1 + summary "
-                f"(see AGENTS-NEW-WORKER.md §10.2)"
+                f"(see binary-worker.md)"
             )
         elif skill_md.stat().st_size > SKILL_MD_SIZE_CAP:
             hard(
                 f"{worker}/skill.md exceeds 256 KiB cap "
-                f"({skill_md.stat().st_size} bytes; see AGENTS-NEW-WORKER.md §10.2)"
+                f"({skill_md.stat().st_size} bytes; see binary-worker.md)"
             )
 
     for e in errs:

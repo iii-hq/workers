@@ -1,7 +1,0 @@
-# models-catalog runtime config.
-
-# WebSocket URL the worker uses to register with the engine.
-engine_url: "ws://127.0.0.1:49134"
-
-# Timeout for state::* and other internal bus triggers, in milliseconds.
-state_request_timeout_ms: 5000
