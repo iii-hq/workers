@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { DispatchResult } from '../../src/turn-orchestrator/agent-call.js';
 import {
   FUNCTION_ID,
   TOOL_NAME,
@@ -18,6 +19,29 @@ describe('agent_call tool schema', () => {
   it('TOOL_NAME and FUNCTION_ID are stable', () => {
     expect(TOOL_NAME).toBe('agent_call');
     expect(FUNCTION_ID).toBe('agent::call');
+  });
+});
+
+describe('DispatchResult shape', () => {
+  it('result variant carries a FunctionResult', () => {
+    const r: DispatchResult = {
+      kind: 'result',
+      result: { content: [], details: {}, terminate: false },
+    };
+    expect(r.kind).toBe('result');
+  });
+
+  it('deny variant carries a denial FunctionResult', () => {
+    const r: DispatchResult = {
+      kind: 'deny',
+      result: { content: [], details: { status: 'denied' }, terminate: false },
+    };
+    expect(r.kind).toBe('deny');
+  });
+
+  it('pending variant carries no result', () => {
+    const r: DispatchResult = { kind: 'pending' };
+    expect(r.kind).toBe('pending');
   });
 });
 

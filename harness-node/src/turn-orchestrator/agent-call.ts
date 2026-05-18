@@ -17,6 +17,11 @@ import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './h
 export const TOOL_NAME = 'agent_call';
 export const FUNCTION_ID = 'agent::call';
 
+export type DispatchResult =
+  | { kind: 'result'; result: FunctionResult }
+  | { kind: 'deny'; result: FunctionResult }
+  | { kind: 'pending' };
+
 export function agentCallTool(): unknown {
   return {
     name: TOOL_NAME,
