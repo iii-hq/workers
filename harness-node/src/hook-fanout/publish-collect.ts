@@ -72,9 +72,8 @@ function collectStreamItems(
  * Build the publish-collect response envelope. Mirrors
  * `hook-fanout/src/handler.rs::build_response` (PR #150).
  *
- * Adds `publish.{ok,error}` and `publish_failed:true` markers so the
- * orchestrator's `publishFailureFromResponse` helper can fail-closed when
- * a publish errored or the expected subscriber didn't reply.
+ * Adds `publish.{ok,error}` and `publish_failed:true` markers so callers can
+ * fail closed when a publish errored or an expected subscriber didn't reply.
  */
 export function buildResponse(
   event_id: string,

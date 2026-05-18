@@ -17,221 +17,14 @@ import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
 import type { PreparedEntry } from '../persistence.js';
 import * as persistence from '../persistence.js';
-import { type TurnState, type TurnStateRecord, transitionTo } from '../state.js';
+import { type TurnStateRecord, transitionTo } from '../state.js';
 
-const APPROVAL_CONSUME_FN = 'approval::consume';
-const APPROVAL_CONSUME_TIMEOUT_MS = 5_000;
 const APPROVAL_STATE_SCOPE = 'approvals';
 
 type ApprovalDecisionRecord = {
   decision: 'allow' | 'deny' | 'aborted';
   reason: string | null;
 };
-
-/**
- * Pure helper. Converts a merged blocking reply from the before-hook into a
- * `FunctionResult`. Mirrors
- * `turn-orchestrator/src/states/functions.rs::prefilled_result_for_block` (PR #150).
- *
- * - `status === 'pending'` → terminating pending placeholder. Marks the
- *   FunctionResult with `details.pending_approval = true` so handleFinalize
- *   can later replace it with the real resolved result.
- * - any other block → non-terminating hard-block. The LLM sees the reason
- *   and the turn continues with the next call.
- */
-export function prefilledResultForBlock(
-  merged: Record<string, unknown>,
-  call_id: string,
-  function_id: string,
-): FunctionResult {
-  if (merged.status === 'pending') {
-    const body = {
-      status: 'pending_approval',
-      call_id,
-      function_id,
-      message: 'Awaiting human approval. The result will be reported in a future turn.',
-    };
-    return {
-      content: [text(JSON.stringify(body, null, 2))],
-      details: { pending_approval: true, call_id },
-      terminate: true,
-    };
-  }
-  const reason = typeof merged.reason === 'string' ? merged.reason : 'blocked';
-  return {
-    content: [text(reason)],
-    details: { blocked: true },
-    terminate: false,
-  };
-}
-
-/**
- * `false` for pending-approval placeholders (so handleExecute does NOT mark
- * them as `is_error: true`), `true` for hard-block prefills. Mirrors
- * `prefilled_result_is_error`.
- */
-export function prefilledResultIsError(result: FunctionResult): boolean {
-  if (!result.details || typeof result.details !== 'object') return true;
-  return !(result.details as Record<string, unknown>).pending_approval;
-}
-
-/**
- * Builds the deny envelope the orchestrator uses when the hook bus itself
- * fails (publish error, no approval-gate reply, etc.). Mirrors
- * `fail_closed_block_reply`.
- */
-export function failClosedBlockReply(phase: string, error: string): Record<string, unknown> {
-  return {
-    block: true,
-    status: 'denied',
-    denial: {
-      kind: 'state_error',
-      detail: { phase, error },
-    },
-    reason: `hook bus unavailable during ${phase}: ${error}`,
-  };
-}
-
-function isApprovalGateReply(reply: unknown): boolean {
-  if (!reply || typeof reply !== 'object') return false;
-  const r = reply as Record<string, unknown>;
-  return r.approval_gate === true || r.subscriber === 'approval-gate';
-}
-
-/**
- * Returns an error string when the publish-collect response indicates a
- * fail-closed condition (publish failed, or — when
- * `requireApprovalGateReply` — no reply came from approval-gate).
- * Returns `undefined` when the response is healthy. Mirrors
- * `publish_failure_from_response`.
- */
-export function publishFailureFromResponse(
-  response: Record<string, unknown>,
-  requireApprovalGateReply: boolean,
-): string | undefined {
-  const publish = response.publish as Record<string, unknown> | undefined;
-  if (publish && publish.ok === false) {
-    return typeof publish.error === 'string' ? publish.error : 'publish failed';
-  }
-  if (response.publish_failed === true) {
-    return 'publish failed';
-  }
-  if (requireApprovalGateReply) {
-    const replies = Array.isArray(response.replies) ? response.replies : [];
-    const gate_replied = replies.some(isApprovalGateReply);
-    if (!gate_replied) {
-      return 'publish succeeded but approval-gate did not reply';
-    }
-  }
-  return undefined;
-}
-
-/**
- * Maps `approval::consume` entries into the same `(FunctionCall, prefilled?)`
- * pairs that `handlePrepare` produces. Mirrors
- * `prepared_calls_from_approval_entries`.
- *
- * - `decision: 'allow'` → dispatch via the normal path (prefilled is null).
- * - `decision: 'deny'` → emit a denial FunctionResult; the LLM sees
- *   `approval denied: <reason>` or `approval timed out` and continues.
- */
-export function preparedCallsFromApprovalEntries(entries: unknown[]): PreparedEntry[] {
-  const out: PreparedEntry[] = [];
-  for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as Record<string, unknown>;
-    const function_call_id =
-      (typeof e.function_call_id === 'string' && e.function_call_id) ||
-      (typeof e.tool_call_id === 'string' && e.tool_call_id) ||
-      null;
-    if (!function_call_id) continue;
-    const function_id = typeof e.function_id === 'string' ? e.function_id : '';
-    const args = e.args ?? {};
-    const decision = typeof e.decision === 'string' ? e.decision : 'deny';
-    const fc: FunctionCall = { id: function_call_id, function_id, arguments: args };
-
-    if (decision === 'allow') {
-      out.push({ function_call: fc, blocked: null });
-      continue;
-    }
-
-    const reason = typeof e.reason === 'string' ? e.reason : 'denied';
-    const message =
-      reason === 'timed_out' || decision === 'timed_out'
-        ? 'approval timed out before resolution'
-        : `approval denied: ${reason}`;
-    const result: FunctionResult = {
-      content: [text(message)],
-      details: {
-        approval_denied: true,
-        decision,
-        reason,
-        resolved_via_approval_gate: true,
-        call_id: function_call_id,
-      },
-      terminate: false,
-    };
-    out.push({ function_call: fc, blocked: result });
-  }
-  return out;
-}
-
-/**
- * Triggers `approval::consume` for the given session and maps the entries
- * into prepared FunctionCall pairs. Mirrors
- * `consume_resolved_approval_entries`.
- */
-export async function consumeResolvedApprovalEntries(
-  iii: ISdk,
-  session_id: string,
-): Promise<PreparedEntry[]> {
-  const response = (await iii.trigger<unknown, unknown>({
-    function_id: APPROVAL_CONSUME_FN,
-    payload: { session_id },
-    timeoutMs: APPROVAL_CONSUME_TIMEOUT_MS,
-  })) as Record<string, unknown> | undefined;
-  if (response && response.ok === false) {
-    const err = typeof response.error === 'string' ? response.error : 'approval::consume failed';
-    throw new Error(err);
-  }
-  const entries = response && Array.isArray(response.entries) ? response.entries : [];
-  return preparedCallsFromApprovalEntries(entries);
-}
-
-/**
- * Strips prior pending-approval FunctionResult messages whose call_id
- * matches one of the incoming resolved replacements. Prevents duplicate
- * function-result messages in the transcript when a session resumes.
- * Mirrors `replace_pending_approval_placeholders`.
- */
-export function replacePendingApprovalPlaceholders(
-  messages: AgentMessage[],
-  replacements: FunctionResultMessage[],
-): void {
-  if (replacements.length === 0) return;
-  const ids = new Set(replacements.map((r) => r.function_call_id));
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!m || (m as { role?: string }).role !== 'function_result') continue;
-    const fr = m as FunctionResultMessage;
-    if (!ids.has(fr.function_call_id)) continue;
-    const details =
-      fr.details && typeof fr.details === 'object' ? (fr.details as Record<string, unknown>) : null;
-    if (details?.pending_approval === true) {
-      messages.splice(i, 1);
-    }
-  }
-}
-
-/**
- * Extracted final-transition helper. Mirrors `next_state_after_finalize`.
- */
-export function nextStateAfterFinalize(
-  _hasLastAssistant: boolean,
-  allTerminate: boolean,
-): TurnState {
-  return allTerminate ? 'tearing_down' : 'steering_check';
-}
 
 function unwrapAgentCall(fc: FunctionCall): FunctionCall {
   if (fc.function_id !== TOOL_NAME) return fc;
@@ -508,10 +301,6 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
     });
   }
   const messages = await persistence.loadMessages(iii, rec.session_id);
-  // PR #150: strip any prior pending-approval placeholder for the same
-  // call_id before appending the resolved result, so the transcript
-  // doesn't carry duplicate function-result messages on resume.
-  replacePendingApprovalPlaceholders(messages, function_results);
   for (const r of function_results) messages.push(r as AgentMessage);
   await persistence.saveMessages(iii, rec.session_id, messages);
 
@@ -519,7 +308,7 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
   if (!asst) {
     rec.function_results = function_results;
     rec.pending_function_calls = [];
-    transitionTo(rec, nextStateAfterFinalize(false, all_terminate));
+    transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
     return;
   }
   for (const evt of buildFinalizeLifecycle(asst, function_results)) {
@@ -528,5 +317,5 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
   rec.turn_end_emitted = true;
   rec.function_results = function_results;
   rec.pending_function_calls = [];
-  transitionTo(rec, nextStateAfterFinalize(true, all_terminate));
+  transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
 }
