@@ -105,7 +105,7 @@ export async function runWorker(opts: RunWorkerOptions): Promise<WorkerHandle> {
  */
 function instrumentSdk(iii: ISdk): ISdk {
   return new Proxy(iii, {
-    get(target, prop, receiver) {
+    get(target, prop) {
       if (prop === 'registerFunction') {
         return function instrumentedRegisterFunction(
           functionId: string,
@@ -117,7 +117,13 @@ function instrumentSdk(iii: ISdk): ISdk {
           return target.registerFunction(functionId, wrappedHandler, options);
         };
       }
-      return Reflect.get(target, prop, receiver);
+      // Bind methods to the underlying SDK so `this`-identity (ES private
+      // fields, WeakMap keys, instanceof checks inside iii-sdk) is
+      // preserved when the caller invokes `iii.method()` through the
+      // proxy. Pass `target` as the receiver too so getters that depend
+      // on private state run against the real instance.
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
   });
 }

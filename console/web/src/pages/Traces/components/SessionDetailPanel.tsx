@@ -211,19 +211,25 @@ function TraceCard({
     queryKey: ['trace-tree', traceId],
     queryFn: async () => {
       const startedAt = performance.now()
-      console.debug('[traces] fetchTraceTree start', { traceId })
+      if (import.meta.env.DEV) {
+        console.debug('[traces] fetchTraceTree start', { traceId })
+      }
       try {
         const result = await fetchTraceTree(traceId)
         const elapsedMs = Math.round(performance.now() - startedAt)
-        console.debug('[traces] fetchTraceTree done', {
-          traceId,
-          elapsedMs,
-          roots: result.roots?.length ?? 0,
-        })
+        if (import.meta.env.DEV) {
+          console.debug('[traces] fetchTraceTree done', {
+            traceId,
+            elapsedMs,
+            roots: result.roots?.length ?? 0,
+          })
+        }
         return result
       } catch (err) {
         const elapsedMs = Math.round(performance.now() - startedAt)
-        console.warn('[traces] fetchTraceTree failed', { traceId, elapsedMs, err })
+        if (import.meta.env.DEV) {
+          console.warn('[traces] fetchTraceTree failed', { traceId, elapsedMs, err })
+        }
         throw err
       }
     },

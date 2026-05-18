@@ -181,6 +181,17 @@ function validId(value: unknown): string | undefined {
  * Resolution order mirrors `extract_body_or_top_level_ids` with a
  * bridge-trigger fallback into `body.payload.*` and a final baggage
  * fallback so inner wrappers see IDs set by outer wrappers.
+ *
+ * Supported wrap depths (in order):
+ *   1. `root.session_id` / `root.message_id`              (direct call)
+ *   2. `root.body.session_id` / `root.body.message_id`    (HTTP envelope)
+ *   3. `root.body.payload.session_id` / `.message_id`     (`harness::call` bridge)
+ *
+ * Deeper wraps are intentionally NOT followed — if a future bridge
+ * adds another layer, lift IDs to the outer envelope or extend this
+ * function. Falling through to the baggage layer is the safety net
+ * for nested calls but breaks when the outermost handler is the one
+ * missing the IDs.
  */
 export function extractHarnessIds(input: unknown): HarnessIds {
   if (typeof input !== 'object' || input === null) {

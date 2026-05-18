@@ -121,10 +121,16 @@ async function* realStream(
     // results for "Group by session" / "Group by message" because the
     // engine's own `handle_invocation` / `call run::start` spans aren't
     // inside any baggage context. Mirrors `workers/harness/web/src/App.tsx`
-    // `send()` (it uses the HTTP bridge — we use the WS bus). Errors are
-    // non-fatal at the contract level (the UI surfaces them through the
-    // assistant stream); log and let the loop fall through.
-    void client
+    // `send()` (it uses the HTTP bridge — we use the WS bus).
+    //
+    // The kickoff is fire-and-forget at the request level (the stream
+    // arrives via the subscribed channel, not the call's return value)
+    // but a synchronous rejection (policy denies `run::start`, bridge
+    // throws, transport fails) would otherwise leave the loop waiting
+    // for an `agent_end` that never arrives. Capture the error and
+    // surface it through the assistant stream so the UI shows it.
+    let kickoffError: Error | null = null
+    client
       .call('harness::call', {
         function_id: 'run::start',
         session_id: sessionId,
@@ -145,17 +151,31 @@ async function* realStream(
         },
       })
       .catch((err) => {
-        console.warn('[real-backend] harness::call run::start failed', err)
+        kickoffError = err instanceof Error ? err : new Error(String(err))
+        if (import.meta.env.DEV) {
+          console.warn('[real-backend] harness::call run::start failed', err)
+        }
+        wake()
       })
 
     while (true) {
       if (signal?.aborted) return
-      while (queue.length === 0) {
-        if (signal?.aborted) return
+      if (kickoffError) {
+        const err = kickoffError as Error
+        yield {
+          kind: 'assistant-token',
+          token: `harness::call run::start failed — ${err.message}`,
+        }
+        yield { kind: 'assistant-end' }
+        return
+      }
+      while (queue.length === 0 && !kickoffError && !signal?.aborted) {
         await new Promise<void>((resolve) => {
           resolveNext = resolve
         })
       }
+      if (signal?.aborted) return
+      if (kickoffError) continue
       const event = queue.shift()
       if (!event) continue
       for (const streamEvent of translateAgentEvent(event, sessionId)) {
