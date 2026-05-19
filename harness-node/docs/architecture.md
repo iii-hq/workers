@@ -139,7 +139,6 @@ sequenceDiagram
     Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Gate->>Bus: stream::set agent::events (approval_resolved)
     Note over Gate,Turn: state trigger on scope=approvals<br/>(approval::is_decision_write → approval::on_decision_written)<br/>directly triggers turn::step
     Bus-->>Turn: turn::step wakes → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
     Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute

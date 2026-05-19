@@ -66,17 +66,18 @@ All keys live under the iii state scope configured by
 [src/turn-orchestrator/abort.ts](harness-node/src/turn-orchestrator/abort.ts)
 when `router::abort` fires while the turn is paused on approvals.
 
-## Approval / agent events
+## Pending-approval signalling
 
-Bound to `agent::events` so the UI can render the gate's lifecycle:
-
-| Event type | When | Written by |
-|---|---|---|
-| `approval_resolved` | `approval::resolve` succeeds | `handleResolveWithEvents` in `pending.ts` |
-
-Pending approvals themselves are not emitted as a stream event; the UI
-discovers them by reading the orchestrator's `turn_state` record
-(`awaiting_approval` field) when the turn parks in `function_awaiting_approval`.
+The frontend does not consume signal events for approvals. Instead, the
+orchestrator emits a `turn_state_changed` event on every `turn_state`
+write (see `harness-node/docs/workers/turn-orchestrator.md`). The
+console reads `awaiting_approval` from the new record to render
+approve/deny buttons, and uses `function_execution_end` (which already
+carries the blocked result for denied calls via the orchestrator's
+`handleExecute` blocked-result branch) to close the card. On page
+reload the console fires a one-shot `state::get { scope: 'agent', key:
+'session/<sid>/turn_state' }` to recover any modals that were pending
+when the page loaded.
 
 ## Configuration
 
@@ -109,7 +110,7 @@ no explicit dependency block (the gate reads/writes iii state).
 | [src/approval-gate/config.ts](harness-node/src/approval-gate/config.ts) | Loads the `approval_gate` config section. |
 | [src/approval-gate/types.ts](harness-node/src/approval-gate/types.ts) | Wire types and constants: `DenialEnvelope`, `MatchedConstraint`, `WireDecision`, `DeniedBy`, `FN_RESOLVE`, `STATE_SCOPE`, `pendingKey`. |
 | [src/approval-gate/policy-consult.ts](harness-node/src/approval-gate/policy-consult.ts) | Calls `policy::check_permissions` and decodes the decision (imported by the orchestrator's `hook.ts`). |
-| [src/approval-gate/pending.ts](harness-node/src/approval-gate/pending.ts) | `handleResolve` writes `{decision, reason}` to `approvals/<sid>/<cid>`; `handleResolveWithEvents` adds the `approval_resolved` agent event. |
+| [src/approval-gate/pending.ts](harness-node/src/approval-gate/pending.ts) | `handleResolve` writes `{decision, reason}` to `approvals/<sid>/<cid>`. |
 | [src/approval-gate/on-decision-written.ts](harness-node/src/approval-gate/on-decision-written.ts) | State trigger adapter — `approval::is_decision_write` (condition) + `approval::on_decision_written` (handler) — directly triggers `turn::step` when a decision lands. |
 | [src/approval-gate/denial.ts](harness-node/src/approval-gate/denial.ts) | Builds `DenialEnvelope` instances (permissions, user, gate_unavailable). |
 | [src/approval-gate/iii.worker.yaml](harness-node/src/approval-gate/iii.worker.yaml) | Worker manifest. |
