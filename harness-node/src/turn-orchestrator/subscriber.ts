@@ -1,18 +1,16 @@
 /**
- * `turn::step` durable subscriber. Mirrors
- * `turn-orchestrator/src/subscriber.rs`.
+ * `turn::step` durable subscriber.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnOrchestratorConfig } from './config.js';
 import * as persistence from './persistence.js';
-import { publishStep } from './run-start.js';
 import { isTerminal } from './state.js';
 import { step } from './transitions.js';
 
 export const STEP_FN_ID = 'turn::step';
-const STEP_TOPIC = 'turn::step_requested';
+export const STEP_TOPIC = 'turn::step_requested';
 
 function extractSessionId(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -50,9 +48,6 @@ export async function execute(
     throw new Error(`transition from ${from_state} failed: ${String(err)}`);
   }
   await persistence.saveRecord(iii, rec);
-  if (!isTerminal(rec) && rec.state !== 'function_awaiting_approval') {
-    await publishStep(iii, session_id);
-  }
   return { ok: true, from_state, to_state: rec.state };
 }
 

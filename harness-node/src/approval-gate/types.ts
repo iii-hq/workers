@@ -6,7 +6,6 @@
 export const FN_RESOLVE = 'approval::resolve';
 export const STATE_SCOPE = 'approvals';
 export const DENIAL_SCHEMA_VERSION = 1;
-export const SUBSCRIBER_NAME = 'approval-gate';
 
 export type DeniedBy = 'permissions' | 'user' | 'gate_unavailable';
 
@@ -30,76 +29,8 @@ export type DenialEnvelope = {
 
 export type WireDecision = 'allow' | 'deny';
 
-export type IncomingCall = {
-  session_id: string;
-  function_call_id: string;
-  function_id: string;
-  args: unknown;
-  approval_required: string[];
-  event_id: string;
-  reply_stream: string;
-};
-
 export function pendingKey(session_id: string, function_call_id: string): string {
   if (session_id.includes('/')) throw new Error('session_id must not contain "/"');
   if (function_call_id.includes('/')) throw new Error('function_call_id must not contain "/"');
   return `${session_id}/${function_call_id}`;
-}
-
-export type GateDecision = { kind: 'allow' } | { kind: 'deny'; reason: string };
-
-export type GateBlockReply =
-  | { block: false; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true }
-  | { block: true; reason: string; subscriber: typeof SUBSCRIBER_NAME; approval_gate: true };
-
-/**
- * Mirrors `approval-gate/src/lib.rs::block_reply_for`. Allow and Deny replies
- * both carry the `subscriber` + `approval_gate` flags so the orchestrator's
- * `publish_failure_from_response` can detect that approval-gate actually
- * replied (fail-closed if no such reply is present).
- */
-export function blockReplyFor(decision: GateDecision): GateBlockReply {
-  if (decision.kind === 'allow') {
-    return { block: false, subscriber: SUBSCRIBER_NAME, approval_gate: true };
-  }
-  return {
-    block: true,
-    reason: `approval-gate: ${decision.reason}`,
-    subscriber: SUBSCRIBER_NAME,
-    approval_gate: true,
-  };
-}
-
-export function extractCall(envelope: unknown): IncomingCall | null {
-  if (!envelope || typeof envelope !== 'object') return null;
-  const obj = envelope as Record<string, unknown>;
-  const event_id = typeof obj.event_id === 'string' ? obj.event_id : null;
-  const reply_stream = typeof obj.reply_stream === 'string' ? obj.reply_stream : null;
-  if (!event_id || !reply_stream) return null;
-  const inner =
-    obj.payload && typeof obj.payload === 'object' ? (obj.payload as Record<string, unknown>) : obj;
-  const session_id = typeof inner.session_id === 'string' ? inner.session_id : null;
-  const fc =
-    (inner.function_call as Record<string, unknown> | undefined) ??
-    (inner.tool_call as Record<string, unknown> | undefined);
-  if (!session_id || !fc) return null;
-  const function_id =
-    (typeof fc.function_id === 'string' && fc.function_id) ||
-    (typeof fc.name === 'string' && fc.name) ||
-    null;
-  const id = typeof fc.id === 'string' ? fc.id : null;
-  if (!function_id || !id) return null;
-  const args = fc.arguments ?? {};
-  const approval_required = Array.isArray(inner.approval_required)
-    ? (inner.approval_required as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
-  return {
-    session_id,
-    function_call_id: id,
-    function_id,
-    args,
-    approval_required,
-    event_id,
-    reply_stream,
-  };
 }

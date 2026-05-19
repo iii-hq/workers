@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  FN_RESOLVE,
-  blockReplyFor,
-  extractCall,
-  pendingKey,
-} from '../../src/approval-gate/types.js';
+import { FN_RESOLVE, pendingKey } from '../../src/approval-gate/types.js';
 
 describe('pendingKey', () => {
   it('joins session and call ids', () => {
@@ -19,66 +14,5 @@ describe('pendingKey', () => {
 describe('approval-gate function constants', () => {
   it('exposes active approval-gate iii function ids', () => {
     expect(FN_RESOLVE).toBe('approval::resolve');
-  });
-});
-
-describe('blockReplyFor', () => {
-  it('marks allow replies with subscriber and approval_gate flags', () => {
-    expect(blockReplyFor({ kind: 'allow' })).toEqual({
-      block: false,
-      subscriber: 'approval-gate',
-      approval_gate: true,
-    });
-  });
-
-  it('marks deny replies with reason, subscriber, and approval_gate flags', () => {
-    expect(blockReplyFor({ kind: 'deny', reason: 'denied by policy' })).toEqual({
-      block: true,
-      reason: 'approval-gate: denied by policy',
-      subscriber: 'approval-gate',
-      approval_gate: true,
-    });
-  });
-});
-
-describe('extractCall', () => {
-  it('reads modern envelope shape', () => {
-    const envelope = {
-      event_id: 'evt-1',
-      reply_stream: 'rs-1',
-      payload: {
-        function_call: { id: 'tc-1', function_id: 'write', arguments: { path: '/tmp/x' } },
-        approval_required: ['write'],
-        session_id: 's1',
-      },
-    };
-    const call = extractCall(envelope);
-    expect(call?.session_id).toBe('s1');
-    expect(call?.function_id).toBe('write');
-    expect(call?.function_call_id).toBe('tc-1');
-    expect(call?.approval_required).toContain('write');
-  });
-
-  it('accepts legacy tool_call shape with name field', () => {
-    const envelope = {
-      event_id: 'evt-1',
-      reply_stream: 'rs-1',
-      payload: {
-        tool_call: { id: 'tc-1', name: 'write', arguments: {} },
-        approval_required: ['write'],
-        session_id: 's1',
-      },
-    };
-    expect(extractCall(envelope)?.function_id).toBe('write');
-  });
-
-  it('returns null when function_call missing', () => {
-    expect(
-      extractCall({
-        event_id: 'evt-1',
-        reply_stream: 'rs-1',
-        payload: { session_id: 's1' },
-      }),
-    ).toBeNull();
   });
 });

@@ -1,7 +1,6 @@
 /**
  * Tiny `state::*` wrappers. Mirrors
- * `turn-orchestrator/src/persistence.rs::state_get` / `state_set` and the
- * approval-gate `IiiStateBus`.
+ * `turn-orchestrator/src/persistence.rs::state_get` / `state_set`.
  *
  * All helpers are tolerant: trigger errors degrade to `null` / `[]` and
  * are logged at warn level so a single failed read never aborts a turn.

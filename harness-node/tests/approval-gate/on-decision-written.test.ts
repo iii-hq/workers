@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  STEP_TOPIC,
+  STEP_FN_ID,
   handleDecisionWritten,
   isDecisionWrite,
 } from '../../src/approval-gate/on-decision-written.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('handleDecisionWritten', () => {
-  it('extracts session_id from key and publishes turn::step_requested', async () => {
+  it('extracts session_id from key and triggers turn::step directly', async () => {
     const triggers: Array<{ function_id: string; payload: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -28,11 +28,8 @@ describe('handleDecisionWritten', () => {
     await handleDecisionWritten(iii, event);
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('iii::durable::publish');
-    expect(triggers[0]?.payload).toMatchObject({
-      topic: STEP_TOPIC,
-      data: { session_id: 'sess-abc' },
-    });
+    expect(triggers[0]?.function_id).toBe(STEP_FN_ID);
+    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-abc' });
   });
 
   it('handles keys with multiple slashes by taking only the prefix before the first slash', async () => {
@@ -53,7 +50,7 @@ describe('handleDecisionWritten', () => {
       message_type: 'state',
     });
 
-    expect(triggers[0]?.payload).toMatchObject({ data: { session_id: 'sess-1' } });
+    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-1' });
   });
 
   it('no-ops when the key has no slash separator', async () => {
@@ -100,10 +97,10 @@ describe('handleDecisionWritten', () => {
     });
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.payload).toMatchObject({ data: { session_id: 'sess-xyz' } });
+    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-xyz' });
   });
 
-  it('still publishes when handed a state:deleted event directly (condition would have blocked at engine)', async () => {
+  it('still triggers when handed a state:deleted event directly (condition would have blocked at engine)', async () => {
     // Documents that the handler is no longer the filter — the condition is.
     // In production, the engine ensures this never happens because the
     // condition function returns false for state:deleted. This test asserts
@@ -126,7 +123,7 @@ describe('handleDecisionWritten', () => {
       message_type: 'state',
     });
 
-    // No filter in the handler → publishes anyway. Production safety comes from
+    // No filter in the handler → triggers anyway. Production safety comes from
     // the condition function registered alongside this handler.
     expect(triggers).toHaveLength(1);
   });

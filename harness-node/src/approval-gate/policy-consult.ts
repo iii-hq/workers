@@ -1,11 +1,10 @@
 /**
- * Consult the harness's `policy::check_permissions`. Returns `null` when
- * the policy worker is unreachable (callers fall back to the legacy
- * `approval_required` substring check).
+ * Decode the wire reply from `policy::check_permissions` into a typed
+ * `PolicyOutcome`. The actual `iii.trigger` to the policy function lives
+ * in the orchestrator's `consultBefore` (`harness-node/src/turn-orchestrator/hook.ts`)
+ * — that's the only caller of this module.
  */
 
-import type { ISdk } from '../runtime/iii.js';
-import { logger } from '../runtime/otel.js';
 import type { MatchedConstraint } from './types.js';
 
 export type PolicyOutcome =
@@ -38,26 +37,4 @@ export function parsePolicyReply(value: unknown): PolicyOutcome {
     };
   }
   return { kind: 'needs_approval' };
-}
-
-export async function consultPolicy(
-  iii: ISdk,
-  policy_function_id: string,
-  function_id: string,
-  args: unknown,
-): Promise<PolicyOutcome | null> {
-  try {
-    const resp = await iii.trigger<unknown, unknown>({
-      function_id: policy_function_id,
-      payload: { function_id, args },
-      timeoutMs: 5_000,
-    });
-    return parsePolicyReply(resp);
-  } catch (err) {
-    logger.debug('policy worker unreachable; falling back to approval_required list', {
-      policy_function_id,
-      err: String(err),
-    });
-    return null;
-  }
 }

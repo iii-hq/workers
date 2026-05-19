@@ -20,7 +20,7 @@ workers.
 |---|---|---|---|
 | harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `harness::status` / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::call`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Hook subscriber on `agent::before_function_call`; consults policy and pauses for user resolution. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Owns approval state. Registers `approval::resolve` and a state-trigger adapter on the `approvals` scope that wakes `turn::step` on every decision write. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
 | session | [src/session/](harness-node/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness-node/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness-node/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness-node/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness-node/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness-node/docs/workers/hook-fanout.md) |
@@ -62,20 +62,15 @@ flowchart LR
 
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
-  turnOrch -- "agent::call → hook-fanout::publish_collect" --> hook
+  turnOrch -- "consultBefore: policy::check_permissions" --> harness
+  turnOrch -- "agent::call → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
-
-  hook -- "publish agent::before_function_call" --> state
-  state -- "durable:subscriber" --> approval
-  approval -- "policy::check_permissions" --> harness
-  approval -- "stream::set agent::hook_reply" --> hook
-  hook -- "stream trigger on agent::hook_reply" --> hook
 
   client -- "approval::resolve" --> approval
   approval -- "state::set approvals/<sid>/<cid>" --> state
   state -- "state trigger (scope=approvals)" --> approval
-  approval -- "publish turn::step_requested" --> turnOrch
+  approval -- "iii.trigger turn::step" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
@@ -120,51 +115,37 @@ stateDiagram-v2
 
 ## Approval flow
 
-The gate replies synchronously to every `agent::before_function_call`
-event — `allow`, `deny`, or `pending`. There is no in-gate polling;
-resume is driven by a `state` trigger on the `approvals` scope. The
-orchestrator parks the turn in `function_awaiting_approval` until that
-trigger fires and re-publishes `turn::step_requested`.
+The orchestrator consults `policy::check_permissions` directly inside
+`consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
+the before path; resume is driven by a `state` trigger on the `approvals`
+scope. The orchestrator parks the turn in `function_awaiting_approval` until
+that trigger fires and re-triggers `turn::step`.
 
 ```mermaid
 sequenceDiagram
   participant Turn as turn-orchestrator (FSM)
-  participant Hook as hook-fanout::publish_collect
   participant Bus as iii bus (state::* + stream::*)
-  participant Gate as approval-gate (policy::approval_gate)
   participant Harness as harness (policy::check_permissions)
+  participant Gate as approval-gate
   participant User
 
-  Turn->>Hook: publish_collect("agent::before_function_call", call)
-  Hook->>Bus: iii::durable::publish
-  Bus-->>Gate: durable:subscriber wakes
-  Gate->>Harness: policy::check_permissions(function_id, args)
+  Turn->>Harness: policy::check_permissions(function_id, args) [5s timeout]
   alt rule.action == allow
-    Harness-->>Gate: allow
-    Gate-->>Hook: {block:false, subscriber, approval_gate}
-    Hook-->>Turn: merged.allow → dispatch the call
+    Harness-->>Turn: allow → dispatch the call
   else rule.action == deny
-    Harness-->>Gate: deny + DenialEnvelope
-    Gate->>Bus: stream::set agent::events (function_call_denied)
-    Gate-->>Hook: {block:true, denial, subscriber, approval_gate}
-    Hook-->>Turn: merged.deny → DenialResult
+    Harness-->>Turn: deny + DenialEnvelope → DenialResult
   else no rule (needs_approval)
-    Harness-->>Gate: needs_approval
-    Gate->>Bus: stream::set agent::events (approval_requested)
-    Gate-->>Hook: {block:true, status:"pending", subscriber, approval_gate}
-    Hook-->>Turn: merged.pending → park in function_awaiting_approval
+    Harness-->>Turn: needs_approval → park in function_awaiting_approval
     Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Gate->>Bus: stream::set agent::events (approval_resolved)
-    Note over Gate,Turn: state trigger on scope=approvals<br/>(approval::is_decision_write → approval::on_decision_written)<br/>publishes turn::step_requested
-    Bus-->>Turn: durable wake → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
+    Note over Gate,Turn: state trigger on scope=approvals<br/>(approval::is_decision_write → approval::on_decision_written)<br/>directly triggers turn::step
+    Bus-->>Turn: turn::step wakes → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
     Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute
   end
 ```
 
-Fail-closed: if `iii::durable::publish` errors or no subscriber replies,
-`hook-fanout::publish_collect` returns `publish_failed: true` and
+Fail-closed: policy unreachable (transport error or 5 s timeout) →
 `consultBefore` denies the call with a `gate_unavailable` envelope.
 
 Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
@@ -185,7 +166,6 @@ and protect the gate / state surface.
 |---|---|---|---|
 | `kernel/no-self-approve` | `approval::resolve` | deny | An agent must not flip its own pending approval. |
 | `kernel/no-self-policy` | `policy::check_permissions` | deny | Don't let the model trace or precompute its own gate decision. |
-| `kernel/no-self-policy-gate` | `policy::approval_gate` | deny | Same as above, for the subscriber. |
 | `kernel/no-self-hook` | `hook-fanout::publish_collect` | deny | The hook primitive is operator-only. |
 | `kernel/no-state-set` | `state::set` | deny | Use a worker function; never raw state writes. |
 | `kernel/no-state-update` | `state::update` | deny | Same. |

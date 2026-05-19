@@ -1,44 +1,26 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { loadApprovalGateConfig } from './config.js';
-import { handleGateEvent } from './gate-subscriber.js';
 import {
   CONDITION_FN_ID as ON_DECISION_CONDITION,
   TRIGGER_FN_ID as ON_DECISION_FN,
   handleDecisionWritten,
   isDecisionWrite,
 } from './on-decision-written.js';
-import { handleResolveWithEvents } from './pending.js';
-import { IiiStateBus } from './state-bus.js';
+import { handleResolve } from './pending.js';
 import { FN_RESOLVE } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
   const cfg = loadApprovalGateConfig(await loadConfig(ctx.configPath));
-  const bus = new IiiStateBus(iii);
 
   iii.registerFunction(
     FN_RESOLVE,
-    async (payload: unknown) =>
-      handleResolveWithEvents(iii, bus, cfg.approval_state_scope, payload),
+    async (payload: unknown) => handleResolve(iii, cfg.approval_state_scope, payload),
     {
       description:
         'Flip an approval to allow or deny. Writing the decision is itself the wake-up event.',
     },
   );
-
-  iii.registerFunction(
-    'policy::approval_gate',
-    async (envelope: unknown) => handleGateEvent({ iii, bus, cfg }, envelope),
-    {
-      description: 'Consult policy::check_permissions and reply allow, deny, or pending.',
-    },
-  );
-
-  iii.registerTrigger({
-    type: 'durable:subscriber',
-    function_id: 'policy::approval_gate',
-    config: { topic: cfg.topic },
-  });
 
   iii.registerFunction(ON_DECISION_CONDITION, async (event: unknown) => isDecisionWrite(event), {
     description:
@@ -50,7 +32,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     async (event: unknown) => handleDecisionWritten(iii, event),
     {
       description:
-        'State trigger adapter on scope=approvals; extracts session_id from key and publishes turn::step_requested.',
+        'State trigger adapter on scope=approvals; extracts session_id from key and invokes turn::step directly.',
     },
   );
 

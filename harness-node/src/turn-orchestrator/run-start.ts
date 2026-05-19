@@ -5,7 +5,6 @@
 
 import { requireString } from '../runtime/handler.js';
 import type { ISdk } from '../runtime/iii.js';
-import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { TurnOrchestratorConfig } from './config.js';
@@ -16,21 +15,6 @@ import { newRecord } from './state.js';
 
 export const FUNCTION_ID = 'run::start';
 export const SYNC_FUNCTION_ID = 'run::start_and_wait';
-export const STEP_TOPIC = 'turn::step_requested';
-
-export async function publishStep(iii: ISdk, session_id: string): Promise<void> {
-  try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: STEP_TOPIC, data: { session_id } },
-    });
-  } catch (err) {
-    logger.warn('turn::step_requested publish failed', {
-      session_id,
-      err: String(err),
-    });
-  }
-}
 
 function buildRunRequest(payload: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -38,7 +22,6 @@ function buildRunRequest(payload: Record<string, unknown>): Record<string, unkno
     model: payload.model ?? '',
     system_prompt: payload.system_prompt ?? '',
     mode: payload.mode ?? null,
-    approval_required: Array.isArray(payload.approval_required) ? payload.approval_required : [],
     image: payload.image ?? 'python',
     idle_timeout_secs: payload.idle_timeout_secs ?? 300,
     cwd: payload.cwd ?? null,
@@ -64,8 +47,6 @@ export async function execute(iii: ISdk, payload: unknown): Promise<{ session_id
 
   await persistence.saveRunRequest(iii, session_id, request);
   await persistence.saveMessages(iii, session_id, initial_messages);
-  const record = newRecord(session_id, max_turns);
-  await persistence.saveRecord(iii, record);
 
   if (typeof request.cwd === 'string') {
     await persistence.saveCwd(iii, session_id, request.cwd as string);
@@ -77,7 +58,9 @@ export async function execute(iii: ISdk, payload: unknown): Promise<{ session_id
   for (const evt of buildInitialEventPlan(initial_messages)) {
     await emit(iii, session_id, evt);
   }
-  await publishStep(iii, session_id);
+
+  const record = newRecord(session_id, max_turns);
+  await persistence.saveRecord(iii, record);
   return { session_id };
 }
 

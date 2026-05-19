@@ -4,6 +4,7 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
+import type { TurnOrchestratorConfig } from '../config.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
   AgentMessage,
@@ -51,12 +52,11 @@ export async function handlePrepare(iii: ISdk, rec: TurnStateRecord): Promise<vo
   transitionTo(rec, 'function_execute');
 }
 
-export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const runRequest = await persistence.loadRunRequest(iii, rec.session_id);
-  const approval_required = Array.isArray(runRequest.approval_required)
-    ? (runRequest.approval_required as string[]).filter((x) => typeof x === 'string')
-    : [];
-
+export async function handleExecute(
+  iii: ISdk,
+  cfg: TurnOrchestratorConfig,
+  rec: TurnStateRecord,
+): Promise<void> {
   const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
   const results = await persistence.loadExecutedCalls(iii, rec.session_id);
 
@@ -80,12 +80,19 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     }
 
     if (entry.pre_approved === true) {
-      const value = await iii.trigger<unknown, unknown>({
-        function_id: fc.function_id,
-        payload: fc.arguments ?? {},
-      });
-      const result = decodeOrPassthroughResult(value);
-      const is_error = isErrorResult(result);
+      let result: FunctionResult;
+      let is_error: boolean;
+      try {
+        const value = await iii.trigger<unknown, unknown>({
+          function_id: fc.function_id,
+          payload: fc.arguments ?? {},
+        });
+        result = decodeOrPassthroughResult(value);
+        is_error = isErrorResult(result);
+      } catch (err) {
+        result = triggerErrorResult(fc.function_id, err);
+        is_error = true;
+      }
       persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
       await persistence.saveExecutedCalls(iii, rec.session_id, results);
       await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
@@ -124,7 +131,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const out = await dispatchWithHook(iii, augmentedFc, approval_required, rec.session_id);
+    const out = await dispatchWithHook(iii, augmentedFc, rec.session_id, cfg.policy_function_id);
 
     if (out.kind === 'pending') {
       rec.awaiting_approval = rec.awaiting_approval ?? [];
@@ -140,14 +147,29 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     const result = out.result;
     const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
-    // Kick off persistence in parallel with the user-facing emit so the UI's
-    // fcall-end lands ~one trigger round-trip sooner. We still await both
-    // before the next iteration so ordering and durability are preserved.
+   
     const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
     await savePromise;
   }
   transitionTo(rec, 'function_finalize');
+}
+
+function triggerErrorResult(function_id: string, err: unknown): FunctionResult {
+  const message =
+    err && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string'
+      ? ((err as Record<string, unknown>).message as string)
+      : String(err);
+  const details = {
+    error: 'trigger_failed',
+    function: function_id,
+    message,
+  };
+  return {
+    content: [text(JSON.stringify(details))],
+    details,
+    terminate: false,
+  };
 }
 
 function decodeOrPassthroughResult(value: unknown): FunctionResult {

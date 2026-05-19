@@ -43,7 +43,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId } from '@/lib/session-id'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
-import { translateAgentEvent } from './translate'
+import { createTurnStateTranslator, translateAgentEvent } from './translate'
 import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
 
 interface RunParams {
@@ -112,23 +112,29 @@ async function* realStream(
     })
     subscribed = true
 
+    const turnStateTranslator = createTurnStateTranslator()
+
+    client
+      .call<Record<string, unknown> | null>('turn::get_state', {
+        session_id: sessionId,
+      })
+      .then((record) => {
+        if (!record) return
+        queue.push({
+          type: 'turn_state_changed',
+          event_type: 'state:created',
+          new_value: record,
+        })
+        wake()
+      })
+      .catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn('[real-backend] turn::get_state recovery failed', err)
+        }
+      })
+
     const { provider, model: modelId } = resolveRunParams(model)
 
-    // Route the turn-orchestrator kick-off through `harness::call` so the
-    // harness wraps the inner trigger with an instrumented span that
-    // seeds `iii.session.id` / `iii.message.id` as baggage. Without this
-    // wrapper, the engine's `engine::traces::group_by` returns empty
-    // results for "Group by session" / "Group by message" because the
-    // engine's own `handle_invocation` / `call run::start` spans aren't
-    // inside any baggage context. Mirrors `workers/harness/web/src/App.tsx`
-    // `send()` (it uses the HTTP bridge — we use the WS bus).
-    //
-    // The kickoff is fire-and-forget at the request level (the stream
-    // arrives via the subscribed channel, not the call's return value)
-    // but a synchronous rejection (policy denies `run::start`, bridge
-    // throws, transport fails) would otherwise leave the loop waiting
-    // for an `agent_end` that never arrives. Capture the error and
-    // surface it through the assistant stream so the UI shows it.
     let kickoffError: Error | null = null
     client
       .call('harness::call', {
@@ -178,7 +184,11 @@ async function* realStream(
       if (kickoffError) continue
       const event = queue.shift()
       if (!event) continue
-      for (const streamEvent of translateAgentEvent(event, sessionId)) {
+      const streamEvents =
+        event.type === 'turn_state_changed'
+          ? turnStateTranslator(event, sessionId)
+          : translateAgentEvent(event, sessionId)
+      for (const streamEvent of streamEvents) {
         yield streamEvent
       }
       if (event.type === 'agent_end') return

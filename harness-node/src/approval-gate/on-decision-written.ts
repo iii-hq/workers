@@ -1,13 +1,14 @@
 /**
  * `state` trigger adapter. Registered against `scope: 'approvals'` so it fires
  * on every decision write. Extracts the session id from the `<sid>/<cid>` key
- * and wakes the orchestrator through the normal turn step topic.
+ * and wakes the orchestrator by invoking turn::step directly.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { STEP_FN_ID } from '../turn-orchestrator/subscriber.js';
 
-export const STEP_TOPIC = 'turn::step_requested';
+export { STEP_FN_ID };
 export const TRIGGER_FN_ID = 'approval::on_decision_written';
 export const CONDITION_FN_ID = 'approval::is_decision_write';
 
@@ -42,11 +43,11 @@ export async function handleDecisionWritten(iii: ISdk, event: unknown): Promise<
 
   try {
     await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: STEP_TOPIC, data: { session_id } },
+      function_id: STEP_FN_ID,
+      payload: { session_id },
     });
   } catch (err) {
-    logger.warn('approval::on_decision_written: publish failed', {
+    logger.warn('approval::on_decision_written: turn::step invoke failed', {
       session_id,
       err: String(err),
     });

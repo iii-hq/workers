@@ -112,9 +112,6 @@ export interface FunctionResult {
   terminate?: boolean
 }
 
-/** Outcome of an approval gate. */
-export type ApprovalDecision = 'allow' | 'deny'
-
 /**
  * Provider-side streaming event. Mirrors the Rust enum
  * `harness/crates/harness-types/src/stream_event.rs::AssistantMessageEvent`.
@@ -200,17 +197,16 @@ export type AgentEvent =
       is_error: boolean
     }
   | {
-      type: 'approval_requested'
-      function_call_id: string
-      function_id: string
-      args: unknown
+      type: 'turn_state_changed'
+      event_type: 'state:created' | 'state:updated'
+      new_value: Record<string, unknown>
+      old_value?: Record<string, unknown>
     }
-  | {
-      type: 'approval_resolved'
-      function_call_id: string
-      decision: ApprovalDecision
-      reason?: string
-    }
+
+export type TurnStateChangedEvent = Extract<
+  AgentEvent,
+  { type: 'turn_state_changed' }
+>
 
 /**
  * Envelope the harness fanout pushes to `ui::session::event::<browser_id>`.

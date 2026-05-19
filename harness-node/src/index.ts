@@ -45,7 +45,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'approval-gate',
     description:
-      'Hook subscriber on agent::before_function_call that consults policy::check_permissions and pauses calls for user approval.',
+      'Owns approval state: registers approval::resolve and a state-trigger adapter on the approvals scope that wakes turn::step on every decision write.',
     register: (iii, ctx) => registerApprovalGate(iii, ctx),
   },
   {

@@ -11,12 +11,11 @@ permissions_path: "./iii-permissions.yaml"
 sync_default_timeout_ms: 120000
 system_default_skills:
   - "iii://iii-directory/index"
+policy_function_id: "policy::check_permissions"
 
 # approval-gate
 approval_gate:
-  topic: "agent::before_function_call"
   approval_state_scope: "approvals"
-  policy_function_id: "policy::check_permissions"
 
 # session worker
 session:

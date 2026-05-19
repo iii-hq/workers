@@ -10,8 +10,6 @@ import type { AgentMessage, FunctionResultMessage } from './agent-message.js';
 import type { FunctionResult } from './function.js';
 import type { AssistantMessageEvent } from './stream-event.js';
 
-export type ApprovalDecision = 'allow' | 'deny';
-
 export type AgentEvent =
   | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
@@ -49,14 +47,10 @@ export type AgentEvent =
       is_error: boolean;
     }
   | {
-      type: 'approval_requested';
-      function_call_id: string;
-      function_id: string;
-      args: unknown;
-    }
-  | {
-      type: 'approval_resolved';
-      function_call_id: string;
-      decision: ApprovalDecision;
-      reason?: string | null;
+      type: 'turn_state_changed';
+      /** Full new turn_state record (the orchestrator's persisted state). */
+      new_value: Record<string, unknown>;
+      /** Previous record, present on state:updated; absent on state:created. */
+      old_value?: Record<string, unknown>;
+      event_type: 'state:created' | 'state:updated';
     };
