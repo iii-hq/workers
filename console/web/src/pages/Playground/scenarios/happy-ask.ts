@@ -7,7 +7,7 @@ short answer: it depends on whether you're optimizing for **read** speed or
 
 - a flat \`Map\` gives you \`O(1)\` lookups but is awkward for ordered iteration.
 - a sorted list trades insert cost for cheap range scans.
-- if you need both, a btree-backed index is usually the right tool.
+- if you need both, a btree-backed index is usually the right function.
 
 | structure | lookup | ordered range |
 |-----------|--------|---------------|
@@ -18,9 +18,6 @@ short answer: it depends on whether you're optimizing for **read** speed or
 pick the one whose worst case matches your hottest path. you can always swap
 later — the interface is the thing that matters.`
 
-export const happyAsk = makeBackend(
-  'happy-ask',
-  async function* (_prompt, _mode, _model, opts) {
-    yield* streamAssistant(BODY, { signal: opts?.signal })
-  },
-)
+export const happyAsk = makeBackend('happy-ask', async function* (_prompt, _mode, _model, opts) {
+  yield* streamAssistant(BODY, { signal: opts?.signal })
+})

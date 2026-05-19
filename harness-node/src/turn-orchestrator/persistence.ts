@@ -200,6 +200,12 @@ export type ExecutedEntry = {
   function_call: FunctionCall;
   result: FunctionResult;
   is_error: boolean;
+  /** Wall-clock ms between the matching function_execution_start and end.
+   *  Persisted so resumed runs replay the original timing instead of the
+   *  ~0ms it takes to re-emit the end event. Defaults to 0 in
+   *  loadExecutedCalls so records persisted by an older binary survive
+   *  the upgrade. */
+  duration_ms: number;
 };
 
 export async function savePreparedCalls(
@@ -251,6 +257,7 @@ export async function loadExecutedCalls(iii: ISdk, session_id: string): Promise<
       function_call: fc,
       result,
       is_error: typeof obj.is_error === 'boolean' ? obj.is_error : false,
+      duration_ms: typeof obj.duration_ms === 'number' ? obj.duration_ms : 0,
     });
   }
   return out;

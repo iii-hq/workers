@@ -92,11 +92,7 @@ export interface CustomMessage {
   timestamp: number
 }
 
-export type AgentMessage =
-  | UserMessage
-  | AssistantMessage
-  | FunctionResultMessage
-  | CustomMessage
+export type AgentMessage = UserMessage | AssistantMessage | FunctionResultMessage | CustomMessage
 
 /** Function call request emitted by an assistant message. */
 export interface FunctionCall {
@@ -144,12 +140,7 @@ export type AssistantMessageEvent =
       type: 'stop'
       stop_reason: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
       error_message?: string
-      error_kind?:
-        | 'auth_expired'
-        | 'rate_limited'
-        | 'context_overflow'
-        | 'transient'
-        | 'permanent'
+      error_kind?: 'auth_expired' | 'rate_limited' | 'context_overflow' | 'transient' | 'permanent'
     }
   | { type: 'done'; message: AssistantMessage }
   | { type: 'error'; error: AssistantMessage }
@@ -195,6 +186,10 @@ export type AgentEvent =
       function_id: string
       result: FunctionResult
       is_error: boolean
+      /** Wall-clock ms between the matching function_execution_start and end,
+       *  measured by the harness's turn-orchestrator. Surfaced through the
+       *  StreamEvent contract as `fcall-end.durationMs`. */
+      duration_ms: number
     }
   | {
       type: 'turn_state_changed'

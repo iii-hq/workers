@@ -1,6 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Prompt } from '@/components/ui/Prompt'
-import type { Message as MessageType } from '@/types/chat'
+import type {
+  FunctionCallMessage as FunctionCallMessageType,
+  Message as MessageType,
+} from '@/types/chat'
+import { FunctionCallGroup } from './FunctionCallGroup'
 import { Message } from './Message'
 
 interface MessageListProps {
@@ -16,6 +20,51 @@ interface MessageListProps {
   ) => Promise<void>
 }
 
+type RenderItem =
+  | { kind: 'message'; key: string; message: MessageType }
+  | { kind: 'fcall-group'; key: string; messages: FunctionCallMessageType[] }
+
+/**
+ * Collapse runs of consecutive `function-call` messages into a single
+ * `fcall-group` item. Single-call runs stay rendered as a standalone
+ * `Message` so happy-agent, pending-approval, and error-on-fcall look
+ * identical to today. Only runs of 2+ get the group accordion.
+ *
+ * The group's key is anchored to the first call's id so the React tree
+ * stays stable as later calls land in the same run.
+ */
+function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
+  const out: RenderItem[] = []
+  let buffer: FunctionCallMessageType[] = []
+
+  const flush = () => {
+    if (buffer.length === 0) return
+    if (buffer.length === 1) {
+      const only = buffer[0]
+      out.push({ kind: 'message', key: only.id, message: only })
+    } else {
+      out.push({
+        kind: 'fcall-group',
+        key: `fcall-group:${buffer[0].id}`,
+        messages: buffer,
+      })
+    }
+    buffer = []
+  }
+
+  for (const m of messages) {
+    if (m.role === 'function-call') {
+      buffer.push(m)
+    } else {
+      flush()
+      out.push({ kind: 'message', key: m.id, message: m })
+    }
+  }
+  flush()
+
+  return out
+}
+
 export function MessageList({
   messages,
   isThinking,
@@ -24,6 +73,8 @@ export function MessageList({
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const lastPendingIdRef = useRef<string | null>(null)
+
+  const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
 
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"
@@ -76,13 +127,21 @@ export function MessageList({
   return (
     <div ref={containerRef} className="flex-1 overflow-y-auto px-9 py-8">
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
-        {messages.map((m) => (
-          <Message
-            key={m.id}
-            message={m}
-            onResolveApproval={onResolveApproval}
-          />
-        ))}
+        {items.map((item) =>
+          item.kind === 'message' ? (
+            <Message
+              key={item.key}
+              message={item.message}
+              onResolveApproval={onResolveApproval}
+            />
+          ) : (
+            <FunctionCallGroup
+              key={item.key}
+              messages={item.messages}
+              onResolveApproval={onResolveApproval}
+            />
+          ),
+        )}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
             thinking…
