@@ -8,11 +8,10 @@
  */
 
 import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
-import { parsePolicyReply } from '../approval-gate/policy-consult.js';
-import { DENIAL_SCHEMA_VERSION } from '../approval-gate/types.js';
-import type { DenialEnvelope } from '../approval-gate/types.js';
+import { DENIAL_SCHEMA_VERSION, parsePolicyReply } from '../approval-gate/schemas.js';
+import type { DenialEnvelope } from '../approval-gate/schemas.js';
 import type { ISdk } from '../runtime/iii.js';
-export type { DeniedBy, DenialEnvelope } from '../approval-gate/types.js';
+export type { DeniedBy, DenialEnvelope } from '../approval-gate/schemas.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
 
@@ -62,15 +61,15 @@ export async function consultBefore(
     };
   }
 
-  const decision = parsePolicyReply(raw);
-  if (decision.kind === 'allow') return { kind: 'allow' };
-  if (decision.kind === 'deny') {
+  const outcome = parsePolicyReply(raw);
+  if (outcome.decision === 'allow') return { kind: 'allow' };
+  if (outcome.decision === 'deny') {
     return {
       kind: 'deny',
       denial: permissionsDenyEnvelope(
         function_call.function_id,
-        decision.rule_id,
-        decision.matched_constraint,
+        outcome.rule_id,
+        outcome.matched_constraint,
         function_call.arguments,
       ),
     };

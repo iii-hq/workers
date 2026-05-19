@@ -1,131 +1,99 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CONDITION_FN_ID,
   STEP_FN_ID,
+  TRIGGER_FN_ID,
   handleDecisionWritten,
   isDecisionWrite,
 } from '../../src/approval-gate/on-decision-written.js';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 
 describe('handleDecisionWritten', () => {
-  it('extracts session_id from key and triggers turn::step directly', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
-
-    const event = {
+  it('extracts session_id from key and triggers turn::step', async () => {
+    const { iii, stepCalls } = fakeIii();
+    await handleDecisionWritten(iii, {
       event_type: 'state:updated',
       scope: 'approvals',
       key: 'sess-abc/fc-1',
       old_value: null,
       new_value: { decision: 'allow', reason: null },
       message_type: 'state',
-    };
-
-    await handleDecisionWritten(iii, event);
-
-    expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe(STEP_FN_ID);
-    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-abc' });
+    });
+    expect(stepCalls).toHaveLength(1);
+    expect(stepCalls[0]).toEqual({ session_id: 'sess-abc' });
   });
 
-  it('handles keys with multiple slashes by taking only the prefix before the first slash', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
-
+  it('preserves slashes in the function_call_id half (tolerant parse)', async () => {
+    const { iii, stepCalls } = fakeIii();
     await handleDecisionWritten(iii, {
       event_type: 'state:updated',
-      scope: 'approvals',
       key: 'sess-1/sub/path',
-      old_value: null,
       new_value: { decision: 'deny', reason: 'test' },
-      message_type: 'state',
     });
-
-    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-1' });
-  });
-
-  it('no-ops when the key has no slash separator', async () => {
-    const iii = { trigger: vi.fn() } as unknown as ISdk;
-    await handleDecisionWritten(iii, {
-      event_type: 'state:updated',
-      scope: 'approvals',
-      key: 'malformed-no-slash',
-      old_value: null,
-      new_value: { decision: 'allow', reason: null },
-      message_type: 'state',
-    });
-    expect(iii.trigger).not.toHaveBeenCalled();
-  });
-
-  it('no-ops when the key is missing or not a string', async () => {
-    const iii = { trigger: vi.fn() } as unknown as ISdk;
-    await handleDecisionWritten(iii, {
-      event_type: 'state:updated',
-      scope: 'approvals',
-    } as unknown);
-    expect(iii.trigger).not.toHaveBeenCalled();
-
-    await handleDecisionWritten(iii, null);
-    expect(iii.trigger).not.toHaveBeenCalled();
+    expect(stepCalls[0]).toEqual({ session_id: 'sess-1' });
   });
 
   it('handles state:created events (first decision write)', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
-
+    const { iii, stepCalls } = fakeIii();
     await handleDecisionWritten(iii, {
       event_type: 'state:created',
-      scope: 'approvals',
       key: 'sess-xyz/fc-1',
-      old_value: null,
       new_value: { decision: 'allow', reason: null },
-      message_type: 'state',
     });
-
-    expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.payload).toMatchObject({ session_id: 'sess-xyz' });
+    expect(stepCalls).toEqual([{ session_id: 'sess-xyz' }]);
   });
 
-  it('still triggers when handed a state:deleted event directly (condition would have blocked at engine)', async () => {
-    // Documents that the handler is no longer the filter — the condition is.
-    // In production, the engine ensures this never happens because the
-    // condition function returns false for state:deleted. This test asserts
-    // the handler doesn't have defensive double-filtering that would mask
-    // a regression in registration wiring.
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
+  it('no-ops when the key has no slash separator', async () => {
+    const { iii, calls } = fakeIii();
+    await handleDecisionWritten(iii, {
+      event_type: 'state:updated',
+      key: 'malformed-no-slash',
+      new_value: { decision: 'allow' },
+    });
+    expect(calls).toHaveLength(0);
+  });
 
+  it('no-ops when the event is missing required fields (no key)', async () => {
+    const { iii, calls } = fakeIii();
+    await handleDecisionWritten(iii, {
+      event_type: 'state:updated',
+      scope: 'approvals',
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('no-ops on null / non-object input', async () => {
+    const { iii, calls } = fakeIii();
+    await handleDecisionWritten(iii, null);
+    await handleDecisionWritten(iii, 'string-payload');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still triggers when handed state:deleted directly (handler is not the filter)', async () => {
+    // The engine-side condition function filters state:deleted before this
+    // handler is invoked. This test asserts the handler doesn't have defensive
+    // double-filtering that would mask a regression in registration wiring.
+    const { iii, stepCalls } = fakeIii();
     await handleDecisionWritten(iii, {
       event_type: 'state:deleted',
-      scope: 'approvals',
       key: 'sess-x/fc-1',
-      old_value: { decision: 'allow', reason: null },
       new_value: null,
-      message_type: 'state',
     });
+    expect(stepCalls).toHaveLength(1);
+  });
 
-    // No filter in the handler → triggers anyway. Production safety comes from
-    // the condition function registered alongside this handler.
-    expect(triggers).toHaveLength(1);
+  // R4 — silent-warn semantics regression guard. Event-trigger handlers MUST
+  // NOT throw; a thrown handler crashes trigger dispatch for everyone.
+  it('does not throw when iii.trigger fails (R4 silent-warn guard)', async () => {
+    const { iii } = fakeIii();
+    (iii.trigger as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('downstream boom'));
+    await expect(
+      handleDecisionWritten(iii, {
+        event_type: 'state:updated',
+        key: 'sess-1/fc-1',
+        new_value: { decision: 'allow' },
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -134,11 +102,8 @@ describe('isDecisionWrite condition', () => {
     expect(
       isDecisionWrite({
         event_type: 'state:created',
-        scope: 'approvals',
         key: 'sess/fc',
-        old_value: null,
         new_value: { decision: 'allow', reason: null },
-        message_type: 'state',
       }),
     ).toBe(true);
   });
@@ -147,11 +112,8 @@ describe('isDecisionWrite condition', () => {
     expect(
       isDecisionWrite({
         event_type: 'state:updated',
-        scope: 'approvals',
         key: 'sess/fc',
-        old_value: { decision: 'allow', reason: null },
         new_value: { decision: 'deny', reason: 'user' },
-        message_type: 'state',
       }),
     ).toBe(true);
   });
@@ -160,11 +122,8 @@ describe('isDecisionWrite condition', () => {
     expect(
       isDecisionWrite({
         event_type: 'state:deleted',
-        scope: 'approvals',
         key: 'sess/fc',
-        old_value: { decision: 'allow', reason: null },
         new_value: null,
-        message_type: 'state',
       }),
     ).toBe(false);
   });
@@ -173,30 +132,36 @@ describe('isDecisionWrite condition', () => {
     expect(
       isDecisionWrite({
         event_type: 'state:updated',
-        scope: 'approvals',
         key: 'sess/fc',
-        old_value: null,
         new_value: { somethingElse: true },
-        message_type: 'state',
       }),
     ).toBe(false);
   });
 
-  it('returns false when new_value is missing', () => {
+  it('returns false when new_value is missing or null', () => {
     expect(
       isDecisionWrite({
         event_type: 'state:created',
-        scope: 'approvals',
         key: 'sess/fc',
-        old_value: null,
         new_value: null,
-        message_type: 'state',
       }),
     ).toBe(false);
+    expect(isDecisionWrite({ event_type: 'state:created', key: 'sess/fc' })).toBe(false);
   });
 
-  it('returns false for non-object input', () => {
+  it('returns false for non-object / unknown event_type', () => {
     expect(isDecisionWrite(null)).toBe(false);
     expect(isDecisionWrite('whatever')).toBe(false);
+    expect(
+      isDecisionWrite({ event_type: 'state:weird', key: 'x', new_value: { decision: 'allow' } }),
+    ).toBe(false);
+  });
+});
+
+describe('exported function ids', () => {
+  it('stable wire ids', () => {
+    expect(TRIGGER_FN_ID).toBe('approval::on_decision_written');
+    expect(CONDITION_FN_ID).toBe('approval::is_decision_write');
+    expect(STEP_FN_ID).toBeTypeOf('string');
   });
 });
