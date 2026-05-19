@@ -37,8 +37,17 @@
  * Engine-routing heuristics (hide/collapse) live in `../lib/spanLabel`.
  */
 
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
@@ -46,10 +55,9 @@ import {
   getSpanKindIndicator,
   isEngineRoutingSpan,
 } from '../lib/spanLabel'
-import { buildSpanTree, flattenTree } from '../lib/spanTree'
+import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
-import { computeVirtualWindow } from '../lib/virtualWindow'
 
 interface WaterfallChartProps {
   data: WaterfallData
@@ -57,26 +65,187 @@ interface WaterfallChartProps {
   selectedSpanId?: string | null
 }
 
+interface WaterfallRowProps {
+  span: FlatSpanRow
+  isSelected: boolean
+  isExpanded: boolean
+  isCritical: boolean
+  onSpanClick: (span: VisualizationSpan) => void
+  onToggleExpand: (spanId: string) => void
+}
+
+const WaterfallRow = memo(function WaterfallRow({
+  span,
+  isSelected,
+  isExpanded,
+  isCritical,
+  onSpanClick,
+  onToggleExpand,
+}: WaterfallRowProps) {
+  const effectiveChildren = span.mergedRouting
+    ? (span.children[0]?.children ?? [])
+    : span.children
+  const hasChildren = effectiveChildren.length > 0
+  const isEngineDim = !isSelected && isEngineRoutingSpan(span)
+  const kindIndicator = getSpanKindIndicator(span.kind)
+  const displayLabel = formatSpanLabel(span)
+  const isError = span.status === 'error'
+
+  // Schematic mapping: bar fill is monochrome ink for OK,
+  // alert for error, warn for unset/pending. Critical path
+  // collapses onto the single accent moment per region per
+  // DESIGN.md §3.
+  const barClass = isCritical
+    ? 'bg-accent'
+    : isError
+      ? 'bg-alert'
+      : span.status === 'ok'
+        ? 'bg-ink'
+        : 'bg-ink-ghost'
+
+  // Hover is pure CSS (`hover:bg-panel`). Selected/error chrome
+  // takes priority over hover via CSS specificity (more-specific
+  // bg classes).
+  const rowChrome = isSelected
+    ? 'bg-panel border-l-2 border-l-accent'
+    : isError
+      ? 'bg-alert/5 border-l-2 border-l-alert'
+      : 'hover:bg-panel'
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={cn(
+        'grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-1 items-center cursor-pointer w-full text-left',
+        rowChrome,
+      )}
+      onClick={() => onSpanClick(span)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSpanClick(span)
+        }
+      }}
+    >
+      <div
+        className={cn(
+          'flex items-center gap-1.5 min-w-0',
+          isEngineDim && 'opacity-60',
+        )}
+      >
+        <div
+          className="flex-shrink-0 flex"
+          style={{ width: span.displayDepth * 16 }}
+        >
+          {indentKeys(span.span_id, span.displayDepth).map((key) => (
+            <div
+              key={key}
+              className="w-4 h-6 border-l border-rule-2"
+            />
+          ))}
+        </div>
+
+        {hasChildren ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand(span.span_id)
+            }}
+            className="w-4 h-4 flex items-center justify-center text-ink-faint hover:text-ink flex-shrink-0"
+            aria-label={isExpanded ? 'collapse span' : 'expand span'}
+          >
+            <ChevronRight
+              className={cn(
+                'w-3 h-3 transition-transform',
+                isExpanded && 'rotate-90',
+              )}
+            />
+          </button>
+        ) : (
+          <div className="w-4 h-4 flex-shrink-0" />
+        )}
+
+        <StatusDot tone={statusDotTone(span.status)} />
+
+        {span.service_name && (
+          <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-mono tracking-[0.06em] border border-rule bg-bg text-ink-faint leading-none lowercase">
+            {span.service_name}
+          </span>
+        )}
+        {kindIndicator && (
+          <span
+            className="flex-shrink-0 text-[11px] text-ink-faint leading-none w-3 text-center"
+            title={kindIndicator.label}
+          >
+            {kindIndicator.icon}
+          </span>
+        )}
+
+        <span
+          className={cn(
+            'text-[13px] font-mono truncate lowercase',
+            isSelected ? 'text-accent' : 'text-ink',
+          )}
+          title={span.name}
+        >
+          {displayLabel}
+        </span>
+        {span.mergedRouting && (
+          <span
+            className="flex-shrink-0 px-1 py-0.5 text-[9px] font-mono tracking-[0.06em] border border-rule bg-panel text-ink-faint leading-none tabular-nums"
+            title="merged: this row hides the engine 'call' child of a handle_invocation pair"
+          >
+            +1
+          </span>
+        )}
+
+        <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 ml-auto tabular-nums">
+          {formatDuration(span.duration_ms)}
+        </span>
+      </div>
+
+      {/* bar track */}
+      <div className="relative h-6 bg-rule-2">
+        <div
+          className={cn(
+            'absolute h-4 top-1 min-w-[3px]',
+            barClass,
+            isSelected && 'outline outline-2 outline-accent',
+          )}
+          style={{
+            left: `${span.start_percent}%`,
+            width: `${Math.max(0.5, span.width_percent)}%`,
+          }}
+          title={`${span.name} — ${formatDuration(span.duration_ms)}`}
+        />
+      </div>
+    </div>
+  )
+})
+
 interface DisplayState {
   expandedIds: Set<string>
   showCriticalPath: boolean
-  hoveredSpanId: string | null
-  scrollPosition: number
 }
 
 type DisplayAction =
   | { type: 'TOGGLE_SPAN'; spanId: string }
   | { type: 'SET_ALL_EXPANDED'; ids: Set<string> }
   | { type: 'SET_CRITICAL_PATH'; value: boolean }
-  | { type: 'SET_HOVERED_SPAN'; spanId: string | null }
-  | { type: 'SET_SCROLL'; position: number }
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
   showCriticalPath: false,
-  hoveredSpanId: null,
-  scrollPosition: 0,
 }
+
+// Note: `hoveredSpanId` used to live here, but mouse-sweep over the
+// chart fired one dispatch per row entered/exited — each one a full
+// re-render of every visible row. For a 2000+-span trace that froze
+// the page on mouse-move. The only consumer of the JS hover state was
+// row-background styling, which Tailwind's `hover:bg-panel` already
+// provides via CSS. Keeping the state was redundant work.
 
 function displayReducer(
   state: DisplayState,
@@ -96,10 +265,6 @@ function displayReducer(
       return { ...state, expandedIds: action.ids }
     case 'SET_CRITICAL_PATH':
       return { ...state, showCriticalPath: action.value }
-    case 'SET_HOVERED_SPAN':
-      return { ...state, hoveredSpanId: action.spanId }
-    case 'SET_SCROLL':
-      return { ...state, scrollPosition: action.position }
   }
 }
 
@@ -147,9 +312,13 @@ export function WaterfallChart({
     displayReducer,
     initialDisplayState,
   )
-  const { expandedIds, showCriticalPath, hoveredSpanId, scrollPosition } =
-    displayState
-  const containerRef = useRef<HTMLDivElement>(null)
+  const { expandedIds, showCriticalPath } = displayState
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const thumbRef = useRef<HTMLDivElement | null>(null)
+
+  // containerHeight is kept locally only to decide whether to show
+  // the minimap. The library owns the heavy lifting of scroll
+  // position + visible-range tracking.
   const [containerHeight, setContainerHeight] = useState(0)
 
   useEffect(() => {
@@ -277,13 +446,60 @@ export function WaterfallChart({
     [spanTree, expandedIds, hideEngineRouting, collapseEngineRoutingPairs],
   )
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    dispatch({ type: 'SET_SCROLL', position: e.currentTarget.scrollTop })
-  }
+  // @tanstack/react-virtual owns scroll state, container measurement,
+  // and per-row positioning. Per-row absolute positioning via
+  // `transform: translateY(...)` lets the browser composite each scroll
+  // tick without re-rendering the whole list. See spec
+  // `2026-05-19-waterfall-virtualization-lib-swap-design.md`.
+  const virtualizer = useVirtualizer({
+    count: visibleSpans.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 16,
+  })
+  const virtualRows = virtualizer.getVirtualItems()
+  const contentHeight = virtualizer.getTotalSize()
 
-  const toggleExpand = (spanId: string) => {
+  // The minimap thumb tracks the scroll container directly so it
+  // stays glued to the user's scrollTop without forcing a React
+  // re-render of the whole chart on every wheel tick. The
+  // virtualizer already exposes contentHeight via getTotalSize(),
+  // so we read it on each rAF frame from the same source.
+  useEffect(() => {
+    const el = containerRef.current
+    const thumb = thumbRef.current
+    if (!el || !thumb) return
+    let raf: number | null = null
+    const update = () => {
+      raf = null
+      const scrollHeight = el.scrollHeight
+      if (scrollHeight <= 0) return
+      const top = (el.scrollTop / scrollHeight) * MINIMAP_HEIGHT
+      const height = Math.max(
+        20,
+        MINIMAP_HEIGHT * (el.clientHeight / scrollHeight),
+      )
+      thumb.style.top = `${top}px`
+      thumb.style.height = `${height}px`
+    }
+    const onScroll = () => {
+      if (raf !== null) return
+      raf = requestAnimationFrame(update)
+    }
+    update()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const obs = new ResizeObserver(update)
+    obs.observe(el)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      obs.disconnect()
+      if (raf !== null) cancelAnimationFrame(raf)
+    }
+  }, [contentHeight, containerHeight])
+
+  const toggleExpand = useCallback((spanId: string) => {
     dispatch({ type: 'TOGGLE_SPAN', spanId })
-  }
+  }, [])
 
   const expandAll = () => {
     const allIds = new Set(data.spans.map((s) => s.span_id))
@@ -293,31 +509,6 @@ export function WaterfallChart({
   const collapseAll = () => {
     dispatch({ type: 'SET_ALL_EXPANDED', ids: new Set() })
   }
-
-  const contentHeight = visibleSpans.length * ROW_HEIGHT
-  const viewportRatio =
-    containerHeight > 0 && contentHeight > 0
-      ? containerHeight / contentHeight
-      : 1
-  const thumbHeight = Math.max(20, MINIMAP_HEIGHT * viewportRatio)
-  const thumbPosition =
-    contentHeight > 0 ? (scrollPosition / contentHeight) * MINIMAP_HEIGHT : 0
-
-  // Fixed-height windowing: only render the rows currently visible plus
-  // overscan. With ROW_HEIGHT=32 and a typical 800px viewport that is
-  // ~25 rows + 16 overscan = ~41 DOM rows regardless of itemCount.
-  // 4000-span traces no longer freeze the React commit phase. See
-  // `lib/virtualWindow.ts` for the pure math.
-  const virtualWindow = computeVirtualWindow({
-    scrollTop: scrollPosition,
-    containerHeight,
-    rowHeight: ROW_HEIGHT,
-    itemCount: visibleSpans.length,
-  })
-  const visibleSlice = visibleSpans.slice(
-    virtualWindow.startIndex,
-    virtualWindow.endIndex,
-  )
 
   return (
     <div className="flex flex-col h-full">
@@ -382,8 +573,8 @@ export function WaterfallChart({
 
       {/* sticky time axis */}
       <div
-        className="grid gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
-        style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
+        style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
+        className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
       >
         <div className="flex items-center relative">
           <span>span</span>
@@ -414,179 +605,41 @@ export function WaterfallChart({
       <div className="flex flex-1 overflow-hidden">
         <div
           ref={containerRef}
+          style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
           className="flex-1 overflow-y-auto"
-          onScroll={handleScroll}
         >
-          {/* Height spacer keeps the native scrollbar accurate; the inner
-              `translateY` positions the slice at its real Y in the list.
-              See `lib/virtualWindow.ts`. */}
-          <div
-            style={{ height: contentHeight, position: 'relative' }}
-          >
-            <div style={{ transform: `translateY(${virtualWindow.offsetY}px)` }}>
-          {visibleSlice.map((span) => {
-            const effectiveChildren = span.mergedRouting
-              ? (span.children[0]?.children ?? [])
-              : span.children
-            const hasChildren = effectiveChildren.length > 0
-            const isExpanded = expandedIds.has(span.span_id)
-            const isCritical = showCriticalPath && span.isCriticalPath
-            const isSelected = selectedSpanId === span.span_id
-            const isHovered = hoveredSpanId === span.span_id
-            const isEngineDim = !isSelected && isEngineRoutingSpan(span)
-            const kindIndicator = getSpanKindIndicator(span.kind)
-            const displayLabel = formatSpanLabel(span)
-            const isError = span.status === 'error'
-
-            // Schematic mapping: bar fill is monochrome ink for OK,
-            // alert for error, warn for unset/pending. Critical path
-            // collapses onto the single accent moment per region per
-            // DESIGN.md §3.
-            const barClass = isCritical
-              ? 'bg-accent'
-              : isError
-                ? 'bg-alert'
-                : span.status === 'ok'
-                  ? 'bg-ink'
-                  : 'bg-ink-ghost'
-
-            // row-level severity stripe: faint alert wash + 2px accent rail
-            // for error rows, accent rail for the selected row. Only one
-            // accent moment per region so selection takes priority.
-            const rowChrome = isSelected
-              ? 'bg-panel border-l-2 border-l-accent'
-              : isError
-                ? 'bg-alert/5 border-l-2 border-l-alert'
-                : isHovered
-                  ? 'bg-panel'
-                  : 'hover:bg-panel'
-
-            return (
-              // Row is a `<div role="button">`, not a `<button>`, because it
-              // contains a nested `<button>` for expand/collapse (and HTML
-              // forbids nested buttons — React surfaces it as a hydration
-              // error). Enter/Space activate selection to match button
-              // semantics for keyboard users.
-              <div
-                key={span.span_id}
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  'grid gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
-                  rowChrome,
-                )}
-                style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
-                onClick={() => onSpanClick(span)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onSpanClick(span)
-                  }
-                }}
-                onMouseEnter={() =>
-                  dispatch({ type: 'SET_HOVERED_SPAN', spanId: span.span_id })
-                }
-                onMouseLeave={() =>
-                  dispatch({ type: 'SET_HOVERED_SPAN', spanId: null })
-                }
-              >
+          {/* Height spacer keeps the native scrollbar accurate; each
+              virtualized row is absolutely positioned via translateY so
+              the browser can composite scroll without re-rendering the
+              list. The virtualizer drives `virtualRows`. */}
+          <div style={{ height: contentHeight, position: 'relative' }}>
+            {virtualRows.map((vrow) => {
+              const span = visibleSpans[vrow.index]
+              if (!span) return null
+              return (
                 <div
-                  className={cn(
-                    'flex items-center gap-1.5 min-w-0',
-                    isEngineDim && 'opacity-60',
-                  )}
+                  key={vrow.key}
+                  data-index={vrow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: ROW_HEIGHT,
+                    transform: `translateY(${vrow.start}px)`,
+                  }}
                 >
-                  <div
-                    className="flex-shrink-0 flex"
-                    style={{ width: span.displayDepth * 16 }}
-                  >
-                    {indentKeys(span.span_id, span.displayDepth).map((key) => (
-                      <div
-                        key={key}
-                        className="w-4 h-6 border-l border-rule-2"
-                      />
-                    ))}
-                  </div>
-
-                  {hasChildren ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleExpand(span.span_id)
-                      }}
-                      className="w-4 h-4 flex items-center justify-center text-ink-faint hover:text-ink flex-shrink-0"
-                      aria-label={isExpanded ? 'collapse span' : 'expand span'}
-                    >
-                      <ChevronRight
-                        className={cn(
-                          'w-3 h-3 transition-transform',
-                          isExpanded && 'rotate-90',
-                        )}
-                      />
-                    </button>
-                  ) : (
-                    <div className="w-4 h-4 flex-shrink-0" />
-                  )}
-
-                  <StatusDot tone={statusDotTone(span.status)} />
-
-                  {span.service_name && (
-                    <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-mono tracking-[0.06em] border border-rule bg-bg text-ink-faint leading-none lowercase">
-                      {span.service_name}
-                    </span>
-                  )}
-                  {kindIndicator && (
-                    <span
-                      className="flex-shrink-0 text-[11px] text-ink-faint leading-none w-3 text-center"
-                      title={kindIndicator.label}
-                    >
-                      {kindIndicator.icon}
-                    </span>
-                  )}
-
-                  <span
-                    className={cn(
-                      'text-[13px] font-mono truncate lowercase',
-                      isSelected ? 'text-accent' : 'text-ink',
-                    )}
-                    title={span.name}
-                  >
-                    {displayLabel}
-                  </span>
-                  {span.mergedRouting && (
-                    <span
-                      className="flex-shrink-0 px-1 py-0.5 text-[9px] font-mono tracking-[0.06em] border border-rule bg-panel text-ink-faint leading-none tabular-nums"
-                      title="merged: this row hides the engine 'call' child of a handle_invocation pair"
-                    >
-                      +1
-                    </span>
-                  )}
-
-                  <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 ml-auto tabular-nums">
-                    {formatDuration(span.duration_ms)}
-                  </span>
-                </div>
-
-                {/* bar track */}
-                <div className="relative h-6 bg-rule-2">
-                  <div
-                    className={cn(
-                      'absolute h-4 top-1 min-w-[3px] transition-all duration-150',
-                      barClass,
-                      isSelected && 'outline outline-2 outline-accent',
-                    )}
-                    style={{
-                      left: `${span.start_percent}%`,
-                      width: `${Math.max(0.5, span.width_percent)}%`,
-                    }}
-                    title={`${span.name} — ${formatDuration(span.duration_ms)}`}
+                  <WaterfallRow
+                    span={span}
+                    isSelected={selectedSpanId === span.span_id}
+                    isExpanded={expandedIds.has(span.span_id)}
+                    isCritical={showCriticalPath && span.isCriticalPath}
+                    onSpanClick={onSpanClick}
+                    onToggleExpand={toggleExpand}
                   />
                 </div>
-              </div>
-            )
-          })}
-            </div>
+              )
+            })}
           </div>
         </div>
 
@@ -619,11 +672,9 @@ export function WaterfallChart({
                 )
               })}
               <div
+                ref={thumbRef}
                 className="absolute left-0 right-0 bg-accent/20 border border-accent"
-                style={{
-                  top: thumbPosition,
-                  height: thumbHeight,
-                }}
+                style={{ top: 0, height: 20 }}
               />
             </div>
           </div>

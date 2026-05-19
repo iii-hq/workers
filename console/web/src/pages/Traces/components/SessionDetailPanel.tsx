@@ -136,7 +136,7 @@ export function SessionDetailPanel({
           isn't stuck staring at a "loading…" header that may be slow
           because `engine::traces::tree` is shipping a multi-MB payload.
           The chart itself is virtualized via
-          `lib/virtualWindow.ts`, so once data lands the render is
+          `@tanstack/react-virtual`, so once data lands the render is
           cheap. The slowness today is end-to-end fetch latency, which
           this panel can't shrink — but it can surface elapsed time so
           users know it's still going. */}
