@@ -61,8 +61,9 @@ const GET_DESCRIPTION: &str =
     "Fetch one filesystem-backed skill by id. Returns the raw markdown body plus id, \
      title, type, description, and modified_at — same flat shape as directory::prompts::get \
      with `type` lifted from the YAML frontmatter and `title` preferring frontmatter \
-     over the body H1. Accepts a bare id (e.g. \"directory/skills/list\") or the same \
-     id prefixed with iii://.";
+     over the body H1. Accepts a bare id (e.g. \"directory/skills/list\"), the same id \
+     suffixed with `.md` (e.g. \"directory/skills/list.md\"), or either form prefixed \
+     with iii://.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct ListSkillsInput {}
@@ -108,9 +109,11 @@ struct IndexSkillsOutput {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SkillGetInput {
     /// Skill id (the same string returned by `directory::skills::list`,
-    /// e.g. `"directory/skills/list"`). The legacy `iii://{id}` form is
-    /// also accepted for ergonomics; the prefix is stripped before
-    /// validation. Other URI schemes are rejected.
+    /// e.g. `"directory/skills/list"`). Two ergonomic variants are also
+    /// accepted: the file-path form `<id>.md` (the trailing `.md` is
+    /// stripped) and the legacy `iii://{id}` URI form. Other URI
+    /// schemes are rejected. The filename `SKILLS.md` is aliased to
+    /// `index.md` to match the filesystem scanner.
     pub id: String,
 }
 
@@ -226,23 +229,39 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     })
 }
 
-/// Trim, strip an optional `iii://` prefix, and reject any other URI
-/// scheme. The remaining string still has to satisfy [`validate_id`];
-/// this function only handles the prefix-stripping ergonomics.
+/// Trim and strip an optional `iii://` prefix; reject any other URI
+/// scheme. Also accepts a file-path form: a trailing `.md` is stripped
+/// so callers can paste either `hello-worker/index` or
+/// `hello-worker/index.md` and get the same id. The literal filename
+/// `SKILLS.md` (final path component) is aliased to `index.md` — same
+/// rule the filesystem scanner uses. The remaining string still has to
+/// satisfy [`validate_id`]; this function only handles the prefix /
+/// suffix ergonomics.
 pub fn normalize_get_id(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("id must be non-empty".into());
     }
-    if let Some(rest) = trimmed.strip_prefix(URI_PREFIX) {
-        return Ok(rest.to_string());
-    }
-    if trimmed.contains("://") {
+    let without_scheme = if let Some(rest) = trimmed.strip_prefix(URI_PREFIX) {
+        rest
+    } else if trimmed.contains("://") {
         return Err(format!(
-            "Invalid id (must be a bare skill path or an iii:// URI): {trimmed}"
+            "Invalid id (must be a bare skill path, a path ending in .md, or an iii:// URI): {trimmed}"
         ));
-    }
-    Ok(trimmed.to_string())
+    } else {
+        trimmed
+    };
+    let aliased = if let Some(stem) = without_scheme.strip_suffix("/SKILLS.md") {
+        format!("{stem}/index")
+    } else if without_scheme == "SKILLS.md" {
+        "index".to_string()
+    } else {
+        without_scheme
+            .strip_suffix(".md")
+            .unwrap_or(without_scheme)
+            .to_string()
+    };
+    Ok(aliased)
 }
 
 // ---------- validation ----------
@@ -491,6 +510,47 @@ mod tests {
         let err = normalize_get_id("https://example.com").unwrap_err();
         assert!(err.contains("iii://"), "got: {err}");
         assert!(normalize_get_id("ftp://nope").is_err());
+    }
+
+    #[test]
+    fn normalize_strips_md_suffix_on_bare_path() {
+        assert_eq!(
+            normalize_get_id("hello-worker/index.md").unwrap(),
+            "hello-worker/index"
+        );
+    }
+
+    #[test]
+    fn normalize_aliases_skills_md_to_index() {
+        assert_eq!(
+            normalize_get_id("hello-worker/SKILLS.md").unwrap(),
+            "hello-worker/index"
+        );
+    }
+
+    #[test]
+    fn normalize_aliases_nested_skills_md_to_index() {
+        assert_eq!(
+            normalize_get_id("resend/emails/SKILLS.md").unwrap(),
+            "resend/emails/index"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_md_after_iii_prefix() {
+        assert_eq!(
+            normalize_get_id("iii://hello-worker/index.md").unwrap(),
+            "hello-worker/index"
+        );
+    }
+
+    #[test]
+    fn normalize_does_not_strip_md_in_middle_of_path() {
+        // ".md" inside a segment is a real id, not a file suffix.
+        assert_eq!(
+            normalize_get_id("hello-worker/index_md").unwrap(),
+            "hello-worker/index_md"
+        );
     }
 
     // ── validate_id: happy paths ────────────────────────────────────────
