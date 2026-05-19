@@ -15,7 +15,7 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnState } from './state.js';
-import { STEP_FN_ID } from './subscriber.js';
+import { STEP_FN_ID, STEP_TOPIC } from './subscriber.js';
 
 export { STEP_FN_ID };
 export const HANDLER_FN_ID = 'turn::on_record_written';
@@ -80,10 +80,27 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
       function_id: STEP_FN_ID,
       payload: { session_id: parsed.session_id },
     });
+    return;
   } catch (err) {
-    logger.warn('turn::on_record_written: turn::step invoke failed', {
-      session_id: parsed.session_id,
-      err: String(err),
-    });
+    // Direct invoke failed (timeout, transient throw, etc). The triggering
+    // state write already landed, so without a durable retry the session
+    // would sit stuck in this state forever. Fall back to publishing
+    // `turn::step_requested` so the durable subscriber on `subscriber.ts`
+    // buffers + retries.
+    logger.warn(
+      'turn::on_record_written: direct turn::step failed; falling back to durable publish',
+      { session_id: parsed.session_id, err: String(err) },
+    );
+    try {
+      await iii.trigger<unknown, unknown>({
+        function_id: 'iii::durable::publish',
+        payload: { topic: STEP_TOPIC, data: { session_id: parsed.session_id } },
+      });
+    } catch (publishErr) {
+      logger.error(
+        'turn::on_record_written: durable publish fallback also failed; session may be stuck',
+        { session_id: parsed.session_id, err: String(publishErr) },
+      );
+    }
   }
 }

@@ -10,7 +10,7 @@ import { isTerminal } from './state.js';
 import { step } from './transitions.js';
 
 export const STEP_FN_ID = 'turn::step';
-const STEP_TOPIC = 'turn::step_requested';
+export const STEP_TOPIC = 'turn::step_requested';
 
 function extractSessionId(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
