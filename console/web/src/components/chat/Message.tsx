@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import type {
   AssistantMessage as AssistantMessageType,
   Message as MessageType,
+  SystemMessage as SystemMessageType,
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { AttachmentChip } from './AttachmentChip'
@@ -45,7 +46,67 @@ export function Message({ message, onResolveApproval }: MessageProps) {
         />
       )
     }
+    case 'system':
+      return message.kind === 'compaction' ? (
+        <CompactionMarker message={message} />
+      ) : (
+        <SystemNotice message={message} />
+      )
   }
+}
+
+function SystemNotice({ message }: { message: SystemMessageType }) {
+  const tone = message.tone ?? 'info'
+  const toneCls =
+    tone === 'error'
+      ? 'border-l-danger text-danger'
+      : tone === 'warn'
+        ? 'border-l-warn text-warn'
+        : 'border-l-rule text-ink-faint'
+  return (
+    <article
+      className={cn(
+        'border-l-2 pl-3 py-1 font-mono text-[12px] uppercase tracking-[0.04em]',
+        toneCls,
+      )}
+    >
+      {message.content}
+    </article>
+  )
+}
+
+function CompactionMarker({ message }: { message: SystemMessageType }) {
+  const tokens = message.tokensBefore ?? 0
+  const summary = message.summaryText ?? ''
+  return (
+    <article className="my-2">
+      <details className="group">
+        <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
+          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 group-hover:text-ink transition-colors">
+            <span>compacted</span>
+            {tokens > 0 ? (
+              <>
+                <span className="text-ink-ghost">·</span>
+                <span className="tabular-nums">
+                  {tokens.toLocaleString()} tokens
+                </span>
+              </>
+            ) : null}
+            <span className="text-ink-ghost normal-case tracking-normal text-[10px]">
+              show summary
+            </span>
+          </span>
+          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+        </summary>
+        {summary ? (
+          <pre className="mt-3 mx-9 p-3 bg-panel border border-rule-2 font-mono text-[11px] leading-relaxed text-ink-faint whitespace-pre-wrap">
+            {summary}
+          </pre>
+        ) : null}
+      </details>
+    </article>
+  )
 }
 
 function UserMessage({ message }: { message: UserMessageType }) {

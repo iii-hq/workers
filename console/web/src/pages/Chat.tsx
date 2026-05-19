@@ -24,6 +24,7 @@ export function Chat() {
     setMode,
     appendMessage,
     updateMessage,
+    compactConversation,
   } = useConversations(catalogKeys, !catalogLoading)
 
   return (
@@ -48,6 +49,7 @@ export function Chat() {
           onUpdateMode={setMode}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}
+          onCompactConversation={compactConversation}
         />
       ) : (
         <section className="flex-1 flex items-center justify-center">

@@ -103,6 +103,14 @@ export function Playground() {
     [],
   )
 
+  const compactConversation = useCallback((_id: string, marker: Message) => {
+    setConvo((c) => ({
+      ...c,
+      messages: [marker],
+      updatedAt: Date.now(),
+    }))
+  }, [])
+
   return (
     <div className="flex-1 flex min-h-0">
       <ScenarioPicker selectedId={selectedId} onSelect={handleSelect} />
@@ -133,6 +141,7 @@ export function Playground() {
           onUpdateMode={setMode}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}
+          onCompactConversation={compactConversation}
         />
       </div>
 

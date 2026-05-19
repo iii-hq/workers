@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { FunctionMentionNode } from './lexical/FunctionMentionNode'
 import { FunctionMentionTransformPlugin } from './lexical/FunctionMentionTransformPlugin'
 import { MentionsPlugin } from './lexical/MentionsPlugin'
+import { SlashCommandsPlugin } from './lexical/SlashCommandsPlugin'
 
 interface LexicalShellProps {
   onChange: (text: string) => void
@@ -171,6 +172,7 @@ export function LexicalShell({
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin menuOpenRef={menuOpenRef} />
+      <SlashCommandsPlugin menuOpenRef={menuOpenRef} />
       <FunctionMentionTransformPlugin />
     </LexicalComposer>
   )

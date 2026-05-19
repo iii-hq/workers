@@ -7,10 +7,13 @@ import { requireString } from '../../runtime/handler.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import {
+  type UpdatePartItem,
   activePath as _activePath,
   appendMessage,
+  appendSynthetic as appendSyntheticOp,
   cloneSession,
   compact as compactOp,
+  compactionEntries as compactionEntriesOp,
   createSession,
   ensureSession,
   exportHtml,
@@ -19,6 +22,8 @@ import {
   loadMessagesWithEntryIds,
   reconcile,
   tree,
+  updatePart as updatePartOp,
+  updateParts as updatePartsOp,
 } from './operations.js';
 import type { SessionStore } from './store.js';
 import type { CompactionDetails, ListOrder } from './types.js';
@@ -35,6 +40,10 @@ export const FUNCTION_IDS = {
   MESSAGES: 'session-tree::messages',
   LIST: 'session-tree::list',
   RECONCILE: 'session-tree::reconcile',
+  COMPACTIONS: 'session-tree::compactions',
+  APPEND_SYNTHETIC: 'session-tree::append_synthetic',
+  UPDATE_PART: 'session-tree::update_part',
+  UPDATE_PARTS: 'session-tree::update_parts',
 } as const;
 
 export function registerTree(iii: ISdk, store: SessionStore): void {
@@ -69,6 +78,7 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
       const details: CompactionDetails =
         obj.details && typeof obj.details === 'object' ? (obj.details as CompactionDetails) : {};
       const parent_id = typeof obj.parent_id === 'string' ? obj.parent_id : null;
+      const tail_start_id = typeof obj.tail_start_id === 'string' ? obj.tail_start_id : null;
       const entry_id = await compactOp(
         store,
         session_id,
@@ -76,6 +86,7 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
         details,
         parent_id,
         tokens_before,
+        tail_start_id,
       );
       return { entry_id };
     },
@@ -178,5 +189,67 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
       return await listSessions(store, limit, offset, order);
     },
     { description: 'List sessions with optional pagination and ordering' },
+  );
+
+  iii.registerFunction(
+    FUNCTION_IDS.COMPACTIONS,
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const session_id = requireString(obj, 'session_id');
+      const entries = await compactionEntriesOp(store, session_id);
+      return { entries };
+    },
+    { description: 'Return all compaction entries for a session, sorted by timestamp ascending' },
+  );
+
+  iii.registerFunction(
+    FUNCTION_IDS.APPEND_SYNTHETIC,
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const session_id = requireString(obj, 'session_id');
+      const text = requireString(obj, 'text');
+      const metadata = obj.metadata;
+      const parent_id = typeof obj.parent_id === 'string' ? obj.parent_id : null;
+      const entry_id = await appendSyntheticOp(store, session_id, { text, metadata, parent_id });
+      return { entry_id };
+    },
+    { description: 'Append a synthetic user-role message entry to a session' },
+  );
+
+  iii.registerFunction(
+    FUNCTION_IDS.UPDATE_PART,
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const session_id = requireString(obj, 'session_id');
+      const entry_id = requireString(obj, 'entry_id');
+      const output = typeof obj.output === 'string' ? obj.output : null;
+      const compacted_at = obj.compacted_at;
+      await updatePartOp(store, session_id, entry_id, { output, compacted_at });
+      return { ok: true };
+    },
+    { description: 'Replace content of a function_result message entry with compacted output' },
+  );
+
+  iii.registerFunction(
+    FUNCTION_IDS.UPDATE_PARTS,
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const session_id = requireString(obj, 'session_id');
+      const itemsRaw = Array.isArray(obj.items) ? (obj.items as Record<string, unknown>[]) : [];
+      const items: UpdatePartItem[] = itemsRaw
+        .map((it) => {
+          const entry_id = typeof it.entry_id === 'string' ? it.entry_id : '';
+          if (!entry_id) return null;
+          const output = typeof it.output === 'string' ? it.output : null;
+          return { entry_id, output, compacted_at: it.compacted_at } as UpdatePartItem;
+        })
+        .filter((x): x is UpdatePartItem => x !== null);
+      const { updated } = await updatePartsOp(store, session_id, items);
+      return { updated };
+    },
+    {
+      description:
+        'Batch replace content of multiple function_result message entries. Loads entries once.',
+    },
   );
 }

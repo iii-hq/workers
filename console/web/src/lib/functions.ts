@@ -12,6 +12,9 @@ export const FUNCTIONS: FunctionEntry[] = [
   { id: 'trigger::run', description: 'fire a trigger' },
   { id: 'directory::index', description: 'index a worker skill bundle' },
   { id: 'directory::resolve', description: 'resolve an iii:// link' },
+  { id: 'context-compaction::compact_session', description: 'compact a session now' },
+  { id: 'context-compaction::prune_tool_outputs', description: 'prune old tool outputs' },
+  { id: 'session-tree::compactions', description: 'list compaction history for a session' },
 ]
 
 export function fuzzyFilter(query: string, limit = 8): FunctionEntry[] {

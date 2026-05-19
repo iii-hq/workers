@@ -78,7 +78,10 @@ async function* mockStream(
     const startedAt = Date.now()
     yield { kind: 'thought-start' }
     const thoughtTokens = thoughtBody.split(/(\s+)/)
-    const perToken = Math.max(8, targetDuration / Math.max(1, thoughtTokens.length))
+    const perToken = Math.max(
+      8,
+      targetDuration / Math.max(1, thoughtTokens.length),
+    )
     for (const token of thoughtTokens) {
       if (signal?.aborted) return
       if (token) yield { kind: 'thought-token', token }
@@ -128,4 +131,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export const mockBackend: ChatBackend = {
   id: 'mock',
   stream: mockStream,
+  async compactSession(_sessionId, _model, _history) {
+    return { status: 'empty' }
+  },
 }

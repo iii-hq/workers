@@ -14,6 +14,7 @@ import type { AssistantMessageEvent, StopReason } from '../../types/stream-event
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
 import { buildInput, decide, targetFunctionId } from '../provider-router.js';
+import { runPreflight } from '../preflight.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
 
 export async function handleAwaiting(iii: ISdk, rec: TurnStateRecord): Promise<void> {
@@ -104,7 +105,7 @@ function formatProviderError(err: unknown): string {
 
 export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   const request = await persistence.loadRunRequest(iii, rec.session_id);
-  const messages = await persistence.loadMessages(iii, rec.session_id);
+  let messages = await persistence.loadMessages(iii, rec.session_id);
   const schemas = await persistence.loadFunctionSchemas(iii, rec.session_id);
 
   const provider = typeof request.provider === 'string' ? (request.provider as string) : '';
@@ -115,6 +116,23 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
 
   const decision = decide({ provider, model });
   const targetFn = targetFunctionId(decision);
+
+  // Pre-flight: if projected token usage would overflow the model's context
+  // window, trigger compact_now synchronously before opening the provider
+  // channel. On compaction, reload messages so the provider sees the trimmed
+  // history. ContextOverflowError / CompactionBusyError propagate up and are
+  // handled as a transient error by the step loop (the session will retry on
+  // the next wake or surface the error to the caller).
+  const preflightResult = await runPreflight(
+    iii,
+    rec.session_id,
+    messages,
+    decision.provider,
+    model,
+  );
+  if (preflightResult === 'compacted') {
+    messages = await persistence.loadMessages(iii, rec.session_id);
+  }
 
   // Open a channel; provider writes AssistantMessageEvent JSON into it.
   let channel: Awaited<ReturnType<ISdk['createChannel']>>;
