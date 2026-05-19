@@ -22,7 +22,6 @@ function buildRunRequest(payload: Record<string, unknown>): Record<string, unkno
     model: payload.model ?? '',
     system_prompt: payload.system_prompt ?? '',
     mode: payload.mode ?? null,
-    approval_required: Array.isArray(payload.approval_required) ? payload.approval_required : [],
     image: payload.image ?? 'python',
     idle_timeout_secs: payload.idle_timeout_secs ?? 300,
     cwd: payload.cwd ?? null,

@@ -39,8 +39,6 @@ describe('handleExecute new flow', () => {
     ]);
     vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({ approval_required: [] });
-
     await handleExecute(iii, cfg, rec);
 
     expect(rec.state).toBe('function_awaiting_approval');
@@ -67,8 +65,6 @@ describe('handleExecute new flow', () => {
     ]);
     vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({ approval_required: [] });
-
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
 
     await handleExecute(iii, cfg, rec);
@@ -100,8 +96,6 @@ describe('handleExecute new flow', () => {
     ]);
     vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({ approval_required: [] });
-
     await handleExecute(iii, cfg, rec);
 
     const shellCalls = triggerSpy.mock.calls.filter(

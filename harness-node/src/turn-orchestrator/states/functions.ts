@@ -57,11 +57,6 @@ export async function handleExecute(
   cfg: TurnOrchestratorConfig,
   rec: TurnStateRecord,
 ): Promise<void> {
-  const runRequest = await persistence.loadRunRequest(iii, rec.session_id);
-  const approval_required = Array.isArray(runRequest.approval_required)
-    ? (runRequest.approval_required as string[]).filter((x) => typeof x === 'string')
-    : [];
-
   const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
   const results = await persistence.loadExecutedCalls(iii, rec.session_id);
 
@@ -129,13 +124,7 @@ export async function handleExecute(
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const out = await dispatchWithHook(
-      iii,
-      augmentedFc,
-      approval_required,
-      rec.session_id,
-      cfg.policy_function_id,
-    );
+    const out = await dispatchWithHook(iii, augmentedFc, rec.session_id, cfg.policy_function_id);
 
     if (out.kind === 'pending') {
       rec.awaiting_approval = rec.awaiting_approval ?? [];

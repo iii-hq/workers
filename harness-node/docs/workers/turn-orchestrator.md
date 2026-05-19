@@ -18,9 +18,7 @@ restarts.
 through. It runs `consultBefore` before forwarding to the target function
 id. `consultBefore` triggers `policy::check_permissions` directly (5 s
 timeout) and maps the reply to allow / deny / pending. Fail-closed: policy
-unreachable → deny with a `gate_unavailable` `DenialEnvelope`, unless the
-function id appears in the per-run `approval_required` list (legacy
-fallback → pending, so the UI can still resolve it).
+unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 
 ## Registered functions
 

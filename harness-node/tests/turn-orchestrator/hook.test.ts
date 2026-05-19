@@ -16,7 +16,7 @@ describe('consultBefore (direct policy call)', () => {
       expect(function_id).toBe('policy::check_permissions');
       return { decision: 'allow', rule_id: 'allow-tmp' };
     });
-    const outcome = await consultBefore(iii, fc, [], 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
     expect(outcome.kind).toBe('allow');
   });
 
@@ -26,7 +26,7 @@ describe('consultBefore (direct policy call)', () => {
       rule_id: 'deny-rm-rf',
       matched_constraint: { field: 'path', operator: 'matches', value: '^/$' },
     }));
-    const outcome = await consultBefore(iii, fc, [], 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
     expect(outcome.kind).toBe('deny');
     if (outcome.kind !== 'deny') return;
     expect(outcome.denial.denied_by).toBe('permissions');
@@ -35,41 +35,15 @@ describe('consultBefore (direct policy call)', () => {
 
   it('returns pending when policy says needs_approval', async () => {
     const iii = fakeIii(() => ({ decision: 'needs_approval' }));
-    const outcome = await consultBefore(iii, fc, [], 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
     expect(outcome.kind).toBe('pending');
   });
 
-  it('returns pending on needs_approval even when caller supplies a non-empty approval_required list that omits this function', async () => {
-    const iii = fakeIii(() => ({ decision: 'needs_approval' }));
-    const outcome = await consultBefore(
-      iii,
-      fc,
-      ['shell::run'], // fc.function_id is 'shell::fs::write' — not in the list
-      'sess-a',
-      'policy::check_permissions',
-    );
-    expect(outcome.kind).toBe('pending');
-  });
-
-  it('falls back to legacy approval_required list when policy is unreachable', async () => {
+  it('fails closed (deny gate_unavailable) when policy is unreachable', async () => {
     const iii = fakeIii(() => {
       throw new Error('policy worker down');
     });
-    const outcome = await consultBefore(
-      iii,
-      fc,
-      ['shell::fs::write'],
-      'sess-a',
-      'policy::check_permissions',
-    );
-    expect(outcome.kind).toBe('pending');
-  });
-
-  it('fails closed (deny) when policy unreachable AND not in approval_required list', async () => {
-    const iii = fakeIii(() => {
-      throw new Error('policy worker down');
-    });
-    const outcome = await consultBefore(iii, fc, [], 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
     expect(outcome.kind).toBe('deny');
     if (outcome.kind !== 'deny') return;
     expect(outcome.denial.denied_by).toBe('gate_unavailable');
@@ -78,7 +52,7 @@ describe('consultBefore (direct policy call)', () => {
   it('does NOT call hook-fanout::publish_collect', async () => {
     const trigger = vi.fn(async () => ({ decision: 'allow', rule_id: 'r' }));
     const iii = { trigger } as unknown as ISdk;
-    await consultBefore(iii, fc, [], 'sess-a', 'policy::check_permissions');
+    await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger.mock.calls[0][0].function_id).toBe('policy::check_permissions');
   });

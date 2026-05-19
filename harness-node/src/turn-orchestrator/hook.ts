@@ -1,9 +1,7 @@
 /**
  * Approval consultation. Calls `policy::check_permissions` directly and maps
  * the reply to allow / deny / pending. Fail-closed on transport errors:
- * unreachable policy → deny with `gate_unavailable`, unless the call appears
- * in the legacy `approval_required` list (then treat as pending so the user
- * can resolve it).
+ * unreachable policy → deny with `gate_unavailable`.
  *
  * `publishAfter` still goes through hook-fanout because the after-hook is a
  * pluggable merge point with multiple potential consumers.
@@ -39,25 +37,23 @@ export function gateUnavailableEnvelope(function_id: string, reason: string): De
 export async function consultBefore(
   iii: ISdk,
   function_call: FunctionCall,
-  approval_required: string[],
-  session_id: string | undefined,
+  // session_id is accepted for future correlation; the current policy wire format only uses function_id + args.
+  _session_id: string | undefined,
   policy_function_id: string,
 ): Promise<HookOutcome> {
   let raw: unknown;
   try {
+    // 5s is a safe budget for a synchronous policy check; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
     raw = await iii.trigger<unknown, unknown>({
       function_id: policy_function_id,
       payload: { function_id: function_call.function_id, args: function_call.arguments },
       timeoutMs: 5_000,
     });
   } catch (err) {
-    logger.warn('policy consult failed; checking legacy approval_required fallback', {
+    logger.warn('policy consult failed; failing closed', {
       function_id: function_call.function_id,
       err: String(err),
     });
-    if (approval_required.includes(function_call.function_id)) {
-      return { kind: 'pending' };
-    }
     return {
       kind: 'deny',
       denial: gateUnavailableEnvelope(
@@ -80,7 +76,6 @@ export async function consultBefore(
       ),
     };
   }
-
   return { kind: 'pending' };
 }
 

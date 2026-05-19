@@ -104,7 +104,6 @@ function isTimeout(err: unknown): boolean {
 export async function dispatchWithHook(
   iii: ISdk,
   function_call: FunctionCall,
-  approval_required: string[],
   session_id: string | undefined,
   policy_function_id: string,
 ): Promise<DispatchResult> {
@@ -117,13 +116,7 @@ export async function dispatchWithHook(
       }),
     };
   }
-  const outcome = await consultBefore(
-    iii,
-    function_call,
-    approval_required,
-    session_id,
-    policy_function_id,
-  );
+  const outcome = await consultBefore(iii, function_call, session_id, policy_function_id);
   if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
   if (outcome.kind === 'pending') {
     return { kind: 'pending' };
@@ -183,7 +176,7 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  const out = await dispatchWithHook(iii, fc, [], session_id, policy_function_id);
+  const out = await dispatchWithHook(iii, fc, session_id, policy_function_id);
   if (out.kind === 'pending') {
     return errorResult({
       error: 'awaiting_approval',

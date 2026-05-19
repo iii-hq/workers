@@ -146,10 +146,7 @@ sequenceDiagram
 ```
 
 Fail-closed: policy unreachable (transport error or 5 s timeout) →
-`consultBefore` denies the call with a `gate_unavailable` envelope. Legacy
-fallback: if the function id appears in the per-run `approval_required`
-list and policy is unreachable, `consultBefore` returns pending so the UI
-can still resolve it.
+`consultBefore` denies the call with a `gate_unavailable` envelope.
 
 Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
 the orchestrator through its own `agent`-scope state trigger) and, if the
