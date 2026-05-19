@@ -87,9 +87,11 @@ From the `approval_gate` section of
 - `approval_state_scope` (default `approvals`) — iii state scope for
   decision records. The state trigger that wakes the orchestrator is
   registered against this same scope.
-- `policy_function_id` (default `policy::check_permissions`) — function id
-  consulted for the rule decision (used by the orchestrator's `consultBefore`,
-  not by approval-gate directly).
+
+The policy function id is owned by the orchestrator's config slice, not
+approval-gate's — set it at top level as `policy_function_id` (default
+`policy::check_permissions`). See `harness-node/config.yaml` and
+[workers/turn-orchestrator.md](workers/turn-orchestrator.md).
 
 There is no `default_timeout_ms`: the turn record sits in
 `function_awaiting_approval` until a decision is written, so the only relevant

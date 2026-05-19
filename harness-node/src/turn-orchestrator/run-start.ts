@@ -47,8 +47,6 @@ export async function execute(iii: ISdk, payload: unknown): Promise<{ session_id
 
   await persistence.saveRunRequest(iii, session_id, request);
   await persistence.saveMessages(iii, session_id, initial_messages);
-  const record = newRecord(session_id, max_turns);
-  await persistence.saveRecord(iii, record);
 
   if (typeof request.cwd === 'string') {
     await persistence.saveCwd(iii, session_id, request.cwd as string);
@@ -60,6 +58,9 @@ export async function execute(iii: ISdk, payload: unknown): Promise<{ session_id
   for (const evt of buildInitialEventPlan(initial_messages)) {
     await emit(iii, session_id, evt);
   }
+
+  const record = newRecord(session_id, max_turns);
+  await persistence.saveRecord(iii, record);
   return { session_id };
 }
 
