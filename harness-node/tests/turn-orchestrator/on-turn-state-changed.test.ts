@@ -97,4 +97,33 @@ describe('handleTurnStateWrite', () => {
     });
     expect(emits).toEqual([]);
   });
+
+  it('swallows emit failures (logs only, never rethrows)', async () => {
+    const iii = {
+      trigger: vi.fn(async () => {
+        throw new Error('stream::set down');
+      }),
+    } as unknown as ISdk;
+    // Should NOT throw.
+    await expect(
+      handleTurnStateWrite(iii, {
+        event_type: 'state:created',
+        key: 'session/sess-a/turn_state',
+        new_value: { state: 'provisioning' },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('omits old_value from the emitted event when state:created', async () => {
+    const { iii, emits } = fakeIii();
+    await handleTurnStateWrite(iii, {
+      event_type: 'state:created',
+      key: 'session/sess-a/turn_state',
+      new_value: { state: 'provisioning' },
+    });
+    expect(emits).toHaveLength(1);
+    const event = emits[0]?.event as Record<string, unknown>;
+    expect(event.type).toBe('turn_state_changed');
+    expect('old_value' in event).toBe(false);
+  });
 });

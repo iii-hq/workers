@@ -7,6 +7,7 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
+import { logger } from '../runtime/otel.js';
 import { emit } from './events.js';
 
 export const HANDLER_FN_ID = 'turn::on_turn_state_changed';
@@ -47,10 +48,18 @@ export function isTurnStateWrite(event: unknown): boolean {
 export async function handleTurnStateWrite(iii: ISdk, event: unknown): Promise<void> {
   const parsed = parseWrite(event);
   if (!parsed) return;
-  await emit(iii, parsed.session_id, {
-    type: 'turn_state_changed',
-    event_type: parsed.event_type,
-    new_value: parsed.new_value,
-    old_value: parsed.old_value,
-  });
+
+  try {
+    await emit(iii, parsed.session_id, {
+      type: 'turn_state_changed',
+      event_type: parsed.event_type,
+      new_value: parsed.new_value,
+      ...(parsed.old_value !== undefined && { old_value: parsed.old_value }),
+    });
+  } catch (err) {
+    logger.warn('turn::on_turn_state_changed: emit failed', {
+      session_id: parsed.session_id,
+      err: String(err),
+    });
+  }
 }
