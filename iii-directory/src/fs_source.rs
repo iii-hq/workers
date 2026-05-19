@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skills_treats_SKILLS_md_as_index_alias() {
+    fn scan_skills_treats_skills_md_as_index_alias() {
         let tmp = tempfile::tempdir().unwrap();
         let ns = tmp.path().join("resend");
         std::fs::create_dir_all(&ns).unwrap();
@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skills_treats_nested_SKILLS_md_as_index_alias() {
+    fn scan_skills_treats_nested_skills_md_as_index_alias() {
         let tmp = tempfile::tempdir().unwrap();
         let nested = tmp.path().join("resend/emails");
         std::fs::create_dir_all(&nested).unwrap();
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skills_skips_one_when_both_index_and_SKILLS_present() {
+    fn scan_skills_skips_one_when_both_index_and_skills_present() {
         let tmp = tempfile::tempdir().unwrap();
         let ns = tmp.path().join("resend");
         std::fs::create_dir_all(&ns).unwrap();
