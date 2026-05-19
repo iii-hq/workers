@@ -495,7 +495,7 @@ export function WaterfallChart({
       obs.disconnect()
       if (raf !== null) cancelAnimationFrame(raf)
     }
-  }, [])
+  }, [contentHeight, containerHeight])
 
   const toggleExpand = useCallback((spanId: string) => {
     dispatch({ type: 'TOGGLE_SPAN', spanId })
