@@ -203,9 +203,8 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     And  the index response body contains "## team-b"
     And  the index response body contains "Alpha team's worker. Owns alpha-only tooling."
     And  the index response body contains "Bravo team's worker. Handles all bravo workflows."
-    And  the index response body contains "Read [`team-a/index.md`](team-a/index.md) for the full worker reference."
-    And  the index response body contains "Read [`team-b/index.md`](team-b/index.md) for the full worker reference."
-    And  the index response body does not contain "iii://"
+    And  the index response body contains "Read [`team-a/index.md`](team-a/index.md) (legacy `iii://team-a/index`) for the full worker reference."
+    And  the index response body contains "Read [`team-b/index.md`](team-b/index.md) (legacy `iii://team-b/index`) for the full worker reference."
     And  the index response body does not contain "team-a/foo"
     And  the index response body does not contain "## Foo"
 

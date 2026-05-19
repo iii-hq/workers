@@ -385,8 +385,12 @@ pub fn extract_description(markdown: &str) -> Option<String> {
 ///
 /// <first paragraph from the worker's overview>
 ///
-/// Read [`<id>.md`](<id>.md) for the full worker reference.
+/// Read [`<id>.md`](<id>.md) (legacy `iii://<id>`) for the full worker reference.
 /// ```
+///
+/// The legacy `iii://<id>` form is emitted alongside the file-path
+/// pointer so harnesses that grep for the old URI scheme keep working
+/// while new consumers prefer the markdown link target.
 ///
 /// The description block is omitted (no extra blank line) when the
 /// overview body has no paragraph. Entries must already be sorted lex
@@ -411,7 +415,7 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
         }
         out.push('\n');
         out.push_str(&format!(
-            "Read [`{id}.md`]({id}.md) for the full worker reference.\n",
+            "Read [`{id}.md`]({id}.md) (legacy `iii://{id}`) for the full worker reference.\n",
             id = worker.id
         ));
     }
@@ -1001,7 +1005,7 @@ mod tests {
         )]);
         assert!(
             body.contains(
-                "Read [`agent-memory/index.md`](agent-memory/index.md) for the full worker reference.\n"
+                "Read [`agent-memory/index.md`](agent-memory/index.md) (legacy `iii://agent-memory/index`) for the full worker reference.\n"
             ),
             "missing dive-deeper pointer; got: {body}"
         );
@@ -1044,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn render_index_emits_file_path_pointer() {
+    fn render_index_emits_both_file_path_and_iii_pointer() {
         let entries = vec![SkillEntry {
             id: "agent-memory/index".into(),
             title: "agent-memory".into(),
@@ -1055,12 +1059,12 @@ mod tests {
         }];
         let body = render_index_markdown(&entries);
         assert!(
-            body.contains("Read [`agent-memory/index.md`](agent-memory/index.md)"),
+            body.contains("[`agent-memory/index.md`](agent-memory/index.md)"),
             "expected file-path pointer, got:\n{body}"
         );
         assert!(
-            !body.contains("iii://"),
-            "iii:// scheme should no longer be emitted, got:\n{body}"
+            body.contains("legacy `iii://agent-memory/index`"),
+            "expected legacy iii:// pointer for back-compat, got:\n{body}"
         );
     }
 }
