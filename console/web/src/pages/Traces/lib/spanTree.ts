@@ -41,6 +41,12 @@ export interface FlattenOptions {
    *  is rendered as ONE row, with the child's subtree promoted under the
    *  parent. The row gets `mergedRouting: true`. */
   collapseEngineRoutingPairs: boolean
+  /** When true, only spans on the critical path are emitted. Because the
+   *  critical path is a single chain from root to leaf (each parent has at
+   *  most one critical child, and non-critical siblings recursively unmark
+   *  their subtrees), we can skip non-critical nodes entirely without
+   *  losing visible descendants. */
+  onlyCriticalPath?: boolean
 }
 
 /**
@@ -138,6 +144,8 @@ export function flattenTree(
   const result: FlatSpanRow[] = []
 
   function traverse(node: SpanNode, depthOffset: number) {
+    if (opts.onlyCriticalPath && !node.isCriticalPath) return
+
     const hidden = opts.hideEngineRouting && isEngineRoutingSpan(node)
 
     let mergedRouting = false

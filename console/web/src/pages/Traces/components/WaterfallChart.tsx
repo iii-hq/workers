@@ -9,36 +9,45 @@
  *   buildSpanTree(spans)            ← parent/child linking, marks critical path
  *        │
  *        ▼
- *   useReducer<DisplayState>        ← expand/collapse + critical-path toggle
+ *   useReducer<DisplayState>        ← expand/collapse + critical-path-only toggle
  *        │
  *        ▼
  *   flattenTree(tree, opts)         ← respects expandedIds, hideEngineRouting,
- *        │                            collapseEngineRoutingPairs; emits depth-offset
- *        │                            adjusted rows so hidden parents don't leave gaps
+ *        │                            collapseEngineRoutingPairs, onlyCriticalPath;
+ *        │                            emits depth-offset adjusted rows so hidden
+ *        │                            parents don't leave gaps
  *        ▼
  *   visibleSpans: FlatSpanRow[]
  *        │
  *        ▼
  *   Per-row render: indent guides, kind indicator, status dot, name,
- *                   duration, bar (status-colored or critical-path accent),
- *                   merged-routing `+1` chip when applicable
+ *                   duration, bar (status-colored), merged-routing `+1`
+ *                   chip when applicable
+ *
+ * Toolbar toggles (driven by the user):
+ *   show critical path  →  filter visibleSpans to only the slowest chain.
+ *   show engine routing →  reveal `handle_invocation` / `call` pairs (off by
+ *                          default). When on, pairs are always merged into
+ *                          a single row with a `+1` affordance.
  *
  * Persistent state (localStorage):
- *   iii-trace-hide-engine-routing       boolean checkbox
- *   iii-trace-collapse-engine-pairs     boolean checkbox
+ *   iii-trace-show-engine-routing       boolean — shared with FlameGraph
  *   iii-span-col-width                  resizer position
  *
  * Schematic theming: all colors flow from `--color-*` CSS custom properties.
- * Bars use `bg-ink` / `bg-alert` / `bg-warn` / `bg-ink-ghost` for OK /
- * error / pending / unset. The critical path collapses onto the accent
- * (orange in light, electric-blue in dark) per DESIGN.md §3 — the single
- * accent moment per visible region.
+ * Bars use `bg-ink` / `bg-alert` / `bg-ink-ghost` for OK / error / pending.
  *
- * Engine-routing heuristics (hide/collapse) live in `../lib/spanLabel`.
+ * Engine-routing heuristics live in `../lib/spanLabel`.
  */
 
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronRight } from 'lucide-react'
+import {
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
+  Eye,
+  Sparkles,
+} from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -49,7 +58,14 @@ import {
   useState,
 } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
+import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
+import { IconToggleButton } from './IconToggleButton'
 import {
   formatSpanLabel,
   getSpanKindIndicator,
@@ -69,7 +85,6 @@ interface WaterfallRowProps {
   span: FlatSpanRow
   isSelected: boolean
   isExpanded: boolean
-  isCritical: boolean
   onSpanClick: (span: VisualizationSpan) => void
   onToggleExpand: (spanId: string) => void
 }
@@ -78,7 +93,6 @@ const WaterfallRow = memo(function WaterfallRow({
   span,
   isSelected,
   isExpanded,
-  isCritical,
   onSpanClick,
   onToggleExpand,
 }: WaterfallRowProps) {
@@ -92,16 +106,14 @@ const WaterfallRow = memo(function WaterfallRow({
   const isError = span.status === 'error'
 
   // Schematic mapping: bar fill is monochrome ink for OK,
-  // alert for error, warn for unset/pending. Critical path
-  // collapses onto the single accent moment per region per
-  // DESIGN.md §3.
-  const barClass = isCritical
-    ? 'bg-accent'
-    : isError
-      ? 'bg-alert'
-      : span.status === 'ok'
-        ? 'bg-ink'
-        : 'bg-ink-ghost'
+  // alert for error, ghost for unset/pending. The critical-path
+  // toggle now filters the visible rows rather than re-coloring
+  // them, so we no longer paint critical rows with the accent.
+  const barClass = isError
+    ? 'bg-alert'
+    : span.status === 'ok'
+      ? 'bg-ink'
+      : 'bg-ink-ghost'
 
   // Hover is pure CSS (`hover:bg-panel`). Selected/error chrome
   // takes priority over hover via CSS specificity (more-specific
@@ -139,10 +151,7 @@ const WaterfallRow = memo(function WaterfallRow({
           style={{ width: span.displayDepth * 16 }}
         >
           {indentKeys(span.span_id, span.displayDepth).map((key) => (
-            <div
-              key={key}
-              className="w-4 h-6 border-l border-rule-2"
-            />
+            <div key={key} className="w-4 h-6 border-l border-rule-2" />
           ))}
         </div>
 
@@ -237,7 +246,7 @@ type DisplayAction =
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
-  showCriticalPath: false,
+  showCriticalPath: true,
 }
 
 // Note: `hoveredSpanId` used to live here, but mouse-sweep over the
@@ -268,8 +277,6 @@ function displayReducer(
   }
 }
 
-const HIDE_ENGINE_KEY = 'iii-trace-hide-engine-routing'
-const COLLAPSE_PAIRS_KEY = 'iii-trace-collapse-engine-pairs'
 const SPAN_COL_WIDTH_KEY = 'iii-span-col-width'
 const DEFAULT_SPAN_COL_WIDTH = 300
 const MIN_SPAN_COL_WIDTH = 150
@@ -303,6 +310,86 @@ function indentKeys(spanId: string, depth: number): string[] {
   return keys
 }
 
+// Compact icon-driven toolbar. The two view toggles (critical-path-only,
+// show engine routing) are square icon buttons whose `pressed` state
+// fills with ink; their meaning is exposed via hover tooltips.
+// Expand/collapse-all sit at the start as plain icon buttons. Engine
+// routing is hidden by default; when shown, routing pairs are always
+// merged into a single row.
+interface ToolbarProps {
+  expandAll: () => void
+  collapseAll: () => void
+  showCriticalPath: boolean
+  setShowCriticalPath: (value: boolean) => void
+  showEngineRouting: boolean
+  setShowEngineRouting: (value: boolean) => void
+  visibleCount: number
+  totalCount: number
+}
+
+function Toolbar(props: ToolbarProps) {
+  const {
+    expandAll,
+    collapseAll,
+    showCriticalPath,
+    setShowCriticalPath,
+    showEngineRouting,
+    setShowEngineRouting,
+    visibleCount,
+    totalCount,
+  } = props
+  return (
+    <div className="flex items-center justify-between px-3 py-2 border-b border-rule bg-panel">
+      <div className="flex items-center gap-1.5">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={expandAll}
+              aria-label="expand all spans"
+              className="inline-flex items-center justify-center w-7 h-7 border bg-bg text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors"
+            >
+              <ChevronsDown className="w-3.5 h-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">expand all</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={collapseAll}
+              aria-label="collapse all spans"
+              className="inline-flex items-center justify-center w-7 h-7 border bg-bg text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors"
+            >
+              <ChevronsUp className="w-3.5 h-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">collapse all</TooltipContent>
+        </Tooltip>
+        <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
+        <IconToggleButton
+          active={showCriticalPath}
+          onClick={() => setShowCriticalPath(!showCriticalPath)}
+          label="only critical path"
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+        </IconToggleButton>
+        <IconToggleButton
+          active={showEngineRouting}
+          onClick={() => setShowEngineRouting(!showEngineRouting)}
+          label="show engine routing spans"
+        >
+          <Eye className="w-3.5 h-3.5" />
+        </IconToggleButton>
+      </div>
+      <div className="text-[11px] text-ink-faint tabular-nums lowercase">
+        {visibleCount} of {totalCount} spans
+      </div>
+    </div>
+  )
+}
+
 export function WaterfallChart({
   data,
   onSpanClick,
@@ -334,25 +421,12 @@ export function WaterfallChart({
     return () => obs.disconnect()
   }, [])
 
-  const [hideEngineRouting, setHideEngineRouting] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(HIDE_ENGINE_KEY) === '1'
-  })
-  const [collapseEngineRoutingPairs, setCollapseEngineRoutingPairs] =
-    useState<boolean>(() => {
-      if (typeof window === 'undefined') return false
-      return window.localStorage.getItem(COLLAPSE_PAIRS_KEY) === '1'
-    })
-
-  useEffect(() => {
-    window.localStorage.setItem(HIDE_ENGINE_KEY, hideEngineRouting ? '1' : '0')
-  }, [hideEngineRouting])
-  useEffect(() => {
-    window.localStorage.setItem(
-      COLLAPSE_PAIRS_KEY,
-      collapseEngineRoutingPairs ? '1' : '0',
-    )
-  }, [collapseEngineRoutingPairs])
+  // Engine routing spans (`handle_invocation X`, `call X` on the `iii`
+  // service) are hidden by default; toggling reveals them in their
+  // always-merged form (one row per handle/call pair, marked with `+1`).
+  // The persisted hook is shared with the flame-graph view so the
+  // preference survives view swaps.
+  const [showEngineRouting, setShowEngineRouting] = useShowEngineRouting()
 
   // span column resize
   const [spanColWidth, setSpanColWidth] = useState<number>(() => {
@@ -440,10 +514,13 @@ export function WaterfallChart({
     () =>
       flattenTree(spanTree, {
         expandedIds,
-        hideEngineRouting,
-        collapseEngineRoutingPairs,
+        hideEngineRouting: !showEngineRouting,
+        // Showing engine routing always merges each handle/call pair —
+        // there's no separate user toggle for un-merged routing.
+        collapseEngineRoutingPairs: showEngineRouting,
+        onlyCriticalPath: showCriticalPath,
       }),
-    [spanTree, expandedIds, hideEngineRouting, collapseEngineRoutingPairs],
+    [spanTree, expandedIds, showEngineRouting, showCriticalPath],
   )
 
   // @tanstack/react-virtual owns scroll state, container measurement,
@@ -510,70 +587,27 @@ export function WaterfallChart({
     dispatch({ type: 'SET_ALL_EXPANDED', ids: new Set() })
   }
 
+  const toolbarProps: ToolbarProps = {
+    expandAll,
+    collapseAll,
+    showCriticalPath,
+    setShowCriticalPath: (value: boolean) =>
+      dispatch({ type: 'SET_CRITICAL_PATH', value }),
+    showEngineRouting,
+    setShowEngineRouting,
+    visibleCount: visibleSpans.length,
+    totalCount: data.span_count,
+  }
+
   return (
     <div className="flex flex-col h-full">
-      {/* sticky toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-rule bg-panel">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={expandAll}
-            className="px-2 py-1 text-[11px] tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-bg transition-colors lowercase"
-          >
-            expand all
-          </button>
-          <button
-            type="button"
-            onClick={collapseAll}
-            className="px-2 py-1 text-[11px] tracking-[0.06em] text-ink-faint hover:text-ink hover:bg-bg transition-colors lowercase"
-          >
-            collapse all
-          </button>
-          <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
-          <label className="flex items-center gap-2 text-[11px] text-ink-faint cursor-pointer lowercase">
-            <input
-              type="checkbox"
-              checked={showCriticalPath}
-              onChange={(e) =>
-                dispatch({ type: 'SET_CRITICAL_PATH', value: e.target.checked })
-              }
-              className="border-rule bg-bg text-accent focus:ring-accent/30"
-            />
-            show critical path
-          </label>
-          <label
-            className="flex items-center gap-2 text-[11px] text-ink-faint cursor-pointer lowercase"
-            title="merge each engine handle_invocation+call pair into one row"
-          >
-            <input
-              type="checkbox"
-              checked={collapseEngineRoutingPairs}
-              onChange={(e) => setCollapseEngineRoutingPairs(e.target.checked)}
-              className="border-rule bg-bg text-accent focus:ring-accent/30"
-            />
-            collapse routing pairs
-          </label>
-          <label
-            className="flex items-center gap-2 text-[11px] text-ink-faint cursor-pointer lowercase"
-            title="hide engine handle_invocation / call spans entirely"
-          >
-            <input
-              type="checkbox"
-              checked={hideEngineRouting}
-              onChange={(e) => setHideEngineRouting(e.target.checked)}
-              className="border-rule bg-bg text-accent focus:ring-accent/30"
-            />
-            hide engine routing
-          </label>
-        </div>
-        <div className="text-[11px] text-ink-faint tabular-nums lowercase">
-          {visibleSpans.length} of {data.span_count} spans
-        </div>
-      </div>
+      <Toolbar {...toolbarProps} />
 
       {/* sticky time axis */}
       <div
-        style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
+        style={
+          { '--span-col-width': `${spanColWidth}px` } as React.CSSProperties
+        }
         className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
       >
         <div className="flex items-center relative">
@@ -605,7 +639,9 @@ export function WaterfallChart({
       <div className="flex flex-1 overflow-hidden">
         <div
           ref={containerRef}
-          style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
+          style={
+            { '--span-col-width': `${spanColWidth}px` } as React.CSSProperties
+          }
           className="flex-1 overflow-y-auto"
         >
           {/* Height spacer keeps the native scrollbar accurate; each
@@ -633,7 +669,6 @@ export function WaterfallChart({
                     span={span}
                     isSelected={selectedSpanId === span.span_id}
                     isExpanded={expandedIds.has(span.span_id)}
-                    isCritical={showCriticalPath && span.isCriticalPath}
                     onSpanClick={onSpanClick}
                     onToggleExpand={toggleExpand}
                   />

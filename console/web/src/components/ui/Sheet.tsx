@@ -10,7 +10,7 @@ export function Sheet({ children, className }: SheetProps) {
   return (
     <div
       className={cn(
-        'mx-auto w-full max-w-[1200px] border-x border-rule min-h-screen bg-bg flex flex-col h-screen',
+        'w-full min-h-dvh bg-bg flex flex-col h-dvh isolate',
         className,
       )}
     >

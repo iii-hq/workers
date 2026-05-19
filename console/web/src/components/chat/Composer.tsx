@@ -93,10 +93,10 @@ export function Composer({
         />
       </div>
 
-      <div className="flex items-center gap-3 px-3 py-2 border-t border-rule-2">
+      <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
         <AttachmentButton onAttach={handleAttach} disabled={isStreaming} />
         <ModePicker value={mode} onChange={onModeChange} />
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
         <ModelPicker
           value={model}
           options={modelOptions}
