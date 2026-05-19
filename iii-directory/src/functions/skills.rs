@@ -98,7 +98,7 @@ struct IndexSkillsOutput {
     /// Rendered markdown document — one short `## <title>` block per
     /// installed worker (skills with frontmatter `type: index`),
     /// carrying the worker's first-paragraph overview and a read-more
-    /// link pointing at `iii://<ns>/index`. Sorted lex by id.
+    /// link pointing at the file path `<ns>/index.md`. Sorted lex by id.
     body: String,
     /// Number of worker entries rendered (i.e. the count of
     /// `type: index` skills that survived the filter). Cheap sanity
@@ -199,7 +199,7 @@ fn register_index_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
         .description(
             "Render one short markdown entry per installed worker (skills with frontmatter \
              `type: index`). Each entry is a `## <worker title>` heading, the first paragraph \
-             of the worker's overview, and a `Read iii://<ns>/index` line the agent can \
+             of the worker's overview, and a `Read <ns>/index.md` line the agent can \
              follow via `directory::skills::get` for the full reference. Token-light by \
              design; for per-skill rows use `directory::skills::list`.",
         ),
@@ -385,7 +385,7 @@ pub fn extract_description(markdown: &str) -> Option<String> {
 ///
 /// <first paragraph from the worker's overview>
 ///
-/// Read [`iii://<id>`](iii://<id>) for the full worker reference.
+/// Read [`<id>.md`](<id>.md) for the full worker reference.
 /// ```
 ///
 /// The description block is omitted (no extra blank line) when the
@@ -411,7 +411,7 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
         }
         out.push('\n');
         out.push_str(&format!(
-            "Read [`iii://{id}`](iii://{id}) for the full worker reference.\n",
+            "Read [`{id}.md`]({id}.md) for the full worker reference.\n",
             id = worker.id
         ));
     }
@@ -942,7 +942,7 @@ mod tests {
         );
         // Filtered-out skills must not leak into the read-more pointers either.
         assert!(
-            !body.contains("iii://agent-memory/observe"),
+            !body.contains("agent-memory/observe.md"),
             "filtered-out how-to leaked a link; got: {body}"
         );
         assert!(body.contains("1 worker(s).\n"), "wrong count; got: {body}");
@@ -1001,7 +1001,7 @@ mod tests {
         )]);
         assert!(
             body.contains(
-                "Read [`iii://agent-memory/index`](iii://agent-memory/index) for the full worker reference.\n"
+                "Read [`agent-memory/index.md`](agent-memory/index.md) for the full worker reference.\n"
             ),
             "missing dive-deeper pointer; got: {body}"
         );
@@ -1018,7 +1018,7 @@ mod tests {
         // Title comes immediately before the read-more line — no extra
         // blank paragraph in the middle.
         assert!(
-            body.contains("\n## bare\n\nRead [`iii://bare/index`](iii://bare/index)"),
+            body.contains("\n## bare\n\nRead [`bare/index.md`](bare/index.md)"),
             "blank-description block should compress; got: {body}"
         );
         // And the rest of the document still has the header.
@@ -1040,6 +1040,27 @@ mod tests {
         assert!(
             am < iii && iii < resend,
             "headings out of order; got: {body}"
+        );
+    }
+
+    #[test]
+    fn render_index_emits_file_path_pointer() {
+        let entries = vec![SkillEntry {
+            id: "agent-memory/index".into(),
+            title: "agent-memory".into(),
+            kind: Some("index".into()),
+            description: "Memory worker overview.".into(),
+            bytes: 10,
+            modified_at: String::new(),
+        }];
+        let body = render_index_markdown(&entries);
+        assert!(
+            body.contains("Read [`agent-memory/index.md`](agent-memory/index.md)"),
+            "expected file-path pointer, got:\n{body}"
+        );
+        assert!(
+            !body.contains("iii://"),
+            "iii:// scheme should no longer be emitted, got:\n{body}"
         );
     }
 }
