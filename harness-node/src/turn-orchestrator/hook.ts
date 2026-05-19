@@ -17,7 +17,8 @@ import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
 
 export const TOPIC_AFTER = 'agent::after_function_call';
-export const HOOK_TIMEOUT_MS = 10_000;
+
+export const HOOK_TIMEOUT_MS = 500;
 
 export type HookOutcome =
   | { kind: 'allow' }

@@ -76,6 +76,46 @@ describe('handleExecute new flow', () => {
     expect(triggerCalls).toContain('shell::run');
   });
 
+  it('synthesizes an error result when a pre_approved trigger rejects (does not throw out of handleExecute)', async () => {
+    const triggerSpy = vi.fn(async (req: { function_id: string }) => {
+      if (req.function_id === 'shell::fs::write') {
+        throw new Error('handler error: {"code":"S210","message":"bad write payload"}');
+      }
+      return null;
+    });
+    const iii = { trigger: triggerSpy } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    rec.state = 'function_execute';
+
+    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
+      {
+        function_call: {
+          id: 'fc-1',
+          function_id: 'shell::fs::write',
+          arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
+        },
+        blocked: null,
+        pre_approved: true,
+      },
+    ]);
+    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
+    const saveSpy = vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+
+    await expect(handleExecute(iii, cfg, rec)).resolves.toBeUndefined();
+
+    expect(rec.state).toBe('function_finalize');
+    expect(saveSpy).toHaveBeenCalled();
+    const lastSave = saveSpy.mock.calls.at(-1)?.[2] as Array<{
+      is_error: boolean;
+      result: { details: unknown };
+    }>;
+    expect(lastSave?.[0]?.is_error).toBe(true);
+    const details = lastSave?.[0]?.result.details as Record<string, unknown>;
+    expect(details?.error).toBe('trigger_failed');
+    expect(details?.function).toBe('shell::fs::write');
+    expect(String(details?.message)).toContain('S210');
+  });
+
   it('emits denial result without dispatching when blocked is set', async () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;

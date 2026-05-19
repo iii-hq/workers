@@ -80,12 +80,19 @@ export async function handleExecute(
     }
 
     if (entry.pre_approved === true) {
-      const value = await iii.trigger<unknown, unknown>({
-        function_id: fc.function_id,
-        payload: fc.arguments ?? {},
-      });
-      const result = decodeOrPassthroughResult(value);
-      const is_error = isErrorResult(result);
+      let result: FunctionResult;
+      let is_error: boolean;
+      try {
+        const value = await iii.trigger<unknown, unknown>({
+          function_id: fc.function_id,
+          payload: fc.arguments ?? {},
+        });
+        result = decodeOrPassthroughResult(value);
+        is_error = isErrorResult(result);
+      } catch (err) {
+        result = triggerErrorResult(fc.function_id, err);
+        is_error = true;
+      }
       persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
       await persistence.saveExecutedCalls(iii, rec.session_id, results);
       await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
@@ -140,14 +147,29 @@ export async function handleExecute(
     const result = out.result;
     const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
-    // Kick off persistence in parallel with the user-facing emit so the UI's
-    // fcall-end lands ~one trigger round-trip sooner. We still await both
-    // before the next iteration so ordering and durability are preserved.
+   
     const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
     await savePromise;
   }
   transitionTo(rec, 'function_finalize');
+}
+
+function triggerErrorResult(function_id: string, err: unknown): FunctionResult {
+  const message =
+    err && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string'
+      ? ((err as Record<string, unknown>).message as string)
+      : String(err);
+  const details = {
+    error: 'trigger_failed',
+    function: function_id,
+    message,
+  };
+  return {
+    content: [text(JSON.stringify(details))],
+    details,
+    terminate: false,
+  };
 }
 
 function decodeOrPassthroughResult(value: unknown): FunctionResult {
