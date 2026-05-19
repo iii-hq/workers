@@ -57,10 +57,12 @@ export function buildSystemPrompt(
   cwd?: string | null,
   override?: string | null,
   mode?: Mode | null,
+  skillsIndex?: string | null,
 ): string {
   if (override && override.length > 0) return override
   let out = isMode(mode) ? `${MODE_PARAGRAPHS[mode]}\n\n${IDENTITY_PREAMBLE}` : IDENTITY_PREAMBLE
   if (cwd && cwd.length > 0) out += `\n\nWorking directory: ${cwd}`
+  if (skillsIndex && skillsIndex.length > 0) out += `\n\n${skillsIndex}`
   for (const s of skills) {
     out += `\n\n# ${s.uri}\n\n`
     if (s.body !== null) out += s.body

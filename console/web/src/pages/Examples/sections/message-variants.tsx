@@ -1,3 +1,4 @@
+import { FunctionCallGroup } from '@/components/chat/FunctionCallGroup'
 import { FunctionCallMessage } from '@/components/chat/FunctionCallMessage'
 import { Message } from '@/components/chat/Message'
 import { ThoughtMessage } from '@/components/chat/ThoughtMessage'
@@ -66,8 +67,7 @@ const assistantStreaming: AssistantMessage = {
   role: 'assistant',
   model: 'openai::gpt-5',
   mode: 'ask',
-  content:
-    'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
+  content: 'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
   streaming: true,
   createdAt: Date.now(),
 }
@@ -85,8 +85,7 @@ const assistantThinking: AssistantMessage = {
 const thoughtBrief: ThoughtType = {
   id: 't1',
   role: 'thought',
-  content:
-    'this is a one-line clarification. trivial to resolve, no branching to consider.',
+  content: 'this is a one-line clarification. trivial to resolve, no branching to consider.',
   durationMs: 800,
   createdAt: Date.now(),
 }
@@ -164,6 +163,72 @@ const fcallDoneMulti: FCallType = {
   createdAt: Date.now(),
 }
 
+/* mirrors the multi-function-agent scenario: three sequential engine calls
+   so the spec sheet matches what a real fan-out turn produces. */
+const fcallGroupInFlight: FCallType[] = [
+  {
+    id: 'g1a',
+    role: 'function-call',
+    functionId: 'engine::list',
+    input: {},
+    output: { workers: ['worker-1', 'worker-3', 'worker-7'] },
+    durationMs: 450,
+    createdAt: Date.now(),
+  },
+  {
+    id: 'g1b',
+    role: 'function-call',
+    functionId: 'engine::info',
+    input: { id: 'worker-7' },
+    running: true,
+    createdAt: Date.now(),
+  },
+  {
+    id: 'g1c',
+    role: 'function-call',
+    functionId: 'engine::echo',
+    input: { workerId: 'worker-7', text: 'ping' },
+    output: { text: 'ping' },
+    durationMs: 350,
+    createdAt: Date.now(),
+  },
+]
+
+const fcallGroupDone: FCallType[] = [
+  {
+    id: 'g2a',
+    role: 'function-call',
+    functionId: 'engine::list',
+    input: {},
+    output: { workers: ['worker-1', 'worker-3', 'worker-7'] },
+    durationMs: 450,
+    createdAt: Date.now(),
+  },
+  {
+    id: 'g2b',
+    role: 'function-call',
+    functionId: 'engine::info',
+    input: { id: 'worker-7' },
+    output: {
+      id: 'worker-7',
+      load: 0.12,
+      version: '0.4.1',
+      skills: ['echo', 'tokenize', 'embed'],
+    },
+    durationMs: 500,
+    createdAt: Date.now(),
+  },
+  {
+    id: 'g2c',
+    role: 'function-call',
+    functionId: 'engine::echo',
+    input: { workerId: 'worker-7', text: 'ping' },
+    output: { text: 'ping' },
+    durationMs: 350,
+    createdAt: Date.now(),
+  },
+]
+
 export function MessageVariantsSection() {
   return (
     <Section
@@ -231,6 +296,18 @@ export function MessageVariantsSection() {
 
         <VariantCard label="function-call, done · multi-field (expanded)">
           <FunctionCallMessage message={fcallDoneMulti} defaultOpen />
+        </VariantCard>
+
+        <VariantCard label="function-call group, in-flight (3 functions, 2nd running)">
+          <FunctionCallGroup messages={fcallGroupInFlight} />
+        </VariantCard>
+
+        <VariantCard label="function-call group, done (3 functions, collapsed)">
+          <FunctionCallGroup messages={fcallGroupDone} />
+        </VariantCard>
+
+        <VariantCard label="function-call group, done (3 functions, expanded)" className="@3xl:col-span-2">
+          <FunctionCallGroup messages={fcallGroupDone} defaultOpen />
         </VariantCard>
       </div>
     </Section>

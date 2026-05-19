@@ -6,7 +6,7 @@ Tailwind v4 and styled to the iii Schematic design system
 
 It runs entirely client-side with mocked streaming, so there are no API keys
 to configure. The mock — and an interactive Playground that exercises every
-streaming edge case (errors, aborts, multi-tool runs, long markdown, …) —
+streaming edge case (errors, aborts, multi-function runs, long markdown, …) —
 ships behind the `VITE_PLAYGROUND` flag, on by default in dev and off in
 prod. Drop a real provider in by replacing one file
 (see [Swapping in a real backend](#swapping-in-a-real-backend) below) and
@@ -47,7 +47,7 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   code, blockquotes, and inline code on the first run.
   See [`PLAYGROUND.md`](./PLAYGROUND.md) for the full contract.
 - **Playground** at `#/playground` (dev only) — a chat surface driven by a
-  catalog of scenarios (errors, aborts, multi-tool runs, slow/fast streams,
+  catalog of scenarios (errors, aborts, multi-function runs, slow/fast streams,
   long markdown) that stress every corner of the streaming contract. Useful
   before swapping in a real backend.
 - **Model picker** and **mode picker** (`plan` / `ask` / `agent`) wired into
