@@ -1,10 +1,10 @@
+use iii_directory::fs_source::{scan_prompts, scan_skills};
 use iii_directory::sources::registry::{download, VersionSpec};
-use iii_directory::fs_source::{scan_skills, scan_prompts};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let registry = std::env::var("REGISTRY")
-        .unwrap_or_else(|_| "http://localhost:3111".to_string());
+    let registry =
+        std::env::var("REGISTRY").unwrap_or_else(|_| "http://localhost:3111".to_string());
     let worker = std::env::var("WORKER").unwrap_or_else(|_| "hello-worker".to_string());
     let tag = std::env::var("TAG").unwrap_or_else(|_| "latest".to_string());
 

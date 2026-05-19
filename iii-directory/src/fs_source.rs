@@ -583,7 +583,11 @@ mod tests {
         let (skills, skipped) = scan_skills(tmp.path());
         assert_eq!(skills.len(), 1, "should keep exactly one entry");
         assert_eq!(skills[0].id, "resend/index");
-        assert_eq!(skipped.len(), 1, "second entry should be reported as duplicate");
+        assert_eq!(
+            skipped.len(),
+            1,
+            "second entry should be reported as duplicate"
+        );
         assert!(
             skipped[0].reason.contains("duplicate id \"resend/index\""),
             "expected duplicate-id skip, got: {}",
