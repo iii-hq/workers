@@ -38,7 +38,15 @@
  */
 
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import {
@@ -46,7 +54,7 @@ import {
   getSpanKindIndicator,
   isEngineRoutingSpan,
 } from '../lib/spanLabel'
-import { buildSpanTree, flattenTree } from '../lib/spanTree'
+import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
 import { computeVirtualWindow } from '../lib/virtualWindow'
@@ -56,6 +64,169 @@ interface WaterfallChartProps {
   onSpanClick: (span: VisualizationSpan) => void
   selectedSpanId?: string | null
 }
+
+interface WaterfallRowProps {
+  span: FlatSpanRow
+  isSelected: boolean
+  isExpanded: boolean
+  isCritical: boolean
+  spanColWidth: number
+  onSpanClick: (span: VisualizationSpan) => void
+  onToggleExpand: (spanId: string) => void
+}
+
+const WaterfallRow = memo(function WaterfallRow({
+  span,
+  isSelected,
+  isExpanded,
+  isCritical,
+  spanColWidth,
+  onSpanClick,
+  onToggleExpand,
+}: WaterfallRowProps) {
+  const effectiveChildren = span.mergedRouting
+    ? (span.children[0]?.children ?? [])
+    : span.children
+  const hasChildren = effectiveChildren.length > 0
+  const isEngineDim = !isSelected && isEngineRoutingSpan(span)
+  const kindIndicator = getSpanKindIndicator(span.kind)
+  const displayLabel = formatSpanLabel(span)
+  const isError = span.status === 'error'
+
+  // Schematic mapping: bar fill is monochrome ink for OK,
+  // alert for error, warn for unset/pending. Critical path
+  // collapses onto the single accent moment per region per
+  // DESIGN.md §3.
+  const barClass = isCritical
+    ? 'bg-accent'
+    : isError
+      ? 'bg-alert'
+      : span.status === 'ok'
+        ? 'bg-ink'
+        : 'bg-ink-ghost'
+
+  // Hover is pure CSS (`hover:bg-panel`). Selected/error chrome
+  // takes priority over hover via CSS specificity (more-specific
+  // bg classes).
+  const rowChrome = isSelected
+    ? 'bg-panel border-l-2 border-l-accent'
+    : isError
+      ? 'bg-alert/5 border-l-2 border-l-alert'
+      : 'hover:bg-panel'
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={cn(
+        'grid gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
+        rowChrome,
+      )}
+      style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
+      onClick={() => onSpanClick(span)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSpanClick(span)
+        }
+      }}
+    >
+      <div
+        className={cn(
+          'flex items-center gap-1.5 min-w-0',
+          isEngineDim && 'opacity-60',
+        )}
+      >
+        <div
+          className="flex-shrink-0 flex"
+          style={{ width: span.displayDepth * 16 }}
+        >
+          {indentKeys(span.span_id, span.displayDepth).map((key) => (
+            <div
+              key={key}
+              className="w-4 h-6 border-l border-rule-2"
+            />
+          ))}
+        </div>
+
+        {hasChildren ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand(span.span_id)
+            }}
+            className="w-4 h-4 flex items-center justify-center text-ink-faint hover:text-ink flex-shrink-0"
+            aria-label={isExpanded ? 'collapse span' : 'expand span'}
+          >
+            <ChevronRight
+              className={cn(
+                'w-3 h-3 transition-transform',
+                isExpanded && 'rotate-90',
+              )}
+            />
+          </button>
+        ) : (
+          <div className="w-4 h-4 flex-shrink-0" />
+        )}
+
+        <StatusDot tone={statusDotTone(span.status)} />
+
+        {span.service_name && (
+          <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-mono tracking-[0.06em] border border-rule bg-bg text-ink-faint leading-none lowercase">
+            {span.service_name}
+          </span>
+        )}
+        {kindIndicator && (
+          <span
+            className="flex-shrink-0 text-[11px] text-ink-faint leading-none w-3 text-center"
+            title={kindIndicator.label}
+          >
+            {kindIndicator.icon}
+          </span>
+        )}
+
+        <span
+          className={cn(
+            'text-[13px] font-mono truncate lowercase',
+            isSelected ? 'text-accent' : 'text-ink',
+          )}
+          title={span.name}
+        >
+          {displayLabel}
+        </span>
+        {span.mergedRouting && (
+          <span
+            className="flex-shrink-0 px-1 py-0.5 text-[9px] font-mono tracking-[0.06em] border border-rule bg-panel text-ink-faint leading-none tabular-nums"
+            title="merged: this row hides the engine 'call' child of a handle_invocation pair"
+          >
+            +1
+          </span>
+        )}
+
+        <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 ml-auto tabular-nums">
+          {formatDuration(span.duration_ms)}
+        </span>
+      </div>
+
+      {/* bar track */}
+      <div className="relative h-6 bg-rule-2">
+        <div
+          className={cn(
+            'absolute h-4 top-1 min-w-[3px] transition-all duration-150',
+            barClass,
+            isSelected && 'outline outline-2 outline-accent',
+          )}
+          style={{
+            left: `${span.start_percent}%`,
+            width: `${Math.max(0.5, span.width_percent)}%`,
+          }}
+          title={`${span.name} — ${formatDuration(span.duration_ms)}`}
+        />
+      </div>
+    </div>
+  )
+})
 
 interface DisplayState {
   expandedIds: Set<string>
@@ -309,9 +480,9 @@ export function WaterfallChart({
     }
   }, [])
 
-  const toggleExpand = (spanId: string) => {
+  const toggleExpand = useCallback((spanId: string) => {
     dispatch({ type: 'TOGGLE_SPAN', spanId })
-  }
+  }, [])
 
   const expandAll = () => {
     const allIds = new Set(data.spans.map((s) => s.span_id))
@@ -453,158 +624,17 @@ export function WaterfallChart({
           >
             <div style={{ transform: `translateY(${virtualWindow.offsetY}px)` }}>
           {visibleSlice.map((span) => {
-            const effectiveChildren = span.mergedRouting
-              ? (span.children[0]?.children ?? [])
-              : span.children
-            const hasChildren = effectiveChildren.length > 0
-            const isExpanded = expandedIds.has(span.span_id)
-            const isCritical = showCriticalPath && span.isCriticalPath
-            const isSelected = selectedSpanId === span.span_id
-            const isEngineDim = !isSelected && isEngineRoutingSpan(span)
-            const kindIndicator = getSpanKindIndicator(span.kind)
-            const displayLabel = formatSpanLabel(span)
-            const isError = span.status === 'error'
-
-            // Schematic mapping: bar fill is monochrome ink for OK,
-            // alert for error, warn for unset/pending. Critical path
-            // collapses onto the single accent moment per region per
-            // DESIGN.md §3.
-            const barClass = isCritical
-              ? 'bg-accent'
-              : isError
-                ? 'bg-alert'
-                : span.status === 'ok'
-                  ? 'bg-ink'
-                  : 'bg-ink-ghost'
-
-            // row-level severity stripe: faint alert wash + 2px accent rail
-            // for error rows, accent rail for the selected row. Only one
-            // accent moment per region so selection takes priority.
-            // Hover is pure CSS (`hover:bg-panel`) — see the
-            // DisplayState comment for why we don't track it in JS.
-            const rowChrome = isSelected
-              ? 'bg-panel border-l-2 border-l-accent'
-              : isError
-                ? 'bg-alert/5 border-l-2 border-l-alert'
-                : 'hover:bg-panel'
-
             return (
-              // Row is a `<div role="button">`, not a `<button>`, because it
-              // contains a nested `<button>` for expand/collapse (and HTML
-              // forbids nested buttons — React surfaces it as a hydration
-              // error). Enter/Space activate selection to match button
-              // semantics for keyboard users.
-              <div
+              <WaterfallRow
                 key={span.span_id}
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  'grid gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
-                  rowChrome,
-                )}
-                style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
-                onClick={() => onSpanClick(span)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onSpanClick(span)
-                  }
-                }}
-              >
-                <div
-                  className={cn(
-                    'flex items-center gap-1.5 min-w-0',
-                    isEngineDim && 'opacity-60',
-                  )}
-                >
-                  <div
-                    className="flex-shrink-0 flex"
-                    style={{ width: span.displayDepth * 16 }}
-                  >
-                    {indentKeys(span.span_id, span.displayDepth).map((key) => (
-                      <div
-                        key={key}
-                        className="w-4 h-6 border-l border-rule-2"
-                      />
-                    ))}
-                  </div>
-
-                  {hasChildren ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleExpand(span.span_id)
-                      }}
-                      className="w-4 h-4 flex items-center justify-center text-ink-faint hover:text-ink flex-shrink-0"
-                      aria-label={isExpanded ? 'collapse span' : 'expand span'}
-                    >
-                      <ChevronRight
-                        className={cn(
-                          'w-3 h-3 transition-transform',
-                          isExpanded && 'rotate-90',
-                        )}
-                      />
-                    </button>
-                  ) : (
-                    <div className="w-4 h-4 flex-shrink-0" />
-                  )}
-
-                  <StatusDot tone={statusDotTone(span.status)} />
-
-                  {span.service_name && (
-                    <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-mono tracking-[0.06em] border border-rule bg-bg text-ink-faint leading-none lowercase">
-                      {span.service_name}
-                    </span>
-                  )}
-                  {kindIndicator && (
-                    <span
-                      className="flex-shrink-0 text-[11px] text-ink-faint leading-none w-3 text-center"
-                      title={kindIndicator.label}
-                    >
-                      {kindIndicator.icon}
-                    </span>
-                  )}
-
-                  <span
-                    className={cn(
-                      'text-[13px] font-mono truncate lowercase',
-                      isSelected ? 'text-accent' : 'text-ink',
-                    )}
-                    title={span.name}
-                  >
-                    {displayLabel}
-                  </span>
-                  {span.mergedRouting && (
-                    <span
-                      className="flex-shrink-0 px-1 py-0.5 text-[9px] font-mono tracking-[0.06em] border border-rule bg-panel text-ink-faint leading-none tabular-nums"
-                      title="merged: this row hides the engine 'call' child of a handle_invocation pair"
-                    >
-                      +1
-                    </span>
-                  )}
-
-                  <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 ml-auto tabular-nums">
-                    {formatDuration(span.duration_ms)}
-                  </span>
-                </div>
-
-                {/* bar track */}
-                <div className="relative h-6 bg-rule-2">
-                  <div
-                    className={cn(
-                      'absolute h-4 top-1 min-w-[3px] transition-all duration-150',
-                      barClass,
-                      isSelected && 'outline outline-2 outline-accent',
-                    )}
-                    style={{
-                      left: `${span.start_percent}%`,
-                      width: `${Math.max(0.5, span.width_percent)}%`,
-                    }}
-                    title={`${span.name} — ${formatDuration(span.duration_ms)}`}
-                  />
-                </div>
-              </div>
+                span={span}
+                isSelected={selectedSpanId === span.span_id}
+                isExpanded={expandedIds.has(span.span_id)}
+                isCritical={showCriticalPath && span.isCriticalPath}
+                spanColWidth={spanColWidth}
+                onSpanClick={onSpanClick}
+                onToggleExpand={toggleExpand}
+              />
             )
           })}
             </div>
