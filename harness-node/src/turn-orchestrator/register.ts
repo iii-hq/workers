@@ -3,6 +3,7 @@ import type { ISdk } from '../runtime/iii.js';
 import { register as registerAgentCall } from './agent-call.js';
 import * as bootstrap from './bootstrap.js';
 import { loadOrchestratorConfig } from './config.js';
+import { register as registerGetState } from './get-state.js';
 import {
   CONDITION_FN_ID as ABORT_CONDITION_FN,
   HANDLER_FN_ID as ABORT_HANDLER_FN,
@@ -36,6 +37,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerRunStart(iii, orchestratorCfg);
   registerAgentCall(iii, orchestratorCfg.policy_function_id);
   registerSubscriber(iii, orchestratorCfg);
+  registerGetState(iii);
 
   iii.registerFunction(ABORT_CONDITION_FN, async (event: unknown) => isAbortSignalWrite(event), {
     description:

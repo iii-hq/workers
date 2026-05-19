@@ -75,9 +75,9 @@ console reads `awaiting_approval` from the new record to render
 approve/deny buttons, and uses `function_execution_end` (which already
 carries the blocked result for denied calls via the orchestrator's
 `handleExecute` blocked-result branch) to close the card. On page
-reload the console fires a one-shot `state::get { scope: 'agent', key:
-'session/<sid>/turn_state' }` to recover any modals that were pending
-when the page loaded.
+reload the console fires a one-shot `turn::get_state { session_id }`
+(orchestrator function — clients do not read iii state directly) to
+recover any modals that were pending when the page loaded.
 
 ## Configuration
 

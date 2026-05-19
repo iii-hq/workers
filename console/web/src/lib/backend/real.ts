@@ -115,9 +115,8 @@ async function* realStream(
     const turnStateTranslator = createTurnStateTranslator()
 
     client
-      .call<Record<string, unknown> | null>('state::get', {
-        scope: 'agent',
-        key: `session/${sessionId}/turn_state`,
+      .call<Record<string, unknown> | null>('turn::get_state', {
+        session_id: sessionId,
       })
       .then((record) => {
         if (!record) return
@@ -130,10 +129,7 @@ async function* realStream(
       })
       .catch((err) => {
         if (import.meta.env.DEV) {
-          console.warn(
-            '[real-backend] state::get turn_state recovery failed',
-            err,
-          )
+          console.warn('[real-backend] turn::get_state recovery failed', err)
         }
       })
 

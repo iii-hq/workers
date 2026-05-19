@@ -25,6 +25,7 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 - `run::start` — Start a durable agent session and return immediately.
 - `run::start_and_wait` — Start a durable agent session and block until terminal (test/dev convenience).
 - `turn::step` — Run one durable state machine transition for a session.
+- `turn::get_state` — Read the current `TurnStateRecord` for a session (or null for unknown sessions). UI clients use this on reload to recover any in-progress modals (e.g. `function_awaiting_approval`) without reading iii state directly.
 - `agent::call` — LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult.
 - `turn::is_abort_signal_set` — Condition function bound to the agent-scope state trigger; matches `state:created`/`state:updated` writes that set `session/<id>/abort_signal` to `true`.
 - `turn::on_abort_signal` — State trigger adapter: publishes `turn::step_requested` when the abort signal is set so the FSM advances on the next safe boundary.
@@ -124,6 +125,7 @@ From
 | [src/turn-orchestrator/main.ts](harness-node/src/turn-orchestrator/main.ts) | Binary entry point. |
 | [src/turn-orchestrator/register.ts](harness-node/src/turn-orchestrator/register.ts) | Composes `run::start*`, `agent::call`, `turn::step`, the abort-signal and terminal-state state triggers, and kicks off the bootstrap. |
 | [src/turn-orchestrator/run-start.ts](harness-node/src/turn-orchestrator/run-start.ts) | `run::start` + `run::start_and_wait` handlers and the `publishStep` helper. `executeSync` installs a terminal-state waiter, kicks the run, then races the waiter against `sync_default_timeout_ms` — no polling. |
+| [src/turn-orchestrator/get-state.ts](harness-node/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader that returns the current `TurnStateRecord` for a session. UI clients call this on reload to recover in-progress modals; the orchestrator owns the state schema/key layout so clients never read iii state directly. |
 | [src/turn-orchestrator/on-terminal.ts](harness-node/src/turn-orchestrator/on-terminal.ts) | State trigger adapter — `turn::is_terminal_state_write` (condition) + `turn::on_terminal_state` (handler) — plus the in-process `installTerminalWaiter` / `clearTerminalWaiter` API used by `executeSync` to await a terminal `turn_state` write reactively. |
 | [src/turn-orchestrator/agent-call.ts](harness-node/src/turn-orchestrator/agent-call.ts) | The dispatcher chokepoint; `dispatchWithHook` runs `consultBefore` before triggering the function and returns `result` / `deny` / `pending`. |
 | [src/turn-orchestrator/hook.ts](harness-node/src/turn-orchestrator/hook.ts) | `consultBefore` — calls `policy::check_permissions` directly (5 s timeout) and maps the reply to `allow` / `pending` / `deny`; fails closed with a `gate_unavailable` envelope. `publishAfter` still routes through `hook-fanout::publish_collect` for the after-hook fanout path. |
