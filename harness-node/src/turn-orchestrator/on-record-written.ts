@@ -8,8 +8,9 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnState } from './state.js';
+import { STEP_FN_ID } from './subscriber.js';
 
-export const STEP_FN_ID = 'turn::step';
+export { STEP_FN_ID };
 export const HANDLER_FN_ID = 'turn::on_record_written';
 export const CONDITION_FN_ID = 'turn::is_stepable_record_write';
 

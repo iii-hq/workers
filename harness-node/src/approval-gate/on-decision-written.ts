@@ -6,8 +6,9 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { STEP_FN_ID } from '../turn-orchestrator/subscriber.js';
 
-export const STEP_FN_ID = 'turn::step';
+export { STEP_FN_ID };
 export const TRIGGER_FN_ID = 'approval::on_decision_written';
 export const CONDITION_FN_ID = 'approval::is_decision_write';
 
