@@ -42,6 +42,7 @@ export type SessionEntry =
       parent_id?: string | null;
       summary: string;
       tokens_before: number;
+      tail_start_id?: string | null;
       details: CompactionDetails;
       timestamp: number;
     };

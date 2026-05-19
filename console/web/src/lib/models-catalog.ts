@@ -7,6 +7,7 @@ export interface CatalogModelRow {
   id: string
   provider: string
   display_name: string
+  context_window?: number
 }
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
@@ -22,13 +23,16 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
     const provider = typeof o.provider === 'string' ? o.provider : ''
     const display_name =
       typeof o.display_name === 'string' ? o.display_name : id
+    const context_window =
+      typeof o.context_window === 'number' && o.context_window > 0
+        ? o.context_window
+        : undefined
     if (!id || !provider) continue
-    out.push({ id, provider, display_name })
+    out.push({ id, provider, display_name, context_window })
   }
   return out
 }
 
-/** Sorted picker options derived from catalog rows. */
 export function catalogRowsToModelOptions(
   rows: CatalogModelRow[],
 ): ModelOption[] {
@@ -38,5 +42,6 @@ export function catalogRowsToModelOptions(
   return sorted.map((m) => ({
     id: makeCatalogModelKey(m.provider, m.id),
     label: m.display_name.toLowerCase(),
+    contextWindow: m.context_window,
   }))
 }

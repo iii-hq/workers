@@ -1,11 +1,3 @@
-/**
- * Phase 2.A architectural deviation: replaces the legacy
- * `router::stream_assistant` bus call (now denied by the kernel rule
- * `kernel/no-router-stream-assistant`) with an in-process channel
- * round-trip against `provider::<name>::stream`. Mirrors the design in
- * `PHASE-2-PLAN.md` §"Context compaction".
- */
-
 import type { ISdk, StreamChannelRef } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AssistantMessage } from '../types/agent-message.js';
@@ -40,6 +32,8 @@ export async function streamAndCollect(
       logger.warn('streamAndCollect: decode failed', { err: String(err) });
     }
   });
+  // iii-sdk@0.12.0: onMessage doesn't open the read-side; resume() does.
+  channel.reader.stream.resume();
 
   await iii.trigger<unknown, unknown>({
     function_id: providerFunctionId,
@@ -50,7 +44,6 @@ export async function streamAndCollect(
     timeoutMs: SUMMARIZER_TIMEOUT_MS,
   });
 
-  // Provider returned (channel closed). Drain any remaining buffered events.
   while (!terminal) {
     if (events.length > 0) {
       const tail = events[events.length - 1];
@@ -59,7 +52,6 @@ export async function streamAndCollect(
         break;
       }
     }
-    // Wait briefly for any in-flight events.
     await new Promise<void>((r) => {
       resolveNext = r;
       setTimeout(r, 25);

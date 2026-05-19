@@ -8,6 +8,7 @@ export type ModelId = string
 export interface ModelOption {
   id: ModelId
   label: string
+  contextWindow?: number
 }
 
 /**
@@ -15,16 +16,26 @@ export interface ModelOption {
  * Ids mirror the seeded catalog (`harness-node/.../models.json`).
  */
 export const STATIC_MODEL_OPTIONS: ModelOption[] = [
-  { id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5`, label: 'gpt-5' },
+  {
+    id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5`,
+    label: 'gpt-5',
+    contextWindow: 400_000,
+  },
   {
     id: `anthropic${CATALOG_MODEL_KEY_SEP}claude-opus-4-7`,
     label: 'claude opus 4.7',
+    contextWindow: 1_000_000,
   },
   {
     id: `google${CATALOG_MODEL_KEY_SEP}gemini-2-5-pro`,
     label: 'gemini 2.5 pro',
+    contextWindow: 1_048_576,
   },
-  { id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5-mini`, label: 'gpt-5 mini' },
+  {
+    id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5-mini`,
+    label: 'gpt-5 mini',
+    contextWindow: 400_000,
+  },
 ]
 
 export const DEFAULT_MODEL: ModelId = STATIC_MODEL_OPTIONS[0].id
@@ -89,11 +100,26 @@ export interface FunctionCallMessage extends BaseMessage {
   sessionId?: string
 }
 
+/**
+ * `kind: 'compaction'` represents collapsed history; messages before it
+ * must NOT be reshipped on subsequent `run::start` calls. The translator
+ * (`translateUiHistoryForBackend`) honours this barrier.
+ */
+export interface SystemMessage extends BaseMessage {
+  role: 'system'
+  content: string
+  tone?: 'info' | 'warn' | 'error'
+  kind?: 'notice' | 'compaction'
+  summaryText?: string
+  tokensBefore?: number
+}
+
 export type Message =
   | UserMessage
   | AssistantMessage
   | ThoughtMessage
   | FunctionCallMessage
+  | SystemMessage
 
 /**
  * Loose patch shape passed to updateMessage(). Lists every patchable field
@@ -113,6 +139,11 @@ export interface MessagePatch {
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
   functionCallId?: string
   sessionId?: string
+  /** SystemMessage variant. */
+  tone?: 'info' | 'warn' | 'error'
+  kind?: 'notice' | 'compaction'
+  summaryText?: string
+  tokensBefore?: number
 }
 
 export interface Conversation {

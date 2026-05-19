@@ -297,6 +297,7 @@ export async function compact(
   details: CompactionDetails,
   parent_id: string | null,
   tokens_before: number,
+  tail_start_id: string | null = null,
 ): Promise<string> {
   let resolvedParent = parent_id;
   if (resolvedParent === null) {
@@ -310,10 +311,114 @@ export async function compact(
     parent_id: resolvedParent,
     summary,
     tokens_before,
+    tail_start_id,
     details,
     timestamp: Date.now(),
   });
   return id;
+}
+
+export type CompactionEntryRow = {
+  id: string;
+  summary: string;
+  tokens_before: number;
+  tail_start_id: string | null | undefined;
+  details: CompactionDetails;
+  timestamp: number;
+};
+
+export async function compactionEntries(
+  store: SessionStore,
+  session_id: string,
+): Promise<CompactionEntryRow[]> {
+  const entries = await store.loadEntries(session_id);
+  return entries
+    .filter((e): e is Extract<SessionEntry, { type: 'compaction' }> => e.type === 'compaction')
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((e) => ({
+      id: e.id,
+      summary: e.summary,
+      tokens_before: e.tokens_before,
+      tail_start_id: e.tail_start_id,
+      details: e.details,
+      timestamp: e.timestamp,
+    }));
+}
+
+export async function appendSynthetic(
+  store: SessionStore,
+  session_id: string,
+  opts: {
+    text: string;
+    // metadata is not supported on message entries currently; accepted for
+    // forward-compat but discarded.
+    metadata?: unknown;
+    parent_id?: string | null;
+  },
+): Promise<string> {
+  const id = randomUUID();
+  const parent_id = opts.parent_id ?? null;
+  const entry: SessionEntry = {
+    type: 'message',
+    id,
+    parent_id,
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: opts.text }],
+      timestamp: Date.now(),
+    },
+    timestamp: Date.now(),
+  };
+  await store.append(session_id, entry);
+  return id;
+}
+
+export async function updatePart(
+  store: SessionStore,
+  session_id: string,
+  entry_id: string,
+  opts: { output: string | null | undefined; compacted_at: unknown },
+): Promise<void> {
+  await updateParts(store, session_id, [
+    { entry_id, output: opts.output, compacted_at: opts.compacted_at },
+  ]);
+}
+
+export type UpdatePartItem = {
+  entry_id: string;
+  output: string | null | undefined;
+  compacted_at: unknown;
+};
+
+// Loads entries once instead of O(N×M) reloads in the prune loop.
+export async function updateParts(
+  store: SessionStore,
+  session_id: string,
+  items: UpdatePartItem[],
+): Promise<{ updated: number }> {
+  if (items.length === 0) return { updated: 0 };
+  const entries = await store.loadEntries(session_id);
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  let updated = 0;
+  for (const item of items) {
+    const target = byId.get(item.entry_id);
+    if (!target || target.type !== 'message') continue;
+    if (target.message.role !== 'function_result') continue;
+    const next: SessionEntry = {
+      ...target,
+      message: {
+        ...target.message,
+        content: [{ type: 'text', text: item.output ?? '[output pruned]' }],
+        details: {
+          ...(target.message.details as Record<string, unknown> | undefined),
+          compacted_at: item.compacted_at,
+        },
+      },
+    };
+    await store.updateEntry(session_id, item.entry_id, next);
+    updated++;
+  }
+  return { updated };
 }
 
 export async function tree(store: SessionStore, session_id: string): Promise<TreeNode> {
