@@ -37,13 +37,11 @@ export function gateUnavailableEnvelope(function_id: string, reason: string): De
 export async function consultBefore(
   iii: ISdk,
   function_call: FunctionCall,
-  // session_id is accepted for future correlation; the current policy wire format only uses function_id + args.
   _session_id: string | undefined,
   policy_function_id: string,
 ): Promise<HookOutcome> {
   let raw: unknown;
   try {
-    // 5s is a safe budget for a synchronous policy check; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
     raw = await iii.trigger<unknown, unknown>({
       function_id: policy_function_id,
       payload: { function_id: function_call.function_id, args: function_call.arguments },

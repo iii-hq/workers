@@ -37,8 +37,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerAgentCall(iii, orchestratorCfg.policy_function_id);
   registerSubscriber(iii, orchestratorCfg);
 
-  // Reactive abort wake. Mirrors the pattern in
-  // harness/fanout/sessions-poll.ts (post c59210788c).
   iii.registerFunction(ABORT_CONDITION_FN, async (event: unknown) => isAbortSignalWrite(event), {
     description:
       'Condition: state event sets session/<id>/abort_signal = true (state:created or state:updated).',
@@ -62,10 +60,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     },
   });
 
-  // Reactive `run::start_and_wait` wake. The condition matches terminal
-  // turn_state writes; the handler resolves the in-process waiter
-  // installed by executeSync. Replaces the old sync_poll_interval_ms
-  // sleep loop.
   iii.registerFunction(
     TERMINAL_CONDITION_FN,
     async (event: unknown) => isTerminalStateWrite(event),
@@ -94,10 +88,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     },
   });
 
-  // Reactive turn-step wake. The condition matches non-terminal,
-  // non-awaiting writes to session/<id>/turn_state; the handler
-  // invokes turn::step for that session. Replaces the imperative
-  // publishStep self-publish that used to live in subscriber.ts.
   iii.registerFunction(
     RECORD_CONDITION_FN,
     async (event: unknown) => isStepableRecordWrite(event),
@@ -125,11 +115,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     },
   });
 
-  // Reactive turn_state event for the UI. The condition matches every
-  // turn_state write (created or updated); the handler emits a
-  // `turn_state_changed` agent event carrying the full new record so the
-  // frontend can derive pending approvals from state rather than from a
-  // signal event.
   iii.registerFunction(
     TURN_STATE_CHANGED_CONDITION_FN,
     async (event: unknown) => isTurnStateWrite(event),

@@ -114,10 +114,6 @@ async function* realStream(
 
     const turnStateTranslator = createTurnStateTranslator()
 
-    // Recover any pending approvals after a reload — the orchestrator only
-    // re-broadcasts turn_state on the next write, so without this we'd never
-    // surface a modal for an approval that was already parked when the page
-    // loaded.
     client
       .call<Record<string, unknown> | null>('state::get', {
         scope: 'agent',
@@ -125,12 +121,6 @@ async function* realStream(
       })
       .then((record) => {
         if (!record) return
-        // Push (not unshift): the persisted state is always older than the
-        // freshly-subscribed live stream. If live turn_state events already
-        // arrived, the recovery should be processed after them so the
-        // translator's mirror reflects the freshest server state. If no live
-        // events have arrived yet, the recovery is the first event in the
-        // queue and is processed in natural order.
         queue.push({
           type: 'turn_state_changed',
           event_type: 'state:created',
@@ -149,21 +139,6 @@ async function* realStream(
 
     const { provider, model: modelId } = resolveRunParams(model)
 
-    // Route the turn-orchestrator kick-off through `harness::call` so the
-    // harness wraps the inner trigger with an instrumented span that
-    // seeds `iii.session.id` / `iii.message.id` as baggage. Without this
-    // wrapper, the engine's `engine::traces::group_by` returns empty
-    // results for "Group by session" / "Group by message" because the
-    // engine's own `handle_invocation` / `call run::start` spans aren't
-    // inside any baggage context. Mirrors `workers/harness/web/src/App.tsx`
-    // `send()` (it uses the HTTP bridge — we use the WS bus).
-    //
-    // The kickoff is fire-and-forget at the request level (the stream
-    // arrives via the subscribed channel, not the call's return value)
-    // but a synchronous rejection (policy denies `run::start`, bridge
-    // throws, transport fails) would otherwise leave the loop waiting
-    // for an `agent_end` that never arrives. Capture the error and
-    // surface it through the assistant stream so the UI shows it.
     let kickoffError: Error | null = null
     client
       .call('harness::call', {

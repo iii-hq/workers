@@ -50,18 +50,10 @@ export function translateAgentEvent(
     case 'function_execution_update':
       return []
 
-    // `turn_state_changed` events are always routed to `createTurnStateTranslator`
-    // in `real.ts` before reaching this function. The case here exists only to
-    // satisfy the exhaustiveness check; calling `translateAgentEvent` with one
-    // directly is a bug.
     case 'turn_state_changed':
       return []
 
     case 'message_end':
-      // Per-turn boundary: signal `assistant-end` so consumers can finalize
-      // the streaming assistant message and reset their per-turn pointer.
-      // Without this, multi-turn agents (text → fcall → text → ...) merge
-      // every turn's text into the first assistant message.
       if (event.message.role === 'assistant') {
         return [{ kind: 'assistant-end' }]
       }
@@ -124,20 +116,9 @@ function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
 }
 
 function translateMessageStart(message: AgentMessage): StreamEvent[] {
-  // User prompts and tool/function results aren't surfaced as backend-driven
-  // StreamEvents — the consumer renders the user message itself and the
-  // tool result rides on `fcall-end`'s output.
   if (message.role !== 'assistant') {
     return []
   }
-  // Phase 2.A: assistant text and thinking already streamed via
-  // `message_update`; don't double-emit them here. We only forward
-  // function-call / image blocks, which don't ride on the streamed
-  // delta path. (Function calls actually arrive on
-  // `function_execution_start`, but the assistant message technically
-  // owns them too — keeping the early return below preserves the
-  // historical contract for non-streaming providers that emit a single
-  // `MessageStart` with the full body.)
   const hasStreamableContent = message.content.some(
     (b) => b.type === 'text' || b.type === 'thinking',
   )
@@ -169,9 +150,6 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
     case 'functionCall':
     case 'functionResult':
     case 'image':
-      // FunctionCall/Result blocks ride on dedicated AgentEvents
-      // (function_execution_start/end); images aren't part of the
-      // StreamEvent contract today.
       return
   }
 }
