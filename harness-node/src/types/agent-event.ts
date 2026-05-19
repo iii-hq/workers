@@ -59,4 +59,12 @@ export type AgentEvent =
       function_call_id: string;
       decision: ApprovalDecision;
       reason?: string | null;
+    }
+  | {
+      type: 'turn_state_changed';
+      /** Full new turn_state record (the orchestrator's persisted state). */
+      new_value: Record<string, unknown>;
+      /** Previous record, present on state:updated; absent on state:created. */
+      old_value?: Record<string, unknown>;
+      event_type: 'state:created' | 'state:updated';
     };

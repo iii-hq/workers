@@ -16,6 +16,12 @@ import {
   isStepableRecordWrite,
 } from './on-record-written.js';
 import {
+  CONDITION_FN_ID as TURN_STATE_CHANGED_CONDITION_FN,
+  HANDLER_FN_ID as TURN_STATE_CHANGED_HANDLER_FN,
+  handleTurnStateWrite,
+  isTurnStateWrite,
+} from './on-turn-state-changed.js';
+import {
   CONDITION_FN_ID as TERMINAL_CONDITION_FN,
   HANDLER_FN_ID as TERMINAL_HANDLER_FN,
   handleTerminalStateWrite,
@@ -116,6 +122,37 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
     config: {
       scope: 'agent',
       condition_function_id: RECORD_CONDITION_FN,
+    },
+  });
+
+  // Reactive turn_state event for the UI. The condition matches every
+  // turn_state write (created or updated); the handler emits a
+  // `turn_state_changed` agent event carrying the full new record so the
+  // frontend can derive pending approvals from state rather than from a
+  // signal event.
+  iii.registerFunction(
+    TURN_STATE_CHANGED_CONDITION_FN,
+    async (event: unknown) => isTurnStateWrite(event),
+    {
+      description: 'Condition: state event is a write to session/<sid>/turn_state.',
+    },
+  );
+
+  iii.registerFunction(
+    TURN_STATE_CHANGED_HANDLER_FN,
+    async (event: unknown) => handleTurnStateWrite(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=agent for turn_state writes; emits turn_state_changed on agent::events for the subscribed UI.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: TURN_STATE_CHANGED_HANDLER_FN,
+    config: {
+      scope: 'agent',
+      condition_function_id: TURN_STATE_CHANGED_CONDITION_FN,
     },
   });
 
