@@ -37,6 +37,7 @@
  * Engine-routing heuristics (hide/collapse) live in `../lib/spanLabel`.
  */
 
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronRight } from 'lucide-react'
 import {
   memo,
@@ -57,7 +58,6 @@ import {
 import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
-import { computeVirtualWindow } from '../lib/virtualWindow'
 
 interface WaterfallChartProps {
   data: WaterfallData
@@ -228,19 +228,16 @@ const WaterfallRow = memo(function WaterfallRow({
 interface DisplayState {
   expandedIds: Set<string>
   showCriticalPath: boolean
-  scrollPosition: number
 }
 
 type DisplayAction =
   | { type: 'TOGGLE_SPAN'; spanId: string }
   | { type: 'SET_ALL_EXPANDED'; ids: Set<string> }
   | { type: 'SET_CRITICAL_PATH'; value: boolean }
-  | { type: 'SET_SCROLL'; position: number }
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
   showCriticalPath: false,
-  scrollPosition: 0,
 }
 
 // Note: `hoveredSpanId` used to live here, but mouse-sweep over the
@@ -268,12 +265,6 @@ function displayReducer(
       return { ...state, expandedIds: action.ids }
     case 'SET_CRITICAL_PATH':
       return { ...state, showCriticalPath: action.value }
-    case 'SET_SCROLL':
-      // Cheap no-op when nothing changed — avoids a full re-render
-      // when the rAF-throttled scroll handler fires the same scrollTop
-      // twice in a row (e.g. when the user reaches a scroll boundary).
-      if (state.scrollPosition === action.position) return state
-      return { ...state, scrollPosition: action.position }
   }
 }
 
@@ -321,9 +312,13 @@ export function WaterfallChart({
     displayReducer,
     initialDisplayState,
   )
-  const { expandedIds, showCriticalPath, scrollPosition } =
-    displayState
-  const containerRef = useRef<HTMLDivElement>(null)
+  const { expandedIds, showCriticalPath } = displayState
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const thumbRef = useRef<HTMLDivElement | null>(null)
+
+  // containerHeight is kept locally only to decide whether to show
+  // the minimap. The library owns the heavy lifting of scroll
+  // position + visible-range tracking.
   const [containerHeight, setContainerHeight] = useState(0)
 
   useEffect(() => {
@@ -451,29 +446,54 @@ export function WaterfallChart({
     [spanTree, expandedIds, hideEngineRouting, collapseEngineRoutingPairs],
   )
 
-  // rAF-throttled scroll. The native `scroll` event fires far above the
-  // browser's paint rate (trackpads can emit ~120Hz, freewheel scroll on
-  // macOS gets even noisier). Dispatching on every event triggered a full
-  // chart re-render each time — on a 2000+-span trace that flooded the
-  // main thread and the page felt frozen. Coalescing to one update per
-  // animation frame keeps state in sync with what the user can actually
-  // see while letting the browser handle the bulk of the visual scroll.
-  const scrollRafRef = useRef<number | null>(null)
-  const pendingScrollRef = useRef<number>(0)
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    pendingScrollRef.current = e.currentTarget.scrollTop
-    if (scrollRafRef.current !== null) return
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null
-      dispatch({ type: 'SET_SCROLL', position: pendingScrollRef.current })
-    })
-  }
+  // @tanstack/react-virtual owns scroll state, container measurement,
+  // and per-row positioning. Per-row absolute positioning via
+  // `transform: translateY(...)` lets the browser composite each scroll
+  // tick without re-rendering the whole list. See spec
+  // `2026-05-19-waterfall-virtualization-lib-swap-design.md`.
+  const virtualizer = useVirtualizer({
+    count: visibleSpans.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 16,
+  })
+  const virtualRows = virtualizer.getVirtualItems()
+  const contentHeight = virtualizer.getTotalSize()
+
+  // The minimap thumb tracks the scroll container directly so it
+  // stays glued to the user's scrollTop without forcing a React
+  // re-render of the whole chart on every wheel tick. The
+  // virtualizer already exposes contentHeight via getTotalSize(),
+  // so we read it on each rAF frame from the same source.
   useEffect(() => {
+    const el = containerRef.current
+    const thumb = thumbRef.current
+    if (!el || !thumb) return
+    let raf: number | null = null
+    const update = () => {
+      raf = null
+      const scrollHeight = el.scrollHeight
+      if (scrollHeight <= 0) return
+      const top = (el.scrollTop / scrollHeight) * MINIMAP_HEIGHT
+      const height = Math.max(
+        20,
+        MINIMAP_HEIGHT * (el.clientHeight / scrollHeight),
+      )
+      thumb.style.top = `${top}px`
+      thumb.style.height = `${height}px`
+    }
+    const onScroll = () => {
+      if (raf !== null) return
+      raf = requestAnimationFrame(update)
+    }
+    update()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const obs = new ResizeObserver(update)
+    obs.observe(el)
     return () => {
-      if (scrollRafRef.current !== null) {
-        cancelAnimationFrame(scrollRafRef.current)
-        scrollRafRef.current = null
-      }
+      el.removeEventListener('scroll', onScroll)
+      obs.disconnect()
+      if (raf !== null) cancelAnimationFrame(raf)
     }
   }, [])
 
@@ -489,31 +509,6 @@ export function WaterfallChart({
   const collapseAll = () => {
     dispatch({ type: 'SET_ALL_EXPANDED', ids: new Set() })
   }
-
-  const contentHeight = visibleSpans.length * ROW_HEIGHT
-  const viewportRatio =
-    containerHeight > 0 && contentHeight > 0
-      ? containerHeight / contentHeight
-      : 1
-  const thumbHeight = Math.max(20, MINIMAP_HEIGHT * viewportRatio)
-  const thumbPosition =
-    contentHeight > 0 ? (scrollPosition / contentHeight) * MINIMAP_HEIGHT : 0
-
-  // Fixed-height windowing: only render the rows currently visible plus
-  // overscan. With ROW_HEIGHT=32 and a typical 800px viewport that is
-  // ~25 rows + 16 overscan = ~41 DOM rows regardless of itemCount.
-  // 4000-span traces no longer freeze the React commit phase. See
-  // `lib/virtualWindow.ts` for the pure math.
-  const virtualWindow = computeVirtualWindow({
-    scrollTop: scrollPosition,
-    containerHeight,
-    rowHeight: ROW_HEIGHT,
-    itemCount: visibleSpans.length,
-  })
-  const visibleSlice = visibleSpans.slice(
-    virtualWindow.startIndex,
-    virtualWindow.endIndex,
-  )
 
   return (
     <div className="flex flex-col h-full">
@@ -612,29 +607,39 @@ export function WaterfallChart({
           ref={containerRef}
           style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
           className="flex-1 overflow-y-auto"
-          onScroll={handleScroll}
         >
-          {/* Height spacer keeps the native scrollbar accurate; the inner
-              `translateY` positions the slice at its real Y in the list.
-              See `lib/virtualWindow.ts`. */}
-          <div
-            style={{ height: contentHeight, position: 'relative' }}
-          >
-            <div style={{ transform: `translateY(${virtualWindow.offsetY}px)` }}>
-          {visibleSlice.map((span) => {
-            return (
-              <WaterfallRow
-                key={span.span_id}
-                span={span}
-                isSelected={selectedSpanId === span.span_id}
-                isExpanded={expandedIds.has(span.span_id)}
-                isCritical={showCriticalPath && span.isCriticalPath}
-                onSpanClick={onSpanClick}
-                onToggleExpand={toggleExpand}
-              />
-            )
-          })}
-            </div>
+          {/* Height spacer keeps the native scrollbar accurate; each
+              virtualized row is absolutely positioned via translateY so
+              the browser can composite scroll without re-rendering the
+              list. The virtualizer drives `virtualRows`. */}
+          <div style={{ height: contentHeight, position: 'relative' }}>
+            {virtualRows.map((vrow) => {
+              const span = visibleSpans[vrow.index]
+              if (!span) return null
+              return (
+                <div
+                  key={vrow.key}
+                  data-index={vrow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: ROW_HEIGHT,
+                    transform: `translateY(${vrow.start}px)`,
+                  }}
+                >
+                  <WaterfallRow
+                    span={span}
+                    isSelected={selectedSpanId === span.span_id}
+                    isExpanded={expandedIds.has(span.span_id)}
+                    isCritical={showCriticalPath && span.isCriticalPath}
+                    onSpanClick={onSpanClick}
+                    onToggleExpand={toggleExpand}
+                  />
+                </div>
+              )
+            })}
           </div>
         </div>
 
@@ -667,11 +672,9 @@ export function WaterfallChart({
                 )
               })}
               <div
+                ref={thumbRef}
                 className="absolute left-0 right-0 bg-accent/20 border border-accent"
-                style={{
-                  top: thumbPosition,
-                  height: thumbHeight,
-                }}
+                style={{ top: 0, height: 20 }}
               />
             </div>
           </div>
