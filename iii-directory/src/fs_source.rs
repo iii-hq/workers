@@ -7,6 +7,7 @@
 //! <skills_folder>/
 //!   <ns>/                       # one folder per download namespace
 //!     index.md                  # → iii://<ns>/index
+//!     SKILLS.md                 # → iii://<ns>/index   (alias of index.md)
 //!     anything.md               # → iii://<ns>/anything
 //!     deep/path.md              # → iii://<ns>/deep/path
 //!     prompts/                  # ← magic marker for prompts
@@ -164,11 +165,36 @@ fn walk_markdown(base_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     Ok(out)
 }
 
+/// Convert a `<skills_folder>`-relative path to a skill id.
+///
+/// `SKILLS.md` (the literal filename, any case-sensitive match) is
+/// treated as an alias for `index.md`, so a file at `<ns>/SKILLS.md`
+/// produces the id `<ns>/index`. The alias runs on the final path
+/// component only — directories named `SKILLS` are *not* renamed.
 fn rel_to_id(rel: &Path) -> Result<String, String> {
     let rel_str = rel
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 path: {}", rel.display()))?;
-    let stripped = rel_str.strip_suffix(".md").unwrap_or(rel_str);
+    let aliased = if let Some(parent) = rel.parent() {
+        let last_is_skills_md = rel
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n == "SKILLS.md")
+            .unwrap_or(false);
+        if last_is_skills_md {
+            let parent_str = parent.to_str().unwrap_or("");
+            if parent_str.is_empty() {
+                "index.md".to_string()
+            } else {
+                format!("{}/index.md", parent_str.replace('\\', "/"))
+            }
+        } else {
+            rel_str.to_string()
+        }
+    } else {
+        rel_str.to_string()
+    };
+    let stripped = aliased.strip_suffix(".md").unwrap_or(&aliased).to_string();
     Ok(stripped.replace('\\', "/"))
 }
 
@@ -518,6 +544,55 @@ mod tests {
         let (skills, skipped) = scan_skills(Path::new("/no/such/dir/at/all/here"));
         assert!(skills.is_empty());
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn scan_skills_treats_skills_md_as_index_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("resend");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("SKILLS.md"), "# resend\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "resend/index");
+    }
+
+    #[test]
+    fn scan_skills_treats_nested_skills_md_as_index_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("resend/emails");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("SKILLS.md"), "# emails\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "resend/emails/index");
+    }
+
+    #[test]
+    fn scan_skills_skips_one_when_both_index_and_skills_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("resend");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# from index\n").unwrap();
+        std::fs::write(ns.join("SKILLS.md"), "# from SKILLS\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert_eq!(skills.len(), 1, "should keep exactly one entry");
+        assert_eq!(skills[0].id, "resend/index");
+        assert_eq!(
+            skipped.len(),
+            1,
+            "second entry should be reported as duplicate"
+        );
+        assert!(
+            skipped[0].reason.contains("duplicate id \"resend/index\""),
+            "expected duplicate-id skip, got: {}",
+            skipped[0].reason
+        );
     }
 
     // ── scan_prompts ─────────────────────────────────────────────────

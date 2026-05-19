@@ -462,11 +462,7 @@ pub async fn worker_info(
     input: WorkerInfoInput,
 ) -> Result<WorkerInfoOutput, String> {
     let (name, spec) = classify_worker_info_input(input)?;
-    let cache_key = format!(
-        "worker-info:{name}:{}={}",
-        spec.label(),
-        spec.query_value()
-    );
+    let cache_key = format!("worker-info:{name}:{}={}", spec.label(), spec.query_value());
     if let Some(cached) = cache.get::<WorkerInfoOutput>(&cache_key).await {
         return Ok(cached);
     }
@@ -618,7 +614,9 @@ fn parse_skills_tree(value: &Value) -> SkillsTree {
                 .filter_map(|s| {
                     s.get("path")
                         .and_then(|p| p.as_str())
-                        .map(|p| SkillsTreeSkill { path: p.to_string() })
+                        .map(|p| SkillsTreeSkill {
+                            path: p.to_string(),
+                        })
                 })
                 .collect()
         })
@@ -748,7 +746,10 @@ mod tests {
         assert_eq!(out.workers[0].kind.as_deref(), Some("binary"));
         assert_eq!(out.workers[0].version.as_deref(), Some("1.2.3"));
         assert_eq!(out.workers[0].total_downloads, 42);
-        assert_eq!(out.workers[0].supported_targets, vec!["x86_64-unknown-linux-gnu".to_string()]);
+        assert_eq!(
+            out.workers[0].supported_targets,
+            vec!["x86_64-unknown-linux-gnu".to_string()]
+        );
         let author = out.workers[0].author.as_ref().unwrap();
         assert_eq!(author.name.as_deref(), Some("iii"));
         assert!(author.verified);
