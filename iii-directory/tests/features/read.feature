@@ -203,7 +203,66 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     And  the index response body contains "## team-b"
     And  the index response body contains "Alpha team's worker. Owns alpha-only tooling."
     And  the index response body contains "Bravo team's worker. Handles all bravo workflows."
-    And  the index response body contains "Read [`iii://team-a/index`](iii://team-a/index) for the full worker reference."
-    And  the index response body contains "Read [`iii://team-b/index`](iii://team-b/index) for the full worker reference."
+    And  the index response body contains "Read [`team-a/index.md`](team-a/index.md) for the full worker reference."
+    And  the index response body contains "Read [`team-b/index.md`](team-b/index.md) for the full worker reference."
+    And  the index response body does not contain "iii://"
     And  the index response body does not contain "team-a/foo"
     And  the index response body does not contain "## Foo"
+
+  # ── SKILLS.md alias (case-sensitive entry-point) ────────────────────
+
+  Scenario: SKILLS.md at namespace root is aliased to <ns>/index
+    Given a skill file at "ns-skills/SKILLS.md" with body:
+      """
+      # ns-skills entry-point
+
+      Body served via the SKILLS.md alias.
+      """
+    When I list skills
+    Then the listing has an entry with id "ns-skills/index"
+    And  no listing entry has id "ns-skills/SKILLS"
+
+  Scenario: nested SKILLS.md is aliased to <ns>/<sub>/index
+    Given a skill file at "ns-nested/section/SKILLS.md" with body:
+      """
+      # nested entry-point
+
+      Body for nested SKILLS.md.
+      """
+    When I list skills
+    Then the listing has an entry with id "ns-nested/section/index"
+
+  # ── directory::skills::get accepts the file-path forms ──────────────
+
+  Scenario: directory::skills::get accepts the <id>.md file-path form
+    Given a skill file at "ns-path/lookup.md" with body:
+      """
+      # Lookup via path
+
+      Body for the path-form lookup.
+      """
+    When I get skill "ns-path/lookup.md"
+    Then the get response has id "ns-path/lookup"
+    And  the get response body contains "Body for the path-form lookup."
+
+  Scenario: directory::skills::get accepts the SKILLS.md filename
+    Given a skill file at "ns-skills-get/SKILLS.md" with body:
+      """
+      # ns-skills-get entry-point
+
+      Body served via SKILLS.md lookup.
+      """
+    When I get skill "ns-skills-get/SKILLS.md"
+    Then the get response has id "ns-skills-get/index"
+    And  the get response body contains "Body served via SKILLS.md lookup."
+
+  Scenario: directory::skills::get accepts the iii:// + .md combined form
+    Given a skill file at "ns-combo/lookup.md" with body:
+      """
+      # Combo
+
+      Body for combined-form lookup.
+      """
+    When I get skill "iii://ns-combo/lookup.md"
+    Then the get response has id "ns-combo/lookup"
+    And  the get response body contains "Body for combined-form lookup."
