@@ -117,7 +117,7 @@ const WaterfallRow = memo(function WaterfallRow({
       role="button"
       tabIndex={0}
       className={cn(
-        'grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
+        'grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-1 items-center cursor-pointer w-full text-left',
         rowChrome,
       )}
       onClick={() => onSpanClick(span)}
@@ -210,7 +210,7 @@ const WaterfallRow = memo(function WaterfallRow({
       <div className="relative h-6 bg-rule-2">
         <div
           className={cn(
-            'absolute h-4 top-1 min-w-[3px] transition-all duration-150',
+            'absolute h-4 top-1 min-w-[3px]',
             barClass,
             isSelected && 'outline outline-2 outline-accent',
           )}
