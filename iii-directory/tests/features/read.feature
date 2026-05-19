@@ -265,3 +265,31 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I get skill "iii://ns-combo/lookup.md"
     Then the get response has id "ns-combo/lookup"
     And  the get response body contains "Body for combined-form lookup."
+
+  Scenario: directory::skills::get accepts the iii:// + SKILLS.md combined form
+    Given a skill file at "ns-combo-skills/SKILLS.md" with body:
+      """
+      # Combo SKILLS
+
+      Body for combined iii:// + SKILLS.md lookup.
+      """
+    When I get skill "iii://ns-combo-skills/SKILLS.md"
+    Then the get response has id "ns-combo-skills/index"
+    And  the get response body contains "Body for combined iii:// + SKILLS.md lookup."
+
+  Scenario: the legacy iii:// pointer emitted by skills::index round-trips through skills::get
+    Given a skill file at "round-trip/index.md" with body:
+      """
+      ---
+      title: round-trip
+      type: index
+      ---
+      # round-trip
+
+      Body served via the legacy iii:// pointer.
+      """
+    When I index skills
+    Then the index response body contains "(legacy `iii://round-trip/index`)"
+    When I get skill "iii://round-trip/index"
+    Then the get response has id "round-trip/index"
+    And  the get response body contains "Body served via the legacy iii:// pointer."

@@ -557,6 +557,31 @@ mod tests {
         );
     }
 
+    // ── iii:// back-compat ─────────────────────────────────────────────
+
+    #[test]
+    fn normalize_iii_prefix_with_skills_md_aliases_to_index() {
+        // `iii://` + `SKILLS.md` filename composes through both transforms.
+        assert_eq!(normalize_get_id("iii://ns/SKILLS.md").unwrap(), "ns/index");
+    }
+
+    #[test]
+    fn normalize_iii_prefix_with_nested_skills_md_aliases_to_index() {
+        assert_eq!(
+            normalize_get_id("iii://resend/emails/SKILLS.md").unwrap(),
+            "resend/emails/index"
+        );
+    }
+
+    #[test]
+    fn normalize_iii_prefix_round_trips_with_render_emitted_id() {
+        // The `iii://<id>` token render_index_markdown emits for the
+        // legacy-pointer footer must parse back through normalize_get_id
+        // without modification.
+        let emitted = "iii://agent-memory/index";
+        assert_eq!(normalize_get_id(emitted).unwrap(), "agent-memory/index");
+    }
+
     // ── validate_id: happy paths ────────────────────────────────────────
 
     #[test]
