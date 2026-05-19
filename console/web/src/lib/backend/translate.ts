@@ -28,6 +28,7 @@
  *   - `agent_end` → `assistant-end`.
  *   - `agent_start` / `turn_start` / `turn_end` / `message_end` /
  *     `function_execution_update` → noop.
+ *   - `turn_state_changed` → noop (routed through `createTurnStateTranslator`).
  */
 
 import type {
@@ -35,8 +36,9 @@ import type {
   AgentMessage,
   AssistantMessageEvent,
   ContentBlock,
+  TurnStateChangedEvent,
 } from '@/types/iii-agent-event'
-import { diffPending } from './pending-approvals-store'
+import { diffPending, type PendingApproval } from './pending-approvals-store'
 import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
@@ -49,6 +51,12 @@ export function translateAgentEvent(
     case 'turn_start':
     case 'turn_end':
     case 'function_execution_update':
+      return []
+
+    // `turn_state_changed` events are always routed to `createTurnStateTranslator`
+    // in `real.ts` before reaching this function. The case here exists only to
+    // satisfy the exhaustiveness check; calling `translateAgentEvent` with one
+    // directly is a bug.
     case 'turn_state_changed':
       return []
 
@@ -214,13 +222,10 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
  * bookkeeping only.
  */
 export function createTurnStateTranslator(): (
-  event: Extract<AgentEvent, { type: 'turn_state_changed' }>,
+  event: TurnStateChangedEvent,
   sessionId: string,
 ) => StreamEvent[] {
-  const mirrors = new Map<
-    string,
-    ReturnType<typeof pendingApprovalsFromTurnState>
-  >()
+  const mirrors = new Map<string, PendingApproval[]>()
   return (event, sessionId) => {
     const prev = mirrors.get(sessionId) ?? []
     const next = pendingApprovalsFromTurnState(event.new_value)

@@ -125,15 +125,26 @@ async function* realStream(
       })
       .then((record) => {
         if (!record) return
-        queue.unshift({
+        // Push (not unshift): the persisted state is always older than the
+        // freshly-subscribed live stream. If live turn_state events already
+        // arrived, the recovery should be processed after them so the
+        // translator's mirror reflects the freshest server state. If no live
+        // events have arrived yet, the recovery is the first event in the
+        // queue and is processed in natural order.
+        queue.push({
           type: 'turn_state_changed',
           event_type: 'state:created',
           new_value: record,
         })
         wake()
       })
-      .catch(() => {
-        // Best-effort; ignore. Recovery is non-fatal.
+      .catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn(
+            '[real-backend] state::get turn_state recovery failed',
+            err,
+          )
+        }
       })
 
     const { provider, model: modelId } = resolveRunParams(model)

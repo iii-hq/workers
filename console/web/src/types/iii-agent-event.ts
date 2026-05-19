@@ -218,6 +218,11 @@ export type AgentEvent =
       old_value?: Record<string, unknown>
     }
 
+export type TurnStateChangedEvent = Extract<
+  AgentEvent,
+  { type: 'turn_state_changed' }
+>
+
 /**
  * Envelope the harness fanout pushes to `ui::session::event::<browser_id>`.
  * See `harness/src/fanout.rs` `subscribers_for(session_id)`.
