@@ -70,7 +70,6 @@ interface WaterfallRowProps {
   isSelected: boolean
   isExpanded: boolean
   isCritical: boolean
-  spanColWidth: number
   onSpanClick: (span: VisualizationSpan) => void
   onToggleExpand: (spanId: string) => void
 }
@@ -80,7 +79,6 @@ const WaterfallRow = memo(function WaterfallRow({
   isSelected,
   isExpanded,
   isCritical,
-  spanColWidth,
   onSpanClick,
   onToggleExpand,
 }: WaterfallRowProps) {
@@ -119,10 +117,9 @@ const WaterfallRow = memo(function WaterfallRow({
       role="button"
       tabIndex={0}
       className={cn(
-        'grid gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
+        'grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-1 items-center transition-colors cursor-pointer w-full text-left',
         rowChrome,
       )}
-      style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
       onClick={() => onSpanClick(span)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -581,8 +578,8 @@ export function WaterfallChart({
 
       {/* sticky time axis */}
       <div
-        className="grid gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
-        style={{ gridTemplateColumns: `${spanColWidth}px 1fr` }}
+        style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
+        className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule bg-bg"
       >
         <div className="flex items-center relative">
           <span>span</span>
@@ -613,6 +610,7 @@ export function WaterfallChart({
       <div className="flex flex-1 overflow-hidden">
         <div
           ref={containerRef}
+          style={{ '--span-col-width': `${spanColWidth}px` } as React.CSSProperties}
           className="flex-1 overflow-y-auto"
           onScroll={handleScroll}
         >
@@ -631,7 +629,6 @@ export function WaterfallChart({
                 isSelected={selectedSpanId === span.span_id}
                 isExpanded={expandedIds.has(span.span_id)}
                 isCritical={showCriticalPath && span.isCriticalPath}
-                spanColWidth={spanColWidth}
                 onSpanClick={onSpanClick}
                 onToggleExpand={toggleExpand}
               />
