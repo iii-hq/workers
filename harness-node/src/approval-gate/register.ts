@@ -7,7 +7,7 @@ import {
   handleDecisionWritten,
   isDecisionWrite,
 } from './on-decision-written.js';
-import { handleResolveWithEvents } from './pending.js';
+import { handleResolve } from './pending.js';
 import { FN_RESOLVE } from './types.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
@@ -15,8 +15,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
 
   iii.registerFunction(
     FN_RESOLVE,
-    async (payload: unknown) =>
-      handleResolveWithEvents(iii, cfg.approval_state_scope, payload),
+    async (payload: unknown) => handleResolve(iii, cfg.approval_state_scope, payload),
     {
       description:
         'Flip an approval to allow or deny. Writing the decision is itself the wake-up event.',

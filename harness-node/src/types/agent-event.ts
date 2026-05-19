@@ -10,8 +10,6 @@ import type { AgentMessage, FunctionResultMessage } from './agent-message.js';
 import type { FunctionResult } from './function.js';
 import type { AssistantMessageEvent } from './stream-event.js';
 
-export type ApprovalDecision = 'allow' | 'deny';
-
 export type AgentEvent =
   | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
@@ -47,12 +45,6 @@ export type AgentEvent =
       function_id: string;
       result: FunctionResult;
       is_error: boolean;
-    }
-  | {
-      type: 'approval_resolved';
-      function_call_id: string;
-      decision: ApprovalDecision;
-      reason?: string | null;
     }
   | {
       type: 'turn_state_changed';

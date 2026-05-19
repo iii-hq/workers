@@ -22,8 +22,6 @@
  * Other events:
  *   - `function_execution_start` → `fcall-start` (with args).
  *   - `function_execution_end`   → `fcall-end` (with result).
- *   - `approval_resolved` deny → synthetic `fcall-end`.
- *   - `approval_resolved` allow → noop (the matching exec_start follows).
  *   - `agent_end` → `assistant-end`.
  *   - `agent_start` / `turn_start` / `turn_end` / `message_end` /
  *     `function_execution_update` → noop.
@@ -91,23 +89,6 @@ export function translateAgentEvent(
         {
           kind: 'fcall-end',
           output: event.result,
-          durationMs: 0,
-        },
-      ]
-
-    case 'approval_resolved':
-      if (event.decision === 'allow') {
-        return []
-      }
-      return [
-        {
-          kind: 'fcall-end',
-          output: {
-            error: {
-              kind: 'denied',
-              message: event.reason ?? 'denied by user',
-            },
-          },
           durationMs: 0,
         },
       ]
