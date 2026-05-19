@@ -2,8 +2,7 @@
  * State-trigger adapter that mirrors `on-record-written` but emits a
  * `turn_state_changed` agent event instead of triggering `turn::step`.
  * Gives the frontend a live signal carrying the new turn_state record
- * so it can derive pending approvals from state, not from an
- * approval_requested event.
+ * so it can derive pending approvals from state directly.
  */
 
 import type { ISdk } from '../runtime/iii.js';

@@ -200,12 +200,6 @@ export type AgentEvent =
       is_error: boolean
     }
   | {
-      type: 'approval_requested'
-      function_call_id: string
-      function_id: string
-      args: unknown
-    }
-  | {
       type: 'approval_resolved'
       function_call_id: string
       decision: ApprovalDecision

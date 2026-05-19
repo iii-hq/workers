@@ -92,8 +92,6 @@ export function ChatView({
       let thoughtId: string | null = null
       let thoughtBuffer = ''
       let fcallId: string | null = null
-      // PR #150: same iii function_call_id can fire fcall-start twice
-      // (once for function_execution_start, once for approval_requested).
       // Map UI message id → iii function_call_id so dedupe is reliable.
       const fcallMap = new Map<string, string>()
       let assistantId: string | null = null

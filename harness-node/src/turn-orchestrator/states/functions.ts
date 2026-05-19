@@ -144,12 +144,6 @@ export async function handleExecute(
         function_id: fc.function_id,
         args: fc.arguments,
       });
-      await emit(iii, rec.session_id, {
-        type: 'approval_requested',
-        function_call_id: fc.id,
-        function_id: fc.function_id,
-        args: fc.arguments,
-      });
       transitionTo(rec, 'function_awaiting_approval');
       return;
     }
