@@ -40,13 +40,11 @@ export async function consultBefore(
   iii: ISdk,
   function_call: FunctionCall,
   approval_required: string[],
-  // session_id is accepted for future correlation; the current policy wire format only uses function_id + args.
   session_id: string | undefined,
   policy_function_id: string,
 ): Promise<HookOutcome> {
   let raw: unknown;
   try {
-    // 5s is a safe budget for a synchronous policy check; HOOK_TIMEOUT_MS is reserved for publishAfter's fanout deadline.
     raw = await iii.trigger<unknown, unknown>({
       function_id: policy_function_id,
       payload: { function_id: function_call.function_id, args: function_call.arguments },
@@ -82,12 +80,7 @@ export async function consultBefore(
       ),
     };
   }
-  // needs_approval. Honor the legacy per-run approval_required allowlist: if
-  // the caller pre-declared their own list and this function isn't on it,
-  // return allow so no caller observes a change in semantics.
-  if (approval_required.length > 0 && !approval_required.includes(function_call.function_id)) {
-    return { kind: 'allow' };
-  }
+
   return { kind: 'pending' };
 }
 

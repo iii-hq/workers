@@ -39,6 +39,18 @@ describe('consultBefore (direct policy call)', () => {
     expect(outcome.kind).toBe('pending');
   });
 
+  it('returns pending on needs_approval even when caller supplies a non-empty approval_required list that omits this function', async () => {
+    const iii = fakeIii(() => ({ decision: 'needs_approval' }));
+    const outcome = await consultBefore(
+      iii,
+      fc,
+      ['shell::run'], // fc.function_id is 'shell::fs::write' — not in the list
+      'sess-a',
+      'policy::check_permissions',
+    );
+    expect(outcome.kind).toBe('pending');
+  });
+
   it('falls back to legacy approval_required list when policy is unreachable', async () => {
     const iii = fakeIii(() => {
       throw new Error('policy worker down');

@@ -83,6 +83,30 @@ describe('isStepableRecordWrite condition', () => {
     ).toBe(false);
   });
 
+  it('rejects same-state writes (old_value.state === new_value.state)', () => {
+    expect(
+      isStepableRecordWrite({
+        event_type: 'state:updated',
+        scope: 'agent',
+        key: 'session/sess-abc/turn_state',
+        old_value: { state: 'function_prepare' },
+        new_value: { state: 'function_prepare' },
+        message_type: 'state',
+      }),
+    ).toBe(false);
+
+    expect(
+      isStepableRecordWrite({
+        event_type: 'state:updated',
+        scope: 'agent',
+        key: 'session/sess-abc/turn_state',
+        old_value: { state: 'function_prepare' },
+        new_value: { state: 'function_execute' },
+        message_type: 'state',
+      }),
+    ).toBe(true);
+  });
+
   it('rejects writes whose new_value lacks a string state', () => {
     expect(
       isStepableRecordWrite({
