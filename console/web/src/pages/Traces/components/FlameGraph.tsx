@@ -21,8 +21,15 @@
  * without canvas redraws.
  */
 
-import { Minus, Plus, RotateCcw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { Eye, Minus, Plus, RotateCcw, Sparkles } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import {
   Tooltip,
@@ -30,8 +37,11 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
+import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
+import { buildSpanTree, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
+import { IconToggleButton } from './IconToggleButton'
 
 interface FlameGraphProps {
   data: WaterfallData
@@ -213,16 +223,52 @@ export function FlameGraph({
   const [viewState, dispatch] = useReducer(viewReducer, initialViewState)
   const { hoveredNode, tooltipPos, zoomLevel, panOffset } = viewState
 
+  // Same defaults as the waterfall view: critical-path-only is on, engine
+  // routing is hidden. The engine-routing toggle is persisted via the
+  // shared hook so the preference survives view swaps.
+  const [showCriticalPath, setShowCriticalPath] = useState(true)
+  const [showEngineRouting, setShowEngineRouting] = useShowEngineRouting()
+
   const ROW_HEIGHT = 26
   const ROW_GAP = 2
   const PADDING = 16
   const MINIMAP_HEIGHT = 32
 
-  const flameNodes = useMemo(() => buildFlameNodes(data.spans), [data.spans])
-  const flatNodes = useMemo(() => flattenFlameNodes(flameNodes), [flameNodes])
-  const maxDepth = useMemo(
-    () => Math.max(...data.spans.map((s) => s.depth), 0) + 1,
+  // selfTime + child counts come from buildFlameNodes over the unfiltered
+  // input so the tooltip reports accurate metrics even when a span's
+  // children are not currently rendered.
+  const allFlameNodes = useMemo(
+    () => flattenFlameNodes(buildFlameNodes(data.spans)),
     [data.spans],
+  )
+
+  // The visible set is computed via the same tree pipeline the waterfall
+  // uses, so both views agree on what "only critical path" and
+  // "show engine routing" mean. `displayDepth` from `flattenTree`
+  // overrides each FlameNode's depth so hidden routing ancestors shift
+  // descendants left here as well.
+  const flatNodes = useMemo(() => {
+    const spanTree = buildSpanTree(data.spans)
+    const allIds = new Set(data.spans.map((s) => s.span_id))
+    const filteredRows = flattenTree(spanTree, {
+      expandedIds: allIds,
+      hideEngineRouting: !showEngineRouting,
+      collapseEngineRoutingPairs: showEngineRouting,
+      onlyCriticalPath: showCriticalPath,
+    })
+    const flameMap = new Map(allFlameNodes.map((n) => [n.span.span_id, n]))
+    const result: FlameNode[] = []
+    for (const row of filteredRows) {
+      const flame = flameMap.get(row.span_id)
+      if (!flame) continue
+      result.push({ ...flame, depth: row.displayDepth })
+    }
+    return result
+  }, [data.spans, allFlameNodes, showCriticalPath, showEngineRouting])
+
+  const maxDepth = useMemo(
+    () => Math.max(0, ...flatNodes.map((n) => n.depth)) + 1,
+    [flatNodes],
   )
 
   const draw = useCallback(() => {
@@ -533,9 +579,28 @@ export function FlameGraph({
 
   return (
     <div className="flex flex-col h-full">
-      {/* compact toolbar — depth legend + zoom controls */}
+      {/* compact toolbar — view toggles + depth legend + zoom controls */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-rule bg-panel flex-shrink-0">
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <IconToggleButton
+              active={showCriticalPath}
+              onClick={() => setShowCriticalPath(!showCriticalPath)}
+              label="only critical path"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </IconToggleButton>
+            <IconToggleButton
+              active={showEngineRouting}
+              onClick={() => setShowEngineRouting(!showEngineRouting)}
+              label="show engine routing spans"
+            >
+              <Eye className="w-3.5 h-3.5" />
+            </IconToggleButton>
+          </div>
+
+          <div aria-hidden className="w-px h-4 bg-rule-2 mx-1" />
+
           <span className="text-[10px] uppercase tracking-[0.06em] text-ink-ghost">
             depth
           </span>

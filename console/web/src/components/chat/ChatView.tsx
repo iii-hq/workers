@@ -1,12 +1,12 @@
-import { Copy } from 'lucide-react'
+import { Copy, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { Prompt } from '@/components/ui/Prompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { uid } from '@/hooks/use-conversations'
 import type { ChatBackend } from '@/lib/backend'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
 import { makeSessionId } from '@/lib/session-id'
+import { cn } from '@/lib/utils'
 import type {
   AssistantMessage,
   Conversation,
@@ -66,6 +66,9 @@ interface ChatViewProps {
   backend: ChatBackend
   modelOptions: ModelOption[]
   catalogLoading?: boolean
+  density?: 'route' | 'dock'
+  /** When provided, renders a close affordance in the header (dock mode). */
+  onClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onAppendMessage: (id: string, message: Message) => void
@@ -78,6 +81,8 @@ export function ChatView({
   backend,
   modelOptions,
   catalogLoading,
+  density = 'route',
+  onClose,
   onUpdateModel,
   onUpdateMode,
   onAppendMessage,
@@ -379,37 +384,57 @@ export function ChatView({
       return false
     })()
 
+  const isDock = density === 'dock'
+  const headerPad = isDock ? 'px-4' : 'px-9'
+  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
-      <header className="flex items-center justify-between px-9 py-3 border-b border-rule">
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0">
-          <Prompt symbol="$">{conversation.model}</Prompt>
-          <span className="text-ink-ghost">·</span>
-          <span className="text-ink-faint">{conversation.mode}</span>
-          <span className="text-ink-ghost">·</span>
-          <button
-            type="button"
-            onClick={handleCopySessionId}
-            title={
-              copied
-                ? `copied ${sessionId}`
-                : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-            }
-            className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-          >
-            <span className="truncate font-mono text-[11px] tabular-nums">
-              {sessionId}
-            </span>
-            {copied ? (
-              <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                copied
-              </span>
-            ) : (
-              <Copy className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-            )}
-          </button>
+      <header
+        className={cn(
+          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
+          headerPad,
+        )}
+      >
+        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-accent flex-shrink-0" aria-hidden>
+            $
+          </span>
+          <span className="text-ink truncate min-w-0">
+            {conversation.model}
+          </span>
+          <span className="text-ink-ghost flex-shrink-0">·</span>
+          <span className="text-ink-faint flex-shrink-0">
+            {conversation.mode}
+          </span>
+          {isDock ? null : (
+            <>
+              <span className="text-ink-ghost flex-shrink-0">·</span>
+              <button
+                type="button"
+                onClick={handleCopySessionId}
+                title={
+                  copied
+                    ? `copied ${sessionId}`
+                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
+                }
+                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
+              >
+                <span className="truncate font-mono text-[11px] tabular-nums">
+                  {sessionId}
+                </span>
+                {copied ? (
+                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
+                    copied
+                  </span>
+                ) : (
+                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                )}
+              </button>
+            </>
+          )}
         </div>
-        <div className="flex items-center gap-4 font-mono text-[11px] uppercase tracking-[0.06em]">
+        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
           <ContextUsage
             messages={conversation.messages}
             contextWindow={contextWindow}
@@ -423,12 +448,23 @@ export function ChatView({
               {isStreaming ? 'streaming' : 'ready'}
             </span>
           </div>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="close chat dock"
+              className="flex items-center justify-center size-6 -mr-1 text-ink-faint hover:text-ink transition-colors"
+            >
+              <X className="size-3.5" />
+            </button>
+          ) : null}
         </div>
       </header>
 
       <MessageList
         messages={conversation.messages}
         isThinking={isThinking}
+        density={density}
         onResolveApproval={
           backend.resolveApproval
             ? async (sessionId, functionCallId, decision) => {
@@ -442,7 +478,7 @@ export function ChatView({
         }
       />
 
-      <footer className="px-9 pb-6 pt-2">
+      <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
           <Composer
             mode={conversation.mode}

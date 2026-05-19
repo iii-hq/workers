@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    allowedHosts: true,
     proxy: {
       // iii-browser-sdk hits ws(s)://${host}/iii/ws by default; the proxy
       // forwards to the local engine WebSocket on :49134 in dev.
