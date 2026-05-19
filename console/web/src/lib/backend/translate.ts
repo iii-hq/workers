@@ -36,6 +36,8 @@ import type {
   AssistantMessageEvent,
   ContentBlock,
 } from '@/types/iii-agent-event'
+import { diffPending } from './pending-approvals-store'
+import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
 export function translateAgentEvent(
@@ -47,6 +49,7 @@ export function translateAgentEvent(
     case 'turn_start':
     case 'turn_end':
     case 'function_execution_update':
+    case 'turn_state_changed':
       return []
 
     case 'message_end':
@@ -194,5 +197,42 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
       // (function_execution_start/end); images aren't part of the
       // StreamEvent contract today.
       return
+  }
+}
+
+/**
+ * Stateful translator for `turn_state_changed` events. Holds a per-session
+ * mirror of the previous `awaiting_approval` list so it can emit a
+ * `fcall-start { pendingApproval: true }` exactly once per new pending
+ * call, and suppress duplicates when the same record is re-broadcast
+ * (the backend emits on every turn_state write, not just transitions
+ * into the parking state).
+ *
+ * No `fcall-end` is emitted when the list shrinks — the orchestrator
+ * already fires `function_execution_end` for resolved/denied calls
+ * through its existing path. Removing the entry from our mirror is
+ * bookkeeping only.
+ */
+export function createTurnStateTranslator(): (
+  event: Extract<AgentEvent, { type: 'turn_state_changed' }>,
+  sessionId: string,
+) => StreamEvent[] {
+  const mirrors = new Map<
+    string,
+    ReturnType<typeof pendingApprovalsFromTurnState>
+  >()
+  return (event, sessionId) => {
+    const prev = mirrors.get(sessionId) ?? []
+    const next = pendingApprovalsFromTurnState(event.new_value)
+    mirrors.set(sessionId, next)
+    const { added } = diffPending(prev, next)
+    return added.map((entry) => ({
+      kind: 'fcall-start' as const,
+      functionId: entry.function_id,
+      input: entry.args,
+      pendingApproval: true,
+      functionCallId: entry.function_call_id,
+      sessionId,
+    }))
   }
 }

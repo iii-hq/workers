@@ -43,7 +43,7 @@ import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId } from '@/lib/session-id'
 import type { Mode, ModelId } from '@/types/chat'
 import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
-import { translateAgentEvent } from './translate'
+import { createTurnStateTranslator, translateAgentEvent } from './translate'
 import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
 
 interface RunParams {
@@ -112,6 +112,30 @@ async function* realStream(
     })
     subscribed = true
 
+    const turnStateTranslator = createTurnStateTranslator()
+
+    // Recover any pending approvals after a reload — the orchestrator only
+    // re-broadcasts turn_state on the next write, so without this we'd never
+    // surface a modal for an approval that was already parked when the page
+    // loaded.
+    client
+      .call<Record<string, unknown> | null>('state::get', {
+        scope: 'agent',
+        key: `session/${sessionId}/turn_state`,
+      })
+      .then((record) => {
+        if (!record) return
+        queue.unshift({
+          type: 'turn_state_changed',
+          event_type: 'state:created',
+          new_value: record,
+        })
+        wake()
+      })
+      .catch(() => {
+        // Best-effort; ignore. Recovery is non-fatal.
+      })
+
     const { provider, model: modelId } = resolveRunParams(model)
 
     // Route the turn-orchestrator kick-off through `harness::call` so the
@@ -178,7 +202,11 @@ async function* realStream(
       if (kickoffError) continue
       const event = queue.shift()
       if (!event) continue
-      for (const streamEvent of translateAgentEvent(event, sessionId)) {
+      const streamEvents =
+        event.type === 'turn_state_changed'
+          ? turnStateTranslator(event, sessionId)
+          : translateAgentEvent(event, sessionId)
+      for (const streamEvent of streamEvents) {
         yield streamEvent
       }
       if (event.type === 'agent_end') return

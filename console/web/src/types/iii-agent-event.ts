@@ -211,6 +211,12 @@ export type AgentEvent =
       decision: ApprovalDecision
       reason?: string
     }
+  | {
+      type: 'turn_state_changed'
+      event_type: 'state:created' | 'state:updated'
+      new_value: Record<string, unknown>
+      old_value?: Record<string, unknown>
+    }
 
 /**
  * Envelope the harness fanout pushes to `ui::session::event::<browser_id>`.
