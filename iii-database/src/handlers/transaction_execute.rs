@@ -1,10 +1,14 @@
 //! `iii-database::transactionExecute` — write SQL inside an interactive
 //! transaction. Same response envelope as `iii-database::execute`. Bare
 //! `BEGIN` / `COMMIT` / `ROLLBACK` / `END` / `SAVEPOINT` / `RELEASE` /
-//! `SET TRANSACTION` statements are rejected with `INVALID_PARAM` so
-//! callers cannot side-channel finalization through SQL — they must use
-//! the dedicated `commitTransaction` / `rollbackTransaction` handlers.
+//! `SET TRANSACTION` / `START TRANSACTION` statements are rejected with
+//! `INVALID_PARAM` so callers cannot side-channel finalization through SQL —
+//! they must use the dedicated `commitTransaction` / `rollbackTransaction`
+//! handlers. The detection runs *after* stripping leading SQL comments and
+//! `;`, so `/* */COMMIT` and `--\nCOMMIT` are rejected too. See
+//! [`super::tx_sql_guard`] for the full coverage and rationale.
 
+use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
 use crate::driver;
 use crate::error::DbError;
@@ -33,34 +37,6 @@ pub struct TxExecuteResp {
     pub returned_rows: Vec<serde_json::Map<String, Value>>,
 }
 
-/// First-token check for transaction-control SQL. We compare against the
-/// uppercased trimmed first whitespace-delimited token (with any trailing
-/// `;` stripped); this matches `BEGIN`, `COMMIT`, `ROLLBACK`, `END`,
-/// `SAVEPOINT`, `RELEASE`, and `SET TRANSACTION ...` regardless of
-/// surrounding whitespace and trailing arguments. Bare `SET` (not
-/// `SET TRANSACTION`) is left alone — callers may legitimately set session
-/// variables inside a transaction.
-fn is_transaction_control_sql(sql: &str) -> bool {
-    let trimmed = sql.trim_start_matches(|c: char| c.is_whitespace() || c == ';');
-    let mut tokens = trimmed.split_whitespace();
-    let Some(first) = tokens.next() else {
-        return false;
-    };
-    // `COMMIT;` / `end;` / `ROLLBACK ;` all reach here as the first token
-    // including the trailing `;`. Strip it before matching so the same
-    // keyword set covers terminated and unterminated forms.
-    let first = first.trim_end_matches(';');
-    let upper = first.to_ascii_uppercase();
-    match upper.as_str() {
-        "BEGIN" | "COMMIT" | "ROLLBACK" | "END" | "SAVEPOINT" | "RELEASE" => true,
-        "SET" => tokens
-            .next()
-            .map(|t| t.eq_ignore_ascii_case("TRANSACTION"))
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
 pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp, String> {
     if req.sql.trim().is_empty() {
         return Err(err_to_str(DbError::DriverError {
@@ -83,7 +59,8 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
         );
         return Err(err_to_str(DbError::InvalidParam {
             index: 0,
-            reason: "transaction-control SQL (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/SET TRANSACTION) \
+            reason: "transaction-control SQL (BEGIN/START TRANSACTION/COMMIT/ROLLBACK/\
+                    SAVEPOINT/RELEASE/END/SET TRANSACTION, including comment-prefixed forms) \
                     is not allowed in transactionExecute; use commitTransaction or \
                     rollbackTransaction"
                 .into(),
@@ -172,33 +149,12 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
-    #[test]
-    fn is_transaction_control_sql_matches_finalization_keywords() {
-        // Casing + leading whitespace + trailing args must all still match.
-        assert!(is_transaction_control_sql("COMMIT"));
-        assert!(is_transaction_control_sql(" rollback "));
-        assert!(is_transaction_control_sql("ROLLBACK TO SAVEPOINT foo"));
-        assert!(is_transaction_control_sql(
-            "BEGIN ISOLATION LEVEL SERIALIZABLE"
-        ));
-        assert!(is_transaction_control_sql("end;"));
-        assert!(is_transaction_control_sql("SAVEPOINT s1"));
-        assert!(is_transaction_control_sql("RELEASE SAVEPOINT s1"));
-        assert!(is_transaction_control_sql("SET TRANSACTION READ ONLY"));
-        assert!(is_transaction_control_sql(
-            "set transaction isolation level serializable"
-        ));
-    }
-
-    #[test]
-    fn is_transaction_control_sql_passes_normal_dml() {
-        // Bare SET (e.g. SET LOCAL search_path) is fine.
-        assert!(!is_transaction_control_sql("INSERT INTO t (n) VALUES (1)"));
-        assert!(!is_transaction_control_sql("UPDATE t SET n = 2"));
-        assert!(!is_transaction_control_sql("DELETE FROM t"));
-        assert!(!is_transaction_control_sql("SELECT 1"));
-        assert!(!is_transaction_control_sql("SET LOCAL search_path = foo"));
-    }
+    // Keyword-set + comment-strip unit coverage lives in
+    // `super::tx_sql_guard`. The tests below assert the handler's
+    // *behaviour* — that the rejection actually fires before the registry
+    // is touched, the log event lands, and the error message points at the
+    // right finalization handler. We exercise enough bypass shapes here to
+    // catch any future regression that re-introduces a side-channel.
 
     #[tokio::test(flavor = "multi_thread")]
     async fn rejects_commit_via_execute() {
@@ -236,6 +192,78 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("INVALID_PARAM"), "got: {err}");
         assert!(err.contains("rollbackTransaction"), "got: {err}");
+    }
+
+    /// Regression: `/* ... */COMMIT` previously fell through the first-token
+    /// check (the first whitespace-delimited token was `/*`). After the
+    /// strip-leading-noise fix it must reject like a bare `COMMIT`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_block_comment_prefixed_commit() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({
+                "transaction_id": begin.transaction.id,
+                "sql": "/* sneak */COMMIT",
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("commitTransaction"), "got: {err}");
+    }
+
+    /// Regression: `--text\nCOMMIT` previously bypassed the filter the same
+    /// way as the block-comment form.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_line_comment_prefixed_commit() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({
+                "transaction_id": begin.transaction.id,
+                "sql": "-- sneak\nCOMMIT",
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+    }
+
+    /// Regression: `START TRANSACTION` (MySQL/ANSI spelling of `BEGIN`) was
+    /// not in the keyword set; on MySQL it implicitly committed the outer
+    /// txn and opened a new untracked one. Must now reject.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_start_transaction_via_execute() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({
+                "transaction_id": begin.transaction.id,
+                "sql": "START TRANSACTION",
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
     }
 
     /// Success-path INSERT inside an interactive transaction surfaces

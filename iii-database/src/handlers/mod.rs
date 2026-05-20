@@ -20,6 +20,7 @@ pub mod run_statement;
 pub mod transaction;
 pub mod transaction_execute;
 pub mod transaction_query;
+mod tx_sql_guard;
 
 pub(crate) use query::rows_to_objects as query_rows_to_objects;
 

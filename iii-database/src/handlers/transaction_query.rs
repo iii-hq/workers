@@ -2,9 +2,19 @@
 //! transaction. Same response envelope as `iii-database::query`; the only
 //! difference is the SQL runs on the pinned transaction connection rather
 //! than a freshly-pooled one.
+//!
+//! Transaction-control SQL (`BEGIN`/`COMMIT`/`ROLLBACK`/`START TRANSACTION`
+//! /etc., including comment-prefixed forms) is rejected with `INVALID_PARAM`
+//! by the shared [`super::tx_sql_guard`] check. PG/MySQL/SQLite all happily
+//! execute these through their prepared-statement paths — without the guard
+//! a caller could side-channel finalize the transaction through the query
+//! handler, leaving the [`crate::transaction::TxRegistry`] desynchronized
+//! from the connection's actual txn state.
 
+use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
 use crate::driver;
+use crate::error::DbError;
 use crate::handle::PinnedConn;
 use crate::handlers::query::QueryResp;
 use crate::handlers::{query::err_to_str, query_rows_to_objects};
@@ -24,11 +34,33 @@ pub struct TxQueryReq {
 
 pub async fn handle(state: &AppState, req: TxQueryReq) -> Result<QueryResp, String> {
     if req.sql.trim().is_empty() {
-        return Err(err_to_str(crate::error::DbError::DriverError {
+        return Err(err_to_str(DbError::DriverError {
             driver: "(tx)".into(),
             code: None,
             message: "empty SQL".into(),
             failed_index: None,
+        }));
+    }
+    if is_transaction_control_sql(&req.sql) {
+        // Mirror the transactionExecute rejection. The defense is symmetric:
+        // PG/MySQL/SQLite all execute COMMIT/ROLLBACK/etc. through the
+        // prepared-statement path that `run_prepared` uses, so without this
+        // guard the query handler is the easiest finalization side-channel.
+        state.log.warn(
+            "db_tx_finalization_via_sql_rejected",
+            Some(json!({
+                "db.transaction.id": req.transaction_id,
+                "db.operation": "QUERY",
+                "db.statement": req.sql.trim(),
+            })),
+        );
+        return Err(err_to_str(DbError::InvalidParam {
+            index: 0,
+            reason: "transaction-control SQL (BEGIN/START TRANSACTION/COMMIT/ROLLBACK/\
+                    SAVEPOINT/RELEASE/END/SET TRANSACTION, including comment-prefixed forms) \
+                    is not allowed in transactionQuery; use commitTransaction or \
+                    rollbackTransaction"
+                .into(),
         }));
     }
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
@@ -166,5 +198,91 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("empty SQL"), "got: {err}");
+    }
+
+    /// transactionQuery must reject bare COMMIT/ROLLBACK/etc. with the same
+    /// `INVALID_PARAM` rationale as transactionExecute. Without this, a
+    /// caller can finalize the txn through the query handler — the registry
+    /// keeps the entry around and subsequent calls run on a now-non-txn conn
+    /// until the timeout watcher sweeps.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_commit_via_query() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({ "transaction_id": begin.transaction.id, "sql": "COMMIT" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("commitTransaction"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_rollback_via_query() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({ "transaction_id": begin.transaction.id, "sql": "ROLLBACK" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+        assert!(err.contains("rollbackTransaction"), "got: {err}");
+    }
+
+    /// Comment-prefixed bypass via the query path.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_block_comment_prefixed_commit_via_query() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({
+                "transaction_id": begin.transaction.id,
+                "sql": "/* sneak */COMMIT",
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_start_transaction_via_query() {
+        let st = state();
+        let begin = crate::handlers::begin_transaction::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "primary" })).unwrap(),
+        )
+        .await
+        .unwrap();
+        let err = handle(
+            &st,
+            req(json!({
+                "transaction_id": begin.transaction.id,
+                "sql": "START TRANSACTION",
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("INVALID_PARAM"), "got: {err}");
     }
 }
