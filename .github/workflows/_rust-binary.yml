@@ -40,6 +40,11 @@ on:
         required: false
         type: string
         default: ''
+      web_bundle:
+        description: "Pre-build the SPA in <worker>/web/ (Node + pnpm) and ship the dist artifact to every matrix shard before `cargo build`. Required when the worker's build.rs embeds a Vite-built bundle (e.g. console)."
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -110,9 +115,75 @@ jobs:
           print(f"::notice::building {len(include)} target(s): {[t['target'] for t in include]}")
           PY
 
+  # Workers like `console` embed a Vite-built SPA into the binary via
+  # `rust-embed` (see `console/build.rs`). The matrix runners only carry
+  # the Rust toolchain — running pnpm there would either fail outright
+  # (Windows / cross-compile shards lack Node) or rebuild the same
+  # platform-independent bundle nine times. Instead we build the SPA
+  # once on a Linux runner, upload `<worker>/web/dist/` as an artifact,
+  # and have every matrix shard download it before `cargo build`. The
+  # crate's `build.rs` short-circuits when `web/dist/index.html` exists,
+  # so the embed-time check is satisfied without ever touching pnpm
+  # inside the cross-compile shards.
+  web-build:
+    name: Pre-build SPA bundle
+    needs: [matrix]
+    if: inputs.web_bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve worker dir
+        id: dirs
+        env:
+          MANIFEST: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          worker=$(dirname "$MANIFEST")
+          if [[ -z "$worker" || "$worker" == "." ]]; then
+            echo "::error::could not derive worker dir from manifest_path=$MANIFEST"
+            exit 1
+          fi
+          if [[ ! -f "$worker/web/package.json" ]]; then
+            echo "::error::$worker/web/package.json not found; web_bundle=true requires a vite project under <worker>/web/"
+            exit 1
+          fi
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
+          echo "::notice::pre-building SPA bundle in $worker/web/"
+
+      # `pnpm/action-setup` must run before `setup-node` so that
+      # `setup-node`'s `cache: 'pnpm'` finds the binary on PATH.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: ${{ steps.dirs.outputs.worker }}/web/pnpm-lock.yaml
+
+      - name: pnpm install
+        working-directory: ${{ steps.dirs.outputs.worker }}/web
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm build (VITE_PLAYGROUND='')
+        working-directory: ${{ steps.dirs.outputs.worker }}/web
+        env:
+          VITE_PLAYGROUND: ''
+        run: pnpm build
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-bundle
+          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build ${{ matrix.target }}
-    needs: [pre-build, matrix]
+    needs: [pre-build, matrix, web-build]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -191,8 +262,37 @@ jobs:
           print(f"::notice::set [package].version to {version} in {path}")
           PY
 
+      # When `web_bundle: true`, the SPA was built by the `web-build` job
+      # above. Download the artifact, drop it at `<worker>/web/dist/`, and
+      # signal `build.rs` to skip its own pnpm invocation. Without this
+      # the cross-compile shards would either fail (no Node/pnpm) or
+      # rebuild the same platform-independent bundle nine times.
+      - name: Resolve worker dir
+        if: inputs.web_bundle
+        id: dirs
+        shell: bash
+        env:
+          MANIFEST: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          worker=$(dirname "$MANIFEST")
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
+
+      - name: Download web bundle
+        if: inputs.web_bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-bundle
+          path: ${{ steps.dirs.outputs.worker }}/web/dist/
+
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          # Honored by `console/build.rs` (and any future build.rs that
+          # wraps a pnpm SPA): when set, the script trusts the `web/dist/`
+          # already on disk and never invokes pnpm. The dist comes from
+          # the `web-build` job's artifact above.
+          SKIP_WEB_BUILD: ${{ inputs.web_bundle && '1' || '' }}
         with:
           bin: ${{ inputs.bin_name }}
           target: ${{ matrix.target }}

@@ -3,7 +3,8 @@ export interface FunctionEntry {
   description: string
 }
 
-export const FUNCTIONS: FunctionEntry[] = [
+/** Mock-only catalog for playground / examples `@` autocomplete. */
+export const STATIC_FUNCTIONS: FunctionEntry[] = [
   { id: 'engine::echo', description: 'echo a string back' },
   { id: 'engine::list', description: 'list workers' },
   { id: 'engine::info', description: 'inspect a worker' },
@@ -17,15 +18,22 @@ export const FUNCTIONS: FunctionEntry[] = [
   { id: 'session-tree::compactions', description: 'list compaction history for a session' },
 ]
 
-export function fuzzyFilter(query: string, limit = 8): FunctionEntry[] {
+export function fuzzyFilter(
+  entries: FunctionEntry[],
+  query: string,
+  limit = 8,
+): FunctionEntry[] {
   const q = query.trim().toLowerCase()
-  if (!q) return FUNCTIONS.slice(0, limit)
-  return FUNCTIONS.filter(
-    (f) =>
-      f.id.toLowerCase().includes(q) || f.description.toLowerCase().includes(q),
-  ).slice(0, limit)
+  if (!q) return entries.slice(0, limit)
+  return entries
+    .filter(
+      (f) =>
+        f.id.toLowerCase().includes(q) ||
+        f.description.toLowerCase().includes(q),
+    )
+    .slice(0, limit)
 }
 
 export function getFunctionEntry(id: string): FunctionEntry | undefined {
-  return FUNCTIONS.find((f) => f.id === id)
+  return STATIC_FUNCTIONS.find((f) => f.id === id)
 }

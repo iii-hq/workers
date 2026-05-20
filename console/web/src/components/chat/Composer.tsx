@@ -2,6 +2,7 @@ import type { LexicalEditor } from 'lexical'
 import { useCallback, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
+import type { FunctionEntry } from '@/lib/functions'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { LexicalShell } from './LexicalShell'
@@ -27,6 +28,7 @@ interface ComposerProps {
   initialContent?: (editor: LexicalEditor) => void
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
+  functionEntries?: FunctionEntry[]
 }
 
 export function Composer({
@@ -41,6 +43,7 @@ export function Composer({
   isStreaming,
   initialContent,
   initialAttachments,
+  functionEntries,
 }: ComposerProps) {
   const [attachments, setAttachments] = useState<Attachment[]>(
     initialAttachments ?? [],
@@ -90,6 +93,7 @@ export function Composer({
           placeholder={isStreaming ? 'streaming response…' : 'send a message…'}
           disabled={isStreaming}
           initialContent={initialContent}
+          functionEntries={functionEntries}
         />
       </div>
 
