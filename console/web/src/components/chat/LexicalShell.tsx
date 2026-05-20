@@ -14,6 +14,7 @@ import {
   type LexicalEditor,
 } from 'lexical'
 import { useEffect, useMemo, useRef } from 'react'
+import type { FunctionEntry } from '@/lib/functions'
 import { FunctionMentionNode } from './lexical/FunctionMentionNode'
 import { FunctionMentionTransformPlugin } from './lexical/FunctionMentionTransformPlugin'
 import { MentionsPlugin } from './lexical/MentionsPlugin'
@@ -124,6 +125,7 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   clearToken: number
   /** Optional one-shot initializer that runs once on mount inside the editor. */
   initialContent?: (editor: LexicalEditor) => void
+  functionEntries?: FunctionEntry[]
 }
 
 export function LexicalShell({
@@ -133,6 +135,7 @@ export function LexicalShell({
   disabled,
   clearToken,
   initialContent,
+  functionEntries,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
      so the initializer callback identity doesn't trigger a remount on re-render. */
@@ -171,7 +174,7 @@ export function LexicalShell({
       <ChangePlugin onChange={onChange} />
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <EditablePlugin disabled={disabled} />
-      <MentionsPlugin menuOpenRef={menuOpenRef} />
+      <MentionsPlugin menuOpenRef={menuOpenRef} functionEntries={functionEntries} />
       <SlashCommandsPlugin menuOpenRef={menuOpenRef} />
       <FunctionMentionTransformPlugin />
     </LexicalComposer>

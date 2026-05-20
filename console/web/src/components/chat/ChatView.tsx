@@ -2,6 +2,7 @@ import { Copy, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { uid } from '@/hooks/use-conversations'
+import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import type { ChatBackend } from '@/lib/backend'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
@@ -92,6 +93,7 @@ export function ChatView({
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
+  const { functionEntries } = useFunctionsCatalog(backend.id)
 
   // Matches iii.session.id on every span so the traces UI can group by it.
   const sessionId = useMemo(
@@ -485,6 +487,7 @@ export function ChatView({
             model={conversation.model}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
+            functionEntries={functionEntries}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             onSubmit={handleSubmit}

@@ -5,8 +5,9 @@
  *   1. Resolve the engine WebSocket URL from `VITE_ENGINE_WS_URL` or a
  *      relative-path default against `window.location.host`. There is no
  *      HTTP bootstrap — the browser opens a single WebSocket directly to
- *      the engine (dev: through the Vite `/iii/ws` proxy in
- *      `console/web/vite.config.ts`).
+ *      the engine (dev: through the Vite `/ws` proxy in
+ *      `console/web/vite.config.ts`; prod: through the `console` worker
+ *      which proxies `/ws` to the engine).
  *   2. Open the WebSocket via `iii-browser-sdk::registerWorker(url)`.
  *   3. Mint a stable `browser_id` for this page; per-browser handlers are
  *      registered under `<functionId>::<browserId>` so the harness fanout
@@ -167,8 +168,9 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
  * Resolve the engine WebSocket URL. Browser preference order:
  *   1. `VITE_ENGINE_WS_URL` if set at build time.
  *   2. Relative path against `window.location` (`wss://` for HTTPS pages,
- *      `ws://` otherwise) so dev hits the Vite `/iii/ws` proxy and prod
- *      hits whatever reverse proxy is forwarding `/iii/ws` to the engine.
+ *      `ws://` otherwise) so dev hits the Vite `/ws` proxy and prod hits
+ *      the `console` worker (or whatever reverse proxy) forwarding `/ws`
+ *      to the engine.
  * Outside a browser (tests), default to `ws://127.0.0.1:49134`.
  */
 function resolveWsUrl(): string {
@@ -178,7 +180,7 @@ function resolveWsUrl(): string {
   }
   if (typeof window !== 'undefined' && window.location) {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${window.location.host}/iii/ws`
+    return `${proto}://${window.location.host}/ws`
   }
   return 'ws://127.0.0.1:49134'
 }

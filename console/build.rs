@@ -1,0 +1,178 @@
+//! Build script for the `console` worker.
+//!
+//! 1. Forwards the build-time target triple to the binary as `env!("TARGET")`
+//!    (used by `manifest.rs` for the registry `supported_targets` field).
+//! 2. Ensures the embedded SPA bundle exists. `rust-embed` reads
+//!    `web/dist/` at compile time; if it's missing or stale we run
+//!    `pnpm install --frozen-lockfile && pnpm build` (with
+//!    `VITE_PLAYGROUND=`) inside `web/` before the rest of the crate
+//!    compiles.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::SystemTime;
+
+fn main() {
+    println!(
+        "cargo:rustc-env=TARGET={}",
+        std::env::var("TARGET").unwrap()
+    );
+
+    // Trigger a re-run when the JS source or its toolchain inputs change.
+    // `dist/` itself is *not* listed: rust-embed reads it directly, and
+    // listing it would create a dependency cycle (touching dist forces a
+    // rebuild that touches dist again).
+    println!("cargo:rerun-if-changed=web/src");
+    println!("cargo:rerun-if-changed=web/index.html");
+    println!("cargo:rerun-if-changed=web/package.json");
+    println!("cargo:rerun-if-changed=web/pnpm-lock.yaml");
+    println!("cargo:rerun-if-changed=web/vite.config.ts");
+    println!("cargo:rerun-if-changed=web/tsconfig.app.json");
+    println!("cargo:rerun-if-changed=web/tsconfig.json");
+    println!("cargo:rerun-if-changed=web/tsconfig.node.json");
+    println!("cargo:rerun-if-changed=web/.env.production");
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let web_dir = manifest_dir.join("web");
+    let dist_dir = web_dir.join("dist");
+    let dist_index = dist_dir.join("index.html");
+
+    if dist_index.exists() && dist_is_fresh(&dist_index, &web_dir) {
+        return;
+    }
+
+    if std::env::var_os("SKIP_WEB_BUILD").is_some() {
+        if !dist_index.exists() {
+            panic!(
+                "SKIP_WEB_BUILD set but {} is missing — build the \
+                 SPA manually (cd web && pnpm install && pnpm build) or \
+                 unset the env var",
+                dist_index.display()
+            );
+        }
+        return;
+    }
+
+    let pnpm = locate_pnpm();
+
+    let status = Command::new(&pnpm)
+        .args(["install", "--frozen-lockfile"])
+        .current_dir(&web_dir)
+        .status()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn `pnpm install` in {}: {e}",
+                web_dir.display()
+            )
+        });
+    if !status.success() {
+        panic!("`pnpm install` exited with {status} — see logs above");
+    }
+
+    let status = Command::new(&pnpm)
+        .args(["build"])
+        .env("VITE_PLAYGROUND", "")
+        .current_dir(&web_dir)
+        .status()
+        .unwrap_or_else(|e| panic!("failed to spawn `pnpm build` in {}: {e}", web_dir.display()));
+    if !status.success() {
+        panic!("`pnpm build` exited with {status} — see logs above");
+    }
+
+    if !dist_index.exists() {
+        panic!(
+            "`pnpm build` finished but {} is still missing — check the \
+             vite output above",
+            dist_index.display()
+        );
+    }
+}
+
+/// `true` when the existing dist bundle is at least as new as every
+/// source file that contributes to it. Conservative: any I/O failure or
+/// missing mtime returns `false`, forcing a rebuild.
+fn dist_is_fresh(dist_index: &Path, web_dir: &Path) -> bool {
+    let Ok(dist_mtime) = dist_index.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+
+    let watched_dirs = [web_dir.join("src"), web_dir.join("public")];
+    for dir in watched_dirs.iter() {
+        if !dir.exists() {
+            continue;
+        }
+        if !subtree_older_than(dir, dist_mtime) {
+            return false;
+        }
+    }
+
+    let watched_files = [
+        web_dir.join("index.html"),
+        web_dir.join("package.json"),
+        web_dir.join("pnpm-lock.yaml"),
+        web_dir.join("vite.config.ts"),
+        web_dir.join(".env.production"),
+    ];
+    for f in watched_files.iter() {
+        if !f.exists() {
+            continue;
+        }
+        let Ok(m) = f.metadata().and_then(|m| m.modified()) else {
+            return false;
+        };
+        if m > dist_mtime {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn subtree_older_than(root: &Path, ceiling: SystemTime) -> bool {
+    let Ok(read) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            return false;
+        };
+        if meta.is_dir() {
+            if !subtree_older_than(&path, ceiling) {
+                return false;
+            }
+        } else {
+            let Ok(m) = meta.modified() else {
+                return false;
+            };
+            if m > ceiling {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn locate_pnpm() -> PathBuf {
+    if let Ok(explicit) = std::env::var("PNPM") {
+        return PathBuf::from(explicit);
+    }
+    let candidates = if cfg!(windows) {
+        ["pnpm.cmd", "pnpm.exe", "pnpm"].as_slice()
+    } else {
+        ["pnpm"].as_slice()
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path) {
+        for name in candidates {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    panic!(
+        "pnpm not found on PATH — install Node + pnpm, or set SKIP_WEB_BUILD=1 \
+         after building the SPA manually with `cd web && pnpm install && pnpm build`"
+    );
+}

@@ -1,0 +1,7 @@
+iii: v1
+name: console
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: console
+description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port.

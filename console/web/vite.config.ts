@@ -13,13 +13,14 @@ export default defineConfig({
   server: {
     allowedHosts: true,
     proxy: {
-      // iii-browser-sdk hits ws(s)://${host}/iii/ws by default; the proxy
-      // forwards to the local engine WebSocket on :49134 in dev.
-      '/iii/ws': {
+      // iii-browser-sdk hits ws(s)://${host}/ws by default; the proxy
+      // forwards to the local engine WebSocket on :49134 in dev. In
+      // prod the `console` worker exposes the same /ws contract.
+      '/ws': {
         target: 'ws://127.0.0.1:49134',
         ws: true,
         changeOrigin: false,
-        rewrite: (path) => path.replace(/^\/iii\/ws/, ''),
+        rewrite: (path) => path.replace(/^\/ws/, ''),
       },
     },
   },

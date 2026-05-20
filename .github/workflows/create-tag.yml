@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - acp
+          - console
           - iii-database
           - iii-directory
           - iii-lsp
