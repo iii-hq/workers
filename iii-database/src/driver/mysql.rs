@@ -244,6 +244,70 @@ fn step_err(idx: usize, e: mysql_async::Error) -> DbError {
     }
 }
 
+/// Issue `SET TRANSACTION ISOLATION LEVEL ...; START TRANSACTION` on a
+/// pinned connection. Used by `beginTransaction`. MySQL needs the isolation
+/// statement before `START TRANSACTION` (per-server-default otherwise).
+pub async fn tx_begin(
+    conn: &mut crate::pool::mysql::MysqlConn,
+    isolation: Option<Isolation>,
+) -> Result<(), DbError> {
+    let iso_sql = match isolation {
+        Some(Isolation::ReadCommitted) => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        Some(Isolation::RepeatableRead) => "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+        Some(Isolation::Serializable) => "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        None => "",
+    };
+    if !iso_sql.is_empty() {
+        conn.query_drop(iso_sql).await.map_err(map_err)?;
+    }
+    conn.query_drop("START TRANSACTION")
+        .await
+        .map_err(map_err)
+}
+
+/// `COMMIT` the in-progress transaction on a pinned connection.
+pub async fn tx_commit(conn: &mut crate::pool::mysql::MysqlConn) -> Result<(), DbError> {
+    conn.query_drop("COMMIT").await.map_err(map_err)
+}
+
+/// `ROLLBACK` the in-progress transaction on a pinned connection. Callers
+/// that want best-effort rollback should `let _ =` the result.
+pub async fn tx_rollback(conn: &mut crate::pool::mysql::MysqlConn) -> Result<(), DbError> {
+    conn.query_drop("ROLLBACK").await.map_err(map_err)
+}
+
+/// Run an INSERT/UPDATE/DELETE on a pinned connection inside an active
+/// transaction. Mirrors `execute()` but without pool acquire. MySQL has
+/// no `RETURNING`, so the `returning` array is logged-and-ignored as
+/// usual. Used by `transactionExecute`.
+pub async fn tx_execute(
+    conn: &mut crate::pool::mysql::MysqlConn,
+    sql: &str,
+    params: &[JsonParam],
+    returning: &[String],
+) -> Result<ExecuteResult, DbError> {
+    if !returning.is_empty() {
+        tracing::warn!(
+            driver = "mysql",
+            "RETURNING not supported on MySQL; ignoring `returning` array"
+        );
+    }
+    let bound = bind_params(params);
+    conn.exec_drop(sql, bound).await.map_err(map_err)?;
+    let affected = conn.affected_rows();
+    let last_insert_id = if is_insert(sql) {
+        conn.last_insert_id().map(|i| i.to_string())
+    } else {
+        None
+    };
+    Ok(ExecuteResult {
+        affected_rows: affected,
+        last_insert_id,
+        returned_rows: vec![],
+        returned_columns: vec![],
+    })
+}
+
 pub async fn run_prepared(
     conn: &mut crate::pool::mysql::MysqlConn,
     sql: &str,

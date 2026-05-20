@@ -2,8 +2,7 @@
 //! at worker startup.
 //!
 //! Only `handler` is part of the public crate surface (consumed by main.rs).
-//! `query_poll` and `row_change` are implementation modules.
+//! `row_change` is an implementation module.
 
 pub mod handler;
-pub(crate) mod query_poll;
 pub(crate) mod row_change;

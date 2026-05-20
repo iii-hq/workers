@@ -421,6 +421,107 @@ fn step_err(idx: usize, e: tokio_postgres::Error) -> DbError {
     }
 }
 
+/// Issue `BEGIN [ISOLATION LEVEL ...]` on a pinned client. Used by
+/// `beginTransaction` to open an interactive transaction on a connection
+/// pulled out of the pool.
+pub async fn tx_begin(
+    client: &mut crate::pool::postgres::PgClient,
+    isolation: Option<Isolation>,
+) -> Result<(), DbError> {
+    let begin_sql = match isolation {
+        Some(Isolation::ReadCommitted) => "BEGIN ISOLATION LEVEL READ COMMITTED",
+        Some(Isolation::RepeatableRead) => "BEGIN ISOLATION LEVEL REPEATABLE READ",
+        Some(Isolation::Serializable) => "BEGIN ISOLATION LEVEL SERIALIZABLE",
+        None => "BEGIN",
+    };
+    client.batch_execute(begin_sql).await.map_err(map_err)
+}
+
+/// `COMMIT` the in-progress transaction on a pinned client.
+pub async fn tx_commit(client: &mut crate::pool::postgres::PgClient) -> Result<(), DbError> {
+    client.batch_execute("COMMIT").await.map_err(map_err)
+}
+
+/// `ROLLBACK` the in-progress transaction on a pinned client. Callers that
+/// want best-effort rollback (timeout watcher, post-commit-failure cleanup)
+/// should `let _ =` the result.
+pub async fn tx_rollback(client: &mut crate::pool::postgres::PgClient) -> Result<(), DbError> {
+    client.batch_execute("ROLLBACK").await.map_err(map_err)
+}
+
+/// Run an INSERT/UPDATE/DELETE (optionally with `RETURNING`) on a pinned
+/// client that is currently inside `BEGIN ... COMMIT`. Mirrors `execute()`
+/// — but without pool acquire. Used by `transactionExecute`.
+pub async fn tx_execute(
+    client: &mut crate::pool::postgres::PgClient,
+    sql: &str,
+    params: &[JsonParam],
+    _returning: &[String],
+) -> Result<ExecuteResult, DbError> {
+    let bound = bind_params(params);
+    let bound_refs: Vec<&(dyn ToSql + Sync)> =
+        bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+
+    let upper = sql.to_ascii_uppercase();
+    if upper.contains(" RETURNING ") {
+        let rows = client
+            .query(sql, bound_refs.as_slice())
+            .await
+            .map_err(map_err)?;
+        let columns: Vec<ColumnMeta> = rows
+            .first()
+            .map(|r| {
+                r.columns()
+                    .iter()
+                    .map(|c| ColumnMeta {
+                        name: c.name().to_string(),
+                        ty: c.type_().name().to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut returned: Vec<Row> = Vec::with_capacity(rows.len());
+        let mut last_insert_id: Option<String> = None;
+
+        for (ri, row) in rows.iter().enumerate() {
+            let mut cells = Vec::with_capacity(row.columns().len());
+            for (i, col) in row.columns().iter().enumerate() {
+                cells.push(pg_cell_to_row_value(row, i, col.type_())?);
+            }
+            if ri == 0 {
+                if let Some(first) = cells.first() {
+                    last_insert_id = match first {
+                        RowValue::Int(i) => Some(i.to_string()),
+                        RowValue::BigInt(i) => Some(i.to_string()),
+                        RowValue::Text(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                }
+            }
+            returned.push(Row(cells));
+        }
+
+        Ok(ExecuteResult {
+            affected_rows: returned.len() as u64,
+            last_insert_id,
+            returned_rows: returned,
+            returned_columns: columns,
+        })
+    } else {
+        let n = client
+            .execute(sql, bound_refs.as_slice())
+            .await
+            .map_err(map_err)?;
+        Ok(ExecuteResult {
+            affected_rows: n,
+            last_insert_id: None,
+            returned_rows: vec![],
+            returned_columns: vec![],
+        })
+    }
+}
+
 pub async fn run_prepared(
     client: &mut crate::pool::postgres::PgClient,
     sql: &str,

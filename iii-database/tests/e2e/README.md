@@ -1,9 +1,9 @@
 # iii-database worker — end-to-end harness
 
 Self-asserting smoke harness for the `iii-database` worker. Validates the 5
-core RPC functions, the `query-poll` trigger, and the `row-change` slot/
-publication derivation contract against real **SQLite**, **PostgreSQL 16**,
-and **MySQL 8.4** with one command.
+core RPC functions and the `row-change` slot/publication derivation contract
+against real **SQLite**, **PostgreSQL 16**, and **MySQL 8.4** with one
+command.
 
 Runs locally and in CI (`.github/workflows/iii-database-e2e.yml`).
 

@@ -92,26 +92,14 @@ const { rows } = await call('iii-database::query', {
 | `iii-database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row**, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
 | `iii-database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
 | `iii-database::runStatement` | Run a previously-prepared handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
-| `iii-database::transaction` | Atomic sequence; rolls back on first failure. |
+| `iii-database::transaction` | Atomic batch sequence; rolls back on first failure. One-shot — pass all statements together. |
+| `iii-database::beginTransaction` | Open an interactive transaction. Returns `{ transaction: { id, expires_at } }`. Configurable `timeout_ms` (default 30 000, max 300 000) auto-rolls back if the deadline elapses. |
+| `iii-database::transactionQuery` | Read SQL inside an interactive transaction. Same envelope as `query`. |
+| `iii-database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
+| `iii-database::commitTransaction` | Commit and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
+| `iii-database::rollbackTransaction` | Rollback and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 
 ## Triggers
-
-### `iii-database::query-poll`
-Polls a SQL query at a fixed interval, dispatches new rows, and persists a cursor inside the watched database in `__iii_cursors`.
-
-```yaml
-triggers:
-  - type: iii-database::query-poll
-    config:
-      db: primary
-      sql: SELECT id, body FROM outbox WHERE id > COALESCE(?, 0) ORDER BY id LIMIT 50
-      interval_ms: 1000
-      cursor_column: id
-```
-
-The trigger binds the cursor as the single positional parameter (`?` for SQLite/MySQL, `$1` for Postgres). On the first poll the cursor binds as `NULL`.
-
-The dispatched event includes a `cursor` field that is **always serialized as a JSON string**, regardless of the underlying column type. Callers must parse it (e.g. `parseInt(event.cursor)`) when expecting numeric comparison.
 
 ### `iii-database::row-change`
 Postgres only. Streams row-level changes via logical replication (`pgoutput`).
@@ -138,12 +126,13 @@ Returned `IIIError::Handler` bodies carry a stable `code` field:
 | `POOL_TIMEOUT` | Pool acquire exceeded `acquire_timeout_ms`. |
 | `QUERY_TIMEOUT` | Query exceeded `timeout_ms`. |
 | `STATEMENT_NOT_FOUND` | Handle expired or unknown — re-prepare. |
+| `TRANSACTION_NOT_FOUND` | Transaction id unknown, already committed/rolled back, or timed out (auto-rolled-back by the watcher). |
 | `UNKNOWN_DB` | `db` parameter doesn't match any configured database. |
-| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver. |
+| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, or transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`). |
 | `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. |
 | `REPLICATION_SLOT_EXISTS` | Startup-only: another instance owns the slot. |
 | `UNSUPPORTED` | Operation not supported on the chosen driver. |
-| `CONFIG_ERROR` | Config parse, pool init, or trigger misconfiguration (e.g. `cursor_column` not in result). |
+| `CONFIG_ERROR` | Config parse or pool init failure. |
 
 ## Driver compatibility
 
@@ -156,11 +145,11 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 | `transaction` `isolation: serializable` | ✓ (`BEGIN IMMEDIATE`) | ✓ | ✓ |
 | `iii-database::row-change` trigger | — | setup-only in v1.0.0 (see above) | — |
 
+
 ## Troubleshooting
 
 - **Pool exhausted (`POOL_TIMEOUT`)**: bump `pool.max` or shorten the longest-running query. Live `prepareStatement` handles each pin one connection from the pool until they expire.
 - **`STATEMENT_NOT_FOUND` from a long-lived handle**: handles are bounded to `ttl_seconds` (default 3600, max 86400). Re-prepare and retry.
-- **SQLite write contention with `query-poll`**: enable WAL mode in your DB: `PRAGMA journal_mode=WAL;` once after creation.
 - **Replication slot already exists**: another instance is consuming the slot. Either reuse the slot name or run `SELECT pg_drop_replication_slot('<slot>')`.
 
 ## License
