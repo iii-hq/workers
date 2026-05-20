@@ -34,7 +34,7 @@ type StepableWrite = {
  * so they can't drift — and the handler can't fire on a parking-state write
  * even if the condition was bypassed.
  */
-function parseStepableWrite(event: unknown): StepableWrite | null {
+export function parseStepableWrite(event: unknown): StepableWrite | null {
   const parsed = parseTurnStateWrite(event);
   if (!parsed) return null;
 
@@ -49,10 +49,6 @@ function parseStepableWrite(event: unknown): StepableWrite | null {
   return { session_id: parsed.session_id, state };
 }
 
-export function isStepableRecordWrite(event: unknown): boolean {
-  return parseStepableWrite(event) !== null;
-}
-
 export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Promise<void> {
   const parsed = parseStepableWrite(event);
   if (!parsed) return;
@@ -64,11 +60,7 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
     });
     return;
   } catch (err) {
-    // Direct invoke failed (timeout, transient throw, etc). The triggering
-    // state write already landed, so without a durable retry the session
-    // would sit stuck in this state forever. Fall back to publishing
-    // `turn::step_requested` so the durable subscriber on `subscriber.ts`
-    // buffers + retries.
+
     logger.warn(
       'turn::on_record_written: direct turn::step failed; falling back to durable publish',
       { session_id: parsed.session_id, err: String(err) },
@@ -90,7 +82,7 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::is_stepable_record_write',
-    async (event: unknown) => isStepableRecordWrite(event),
+    async (event: unknown) => parseStepableWrite(event) !== null,
     {
       description:
         'Condition: state event sets session/<id>/turn_state to a stepable state (excludes stopped + function_awaiting_approval).',

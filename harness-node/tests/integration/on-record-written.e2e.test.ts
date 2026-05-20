@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   handleStepableRecordWrite,
-  isStepableRecordWrite,
+  parseStepableWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
 
 function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> } {
@@ -24,7 +24,7 @@ function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> 
             new_value: p.value,
             message_type: 'state',
           };
-          if (isStepableRecordWrite(event)) {
+          if (parseStepableWrite(event) !== null) {
             queueMicrotask(() => {
               void handleStepableRecordWrite(iii as unknown as ISdk, event);
             });

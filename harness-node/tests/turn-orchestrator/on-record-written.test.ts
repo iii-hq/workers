@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   handleStepableRecordWrite,
-  isStepableRecordWrite,
+  parseStepableWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
 
-describe('isStepableRecordWrite condition', () => {
+describe('parseStepableWrite condition', () => {
   it('matches turn_state writes with a non-terminal, non-awaiting state', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:created',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -16,10 +16,10 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'provisioning' },
         message_type: 'state',
       }),
-    ).toBe(true);
+    ).toEqual({ session_id: 'sess-abc', state: 'provisioning' });
 
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -27,12 +27,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'awaiting_assistant' },
         message_type: 'state',
       }),
-    ).toBe(true);
+    ).toEqual({ session_id: 'sess-abc', state: 'awaiting_assistant' });
   });
 
   it('rejects terminal state (stopped)', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -40,12 +40,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'stopped' },
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it('rejects function_awaiting_approval (orchestrator parks here)', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -53,12 +53,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'function_awaiting_approval' },
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it('rejects state:deleted', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:deleted',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -66,12 +66,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: null,
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it('rejects non-turn_state keys in the agent scope', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/abort_signal',
@@ -79,12 +79,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: true,
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it('rejects same-state writes (old_value.state === new_value.state)', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -92,10 +92,10 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'function_prepare' },
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
 
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -103,12 +103,12 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { state: 'function_execute' },
         message_type: 'state',
       }),
-    ).toBe(true);
+    ).toEqual({ session_id: 'sess-abc', state: 'function_execute' });
   });
 
   it('rejects writes whose new_value lacks a string state', () => {
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -116,10 +116,10 @@ describe('isStepableRecordWrite condition', () => {
         new_value: { not_state: 'provisioning' },
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
 
     expect(
-      isStepableRecordWrite({
+      parseStepableWrite({
         event_type: 'state:updated',
         scope: 'agent',
         key: 'session/sess-abc/turn_state',
@@ -127,7 +127,7 @@ describe('isStepableRecordWrite condition', () => {
         new_value: null,
         message_type: 'state',
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 });
 
