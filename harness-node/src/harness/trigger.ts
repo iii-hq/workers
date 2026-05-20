@@ -1,37 +1,15 @@
 /**
- * Bridge function `harness::trigger`.
+ * `harness::trigger` — browser → bus bridge.
  *
- * Port of `workers/harness/src/lib.rs:103-159`. Forwards `{ function_id,
- * payload }` to `iii.trigger` and returns the result wrapped in an
- * HTTP-style envelope (`{ status_code, headers, body }`).
+ * Accepts `{ function_id, session_id?, message_id?, payload }` (or the same
+ * fields at the top level over WS), calls `iii.trigger` for the inner
+ * function, and returns `{ status_code, headers, body }`. 
  *
- * Why this exists in the WS path (not just HTTP):
- *
- * The Rust harness exposes the same bridge as an HTTP route and as a
- * bus function (legacy id `harness::call`). The browser-facing pattern
- * (see `workers/harness/web/src/App.tsx:317-340`) routes every chat turn
- * through it so the harness's `instrumentHandler` wrap can seed
- * `iii.session.id` / `iii.message.id` baggage from the OUTER body and
- * downstream worker spans inherit those IDs. Without that, the engine's
- * `engine::traces::group_by` returns empty groups for "Group by
- * session" / "Group by message" in the traces UI.
- *
- * The Node port already wraps every registered function via the
- * `instrumentSdk` Proxy in `runtime/worker.ts`, so the inner trigger's
- * `harness.run::start` span ALREADY gets the IDs from its own payload.
- * Registering `harness::trigger` matches the harness/web pattern explicitly
- * so console/web can use the same wrapper without depending on whether the
- * inner function happens to be auto-wrapped. It also gives us one well-
- * defined ingestion point for browser-originated triggers that keeps the
- * span tree symmetric across Rust and Node deployments.
- *
- * Input shape (HTTP body) — matches the Rust handler:
- *   { function_id, session_id?, message_id?, payload }
- * Falls back to top-level when there is no `body` wrapper (direct WS).
- *
- * The wrapping `instrumentHandler` reads `body.session_id` /
- * `body.message_id` and seeds baggage; the handler here only forwards
- * the trigger.
+ * console/web routes chat turns through this function instead of calling
+ * `run::start` directly so `instrumentHandler` can read `session_id` and
+ * `message_id` from the outer request and stamp OTel baggage before the
+ * nested trigger runs. That keeps "Group by session" / "Group by message"
+ * working in the traces UI (`engine::traces::group_by`).
  */
 
 import type { ISdk } from '../runtime/iii.js';

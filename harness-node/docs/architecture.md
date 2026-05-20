@@ -18,7 +18,7 @@ workers.
 
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
-| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
+| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::trigger`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
 | session | [src/session/](harness-node/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness-node/docs/workers/session.md) |
@@ -56,7 +56,7 @@ flowchart LR
     state["iii engine state::* / stream::* / iii::durable::*"]
   end
 
-  client -- "harness::call(run::start, ...)" --> harness
+  client -- "harness::trigger(run::start, ...)" --> harness
   harness -- "iii.trigger run::start" --> turnOrch
   client -- "ui::subscribe" --> harness
 
@@ -264,30 +264,31 @@ harness-node span. When `initHarnessOtel` failed to boot (e.g.
 `OTEL_ENABLED=false`), the OTel side is a quiet no-op and pino continues
 to write to stderr unchanged.
 
-**`harness::call` as the WS ingestion bridge.** Browser-originated calls
-hit `harness::call` (see [src/harness/call.ts](harness-node/src/harness/call.ts)),
-NOT `run::start` directly. The wrapping `instrumentHandler` reads
+**`harness::trigger` as the WS ingestion bridge.** Browser-originated
+requests hit `harness::trigger` (see
+[src/harness/trigger.ts](harness-node/src/harness/trigger.ts)), NOT
+`run::start` directly. The wrapping `instrumentHandler` reads
 `session_id`/`message_id` from the outer body and seeds baggage; the
 handler then forwards to `iii.trigger` with the inner `function_id` /
-`payload`. This is the symmetric counterpart of the Rust harness's HTTP
-`harness::call` route (`workers/harness/src/lib.rs:103-159`) and means
-the span tree looks the same regardless of whether the request landed
-on a Rust or Node deployment.
+`payload`. This is the symmetric counterpart of the Rust harness bridge
+(`workers/harness/src/lib.rs:103-159`; legacy bus id `harness::call`) and
+means the span tree looks the same regardless of whether the request
+landed on a Rust or Node deployment.
 
 ```mermaid
 sequenceDiagram
   participant Web as console/web
-  participant Call as harness::call
+  participant Bridge as harness::trigger
   participant Wrap as instrumentHandler
   participant Inner as run::start (turn-orchestrator)
   participant Trace as engine traces UI
 
-  Web->>Call: {function_id:"run::start", session_id, message_id, payload}
-  Wrap->>Wrap: open span "harness.harness::call", stamp ids, push baggage
-  Call->>Inner: iii.trigger(run::start, payload) -- baggage propagated
+  Web->>Bridge: {function_id:"run::start", session_id, message_id, payload}
+  Wrap->>Wrap: open span "harness.harness::trigger", stamp ids, push baggage
+  Bridge->>Inner: iii.trigger(run::start, payload) -- baggage propagated
   Wrap->>Wrap: open span "harness.run::start", inherit ids from baggage
-  Inner-->>Call: result
-  Call-->>Web: {status_code:200, body:result}
+  Inner-->>Bridge: result
+  Bridge-->>Web: {status_code:200, body:result}
   Wrap->>Trace: spans + iii.invocation.{input,output} events + correlated logs
 ```
 
