@@ -218,9 +218,11 @@ All knobs are env-driven; no `config.yaml` fields are read.
 | `COMPACT_TOOL_OUTPUT_MAX_CHARS` | `2000` | Per-output character cap applied before sending to the summariser. |
 | `COMPACT_BUSY_TIMEOUT_MS` | `30000` | Max ms `compact_now` / `compact_session` waits for the compaction lease before returning `{ status: 'busy' }`. Sized to cover a typical summariser stream (10–30s) so user-initiated `/compact` doesn't race the async TurnEnd path. |
 | `COMPACT_PRUNE_PROTECTED_TOOLS` | _(empty)_ | Comma-separated function IDs whose outputs are never pruned. |
-| `COMPACT_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` or `openai` — picks the streaming provider. |
-| `COMPACT_SUMMARIZER_MODEL` | _(model in use)_ | Model id passed to the provider stream. Defaults to the same model as the session. |
 | `COMPACT_TRIGGER_TOKENS` | _(deprecated)_ | If set, caps `usable()` to this value. Preserves pre-v2 behaviour. Prefer `COMPACT_RESERVED_TOKENS` instead. |
+
+The summariser provider and model are always inherited from the session's
+own selection. Routing goes through `turn-orchestrator/provider-router`,
+so adding a provider there automatically covers `/compact`.
 
 ## State keys
 

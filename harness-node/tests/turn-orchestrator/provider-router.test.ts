@@ -14,9 +14,18 @@ describe('decide', () => {
     expect(decide({ provider: 'openai', model: 'gpt-5' }).provider).toBe('openai');
   });
 
+  it('routes kimi when provider=kimi', () => {
+    expect(decide({ provider: 'kimi', model: 'kimi-k2-0905-preview' }).provider).toBe('kimi');
+  });
+
   it('falls back to model heuristic when provider missing', () => {
     expect(decide({ model: 'gpt-5' }).provider).toBe('openai');
     expect(decide({ model: 'claude-opus-4-7' }).provider).toBe('anthropic');
+    expect(decide({ model: 'kimi-k2-0905-preview' }).provider).toBe('kimi');
+    expect(decide({ model: 'kimi-k2-turbo-preview' }).provider).toBe('kimi');
+    expect(decide({ model: 'kimi-k2.6' }).provider).toBe('kimi');
+    expect(decide({ model: 'moonshot-v1-128k' }).provider).toBe('kimi');
+    expect(decide({ model: 'moonshot-v1-8k-vision-preview' }).provider).toBe('kimi');
   });
 });
 
@@ -26,6 +35,7 @@ describe('targetFunctionId', () => {
       'provider::anthropic::stream',
     );
     expect(targetFunctionId({ provider: 'openai', model: 'm' })).toBe('provider::openai::stream');
+    expect(targetFunctionId({ provider: 'kimi', model: 'm' })).toBe('provider::kimi::stream');
   });
 });
 

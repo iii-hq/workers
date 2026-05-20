@@ -58,6 +58,7 @@ export const ENV_VAR_MAP: ReadonlyArray<readonly [string, string]> = [
   ['minimax', 'MINIMAX_API_KEY'],
   ['huggingface', 'HF_TOKEN'],
   ['fireworks', 'FIREWORKS_API_KEY'],
+  ['kimi', 'MOONSHOT_API_KEY'],
   ['kimi-coding', 'MOONSHOT_API_KEY'],
   ['opencode-zen', 'OPENCODE_ZEN_API_KEY'],
   ['opencode-go', 'OPENCODE_GO_API_KEY'],

@@ -28,6 +28,7 @@ workers.
 | models-catalog | [src/models-catalog/](harness-node/src/models-catalog/) | Static model-capability catalogue (state-first, embedded fallback). | [workers/models-catalog.md](harness-node/docs/workers/models-catalog.md) |
 | provider-anthropic | [src/provider-anthropic/](harness-node/src/provider-anthropic/) | Anthropic Messages API SSE → channel writer. | [workers/provider-anthropic.md](harness-node/docs/workers/provider-anthropic.md) |
 | provider-openai | [src/provider-openai/](harness-node/src/provider-openai/) | OpenAI Chat Completions SSE → channel writer. | [workers/provider-openai.md](harness-node/docs/workers/provider-openai.md) |
+| provider-kimi | [src/provider-kimi/](harness-node/src/provider-kimi/) | Kimi Chat Completions SSE → channel writer. | [workers/provider-kimi.md](harness-node/docs/workers/provider-kimi.md) |
 | context-compaction | [src/context-compaction/](harness-node/src/context-compaction/) | Optional `agent::events` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness-node/docs/workers/context-compaction.md) |
 
 ## System diagram
@@ -47,6 +48,7 @@ flowchart LR
     models[models-catalog]
     provAnth[provider-anthropic]
     provOAI[provider-openai]
+    provKimi[provider-kimi]
     compact[context-compaction]
   end
 
@@ -62,6 +64,7 @@ flowchart LR
 
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
+  turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
   turnOrch -- "agent::call → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
@@ -74,6 +77,7 @@ flowchart LR
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
+  provKimi -- "auth::get_token" --> auth
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
@@ -209,12 +213,15 @@ flowchart TD
   session --> turnOrch
   auth[auth-credentials] --> provAnth[provider-anthropic]
   auth --> provOAI[provider-openai]
+  auth --> provKimi[provider-kimi]
   provAnth --> turnOrch
   provOAI --> turnOrch
+  provKimi --> turnOrch
   hook[hook-fanout] --> approval
   session --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact
+  provKimi --> compact
   budget[llm-budget]
 ```
 

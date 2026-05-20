@@ -22,6 +22,7 @@ alongside `harness-node` over the iii bus.
 | `src/models-catalog/` | `models::list`, `models::get`, `models::supports` | Static model metadata. |
 | `src/provider-anthropic/` | `provider::anthropic::stream`, `provider::anthropic::complete` | Anthropic SSE → channel writer. |
 | `src/provider-openai/` | `provider::openai::stream`, `provider::openai::complete` | OpenAI SSE → channel writer. |
+| `src/provider-kimi/` | `provider::kimi::stream`, `provider::kimi::complete` | Kimi (Moonshot) Chat Completions SSE → channel writer. |
 | `src/context-compaction/` | (none — pure side-car on `agent::events`) | Optional out-of-band session-history compactor. |
 
 ## Quickstart
@@ -39,6 +40,7 @@ node dist/auth-credentials/main.js      --url ws://127.0.0.1:49134 --config ./co
 node dist/models-catalog/main.js        --url ws://127.0.0.1:49134
 node dist/provider-anthropic/main.js    --url ws://127.0.0.1:49134 --config ./config.yaml
 node dist/provider-openai/main.js       --url ws://127.0.0.1:49134 --config ./config.yaml
+node dist/provider-kimi/main.js         --url ws://127.0.0.1:49134 --config ./config.yaml
 node dist/llm-budget/main.js            --url ws://127.0.0.1:49134
 # Optional side-car:
 node dist/context-compaction/main.js    --url ws://127.0.0.1:49134

@@ -30,6 +30,7 @@
     "dev:models-catalog": "tsx src/models-catalog/main.ts",
     "dev:provider-anthropic": "tsx src/provider-anthropic/main.ts",
     "dev:provider-openai": "tsx src/provider-openai/main.ts",
+    "dev:provider-kimi": "tsx src/provider-kimi/main.ts",
     "dev:context-compaction": "tsx src/context-compaction/main.ts"
   },
   "bin": {
@@ -44,6 +45,7 @@
     "iii-models-catalog": "./dist/models-catalog/main.js",
     "iii-provider-anthropic": "./dist/provider-anthropic/main.js",
     "iii-provider-openai": "./dist/provider-openai/main.js",
+    "iii-provider-kimi": "./dist/provider-kimi/main.js",
     "iii-context-compaction": "./dist/context-compaction/main.js"
   },
   "dependencies": {

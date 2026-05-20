@@ -35,3 +35,8 @@ provider_anthropic:
 provider_openai:
   default_max_tokens: 8192
   default_api_url: "https://api.openai.com/v1/chat/completions"
+
+# provider-kimi
+provider_kimi:
+  default_max_tokens: 8192
+  default_api_url: "https://api.moonshot.ai/v1/chat/completions"

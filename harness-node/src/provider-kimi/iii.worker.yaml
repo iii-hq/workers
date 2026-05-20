@@ -1,0 +1,17 @@
+iii: v1
+name: provider-kimi
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-provider-kimi
+description: Kimi (Moonshot) Chat Completions streaming provider; exposes provider::kimi::stream and provider::kimi::complete on the iii bus.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/provider-kimi/main.js --config ./config.yaml
+
+dependencies:
+  auth-credentials: "^0.2.0"

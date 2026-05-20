@@ -59,14 +59,6 @@ export function pruneProtectedTools(): string[] {
     .filter(Boolean);
 }
 
-export function summarizerProvider(): string | undefined {
-  return process.env.COMPACT_SUMMARIZER_PROVIDER || undefined;
-}
-
-export function summarizerModel(): string | undefined {
-  return process.env.COMPACT_SUMMARIZER_MODEL || undefined;
-}
-
 // Deprecated. Hard upper bound on usable() to keep existing deployments
 // from regressing. One-shot warning on first read.
 let deprecatedTriggerTokensWarned = false;
