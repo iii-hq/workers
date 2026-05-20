@@ -2,6 +2,7 @@ import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical'
 import { useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { $createFunctionMentionNode } from '@/components/chat/lexical/FunctionMentionNode'
+import { STATIC_FUNCTIONS } from '@/lib/functions'
 import type { Attachment, Mode, ModelId } from '@/types/chat'
 import { STATIC_MODEL_OPTIONS } from '@/types/chat'
 import { Section, VariantCard } from '../Section'
@@ -50,6 +51,7 @@ export function ComposerVariantsSection() {
             mode={mode}
             model={model}
             modelOptions={STATIC_MODEL_OPTIONS}
+            functionEntries={STATIC_FUNCTIONS}
             onModeChange={setMode}
             onModelChange={setModel}
             onSubmit={noop}
@@ -61,6 +63,7 @@ export function ComposerVariantsSection() {
             mode="ask"
             model="anthropic::claude-opus-4-7"
             modelOptions={STATIC_MODEL_OPTIONS}
+            functionEntries={STATIC_FUNCTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -76,6 +79,7 @@ export function ComposerVariantsSection() {
             mode="agent"
             model="openai::gpt-5"
             modelOptions={STATIC_MODEL_OPTIONS}
+            functionEntries={STATIC_FUNCTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -88,6 +92,7 @@ export function ComposerVariantsSection() {
             mode="agent"
             model="openai::gpt-5"
             modelOptions={STATIC_MODEL_OPTIONS}
+            functionEntries={STATIC_FUNCTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}
@@ -100,6 +105,7 @@ export function ComposerVariantsSection() {
             mode="plan"
             model="openai::gpt-5-mini"
             modelOptions={STATIC_MODEL_OPTIONS}
+            functionEntries={STATIC_FUNCTIONS}
             onModeChange={noop}
             onModelChange={noop}
             onSubmit={noop}

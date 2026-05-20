@@ -54,6 +54,7 @@ export interface ConversationsApi {
   setMode: (id: string, mode: Mode) => void
   appendMessage: (id: string, message: Message) => void
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
+  compactConversation: (id: string, marker: Message) => void
 }
 
 /** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). `catalogReady` gates the migration so it doesn't run against `STATIC_MODEL_OPTIONS` before the live catalog has loaded. */
@@ -213,6 +214,16 @@ export function useConversations(
     [patchConversation],
   )
 
+  const compactConversation = useCallback(
+    (id: string, marker: Message) =>
+      patchConversation(id, (c) => ({
+        ...c,
+        messages: [marker],
+        updatedAt: Date.now(),
+      })),
+    [patchConversation],
+  )
+
   return {
     conversations,
     activeId,
@@ -225,6 +236,7 @@ export function useConversations(
     setMode,
     appendMessage,
     updateMessage,
+    compactConversation,
   }
 }
 

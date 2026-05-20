@@ -1,64 +1,30 @@
 /**
- * Real backend: iii-browser-sdk + harness fanout.
- *
- * Each `stream()` call:
- *   1. Reads `opts.sessionId` (stable across all turns of a chat
- *      conversation) and mints a fresh `message_id` (one per send).
- *      Mirrors `workers/harness/web/src/App.tsx` `send()` — the same
- *      session_id is reused for every turn, the message_id is new per
- *      user message. Both flow into the engine via baggage so the
- *      traces UI can group spans by session AND by message.
- *      If `opts.sessionId` is missing (legacy callers), falls back to
- *      a fresh `console-<uuid>` so behavior is at least well-defined.
- *   2. Registers a per-`ui::session::event::<browser_id>` handler that
- *      enqueues envelopes whose `session_id` matches.
- *   3. Calls `ui::subscribe { browser_id, session_id }` so the harness
- *      fanout starts forwarding this session's events to us.
- *   4. Fires `run::start { session_id, message_id, provider, model,
- *      mode, messages }` against turn-orchestrator. The harness owns
- *      the system prompt; the console only ships the mode and lets the
- *      harness prepend the matching mode paragraph to its identity
- *      preamble.
- *   5. Pumps the queue through `translateAgentEvent`, yielding each
- *      resulting `StreamEvent`. Terminates on the `agent_end` envelope.
- *
- * Honors `opts.signal`: if the caller aborts, the generator returns and
- * the `finally` runs `ui::unsubscribe` and unregisters the handler.
- *
- * Phase 2.B (§D): the per-call `approval_required` array no longer
- * exists. Permissions are owned by the harness's `iii-permissions.yaml`
- * (loaded from the harness cwd; watched for changes). The chat surface
- * just describes the desired mode — the operator owns policy.
- *
- * Remaining caveats (each is a deliberate Phase 2/3/4 target — see
- * `PHASE-2-PLAN.md`):
- *   - Assistant body arrives as a single `assistant-token` (no per-token
- *     streaming yet; Phase 2.A wires `message_update`).
- *   - Provider/model selection uses the models-catalog via the picker; legacy
- *     ids without `::` still get a coarse provider guess in `resolveRunParams`.
+ * iii-browser-sdk + harness fanout. Permissions live in the harness's
+ * iii-permissions.yaml; the console only ships the mode.
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId } from '@/lib/session-id'
 import type { Mode, ModelId } from '@/types/chat'
-import type { AgentEvent, SessionEventEnvelope } from '@/types/iii-agent-event'
+import type {
+  AgentEvent,
+  AgentMessage,
+  SessionEventEnvelope,
+} from '@/types/iii-agent-event'
 import { createTurnStateTranslator, translateAgentEvent } from './translate'
-import type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
+import type {
+  ChatBackend,
+  ChatStreamOptions,
+  CompactResult,
+  StreamEvent,
+} from './types'
 
 interface RunParams {
   provider: string
   model: string
 }
 
-/**
- * Map console model selection onto turn-orchestrator's `provider` / `model`
- * fields. The system prompt is no longer the console's concern — the
- * harness owns it and is fed `mode` directly on `run::start`.
- *
- * Model ids from the catalog picker are `provider::<catalog_id>`. Legacy
- * heuristic ids (no `::`) still map `claude*` / `gemini*` / default openai.
- */
 function resolveRunParams(model: ModelId): RunParams {
   const parsed = parseCatalogModelKey(model)
   if (parsed) {
@@ -80,8 +46,6 @@ async function* realStream(
 ): AsyncGenerator<StreamEvent> {
   const signal = opts?.signal
   const client = await getIiiClient()
-  // Prefer the caller-supplied conversation-scoped session_id; fall back
-  // to a fresh per-call id only when the caller hasn't been updated yet.
   const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
   const messageId = newMessageId()
 
@@ -99,7 +63,6 @@ async function* realStream(
     wake()
   })
 
-  // Wake any pending await when the caller aborts so the loop can exit.
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
 
@@ -148,6 +111,7 @@ async function* realStream(
           model: modelId,
           mode,
           messages: [
+            ...(opts?.history ?? []),
             {
               role: 'user',
               content: [{ type: 'text', text: prompt }],
@@ -220,8 +184,95 @@ async function realResolveApproval(
   })
 }
 
+async function realCompactSession(
+  sessionId: string,
+  model: ModelId,
+  history?: AgentMessage[],
+): Promise<CompactResult> {
+  const { provider, model: modelId } = resolveRunParams(model)
+  const client = await getIiiClient()
+  try {
+    // Reconcile session-tree with the UI's history before compacting so a
+    // stale tree (only the first turn mirrored) doesn't yield a spurious
+    // 'empty' when the UI has plenty to summarise. No-op when the tree
+    // already has equal-or-more entries.
+    if (history && history.length > 0) {
+      await client
+        .call('session-tree::ensure', { session_id: sessionId })
+        .catch(() => {})
+      await client
+        .call('session-tree::reconcile', {
+          session_id: sessionId,
+          state_snapshot: history,
+        })
+        .catch((err) => {
+          if (import.meta.env.DEV) {
+            console.warn(
+              '[compact_session] reconcile failed; compacting as-is',
+              err,
+            )
+          }
+        })
+    }
+
+    const resp = await client.call<{
+      status?: string
+      tail_start_id?: string | null
+      tokens_before?: number
+      auto_continued?: boolean
+      summary_text?: string
+      message?: string
+      reason?: string
+    }>('context-compaction::compact_session', {
+      session_id: sessionId,
+      model: { id: modelId, providerID: provider },
+    })
+    if (resp?.status === 'ok') {
+      const tokensBefore =
+        typeof resp.tokens_before === 'number' ? resp.tokens_before : 0
+      // Surface zero-token "ok" as semantic empty.
+      if (tokensBefore === 0) return { status: 'empty' }
+      // Fallback placeholder for engines that predate summary_text on the
+      // wire; without it the marker has no <conversation-summary> to ship.
+      const summaryText =
+        typeof resp.summary_text === 'string' && resp.summary_text.length > 0
+          ? resp.summary_text
+          : '[prior conversation compacted by the engine]'
+      return {
+        status: 'ok',
+        tokensBefore,
+        autoContinued: Boolean(resp.auto_continued),
+        summaryText,
+      }
+    }
+    if (resp?.status === 'busy') return { status: 'busy' }
+    if (resp?.status === 'overflow') {
+      // Accepts both `message` and (legacy) `reason` during rollout.
+      const wire = resp as { message?: unknown; reason?: unknown }
+      const message =
+        typeof wire.message === 'string'
+          ? wire.message
+          : typeof wire.reason === 'string'
+            ? wire.reason
+            : 'unknown summariser error'
+      return { status: 'overflow', message }
+    }
+    if (resp?.status === 'empty') return { status: 'empty' }
+    return {
+      status: 'error',
+      message: `unexpected status: ${String(resp?.status ?? 'null')}`,
+    }
+  } catch (err) {
+    return {
+      status: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
   resolveApproval: realResolveApproval,
+  compactSession: realCompactSession,
 }

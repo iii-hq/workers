@@ -1,10 +1,13 @@
-import { Copy } from 'lucide-react'
+import { Copy, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { Prompt } from '@/components/ui/Prompt'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { uid } from '@/hooks/use-conversations'
+import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import type { ChatBackend } from '@/lib/backend'
+import { translateUiHistoryForBackend } from '@/lib/backend/history'
+import type { CompactResult } from '@/lib/backend/types'
 import { makeSessionId } from '@/lib/session-id'
+import { cn } from '@/lib/utils'
 import type {
   AssistantMessage,
   Conversation,
@@ -14,10 +17,12 @@ import type {
   Mode,
   ModelId,
   ModelOption,
+  SystemMessage,
   ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
+import { ContextUsage } from './ContextUsage'
 import { MessageList } from './MessageList'
 
 function isAbortError(err: unknown): boolean {
@@ -27,15 +32,49 @@ function isAbortError(err: unknown): boolean {
   )
 }
 
+function makeSystemNotice(
+  content: string,
+  tone: 'info' | 'warn' | 'error' = 'info',
+): SystemMessage {
+  return { id: uid(), role: 'system', content, tone, createdAt: Date.now() }
+}
+
+function formatCompactResult(result: CompactResult): string {
+  switch (result.status) {
+    case 'ok':
+      return `compacted — ${result.tokensBefore.toLocaleString()} tokens summarised${
+        result.autoContinued ? ' (continued)' : ''
+      }`
+    case 'busy':
+      return 'compact: another compaction is in progress'
+    case 'overflow':
+      return `compact failed: ${result.message}`
+    case 'empty':
+      return 'compact: nothing to summarise yet'
+    case 'error':
+      return `compact failed: ${result.message}`
+  }
+}
+
+function compactResultTone(result: CompactResult): 'info' | 'warn' | 'error' {
+  if (result.status === 'ok') return 'info'
+  if (result.status === 'error') return 'error'
+  return 'warn'
+}
+
 interface ChatViewProps {
   conversation: Conversation
   backend: ChatBackend
   modelOptions: ModelOption[]
   catalogLoading?: boolean
+  density?: 'route' | 'dock'
+  /** When provided, renders a close affordance in the header (dock mode). */
+  onClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
+  onCompactConversation: (id: string, marker: Message) => void
 }
 
 export function ChatView({
@@ -43,23 +82,29 @@ export function ChatView({
   backend,
   modelOptions,
   catalogLoading,
+  density = 'route',
+  onClose,
   onUpdateModel,
   onUpdateMode,
   onAppendMessage,
   onPatchMessage,
+  onCompactConversation,
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
+  const { functionEntries } = useFunctionsCatalog(backend.id)
 
-  // Stable across all turns of this conversation. Matches what the
-  // engine sees on every `run::start` and on every span's
-  // `iii.session.id` attribute, so the value displayed in the header
-  // is exactly what the traces UI shows when grouping by session.
+  // Matches iii.session.id on every span so the traces UI can group by it.
   const sessionId = useMemo(
     () => makeSessionId(conversation.id),
     [conversation.id],
   )
+
+  const contextWindow = useMemo(() => {
+    const match = modelOptions.find((o) => o.id === conversation.model)
+    return match?.contextWindow
+  }, [modelOptions, conversation.model])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -73,7 +118,10 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       const conversationId = conversation.id
 
-      /* user turn */
+      // Snapshot prior history BEFORE appending the new user msg —
+      // run::start overwrites flat state with whatever we send.
+      const priorHistory = translateUiHistoryForBackend(conversation.messages)
+
       const userMsg: UserMessage = {
         id: uid(),
         role: 'user',
@@ -84,15 +132,70 @@ export function ChatView({
       }
       onAppendMessage(conversationId, userMsg)
 
+      const trimmed = payload.text.trim()
+      if (trimmed === '/compact' || trimmed.startsWith('/compact ')) {
+        if (!backend.compactSession) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              '/compact not supported by this backend.',
+              'error',
+            ),
+          )
+          return
+        }
+        const pendingId = uid()
+        onAppendMessage(conversationId, {
+          id: pendingId,
+          role: 'system',
+          content: 'compacting session…',
+          tone: 'info',
+          createdAt: Date.now(),
+        })
+        setIsStreaming(true)
+        try {
+          const result = await backend.compactSession(
+            sessionId,
+            conversation.model,
+            priorHistory,
+          )
+          if (result.status === 'ok') {
+            const marker: SystemMessage = {
+              id: uid(),
+              role: 'system',
+              kind: 'compaction',
+              content: formatCompactResult(result),
+              tone: 'info',
+              summaryText: result.summaryText,
+              tokensBefore: result.tokensBefore,
+              createdAt: Date.now(),
+            }
+            onCompactConversation(conversationId, marker)
+          } else {
+            // empty | busy | overflow | error: nothing rewritten server-side.
+            onPatchMessage(conversationId, pendingId, {
+              content: formatCompactResult(result),
+              tone: compactResultTone(result),
+            })
+          }
+        } catch (err) {
+          onPatchMessage(conversationId, pendingId, {
+            content: `compact failed: ${err instanceof Error ? err.message : String(err)}`,
+            tone: 'error',
+          })
+        } finally {
+          setIsStreaming(false)
+        }
+        return
+      }
+
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
 
-      /* per-turn pointers so we know which id to patch when events arrive */
       let thoughtId: string | null = null
       let thoughtBuffer = ''
       let fcallId: string | null = null
-      // Map UI message id → iii function_call_id so dedupe is reliable.
       const fcallMap = new Map<string, string>()
       let assistantId: string | null = null
       let assistantBuffer = ''
@@ -102,7 +205,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           conversation.model,
-          { signal: controller.signal, sessionId },
+          { signal: controller.signal, sessionId, history: priorHistory },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -183,7 +286,6 @@ export function ChatView({
                 running: false,
                 pendingApproval: false,
               })
-              /* reset so a subsequent fcall-start gets a fresh slot */
               fcallMap.delete(fcallId)
               fcallId = null
               break
@@ -221,8 +323,6 @@ export function ChatView({
               break
             }
           }
-          // Any inbound activity event re-arms the STREAMING pill
-          // (the backend stream stays alive across multiple turns now).
           if (
             event.kind === 'fcall-start' ||
             event.kind === 'assistant-token' ||
@@ -232,15 +332,11 @@ export function ChatView({
           }
         }
       } catch (err) {
-        /* AbortError (caller aborted, or backend threw one) is a benign
-           cancellation. Anything else gets surfaced for debugging — backends
-           are expected to express semantic failures via fcall-end payloads
-           rather than thrown errors. */
+        // Backends signal semantic failures via fcall-end; thrown = abort or bug.
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
         }
       } finally {
-        /* defensive cleanup: if we aborted mid-stream, clear streaming flags. */
         if (thoughtId) {
           onPatchMessage(conversationId, thoughtId, { streaming: false })
         }
@@ -258,10 +354,12 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      conversation.messages,
       sessionId,
       backend,
       onAppendMessage,
       onPatchMessage,
+      onCompactConversation,
     ],
   )
 
@@ -269,13 +367,8 @@ export function ChatView({
     abortRef.current?.abort()
   }, [])
 
-  /* "agent is thinking" indicator: stream is active but no streaming
-     thought/assistant message is currently visible. Covers two gaps:
-     (a) right after submit, before the first token/thought/fcall arrives;
-     (b) after each fcall-end, while the harness transitions through
-     function_finalize → steering_check → next turn's provider stream.
-     A streaming assistant/thought message renders its own "thinking…"
-     shimmer when content is empty, so we don't double-render those. */
+  // Covers the gap between submit / fcall-end and the next streamed token,
+  // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
     isStreaming &&
     (() => {
@@ -293,50 +386,87 @@ export function ChatView({
       return false
     })()
 
+  const isDock = density === 'dock'
+  const headerPad = isDock ? 'px-4' : 'px-9'
+  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+
   return (
     <section className="flex-1 flex flex-col min-w-0 min-h-0">
-      <header className="flex items-center justify-between px-9 py-3 border-b border-rule">
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0">
-          <Prompt symbol="$">{conversation.model}</Prompt>
-          <span className="text-ink-ghost">·</span>
-          <span className="text-ink-faint">{conversation.mode}</span>
-          <span className="text-ink-ghost">·</span>
-          <button
-            type="button"
-            onClick={handleCopySessionId}
-            title={
-              copied
-                ? `copied ${sessionId}`
-                : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-            }
-            className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-          >
-            <span className="truncate font-mono text-[11px] tabular-nums">
-              {sessionId}
-            </span>
-            {copied ? (
-              <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                copied
-              </span>
-            ) : (
-              <Copy className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-            )}
-          </button>
-        </div>
-        <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em]">
-          <StatusDot
-            tone={isStreaming ? 'accent' : 'ink'}
-            pulse={isStreaming}
-          />
-          <span className="text-ink-faint">
-            {isStreaming ? 'streaming' : 'ready'}
+      <header
+        className={cn(
+          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
+          headerPad,
+        )}
+      >
+        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-accent flex-shrink-0" aria-hidden>
+            $
           </span>
+          <span className="text-ink truncate min-w-0">
+            {conversation.model}
+          </span>
+          <span className="text-ink-ghost flex-shrink-0">·</span>
+          <span className="text-ink-faint flex-shrink-0">
+            {conversation.mode}
+          </span>
+          {isDock ? null : (
+            <>
+              <span className="text-ink-ghost flex-shrink-0">·</span>
+              <button
+                type="button"
+                onClick={handleCopySessionId}
+                title={
+                  copied
+                    ? `copied ${sessionId}`
+                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
+                }
+                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
+              >
+                <span className="truncate font-mono text-[11px] tabular-nums">
+                  {sessionId}
+                </span>
+                {copied ? (
+                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
+                    copied
+                  </span>
+                ) : (
+                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                )}
+              </button>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
+          <ContextUsage
+            messages={conversation.messages}
+            contextWindow={contextWindow}
+          />
+          <div className="flex items-center gap-2">
+            <StatusDot
+              tone={isStreaming ? 'accent' : 'ink'}
+              pulse={isStreaming}
+            />
+            <span className="text-ink-faint">
+              {isStreaming ? 'streaming' : 'ready'}
+            </span>
+          </div>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="close chat dock"
+              className="flex items-center justify-center size-6 -mr-1 text-ink-faint hover:text-ink transition-colors"
+            >
+              <X className="size-3.5" />
+            </button>
+          ) : null}
         </div>
       </header>
 
       <MessageList
         messages={conversation.messages}
         isThinking={isThinking}
+        density={density}
         onResolveApproval={
           backend.resolveApproval
             ? async (sessionId, functionCallId, decision) => {
@@ -350,13 +480,14 @@ export function ChatView({
         }
       />
 
-      <footer className="px-9 pb-6 pt-2">
+      <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
           <Composer
             mode={conversation.mode}
             model={conversation.model}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
+            functionEntries={functionEntries}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             onSubmit={handleSubmit}

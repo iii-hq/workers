@@ -126,6 +126,8 @@ export function Traces() {
   const containerRef = useRef<HTMLDivElement>(null)
   const {
     panelWidths,
+    panelMaxes,
+    panelMin,
     isResizing,
     startResize,
     resetTracePanel,
@@ -366,6 +368,8 @@ export function Traces() {
                   role="separator"
                   aria-orientation="vertical"
                   aria-valuenow={panelWidths.trace}
+                  aria-valuemin={panelMin}
+                  aria-valuemax={panelMaxes.trace}
                   tabIndex={0}
                   aria-label="resize trace panel"
                   onMouseDown={(e) => startResize(e, 'trace')}
@@ -493,6 +497,8 @@ export function Traces() {
                       role="separator"
                       aria-orientation="vertical"
                       aria-valuenow={panelWidths.span}
+                      aria-valuemin={panelMin}
+                      aria-valuemax={panelMaxes.span}
                       tabIndex={0}
                       aria-label="resize span panel"
                       onMouseDown={(e) => startResize(e, 'span')}

@@ -386,6 +386,175 @@ fn run_tx_steps(
     Ok(results)
 }
 
+/// Issue `BEGIN` on a pinned connection (held in the registry's
+/// `PinnedConn::Sqlite(Option<...>)` slot). SQLite-specific isolation
+/// downgrade applies: `Serializable` → `BEGIN IMMEDIATE`, others fall back
+/// to `BEGIN DEFERRED` with a `tracing::warn!`. Used by `beginTransaction`.
+pub async fn tx_begin(
+    conn_slot: &mut Option<crate::pool::sqlite::SqliteConn>,
+    isolation: Option<Isolation>,
+) -> Result<(), DbError> {
+    let begin_sql = match isolation {
+        Some(Isolation::Serializable) => "BEGIN IMMEDIATE",
+        Some(Isolation::ReadCommitted) | Some(Isolation::RepeatableRead) => {
+            tracing::warn!(
+                "sqlite ignores requested isolation; using BEGIN DEFERRED (always serializable in practice)"
+            );
+            "BEGIN DEFERRED"
+        }
+        None => "BEGIN DEFERRED",
+    };
+    run_simple_on_pinned(conn_slot, begin_sql).await
+}
+
+/// `COMMIT` the in-progress transaction on a pinned connection.
+pub async fn tx_commit(
+    conn_slot: &mut Option<crate::pool::sqlite::SqliteConn>,
+) -> Result<(), DbError> {
+    run_simple_on_pinned(conn_slot, "COMMIT").await
+}
+
+/// `ROLLBACK` the in-progress transaction on a pinned connection. Errors
+/// from rollback (e.g. SQLite already aborted the txn implicitly) are
+/// surfaced; callers that want best-effort rollback (e.g. timeout watcher,
+/// post-commit-failure cleanup) should `let _ =` the result.
+pub async fn tx_rollback(
+    conn_slot: &mut Option<crate::pool::sqlite::SqliteConn>,
+) -> Result<(), DbError> {
+    run_simple_on_pinned(conn_slot, "ROLLBACK").await
+}
+
+/// Internal helper: run a parameterless control-plane SQL string (`BEGIN`,
+/// `COMMIT`, `ROLLBACK`) on the pinned SQLite connection. Mirrors the
+/// take/replace dance from `run_prepared` so rusqlite's blocking call can
+/// be wrapped in `spawn_blocking`.
+async fn run_simple_on_pinned(
+    conn_slot: &mut Option<crate::pool::sqlite::SqliteConn>,
+    sql: &'static str,
+) -> Result<(), DbError> {
+    let owned = conn_slot.take().ok_or_else(|| DbError::DriverError {
+        driver: "sqlite".into(),
+        code: None,
+        message: "pinned connection already taken (concurrent tx op?)".into(),
+        failed_index: None,
+    })?;
+    let (result, returned) = tokio::task::spawn_blocking(
+        move || -> (Result<(), DbError>, crate::pool::sqlite::SqliteConn) {
+            let mut owned = owned;
+            let result = owned.with_mut(|c| c.execute_batch(sql).map_err(map_err));
+            (result, owned)
+        },
+    )
+    .await
+    .map_err(|e| DbError::DriverError {
+        driver: "sqlite".into(),
+        code: None,
+        message: format!("spawn_blocking join: {e}"),
+        failed_index: None,
+    })?;
+    *conn_slot = Some(returned);
+    result
+}
+
+/// Run an INSERT/UPDATE/DELETE/DDL (optionally with `RETURNING`) against a
+/// pinned connection that is currently inside a `BEGIN ... COMMIT` block.
+/// Mirrors `execute()`'s semantics — multi-statement guard, `last_insert_id`
+/// for INSERT, planner-driven row/no-row routing — but does NOT acquire from
+/// the pool. Used by `transactionExecute`.
+pub async fn tx_execute(
+    conn_slot: &mut Option<crate::pool::sqlite::SqliteConn>,
+    sql: &str,
+    params: &[JsonParam],
+    returning: &[String],
+) -> Result<ExecuteResult, DbError> {
+    if looks_like_multi_statement(sql) {
+        return Err(DbError::DriverError {
+            driver: "sqlite".into(),
+            code: Some("MULTI_STATEMENT".into()),
+            message: "rusqlite tx_execute() supports only a single statement; \
+                      use multiple transactionExecute calls"
+                .into(),
+            failed_index: None,
+        });
+    }
+    let owned = conn_slot.take().ok_or_else(|| DbError::DriverError {
+        driver: "sqlite".into(),
+        code: None,
+        message: "pinned connection already taken (concurrent tx op?)".into(),
+        failed_index: None,
+    })?;
+    let sql = sql.to_string();
+    let params = params.to_vec();
+    let returning = returning.to_vec();
+
+    let (result, returned) = tokio::task::spawn_blocking(
+        move || -> (Result<ExecuteResult, DbError>, crate::pool::sqlite::SqliteConn) {
+            let mut owned = owned;
+            let result = owned.with_mut(|c| -> Result<ExecuteResult, DbError> {
+                let bound: Vec<SqlValue> = params.iter().map(json_param_to_sql).collect();
+                let bound_refs: Vec<&dyn rusqlite::ToSql> =
+                    bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+
+                let (affected_rows, returned_rows, returned_columns) = {
+                    let mut stmt = c.prepare(&sql).map_err(map_err)?;
+                    if statement_returns_rows(&stmt, &returning) {
+                        let columns: Vec<ColumnMeta> = stmt
+                            .columns()
+                            .into_iter()
+                            .map(|col| ColumnMeta {
+                                name: col.name().to_string(),
+                                ty: col.decl_type().unwrap_or("").to_string(),
+                            })
+                            .collect();
+                        let n = columns.len();
+                        let mut returned: Vec<Row> = Vec::new();
+                        let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
+                        while let Some(row) = rows.next().map_err(map_err)? {
+                            let mut vals = Vec::with_capacity(n);
+                            for i in 0..n {
+                                vals.push(row_value_at(row, i)?);
+                            }
+                            returned.push(Row(vals));
+                        }
+                        (returned.len() as u64, returned, columns)
+                    } else {
+                        let affected = stmt.execute(bound_refs.as_slice()).map_err(map_err)?;
+                        (affected as u64, vec![], vec![])
+                    }
+                };
+
+                let last_insert_id = if is_insert(&sql) {
+                    let r = c.last_insert_rowid();
+                    if r != 0 {
+                        Some(r.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Ok(ExecuteResult {
+                    affected_rows,
+                    last_insert_id,
+                    returned_rows,
+                    returned_columns,
+                })
+            });
+            (result, owned)
+        },
+    )
+    .await
+    .map_err(|e| DbError::DriverError {
+        driver: "sqlite".into(),
+        code: None,
+        message: format!("spawn_blocking join: {e}"),
+        failed_index: None,
+    })?;
+
+    *conn_slot = Some(returned);
+    result
+}
+
 /// Run an arbitrary SELECT/RETURNING-bearing statement against a pinned
 /// connection held in an Option slot (the registry's `PinnedConn::Sqlite`
 /// variant). The slot is `.take()`-en to move the connection into

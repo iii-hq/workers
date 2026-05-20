@@ -15,6 +15,12 @@ interface FunctionCallMessageProps {
    */
   onApprove?: () => void | Promise<void>
   onDeny?: () => void | Promise<void>
+  /**
+   * When true, render without the outer `border border-rule bg-bg` chrome
+   * so the parent (typically a `FunctionCallGroup`) can frame the stack.
+   * The internal layout — header, body, pending bar — stays identical.
+   */
+  embedded?: boolean
 }
 
 function formatJson(value: unknown): string {
@@ -73,6 +79,7 @@ export function FunctionCallMessage({
   defaultOpen,
   onApprove,
   onDeny,
+  embedded,
 }: FunctionCallMessageProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
@@ -107,7 +114,10 @@ export function FunctionCallMessage({
       : 'ink'
 
   return (
-    <div className="border border-rule bg-bg" data-message-id={message.id}>
+    <div
+      className={cn(!embedded && 'border border-rule bg-bg')}
+      data-message-id={message.id}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

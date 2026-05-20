@@ -26,6 +26,7 @@ interface MentionsPluginProps {
   /** When set, this ref is flipped to true while the typeahead is visible
       so a sibling SubmitOnEnter plugin can skip its Enter handler. */
   menuOpenRef?: React.MutableRefObject<boolean>
+  functionEntries?: FunctionEntry[]
 }
 
 interface FlipMenuProps {
@@ -147,15 +148,20 @@ function FlipMenu({
   )
 }
 
-export function MentionsPlugin({ menuOpenRef }: MentionsPluginProps = {}) {
+export function MentionsPlugin({
+  menuOpenRef,
+  functionEntries = [],
+}: MentionsPluginProps = {}) {
   const [query, setQuery] = useState<string | null>(null)
 
   const triggerFn = useBasicTypeaheadTriggerMatch('@', { minLength: 0 })
 
   const options = useMemo(
     () =>
-      fuzzyFilter(query ?? '').map((entry) => new FunctionMentionOption(entry)),
-    [query],
+      fuzzyFilter(functionEntries, query ?? '').map(
+        (entry) => new FunctionMentionOption(entry),
+      ),
+    [functionEntries, query],
   )
 
   /* The typeahead plugin wraps this callback in editor.update() and passes us

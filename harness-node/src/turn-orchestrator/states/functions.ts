@@ -3,10 +3,8 @@
  * `turn-orchestrator/src/states/functions.rs`.
  */
 
-import type { ISdk } from '../../runtime/iii.js';
 import { STATE_SCOPE } from '../../approval-gate/schemas.js';
-import { registerApprovalResume } from '../approval-resume.js';
-import type { TurnOrchestratorConfig } from '../config.js';
+import type { ISdk } from '../../runtime/iii.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
   AgentMessage,
@@ -16,6 +14,8 @@ import type {
 import { text } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import { TOOL_NAME, dispatchWithHook, isErrorResult } from '../agent-call.js';
+import { registerApprovalResume } from '../approval-resume.js';
+import type { TurnOrchestratorConfig } from '../config.js';
 import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
 import type { PreparedEntry } from '../persistence.js';
@@ -68,13 +68,19 @@ export async function handleExecute(
       function_id: fc.function_id,
       args: fc.arguments,
     });
+    /* `startedAt` is captured right after the start emit so the measured
+       window matches what the consumer sees on the wire. Each non-replay
+       branch computes its own delta; `existing` reuses the persisted one. */
+    const startedAt = Date.now();
 
     const existing = persistence.findExecutedCall(results, fc.id);
     if (existing) {
+      /* Replay: reuse the persisted duration so a resumed run shows the
+         original timing, not the ~0ms it takes to re-emit. */
       await emit(
         iii,
         rec.session_id,
-        buildFunctionExecutionEnd(fc, existing.result, existing.is_error),
+        buildFunctionExecutionEnd(fc, existing.result, existing.is_error, existing.duration_ms),
       );
       continue;
     }
@@ -82,6 +88,7 @@ export async function handleExecute(
     if (entry.pre_approved === true) {
       let result: FunctionResult;
       let is_error: boolean;
+      let duration_ms: number;
       try {
         const value = await iii.trigger<unknown, unknown>({
           function_id: fc.function_id,
@@ -93,18 +100,34 @@ export async function handleExecute(
         result = triggerErrorResult(fc.function_id, err);
         is_error = true;
       }
-      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+
+      duration_ms = Date.now() - startedAt;
+      persistence.upsertExecutedCall(results, {
+        function_call: fc,
+        result,
+        is_error,
+        duration_ms,
+      });
+
       await persistence.saveExecutedCalls(iii, rec.session_id, results);
-      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error, duration_ms));
       continue;
     }
 
     if (entry.blocked) {
       const result = entry.blocked;
       const is_error = true;
-      persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+      /* Denial is effectively instant — local delta captures whatever
+         time the persist + emit roundtrip takes, which is honest. */
+      const duration_ms = Date.now() - startedAt;
+      persistence.upsertExecutedCall(results, {
+        function_call: fc,
+        result,
+        is_error,
+        duration_ms,
+      });
       await persistence.saveExecutedCalls(iii, rec.session_id, results);
-      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+      await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error, duration_ms));
       continue;
     }
 
@@ -134,6 +157,9 @@ export async function handleExecute(
     const out = await dispatchWithHook(iii, augmentedFc, rec.session_id);
 
     if (out.kind === 'pending') {
+      /* No end emit; `startedAt` is discarded. On resume, the loop re-enters
+         and a fresh `function_execution_start` resets the timer — approval
+         wait time is naturally excluded from the eventual duration. */
       rec.awaiting_approval = rec.awaiting_approval ?? [];
       rec.awaiting_approval.push({
         function_call_id: fc.id,
@@ -147,10 +173,20 @@ export async function handleExecute(
 
     const result = out.result;
     const is_error = out.kind === 'deny' || isErrorResult(result);
-    persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
+    const duration_ms = Date.now() - startedAt;
 
+    persistence.upsertExecutedCall(results, {
+      function_call: fc,
+      result,
+      is_error,
+      duration_ms,
+    });
+
+    // Kick off persistence in parallel with the user-facing emit so the UI's
+    // fcall-end lands ~one trigger round-trip sooner. We still await both
+    // before the next iteration so ordering and durability are preserved.
     const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
-    await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
+    await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error, duration_ms));
     await savePromise;
   }
   transitionTo(rec, 'function_finalize');
@@ -279,6 +315,7 @@ function buildFunctionExecutionEnd(
   fc: FunctionCall,
   result: FunctionResult,
   is_error: boolean,
+  duration_ms: number,
 ): AgentEvent {
   return {
     type: 'function_execution_end',
@@ -286,6 +323,7 @@ function buildFunctionExecutionEnd(
     function_id: fc.function_id,
     result,
     is_error,
+    duration_ms,
   };
 }
 

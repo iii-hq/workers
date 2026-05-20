@@ -13,8 +13,8 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
-import { parseStateListValues, stateListResponseRows } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
+import { parseStateListValues, stateListResponseRows } from '../../runtime/state.js';
 import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } from './types.js';
 
 export interface SessionStore {
@@ -23,6 +23,8 @@ export interface SessionStore {
   loadEntries(session_id: string): Promise<SessionEntry[]>;
   loadMeta(session_id: string): Promise<SessionMeta>;
   list(): Promise<SessionMeta[]>;
+  /** Replace the entry with the given id in-place. No-op if id not found. */
+  updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void>;
 }
 
 export class InMemoryStore implements SessionStore {
@@ -54,6 +56,16 @@ export class InMemoryStore implements SessionStore {
 
   async list(): Promise<SessionMeta[]> {
     return [...this.meta.values()].map((m) => ({ ...m }));
+  }
+
+  async updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void> {
+    const list = this.entries.get(session_id);
+    if (!list) return;
+    const idx = list.findIndex((e) => e.id === entry_id);
+    if (idx === -1) return;
+    list[idx] = updated;
+    const m = this.meta.get(session_id);
+    if (m) m.updated_at = Date.now();
   }
 }
 
@@ -156,6 +168,30 @@ export class IiiStateSessionStore implements SessionStore {
       throw new SessionError('storage', 'state::list returned non-array');
     }
     return parseStateListValues<SessionMeta>(resp);
+  }
+
+  async updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void> {
+    try {
+      await this.iii.trigger<unknown, unknown>({
+        function_id: 'state::set',
+        payload: {
+          scope: entriesScope(session_id),
+          key: entry_id,
+          value: updated,
+        },
+      });
+    } catch (e) {
+      throw new SessionError('storage', `state::set updateEntry: ${String(e)}`);
+    }
+    // Best-effort meta refresh — failures here log only.
+    try {
+      await this.refreshMetaUpdatedAt(session_id);
+    } catch (e) {
+      logger.warn('meta updated_at refresh failed', {
+        session_id,
+        err: String(e),
+      });
+    }
   }
 
   private async refreshMetaUpdatedAt(session_id: string): Promise<void> {

@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'acp/v*'
+      - 'console/v*'
       - 'iii-database/v*'
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
@@ -48,6 +49,7 @@ jobs:
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
+      web_bundle: ${{ steps.web.outputs.needed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,6 +73,23 @@ jobs:
           set -euo pipefail
           pip install --quiet pyyaml
           python3 .github/scripts/parse_release_tag.py "$RAW_TAG"
+
+      # Workers like `console` ship a Vite SPA embedded into the binary via
+      # `rust-embed`. Their `build.rs` invokes `pnpm install + pnpm build`
+      # inside `<worker>/web/`, which the rust-binary matrix runners don't
+      # have a Node/pnpm toolchain for. Detection is filesystem-based so any
+      # future worker that adds a `web/package.json` opts in automatically.
+      - name: Detect web bundle
+        id: web
+        env:
+          WORKER: ${{ steps.meta.outputs.worker }}
+        run: |
+          if [[ -f "$WORKER/web/package.json" ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$WORKER has web/package.json; will pre-build SPA bundle"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # ──────────────────────────────────────────────────────────────
   # Create the GitHub Release shell (skipped on dry runs).
@@ -108,6 +127,7 @@ jobs:
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       targets: ${{ needs.setup.outputs.targets }}
+      web_bundle: ${{ needs.setup.outputs.web_bundle == 'true' }}
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────

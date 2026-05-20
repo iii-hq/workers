@@ -414,3 +414,89 @@ describe('flattenTree — collapseEngineRoutingPairs', () => {
     expect(flat).toEqual([])
   })
 })
+
+describe('flattenTree — onlyCriticalPath', () => {
+  it('emits the full chain when the tree is linear (every node is critical)', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a', duration_ms: 100, depth: 0 }),
+      makeSpan({
+        span_id: 'b',
+        parent_span_id: 'a',
+        duration_ms: 50,
+        depth: 1,
+      }),
+      makeSpan({
+        span_id: 'c',
+        parent_span_id: 'b',
+        duration_ms: 30,
+        depth: 2,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: false,
+      collapseEngineRoutingPairs: false,
+      onlyCriticalPath: true,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('skips non-critical siblings and their subtrees', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'root', duration_ms: 100, depth: 0 }),
+      makeSpan({
+        span_id: 'fast',
+        parent_span_id: 'root',
+        duration_ms: 5,
+        depth: 1,
+      }),
+      makeSpan({
+        span_id: 'fast-child',
+        parent_span_id: 'fast',
+        duration_ms: 1,
+        depth: 2,
+      }),
+      makeSpan({
+        span_id: 'slow',
+        parent_span_id: 'root',
+        duration_ms: 80,
+        depth: 1,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: false,
+      collapseEngineRoutingPairs: false,
+      onlyCriticalPath: true,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['root', 'slow'])
+  })
+
+  it('composes with hideEngineRouting — critical user span still depth-shifts', () => {
+    const tree = buildSpanTree([
+      makeSpan({
+        span_id: 'r',
+        service_name: 'iii',
+        name: 'handle_invocation fn',
+        duration_ms: 100,
+        depth: 0,
+      }),
+      makeSpan({
+        span_id: 'user',
+        parent_span_id: 'r',
+        service_name: 'billing',
+        name: 'charge',
+        duration_ms: 80,
+        depth: 1,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: true,
+      collapseEngineRoutingPairs: false,
+      onlyCriticalPath: true,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['user'])
+    expect(flat[0].displayDepth).toBe(0)
+  })
+})

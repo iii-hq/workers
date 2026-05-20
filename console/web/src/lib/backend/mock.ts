@@ -26,7 +26,7 @@ short answer: it depends on whether you're optimizing for **read** speed or
 
 - a flat \`Map\` gives you \`O(1)\` lookups but is awkward for ordered iteration.
 - a sorted list trades insert cost for cheap range scans.
-- if you need both, a btree-backed index is usually the right tool.
+- if you need both, a btree-backed index is usually the right function.
 
 | structure | lookup | ordered range |
 |-----------|--------|---------------|
@@ -131,4 +131,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export const mockBackend: ChatBackend = {
   id: 'mock',
   stream: mockStream,
+  async compactSession(_sessionId, _model, _history) {
+    return { status: 'empty' }
+  },
 }

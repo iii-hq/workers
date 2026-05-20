@@ -12,6 +12,12 @@ III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")
 WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/iii-database}"
 WORKER_BIN_LINK="${WORKER_BIN_LINK:-$HOME/.iii/workers/iii-database}"
 
+# Container runtime. Defaults to `docker compose` (compose v2; what CI runs).
+# Override to `podman-compose` for rootless podman on dev laptops; the script
+# falls back to a healthcheck poll because podman-compose 1.x doesn't
+# implement compose v2's `up --wait` flag.
+COMPOSE="${COMPOSE:-docker compose}"
+
 REPORT_PATH="$ROOT_DIR/reports/report.json"
 TS=$(date +%Y%m%d-%H%M%S)
 ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
@@ -23,6 +29,7 @@ KEEP=0
 NO_BUILD=0
 WITH_CARGO_TEST=0
 FILTER=""
+MODE="full"
 
 for arg in "$@"; do
   case "$arg" in
@@ -30,23 +37,34 @@ for arg in "$@"; do
     --no-build)         NO_BUILD=1 ;;
     --with-cargo-test)  WITH_CARGO_TEST=1 ;;
     --filter=*)         FILTER="${arg#--filter=}" ;;
+    --bypass-only)      MODE="bypass-only" ;;
+    --no-bypass)        MODE="no-bypass" ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--keep] [--no-build] [--with-cargo-test] [--filter=<sqlite_db|pg_db|mysql_db>]
+Usage: $0 [--keep] [--no-build] [--with-cargo-test]
+          [--filter=<sqlite_db|pg_db|mysql_db>] [--bypass-only|--no-bypass]
 
-  --keep              Leave docker compose stack running after the run.
+  --keep              Leave the compose stack running after the run.
   --no-build          Skip cargo build of the iii-database worker.
   --with-cargo-test   Run \`cargo test --all-features\` after compose is healthy
                       with TEST_POSTGRES_URL and TEST_MYSQL_URL pointing at the
-                      docker stack — exercises gated driver/pool tests with
-                      real DBs. CI uses this; local dev usually doesn't need it.
+                      stack — exercises gated driver/pool tests with real DBs.
+                      CI uses this; local dev usually doesn't need it.
   --filter=KEY        Run only one driver (default: all 3).
+  --bypass-only       Run ONLY the side-channel-finalization bypass repros.
+                      Use this to focus on the /review findings: post-fix all
+                      4 cases must PASS; pre-fix at least one FAILs.
+  --no-bypass         Run the full suite WITHOUT the bypass repros. Useful
+                      when running against a worker that hasn't shipped the
+                      fix yet so the rest of the suite reports cleanly.
 
 Env overrides:
   WORKER_SRC          Path to the database worker crate (default: ../..).
   III_BIN             Path to the iii engine binary (default: \$(command -v iii) or \$HOME/.local/bin/iii).
   WORKER_BIN_TARGET   Path to the built worker binary (default: \$WORKER_SRC/target/release/iii-database).
   WORKER_BIN_LINK     Path to the symlink the engine reads (default: \$HOME/.iii/workers/iii-database).
+  COMPOSE             Compose command (default: 'docker compose'; set to
+                      'podman-compose' for rootless podman).
   HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 180).
   HEALTH_TIMEOUT      Seconds to wait for postgres/mysql healthchecks (default: 60).
 EOF
@@ -69,7 +87,7 @@ cleanup() {
     wait "$ENGINE_PID" 2>/dev/null || true
   fi
   if [[ "$KEEP" -eq 0 ]]; then
-    (cd "$ROOT_DIR" && docker compose down -v >/dev/null 2>&1) || true
+    (cd "$ROOT_DIR" && $COMPOSE down -v >/dev/null 2>&1) || true
   fi
   exit "$code"
 }
@@ -100,14 +118,58 @@ if [[ ! -x "$III_BIN" ]]; then
   exit 1
 fi
 
-# 4. Bring up postgres + mysql and wait for healthchecks via compose's --wait
-# (compose v2 native; exits non-zero if any service fails to become healthy
-# within HEALTH_TIMEOUT). Beats parsing `compose ps --format json` with regex.
-echo "[run-tests] docker compose up -d --wait (timeout=${HEALTH_TIMEOUT}s)"
-if ! (cd "$ROOT_DIR" && docker compose up -d --wait --wait-timeout "$HEALTH_TIMEOUT"); then
-  echo "[run-tests] FATAL: services did not become healthy within ${HEALTH_TIMEOUT}s" >&2
-  (cd "$ROOT_DIR" && docker compose logs --tail 40) >&2
-  exit 1
+# 4. Bring up postgres + mysql.
+#
+# docker compose v2 supports `up -d --wait --wait-timeout N`, which exits
+# non-zero if any service fails to become healthy within the budget. That's
+# the happy path and what CI uses. podman-compose 1.x doesn't implement
+# `--wait`, so we detect the runtime and fall back to a healthcheck poll.
+if [[ "$COMPOSE" == "docker compose" || "$COMPOSE" == "docker-compose" ]]; then
+  echo "[run-tests] $COMPOSE up -d --wait (timeout=${HEALTH_TIMEOUT}s)"
+  if ! (cd "$ROOT_DIR" && $COMPOSE up -d --wait --wait-timeout "$HEALTH_TIMEOUT"); then
+    echo "[run-tests] FATAL: services did not become healthy within ${HEALTH_TIMEOUT}s" >&2
+    (cd "$ROOT_DIR" && $COMPOSE logs --tail 40) >&2
+    exit 1
+  fi
+else
+  # Fallback for podman-compose et al. Poll `podman inspect` (or `docker
+  # inspect`) for the `.State.Health.Status` field — works on both runtimes
+  # because Healthcheck status is an OCI-standard field.
+  echo "[run-tests] $COMPOSE up -d"
+  (cd "$ROOT_DIR" && $COMPOSE up -d)
+
+  # Auto-detect the runtime CLI from the compose command. `podman-compose`
+  # → `podman`; everything else → `docker`.
+  INSPECT_BIN="docker"
+  if [[ "$COMPOSE" == "podman-compose" ]]; then
+    INSPECT_BIN="podman"
+  fi
+  project=$(basename "$ROOT_DIR")
+  echo "[run-tests] waiting up to ${HEALTH_TIMEOUT}s for postgres + mysql to be healthy ($INSPECT_BIN inspect)"
+  deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
+  while :; do
+    # Containers are named <project>{_|-}<service>{_|-}1 depending on the
+    # compose version — accept either separator.
+    pg_name=$("$INSPECT_BIN" ps --format '{{.Names}}' | grep -E "${project}[-_]postgres([-_]1)?$" | head -1 || true)
+    my_name=$("$INSPECT_BIN" ps --format '{{.Names}}' | grep -E "${project}[-_]mysql([-_]1)?$" | head -1 || true)
+    pg_status=""
+    my_status=""
+    if [[ -n "$pg_name" ]]; then
+      pg_status=$("$INSPECT_BIN" inspect "$pg_name" --format '{{.State.Health.Status}}' 2>/dev/null || echo "")
+    fi
+    if [[ -n "$my_name" ]]; then
+      my_status=$("$INSPECT_BIN" inspect "$my_name" --format '{{.State.Health.Status}}' 2>/dev/null || echo "")
+    fi
+    if [[ "$pg_status" == "healthy" && "$my_status" == "healthy" ]]; then
+      break
+    fi
+    if (( $(date +%s) > deadline )); then
+      echo "[run-tests] FATAL: services did not become healthy within ${HEALTH_TIMEOUT}s (pg=$pg_status mysql=$my_status)" >&2
+      (cd "$ROOT_DIR" && $COMPOSE logs --tail 40) >&2
+      exit 1
+    fi
+    sleep 1
+  done
 fi
 echo "[run-tests] both services healthy"
 
@@ -128,7 +190,7 @@ if [[ "$WITH_CARGO_TEST" -eq 1 ]]; then
 fi
 
 # 6. Reset SQLite file
-rm -f "$ROOT_DIR/data/test.sqlite"
+rm -f "$ROOT_DIR/data/test.sqlite" "$ROOT_DIR/data/iii.db"
 
 # 7. Install harness deps if needed
 if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
@@ -169,13 +231,14 @@ done
 echo "[run-tests] engine listening"
 
 # 10. Launch the harness as a host node process
-echo "[run-tests] starting harness"
+echo "[run-tests] starting harness (mode=$MODE)"
 HARNESS_ENV=()
 if [[ -n "$FILTER" ]]; then
   HARNESS_ENV+=("HARNESS_FILTER=$FILTER")
 fi
 HARNESS_ENV+=("III_URL=ws://127.0.0.1:49134")
 HARNESS_ENV+=("HARNESS_REPORT_PATH=$REPORT_PATH")
+HARNESS_ENV+=("HARNESS_MODE=$MODE")
 
 ( cd "$ROOT_DIR/workers/harness" && env "${HARNESS_ENV[@]}" npm run --silent dev ) > "$HARNESS_LOG" 2>&1 &
 HARNESS_PID=$!

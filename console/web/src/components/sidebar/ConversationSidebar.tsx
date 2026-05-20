@@ -1,10 +1,15 @@
+import { PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationRow } from './ConversationRow'
 
 interface ConversationSidebarProps {
   conversations: Conversation[]
   activeId: string | null
+  collapsed?: boolean
+  onToggleCollapsed?: () => void
+  density?: 'route' | 'dock'
   onCreate: () => void
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -14,19 +19,54 @@ interface ConversationSidebarProps {
 export function ConversationSidebar({
   conversations,
   activeId,
+  collapsed = false,
+  onToggleCollapsed,
+  density = 'route',
   onCreate,
   onSelect,
   onRename,
   onRemove,
 }: ConversationSidebarProps) {
+  if (collapsed) {
+    return (
+      <aside className="w-9 shrink-0 border-r border-rule flex flex-col items-center bg-bg gap-1 py-2">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label="expand conversations"
+          title="expand conversations"
+          className="flex items-center justify-center size-7 text-ink-faint hover:text-ink transition-colors"
+        >
+          <PanelLeftOpen className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={onCreate}
+          aria-label="new chat"
+          title="new chat"
+          className="flex items-center justify-center size-7 text-ink-faint hover:text-accent transition-colors"
+        >
+          <Plus className="size-4" />
+        </button>
+      </aside>
+    )
+  }
+
+  const widthClass = density === 'dock' ? 'w-[220px]' : 'w-[260px]'
+
   return (
-    <aside className="w-[260px] shrink-0 border-r border-rule flex flex-col bg-bg">
-      <div className="px-3 py-3 border-b border-rule">
+    <aside
+      className={cn(
+        'shrink-0 border-r border-rule flex flex-col bg-bg',
+        widthClass,
+      )}
+    >
+      <div className="px-3 py-3 border-b border-rule flex items-center gap-2">
         <Button
           type="button"
           variant="primary"
           size="sm"
-          className="w-full justify-start"
+          className="flex-1 justify-start"
           onClick={onCreate}
         >
           <span aria-hidden className="text-accent">
@@ -34,6 +74,17 @@ export function ConversationSidebar({
           </span>
           new chat
         </Button>
+        {onToggleCollapsed ? (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-label="collapse conversations"
+            title="collapse conversations"
+            className="flex items-center justify-center size-7 text-ink-faint hover:text-ink transition-colors flex-shrink-0"
+          >
+            <PanelLeftClose className="size-4" />
+          </button>
+        ) : null}
       </div>
 
       <div className="px-3 py-2">

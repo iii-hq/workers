@@ -10,7 +10,8 @@ use iii_database::handlers::run_statement::RunReq;
 use iii_database::handlers::transaction::TxReq;
 use iii_database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
 use iii_database::pool;
-use iii_sdk::RegisterFunction;
+use iii_database::transaction::TxRegistry;
+use iii_sdk::{Logger, RegisterFunction};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +27,8 @@ async fn build_state() -> AppState {
     AppState {
         pools: Arc::new(pools),
         handles: Arc::new(HandleRegistry::new()),
+        transactions: TxRegistry::new(),
+        log: Logger::new(),
     }
 }
 
@@ -172,10 +175,40 @@ fn registered_functions_carry_request_and_response_schemas() {
     async fn _t(_: TxReq) -> Result<transaction::TxResp, String> {
         unreachable!()
     }
+    async fn _bt(
+        _: iii_database::handlers::begin_transaction::BeginTxReq,
+    ) -> Result<iii_database::handlers::begin_transaction::BeginTxResp, String> {
+        unreachable!()
+    }
+    async fn _tq(
+        _: iii_database::handlers::transaction_query::TxQueryReq,
+    ) -> Result<query::QueryResp, String> {
+        unreachable!()
+    }
+    async fn _te(
+        _: iii_database::handlers::transaction_execute::TxExecuteReq,
+    ) -> Result<iii_database::handlers::transaction_execute::TxExecuteResp, String> {
+        unreachable!()
+    }
+    async fn _ct(
+        _: iii_database::handlers::commit_transaction::CommitTxReq,
+    ) -> Result<iii_database::handlers::commit_transaction::CommitTxResp, String> {
+        unreachable!()
+    }
+    async fn _rt(
+        _: iii_database::handlers::rollback_transaction::RollbackTxReq,
+    ) -> Result<iii_database::handlers::rollback_transaction::RollbackTxResp, String> {
+        unreachable!()
+    }
 
     assert_schemas("iii-database::query", _q);
     assert_schemas("iii-database::execute", _e);
     assert_schemas("iii-database::prepareStatement", _p);
     assert_schemas("iii-database::runStatement", _r);
     assert_schemas("iii-database::transaction", _t);
+    assert_schemas("iii-database::beginTransaction", _bt);
+    assert_schemas("iii-database::transactionQuery", _tq);
+    assert_schemas("iii-database::transactionExecute", _te);
+    assert_schemas("iii-database::commitTransaction", _ct);
+    assert_schemas("iii-database::rollbackTransaction", _rt);
 }

@@ -33,16 +33,14 @@ import type {
   AgentMessage,
   AssistantMessageEvent,
   ContentBlock,
+  FunctionResult,
   TurnStateChangedEvent,
 } from '@/types/iii-agent-event'
 import { diffPending, type PendingApproval } from './pending-approvals-store'
 import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
-export function translateAgentEvent(
-  event: AgentEvent,
-  sessionId?: string,
-): StreamEvent[] {
+export function translateAgentEvent(event: AgentEvent, sessionId?: string): StreamEvent[] {
   switch (event.type) {
     case 'agent_start':
     case 'turn_start':
@@ -80,8 +78,14 @@ export function translateAgentEvent(
       return [
         {
           kind: 'fcall-end',
-          output: event.result,
-          durationMs: 0,
+          /* Soft failures are surfaced in the UI via the canonical
+             `{ error: { kind, message, ... } }` shape (see PLAYGROUND.md
+             "Error semantics"). The harness sends a raw FunctionResult and a
+             sibling `is_error: true` flag; the canonical shape is a UI
+             concern, so the wrap lives here rather than on the orchestrator
+             side. Keeps the wire format provider-agnostic. */
+          output: event.is_error ? wrapErrorOutput(event.result) : event.result,
+          durationMs: event.duration_ms,
         },
       ]
 
@@ -119,9 +123,8 @@ function translateMessageStart(message: AgentMessage): StreamEvent[] {
   if (message.role !== 'assistant') {
     return []
   }
-  const hasStreamableContent = message.content.some(
-    (b) => b.type === 'text' || b.type === 'thinking',
-  )
+  const hasStreamableContent = message.content.some((b) => b.type === 'text' || b.type === 'thinking')
+
   if (hasStreamableContent) {
     // The provider streamed; nothing to re-emit.
     return []
@@ -167,10 +170,7 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
  * through its existing path. Removing the entry from our mirror is
  * bookkeeping only.
  */
-export function createTurnStateTranslator(): (
-  event: TurnStateChangedEvent,
-  sessionId: string,
-) => StreamEvent[] {
+export function createTurnStateTranslator(): (event: TurnStateChangedEvent, sessionId: string) => StreamEvent[] {
   const mirrors = new Map<string, PendingApproval[]>()
   return (event, sessionId) => {
     const prev = mirrors.get(sessionId) ?? []
@@ -186,4 +186,42 @@ export function createTurnStateTranslator(): (
       sessionId,
     }))
   }
+}
+
+/*
+ * Wrap a soft function-execution failure into the canonical
+ * `{ error: { kind, message, details, content } }` shape consumed by the
+ * group accordion's failed counter and the embedded fcall's error view.
+ * `details` / `content` carry the raw payload so the expanded response
+ * pane still has everything to render. `kind: 'function_error'` matches
+ * the rest of the translator's deny path (`approval_resolved` uses
+ * `kind: 'denied'`).
+ */
+function wrapErrorOutput(result: FunctionResult): {
+  error: { kind: string; message: string; details: unknown; content: ContentBlock[] }
+} {
+  return {
+    error: {
+      kind: 'function_error',
+      message: deriveErrorMessage(result.content),
+      details: result.details,
+      content: result.content,
+    },
+  }
+}
+
+/**
+ * Pull a one-line message out of a FunctionResult's content blocks for the
+ * canonical `error.message`. First non-empty text block wins; otherwise we
+ * fall back to a generic string so the UI always has something to render.
+ */
+function deriveErrorMessage(content: ContentBlock[]): string {
+  for (const block of content) {
+    if (block.type === 'text' && block.text.length > 0) {
+      // Collapse to a single line — the message field is the header; the
+      // full multi-line payload remains under error.content / details.
+      return block.text.replace(/\s+/g, ' ').trim()
+    }
+  }
+  return 'function returned an error'
 }

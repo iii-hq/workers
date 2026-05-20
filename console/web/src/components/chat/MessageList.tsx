@@ -1,6 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Prompt } from '@/components/ui/Prompt'
-import type { Message as MessageType } from '@/types/chat'
+import { cn } from '@/lib/utils'
+import type {
+  FunctionCallMessage as FunctionCallMessageType,
+  Message as MessageType,
+} from '@/types/chat'
+import { FunctionCallGroup } from './FunctionCallGroup'
 import { Message } from './Message'
 
 interface MessageListProps {
@@ -9,6 +14,7 @@ interface MessageListProps {
       visible outputs (after submit, or between fcall-end and the next
       turn's first token). */
   isThinking?: boolean
+  density?: 'route' | 'dock'
   onResolveApproval?: (
     sessionId: string,
     functionCallId: string,
@@ -16,14 +22,62 @@ interface MessageListProps {
   ) => Promise<void>
 }
 
+type RenderItem =
+  | { kind: 'message'; key: string; message: MessageType }
+  | { kind: 'fcall-group'; key: string; messages: FunctionCallMessageType[] }
+
+/**
+ * Collapse runs of consecutive `function-call` messages into a single
+ * `fcall-group` item. Single-call runs stay rendered as a standalone
+ * `Message` so happy-agent, pending-approval, and error-on-fcall look
+ * identical to today. Only runs of 2+ get the group accordion.
+ *
+ * The group's key is anchored to the first call's id so the React tree
+ * stays stable as later calls land in the same run.
+ */
+function groupConsecutiveFcalls(messages: MessageType[]): RenderItem[] {
+  const out: RenderItem[] = []
+  let buffer: FunctionCallMessageType[] = []
+
+  const flush = () => {
+    if (buffer.length === 0) return
+    if (buffer.length === 1) {
+      const only = buffer[0]
+      out.push({ kind: 'message', key: only.id, message: only })
+    } else {
+      out.push({
+        kind: 'fcall-group',
+        key: `fcall-group:${buffer[0].id}`,
+        messages: buffer,
+      })
+    }
+    buffer = []
+  }
+
+  for (const m of messages) {
+    if (m.role === 'function-call') {
+      buffer.push(m)
+    } else {
+      flush()
+      out.push({ kind: 'message', key: m.id, message: m })
+    }
+  }
+  flush()
+
+  return out
+}
+
 export function MessageList({
   messages,
   isThinking,
+  density = 'route',
   onResolveApproval,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const lastPendingIdRef = useRef<string | null>(null)
+
+  const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
 
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"
@@ -70,19 +124,32 @@ export function MessageList({
   }, [messages])
 
   if (messages.length === 0) {
-    return <EmptyState />
+    return <EmptyState density={density} />
   }
 
+  const listPad = density === 'dock' ? 'px-4 py-6' : 'px-9 py-8'
+
   return (
-    <div ref={containerRef} className="flex-1 overflow-y-auto px-9 py-8">
+    <div
+      ref={containerRef}
+      className={cn('flex-1 overflow-y-auto', listPad)}
+    >
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
-        {messages.map((m) => (
-          <Message
-            key={m.id}
-            message={m}
-            onResolveApproval={onResolveApproval}
-          />
-        ))}
+        {items.map((item) =>
+          item.kind === 'message' ? (
+            <Message
+              key={item.key}
+              message={item.message}
+              onResolveApproval={onResolveApproval}
+            />
+          ) : (
+            <FunctionCallGroup
+              key={item.key}
+              messages={item.messages}
+              onResolveApproval={onResolveApproval}
+            />
+          ),
+        )}
         {isThinking ? (
           <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
             thinking…
@@ -94,9 +161,12 @@ export function MessageList({
   )
 }
 
-function EmptyState() {
+function EmptyState({ density }: { density: 'route' | 'dock' }) {
+  const emptyPad = density === 'dock' ? 'px-4' : 'px-9'
   return (
-    <div className="flex-1 flex items-center justify-center px-9">
+    <div
+      className={cn('flex-1 flex items-center justify-center', emptyPad)}
+    >
       <div className="max-w-[520px] w-full flex flex-col gap-6">
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           <Prompt symbol="$">new session</Prompt>

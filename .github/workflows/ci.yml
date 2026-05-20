@@ -125,6 +125,35 @@ jobs:
         with:
           workspaces: ${{ matrix.worker }} -> target
 
+      # Workers that ship a Vite SPA embedded into the binary (e.g.
+      # `console`) have a `build.rs` that calls `pnpm install + pnpm
+      # build` inside `<worker>/web/`. Pre-build the dist here so the
+      # cargo invocations below see a fresh bundle and short-circuit
+      # the pnpm step. Detection is filesystem-based: workers without
+      # a `web/package.json` skip all three steps cleanly.
+      - name: Setup pnpm (workers with bundled web/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node (workers with bundled web/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+
+      - name: Pre-build SPA bundle
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        working-directory: ${{ matrix.worker }}/web
+        env:
+          VITE_PLAYGROUND: ''
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

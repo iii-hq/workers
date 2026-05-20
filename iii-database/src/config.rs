@@ -39,15 +39,45 @@ pub struct DatabaseConfig {
 /// (matching libpq's `sslmode=require` semantics). Use `mode: verify-full`
 /// to additionally verify the certificate hostname matches the URL host,
 /// and `mode: disable` to opt out of TLS entirely (local-dev only).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {
     #[serde(default)]
     pub mode: TlsMode,
     /// Optional path to a PEM file containing one or more CA certificates.
-    /// When set, the system trust store is **replaced** by these certs
-    /// (not extended). Use this for self-hosted databases with a private CA.
+    /// Additive by default — these certs **extend** the system trust store
+    /// rather than replace it. Set `trust_native: false` for strict-isolation
+    /// deployments that must only trust the operator-supplied bundle.
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// When true (default), the system/native trust store is loaded in
+    /// addition to any `ca_cert` bundle. Set to `false` to trust only the
+    /// `ca_cert` certificates — useful when an operator wants to pin trust
+    /// to a private CA and explicitly *not* accept the public web PKI.
+    ///
+    /// Effective for postgres. MySQL is forced-additive: `mysql_async`'s
+    /// rustls path always loads the Mozilla `webpki_roots` bundle and
+    /// extends it with `ca_cert` — there is no upstream knob to suppress
+    /// the bundled roots, so `trust_native: false` only affects postgres.
+    ///
+    /// Note: with both `trust_native: false` *and* `ca_cert: None` on
+    /// postgres, no trust roots are available; pool construction fails
+    /// with `CONFIG_ERROR`.
+    #[serde(default = "default_trust_native")]
+    pub trust_native: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            mode: TlsMode::default(),
+            ca_cert: None,
+            trust_native: default_trust_native(),
+        }
+    }
+}
+
+fn default_trust_native() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

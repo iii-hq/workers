@@ -47,7 +47,8 @@ databases:
     url: postgres://app@db.example.com:5432/app
     tls:
       mode: verify-full           # disable | require | verify-full   (default: require)
-      ca_cert: /etc/ssl/internal-ca.pem    # optional; replaces the system trust store
+      ca_cert: /etc/ssl/internal-ca.pem    # optional; extends the system trust store
+      trust_native: true                   # default true; set false to trust only ca_cert
   local:
     url: postgres://dev@localhost:5432/dev
     tls:
@@ -58,7 +59,34 @@ databases:
 - **`require`** (default) — encrypted; cert chain validated; hostname is **not** verified. Catches passive eavesdropping, doesn't catch a determined MITM with their own valid-chain cert.
 - **`verify-full`** — encrypted; cert chain validated; cert hostname must match the URL host. Production default for managed services (RDS, Neon, Supabase).
 
-`ca_cert` lets you point at a private CA bundle for self-hosted databases. When set, it **replaces** the system trust store rather than extending it.
+`ca_cert` lets you point at a CA bundle for self-hosted databases or managed providers whose root isn't in the OS trust store. **Additive by default**: the supplied certs extend the system trust store rather than replacing it, so the same `TlsConfig` surface works for one database that needs a private CA and another that doesn't. Set `tls.trust_native: false` to switch to the strict-isolation posture (only the `ca_cert` certs trusted; the public web PKI is rejected). Postgres only — `mysql_async`'s rustls path always bundles `webpki_roots` and offers no upstream knob to suppress it.
+
+#### Connecting to managed providers
+
+**Supabase.** Every Supabase endpoint (direct, transaction pooler, session pooler) presents certificates signed by *Supabase Intermediate 2021 CA*, which is not in the OS trust store. By default `tls.mode: require` fails with `pool connection failed (tls)`. Download the CA from your project dashboard (or `https://supabase.com/downloads/prod-ca-2021.crt`) and point `tls.ca_cert` at it:
+
+```yaml
+databases:
+  primary:
+    url: postgresql://postgres.<project>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
+    tls:
+      mode: verify-full
+      ca_cert: /etc/ssl/supabase-prod-ca-2021.crt
+```
+
+`ca_cert` is additive — your existing CA pinning for other databases keeps working alongside this entry.
+
+**Neon.** Drop `?sslmode=` and `?channel_binding=` from URLs copied out of the Neon dashboard, and configure TLS via the `tls` YAML block instead:
+
+```yaml
+databases:
+  primary:
+    url: postgres://user:pass@ep-xxx-pooler.<region>.aws.neon.tech/neondb
+    tls:
+      mode: require    # or verify-full
+```
+
+Neon's default `?channel_binding=require` cannot work through the pooler endpoint: TLS terminates at the pooler, so SCRAM-SHA-256-PLUS isn't advertised by the inner server, and `tokio-postgres` refuses to fall back. Leaving the URL param in surfaces as `pool connection failed (auth)`.
 
 SQLite ignores the `tls` block (local-file driver).
 
@@ -92,26 +120,14 @@ const { rows } = await call('iii-database::query', {
 | `iii-database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row**, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
 | `iii-database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
 | `iii-database::runStatement` | Run a previously-prepared handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
-| `iii-database::transaction` | Atomic sequence; rolls back on first failure. |
+| `iii-database::transaction` | Atomic batch sequence; rolls back on first failure. One-shot — pass all statements together. |
+| `iii-database::beginTransaction` | Open an interactive transaction. Returns `{ transaction: { id, expires_at } }`. Configurable `timeout_ms` (default 30 000, max 300 000) auto-rolls back if the deadline elapses. |
+| `iii-database::transactionQuery` | Read SQL inside an interactive transaction. Same envelope as `query`. |
+| `iii-database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
+| `iii-database::commitTransaction` | Commit and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
+| `iii-database::rollbackTransaction` | Rollback and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 
 ## Triggers
-
-### `iii-database::query-poll`
-Polls a SQL query at a fixed interval, dispatches new rows, and persists a cursor inside the watched database in `__iii_cursors`.
-
-```yaml
-triggers:
-  - type: iii-database::query-poll
-    config:
-      db: primary
-      sql: SELECT id, body FROM outbox WHERE id > COALESCE(?, 0) ORDER BY id LIMIT 50
-      interval_ms: 1000
-      cursor_column: id
-```
-
-The trigger binds the cursor as the single positional parameter (`?` for SQLite/MySQL, `$1` for Postgres). On the first poll the cursor binds as `NULL`.
-
-The dispatched event includes a `cursor` field that is **always serialized as a JSON string**, regardless of the underlying column type. Callers must parse it (e.g. `parseInt(event.cursor)`) when expecting numeric comparison.
 
 ### `iii-database::row-change`
 Postgres only. Streams row-level changes via logical replication (`pgoutput`).
@@ -138,12 +154,13 @@ Returned `IIIError::Handler` bodies carry a stable `code` field:
 | `POOL_TIMEOUT` | Pool acquire exceeded `acquire_timeout_ms`. |
 | `QUERY_TIMEOUT` | Query exceeded `timeout_ms`. |
 | `STATEMENT_NOT_FOUND` | Handle expired or unknown — re-prepare. |
+| `TRANSACTION_NOT_FOUND` | Transaction id unknown, already committed/rolled back, or timed out (auto-rolled-back by the watcher). |
 | `UNKNOWN_DB` | `db` parameter doesn't match any configured database. |
-| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver. |
-| `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. |
+| `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, or transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`). |
+| `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. Pool-acquire failures use the message form `pool connection failed (<class>)` where `<class>` is one of `tls`, `auth`, `network`, `server-policy`, or `unknown` — a redacted hint so untrusted callers can self-triage without seeing host/userinfo/db fragments. The full driver error is in the worker's stderr via `tracing::warn!`. |
 | `REPLICATION_SLOT_EXISTS` | Startup-only: another instance owns the slot. |
 | `UNSUPPORTED` | Operation not supported on the chosen driver. |
-| `CONFIG_ERROR` | Config parse, pool init, or trigger misconfiguration (e.g. `cursor_column` not in result). |
+| `CONFIG_ERROR` | Config parse or pool init failure. |
 
 ## Driver compatibility
 
@@ -156,11 +173,16 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 | `transaction` `isolation: serializable` | ✓ (`BEGIN IMMEDIATE`) | ✓ | ✓ |
 | `iii-database::row-change` trigger | — | setup-only in v1.0.0 (see above) | — |
 
+
 ## Troubleshooting
 
 - **Pool exhausted (`POOL_TIMEOUT`)**: bump `pool.max` or shorten the longest-running query. Live `prepareStatement` handles each pin one connection from the pool until they expire.
 - **`STATEMENT_NOT_FOUND` from a long-lived handle**: handles are bounded to `ttl_seconds` (default 3600, max 86400). Re-prepare and retry.
-- **SQLite write contention with `query-poll`**: enable WAL mode in your DB: `PRAGMA journal_mode=WAL;` once after creation.
+- **`DRIVER_ERROR` "pool connection failed (...)"**: the parenthesized class tells you where to look.
+    - `(tls)` — handshake or cert-chain failure. For managed providers (Supabase, self-signed corporate CAs), supply `tls.ca_cert`; see "Connecting to managed providers" above.
+    - `(auth)` — credential or pg_hba/SCRAM rejection. Includes Neon's `?channel_binding=require` failing through the pooler endpoint (drop the URL param, use `tls.mode` in YAML).
+    - `(network)` — TCP refuse, DNS, route, or peer reset. Check host/port reachability and any firewalls.
+    - `(server-policy)` — server reachable and TLS+auth OK, but the server actively refused (e.g. `max_connections` exceeded, admin shutdown). Look at the worker stderr for the underlying driver message.
 - **Replication slot already exists**: another instance is consuming the slot. Either reuse the slot name or run `SELECT pg_drop_replication_slot('<slot>')`.
 
 ## License
