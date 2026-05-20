@@ -117,6 +117,17 @@ function buildTestSdk(opts: {
       else stateStore.set(p.key, p.value);
       return { ok: true };
     }
+    if (fn === 'state::update') {
+      const p = (payload ?? {}) as { key: string; ops: Array<{ type: string; value?: unknown }> };
+      const oldValue = stateStore.has(p.key) ? stateStore.get(p.key) : null;
+      let newValue: unknown = oldValue;
+      for (const op of p.ops ?? []) {
+        if (op.type === 'set') newValue = op.value;
+      }
+      if (newValue === null || newValue === undefined) stateStore.delete(p.key);
+      else stateStore.set(p.key, newValue);
+      return { old_value: oldValue ?? null, new_value: newValue ?? null };
+    }
 
     // 2) models::get — return a small-context model so the 30-turn fixture overflows.
     if (fn === 'models::get') {

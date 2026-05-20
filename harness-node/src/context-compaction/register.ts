@@ -1,4 +1,5 @@
 import type { ISdk } from '../runtime/iii.js';
+import { logger } from '../runtime/otel.js';
 import { pruneMinFree, pruneProtect, pruneProtectedTools } from './config.js';
 import { handleAsync } from './handler-async.js';
 import { type CompactNowInput, handleSync } from './handler-sync.js';
@@ -11,6 +12,16 @@ import {
 import { prune } from './prune.js';
 
 const AGENT_EVENTS_STREAM = 'agent::events';
+
+// Sized so preserveRecentBudget clamps to its 2k minimum when the real
+// model is unknown — compaction is best-effort, not fatal.
+const FALLBACK_MODEL_LIMIT = {
+  context: 32_000,
+  input: 32_000,
+  output: 4_000,
+};
+const FALLBACK_MODEL_ID = 'unknown';
+const FALLBACK_PROVIDER_ID = 'unknown';
 
 // payload.model: { id, providerID } with optional limit; null on malformed.
 async function resolveExplicitModel(
@@ -126,38 +137,36 @@ export async function register(iii: ISdk): Promise<void> {
       }
       const session_id = session_id_raw;
 
-      // First-hit chain: explicit payload → session-tree → run_request.
-      // The last fallback covers first-turn sessions with no mirrored assistant.
+      const explicitObj = obj.model as { id?: string; providerID?: string } | undefined;
       let model = await resolveExplicitModel(iii, obj.model);
       if (!model) model = await resolveModelFromSession(iii, session_id);
       if (!model) model = await resolveModelFromRunRequest(iii, session_id);
       if (!model) {
-        throw new Error(
-          `context-compaction::compact_session: could not resolve model for session ${session_id}`,
-        );
+        const providedId =
+          typeof explicitObj?.id === 'string' && explicitObj.id ? explicitObj.id : null;
+        const providedProvider =
+          typeof explicitObj?.providerID === 'string' && explicitObj.providerID
+            ? explicitObj.providerID
+            : null;
+        logger.warn('compact_session: model resolution failed; using fallback limit', {
+          session_id,
+          requestedProvider: providedProvider,
+          requestedModel: providedId,
+        });
+        model = {
+          providerID: providedProvider ?? FALLBACK_PROVIDER_ID,
+          modelID: providedId ?? FALLBACK_MODEL_ID,
+          modelLimit: FALLBACK_MODEL_LIMIT,
+        };
       }
 
-      const resp = await iii.trigger<
-        unknown,
-        { messages?: Array<{ entry_id?: string; message?: { role?: string } }> }
-      >({
-        function_id: 'session-tree::messages',
-        payload: { session_id },
-        timeoutMs: 10_000,
-      });
-      const messages = resp?.messages ?? [];
-      let last_user_message_id = '';
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i]?.message?.role === 'user') {
-          last_user_message_id = messages[i]?.entry_id ?? '';
-          break;
-        }
-      }
-
+      // Empty last_user_message_id skips handleSync's replay branch.
+      // Replay belongs to compact_now (orchestrator overflow); /compact
+      // runs against a conversation at rest with nothing to re-inject.
       return handleSync(iii, {
         session_id,
         projected_tokens: 999_999,
-        last_user_message_id,
+        last_user_message_id: '',
         model: {
           id: model.modelID,
           providerID: model.providerID,

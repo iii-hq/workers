@@ -88,6 +88,20 @@ function buildBackwardCompatMock(opts: {
       }
       return { ok: true };
     }
+    if (function_id === 'state::update') {
+      const p = payload as { key: string; ops: Array<{ type: string; value?: unknown }> };
+      const oldValue = stateStore.has(p.key) ? stateStore.get(p.key) : null;
+      let newValue: unknown = oldValue;
+      for (const op of p.ops ?? []) {
+        if (op.type === 'set') newValue = op.value;
+      }
+      if (newValue === null || newValue === undefined) {
+        stateStore.delete(p.key);
+      } else {
+        stateStore.set(p.key, newValue);
+      }
+      return { old_value: oldValue ?? null, new_value: newValue ?? null };
+    }
     if (function_id.startsWith('provider::')) {
       // Capture the system_prompt sent to the summariser
       const systemPrompt = payload.system_prompt;

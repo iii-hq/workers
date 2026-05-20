@@ -115,12 +115,18 @@ Takes only a `session_id`; resolves the model and last user message internally.
   provider/model fields exists in the session, or `models::get` fails.
 
 **Sequence:**
-1. Resolves the model by scanning the most recent assistant message in
-   `session-tree::messages` and looking up limits via `models::get`.
-2. Finds the last user message entry id from the same message list.
-3. Calls `handleSync` with `projected_tokens: 999_999` to force compaction
-   unconditionally (no overflow pre-check).
-4. Returns the same `CompactNowResult` shape as `compact_now`.
+1. Resolves the model: explicit `payload.model.limit` → session-tree scan
+   → orchestrator `run_request` → conservative fallback. Avoids forcing
+   `models::get` when the UI already knows the context window.
+2. Calls `handleSync` with `projected_tokens: 999_999` and
+   `last_user_message_id: ''` to force compaction unconditionally and
+   skip the replay / auto-continue branch. `/compact` runs against a
+   conversation at rest — there is no in-flight user message to re-inject.
+   Without this, single-turn sessions with one user message at index 0
+   collapsed to `truncatedMessages = []` and surfaced as `empty`.
+3. Returns the same `CompactNowResult` shape as `compact_now`, but
+   `auto_continued` is always `false` and no synthetic "Continue…" prompt
+   is appended.
 
 ## Model-adaptive threshold
 
@@ -173,7 +179,11 @@ scratch, so the summary converges rather than growing without bound.
 
 Tools listed in `COMPACT_PRUNE_PROTECTED_TOOLS` are never pruned.
 
-## Replay + auto-continue (sync path only)
+## Replay + auto-continue (`compact_now` only)
+
+Only the turn-orchestrator overflow path uses replay. `compact_session`
+runs against a conversation at rest and passes `last_user_message_id: ''`
+so this branch is skipped — `auto_continued` is always `false` on that path.
 
 When `compact_now` runs:
 
@@ -206,7 +216,7 @@ All knobs are env-driven; no `config.yaml` fields are read.
 | `COMPACT_PRUNE_PROTECT` | `40000` | Tokens of tool output to preserve from the tail before pruning. |
 | `COMPACT_PRUNE_MIN_FREE` | `20000` | Minimum tokens the prune pass must free; skips if below this. |
 | `COMPACT_TOOL_OUTPUT_MAX_CHARS` | `2000` | Per-output character cap applied before sending to the summariser. |
-| `COMPACT_BUSY_TIMEOUT_MS` | `3000` | Max ms `compact_now` waits for the compaction lease before returning `{ status: 'busy' }`. |
+| `COMPACT_BUSY_TIMEOUT_MS` | `30000` | Max ms `compact_now` / `compact_session` waits for the compaction lease before returning `{ status: 'busy' }`. Sized to cover a typical summariser stream (10–30s) so user-initiated `/compact` doesn't race the async TurnEnd path. |
 | `COMPACT_PRUNE_PROTECTED_TOOLS` | _(empty)_ | Comma-separated function IDs whose outputs are never pruned. |
 | `COMPACT_SUMMARIZER_PROVIDER` | `anthropic` | `anthropic` or `openai` — picks the streaming provider. |
 | `COMPACT_SUMMARIZER_MODEL` | _(model in use)_ | Model id passed to the provider stream. Defaults to the same model as the session. |

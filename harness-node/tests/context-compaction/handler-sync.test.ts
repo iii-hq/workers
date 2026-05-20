@@ -33,6 +33,21 @@ function makeStubIii(triggerOverrides: Record<string, unknown> = {}): ISdk {
         }
         return { ok: true };
       }
+      if (function_id === 'state::update') {
+        const key = p.key as string;
+        const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
+        const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+        let newValue: unknown = oldValue;
+        for (const op of ops) {
+          if (op.type === 'set') newValue = op.value;
+        }
+        if (newValue === null || newValue === undefined) {
+          stateStore.delete(key);
+        } else {
+          stateStore.set(key, newValue);
+        }
+        return { old_value: oldValue ?? null, new_value: newValue ?? null };
+      }
 
       return null;
     }),

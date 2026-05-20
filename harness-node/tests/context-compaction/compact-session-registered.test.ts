@@ -77,6 +77,18 @@ function buildSdk(opts: {
       else stateStore.set(p.key as string, p.value);
       return { ok: true };
     }
+    if (fn === 'state::update') {
+      const key = p.key as string;
+      const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
+      const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+      let newValue: unknown = oldValue;
+      for (const op of ops) {
+        if (op.type === 'set') newValue = op.value;
+      }
+      if (newValue === null || newValue === undefined) stateStore.delete(key);
+      else stateStore.set(key, newValue);
+      return { old_value: oldValue ?? null, new_value: newValue ?? null };
+    }
     if (fn === 'session-tree::messages') {
       return { messages: opts.sessionEntries };
     }
@@ -136,9 +148,11 @@ function buildSdk(opts: {
 }
 
 describe('context-compaction::compact_session via registered handler', () => {
-  it('returns ok with tokens_before > 0 and auto_continued=true for a multi-turn session', async () => {
-    // 2 user + 2 assistant turns. compact_session picks u2 as the
-    // replay target → truncatedMessages = [u1, a1] → summarise.
+  it('returns ok with tokens_before > 0 and auto_continued=false for a multi-turn session', async () => {
+    // 2 user + 2 assistant turns. compact_session does NOT extract a
+    // replay target (the replay mechanism is for compact_now's overflow
+    // pre-flight only), so all 4 entries feed into selection. The summary
+    // covers turn 1, turn 2 stays as tail.
     const entries = [
       userEntry('e1', 'first question'),
       asstEntry('e2', 'first answer'),
@@ -168,8 +182,8 @@ describe('context-compaction::compact_session via registered handler', () => {
     };
 
     expect(result.status).toBe('ok');
-    expect(result.auto_continued).toBe(true);
-    // Bug repro target: this MUST be > 0 for any non-empty head.
+    // /compact is user-initiated; no in-flight turn to auto-continue.
+    expect(result.auto_continued).toBe(false);
     expect(typeof result.tokens_before).toBe('number');
     expect(result.tokens_before).toBeGreaterThan(0);
     // Surface every field so we can spot wire-format weirdness.
@@ -177,20 +191,20 @@ describe('context-compaction::compact_session via registered handler', () => {
       ['auto_continued', 'status', 'summary_text', 'tail_start_id', 'tokens_before'].sort(),
     );
     // summary_text MUST be present and non-empty so the UI marker can ship
-    // it as the next-turn <conversation-summary> block (Option A fix).
+    // it as the next-turn <conversation-summary> block.
     expect(typeof result.summary_text).toBe('string');
     expect((result.summary_text ?? '').length).toBeGreaterThan(0);
   });
 
-  it('returns empty when last user message is the FIRST entry (truncated is empty)', async () => {
-    // Session with ONLY one user message that matches last_user_message_id.
-    // - extractReplayTarget: idx=0 → replay=u1, truncatedMessages=[]
-    // - summarize sees []: returns 'empty'
-    // - handler-sync: returns { status: 'empty' }
-    // This proves the suspected UI scenario actually returns 'empty', NOT 'ok'.
-    // If a real call sees 'ok' with tokens=0, the bug is elsewhere.
+  it('summarises a session with only one user message and nothing else', async () => {
+    // Before the fix this returned 'empty' because compact_session
+    // extracted u1 as the replay target, leaving truncatedMessages = [].
+    // After the fix the single user message is summarised normally.
     const entries = [userEntry('only-user', 'just one message')];
-    const { iii, handlers } = buildSdk({ sessionEntries: entries });
+    const { iii, handlers } = buildSdk({
+      sessionEntries: entries,
+      summaryText: 'summary of the lone user message',
+    });
     await register(iii);
     const handler = handlers.get('context-compaction::compact_session');
 
@@ -199,9 +213,54 @@ describe('context-compaction::compact_session via registered handler', () => {
       model: { id: 'fake-model', providerID: 'anthropic' },
     })) as { status: string; tokens_before?: number; auto_continued?: boolean };
 
-    expect(result.status).toBe('empty');
-    // 'empty' shape: just { status }. No tokens_before, no auto_continued.
-    expect(result.tokens_before).toBeUndefined();
-    expect(result.auto_continued).toBeUndefined();
+    expect(result.status).toBe('ok');
+    expect(result.tokens_before).toBeGreaterThan(0);
+    expect(result.auto_continued).toBe(false);
+  });
+
+  it('summarises a single-user-turn session with many subsequent entries', async () => {
+    // Regression: a long-running task with one user message + lots of
+    // assistant/tool output ends up at ~30k+ tokens. Before the fix,
+    // compact_session always extracted the last user message via
+    // extractReplayTarget; with only one user message at idx=0,
+    // truncatedMessages was [] and summarize returned 'empty'. The user
+    // saw "compact: session is too small to summarise" despite a 30%
+    // full context window.
+    //
+    // After the fix, compact_session does NOT extract a replay target
+    // (that mechanism is for the compact_now overflow path), so the full
+    // entry list is summarised normally.
+    const longText = 'x'.repeat(8_000);
+    const entries = [
+      userEntry('u1', 'the only user question — start a long task'),
+      asstEntry('a1', `${longText} first assistant chunk`),
+      asstEntry('a2', `${longText} second assistant chunk`),
+      asstEntry('a3', `${longText} third assistant chunk`),
+      asstEntry('a4', `${longText} fourth assistant chunk`),
+    ];
+
+    const { iii, handlers } = buildSdk({
+      sessionEntries: entries,
+      summaryText: 'summary of the long task',
+    });
+
+    await register(iii);
+    const handler = handlers.get('context-compaction::compact_session');
+
+    const result = (await handler?.({
+      session_id: 'one-turn-large-session',
+      model: { id: 'fake-model', providerID: 'anthropic' },
+    })) as {
+      status: string;
+      tokens_before?: number;
+      auto_continued?: boolean;
+      summary_text?: string;
+    };
+
+    expect(result.status).toBe('ok');
+    expect(result.tokens_before).toBeGreaterThan(0);
+    // /compact (user-initiated) does NOT auto-continue. Replay is only
+    // appropriate for the orchestrator's overflow pre-flight.
+    expect(result.auto_continued).toBe(false);
   });
 });

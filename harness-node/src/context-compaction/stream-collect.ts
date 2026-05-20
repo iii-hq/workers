@@ -44,26 +44,41 @@ export async function streamAndCollect(
     timeoutMs: SUMMARIZER_TIMEOUT_MS,
   });
 
-  while (!terminal) {
-    if (events.length > 0) {
-      const tail = events[events.length - 1];
-      if (tail && (tail.type === 'done' || tail.type === 'error')) {
-        terminal = tail;
-        break;
-      }
-    }
+  // trigger() resolved, but the channel may not have delivered the
+  // terminal event yet. Poll for up to GRACE_MS before giving up so a
+  // slow IPC hop doesn't masquerade as "stream returned without a
+  // terminal event".
+  const GRACE_MS = 1_000;
+  const deadline = Date.now() + GRACE_MS;
+  while (!terminal && Date.now() < deadline) {
     await new Promise<void>((r) => {
       resolveNext = r;
       setTimeout(r, 25);
     });
-    break;
   }
 
   if (!terminal) {
     throw new Error('summariser stream returned without a terminal event');
   }
   if ((terminal as AssistantMessageEvent).type === 'error') {
-    return (terminal as { type: 'error'; error: AssistantMessage }).error;
+    // Surface provider errors as a thrown exception so summarizeAndAppend's
+    // catch treats them as compaction failures. Without this, the error
+    // AssistantMessage's text content got silently written as the summary.
+    const errMsg = (terminal as { type: 'error'; error: AssistantMessage }).error;
+    const detail =
+      typeof errMsg.error_message === 'string' && errMsg.error_message.length > 0
+        ? errMsg.error_message
+        : extractTextFromMessage(errMsg);
+    throw new Error(`summariser stream error: ${detail || 'unknown provider error'}`);
   }
   return (terminal as { type: 'done'; message: AssistantMessage }).message;
+}
+
+function extractTextFromMessage(msg: AssistantMessage): string {
+  for (const block of msg.content ?? []) {
+    if ((block as { type?: string }).type === 'text') {
+      return (block as { type: 'text'; text: string }).text;
+    }
+  }
+  return '';
 }
