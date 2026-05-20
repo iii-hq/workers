@@ -134,6 +134,89 @@ export const INTERACTIVE_TX_CASES: TestCase[] = [
     },
   },
   {
+    // Regression for the three side-channel-finalization bypasses identified
+    // in pre-landing review: `/* */COMMIT`, `--\nCOMMIT`, and `START
+    // TRANSACTION`. Without the strip-leading-comments fix and the
+    // START-keyword addition, all three slipped past `is_transaction_control_sql`
+    // and reached the driver, desyncing the registry from the conn's txn state.
+    name: 'transactionExecute rejects comment-prefixed and START-form finalization',
+    async run({ driver, call, expectError }) {
+      const begin = await call('iii-database::beginTransaction', { db: driver });
+      const id = begin.transaction.id;
+      try {
+        await expectError(
+          () =>
+            call('iii-database::transactionExecute', {
+              transaction_id: id,
+              sql: '/* sneak */COMMIT',
+            }),
+          'INVALID_PARAM',
+        );
+        await expectError(
+          () =>
+            call('iii-database::transactionExecute', {
+              transaction_id: id,
+              sql: '-- sneak\nCOMMIT',
+            }),
+          'INVALID_PARAM',
+        );
+        await expectError(
+          () =>
+            call('iii-database::transactionExecute', {
+              transaction_id: id,
+              sql: 'START TRANSACTION',
+            }),
+          'INVALID_PARAM',
+        );
+      } finally {
+        try {
+          await call('iii-database::rollbackTransaction', { transaction_id: id });
+        } catch {/* ignore */}
+      }
+    },
+  },
+  {
+    // Regression: `transactionQuery` previously had no transaction-control
+    // filter at all. PG/MySQL/SQLite all execute COMMIT through the
+    // prepared-statement path used by `run_prepared`. Must now reject.
+    name: 'transactionQuery rejects COMMIT/ROLLBACK and comment-prefixed forms',
+    async run({ driver, call, expectError }) {
+      const begin = await call('iii-database::beginTransaction', { db: driver });
+      const id = begin.transaction.id;
+      try {
+        await expectError(
+          () => call('iii-database::transactionQuery', { transaction_id: id, sql: 'COMMIT' }),
+          'INVALID_PARAM',
+        );
+        await expectError(
+          () =>
+            call('iii-database::transactionQuery', { transaction_id: id, sql: 'ROLLBACK' }),
+          'INVALID_PARAM',
+        );
+        await expectError(
+          () =>
+            call('iii-database::transactionQuery', {
+              transaction_id: id,
+              sql: '/* sneak */COMMIT',
+            }),
+          'INVALID_PARAM',
+        );
+        await expectError(
+          () =>
+            call('iii-database::transactionQuery', {
+              transaction_id: id,
+              sql: 'START TRANSACTION',
+            }),
+          'INVALID_PARAM',
+        );
+      } finally {
+        try {
+          await call('iii-database::rollbackTransaction', { transaction_id: id });
+        } catch {/* ignore */}
+      }
+    },
+  },
+  {
     name: 'interactive tx beginTransaction unknown isolation returns INVALID_PARAM',
     async run({ driver, call, expectError }) {
       await expectError(

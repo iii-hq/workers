@@ -14,6 +14,7 @@ import { TRANSACTION_EDGE_CASES } from './cases-transaction.ts';
 import { INTERACTIVE_TX_CASES } from './cases-interactive-tx.ts';
 import { CONCURRENCY_CASES } from './cases-concurrency.ts';
 import { ROW_CHANGE_CASES } from './cases-row-change.ts';
+import { TX_CONTROL_BYPASS_CASES } from './cases-tx-control-bypass.ts';
 
 interface CaseResult {
   driver: DriverKey;
@@ -23,10 +24,24 @@ interface CaseResult {
   duration_ms: number;
 }
 
+/**
+ * Harness mode controls which case groups run:
+ *
+ *   - `full`        — full suite + bypass repros (default; this is what CI runs)
+ *   - `no-bypass`   — full suite WITHOUT the bypass repros. Useful when running
+ *                     against a worker that hasn't shipped the side-channel-
+ *                     finalization fix yet, so the rest of the suite still
+ *                     reports clean instead of being drowned in bypass FAILs.
+ *   - `bypass-only` — ONLY the bypass repros. Use this to focus on the
+ *                     /review findings (post-fix it must be all-PASS).
+ */
+export type RunnerMode = 'full' | 'no-bypass' | 'bypass-only';
+
 export interface RunnerOptions {
   iii: ISdk;
   reportPath: string;
   filterDriver?: DriverKey;
+  mode?: RunnerMode;
 }
 
 export class Runner {
@@ -89,6 +104,7 @@ export class Runner {
   }
 
   async runAll(): Promise<{ pass: number; total: number; results: CaseResult[] }> {
+    const mode: RunnerMode = this.opts.mode ?? 'full';
     const drivers: DriverKey[] = this.opts.filterDriver ? [this.opts.filterDriver] : [...DRIVER_KEYS];
     // Wait for the database worker to be reachable on the first driver before kicking off.
     await this.waitForDatabaseWorker(drivers[0]);
@@ -116,29 +132,49 @@ export class Runner {
       return r;
     };
 
-    for (const driver of drivers) {
-      // Always run the schema reset; not a counted case but failures abort this driver.
-      const reset = record(await this.runCase(driver, SCHEMA_RESET));
-      if (reset.status === 'FAIL') continue;
+    // The full suite (`full` and `no-bypass`) needs the shared `t` table from
+    // SCHEMA_RESET. `bypass-only` doesn't, since every bypass case manages its
+    // own scratch table — skip the reset to avoid letting a stale schema from
+    // a prior run block the focused repro.
+    const includeFullSuite = mode === 'full' || mode === 'no-bypass';
+    const includeBypassRepros = mode === 'full' || mode === 'bypass-only';
 
-      // Function suite.
-      for (const c of FUNCTION_CASES) {
-        record(await this.runCase(driver, c));
+    for (const driver of drivers) {
+      if (includeFullSuite) {
+        // Always run the schema reset; not a counted case but failures abort this driver.
+        const reset = record(await this.runCase(driver, SCHEMA_RESET));
+        if (reset.status === 'FAIL') continue;
+
+        // Function suite.
+        for (const c of FUNCTION_CASES) {
+          record(await this.runCase(driver, c));
+        }
+
+        // Boundary, protocol, transaction-edge, interactive-tx, concurrency,
+        // row-change cases. Each test is self-contained (creates and drops
+        // its own scratch tables / replication slots) so order doesn't matter.
+        for (const c of [
+          ...BOUNDARY_CASES,
+          ...PROTOCOL_CASES,
+          ...TRANSACTION_EDGE_CASES,
+          ...INTERACTIVE_TX_CASES,
+          ...CONCURRENCY_CASES,
+          ...ROW_CHANGE_CASES,
+        ]) {
+          if (!matchesDriver(driver, c)) continue;
+          record(await this.runCase(driver, c));
+        }
       }
 
-      // Boundary, protocol, transaction-edge, concurrency, row-change cases.
-      // Each test is self-contained (creates and drops its own scratch tables
-      // / replication slots) so order doesn't matter.
-      for (const c of [
-        ...BOUNDARY_CASES,
-        ...PROTOCOL_CASES,
-        ...TRANSACTION_EDGE_CASES,
-        ...INTERACTIVE_TX_CASES,
-        ...CONCURRENCY_CASES,
-        ...ROW_CHANGE_CASES,
-      ]) {
-        if (!matchesDriver(driver, c)) continue;
-        record(await this.runCase(driver, c));
+      if (includeBypassRepros) {
+        // Side-channel-finalization repros are kept as their own group so
+        // they can be re-run in isolation via `--bypass-only` and appear
+        // together in the per-case summary as the documented coverage for
+        // the /review findings on this branch.
+        for (const c of TX_CONTROL_BYPASS_CASES) {
+          if (!matchesDriver(driver, c)) continue;
+          record(await this.runCase(driver, c));
+        }
       }
     }
 
@@ -148,7 +184,7 @@ export class Runner {
     mkdirSync(resolve(this.opts.reportPath, '..'), { recursive: true });
     writeFileSync(
       this.opts.reportPath,
-      JSON.stringify({ pass, total: counted.length, results }, null, 2),
+      JSON.stringify({ pass, total: counted.length, results, mode }, null, 2),
     );
 
     return { pass, total: counted.length, results };

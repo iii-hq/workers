@@ -37,6 +37,12 @@ export function expect(cond: boolean, msg: string): asserts cond {
 export const SCHEMA_RESET: TestCase = {
   name: 'schema-reset',
   async run({ driver, dialect, call }) {
+    // `outbox` and `__iii_cursors` are vestigial from the query-poll trigger
+    // surface that was removed on feat/database-and-skills. Drop defensively
+    // so re-runs against a stale data volume (docker / podman named volumes
+    // preserved across `--keep`) still come up clean.
+    await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS outbox' });
+    await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS __iii_cursors' });
     await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS t' });
     await call('iii-database::execute', {
       db: driver,
