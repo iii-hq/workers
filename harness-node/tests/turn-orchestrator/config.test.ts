@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { loadOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 
 describe('loadOrchestratorConfig', () => {
-  it('exposes policy_function_id with a sane default', () => {
+  it('applies defaults for sync timeout and system skills', () => {
     const cfg = loadOrchestratorConfig({});
-    expect(cfg.policy_function_id).toBe('policy::check_permissions');
+    expect(cfg.sync_default_timeout_ms).toBe(120_000);
+    expect(cfg.system_default_skills).toEqual(['iii://iii-directory/index']);
   });
 
-  it('lets policy_function_id override the default', () => {
-    const cfg = loadOrchestratorConfig({ policy_function_id: 'custom::policy' });
-    expect(cfg.policy_function_id).toBe('custom::policy');
+  it('reads sync_default_timeout_ms and system_default_skills from config', () => {
+    const cfg = loadOrchestratorConfig({
+      sync_default_timeout_ms: 60_000,
+      system_default_skills: ['skill-a'],
+    });
+    expect(cfg.sync_default_timeout_ms).toBe(60_000);
+    expect(cfg.system_default_skills).toEqual(['skill-a']);
   });
 });

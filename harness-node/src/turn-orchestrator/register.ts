@@ -36,7 +36,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   const cfg = await loadConfig(ctx.configPath);
   const orchestratorCfg = loadOrchestratorConfig(cfg);
   registerRunStart(iii, orchestratorCfg);
-  registerAgentCall(iii, orchestratorCfg.policy_function_id);
+  registerAgentCall(iii);
   registerSubscriber(iii, orchestratorCfg);
   await recoverPendingApprovals(iii);
   registerGetState(iii);

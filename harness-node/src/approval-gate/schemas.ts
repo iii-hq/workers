@@ -38,6 +38,8 @@ export type DenialEnvelope = z.infer<typeof denialEnvelopeSchema>;
 /**
  * Wire payload for `approval::resolve`. Accepts `function_call_id` or the
  * legacy `tool_call_id` alias; output always has `function_call_id` set.
+ * Rejects "/" in either id at the boundary — it is the reserved separator in
+ * the state key, so a slashed id is refused here rather than thrown on later.
  */
 export const ResolvePayloadSchema = z
   .object({
@@ -54,6 +56,22 @@ export const ResolvePayloadSchema = z
         code: z.ZodIssueCode.custom,
         path: ['function_call_id'],
         message: 'function_call_id or tool_call_id is required',
+      });
+      return z.NEVER;
+    }
+    if (v.session_id.includes('/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['session_id'],
+        message: 'session_id must not contain "/"',
+      });
+      return z.NEVER;
+    }
+    if (fnId.includes('/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['function_call_id'],
+        message: 'function_call_id must not contain "/"',
       });
       return z.NEVER;
     }

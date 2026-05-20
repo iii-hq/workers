@@ -8,8 +8,11 @@
  */
 
 import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
-import { DENIAL_SCHEMA_VERSION, parsePolicyReply } from '../approval-gate/schemas.js';
-import type { DenialEnvelope } from '../approval-gate/schemas.js';
+import { DENIAL_SCHEMA_VERSION, type DenialEnvelope } from '../approval-gate/schemas.js';
+import type {
+  CheckPermissionsPayload,
+  PolicyCheckReply,
+} from '../harness/policy/check-permissions.js';
 import type { ISdk } from '../runtime/iii.js';
 export type { DenialEnvelope } from '../approval-gate/schemas.js';
 import { logger } from '../runtime/otel.js';
@@ -22,7 +25,7 @@ export const HOOK_TIMEOUT_MS = 500;
 export type HookOutcome =
   | { kind: 'allow' }
   | { kind: 'pending' }
-  | { kind: 'deny'; denial: DenialEnvelope | Record<string, unknown> };
+  | { kind: 'deny'; denial: DenialEnvelope };
 
 export function gateUnavailableEnvelope(function_id: string, reason: string): DenialEnvelope {
   return {
@@ -34,19 +37,32 @@ export function gateUnavailableEnvelope(function_id: string, reason: string): De
   };
 }
 
-export async function consultBefore(
-  iii: ISdk,
-  function_call: FunctionCall,
-  _session_id: string | undefined,
-  policy_function_id: string,
-): Promise<HookOutcome> {
-  let raw: unknown;
+export async function consultBefore(iii: ISdk, function_call: FunctionCall): Promise<HookOutcome> {
   try {
-    raw = await iii.trigger<unknown, unknown>({
-      function_id: policy_function_id,
-      payload: { function_id: function_call.function_id, args: function_call.arguments },
+    const reply = await iii.trigger<CheckPermissionsPayload, PolicyCheckReply>({
+      function_id: 'policy::check_permissions',
+      payload: {
+        function_id: function_call.function_id,
+        args: function_call.arguments as CheckPermissionsPayload['args'],
+      },
       timeoutMs: 5_000,
     });
+    switch (reply.decision) {
+      case 'allow':
+        return { kind: 'allow' };
+      case 'deny':
+        return {
+          kind: 'deny',
+          denial: permissionsDenyEnvelope(
+            function_call.function_id,
+            reply.rule_id,
+            reply.matched_constraint ?? null,
+            function_call.arguments,
+          ),
+        };
+      case 'needs_approval':
+        return { kind: 'pending' };
+    }
   } catch (err) {
     logger.warn('policy consult failed; failing closed', {
       function_id: function_call.function_id,
@@ -60,21 +76,6 @@ export async function consultBefore(
       ),
     };
   }
-
-  const outcome = parsePolicyReply(raw);
-  if (outcome.decision === 'allow') return { kind: 'allow' };
-  if (outcome.decision === 'deny') {
-    return {
-      kind: 'deny',
-      denial: permissionsDenyEnvelope(
-        function_call.function_id,
-        outcome.rule_id,
-        outcome.matched_constraint,
-        function_call.arguments,
-      ),
-    };
-  }
-  return { kind: 'pending' };
 }
 
 export async function publishAfter(
@@ -82,18 +83,17 @@ export async function publishAfter(
   function_call: FunctionCall,
   result: unknown,
 ): Promise<unknown> {
-  const payload = {
-    topic: TOPIC_AFTER,
-    payload: { function_call, result },
-    merge_rule: 'field_merge',
-    timeout_ms: HOOK_TIMEOUT_MS,
-  };
   try {
     const resp = await iii.trigger<unknown, { merged?: unknown }>({
       function_id: 'hook-fanout::publish_collect',
-      payload,
+      payload: {
+        topic: TOPIC_AFTER,
+        payload: { function_call, result },
+        merge_rule: 'field_merge',
+        timeout_ms: HOOK_TIMEOUT_MS,
+      },
     });
-    return resp?.merged ?? null;
+    return resp.merged;
   } catch {
     return null;
   }

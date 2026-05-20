@@ -162,24 +162,12 @@ it at boot and watches for changes via `chokidar`. Rules are scanned
 top-to-bottom; first match wins. Kernel rules below are shipped by default
 and protect the gate / state surface.
 
-| Rule id | Function | Action | Why |
-|---|---|---|---|
-| `kernel/no-self-approve` | `approval::resolve` | deny | An agent must not flip its own pending approval. |
-| `kernel/no-self-policy` | `policy::check_permissions` | deny | Don't let the model trace or precompute its own gate decision. |
-| `kernel/no-self-hook` | `hook-fanout::publish_collect` | deny | The hook primitive is operator-only. |
-| `kernel/no-state-set` | `state::set` | deny | Use a worker function; never raw state writes. |
-| `kernel/no-state-update` | `state::update` | deny | Same. |
-| `kernel/no-state-delete` | `state::delete` | deny | Same. |
-| `kernel/no-stream-set` | `stream::set` | deny | Bypasses the agent loop. |
-| `kernel/no-durable-publish` | `iii::durable::publish` | deny | Bypasses the durable hook plane. |
-| `kernel/no-auth-set` | `auth::set_token` | deny | Token plumbing is operator-only. |
-| `kernel/no-auth-delete` | `auth::delete_token` | deny | Same. |
-| `kernel/no-oauth-anthropic-login` | `oauth::anthropic::login` | deny | Same. |
-| `kernel/no-oauth-openai-login` | `oauth::openai-codex::login` | deny | Same. |
-| `kernel/no-self-run-start` | `run::start` | deny | No re-entrant runs. |
-| `kernel/no-self-run-start-and-wait` | `run::start_and_wait` | deny | Same. |
-| `kernel/no-router-stream-assistant` | `router::stream_assistant` | deny | Routing internal. |
-| `kernel/no-router-abort` | `router::abort` | deny | Routing internal. |
+Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
+`policy::check_permissions`, `hook-fanout::publish_collect`, `state::set`,
+`state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
+`auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
+`oauth::openai-codex::login`, `run::start`, `run::start_and_wait`,
+`router::stream_assistant`, `router::abort`.
 
 Bare-string allow rules: `harness::status`, `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,

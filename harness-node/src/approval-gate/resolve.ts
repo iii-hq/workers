@@ -6,10 +6,10 @@
 import type { ISdk } from 'iii-sdk';
 import { logger } from '../runtime/otel.js';
 import {
+  type ResolvePayloadInput,
   ResolvePayloadSchema,
   approvalResumeFnId,
   resolveFunctionOptions,
-  type ResolvePayloadInput,
 } from './schemas.js';
 
 export type ResolveResult =

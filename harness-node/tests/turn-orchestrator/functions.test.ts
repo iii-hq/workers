@@ -10,7 +10,6 @@ import * as approvalResumeModule from '../../src/turn-orchestrator/approval-resu
 import { handleExecute } from '../../src/turn-orchestrator/states/functions.js';
 
 const cfg: TurnOrchestratorConfig = {
-  policy_function_id: 'policy::check_permissions',
   sync_default_timeout_ms: 120_000,
   system_default_skills: [],
 };

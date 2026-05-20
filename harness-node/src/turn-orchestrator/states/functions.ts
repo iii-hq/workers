@@ -131,7 +131,7 @@ export async function handleExecute(
       function_id: fc.function_id,
       arguments: augmented_args,
     };
-    const out = await dispatchWithHook(iii, augmentedFc, rec.session_id, cfg.policy_function_id);
+    const out = await dispatchWithHook(iii, augmentedFc, rec.session_id);
 
     if (out.kind === 'pending') {
       rec.awaiting_approval = rec.awaiting_approval ?? [];

@@ -74,8 +74,8 @@ record. On reload it uses `turn::get_state` (not direct iii state reads).
 There is no `approval_gate` section in [config.yaml](harness-node/config.yaml).
 Scope `approvals` is fixed in code (`STATE_SCOPE`).
 
-Policy consultation is configured on the turn-orchestrator slice:
-`policy_function_id` (default `policy::check_permissions`). See
+Policy consultation is a direct `iii.trigger` to `policy::check_permissions`
+from turn-orchestrator `consultBefore`. See
 [workers/turn-orchestrator.md](workers/turn-orchestrator.md).
 
 ## Dependencies

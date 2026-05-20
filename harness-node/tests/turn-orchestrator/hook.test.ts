@@ -1,10 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
+import type {
+  CheckPermissionsPayload,
+  PolicyCheckReply,
+} from '../../src/harness/policy/check-permissions.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import { consultBefore } from '../../src/turn-orchestrator/hook.js';
 
-function fakeIii(triggerImpl: (req: { function_id: string; payload: unknown }) => unknown) {
+function fakeIii(
+  triggerImpl: (req: {
+    function_id: string;
+    payload: CheckPermissionsPayload;
+  }) => PolicyCheckReply | Promise<PolicyCheckReply>,
+) {
   return {
-    trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => triggerImpl(req)),
+    trigger: vi.fn(async (req: { function_id: string; payload: CheckPermissionsPayload }) =>
+      triggerImpl(req),
+    ),
   } as unknown as ISdk;
 }
 
@@ -16,7 +27,7 @@ describe('consultBefore (direct policy call)', () => {
       expect(function_id).toBe('policy::check_permissions');
       return { decision: 'allow', rule_id: 'allow-tmp' };
     });
-    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc);
     expect(outcome.kind).toBe('allow');
   });
 
@@ -24,9 +35,10 @@ describe('consultBefore (direct policy call)', () => {
     const iii = fakeIii(() => ({
       decision: 'deny',
       rule_id: 'deny-rm-rf',
+      rule_action: 'deny',
       matched_constraint: { field: 'path', operator: 'matches', value: '^/$' },
     }));
-    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc);
     expect(outcome.kind).toBe('deny');
     if (outcome.kind !== 'deny') return;
     expect(outcome.denial.denied_by).toBe('permissions');
@@ -35,7 +47,7 @@ describe('consultBefore (direct policy call)', () => {
 
   it('returns pending when policy says needs_approval', async () => {
     const iii = fakeIii(() => ({ decision: 'needs_approval' }));
-    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc);
     expect(outcome.kind).toBe('pending');
   });
 
@@ -43,16 +55,18 @@ describe('consultBefore (direct policy call)', () => {
     const iii = fakeIii(() => {
       throw new Error('policy worker down');
     });
-    const outcome = await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
+    const outcome = await consultBefore(iii, fc);
     expect(outcome.kind).toBe('deny');
     if (outcome.kind !== 'deny') return;
     expect(outcome.denial.denied_by).toBe('gate_unavailable');
   });
 
   it('does NOT call hook-fanout::publish_collect', async () => {
-    const trigger = vi.fn(async () => ({ decision: 'allow', rule_id: 'r' }));
+    const trigger = vi.fn(
+      async () => ({ decision: 'allow', rule_id: 'r' }) satisfies PolicyCheckReply,
+    );
     const iii = { trigger } as unknown as ISdk;
-    await consultBefore(iii, fc, 'sess-a', 'policy::check_permissions');
+    await consultBefore(iii, fc);
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger.mock.calls[0][0].function_id).toBe('policy::check_permissions');
   });
