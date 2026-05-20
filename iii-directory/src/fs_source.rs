@@ -7,6 +7,7 @@
 //! <skills_folder>/
 //!   <ns>/                       # one folder per download namespace
 //!     index.md                  # → iii://<ns>/index
+//!     SKILLS.md                 # → iii://<ns>/index   (alias of index.md)
 //!     anything.md               # → iii://<ns>/anything
 //!     deep/path.md              # → iii://<ns>/deep/path
 //!     prompts/                  # ← magic marker for prompts
@@ -20,10 +21,13 @@
 //!
 //! Public surface:
 //!
-//! - [`split_frontmatter`]   — minimal `---\n...\n---\n` parser.
-//! - [`scan_skills`]         — id-keyed listing of all `**/*.md` outside `*/prompts/*`.
-//! - [`scan_prompts`]        — name-keyed listing of `*/prompts/*.md`.
-//! - [`read_body`]           — cap-checked body read with frontmatter stripped.
+//! - [`split_frontmatter`]            — minimal `---\n...\n---\n` parser.
+//! - [`scan_skills`]                  — id-keyed listing of all `**/*.md` outside `*/prompts/*`.
+//! - [`scan_prompts`]                 — name-keyed listing of `*/prompts/*.md`.
+//! - [`read_body`]                    — cap-checked body read with frontmatter stripped.
+//! - [`read_skill_with_frontmatter`]  — same caps as `read_body` plus a
+//!   parsed `SkillFrontmatter` (title + type) so the skills reader can
+//!   prefer the frontmatter title over a body H1 in one read.
 
 use std::path::{Path, PathBuf};
 
@@ -70,6 +74,25 @@ struct PromptFrontmatter {
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+}
+
+/// Subset of skill frontmatter fields surfaced by
+/// `directory::skills::list` and `directory::skills::get`. Anything else
+/// in the YAML block is preserved verbatim by [`split_frontmatter`] but
+/// ignored here. Both fields are optional so files without frontmatter
+/// (or without these keys) parse as `Default::default()` rather than
+/// erroring — the reader still falls back to the body H1 / id for the
+/// title and serialises a `null` type.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct SkillFrontmatter {
+    /// Optional human-readable title. When non-empty (after trim) the
+    /// reader returns this verbatim instead of the first body `# H1`.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Free-form classifier (e.g. `index`, `how-to`, `reference`).
+    /// Renamed from the YAML key `type` to avoid the Rust reserved word.
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
 }
 
 // ───────────────────────── pure helpers ──────────────────────────────
@@ -142,11 +165,36 @@ fn walk_markdown(base_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     Ok(out)
 }
 
+/// Convert a `<skills_folder>`-relative path to a skill id.
+///
+/// `SKILLS.md` (the literal filename, any case-sensitive match) is
+/// treated as an alias for `index.md`, so a file at `<ns>/SKILLS.md`
+/// produces the id `<ns>/index`. The alias runs on the final path
+/// component only — directories named `SKILLS` are *not* renamed.
 fn rel_to_id(rel: &Path) -> Result<String, String> {
     let rel_str = rel
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 path: {}", rel.display()))?;
-    let stripped = rel_str.strip_suffix(".md").unwrap_or(rel_str);
+    let aliased = if let Some(parent) = rel.parent() {
+        let last_is_skills_md = rel
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n == "SKILLS.md")
+            .unwrap_or(false);
+        if last_is_skills_md {
+            let parent_str = parent.to_str().unwrap_or("");
+            if parent_str.is_empty() {
+                "index.md".to_string()
+            } else {
+                format!("{}/index.md", parent_str.replace('\\', "/"))
+            }
+        } else {
+            rel_str.to_string()
+        }
+    } else {
+        rel_str.to_string()
+    };
+    let stripped = aliased.strip_suffix(".md").unwrap_or(&aliased).to_string();
     Ok(stripped.replace('\\', "/"))
 }
 
@@ -346,6 +394,18 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
 /// Empty-after-strip bodies are an error so the resolver returns a
 /// clear "not found" rather than serving an empty resource.
 pub fn read_body(abs_path: &Path) -> Result<String, String> {
+    let (_, body) = read_skill_with_frontmatter(abs_path)?;
+    Ok(body)
+}
+
+/// Like [`read_body`] but also returns the parsed [`SkillFrontmatter`].
+/// Files without a frontmatter block (or with malformed YAML) still
+/// succeed and yield `SkillFrontmatter::default()` so the read path
+/// keeps working for plain markdown — only the size cap and the
+/// empty-body rule are hard errors. Callers use the returned title /
+/// type to fill in the corresponding `directory::skills::*` response
+/// fields without re-reading the file.
+pub fn read_skill_with_frontmatter(abs_path: &Path) -> Result<(SkillFrontmatter, String), String> {
     let raw = std::fs::read_to_string(abs_path)
         .map_err(|e| format!("read {}: {e}", abs_path.display()))?;
     if raw.len() > SKILL_BODY_MAX_BYTES {
@@ -355,12 +415,15 @@ pub fn read_body(abs_path: &Path) -> Result<String, String> {
             raw.len()
         ));
     }
-    let (_, body) = split_frontmatter(&raw);
+    let (fm_text, body) = split_frontmatter(&raw);
     let trimmed = body.trim_matches('\n');
     if trimmed.is_empty() {
         return Err(format!("file {} has empty body", abs_path.display()));
     }
-    Ok(body.to_string())
+    let fm = fm_text
+        .and_then(|t| serde_yaml::from_str::<SkillFrontmatter>(t).ok())
+        .unwrap_or_default();
+    Ok((fm, body.to_string()))
 }
 
 #[cfg(test)]
@@ -481,6 +544,55 @@ mod tests {
         let (skills, skipped) = scan_skills(Path::new("/no/such/dir/at/all/here"));
         assert!(skills.is_empty());
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn scan_skills_treats_skills_md_as_index_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("resend");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("SKILLS.md"), "# resend\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "resend/index");
+    }
+
+    #[test]
+    fn scan_skills_treats_nested_skills_md_as_index_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("resend/emails");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("SKILLS.md"), "# emails\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "resend/emails/index");
+    }
+
+    #[test]
+    fn scan_skills_skips_one_when_both_index_and_skills_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("resend");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# from index\n").unwrap();
+        std::fs::write(ns.join("SKILLS.md"), "# from SKILLS\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert_eq!(skills.len(), 1, "should keep exactly one entry");
+        assert_eq!(skills[0].id, "resend/index");
+        assert_eq!(
+            skipped.len(),
+            1,
+            "second entry should be reported as duplicate"
+        );
+        assert!(
+            skipped[0].reason.contains("duplicate id \"resend/index\""),
+            "expected duplicate-id skip, got: {}",
+            skipped[0].reason
+        );
     }
 
     // ── scan_prompts ─────────────────────────────────────────────────
@@ -635,5 +747,77 @@ mod tests {
         let path = tmp.path().join("nope.md");
         let err = read_body(&path).unwrap_err();
         assert!(err.contains("read"));
+    }
+
+    // ── read_skill_with_frontmatter ──────────────────────────────────
+
+    #[test]
+    fn read_with_frontmatter_extracts_title_and_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("foo.md");
+        std::fs::write(
+            &path,
+            "---\ntitle: Real title\ntype: how-to\n---\n# Body H1\n\nThe body.\n",
+        )
+        .unwrap();
+        let (fm, body) = read_skill_with_frontmatter(&path).unwrap();
+        assert_eq!(fm.title.as_deref(), Some("Real title"));
+        assert_eq!(fm.kind.as_deref(), Some("how-to"));
+        assert_eq!(body, "# Body H1\n\nThe body.\n");
+    }
+
+    #[test]
+    fn read_with_frontmatter_defaults_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain.md");
+        std::fs::write(&path, "# Plain\n\nbody\n").unwrap();
+        let (fm, body) = read_skill_with_frontmatter(&path).unwrap();
+        assert!(fm.title.is_none());
+        assert!(fm.kind.is_none());
+        assert_eq!(body, "# Plain\n\nbody\n");
+    }
+
+    #[test]
+    fn read_with_frontmatter_tolerates_unrelated_yaml_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rich.md");
+        std::fs::write(
+            &path,
+            "---\ntitle: Hi\ntype: index\nfunctions: [a::b]\nfunction_id: c::d\n---\nbody\n",
+        )
+        .unwrap();
+        let (fm, _) = read_skill_with_frontmatter(&path).unwrap();
+        assert_eq!(fm.title.as_deref(), Some("Hi"));
+        assert_eq!(fm.kind.as_deref(), Some("index"));
+    }
+
+    #[test]
+    fn read_with_frontmatter_falls_back_on_invalid_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bad.md");
+        std::fs::write(&path, "---\nnot: [valid yaml\n---\n# heading\nbody\n").unwrap();
+        let (fm, body) = read_skill_with_frontmatter(&path).unwrap();
+        assert!(fm.title.is_none());
+        assert!(fm.kind.is_none());
+        assert!(body.contains("# heading"));
+    }
+
+    #[test]
+    fn read_with_frontmatter_enforces_size_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.md");
+        let body = "x".repeat(SKILL_BODY_MAX_BYTES + 1);
+        std::fs::write(&path, &body).unwrap();
+        let err = read_skill_with_frontmatter(&path).unwrap_err();
+        assert!(err.contains("too large"), "got: {err}");
+    }
+
+    #[test]
+    fn read_with_frontmatter_rejects_empty_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("only-fm.md");
+        std::fs::write(&path, "---\ntitle: x\n---\n").unwrap();
+        let err = read_skill_with_frontmatter(&path).unwrap_err();
+        assert!(err.contains("empty body"), "got: {err}");
     }
 }

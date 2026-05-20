@@ -1,4 +1,0 @@
-# session-tree runtime config.
-
-# Storage backend: `iii_state` (durable, persists via iii-state) or `memory` (ephemeral, in-process).
-store_backend: iii_state

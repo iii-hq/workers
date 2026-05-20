@@ -1,0 +1,33 @@
+iii: v1
+name: harness
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-harness
+description: Meta-worker that composes the modular Node workers backing the iii chat surface.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/harness/main.js --config ./config.yaml
+
+dependencies:
+  iii-state: "^0.11.0"
+  iii-queue: "^0.11.0"
+  iii-stream: "^0.11.0"
+  iii-bridge: "^0.11.0"
+  iii-http: "^0.11.0"
+  iii-sandbox: "^0.11.0"
+  iii-directory: "^0.5.1"
+  turn-orchestrator: "^0.2.0"
+  models-catalog: "^0.2.0"
+  shell: "^0.3.0"
+  provider-anthropic: "^0.2.0"
+  provider-openai: "^0.2.0"
+  approval-gate: "^0.2.0"
+  session: "^0.2.0"
+  hook-fanout: "^0.2.0"
+  auth-credentials: "^0.2.0"
+  llm-budget: "^0.2.0"

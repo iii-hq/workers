@@ -9,31 +9,18 @@ on:
         type: choice
         options:
           - acp
-          - approval-gate
-          - auth-credentials
-          - harness
-          - hook-fanout
+          - console
           - iii-database
+          - iii-directory
           - iii-lsp
           - iii-lsp-vscode
-          - iii-directory
           - image-resize
           - llm-budget
           - mcp
-          - models-catalog
-          - oauth-anthropic
-          - oauth-openai-codex
-          - policy-denylist
-          - proof
-          - provider-anthropic
-          - provider-openai
-          - provider-router
-          - session
           - shell
           - storage
           - todo-worker
           - todo-worker-python
-          - turn-orchestrator
       bump:
         description: 'Version bump'
         required: true

@@ -1,0 +1,171 @@
+# iii-permissions.yaml — shipped default permissions file.
+#
+# This file is the **single source of truth** for what an iii agent is
+# allowed to call. The harness loads it at boot (and watches for
+# changes), exposes `policy::check_permissions` on the bus, and
+# approval-gate consults it for every dispatched function call.
+#
+# Rules are scanned top-to-bottom; the first rule whose match condition
+# holds wins.
+#
+#   action: allow → call runs without prompting.
+#   action: deny  → call is blocked without prompting; the model sees a
+#                   structured DenialEnvelope so it can re-plan.
+#
+# Calls that match no rule trigger an `approval_requested` event; the UI
+# (Phase 3) will let the operator approve or deny.
+#
+# The kernel/* deny rules below protect the gate itself and the direct-
+# state surfaces that bypass the agent loop. Removing them is supported
+# but DISCOURAGED — an LLM that reached one of these could self-approve,
+# mutate state out of band, or short-circuit the hook.
+#
+# Regex flavor: Rust `regex` crate (no PCRE).
+#
+# Phase 2.B — see `PHASE-2-PLAN.md` §5.
+
+version: 1
+
+rules:
+  # ─── Kernel: self-approval / gate-bypass surfaces ────────────────────
+  # Agents must never resolve their own approvals or rewrite the gate.
+
+  - rule_id: kernel/no-self-approve
+    function: approval::resolve
+    action: deny
+
+  - rule_id: kernel/no-self-policy
+    function: policy::check_permissions
+    action: deny
+
+  - rule_id: kernel/no-self-policy-gate
+    function: policy::approval_gate
+    action: deny
+
+  - rule_id: kernel/no-self-hook
+    function: hook-fanout::publish_collect
+    action: deny
+
+  # ─── Kernel: direct state / event manipulation ──────────────────────
+  # Bypasses the agent loop. Tools that need to mutate session state
+  # should go through purpose-built worker functions, not raw
+  # state::* / stream::* primitives.
+
+  - rule_id: kernel/no-state-set
+    function: state::set
+    action: deny
+
+  - rule_id: kernel/no-state-update
+    function: state::update
+    action: deny
+
+  - rule_id: kernel/no-state-delete
+    function: state::delete
+    action: deny
+
+  - rule_id: kernel/no-stream-set
+    function: stream::set
+    action: deny
+
+  - rule_id: kernel/no-durable-publish
+    function: iii::durable::publish
+    action: deny
+
+  # ─── Kernel: auth credentials ───────────────────────────────────────
+  # Token plumbing is for the operator, not the agent.
+
+  - rule_id: kernel/no-auth-set
+    function: auth::set_token
+    action: deny
+
+  - rule_id: kernel/no-auth-delete
+    function: auth::delete_token
+    action: deny
+
+  - rule_id: kernel/no-oauth-anthropic-login
+    function: oauth::anthropic::login
+    action: deny
+
+  - rule_id: kernel/no-oauth-openai-login
+    function: oauth::openai-codex::login
+    action: deny
+
+  # ─── Kernel: orchestrator entry points ──────────────────────────────
+  # The agent should not start a new run from inside its own run.
+
+  - rule_id: kernel/no-self-run-start
+    function: run::start
+    action: deny
+
+  - rule_id: kernel/no-self-run-start-and-wait
+    function: run::start_and_wait
+    action: deny
+
+  # ─── Kernel: routing internals ──────────────────────────────────────
+
+  - rule_id: kernel/no-router-stream-assistant
+    function: router::stream_assistant
+    action: deny
+
+  - rule_id: kernel/no-router-abort
+    function: router::abort
+    action: deny
+
+  # ─── Read-only convenience allows ───────────────────────────────────
+  # Bare-string shorthand: equivalent to
+  # `{ rule_id: <id>, function: <id>, action: allow }`. Operators can
+  # extend this list freely.
+
+  - harness::status
+  - state::get
+  - state::list
+  - models::list
+  - models::get
+  - models::supports
+  - auth::get_token
+  - auth::list_providers
+  - auth::status
+  - oauth::anthropic::status
+  - oauth::openai-codex::status
+
+  # ─── iii-directory introspection (always safe) ──────────────────────
+
+  - directory::engine::functions::list
+  - directory::engine::functions::info
+  - directory::engine::triggers::list
+  - directory::engine::triggers::info
+  - directory::engine::workers::list
+  - directory::engine::workers::info
+  - directory::engine::registered_triggers::list
+  - directory::engine::registered_triggers::info
+  - directory::skills::list
+  - directory::skills::get
+  - directory::skills::download
+  - directory::prompts::list
+  - directory::prompts::get
+  - directory::prompts::download
+
+  # ─── Add operator-defined rules below ───────────────────────────────
+  #
+  # Examples:
+  #
+  # # Allow read-only filesystem operations.
+  # - shell::fs::ls
+  # - shell::fs::stat
+  # - shell::fs::read
+  #
+  # # Block specific dangerous shell patterns.
+  # - rule_id: shell/no-rm-rf-root
+  #   function: shell::exec
+  #   action: deny
+  #   args:
+  #     command:
+  #       matches: "^rm -rf /( |$)"
+  #
+  # # Allow git read-only commands.
+  # - rule_id: git/readonly-commands
+  #   function: shell::exec
+  #   action: allow
+  #   args:
+  #     command:
+  #       matches: "^git (status|log|diff)( |$)"

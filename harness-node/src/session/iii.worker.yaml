@@ -1,0 +1,17 @@
+iii: v1
+name: session
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-session
+description: Session storage (session-tree::* parent-linked tree + session-inbox::* queues) on the iii bus.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/session/main.js --config ./config.yaml
+
+dependencies:
+  iii-state: "^0.11.0"

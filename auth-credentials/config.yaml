@@ -1,7 +1,0 @@
-# auth-credentials runtime config.
-
-# WebSocket URL the worker uses to register with the engine.
-engine_url: "ws://127.0.0.1:49134"
-
-# Storage backend for credentials: `iii_state` (durable) or `memory` (ephemeral, for tests).
-store: iii_state

@@ -1,0 +1,17 @@
+iii: v1
+name: models-catalog
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-models-catalog
+description: Model capabilities knowledge base on the iii bus (models::*). State-first; seeds from a baked-in baseline when state is empty.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/models-catalog/main.js
+
+dependencies:
+  iii-state: "^0.11.0"

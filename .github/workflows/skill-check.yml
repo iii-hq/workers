@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write          # for auto-fix mode (commits the rendered diff back)
+  contents: read           # report-only; the action no longer commits back
   pull-requests: write     # for the sticky PR comment
   actions: write           # for the persistent AI skip-cache (v0.3+)
 
@@ -19,6 +19,6 @@ jobs:
           ref: ${{ github.head_ref }}    # check out the PR branch directly
       - uses: iii-hq/skills-and-validation@v0.4
         with:
-          write: true
+          write: false
           scope: pr-diff
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

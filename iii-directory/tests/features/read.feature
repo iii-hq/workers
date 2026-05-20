@@ -44,6 +44,23 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I list skills
     Then the listing entry "ns/labelled" has title "Labelled skill"
     And  the listing entry "ns/labelled" has description "First paragraph summary."
+    And  the listing entry "ns/labelled" has a null type
+
+  Scenario: list rows prefer the frontmatter title and surface the frontmatter type
+    Given a skill file at "ns/branded.md" with body:
+      """
+      ---
+      title: Real title from frontmatter
+      type: how-to
+      ---
+      # Body H1 ignored
+
+      First paragraph summary.
+      """
+    When I list skills
+    Then the listing entry "ns/branded" has title "Real title from frontmatter"
+    And  the listing entry "ns/branded" has type "how-to"
+    And  the listing entry "ns/branded" has description "First paragraph summary."
 
   # ── nested directory hierarchy ───────────────────────────────────────
 
@@ -79,6 +96,23 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     And  the get response has description "Body content here."
     And  the get response body contains "Body content here."
     And  the get response has a non-empty modified_at
+    And  the get response has a null type
+
+  Scenario: directory::skills::get prefers the frontmatter title and exposes the frontmatter type
+    Given a skill file at "ns/branded-get.md" with body:
+      """
+      ---
+      title: Real title from frontmatter
+      type: how-to
+      ---
+      # Body H1 ignored
+
+      Body content here.
+      """
+    When I get skill "ns/branded-get"
+    Then the get response has title "Real title from frontmatter"
+    And  the get response has type "how-to"
+    And  the get response body contains "Body H1 ignored"
 
   Scenario: directory::skills::get accepts the legacy iii:// prefix
     Given a skill file at "ns/prefixed.md" with body:
@@ -129,3 +163,133 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I list skills
     Then no listing entry has id "ns/Bad-Name"
     And  no listing entry has id "ns/bad-name"
+
+  # ── directory::skills::index ─────────────────────────────────────────
+
+  Scenario: directory::skills::index lists workers and filters out non-index skills
+    Given a skill file at "team-a/index.md" with body:
+      """
+      ---
+      title: team-a
+      type: index
+      ---
+      # team-a
+
+      Alpha team's worker. Owns alpha-only tooling.
+      """
+    And   a skill file at "team-b/index.md" with body:
+      """
+      ---
+      title: team-b
+      type: index
+      ---
+      # team-b
+
+      Bravo team's worker. Handles all bravo workflows.
+      """
+    And   a skill file at "team-a/foo.md" with body:
+      """
+      ---
+      type: how-to
+      ---
+      # Foo
+
+      A how-to that must not appear in the worker index.
+      """
+    When I index skills
+    Then the index response has at least 2 workers
+    And  the index response body contains "# Skills index"
+    And  the index response body contains "## team-a"
+    And  the index response body contains "## team-b"
+    And  the index response body contains "Alpha team's worker. Owns alpha-only tooling."
+    And  the index response body contains "Bravo team's worker. Handles all bravo workflows."
+    And  the index response body contains "Read [`team-a/index.md`](team-a/index.md) (legacy `iii://team-a/index`) for the full worker reference."
+    And  the index response body contains "Read [`team-b/index.md`](team-b/index.md) (legacy `iii://team-b/index`) for the full worker reference."
+    And  the index response body does not contain "team-a/foo"
+    And  the index response body does not contain "## Foo"
+
+  # ── SKILLS.md alias (case-sensitive entry-point) ────────────────────
+
+  Scenario: SKILLS.md at namespace root is aliased to <ns>/index
+    Given a skill file at "ns-skills/SKILLS.md" with body:
+      """
+      # ns-skills entry-point
+
+      Body served via the SKILLS.md alias.
+      """
+    When I list skills
+    Then the listing has an entry with id "ns-skills/index"
+    And  no listing entry has id "ns-skills/SKILLS"
+
+  Scenario: nested SKILLS.md is aliased to <ns>/<sub>/index
+    Given a skill file at "ns-nested/section/SKILLS.md" with body:
+      """
+      # nested entry-point
+
+      Body for nested SKILLS.md.
+      """
+    When I list skills
+    Then the listing has an entry with id "ns-nested/section/index"
+
+  # ── directory::skills::get accepts the file-path forms ──────────────
+
+  Scenario: directory::skills::get accepts the <id>.md file-path form
+    Given a skill file at "ns-path/lookup.md" with body:
+      """
+      # Lookup via path
+
+      Body for the path-form lookup.
+      """
+    When I get skill "ns-path/lookup.md"
+    Then the get response has id "ns-path/lookup"
+    And  the get response body contains "Body for the path-form lookup."
+
+  Scenario: directory::skills::get accepts the SKILLS.md filename
+    Given a skill file at "ns-skills-get/SKILLS.md" with body:
+      """
+      # ns-skills-get entry-point
+
+      Body served via SKILLS.md lookup.
+      """
+    When I get skill "ns-skills-get/SKILLS.md"
+    Then the get response has id "ns-skills-get/index"
+    And  the get response body contains "Body served via SKILLS.md lookup."
+
+  Scenario: directory::skills::get accepts the iii:// + .md combined form
+    Given a skill file at "ns-combo/lookup.md" with body:
+      """
+      # Combo
+
+      Body for combined-form lookup.
+      """
+    When I get skill "iii://ns-combo/lookup.md"
+    Then the get response has id "ns-combo/lookup"
+    And  the get response body contains "Body for combined-form lookup."
+
+  Scenario: directory::skills::get accepts the iii:// + SKILLS.md combined form
+    Given a skill file at "ns-combo-skills/SKILLS.md" with body:
+      """
+      # Combo SKILLS
+
+      Body for combined iii:// + SKILLS.md lookup.
+      """
+    When I get skill "iii://ns-combo-skills/SKILLS.md"
+    Then the get response has id "ns-combo-skills/index"
+    And  the get response body contains "Body for combined iii:// + SKILLS.md lookup."
+
+  Scenario: the legacy iii:// pointer emitted by skills::index round-trips through skills::get
+    Given a skill file at "round-trip/index.md" with body:
+      """
+      ---
+      title: round-trip
+      type: index
+      ---
+      # round-trip
+
+      Body served via the legacy iii:// pointer.
+      """
+    When I index skills
+    Then the index response body contains "(legacy `iii://round-trip/index`)"
+    When I get skill "iii://round-trip/index"
+    Then the get response has id "round-trip/index"
+    And  the get response body contains "Body served via the legacy iii:// pointer."
