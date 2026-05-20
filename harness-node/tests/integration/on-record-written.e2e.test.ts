@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
-  STEP_FN_ID,
   handleStepableRecordWrite,
   isStepableRecordWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
+import { STEP_FN_ID } from '../../src/turn-orchestrator/subscriber.js';
 
 function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> } {
   const stateStore = new Map<string, unknown>();
@@ -87,10 +87,7 @@ describe('turn-step reactive wake', () => {
     });
     await Promise.resolve();
 
-    expect(stepInvocations).toEqual([
-      { session_id: 'sess-b' },
-      { session_id: 'sess-b' },
-    ]);
+    expect(stepInvocations).toEqual([{ session_id: 'sess-b' }, { session_id: 'sess-b' }]);
   });
 
   it('parking in function_awaiting_approval does NOT wake', async () => {

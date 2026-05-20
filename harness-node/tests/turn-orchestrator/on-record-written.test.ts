@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
-  STEP_FN_ID,
   handleStepableRecordWrite,
   isStepableRecordWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
+import { STEP_FN_ID } from '../../src/turn-orchestrator/subscriber.js';
 
 describe('isStepableRecordWrite condition', () => {
   it('matches turn_state writes with a non-terminal, non-awaiting state', () => {

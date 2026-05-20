@@ -14,14 +14,12 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { parseTurnStateWrite } from './on-turn-state-changed.js';
+import { STEP_TOPIC } from './subscriber.js';
 import type { TurnState } from './state.js';
-import { STEP_FN_ID, STEP_TOPIC } from './subscriber.js';
 
-export { STEP_FN_ID };
 export const HANDLER_FN_ID = 'turn::on_record_written';
 export const CONDITION_FN_ID = 'turn::is_stepable_record_write';
-
-const TURN_STATE_KEY_RE = /^session\/(?<session_id>[^/]+)\/turn_state$/;
 
 const NON_STEPABLE_STATES: ReadonlySet<TurnState> = new Set([
   'stopped',
@@ -41,30 +39,18 @@ type StepableWrite = {
  * even if the condition was bypassed.
  */
 function parseStepableWrite(event: unknown): StepableWrite | null {
-  if (!event || typeof event !== 'object') return null;
-  const obj = event as Record<string, unknown>;
+  const parsed = parseTurnStateWrite(event);
+  if (!parsed) return null;
 
-  if (obj.event_type !== 'state:created' && obj.event_type !== 'state:updated') return null;
+  const state = parsed.new_value.state as TurnState;
+  if (NON_STEPABLE_STATES.has(state)) return null;
 
-  const key = obj.key;
-  if (typeof key !== 'string') return null;
-  const session_id = TURN_STATE_KEY_RE.exec(key)?.groups?.session_id;
-  if (!session_id) return null;
-
-  const nv = obj.new_value;
-  if (!nv || typeof nv !== 'object') return null;
-  const state = (nv as Record<string, unknown>).state;
-  if (typeof state !== 'string') return null;
-  if (NON_STEPABLE_STATES.has(state as TurnState)) return null;
-
-  if (obj.event_type === 'state:updated') {
-    const ov = obj.old_value;
-    const old_state =
-      ov && typeof ov === 'object' ? (ov as Record<string, unknown>).state : undefined;
+  if (parsed.event_type === 'state:updated') {
+    const old_state = parsed.old_value?.state;
     if (typeof old_state === 'string' && old_state === state) return null;
   }
 
-  return { session_id, state: state as TurnState };
+  return { session_id: parsed.session_id, state };
 }
 
 export function isStepableRecordWrite(event: unknown): boolean {
@@ -77,7 +63,7 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
 
   try {
     await iii.trigger<unknown, unknown>({
-      function_id: STEP_FN_ID,
+      function_id: 'turn::step',
       payload: { session_id: parsed.session_id },
     });
     return;
