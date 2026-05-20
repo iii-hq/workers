@@ -19,7 +19,6 @@ import {
   stateSet,
 } from '../runtime/state.js';
 import type { TurnStateRecord } from './state.js';
-import { STEP_FN_ID } from './subscriber.js';
 
 const resumeRefs = new Map<string, FunctionRef>();
 const TURN_STATE_KEY_RE = /^session\/[^/]+\/turn_state$/;
@@ -90,7 +89,7 @@ async function handleApprovalResume(
   }
 
   try {
-    await iii.trigger({ function_id: STEP_FN_ID, payload: { session_id } });
+    await iii.trigger({ function_id: 'turn::step', payload: { session_id } });
   } catch (err) {
     logger.warn('approval resume: turn::step invoke failed', { session_id, err: String(err) });
   }

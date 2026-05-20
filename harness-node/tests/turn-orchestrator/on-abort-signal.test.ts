@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
-  STEP_TOPIC,
   handleAbortSignalWrite,
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
@@ -108,7 +107,7 @@ describe('handleAbortSignalWrite', () => {
     expect(triggers).toHaveLength(1);
     expect(triggers[0]?.function_id).toBe('iii::durable::publish');
     expect(triggers[0]?.payload).toMatchObject({
-      topic: STEP_TOPIC,
+      topic: 'turn::step_requested',
       data: { session_id: 'sess-abc' },
     });
   });

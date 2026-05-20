@@ -15,7 +15,6 @@ import type { FunctionCall, FunctionResult } from '../types/function.js';
 import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './hook.js';
 
 export const TOOL_NAME = 'agent_trigger';
-export const FUNCTION_ID = 'agent::trigger';
 
 export type DispatchResult =
   | { kind: 'result'; result: FunctionResult }
@@ -185,7 +184,7 @@ export async function dispatch(
 
 export function register(iii: ISdk): void {
   iii.registerFunction(
-    FUNCTION_ID,
+    'agent::trigger',
     async (payload: unknown) => {
       const obj = (payload ?? {}) as Record<string, unknown>;
       const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';

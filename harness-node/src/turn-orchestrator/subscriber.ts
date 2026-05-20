@@ -9,8 +9,7 @@ import * as persistence from './persistence.js';
 import { isTerminal } from './state.js';
 import { step } from './transitions.js';
 
-export const STEP_FN_ID = 'turn::step';
-export const STEP_TOPIC = 'turn::step_requested';
+const STEP_TOPIC = 'turn::step_requested';
 
 function extractSessionId(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -52,12 +51,12 @@ export async function execute(
 }
 
 export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
-  iii.registerFunction(STEP_FN_ID, async (payload: unknown) => execute(iii, cfg, payload), {
+  iii.registerFunction('turn::step', async (payload: unknown) => execute(iii, cfg, payload), {
     description: 'Run one durable state machine transition for a session.',
   });
   iii.registerTrigger({
     type: 'durable:subscriber',
-    function_id: STEP_FN_ID,
+    function_id: 'turn::step',
     config: { topic: STEP_TOPIC },
   });
 }

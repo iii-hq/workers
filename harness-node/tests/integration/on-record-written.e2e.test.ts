@@ -4,7 +4,6 @@ import {
   handleStepableRecordWrite,
   isStepableRecordWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
-import { STEP_FN_ID } from '../../src/turn-orchestrator/subscriber.js';
 
 function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> } {
   const stateStore = new Map<string, unknown>();
@@ -34,7 +33,7 @@ function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> 
         return null;
       }
 
-      if (function_id === STEP_FN_ID) {
+      if (function_id === 'turn::step') {
         stepInvocations.push(payload as { session_id: string });
         return null;
       }

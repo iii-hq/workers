@@ -15,11 +15,7 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { parseTurnStateWrite } from './on-turn-state-changed.js';
-import { STEP_TOPIC } from './subscriber.js';
 import type { TurnState } from './state.js';
-
-export const HANDLER_FN_ID = 'turn::on_record_written';
-export const CONDITION_FN_ID = 'turn::is_stepable_record_write';
 
 const NON_STEPABLE_STATES: ReadonlySet<TurnState> = new Set([
   'stopped',
@@ -80,7 +76,7 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
     try {
       await iii.trigger<unknown, unknown>({
         function_id: 'iii::durable::publish',
-        payload: { topic: STEP_TOPIC, data: { session_id: parsed.session_id } },
+        payload: { topic: 'turn::step_requested', data: { session_id: parsed.session_id } },
       });
     } catch (publishErr) {
       logger.error(
@@ -89,4 +85,33 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
       );
     }
   }
+}
+
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::is_stepable_record_write',
+    async (event: unknown) => isStepableRecordWrite(event),
+    {
+      description:
+        'Condition: state event sets session/<id>/turn_state to a stepable state (excludes stopped + function_awaiting_approval).',
+    },
+  );
+
+  iii.registerFunction(
+    'turn::on_record_written',
+    async (event: unknown) => handleStepableRecordWrite(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=agent for stepable turn_state writes; invokes turn::step. Replaces the imperative publishStep self-publish.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: 'turn::on_record_written',
+    config: {
+      scope: 'agent',
+      condition_function_id: 'turn::is_stepable_record_write',
+    },
+  });
 }

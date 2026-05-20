@@ -11,9 +11,6 @@ import { logger } from '../runtime/otel.js';
 import { emit } from './events.js';
 import { turnStateKey } from './state.js';
 
-export const HANDLER_FN_ID = 'turn::on_turn_state_changed';
-export const CONDITION_FN_ID = 'turn::is_turn_state_write';
-
 const TurnStateRecordValueSchema = z.object({ state: z.string() }).passthrough();
 
 export const TurnStateWriteEventSchema = z.object({
@@ -81,4 +78,32 @@ export async function handleTurnStateWrite(iii: ISdk, event: unknown): Promise<v
       err: String(err),
     });
   }
+}
+
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::is_turn_state_write',
+    async (event: unknown) => isTurnStateWrite(event),
+    {
+      description: 'Condition: state event is a write to session/<sid>/turn_state.',
+    },
+  );
+
+  iii.registerFunction(
+    'turn::on_turn_state_changed',
+    async (event: unknown) => handleTurnStateWrite(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=agent for turn_state writes; emits turn_state_changed on agent::events for the subscribed UI.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: 'turn::on_turn_state_changed',
+    config: {
+      scope: 'agent',
+      condition_function_id: 'turn::is_turn_state_write',
+    },
+  });
 }

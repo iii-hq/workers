@@ -19,9 +19,6 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 
-export const STEP_TOPIC = 'turn::step_requested';
-export const HANDLER_FN_ID = 'turn::on_abort_signal';
-export const CONDITION_FN_ID = 'turn::is_abort_signal_set';
 const ABORT_SIGNAL_KEY_RE = /^session\/([^/]+)\/abort_signal$/;
 
 export function isAbortSignalWrite(event: unknown): boolean {
@@ -50,7 +47,7 @@ export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise
   try {
     await iii.trigger<unknown, unknown>({
       function_id: 'iii::durable::publish',
-      payload: { topic: STEP_TOPIC, data: { session_id } },
+      payload: { topic: 'turn::step_requested', data: { session_id } },
     });
   } catch (err) {
     logger.warn('turn::on_abort_signal: publish failed', {
@@ -58,4 +55,33 @@ export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise
       err: String(err),
     });
   }
+}
+
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::is_abort_signal_set',
+    async (event: unknown) => isAbortSignalWrite(event),
+    {
+      description:
+        'Condition: state event sets session/<id>/abort_signal = true (state:created or state:updated).',
+    },
+  );
+
+  iii.registerFunction(
+    'turn::on_abort_signal',
+    async (event: unknown) => handleAbortSignalWrite(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=agent for abort_signal writes; publishes turn::step_requested so the orchestrator picks up the abort promptly.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: 'turn::on_abort_signal',
+    config: {
+      scope: 'agent',
+      condition_function_id: 'turn::is_abort_signal_set',
+    },
+  });
 }

@@ -12,8 +12,6 @@ import type { ISdk } from '../runtime/iii.js';
 import * as persistence from './persistence.js';
 import type { TurnStateRecord } from './state.js';
 
-export const FUNCTION_ID = 'turn::get_state';
-
 export async function execute(iii: ISdk, payload: unknown): Promise<TurnStateRecord | null> {
   const obj = (payload ?? {}) as Record<string, unknown>;
   const session_id = requireString(obj, 'session_id');
@@ -21,8 +19,8 @@ export async function execute(iii: ISdk, payload: unknown): Promise<TurnStateRec
 }
 
 export function register(iii: ISdk): void {
-  iii.registerFunction(FUNCTION_ID, async (payload: unknown) => execute(iii, payload), {
+  iii.registerFunction('turn::get_state', async (payload: unknown) => execute(iii, payload), {
     description:
-      "Read the current turn_state record for a session. Returns null if the session is unknown. UI clients use this on page reload to recover any in-progress modals (e.g. function_awaiting_approval) without reading iii state directly.",
+      'Read the current turn_state record for a session. Returns null if the session is unknown. UI clients use this on page reload to recover any in-progress modals (e.g. function_awaiting_approval) without reading iii state directly.',
   });
 }

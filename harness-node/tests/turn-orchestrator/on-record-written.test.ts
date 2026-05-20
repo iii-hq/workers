@@ -4,7 +4,6 @@ import {
   handleStepableRecordWrite,
   isStepableRecordWrite,
 } from '../../src/turn-orchestrator/on-record-written.js';
-import { STEP_FN_ID } from '../../src/turn-orchestrator/subscriber.js';
 
 describe('isStepableRecordWrite condition', () => {
   it('matches turn_state writes with a non-terminal, non-awaiting state', () => {
@@ -152,7 +151,7 @@ describe('handleStepableRecordWrite', () => {
     });
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe(STEP_FN_ID);
+    expect(triggers[0]?.function_id).toBe('turn::step');
     expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
   });
 
@@ -175,7 +174,7 @@ describe('handleStepableRecordWrite', () => {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
         triggers.push(req);
         // Fail the direct turn::step invoke; let the durable publish succeed.
-        if (req.function_id === STEP_FN_ID) {
+        if (req.function_id === 'turn::step') {
           throw new Error('engine down');
         }
         return null;
@@ -192,7 +191,7 @@ describe('handleStepableRecordWrite', () => {
     });
 
     expect(triggers).toHaveLength(2);
-    expect(triggers[0]?.function_id).toBe(STEP_FN_ID);
+    expect(triggers[0]?.function_id).toBe('turn::step');
     expect(triggers[1]?.function_id).toBe('iii::durable::publish');
     expect(triggers[1]?.payload).toEqual({
       topic: 'turn::step_requested',

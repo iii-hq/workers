@@ -1,13 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import { FUNCTION_ID, execute } from '../../src/turn-orchestrator/get-state.js';
+import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 
 describe('turn::get_state', () => {
-  it('exposes the canonical function id', () => {
-    expect(FUNCTION_ID).toBe('turn::get_state');
-  });
-
   it('returns the turn_state record for a known session via persistence.loadRecord', async () => {
     const rec = newRecord('sess-abc');
     rec.state = 'function_awaiting_approval';

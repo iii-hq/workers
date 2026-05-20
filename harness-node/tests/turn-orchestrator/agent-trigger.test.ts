@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { DispatchResult } from '../../src/turn-orchestrator/agent-trigger.js';
 import {
-  FUNCTION_ID,
   TOOL_NAME,
   agentTriggerTool,
   dispatchWithHook,
@@ -23,9 +22,8 @@ describe('agent_trigger tool schema', () => {
     expect(params.required).toEqual(['function']);
   });
 
-  it('TOOL_NAME and FUNCTION_ID are stable', () => {
+  it('TOOL_NAME is stable', () => {
     expect(TOOL_NAME).toBe('agent_trigger');
-    expect(FUNCTION_ID).toBe('agent::trigger');
   });
 });
 

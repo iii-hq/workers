@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
-  CONDITION_FN_ID,
   handleTurnStateWrite,
   isTurnStateWrite,
 } from '../../src/turn-orchestrator/on-turn-state-changed.js';
@@ -20,12 +19,6 @@ function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unkno
   } as unknown as ISdk;
   return { iii, emits };
 }
-
-describe('CONDITION_FN_ID', () => {
-  it('is the stable string the trigger config will reference', () => {
-    expect(CONDITION_FN_ID).toBe('turn::is_turn_state_write');
-  });
-});
 
 describe('isTurnStateWrite', () => {
   it('returns true for state:created on session/<sid>/turn_state', () => {
