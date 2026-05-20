@@ -46,11 +46,11 @@ function formatCompactResult(result: CompactResult): string {
         result.autoContinued ? ' (continued)' : ''
       }`
     case 'busy':
-      return 'compact: another compaction is in progress'
+      return 'compact: another compaction is in progress — try again in a moment'
     case 'overflow':
       return `compact failed: ${result.message}`
     case 'empty':
-      return 'compact: nothing to summarise yet'
+      return 'compact: session is too small to summarise — try again after a few more turns'
     case 'error':
       return `compact failed: ${result.message}`
   }
@@ -158,6 +158,7 @@ export function ChatView({
             sessionId,
             conversation.model,
             priorHistory,
+            contextWindow,
           )
           if (result.status === 'ok') {
             const marker: SystemMessage = {

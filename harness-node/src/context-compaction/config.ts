@@ -5,7 +5,9 @@ const DEFAULT_MAX_PRESERVE_RECENT_TOKENS = 8_000;
 const DEFAULT_PRUNE_PROTECT = 40_000;
 const DEFAULT_PRUNE_MIN_FREE = 20_000;
 const DEFAULT_TOOL_OUTPUT_MAX_CHARS = 2_000;
-const DEFAULT_BUSY_TIMEOUT_MS = 3_000;
+// Sized to cover a summariser stream (10-30s); shorter values surface
+// `busy` to users when async compaction is mid-flight.
+const DEFAULT_BUSY_TIMEOUT_MS = 30_000;
 
 function intEnv(name: string, def: number): number {
   const v = process.env[name];

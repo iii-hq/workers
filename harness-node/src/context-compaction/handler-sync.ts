@@ -56,7 +56,7 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       >({
         function_id: 'session-tree::messages',
         payload: { session_id: input.session_id },
-        timeoutMs: 10_000,
+        timeoutMs: 30_000,
       });
       const entries: MessageWithEntryId[] = (resp?.messages ?? [])
         .filter(

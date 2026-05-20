@@ -48,6 +48,21 @@ function makeStubIii(
         }
         return { ok: true };
       }
+      if (function_id === 'state::update') {
+        const key = p['key'] as string;
+        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+        let newValue: unknown = oldValue;
+        for (const op of ops) {
+          if (op.type === 'set') newValue = op.value;
+        }
+        if (newValue === null || newValue === undefined) {
+          stateStore.delete(key);
+        } else {
+          stateStore.set(key, newValue);
+        }
+        return { old_value: oldValue ?? null, new_value: newValue ?? null };
+      }
 
       return null;
     }),
@@ -115,38 +130,27 @@ async function runCompactSession(iii: ISdk, session_id: unknown, payloadModel?: 
     throw new Error('context-compaction::compact_session: session_id is required');
   }
 
-  // Mirrors register.ts fallback chain so the test catches drift.
+  // Mirrors register.ts fallback chain so the test catches drift. When
+  // all three sources fail, register.ts now falls back to a conservative
+  // model limit rather than throwing — compaction is best-effort.
+  const FALLBACK = {
+    providerID: 'unknown',
+    modelID: 'unknown',
+    modelLimit: { context: 32_000, input: 32_000, output: 4_000 },
+  };
   let model = await resolveExplicitModel(iii, payloadModel);
   if (!model) model = await resolveModelFromSession(iii, session_id);
   if (!model) model = await resolveModelFromRunRequest(iii, session_id);
-  if (!model) {
-    throw new Error(
-      `context-compaction::compact_session: could not resolve model for session ${session_id}`,
-    );
-  }
+  if (!model) model = FALLBACK;
 
-  const resp = await iii.trigger<
-    unknown,
-    { messages?: Array<{ entry_id?: string; message?: { role?: string } }> }
-  >({
-    function_id: 'session-tree::messages',
-    payload: { session_id },
-    timeoutMs: 10_000,
-  });
-
-  const messages = resp?.messages ?? [];
-  let last_user_message_id = '';
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.message?.role === 'user') {
-      last_user_message_id = messages[i]?.entry_id ?? '';
-      break;
-    }
-  }
-
+  // Mirrors register.ts: /compact does NOT extract a replay target.
+  // The replay mechanism is for compact_now (turn-orchestrator overflow
+  // pre-flight) only. Passing '' tells extractReplayTarget that no entry
+  // matches, so the full entries list is summarised.
   return handleSync(iii, {
     session_id,
     projected_tokens: 999_999,
-    last_user_message_id,
+    last_user_message_id: '',
     model: {
       id: model.modelID,
       providerID: model.providerID,
@@ -174,16 +178,15 @@ describe('compact_session smoke', () => {
     );
   });
 
-  it('throws when neither session-tree nor run_request can resolve a model', async () => {
-    // No assistant messages AND no run_request — the final fallback also fails.
+  it('uses the fallback model limit when no source can resolve a model', async () => {
+    // No assistant messages AND no run_request. compact_session used to
+    // throw; it now degrades to a conservative fallback so /compact still
+    // runs (with a small preserve-recent budget) rather than failing.
     const iii = makeStubIii({
       'session-tree::messages': { messages: [] },
-      // state::get returns null by default in the stub for any unknown key,
-      // which is what `resolveModelFromRunRequest` sees.
     });
-    await expect(runCompactSession(iii, 'no-messages-session')).rejects.toThrow(
-      'could not resolve model for session no-messages-session',
-    );
+    const result = await runCompactSession(iii, 'no-messages-session');
+    expect(['ok', 'empty', 'overflow', 'busy']).toContain(result.status);
   });
 
   it('falls back to run_request when session-tree has no assistant messages', async () => {
@@ -214,6 +217,18 @@ describe('compact_session smoke', () => {
           else stateStore.set(p['key'] as string, v);
           return { ok: true };
         }
+        if (function_id === 'state::update') {
+          const key = p['key'] as string;
+          const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+          const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+          let newValue: unknown = oldValue;
+          for (const op of ops) {
+            if (op.type === 'set') newValue = op.value;
+          }
+          if (newValue === null || newValue === undefined) stateStore.delete(key);
+          else stateStore.set(key, newValue);
+          return { old_value: oldValue ?? null, new_value: newValue ?? null };
+        }
         return null;
       }),
       registerFunction: vi.fn(),
@@ -230,12 +245,34 @@ describe('compact_session smoke', () => {
   it('uses explicit payload.model when provided (skips session scan)', async () => {
     // Even when session-tree returns no assistant messages AND no run_request
     // exists, an explicit model in the payload takes precedence.
+    const stateStore = new Map<string, unknown>();
     const iii = {
-      trigger: vi.fn(async ({ function_id }: { function_id: string; payload: unknown }) => {
+      trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+        const p = (payload ?? {}) as Record<string, unknown>;
         if (function_id === 'session-tree::messages') return { messages: [] };
         if (function_id === 'session-tree::compactions') return { entries: [] };
-        if (function_id === 'state::get') return null;
-        if (function_id === 'state::set') return { ok: true };
+        if (function_id === 'state::get') {
+          const v = stateStore.get(p['key'] as string);
+          return v !== undefined ? v : null;
+        }
+        if (function_id === 'state::set') {
+          const v = p['value'];
+          if (v === null || v === undefined) stateStore.delete(p['key'] as string);
+          else stateStore.set(p['key'] as string, v);
+          return { ok: true };
+        }
+        if (function_id === 'state::update') {
+          const key = p['key'] as string;
+          const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+          const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+          let newValue: unknown = oldValue;
+          for (const op of ops) {
+            if (op.type === 'set') newValue = op.value;
+          }
+          if (newValue === null || newValue === undefined) stateStore.delete(key);
+          else stateStore.set(key, newValue);
+          return { old_value: oldValue ?? null, new_value: newValue ?? null };
+        }
         return null;
       }),
       registerFunction: vi.fn(),

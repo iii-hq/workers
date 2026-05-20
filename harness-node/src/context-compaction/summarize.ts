@@ -40,6 +40,18 @@ export type SummarizeOk = {
 export type SummarizeFailure = { kind: 'compact'; reason: string };
 export type SummarizeOutcome = SummarizeOk | SummarizeFailure | 'empty';
 
+// Auth / 4xx / malformed requests won't fix on retry. Everything else
+// (5xx, 429, network, timeout, unknown) gets one retry. Conservative
+// default: when in doubt, retry.
+export function isRetryableStreamError(err: unknown): boolean {
+  if (!(err instanceof Error)) return true;
+  const msg = err.message.toLowerCase();
+  if (/\b(40[01345]|auth|unauthorized|forbidden|invalid[_ ]?(api[_ ]?key|key|request)|malformed)\b/.test(msg)) {
+    return false;
+  }
+  return true;
+}
+
 export function renderUserPrompt(older: AgentMessage[]): string {
   let out =
     'Summarise the conversation below following the system-prompt structure exactly. Keep identifiers verbatim.\n\n';
@@ -113,7 +125,7 @@ async function appendCompaction(
       tail_start_id,
       details: { read_files: [], modified_files: [] },
     },
-    timeoutMs: 10_000,
+    timeoutMs: 30_000,
   });
   return resp?.entry_id ?? '';
 }
@@ -151,33 +163,53 @@ export async function summarizeAndAppend(
   const systemPrompt = buildPrompt({ previousSummary, context: [] });
   const userPrompt = renderUserPrompt(stripped);
 
-  const providerName = summarizerProvider() ?? 'anthropic';
+  // Default to the session's provider, NOT a hardcoded 'anthropic'.
+  // Otherwise an OpenAI session ends up calling Anthropic with an OpenAI
+  // model id (e.g. gpt-5-mini) and the provider returns not_found_error.
+  const providerName = summarizerProvider() ?? model.providerID;
   const summariserId =
     providerName === 'openai' ? 'provider::openai::stream' : 'provider::anthropic::stream';
   const modelId = summarizerModel() ?? model.modelID;
 
+  // One 250ms retry for transient failures (429/5xx/network). Permanent
+  // failures (auth, malformed request) skip the retry to release the lease
+  // sooner.
+  const streamInput = {
+    system_prompt: systemPrompt,
+    model: modelId,
+    messages: [
+      {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: userPrompt }],
+        timestamp: Date.now(),
+      },
+    ],
+    tools: [],
+  };
   let final: AssistantMessage;
   try {
-    final = await streamAndCollect(
-      iii,
-      {
-        system_prompt: systemPrompt,
-        model: modelId,
-        messages: [
-          {
-            role: 'user',
-            content: [{ type: 'text', text: userPrompt }],
-            timestamp: Date.now(),
-          },
-        ],
-        tools: [],
-      },
-      summariserId,
-    );
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    logger.warn('summariser stream failed', { session_id, err: reason });
-    return { kind: 'compact', reason };
+    final = await streamAndCollect(iii, streamInput, summariserId);
+  } catch (firstErr) {
+    const firstReason = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    if (!isRetryableStreamError(firstErr)) {
+      logger.warn('summariser stream failed (non-retryable)', { session_id, err: firstReason });
+      return { kind: 'compact', reason: firstReason };
+    }
+    logger.warn('summariser stream failed; retrying once', { session_id, err: firstReason });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 250);
+    });
+    try {
+      final = await streamAndCollect(iii, streamInput, summariserId);
+    } catch (secondErr) {
+      const reason = secondErr instanceof Error ? secondErr.message : String(secondErr);
+      logger.warn('summariser stream failed after retry', {
+        session_id,
+        err: reason,
+        firstErr: firstReason,
+      });
+      return { kind: 'compact', reason };
+    }
   }
 
   let summary = '';

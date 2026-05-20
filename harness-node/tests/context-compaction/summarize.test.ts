@@ -288,6 +288,121 @@ describe('summarizeAndAppend async mode', () => {
       expect(result.reason).toContain('channel unavailable');
     }
   });
+
+  it('retries streamAndCollect once and succeeds when the first attempt fails', async () => {
+    // Transient provider failures (429, network blip, 5xx) should not
+    // surface to /compact when a single retry would succeed.
+    const { iii } = buildMock();
+    let createChannelCalls = 0;
+    const realCreateChannel = (
+      iii as unknown as { createChannel: () => Promise<unknown> }
+    ).createChannel;
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
+      .fn(async () => {
+        createChannelCalls += 1;
+        if (createChannelCalls === 1) {
+          throw new Error('transient provider failure');
+        }
+        return realCreateChannel();
+      });
+
+    const result = await summarizeAndAppend(iii, 'sess-retry', { mode: 'async' }, testModel);
+    expect(createChannelCalls).toBe(2);
+    expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('ok');
+  }, 10_000);
+
+  it('returns "compact" when both stream attempts fail', async () => {
+    // Generic permanent failure (no auth/4xx markers) — still retries once
+    // then surfaces the failure.
+    const { iii } = buildMock();
+    let createChannelCalls = 0;
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
+      .fn(async () => {
+        createChannelCalls += 1;
+        throw new Error('permanent provider failure');
+      });
+
+    const result = await summarizeAndAppend(iii, 'sess-fail-twice', { mode: 'async' }, testModel);
+    expect(createChannelCalls).toBe(2);
+    expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
+    if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
+      expect(result.reason).toContain('permanent provider failure');
+    }
+  }, 10_000);
+
+  it('skips retry on non-retryable errors (401/auth/malformed)', async () => {
+    // Auth and 4xx errors won't fix on retry. Skip the retry so the
+    // compaction lease releases ~1s sooner.
+    const { iii } = buildMock();
+    let createChannelCalls = 0;
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
+      .fn(async () => {
+        createChannelCalls += 1;
+        throw new Error('401 unauthorized: invalid_api_key');
+      });
+
+    const result = await summarizeAndAppend(iii, 'sess-auth-fail', { mode: 'async' }, testModel);
+    expect(createChannelCalls).toBe(1); // no retry
+    expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
+    if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
+      expect(result.reason).toContain('401');
+    }
+  });
+
+  it('returns "compact" when the provider stream emits an error terminal event', async () => {
+    // Regression: a not_found_error from Anthropic (e.g. wrong provider/model
+    // combo) used to be silently stored as the compaction summary text,
+    // showing "COMPACTED · N TOKENS" in the UI with the error JSON as
+    // the summary. The error terminal must surface as a failure instead.
+    const errorEvent = JSON.stringify({
+      type: 'error',
+      error: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: '{"type":"error","error":{"type":"not_found_error","message":"model: gpt-5-mini"}}',
+          },
+        ],
+        stop_reason: 'end',
+        error_kind: 'NotFound',
+        error_message: 'model: gpt-5-mini',
+        model: 'gpt-5-mini',
+        provider: 'anthropic',
+        timestamp: 0,
+      },
+    });
+    const { iii } = buildMock(() => errorEvent);
+
+    const result = await summarizeAndAppend(iii, 'sess-provider-error', { mode: 'async' }, testModel);
+    expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
+    if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
+      expect(result.reason.toLowerCase()).toMatch(/not.found|gpt-5-mini/);
+    }
+  });
+
+  it('routes the summariser to the session provider when env is unset', async () => {
+    // Regression: summarizerProvider() default was 'anthropic'. Sessions on
+    // OpenAI got Anthropic stream + OpenAI model → not_found_error.
+    let calledFunctionId: string | null = null;
+    const { iii } = buildMock();
+    const wrapped = iii as unknown as { trigger: ReturnType<typeof vi.fn> };
+    const originalTrigger = wrapped.trigger;
+    wrapped.trigger = vi.fn(async (req: MockTriggerReq) => {
+      if (req.function_id.startsWith('provider::')) {
+        calledFunctionId = req.function_id;
+      }
+      return originalTrigger(req);
+    });
+
+    const openAiModel = {
+      providerID: 'openai',
+      modelID: 'gpt-5-mini',
+      modelLimit: { context: 200_000, input: 200_000, output: 4_096 },
+    };
+    await summarizeAndAppend(iii, 'sess-openai', { mode: 'async' }, openAiModel);
+    expect(calledFunctionId).toBe('provider::openai::stream');
+  });
 });
 
 // ---------------------------------------------------------------------------
