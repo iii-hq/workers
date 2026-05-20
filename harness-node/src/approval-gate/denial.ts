@@ -7,10 +7,6 @@
 import { redact } from './redact.js';
 import { DENIAL_SCHEMA_VERSION, type DenialEnvelope, type MatchedConstraint } from './schemas.js';
 
-export function redactedArgsExcerpt(args: unknown): unknown {
-  return redact(args);
-}
-
 export function reasonForPermissionsDeny(
   function_id: string,
   rule_id: string,
@@ -36,7 +32,7 @@ export function permissionsDenyEnvelope(
     rule_id,
     rule_action: 'deny',
     matched_constraint: matched_constraint ?? undefined,
-    args_excerpt: redactedArgsExcerpt(args),
+    args_excerpt: redact(args),
     reason: reasonForPermissionsDeny(function_id, rule_id, matched_constraint),
   };
 }
@@ -51,7 +47,7 @@ export function userDenyEnvelope(
     status: 'denied',
     denied_by: 'user',
     function_id,
-    args_excerpt: redactedArgsExcerpt(args),
+    args_excerpt: redact(args),
     reason: reason ?? 'Rejected by operator.',
   };
 }

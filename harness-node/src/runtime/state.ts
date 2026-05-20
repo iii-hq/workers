@@ -7,7 +7,10 @@
  */
 
 import type { ISdk } from 'iii-sdk';
+import type { StateListInput } from 'iii-sdk/state';
 import { logger } from './otel.js';
+
+export type { StateListInput } from 'iii-sdk/state';
 
 export type StateUpdateOp =
   | { type: 'set'; value: unknown }
@@ -16,6 +19,58 @@ export type StateUpdateOp =
   | { type: 'increment'; value: number }
   | { type: 'delete' }
   | { type: string; [k: string]: unknown };
+
+/** One row from a keyed `state::list` envelope (`{ items: [...] }`), when present. */
+export type StateListKeyedEntry = {
+  key?: string;
+  value?: unknown;
+};
+
+/** Raw list rows before value unwrap; `null` when the response is not a list. */
+export function stateListResponseRows(response: unknown): unknown[] | null {
+  if (Array.isArray(response)) return response;
+  if (response && typeof response === 'object') {
+    const items = (response as Record<string, unknown>).items;
+    if (Array.isArray(items)) return items;
+  }
+  return null;
+}
+
+function unwrapStateListEntry<T>(entry: unknown): T {
+  if (entry && typeof entry === 'object' && 'value' in (entry as Record<string, unknown>)) {
+    return (entry as Record<string, unknown>).value as T;
+  }
+  return entry as T;
+}
+
+/**
+ * Normalizes a `state::list` trigger result to stored values.
+ *
+ * Official iii returns a flat `T[]` ({@link StateListInput} only). Some
+ * deployments also wrap rows as `{ value }` or `{ items: [{ key, value }] }`;
+ * we accept those shapes so harness workers stay compatible.
+ */
+export function parseStateListValues<T>(response: unknown): T[] {
+  const arr = stateListResponseRows(response);
+  if (!arr) return [];
+  return arr.map((entry) => unwrapStateListEntry<T>(entry));
+}
+
+/** Keyed rows when the list response includes `key` (not returned by stock iii). */
+export function parseStateListKeyedEntries(response: unknown): StateListKeyedEntry[] {
+  const arr = stateListResponseRows(response);
+  if (!arr) return [];
+  return arr.map((entry) => {
+    if (entry && typeof entry === 'object') {
+      const row = entry as Record<string, unknown>;
+      return {
+        key: typeof row.key === 'string' ? row.key : undefined,
+        value: row.value !== undefined ? row.value : entry,
+      };
+    }
+    return { value: entry };
+  });
+}
 
 export async function stateGet(iii: ISdk, scope: string, key: string): Promise<unknown> {
   try {
@@ -59,21 +114,28 @@ export async function stateDelete(iii: ISdk, scope: string, key: string): Promis
 }
 
 /**
- * `state::list` returns `{ items: [{ key, value, ... }] }` on the wire.
- * We surface the raw value array (with `value` unwrapped when present).
+ * Lists all values in a scope using the iii SDK contract (`StateListInput`).
  */
-export async function stateList(iii: ISdk, scope: string, prefix: string): Promise<unknown[]> {
+export async function stateListValues<T>(iii: ISdk, input: StateListInput): Promise<T[]> {
   try {
-    const resp = await iii.trigger<unknown, { items?: Array<Record<string, unknown>> }>({
+    const resp = await iii.trigger<StateListInput, unknown>({
       function_id: 'state::list',
-      payload: { scope, prefix },
+      payload: input,
     });
-    const items = resp?.items ?? [];
-    return items.map((entry) => (entry?.value !== undefined ? entry.value : entry));
+    return parseStateListValues<T>(resp);
   } catch (err) {
-    logger.warn('state::list failed', { scope, prefix, err: String(err) });
+    logger.warn('state::list failed', { scope: input.scope, err: String(err) });
     return [];
   }
+}
+
+/**
+ * @deprecated Third argument `prefix` is not sent to iii (engine lists the
+ * whole scope). Kept for call-site stability; filter returned values locally
+ * if you need key-prefix semantics.
+ */
+export async function stateList(iii: ISdk, scope: string, _prefix?: string): Promise<unknown[]> {
+  return stateListValues(iii, { scope });
 }
 
 /**

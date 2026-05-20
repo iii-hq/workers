@@ -29,6 +29,7 @@ import {
   isTerminalStateWrite,
 } from './on-terminal.js';
 import { register as registerRunStart } from './run-start.js';
+import { recoverPendingApprovals } from './approval-resume.js';
 import { register as registerSubscriber } from './subscriber.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
@@ -37,6 +38,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerRunStart(iii, orchestratorCfg);
   registerAgentCall(iii, orchestratorCfg.policy_function_id);
   registerSubscriber(iii, orchestratorCfg);
+  await recoverPendingApprovals(iii);
   registerGetState(iii);
 
   iii.registerFunction(ABORT_CONDITION_FN, async (event: unknown) => isAbortSignalWrite(event), {

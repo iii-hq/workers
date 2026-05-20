@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  permissionsDenyEnvelope,
-  redactedArgsExcerpt,
-  userDenyEnvelope,
-} from '../../src/approval-gate/denial.js';
+import { permissionsDenyEnvelope, userDenyEnvelope } from '../../src/approval-gate/denial.js';
+import { redact } from '../../src/approval-gate/redact.js';
 
 describe('permissionsDenyEnvelope', () => {
   it('carries rule_id, rule_action and matched_constraint', () => {
@@ -31,9 +28,9 @@ describe('userDenyEnvelope', () => {
   });
 });
 
-describe('redactedArgsExcerpt', () => {
+describe('redact (denial args_excerpt)', () => {
   it('redacts secret-shaped keys (case-insensitive)', () => {
-    const r = redactedArgsExcerpt({
+    const r = redact({
       url: 'https://example.com',
       password: 'hunter2',
       TOKEN: 'abc',
@@ -47,7 +44,7 @@ describe('redactedArgsExcerpt', () => {
 
   it('clips long string values', () => {
     const long = 'x'.repeat(500);
-    const r = redactedArgsExcerpt({ blob: long }) as Record<string, unknown>;
+    const r = redact({ blob: long }) as Record<string, unknown>;
     expect((r.blob as string).endsWith('…')).toBe(true);
   });
 });

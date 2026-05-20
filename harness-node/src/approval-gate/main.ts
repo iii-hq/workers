@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { bootstrapWorker } from '../runtime/worker.js';
-import { register } from './register.js';
+import { register } from './resolve.js';
 
 await bootstrapWorker({
   name: 'approval-gate',
-  description:
-    'Owns approval state: registers approval::resolve and a state-trigger adapter on the approvals scope that wakes turn::step on every decision write.',
-  register: (iii, ctx) => register(iii, ctx),
+  description: 'Registers approval::resolve and routes decisions to per-call resume functions.',
+  register: (iii) => register(iii),
 });

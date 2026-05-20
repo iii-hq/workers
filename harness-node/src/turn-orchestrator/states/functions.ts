@@ -4,6 +4,8 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
+import { STATE_SCOPE } from '../../approval-gate/schemas.js';
+import { registerApprovalResume } from '../approval-resume.js';
 import type { TurnOrchestratorConfig } from '../config.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
@@ -19,8 +21,6 @@ import { publishAfter } from '../hook.js';
 import type { PreparedEntry } from '../persistence.js';
 import * as persistence from '../persistence.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-
-const APPROVAL_STATE_SCOPE = 'approvals';
 
 type ApprovalDecisionRecord = {
   decision: 'allow' | 'deny' | 'aborted';
@@ -140,6 +140,7 @@ export async function handleExecute(
         function_id: fc.function_id,
         args: fc.arguments,
       });
+      registerApprovalResume(iii, rec.session_id, fc.id);
       transitionTo(rec, 'function_awaiting_approval');
       return;
     }
@@ -147,7 +148,7 @@ export async function handleExecute(
     const result = out.result;
     const is_error = out.kind === 'deny' || isErrorResult(result);
     persistence.upsertExecutedCall(results, { function_call: fc, result, is_error });
-   
+
     const savePromise = persistence.saveExecutedCalls(iii, rec.session_id, results);
     await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, is_error));
     await savePromise;
@@ -201,7 +202,7 @@ async function readDecision(
   const key = `${session_id}/${function_call_id}`;
   const raw = await iii.trigger<unknown, unknown>({
     function_id: 'state::get',
-    payload: { scope: APPROVAL_STATE_SCOPE, key },
+    payload: { scope: STATE_SCOPE, key },
   });
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;

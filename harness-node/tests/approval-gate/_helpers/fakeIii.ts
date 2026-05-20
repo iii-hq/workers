@@ -6,38 +6,26 @@
 
 import type { ISdk } from 'iii-sdk';
 import { vi } from 'vitest';
-import type {
-  StateSetApprovalPayload,
-  TurnStepPayload,
-} from '../../../src/approval-gate/schemas.js';
 
 export type TriggerCall = { function_id: string; payload: unknown };
 
 export type FakeIii = {
   iii: ISdk;
   calls: TriggerCall[];
-  /** Convenience filters for the function ids approval-gate cares about. */
-  setCalls: StateSetApprovalPayload[];
-  stepCalls: TurnStepPayload[];
+  resumeCalls: TriggerCall[];
   streamSets: unknown[];
 };
 
 export function fakeIii(): FakeIii {
   const calls: TriggerCall[] = [];
-  const setCalls: FakeIii['setCalls'] = [];
-  const stepCalls: FakeIii['stepCalls'] = [];
+  const resumeCalls: TriggerCall[] = [];
   const streamSets: unknown[] = [];
 
   const iii = {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       calls.push({ function_id, payload });
-      // Single cast at the wire/typed boundary: the fake accepts any
-      // trigger surface, but our convenience arrays know what to expect
-      // for the approval-gate's specific function ids.
-      if (function_id === 'state::set') {
-        setCalls.push(payload as StateSetApprovalPayload);
-      } else if (function_id === 'turn::step') {
-        stepCalls.push(payload as TurnStepPayload);
+      if (function_id.startsWith('turn::approval_resume::')) {
+        resumeCalls.push({ function_id, payload });
       } else if (function_id === 'stream::set') {
         streamSets.push(payload);
       }
@@ -45,5 +33,5 @@ export function fakeIii(): FakeIii {
     }),
   } as unknown as ISdk;
 
-  return { iii, calls, setCalls, stepCalls, streamSets };
+  return { iii, calls, resumeCalls, streamSets };
 }

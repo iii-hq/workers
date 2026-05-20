@@ -11,7 +11,7 @@ import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
 import { DENIAL_SCHEMA_VERSION, parsePolicyReply } from '../approval-gate/schemas.js';
 import type { DenialEnvelope } from '../approval-gate/schemas.js';
 import type { ISdk } from '../runtime/iii.js';
-export type { DeniedBy, DenialEnvelope } from '../approval-gate/schemas.js';
+export type { DenialEnvelope } from '../approval-gate/schemas.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
 

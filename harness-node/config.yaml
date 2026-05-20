@@ -13,10 +13,6 @@ system_default_skills:
   - "iii://iii-directory/index"
 policy_function_id: "policy::check_permissions"
 
-# approval-gate
-approval_gate:
-  approval_state_scope: "approvals"
-
 # session worker
 session:
   store_backend: "iii_state"   # or "memory"

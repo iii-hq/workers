@@ -8,7 +8,7 @@
  */
 
 import { Command } from 'commander';
-import { register as registerApprovalGate } from './approval-gate/register.js';
+import { register as registerApprovalGate } from './approval-gate/resolve.js';
 import { register as registerAuthCredentials } from './auth-credentials/register.js';
 import { register as registerContextCompaction } from './context-compaction/register.js';
 import { register as registerHarness } from './harness/register.js';
@@ -45,8 +45,8 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'approval-gate',
     description:
-      'Owns approval state: registers approval::resolve and a state-trigger adapter on the approvals scope that wakes turn::step on every decision write.',
-    register: (iii, ctx) => registerApprovalGate(iii, ctx),
+      'Registers approval::resolve; routes human decisions to per-call turn::approval_resume functions owned by the turn-orchestrator.',
+    register: (iii) => registerApprovalGate(iii),
   },
   {
     name: 'session',

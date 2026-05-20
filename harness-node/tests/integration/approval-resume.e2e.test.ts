@@ -1,33 +1,31 @@
-import { describe, expect, it, vi } from 'vitest';
-import { handleDecisionWritten } from '../../src/approval-gate/on-decision-written.js';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
+import {
+  clearApprovalResumeRegistry,
+  registerApprovalResume,
+} from '../../src/turn-orchestrator/approval-resume.js';
 import {
   handleAbortSignalWrite,
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
+import type { ISdk } from '../../src/runtime/iii.js';
 
 function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
   const stateStore = new Map<string, unknown>();
   const stepTriggers: Array<{ session_id: string }> = [];
+  const handlers = new Map<string, (payload: unknown) => Promise<unknown>>();
+
   const iii = {
+    registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
+      handlers.set(fnId, handler);
+      return { unregister: vi.fn() };
+    }),
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       if (function_id === 'state::set') {
         const p = payload as { scope: string; key: string; value: unknown };
         const fullKey = `${p.scope}/${p.key}`;
         const old_value = stateStore.get(fullKey) ?? null;
         stateStore.set(fullKey, p.value);
-        if (p.scope === 'approvals') {
-          queueMicrotask(() => {
-            void handleDecisionWritten(iii as unknown as ISdk, {
-              event_type: old_value == null ? 'state:created' : 'state:updated',
-              scope: p.scope,
-              key: p.key,
-              old_value,
-              new_value: p.value,
-              message_type: 'state',
-            });
-          });
-        }
         if (p.scope === 'agent') {
           const event = {
             event_type: old_value == null ? 'state:created' : 'state:updated',
@@ -56,7 +54,12 @@ function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
         return null;
       }
 
-      // abort-signal handler still uses durable publish — capture it here too
+      const handler = handlers.get(function_id);
+      if (handler) {
+        await handler(payload);
+        return null;
+      }
+
       if (function_id === 'iii::durable::publish') {
         const p = payload as { topic: string; data: { session_id: string } };
         if (p.topic === 'turn::step_requested') {
@@ -73,17 +76,20 @@ function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
 }
 
 describe('approval resume reactive trigger', () => {
-  it('writing a decision to approvals/<sid>/<cid> automatically triggers turn::step directly', async () => {
-    const { iii, stepTriggers } = fakeIii();
+  afterEach(() => {
+    clearApprovalResumeRegistry();
+  });
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'approvals',
-        key: 'sess-x/fc-1',
-        value: { decision: 'allow', reason: null },
-      },
+  it('approval::resolve via resume fn automatically triggers turn::step', async () => {
+    const { iii, stepTriggers } = fakeIii();
+    registerApprovalResume(iii, 'sess-x', 'fc-1');
+
+    const out = await handleResolveRequest(iii, {
+      session_id: 'sess-x',
+      function_call_id: 'fc-1',
+      decision: 'allow',
     });
+    expect(out).toEqual({ ok: true });
 
     await Promise.resolve();
 
@@ -112,13 +118,12 @@ describe('approval resume reactive trigger', () => {
   it('writing session/<sid>/abort_signal=false does NOT trigger (condition rejects clears)', async () => {
     const { iii, stepTriggers } = fakeIii();
 
-    // Seed a previous true so this update sets it to false.
     await iii.trigger({
       function_id: 'state::set',
       payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: true },
     });
     await Promise.resolve();
-    stepTriggers.length = 0; // drop the first wake
+    stepTriggers.length = 0;
 
     await iii.trigger({
       function_id: 'state::set',

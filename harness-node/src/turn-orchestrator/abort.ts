@@ -1,15 +1,15 @@
 /**
  * `router::abort` side-effects. The abort path writes the per-session abort
- * signal and, when a turn is paused on approvals, writes one aborted decision
- * per pending call. The approvals-scope state trigger wakes the orchestrator.
+ * signal and, when a turn is paused on approvals, invokes each per-call resume
+ * function with an aborted decision (which persists and wakes turn::step).
  */
 
+import { approvalResumeFnId } from '../approval-gate/schemas.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
 
 const STATE_SCOPE_AGENT = 'agent';
-const STATE_SCOPE_APPROVALS = 'approvals';
 
 export async function performAbortSideEffects(iii: ISdk, session_id: string): Promise<void> {
   await trigger(iii, 'state::set', {
@@ -24,10 +24,9 @@ export async function performAbortSideEffects(iii: ISdk, session_id: string): Pr
   }
 
   for (const entry of rec.awaiting_approval) {
-    await trigger(iii, 'state::set', {
-      scope: STATE_SCOPE_APPROVALS,
-      key: `${session_id}/${entry.function_call_id}`,
-      value: { decision: 'aborted', reason: 'session_aborted' },
+    await trigger(iii, approvalResumeFnId(session_id, entry.function_call_id), {
+      decision: 'aborted',
+      reason: 'session_aborted',
     });
   }
 }
