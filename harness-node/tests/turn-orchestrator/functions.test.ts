@@ -6,10 +6,10 @@ import * as hookModule from '../../src/turn-orchestrator/hook.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import * as approvalResumeModule from '../../src/turn-orchestrator/approval-resume.js';
 import { handleExecute } from '../../src/turn-orchestrator/states/functions.js';
 
 const cfg: TurnOrchestratorConfig = {
-  policy_function_id: 'policy::check_permissions',
   sync_default_timeout_ms: 120_000,
   system_default_skills: [],
 };
@@ -22,6 +22,9 @@ describe('handleExecute new flow', () => {
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
     const dispatchSpy = vi.spyOn(agentCallModule, 'dispatchWithHook');
     dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
+    const registerResumeSpy = vi
+      .spyOn(approvalResumeModule, 'registerApprovalResume')
+      .mockReturnValue({ unregister: vi.fn() } as never);
 
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -44,6 +47,7 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
     expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
+    expect(registerResumeSpy).toHaveBeenCalledWith(iii, 's1', 'fc-1');
   });
 
   it('skips dispatchWithHook on pre_approved entries and calls iii.trigger directly', async () => {

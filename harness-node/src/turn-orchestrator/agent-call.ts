@@ -52,12 +52,10 @@ function errorResult(envelope: Record<string, unknown>): FunctionResult {
   return { content: [text], details: envelope, terminate: false };
 }
 
-function denialResult(envelope: DenialEnvelope | Record<string, unknown>): FunctionResult {
-  const reasonRaw = (envelope as Record<string, unknown>).reason;
-  const reason = typeof reasonRaw === 'string' ? reasonRaw : 'Permission denied.';
+function denialResult(denial: DenialEnvelope): FunctionResult {
   return {
-    content: [{ type: 'text', text: reason }],
-    details: envelope,
+    content: [{ type: 'text', text: denial.reason }],
+    details: denial,
     terminate: false,
   };
 }
@@ -105,7 +103,6 @@ export async function dispatchWithHook(
   iii: ISdk,
   function_call: FunctionCall,
   session_id: string | undefined,
-  policy_function_id: string,
 ): Promise<DispatchResult> {
   if (!function_call.function_id || function_call.function_id.length === 0) {
     return {
@@ -116,7 +113,7 @@ export async function dispatchWithHook(
       }),
     };
   }
-  const outcome = await consultBefore(iii, function_call, session_id, policy_function_id);
+  const outcome = await consultBefore(iii, function_call);
   if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
   if (outcome.kind === 'pending') {
     return { kind: 'pending' };
@@ -163,7 +160,6 @@ export async function dispatch(
   session_id: string,
   fn: unknown,
   payload: unknown,
-  policy_function_id: string,
 ): Promise<FunctionResult> {
   if (typeof fn !== 'string' || fn.length === 0) {
     return errorResult({
@@ -176,7 +172,7 @@ export async function dispatch(
     function_id: fn,
     arguments: payload ?? {},
   };
-  const out = await dispatchWithHook(iii, fc, session_id, policy_function_id);
+  const out = await dispatchWithHook(iii, fc, session_id);
   if (out.kind === 'pending') {
     return errorResult({
       error: 'awaiting_approval',
@@ -187,7 +183,7 @@ export async function dispatch(
   return out.result;
 }
 
-export function register(iii: ISdk, policy_function_id: string): void {
+export function register(iii: ISdk): void {
   iii.registerFunction(
     FUNCTION_ID,
     async (payload: unknown) => {
@@ -195,7 +191,7 @@ export function register(iii: ISdk, policy_function_id: string): void {
       const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';
       const fn = obj.function;
       const inner = obj.payload ?? {};
-      return await dispatch(iii, session_id, fn, inner, policy_function_id);
+      return await dispatch(iii, session_id, fn, inner);
     },
     {
       description:

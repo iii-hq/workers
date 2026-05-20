@@ -85,8 +85,11 @@ worker.
 | [src/harness/expected-workers.ts](harness-node/src/harness/expected-workers.ts) | List of workers `harness::status` reports as expected. |
 | [src/harness/ui-subscribe.ts](harness-node/src/harness/ui-subscribe.ts) | In-memory `FanoutState` plus `ui::subscribe` / `ui::unsubscribe`. |
 | [src/harness/fs.ts](harness-node/src/harness/fs.ts) | `harness::fs::read_inline` — wraps `shell::fs::read` and inlines the channel into the legacy `{content, details}` envelope. |
-| [src/harness/policy.ts](harness-node/src/harness/policy.ts) | YAML loader + `chokidar` watcher; produces a `PermissionsHandle`. |
-| [src/harness/policy-fn.ts](harness-node/src/harness/policy-fn.ts) | `policy::check_permissions` handler. |
+| [src/harness/policy/check-permissions.ts](harness-node/src/harness/policy/check-permissions.ts) | `registerPolicy` — registers `policy::check_permissions` and maps a `Decision` to the wire reply (`allow` / `deny` / `needs_approval`). |
+| [src/harness/policy/handle.ts](harness-node/src/harness/policy/handle.ts) | `PermissionsHandle` + `loadAndWatch` — loads `iii-permissions.yaml`, holds the current `Permissions`, and hot-reloads it via a debounced `chokidar` watcher. |
+| [src/harness/policy/permissions.ts](harness-node/src/harness/policy/permissions.ts) | `Permissions` — parses the YAML into compiled rules and evaluates a call via `check(function_id, args)` (first match wins → `Decision`). |
+| [src/harness/policy/compile.ts](harness-node/src/harness/policy/compile.ts) | `compileRule` / `matchConstraints` — compiles a `RuleSpec` into a `CompiledRule` and evaluates `equals` / `matches` (regex) arg constraints. |
+| [src/harness/policy/types.ts](harness-node/src/harness/policy/types.ts) | `RuleSpec`, `ConstraintSpec`, `Decision`, `MatchedConstraint` types for `iii-permissions.yaml` rules and evaluation results. |
 | [src/harness/fanout/index.ts](harness-node/src/harness/fanout/index.ts) | Spawns the two fan-out pumps. |
 | [src/harness/fanout/agent-events.ts](harness-node/src/harness/fanout/agent-events.ts) | `agent::events` stream subscriber → per-browser fan-out. |
 | [src/harness/fanout/sessions-poll.ts](harness-node/src/harness/fanout/sessions-poll.ts) | State-trigger handler that detects `session/<id>/turn_state` creates and fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. (Filename kept for history; the implementation is no longer a poll loop.) |

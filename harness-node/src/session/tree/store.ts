@@ -14,6 +14,7 @@
 
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
+import { parseStateListValues, stateListResponseRows } from '../../runtime/state.js';
 import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } from './types.js';
 
 export interface SessionStore {
@@ -122,9 +123,10 @@ export class IiiStateSessionStore implements SessionStore {
     } catch (e) {
       throw new SessionError('storage', `state::list entries: ${String(e)}`);
     }
-    const arr = pickArray(resp);
-    if (!arr) throw new SessionError('storage', 'state::list returned non-array');
-    const entries = arr.map((v) => unwrapValue<SessionEntry>(v));
+    if (!stateListResponseRows(resp)) {
+      throw new SessionError('storage', 'state::list returned non-array');
+    }
+    const entries = parseStateListValues<SessionEntry>(resp);
     // PR #150: sort by (timestamp, id) so resumed approval replies that
     // arrive after the session paused appear in correct transcript order
     // even when their entry ids are non-monotonic.
@@ -162,9 +164,10 @@ export class IiiStateSessionStore implements SessionStore {
     } catch (e) {
       throw new SessionError('storage', `state::list meta: ${String(e)}`);
     }
-    const arr = pickArray(resp);
-    if (!arr) throw new SessionError('storage', 'state::list returned non-array');
-    return arr.map((v) => unwrapValue<SessionMeta>(v));
+    if (!stateListResponseRows(resp)) {
+      throw new SessionError('storage', 'state::list returned non-array');
+    }
+    return parseStateListValues<SessionMeta>(resp);
   }
 
   async updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void> {
@@ -204,20 +207,4 @@ export class IiiStateSessionStore implements SessionStore {
       payload: { scope: META_SCOPE, key: session_id, value: meta },
     });
   }
-}
-
-function pickArray(v: unknown): unknown[] | null {
-  if (Array.isArray(v)) return v;
-  if (v && typeof v === 'object') {
-    const items = (v as Record<string, unknown>).items;
-    if (Array.isArray(items)) return items;
-  }
-  return null;
-}
-
-function unwrapValue<T>(v: unknown): T {
-  if (v && typeof v === 'object' && 'value' in (v as Record<string, unknown>)) {
-    return (v as Record<string, unknown>).value as T;
-  }
-  return v as T;
 }

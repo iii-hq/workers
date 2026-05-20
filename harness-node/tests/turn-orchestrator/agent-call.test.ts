@@ -86,7 +86,6 @@ describe('dispatchWithHook returns DispatchResult', () => {
       iii,
       { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
       's1',
-      'policy::check_permissions',
     );
     expect(out.kind).toBe('pending');
   });
@@ -107,7 +106,6 @@ describe('dispatchWithHook returns DispatchResult', () => {
       iii,
       { id: 'fc-1', function_id: 'shell::run', arguments: {} },
       's1',
-      'policy::check_permissions',
     );
     expect(out.kind).toBe('deny');
     if (out.kind === 'deny') {
@@ -124,27 +122,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
       iii,
       { id: 'fc-1', function_id: 'shell::run', arguments: {} },
       's1',
-      'policy::check_permissions',
     );
     expect(out.kind).toBe('result');
-  });
-
-  it('passes policy_function_id through to consultBefore', async () => {
-    const spy = vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
-    const iii = {
-      trigger: vi.fn().mockResolvedValue({ ok: true }),
-    } as unknown as ISdk;
-    await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-      's1',
-      'custom::policy',
-    );
-    expect(spy).toHaveBeenCalledWith(
-      iii,
-      expect.objectContaining({ function_id: 'shell::run' }),
-      's1',
-      'custom::policy',
-    );
   });
 });

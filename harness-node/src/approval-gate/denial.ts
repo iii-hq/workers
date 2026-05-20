@@ -1,51 +1,11 @@
 /**
- * Denial envelope assembly + arg redaction. Mirrors
- * `approval-gate/src/lib.rs::{redact, reason_for_permissions_deny,
- * permissions_deny_envelope, user_deny_envelope}`.
+ * Denial envelope assembly. The recursive redaction tree lives in
+ * `./redact.ts`; this module only composes the two wire envelopes
+ * (permissions-side and user-side) and the human-readable deny reason.
  */
 
-import { DENIAL_SCHEMA_VERSION, type DenialEnvelope, type MatchedConstraint } from './types.js';
-
-const ARGS_EXCERPT_LEN_CAP = 256;
-
-const REDACT_KEYS = new Set([
-  'password',
-  'token',
-  'api_key',
-  'apikey',
-  'secret',
-  'auth',
-  'authorization',
-  'access_key',
-  'access_token',
-  'refresh_token',
-  'private_key',
-]);
-
-function clip(s: string): string {
-  if (s.length <= ARGS_EXCERPT_LEN_CAP) return s;
-  return `${[...s].slice(0, ARGS_EXCERPT_LEN_CAP).join('')}…`;
-}
-
-export function redact(value: unknown): unknown {
-  if (typeof value === 'string') return clip(value);
-  if (Array.isArray(value)) return value.map(redact);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      const lower = k.toLowerCase();
-      const isSecret =
-        REDACT_KEYS.has(lower) || Array.from(REDACT_KEYS).some((s) => lower.endsWith(`_${s}`));
-      out[k] = isSecret ? '<redacted>' : redact(v);
-    }
-    return out;
-  }
-  return value;
-}
-
-export function redactedArgsExcerpt(args: unknown): unknown {
-  return redact(args);
-}
+import { redact } from './redact.js';
+import { DENIAL_SCHEMA_VERSION, type DenialEnvelope, type MatchedConstraint } from './schemas.js';
 
 export function reasonForPermissionsDeny(
   function_id: string,
@@ -72,7 +32,7 @@ export function permissionsDenyEnvelope(
     rule_id,
     rule_action: 'deny',
     matched_constraint: matched_constraint ?? undefined,
-    args_excerpt: redactedArgsExcerpt(args),
+    args_excerpt: redact(args),
     reason: reasonForPermissionsDeny(function_id, rule_id, matched_constraint),
   };
 }
@@ -87,7 +47,7 @@ export function userDenyEnvelope(
     status: 'denied',
     denied_by: 'user',
     function_id,
-    args_excerpt: redactedArgsExcerpt(args),
+    args_excerpt: redact(args),
     reason: reason ?? 'Rejected by operator.',
   };
 }

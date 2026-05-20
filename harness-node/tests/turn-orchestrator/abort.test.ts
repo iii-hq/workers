@@ -47,7 +47,7 @@ describe('performAbortSideEffects', () => {
     expect(triggers.some((t) => t.function_id === 'approval::sweep_session')).toBe(false);
   });
 
-  it('writes aborted decisions and does not publish when paused on approval', async () => {
+  it('invokes resume fns with aborted decision when paused on approval', async () => {
     const triggers: Array<{ function_id: string; payload: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -65,15 +65,23 @@ describe('performAbortSideEffects', () => {
 
     await performAbortSideEffects(iii, 's1');
 
+    const resumeTriggers = triggers.filter((t) =>
+      t.function_id.startsWith('turn::approval_resume::'),
+    );
+    expect(resumeTriggers).toHaveLength(2);
+    expect(resumeTriggers.map((t) => t.function_id).sort()).toEqual([
+      'turn::approval_resume::s1/fc-1',
+      'turn::approval_resume::s1/fc-2',
+    ]);
+    for (const t of resumeTriggers) {
+      expect(t.payload).toMatchObject({ decision: 'aborted', reason: 'session_aborted' });
+    }
+
     const approvalWrites = triggers
       .filter((t) => t.function_id === 'state::set')
       .map((t) => t.payload as Record<string, unknown>)
       .filter((p) => p.scope === 'approvals');
-    expect(approvalWrites).toHaveLength(2);
-    expect(approvalWrites.map((p) => p.key).sort()).toEqual(['s1/fc-1', 's1/fc-2']);
-    for (const write of approvalWrites) {
-      expect(write.value).toMatchObject({ decision: 'aborted', reason: 'session_aborted' });
-    }
+    expect(approvalWrites).toHaveLength(0);
 
     const publishes = triggers.filter((t) => t.function_id === 'iii::durable::publish');
     expect(publishes).toHaveLength(0);

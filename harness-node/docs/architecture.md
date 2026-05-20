@@ -20,7 +20,7 @@ workers.
 |---|---|---|---|
 | harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `harness::status` / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::call`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Owns approval state. Registers `approval::resolve` and a state-trigger adapter on the `approvals` scope that wakes `turn::step` on every decision write. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
 | session | [src/session/](harness-node/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness-node/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness-node/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness-node/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness-node/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness-node/docs/workers/hook-fanout.md) |
@@ -68,9 +68,9 @@ flowchart LR
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
-  approval -- "state::set approvals/<sid>/<cid>" --> state
-  state -- "state trigger (scope=approvals)" --> approval
-  approval -- "iii.trigger turn::step" --> turnOrch
+  approval -- "trigger turn::approval_resume::<sid>/<cid>" --> turnOrch
+  turnOrch -- "state::set approvals/<sid>/<cid>" --> state
+  turnOrch -- "iii.trigger turn::step" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
@@ -89,9 +89,9 @@ flowchart LR
 defines an 11-state durable FSM. Every transition is driven by the
 `turn::step` durable subscriber, which is woken by a publish to the
 `turn::step_requested` topic — either by the orchestrator itself
-(re-publish at the end of a step), by the approval-gate's
-`approvals` state trigger (when a human decision lands), or by the
-orchestrator's own `abort_signal` state trigger.
+(re-publish at the end of a step), by a per-call
+`turn::approval_resume` handler (when a human decision or abort lands), or by
+the orchestrator's own `abort_signal` state trigger.
 
 ```mermaid
 stateDiagram-v2
@@ -117,9 +117,10 @@ stateDiagram-v2
 
 The orchestrator consults `policy::check_permissions` directly inside
 `consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
-the before path; resume is driven by a `state` trigger on the `approvals`
-scope. The orchestrator parks the turn in `function_awaiting_approval` until
-that trigger fires and re-triggers `turn::step`.
+the before path. The orchestrator parks the turn in `function_awaiting_approval`,
+registers a `turn::approval_resume` function per pending call, and waits until
+`approval::resolve` (or abort) triggers that function, which persists the
+decision and invokes `turn::step`.
 
 ```mermaid
 sequenceDiagram
@@ -138,9 +139,9 @@ sequenceDiagram
     Harness-->>Turn: needs_approval → park in function_awaiting_approval
     Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
     User->>Gate: approval::resolve(decision, reason)
-    Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Note over Gate,Turn: state trigger on scope=approvals<br/>(approval::is_decision_write → approval::on_decision_written)<br/>directly triggers turn::step
-    Bus-->>Turn: turn::step wakes → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
+    Gate->>Turn: trigger turn::approval_resume::<sid>/<cid>
+    Turn->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
+    Turn->>Turn: turn::step → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
     Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute
   end
 ```
@@ -150,9 +151,8 @@ Fail-closed: policy unreachable (transport error or 5 s timeout) →
 
 Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
 the orchestrator through its own `agent`-scope state trigger) and, if the
-turn is paused on approvals, also writes one
-`{decision: 'aborted', reason: 'session_aborted'}` record per pending
-call so the approvals state trigger releases the parked step.
+turn is paused on approvals, triggers each registered
+`turn::approval_resume` function with `{decision: 'aborted'}`.
 
 ## Kernel deny list
 
@@ -162,24 +162,12 @@ it at boot and watches for changes via `chokidar`. Rules are scanned
 top-to-bottom; first match wins. Kernel rules below are shipped by default
 and protect the gate / state surface.
 
-| Rule id | Function | Action | Why |
-|---|---|---|---|
-| `kernel/no-self-approve` | `approval::resolve` | deny | An agent must not flip its own pending approval. |
-| `kernel/no-self-policy` | `policy::check_permissions` | deny | Don't let the model trace or precompute its own gate decision. |
-| `kernel/no-self-hook` | `hook-fanout::publish_collect` | deny | The hook primitive is operator-only. |
-| `kernel/no-state-set` | `state::set` | deny | Use a worker function; never raw state writes. |
-| `kernel/no-state-update` | `state::update` | deny | Same. |
-| `kernel/no-state-delete` | `state::delete` | deny | Same. |
-| `kernel/no-stream-set` | `stream::set` | deny | Bypasses the agent loop. |
-| `kernel/no-durable-publish` | `iii::durable::publish` | deny | Bypasses the durable hook plane. |
-| `kernel/no-auth-set` | `auth::set_token` | deny | Token plumbing is operator-only. |
-| `kernel/no-auth-delete` | `auth::delete_token` | deny | Same. |
-| `kernel/no-oauth-anthropic-login` | `oauth::anthropic::login` | deny | Same. |
-| `kernel/no-oauth-openai-login` | `oauth::openai-codex::login` | deny | Same. |
-| `kernel/no-self-run-start` | `run::start` | deny | No re-entrant runs. |
-| `kernel/no-self-run-start-and-wait` | `run::start_and_wait` | deny | Same. |
-| `kernel/no-router-stream-assistant` | `router::stream_assistant` | deny | Routing internal. |
-| `kernel/no-router-abort` | `router::abort` | deny | Routing internal. |
+Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
+`policy::check_permissions`, `hook-fanout::publish_collect`, `state::set`,
+`state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
+`auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
+`oauth::openai-codex::login`, `run::start`, `run::start_and_wait`,
+`router::stream_assistant`, `router::abort`.
 
 Bare-string allow rules: `harness::status`, `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,

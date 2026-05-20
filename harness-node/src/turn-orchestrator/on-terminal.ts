@@ -3,10 +3,9 @@
  * `scope: 'agent'` filtered to `session/<id>/turn_state` writes whose
  * `new_value.state === 'stopped'` fires this handler, which resolves the
  * in-process waiter installed by `executeSync`. Replaces the previous
- * `sleep(sync_poll_interval_ms)` polling loop.
  *
  * Mirror of the canonical pattern in `on-abort-signal.ts` and the
- * approval-gate's `on-decision-written.ts`.
+ * per-call approval resume functions in `approval-resume.ts`.
  */
 
 export const HANDLER_FN_ID = 'turn::on_terminal_state';
