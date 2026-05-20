@@ -56,7 +56,9 @@ pub async fn handle(state: &AppState, req: TxQueryReq) -> Result<QueryResp, Stri
 
     let result = match &mut *g {
         PinnedConn::Sqlite(slot) => driver::sqlite::run_prepared(slot, &req.sql, &params).await,
-        PinnedConn::Postgres(client) => driver::postgres::run_prepared(client, &req.sql, &params).await,
+        PinnedConn::Postgres(client) => {
+            driver::postgres::run_prepared(client, &req.sql, &params).await
+        }
         PinnedConn::Mysql(conn) => driver::mysql::run_prepared(conn, &req.sql, &params).await,
     };
 

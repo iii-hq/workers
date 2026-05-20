@@ -58,7 +58,10 @@ pub async fn handle(state: &AppState, req: BeginTxReq) -> Result<BeginTxResp, St
     let pool = state.pool(&req.db).map_err(err_to_str)?;
     let driver = pool.driver();
     let isolation = parse_isolation(req.isolation.as_deref()).map_err(err_to_str)?;
-    let timeout_ms = req.timeout_ms.unwrap_or_else(default_timeout_ms).min(MAX_TIMEOUT_MS);
+    let timeout_ms = req
+        .timeout_ms
+        .unwrap_or_else(default_timeout_ms)
+        .min(MAX_TIMEOUT_MS);
     let timeout = Duration::from_millis(timeout_ms);
 
     // Acquire a connection from the pool and issue BEGIN on it. If BEGIN

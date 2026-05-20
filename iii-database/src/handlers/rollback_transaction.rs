@@ -101,12 +101,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let resp = handle(
-            &st,
-            req(json!({ "transaction_id": begin.transaction.id })),
-        )
-        .await
-        .unwrap();
+        let resp = handle(&st, req(json!({ "transaction_id": begin.transaction.id })))
+            .await
+            .unwrap();
         assert!(resp.rolled_back);
         assert_eq!(st.transactions.len().await, 0);
     }
@@ -172,8 +169,10 @@ mod tests {
 
         let q = crate::handlers::query::handle(
             &st,
-            serde_json::from_value(json!({ "db": "primary", "sql": "SELECT COUNT(*) AS c FROM t" }))
-                .unwrap(),
+            serde_json::from_value(
+                json!({ "db": "primary", "sql": "SELECT COUNT(*) AS c FROM t" }),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

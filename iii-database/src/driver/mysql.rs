@@ -260,9 +260,7 @@ pub async fn tx_begin(
     if !iso_sql.is_empty() {
         conn.query_drop(iso_sql).await.map_err(map_err)?;
     }
-    conn.query_drop("START TRANSACTION")
-        .await
-        .map_err(map_err)
+    conn.query_drop("START TRANSACTION").await.map_err(map_err)
 }
 
 /// `COMMIT` the in-progress transaction on a pinned connection.

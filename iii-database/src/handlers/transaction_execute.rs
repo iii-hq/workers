@@ -137,10 +137,8 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
                     "affected_rows": er.affected_rows,
                 })),
             );
-            let returned_rows = crate::handlers::query_rows_to_objects(
-                &er.returned_columns,
-                er.returned_rows,
-            );
+            let returned_rows =
+                crate::handlers::query_rows_to_objects(&er.returned_columns, er.returned_rows);
             Ok(TxExecuteResp {
                 affected_rows: er.affected_rows,
                 last_insert_id: er.last_insert_id,
@@ -180,12 +178,16 @@ mod tests {
         assert!(is_transaction_control_sql("COMMIT"));
         assert!(is_transaction_control_sql(" rollback "));
         assert!(is_transaction_control_sql("ROLLBACK TO SAVEPOINT foo"));
-        assert!(is_transaction_control_sql("BEGIN ISOLATION LEVEL SERIALIZABLE"));
+        assert!(is_transaction_control_sql(
+            "BEGIN ISOLATION LEVEL SERIALIZABLE"
+        ));
         assert!(is_transaction_control_sql("end;"));
         assert!(is_transaction_control_sql("SAVEPOINT s1"));
         assert!(is_transaction_control_sql("RELEASE SAVEPOINT s1"));
         assert!(is_transaction_control_sql("SET TRANSACTION READ ONLY"));
-        assert!(is_transaction_control_sql("set transaction isolation level serializable"));
+        assert!(is_transaction_control_sql(
+            "set transaction isolation level serializable"
+        ));
     }
 
     #[test]

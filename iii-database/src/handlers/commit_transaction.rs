@@ -151,7 +151,8 @@ mod tests {
         // each connection its own separate database.
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let url = format!("sqlite:{}", tmp.path().display());
-        let pool = crate::pool::SqlitePool::new(&url, &crate::config::PoolConfig::default()).unwrap();
+        let pool =
+            crate::pool::SqlitePool::new(&url, &crate::config::PoolConfig::default()).unwrap();
         let mut pools = std::collections::HashMap::new();
         pools.insert("primary".to_string(), crate::pool::Pool::Sqlite(pool));
         let st = crate::handlers::AppState {
