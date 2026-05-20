@@ -1,13 +1,8 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { decide, targetFunctionId } from '../turn-orchestrator/provider-router.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
-import {
-  preserveRecentTokensOverride,
-  summarizerModel,
-  summarizerProvider,
-  tailTurns,
-  toolOutputMaxChars,
-} from './config.js';
+import { preserveRecentTokensOverride, tailTurns, toolOutputMaxChars } from './config.js';
 import { stampLastCompaction } from './lease.js';
 import { type ModelLimit, preserveRecentBudget } from './overflow.js';
 import {
@@ -46,7 +41,11 @@ export type SummarizeOutcome = SummarizeOk | SummarizeFailure | 'empty';
 export function isRetryableStreamError(err: unknown): boolean {
   if (!(err instanceof Error)) return true;
   const msg = err.message.toLowerCase();
-  if (/\b(40[01345]|auth|unauthorized|forbidden|invalid[_ ]?(api[_ ]?key|key|request)|malformed)\b/.test(msg)) {
+  if (
+    /\b(40[01345]|auth|unauthorized|forbidden|invalid[_ ]?(api[_ ]?key|key|request)|malformed)\b/.test(
+      msg,
+    )
+  ) {
     return false;
   }
   return true;
@@ -163,13 +162,12 @@ export async function summarizeAndAppend(
   const systemPrompt = buildPrompt({ previousSummary, context: [] });
   const userPrompt = renderUserPrompt(stripped);
 
-  // Default to the session's provider, NOT a hardcoded 'anthropic'.
-  // Otherwise an OpenAI session ends up calling Anthropic with an OpenAI
-  // model id (e.g. gpt-5-mini) and the provider returns not_found_error.
-  const providerName = summarizerProvider() ?? model.providerID;
-  const summariserId =
-    providerName === 'openai' ? 'provider::openai::stream' : 'provider::anthropic::stream';
-  const modelId = summarizerModel() ?? model.modelID;
+  // Always use the session's own provider/model; route through the
+  // canonical provider-router so adding a provider covers /compact too.
+  const summariserId = targetFunctionId(
+    decide({ provider: model.providerID, model: model.modelID }),
+  );
+  const modelId = model.modelID;
 
   // One 250ms retry for transient failures (429/5xx/network). Permanent
   // failures (auth, malformed request) skip the retry to release the lease

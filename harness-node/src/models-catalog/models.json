@@ -139,6 +139,34 @@
       "supports_vision": false,
       "supports_cache": false,
       "transports": ["sse"]
+    },
+    {
+      "id": "kimi-k2.6",
+      "provider": "kimi",
+      "api": "openai-completions",
+      "display_name": "Kimi K2.6",
+      "context_window": 256000,
+      "max_output_tokens": 16384,
+      "supports_thinking": true,
+      "supports_xhigh": false,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_cache": true,
+      "transports": ["sse"]
+    },
+    {
+      "id": "kimi-k2.5",
+      "provider": "kimi",
+      "api": "openai-completions",
+      "display_name": "Kimi K2.5",
+      "context_window": 256000,
+      "max_output_tokens": 16384,
+      "supports_thinking": true,
+      "supports_xhigh": false,
+      "supports_tools": true,
+      "supports_vision": true,
+      "supports_cache": true,
+      "transports": ["sse"]
     }
   ]
 }

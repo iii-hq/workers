@@ -197,9 +197,7 @@ describe('renderUserPrompt', () => {
   it('skips non-text non-function_call blocks silently', () => {
     const msg: AgentMessage = {
       role: 'user',
-      content: [
-        { type: 'image', media_type: 'image/png', data: 'abc' } as unknown as ContentBlock,
-      ],
+      content: [{ type: 'image', media_type: 'image/png', data: 'abc' } as unknown as ContentBlock],
       timestamp: 0,
     };
     const out = renderUserPrompt([msg]);
@@ -294,17 +292,17 @@ describe('summarizeAndAppend async mode', () => {
     // surface to /compact when a single retry would succeed.
     const { iii } = buildMock();
     let createChannelCalls = 0;
-    const realCreateChannel = (
-      iii as unknown as { createChannel: () => Promise<unknown> }
-    ).createChannel;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
-      .fn(async () => {
+    const realCreateChannel = (iii as unknown as { createChannel: () => Promise<unknown> })
+      .createChannel;
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
+      async () => {
         createChannelCalls += 1;
         if (createChannelCalls === 1) {
           throw new Error('transient provider failure');
         }
         return realCreateChannel();
-      });
+      },
+    );
 
     const result = await summarizeAndAppend(iii, 'sess-retry', { mode: 'async' }, testModel);
     expect(createChannelCalls).toBe(2);
@@ -316,11 +314,12 @@ describe('summarizeAndAppend async mode', () => {
     // then surfaces the failure.
     const { iii } = buildMock();
     let createChannelCalls = 0;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
-      .fn(async () => {
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
+      async () => {
         createChannelCalls += 1;
         throw new Error('permanent provider failure');
-      });
+      },
+    );
 
     const result = await summarizeAndAppend(iii, 'sess-fail-twice', { mode: 'async' }, testModel);
     expect(createChannelCalls).toBe(2);
@@ -335,11 +334,12 @@ describe('summarizeAndAppend async mode', () => {
     // compaction lease releases ~1s sooner.
     const { iii } = buildMock();
     let createChannelCalls = 0;
-    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi
-      .fn(async () => {
+    (iii as unknown as { createChannel: () => Promise<unknown> }).createChannel = vi.fn(
+      async () => {
         createChannelCalls += 1;
         throw new Error('401 unauthorized: invalid_api_key');
-      });
+      },
+    );
 
     const result = await summarizeAndAppend(iii, 'sess-auth-fail', { mode: 'async' }, testModel);
     expect(createChannelCalls).toBe(1); // no retry
@@ -374,16 +374,22 @@ describe('summarizeAndAppend async mode', () => {
     });
     const { iii } = buildMock(() => errorEvent);
 
-    const result = await summarizeAndAppend(iii, 'sess-provider-error', { mode: 'async' }, testModel);
+    const result = await summarizeAndAppend(
+      iii,
+      'sess-provider-error',
+      { mode: 'async' },
+      testModel,
+    );
     expect(typeof result === 'object' && 'kind' in result ? result.kind : result).toBe('compact');
     if (typeof result === 'object' && 'kind' in result && result.kind === 'compact') {
       expect(result.reason.toLowerCase()).toMatch(/not.found|gpt-5-mini/);
     }
   });
 
-  it('routes the summariser to the session provider when env is unset', async () => {
-    // Regression: summarizerProvider() default was 'anthropic'. Sessions on
-    // OpenAI got Anthropic stream + OpenAI model → not_found_error.
+  it('routes the summariser to the session provider', async () => {
+    // /compact uses the session's own provider/model. Earlier default was
+    // a hardcoded 'anthropic'; OpenAI sessions got an Anthropic stream
+    // + an OpenAI model id, producing not_found_error.
     let calledFunctionId: string | null = null;
     const { iii } = buildMock();
     const wrapped = iii as unknown as { trigger: ReturnType<typeof vi.fn> };
@@ -402,6 +408,31 @@ describe('summarizeAndAppend async mode', () => {
     };
     await summarizeAndAppend(iii, 'sess-openai', { mode: 'async' }, openAiModel);
     expect(calledFunctionId).toBe('provider::openai::stream');
+  });
+
+  it('routes kimi sessions to provider::kimi::stream, not anthropic', async () => {
+    // Regression: a binary openai-vs-anthropic ternary sent every non-openai
+    // provider (including kimi) to provider::anthropic::stream, producing
+    // NOT_FOUND_ERROR on the kimi model id. Fix uses the canonical provider
+    // router so adding a provider only needs a router update.
+    let calledFunctionId: string | null = null;
+    const { iii } = buildMock();
+    const wrapped = iii as unknown as { trigger: ReturnType<typeof vi.fn> };
+    const originalTrigger = wrapped.trigger;
+    wrapped.trigger = vi.fn(async (req: MockTriggerReq) => {
+      if (req.function_id.startsWith('provider::')) {
+        calledFunctionId = req.function_id;
+      }
+      return originalTrigger(req);
+    });
+
+    const kimiModel = {
+      providerID: 'kimi',
+      modelID: 'kimi-k2.5',
+      modelLimit: { context: 256_000, input: 256_000, output: 16_384 },
+    };
+    await summarizeAndAppend(iii, 'sess-kimi', { mode: 'async' }, kimiModel);
+    expect(calledFunctionId).toBe('provider::kimi::stream');
   });
 });
 

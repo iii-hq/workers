@@ -9,7 +9,8 @@ import type { ProviderStreamInput, StreamChannelRef } from '../types/provider.js
 
 export type RouteDecision =
   | { provider: 'anthropic'; model: string }
-  | { provider: 'openai'; model: string };
+  | { provider: 'openai'; model: string }
+  | { provider: 'kimi'; model: string };
 
 export type RouteRequest = {
   provider?: string;
@@ -20,15 +21,26 @@ export type RouteRequest = {
 export function decide(req: RouteRequest): RouteDecision {
   const p = (req.provider ?? '').toLowerCase();
   if (p === 'openai') return { provider: 'openai', model: req.model };
+  if (p === 'kimi') return { provider: 'kimi', model: req.model };
   // Heuristic for missing provider: model name disambiguates.
   if (!p && /^gpt-|^o\d-/i.test(req.model)) {
     return { provider: 'openai', model: req.model };
+  }
+  if (!p && /^kimi-|^moonshot-v1-/i.test(req.model)) {
+    return { provider: 'kimi', model: req.model };
   }
   return { provider: 'anthropic', model: req.model };
 }
 
 export function targetFunctionId(d: RouteDecision): string {
-  return d.provider === 'anthropic' ? 'provider::anthropic::stream' : 'provider::openai::stream';
+  switch (d.provider) {
+    case 'anthropic':
+      return 'provider::anthropic::stream';
+    case 'openai':
+      return 'provider::openai::stream';
+    case 'kimi':
+      return 'provider::kimi::stream';
+  }
 }
 
 export function buildInput(
