@@ -100,7 +100,7 @@ async function* realStream(
 
     let kickoffError: Error | null = null
     client
-      .call('harness::call', {
+      .call('harness::trigger', {
         function_id: 'run::start',
         session_id: sessionId,
         message_id: messageId,
@@ -123,7 +123,7 @@ async function* realStream(
       .catch((err) => {
         kickoffError = err instanceof Error ? err : new Error(String(err))
         if (import.meta.env.DEV) {
-          console.warn('[real-backend] harness::call run::start failed', err)
+          console.warn('[real-backend] harness::trigger run::start failed', err)
         }
         wake()
       })
@@ -134,7 +134,7 @@ async function* realStream(
         const err = kickoffError as Error
         yield {
           kind: 'assistant-token',
-          token: `harness::call run::start failed — ${err.message}`,
+          token: `harness::trigger run::start failed — ${err.message}`,
         }
         yield { kind: 'assistant-end' }
         return

@@ -1,6 +1,6 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
-import { register as registerAgentCall } from './agent-call.js';
+import { register as registerAgentTrigger } from './agent-trigger.js';
 import * as bootstrap from './bootstrap.js';
 import { loadOrchestratorConfig } from './config.js';
 import { register as registerGetState } from './get-state.js';
@@ -36,7 +36,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   const cfg = await loadConfig(ctx.configPath);
   const orchestratorCfg = loadOrchestratorConfig(cfg);
   registerRunStart(iii, orchestratorCfg);
-  registerAgentCall(iii);
+  registerAgentTrigger(iii);
   registerSubscriber(iii, orchestratorCfg);
   await recoverPendingApprovals(iii);
   registerGetState(iii);

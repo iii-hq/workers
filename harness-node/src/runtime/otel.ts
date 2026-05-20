@@ -185,7 +185,7 @@ function validId(value: unknown): string | undefined {
  * Supported wrap depths (in order):
  *   1. `root.session_id` / `root.message_id`              (direct call)
  *   2. `root.body.session_id` / `root.body.message_id`    (HTTP envelope)
- *   3. `root.body.payload.session_id` / `.message_id`     (`harness::call` bridge)
+ *   3. `root.body.payload.session_id` / `.message_id`     (`harness::trigger` bridge)
  *
  * Deeper wraps are intentionally NOT followed — if a future bridge
  * adds another layer, lift IDs to the outer envelope or extend this

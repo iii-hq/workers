@@ -1,16 +1,15 @@
 /**
- * Contract test for `harness::call`.
+ * Contract test for `harness::trigger`.
  *
- * Mirrors the Rust harness's `harness::call` (see
- * `workers/harness/src/lib.rs:103-159`) by forwarding `{ function_id,
- * payload }` to `iii.trigger` and wrapping the result in an HTTP-style
- * envelope. This ensures console/web can route browser-originated chat
- * turns through a single instrumented bus function — the same pattern
- * `workers/harness/web/src/App.tsx` uses over HTTP.
+ * Mirrors the Rust harness bridge (see `workers/harness/src/lib.rs:103-159`)
+ * by forwarding `{ function_id, payload }` to `iii.trigger` and wrapping the
+ * result in an HTTP-style envelope. This ensures console/web can route
+ * browser-originated chat turns through a single instrumented bus function —
+ * the same pattern `workers/harness/web/src/App.tsx` uses over HTTP.
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { register } from '../../src/harness/call.js';
+import { register } from '../../src/harness/trigger.js';
 
 interface RegisteredFn {
   handler: (input: unknown) => Promise<unknown>;
@@ -29,17 +28,17 @@ function makeFakeSdk(triggerResult: unknown = { ok: true }) {
   return { sdk, registered, trigger };
 }
 
-describe('harness::call', () => {
-  it('registers a handler under id "harness::call"', () => {
+describe('harness::trigger', () => {
+  it('registers a handler under id "harness::trigger"', () => {
     const { sdk, registered } = makeFakeSdk();
     register(sdk);
-    expect(registered.has('harness::call')).toBe(true);
+    expect(registered.has('harness::trigger')).toBe(true);
   });
 
   it('forwards body.function_id and body.payload to iii.trigger', async () => {
     const { sdk, registered, trigger } = makeFakeSdk({ session_id: 'sess' });
     register(sdk);
-    const handler = registered.get('harness::call')?.handler;
+    const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
     const result = (await handler({
@@ -66,7 +65,7 @@ describe('harness::call', () => {
   it('falls back to top-level when body envelope is absent (WS shape)', async () => {
     const { sdk, registered, trigger } = makeFakeSdk();
     register(sdk);
-    const handler = registered.get('harness::call')?.handler;
+    const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
     await handler({
@@ -88,10 +87,10 @@ describe('harness::call', () => {
   it('defaults payload to an empty object when omitted', async () => {
     const { sdk, registered, trigger } = makeFakeSdk();
     register(sdk);
-    const handler = registered.get('harness::call')?.handler;
+    const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
-    await handler({ body: { function_id: 'harness::status' } });
+    await handler({ body: { function_id: 'state::get' } });
 
     const triggerArg = trigger.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(triggerArg.payload).toEqual({});
@@ -100,7 +99,7 @@ describe('harness::call', () => {
   it('throws when function_id is missing', async () => {
     const { sdk, registered } = makeFakeSdk();
     register(sdk);
-    const handler = registered.get('harness::call')?.handler;
+    const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
     await expect(handler({ body: { payload: {} } })).rejects.toThrow(/missing function_id/);
@@ -110,7 +109,7 @@ describe('harness::call', () => {
     const sdk = {
       registerFunction: vi.fn((_fnId: string, handler: (input: unknown) => Promise<unknown>) => {
         triggerHandler = handler;
-        return { id: 'harness::call', unregister: () => {} };
+        return { id: 'harness::trigger', unregister: () => {} };
       }),
       trigger: vi.fn(async () => {
         throw new Error('boom');

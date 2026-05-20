@@ -436,13 +436,7 @@ describe('shipped iii-permissions.yaml', () => {
 
   it('allows the read-only conveniences', async () => {
     const perms = await load();
-    for (const fid of [
-      'harness::status',
-      'state::get',
-      'state::list',
-      'models::list',
-      'auth::status',
-    ]) {
+    for (const fid of ['state::get', 'state::list', 'models::list', 'auth::status']) {
       expect(perms.check(fid, {}).kind).toBe('allow');
     }
   });

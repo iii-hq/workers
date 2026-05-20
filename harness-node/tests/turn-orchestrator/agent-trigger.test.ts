@@ -1,31 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { DispatchResult } from '../../src/turn-orchestrator/agent-call.js';
+import type { DispatchResult } from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   FUNCTION_ID,
   TOOL_NAME,
-  agentCallTool,
+  agentTriggerTool,
   dispatchWithHook,
   isErrorResult,
-} from '../../src/turn-orchestrator/agent-call.js';
+} from '../../src/turn-orchestrator/agent-trigger.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('agent_call tool schema', () => {
+describe('agent_trigger tool schema', () => {
   it('returns a stable schema with the required `function` field', () => {
-    const tool = agentCallTool() as Record<string, unknown>;
-    expect(tool.name).toBe('agent_call');
+    const tool = agentTriggerTool() as Record<string, unknown>;
+    expect(tool.name).toBe('agent_trigger');
     const params = tool.parameters as Record<string, unknown>;
     expect(params.type).toBe('object');
     expect(params.required).toEqual(['function']);
   });
 
   it('TOOL_NAME and FUNCTION_ID are stable', () => {
-    expect(TOOL_NAME).toBe('agent_call');
-    expect(FUNCTION_ID).toBe('agent::call');
+    expect(TOOL_NAME).toBe('agent_trigger');
+    expect(FUNCTION_ID).toBe('agent::trigger');
   });
 });
 

@@ -1,16 +1,21 @@
-import type { ISdk } from '../../runtime/iii.js'
-import { logger } from '../../runtime/otel.js'
-import { agentCallTool } from '../agent-call.js'
-import type { TurnOrchestratorConfig } from '../config.js'
-import * as persistence from '../persistence.js'
-import { type TurnStateRecord, transitionTo } from '../state.js'
-import { type DefaultSkillBody, type Mode, buildSystemPrompt, defaultSkillBody } from '../system-prompt.js'
+import type { ISdk } from '../../runtime/iii.js';
+import { logger } from '../../runtime/otel.js';
+import { agentTriggerTool } from '../agent-trigger.js';
+import type { TurnOrchestratorConfig } from '../config.js';
+import * as persistence from '../persistence.js';
+import { type TurnStateRecord, transitionTo } from '../state.js';
+import {
+  type DefaultSkillBody,
+  type Mode,
+  buildSystemPrompt,
+  defaultSkillBody,
+} from '../system-prompt.js';
 
 function asMode(value: unknown): Mode | null {
-  return value === 'plan' || value === 'ask' || value === 'agent' ? value : null
+  return value === 'plan' || value === 'ask' || value === 'agent' ? value : null;
 }
 
-const FETCH_TIMEOUT_MS = 10_000
+const FETCH_TIMEOUT_MS = 10_000;
 
 async function fetchSkill(iii: ISdk, id: string): Promise<string | null> {
   try {
@@ -18,27 +23,27 @@ async function fetchSkill(iii: ISdk, id: string): Promise<string | null> {
       function_id: 'directory::skills::get',
       payload: { id },
       timeoutMs: FETCH_TIMEOUT_MS,
-    })
-    if (typeof resp === 'string') return resp
+    });
+    if (typeof resp === 'string') return resp;
     if (resp && typeof resp === 'object') {
-      const body = (resp as Record<string, unknown>).body
-      if (typeof body === 'string') return body
+      const body = (resp as Record<string, unknown>).body;
+      if (typeof body === 'string') return body;
     }
-    return null
+    return null;
   } catch (err) {
-    logger.warn('directory::skills::get failed', { id, err: String(err) })
-    return null
+    logger.warn('directory::skills::get failed', { id, err: String(err) });
+    return null;
   }
 }
 
 async function fetchDefaultSkills(iii: ISdk, uris: readonly string[]): Promise<DefaultSkillBody[]> {
-  const bodies: DefaultSkillBody[] = []
+  const bodies: DefaultSkillBody[] = [];
   for (const uri of uris) {
-    const id = uri.startsWith('iii://') ? uri.slice('iii://'.length) : uri
-    const body = await fetchSkill(iii, id)
-    bodies.push(defaultSkillBody(uri, body))
+    const id = uri.startsWith('iii://') ? uri.slice('iii://'.length) : uri;
+    const body = await fetchSkill(iii, id);
+    bodies.push(defaultSkillBody(uri, body));
   }
-  return bodies
+  return bodies;
 }
 
 async function fetchSkillsIndex(iii: ISdk): Promise<string | null> {
@@ -47,37 +52,41 @@ async function fetchSkillsIndex(iii: ISdk): Promise<string | null> {
       function_id: 'directory::skills::index',
       payload: {},
       timeoutMs: FETCH_TIMEOUT_MS,
-    })
+    });
     if (resp && typeof resp === 'object') {
-      const body = (resp as Record<string, unknown>).body
-      if (typeof body === 'string' && body.length > 0) return body
+      const body = (resp as Record<string, unknown>).body;
+      if (typeof body === 'string' && body.length > 0) return body;
     }
-    return null
+    return null;
   } catch (err) {
-    logger.warn('directory::skills::index failed', { err: String(err) })
-    return null
+    logger.warn('directory::skills::index failed', { err: String(err) });
+    return null;
   }
 }
 
-export async function handleProvisioning(iii: ISdk, cfg: TurnOrchestratorConfig, rec: TurnStateRecord): Promise<void> {
-  const request = await persistence.loadRunRequest(iii, rec.session_id)
+export async function handleProvisioning(
+  iii: ISdk,
+  cfg: TurnOrchestratorConfig,
+  rec: TurnStateRecord,
+): Promise<void> {
+  const request = await persistence.loadRunRequest(iii, rec.session_id);
 
-  // The single tool LLMs see is `agent_call`.
-  await persistence.saveFunctionSchemas(iii, rec.session_id, [agentCallTool()])
+  // The single tool LLMs see is `agent_trigger`.
+  await persistence.saveFunctionSchemas(iii, rec.session_id, [agentTriggerTool()]);
 
-  const overrideRaw = request.system_prompt
-  const override = typeof overrideRaw === 'string' && overrideRaw.length > 0 ? overrideRaw : null
-  const cwd = typeof request.cwd === 'string' ? (request.cwd as string) : null
-  const mode = asMode(request.mode)
+  const overrideRaw = request.system_prompt;
+  const override = typeof overrideRaw === 'string' && overrideRaw.length > 0 ? overrideRaw : null;
+  const cwd = typeof request.cwd === 'string' ? (request.cwd as string) : null;
+  const mode = asMode(request.mode);
 
   const [skillsIndex, bodies] = await Promise.all([
     fetchSkillsIndex(iii),
     fetchDefaultSkills(iii, cfg.system_default_skills),
-  ])
-  const prompt = buildSystemPrompt(bodies, cwd, override, mode, skillsIndex)
+  ]);
+  const prompt = buildSystemPrompt(bodies, cwd, override, mode, skillsIndex);
 
-  const updated = { ...request, system_prompt: prompt }
-  await persistence.saveRunRequest(iii, rec.session_id, updated)
+  const updated = { ...request, system_prompt: prompt };
+  await persistence.saveRunRequest(iii, rec.session_id, updated);
 
-  transitionTo(rec, 'awaiting_assistant')
+  transitionTo(rec, 'awaiting_assistant');
 }

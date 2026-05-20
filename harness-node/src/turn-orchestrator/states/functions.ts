@@ -13,7 +13,7 @@ import type {
 } from '../../types/agent-message.js';
 import { text } from '../../types/content.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
-import { TOOL_NAME, dispatchWithHook, isErrorResult } from '../agent-call.js';
+import { TOOL_NAME, dispatchWithHook, isErrorResult } from '../agent-trigger.js';
 import { registerApprovalResume } from '../approval-resume.js';
 import type { TurnOrchestratorConfig } from '../config.js';
 import { emit } from '../events.js';
@@ -27,7 +27,7 @@ type ApprovalDecisionRecord = {
   reason: string | null;
 };
 
-function unwrapAgentCall(fc: FunctionCall): FunctionCall {
+function unwrapAgentTrigger(fc: FunctionCall): FunctionCall {
   if (fc.function_id !== TOOL_NAME) return fc;
   const args = (fc.arguments ?? {}) as Record<string, unknown>;
   const fn = typeof args.function === 'string' ? args.function : '';
@@ -38,7 +38,7 @@ function unwrapAgentCall(fc: FunctionCall): FunctionCall {
 export async function handlePrepare(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   rec.function_results = [];
   const raw = rec.pending_function_calls;
-  rec.pending_function_calls = raw.map(unwrapAgentCall);
+  rec.pending_function_calls = raw.map(unwrapAgentTrigger);
 
   const prepared: PreparedEntry[] = rec.pending_function_calls.map((fc) => ({
     function_call: fc,
