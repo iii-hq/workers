@@ -595,6 +595,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "database"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "clap",
+ "deadpool-postgres",
+ "futures-util",
+ "iii-sdk",
+ "mysql_async",
+ "postgres-protocol",
+ "postgres-types",
+ "r2d2",
+ "r2d2_sqlite",
+ "rusqlite",
+ "rust_decimal",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "deadpool"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1266,46 +1306,6 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
-]
-
-[[package]]
-name = "database"
-version = "0.0.4"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "clap",
- "deadpool-postgres",
- "futures-util",
- "iii-sdk",
- "mysql_async",
- "postgres-protocol",
- "postgres-types",
- "r2d2",
- "r2d2_sqlite",
- "rusqlite",
- "rust_decimal",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
- "rustls-webpki",
- "schemars",
- "serde",
- "serde_json",
- "serde_yml",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
 ]
 
 [[package]]

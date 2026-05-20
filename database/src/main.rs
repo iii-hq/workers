@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_database::config::WorkerConfig;
-use iii_database::handle::HandleRegistry;
-use iii_database::handlers::{
+use database::config::WorkerConfig;
+use database::handle::HandleRegistry;
+use database::handlers::{
     begin_transaction::{self, BeginTxReq},
     commit_transaction::{self, CommitTxReq},
     execute::{self, ExecuteReq},
@@ -15,9 +15,9 @@ use iii_database::handlers::{
     transaction_query::{self, TxQueryReq},
     AppState,
 };
-use iii_database::pool;
-use iii_database::transaction::TxRegistry;
-use iii_database::triggers::handler::RowChangeTrigger;
+use database::pool;
+use database::transaction::TxRegistry;
+use database::triggers::handler::RowChangeTrigger;
 use iii_sdk::{
     register_worker, InitOptions, Logger, OtelConfig, RegisterFunction, RegisterTriggerType,
 };
@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     tracing::info!(
-        name = iii_database::worker_name(),
+        name = database::worker_name(),
         config = %cli.config,
         url = %redact_url(&cli.url),
         "starting"

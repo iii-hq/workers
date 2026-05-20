@@ -1,16 +1,16 @@
 //! Integration: build a local AppState from a YAML config and exercise each
 //! function handler end-to-end against an in-memory SQLite database.
 
-use iii_database::config::WorkerConfig;
-use iii_database::handle::HandleRegistry;
-use iii_database::handlers::execute::ExecuteReq;
-use iii_database::handlers::prepare::PrepareReq;
-use iii_database::handlers::query::QueryReq;
-use iii_database::handlers::run_statement::RunReq;
-use iii_database::handlers::transaction::TxReq;
-use iii_database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
-use iii_database::pool;
-use iii_database::transaction::TxRegistry;
+use database::config::WorkerConfig;
+use database::handle::HandleRegistry;
+use database::handlers::execute::ExecuteReq;
+use database::handlers::prepare::PrepareReq;
+use database::handlers::query::QueryReq;
+use database::handlers::run_statement::RunReq;
+use database::handlers::transaction::TxReq;
+use database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
+use database::pool;
+use database::transaction::TxRegistry;
 use iii_sdk::{Logger, RegisterFunction};
 use serde_json::json;
 use std::collections::HashMap;
@@ -128,7 +128,7 @@ async fn end_to_end_query_execute_prepare_run_transaction() {
 
 #[test]
 fn binary_name_matches_manifest() {
-    assert_eq!(iii_database::worker_name(), "database");
+    assert_eq!(database::worker_name(), "database");
 }
 
 /// Regression: every RPC function must register through the typed
@@ -176,28 +176,28 @@ fn registered_functions_carry_request_and_response_schemas() {
         unreachable!()
     }
     async fn _bt(
-        _: iii_database::handlers::begin_transaction::BeginTxReq,
-    ) -> Result<iii_database::handlers::begin_transaction::BeginTxResp, String> {
+        _: database::handlers::begin_transaction::BeginTxReq,
+    ) -> Result<database::handlers::begin_transaction::BeginTxResp, String> {
         unreachable!()
     }
     async fn _tq(
-        _: iii_database::handlers::transaction_query::TxQueryReq,
+        _: database::handlers::transaction_query::TxQueryReq,
     ) -> Result<query::QueryResp, String> {
         unreachable!()
     }
     async fn _te(
-        _: iii_database::handlers::transaction_execute::TxExecuteReq,
-    ) -> Result<iii_database::handlers::transaction_execute::TxExecuteResp, String> {
+        _: database::handlers::transaction_execute::TxExecuteReq,
+    ) -> Result<database::handlers::transaction_execute::TxExecuteResp, String> {
         unreachable!()
     }
     async fn _ct(
-        _: iii_database::handlers::commit_transaction::CommitTxReq,
-    ) -> Result<iii_database::handlers::commit_transaction::CommitTxResp, String> {
+        _: database::handlers::commit_transaction::CommitTxReq,
+    ) -> Result<database::handlers::commit_transaction::CommitTxResp, String> {
         unreachable!()
     }
     async fn _rt(
-        _: iii_database::handlers::rollback_transaction::RollbackTxReq,
-    ) -> Result<iii_database::handlers::rollback_transaction::RollbackTxResp, String> {
+        _: database::handlers::rollback_transaction::RollbackTxReq,
+    ) -> Result<database::handlers::rollback_transaction::RollbackTxResp, String> {
         unreachable!()
     }
 

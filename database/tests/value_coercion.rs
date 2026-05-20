@@ -1,6 +1,6 @@
 //! Cross-cutting coercion tests — every JSON shape, both directions.
 
-use iii_database::value::{JsonParam, RowValue};
+use database::value::{JsonParam, RowValue};
 use serde_json::json;
 
 #[test]
