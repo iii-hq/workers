@@ -31,9 +31,6 @@ Abort uses the same resume path: `performAbortSideEffects` triggers each
 registered resume fn with `{ decision: 'aborted', reason: 'session_aborted' }`
 instead of calling `approval::resolve`.
 
-There is **no** `approvals` scope state trigger and **no**
-`approval::on_decision_written` adapter.
-
 ## Registered functions
 
 - `approval::resolve` — Validates the payload and triggers the per-call resume function. Returns `{ ok: true }` or `{ ok: false, error: 'invalid_payload' | 'resume_failed' }`.
