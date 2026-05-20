@@ -14,68 +14,55 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { parseTurnStateWrite } from './on-turn-state-changed.js';
+import { TurnStateWriteEventSchema, type ParsedTurnStateWrite } from './on-turn-state-changed.js';
 import type { TurnState } from './state.js';
 
-const NON_STEPABLE_STATES: ReadonlySet<TurnState> = new Set([
-  'stopped',
-  'function_awaiting_approval',
-]);
+const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'function_awaiting_approval']);
 
-type StepableWrite = {
-  session_id: string;
-  state: TurnState;
-};
+const StepableTurnStateWriteSchema = TurnStateWriteEventSchema.refine(
+  (data) => !NON_STEPABLE_STATES.has(data.new_value.state as TurnState),
+).refine(
+  (data) => data.event_type !== 'state:updated' || data.old_value?.state !== data.new_value.state,
+);
 
-/**
- * One source of truth for "is this a stepable turn_state write?". Returns the
- * extracted session_id + state on match, null otherwise. Both the condition
- * (boolean check) and the handler (needs the session_id) route through this,
- * so they can't drift — and the handler can't fire on a parking-state write
- * even if the condition was bypassed.
- */
+export type StepableWrite = Pick<ParsedTurnStateWrite, 'session_id'> & { state: TurnState };
+
 export function parseStepableWrite(event: unknown): StepableWrite | null {
-  const parsed = parseTurnStateWrite(event);
-  if (!parsed) return null;
-
-  const state = parsed.new_value.state as TurnState;
-  if (NON_STEPABLE_STATES.has(state)) return null;
-
-  if (parsed.event_type === 'state:updated') {
-    const old_state = parsed.old_value?.state;
-    if (typeof old_state === 'string' && old_state === state) return null;
-  }
-
-  return { session_id: parsed.session_id, state };
+  const result = StepableTurnStateWriteSchema.safeParse(event);
+  if (!result.success) return null;
+  return { session_id: result.data.session_id, state: result.data.new_value.state as TurnState };
 }
 
-export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Promise<void> {
-  const parsed = parseStepableWrite(event);
-  if (!parsed) return;
-
+export async function stepOnStepableWrite(iii: ISdk, write: StepableWrite): Promise<void> {
   try {
     await iii.trigger<unknown, unknown>({
       function_id: 'turn::step',
-      payload: { session_id: parsed.session_id },
+      payload: { session_id: write.session_id },
     });
     return;
   } catch (err) {
-
     logger.warn(
       'turn::on_record_written: direct turn::step failed; falling back to durable publish',
-      { session_id: parsed.session_id, err: String(err) },
+      { session_id: write.session_id, err: String(err) },
     );
     try {
       await iii.trigger<unknown, unknown>({
         function_id: 'iii::durable::publish',
-        payload: { topic: 'turn::step_requested', data: { session_id: parsed.session_id } },
+        payload: { topic: 'turn::step_requested', data: { session_id: write.session_id } },
       });
     } catch (publishErr) {
       logger.error(
         'turn::on_record_written: durable publish fallback also failed; session may be stuck',
-        { session_id: parsed.session_id, err: String(publishErr) },
+        { session_id: write.session_id, err: String(publishErr) },
       );
     }
+  }
+}
+
+export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Promise<void> {
+  const write = parseStepableWrite(event);
+  if (write) {
+    await stepOnStepableWrite(iii, write);
   }
 }
 

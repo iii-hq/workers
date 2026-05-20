@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   handleTurnStateWrite,
-  isTurnStateWrite,
+  parseTurnStateWrite,
 } from '../../src/turn-orchestrator/on-turn-state-changed.js';
 
 function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unknown }> } {
@@ -20,45 +20,55 @@ function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unkno
   return { iii, emits };
 }
 
-describe('isTurnStateWrite', () => {
-  it('returns true for state:created on session/<sid>/turn_state', () => {
+describe('parseTurnStateWrite', () => {
+  it('parses state:created on session/<sid>/turn_state', () => {
     expect(
-      isTurnStateWrite({
+      parseTurnStateWrite({
         event_type: 'state:created',
         key: 'session/sess-a/turn_state',
         new_value: { state: 'provisioning' },
       }),
-    ).toBe(true);
+    ).toEqual({
+      session_id: 'sess-a',
+      event_type: 'state:created',
+      new_value: { state: 'provisioning' },
+    });
   });
 
-  it('returns true for state:updated on session/<sid>/turn_state', () => {
+  it('parses state:updated on session/<sid>/turn_state', () => {
     expect(
-      isTurnStateWrite({
+      parseTurnStateWrite({
         event_type: 'state:updated',
         key: 'session/sess-a/turn_state',
         new_value: { state: 'function_awaiting_approval' },
         old_value: { state: 'function_execute' },
       }),
-    ).toBe(true);
+    ).toEqual({
+      session_id: 'sess-a',
+      event_type: 'state:updated',
+      new_value: { state: 'function_awaiting_approval' },
+      old_value: { state: 'function_execute' },
+    });
   });
 
-  it('returns false for non-turn_state agent keys', () => {
+  it('rejects non-turn_state agent keys', () => {
     expect(
-      isTurnStateWrite({
+      parseTurnStateWrite({
         event_type: 'state:created',
         key: 'session/sess-a/abort_signal',
-        new_value: true,
+        new_value: { state: 'true' },
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
-  it('returns false for state:deleted', () => {
+  it('rejects state:deleted', () => {
     expect(
-      isTurnStateWrite({
+      parseTurnStateWrite({
         event_type: 'state:deleted',
         key: 'session/sess-a/turn_state',
+        new_value: { state: 'provisioning' },
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 });
 

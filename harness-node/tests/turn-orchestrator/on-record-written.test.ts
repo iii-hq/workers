@@ -155,7 +155,7 @@ describe('handleStepableRecordWrite', () => {
     expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
   });
 
-  it('no-ops when key does not match the turn_state pattern', async () => {
+  it('no-ops when the event is not stepable (direct invoke bypasses engine condition)', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     await handleStepableRecordWrite(iii, {
       event_type: 'state:updated',
@@ -163,6 +163,19 @@ describe('handleStepableRecordWrite', () => {
       key: 'session/sess-abc/abort_signal',
       old_value: null,
       new_value: true,
+      message_type: 'state',
+    });
+    expect(iii.trigger).not.toHaveBeenCalled();
+  });
+
+  it('no-ops on same-state turn_state updates (direct invoke bypasses engine condition)', async () => {
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    await handleStepableRecordWrite(iii, {
+      event_type: 'state:updated',
+      scope: 'agent',
+      key: 'session/sess-abc/turn_state',
+      old_value: { state: 'function_prepare' },
+      new_value: { state: 'function_prepare' },
       message_type: 'state',
     });
     expect(iii.trigger).not.toHaveBeenCalled();

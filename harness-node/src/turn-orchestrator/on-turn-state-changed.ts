@@ -9,56 +9,33 @@ import { z } from 'zod';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { emit } from './events.js';
-import { turnStateKey } from './state.js';
 
 const TurnStateRecordValueSchema = z.object({ state: z.string() }).passthrough();
 
-export const TurnStateWriteEventSchema = z.object({
+const AgentTurnStateWriteEventSchema = z.object({
+  type: z.literal('state').optional(),
+  scope: z.literal('agent').optional(),
   event_type: z.enum(['state:created', 'state:updated']),
-  key: z.string(),
+  key: z.string().regex(/^session\/[^/]+\/turn_state$/),
   new_value: TurnStateRecordValueSchema,
-  old_value: z.unknown().optional(),
+  old_value: TurnStateRecordValueSchema.nullish(),
 });
 
-export type ParsedTurnStateWrite = {
-  session_id: string;
-  event_type: 'state:created' | 'state:updated';
-  new_value: Record<string, unknown>;
-  old_value?: Record<string, unknown>;
-};
-
-function sessionIdFromTurnStateKey(key: string): string | null {
-  const match = /^session\/([^/]+)\/turn_state$/.exec(key);
-  const session_id = match?.[1];
-  if (!session_id || turnStateKey(session_id) !== key) return null;
-  return session_id;
-}
-
-/** Shared parse for agent-scope turn_state create/update events. */
-export function parseTurnStateWrite(event: unknown): ParsedTurnStateWrite | null {
-  const parsed = TurnStateWriteEventSchema.safeParse(event);
-  if (!parsed.success) return null;
-
-  const session_id = sessionIdFromTurnStateKey(parsed.data.key);
-  if (!session_id) return null;
-
-  const old_value =
-    parsed.data.old_value &&
-    typeof parsed.data.old_value === 'object' &&
-    parsed.data.old_value !== null
-      ? (parsed.data.old_value as Record<string, unknown>)
-      : undefined;
-
+export const TurnStateWriteEventSchema = AgentTurnStateWriteEventSchema.transform((data) => {
+  const session_id = data.key.slice('session/'.length, -'/turn_state'.length);
   return {
     session_id,
-    event_type: parsed.data.event_type,
-    new_value: parsed.data.new_value as Record<string, unknown>,
-    ...(old_value !== undefined && { old_value }),
+    event_type: data.event_type,
+    new_value: data.new_value as Record<string, unknown>,
+    ...(data.old_value != null && { old_value: data.old_value as Record<string, unknown> }),
   };
-}
+});
 
-export function isTurnStateWrite(event: unknown): boolean {
-  return parseTurnStateWrite(event) !== null;
+export type ParsedTurnStateWrite = z.infer<typeof TurnStateWriteEventSchema>;
+
+export function parseTurnStateWrite(event: unknown): ParsedTurnStateWrite | null {
+  const result = TurnStateWriteEventSchema.safeParse(event);
+  return result.success ? result.data : null;
 }
 
 export async function handleTurnStateWrite(iii: ISdk, event: unknown): Promise<void> {
@@ -83,7 +60,7 @@ export async function handleTurnStateWrite(iii: ISdk, event: unknown): Promise<v
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::is_turn_state_write',
-    async (event: unknown) => isTurnStateWrite(event),
+    async (event: unknown) => parseTurnStateWrite(event) !== null,
     {
       description: 'Condition: state event is a write to session/<sid>/turn_state.',
     },
