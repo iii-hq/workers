@@ -10,11 +10,11 @@ immediately; the rest of the work happens inside the durable `turn::step`
 state machine, woken once per state transition by a publish to the
 `turn::step_requested` topic. The FSM provisions the sandbox, streams the
 assistant turn from a provider, executes any returned function calls
-through the `agent::call` chokepoint, emits `agent::events` for the
+through the `agent::trigger` chokepoint, emits `agent::events` for the
 harness fanout, and persists everything to iii state so the run survives
 restarts.
 
-`agent::call` is the single dispatcher every agent-issued tool call passes
+`agent::trigger` is the single dispatcher every agent-issued tool call passes
 through. It runs `consultBefore` before forwarding to the target function
 id. `consultBefore` triggers `policy::check_permissions` directly (5 s
 timeout) and maps the reply to allow / deny / pending. Fail-closed: policy
@@ -26,7 +26,7 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 - `run::start_and_wait` — Start a durable agent session and block until terminal (test/dev convenience).
 - `turn::step` — Run one durable state machine transition for a session.
 - `turn::get_state` — Read the current `TurnStateRecord` for a session (or null for unknown sessions). UI clients use this on reload to recover any in-progress modals (e.g. `function_awaiting_approval`) without reading iii state directly.
-- `agent::call` — LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult.
+- `agent::trigger` — LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult.
 - `turn::is_abort_signal_set` — Condition function bound to the agent-scope state trigger; matches `state:created`/`state:updated` writes that set `session/<id>/abort_signal` to `true`.
 - `turn::on_abort_signal` — State trigger adapter: publishes `turn::step_requested` when the abort signal is set so the FSM advances on the next safe boundary.
 - `turn::is_terminal_state_write` — Condition function bound to the terminal state trigger; matches writes to `session/<id>/turn_state` whose `new_value.state === 'stopped'`.
@@ -58,14 +58,14 @@ The 11 states from
 | `assistant_streaming` | same | Drain the channel; relay events. |
 | `assistant_finished` | same | Persist the final `AssistantMessage`; pick next state. |
 | `function_prepare` | [states/functions.ts](harness-node/src/turn-orchestrator/states/functions.ts) | Snapshot the pending function calls. |
-| `function_execute` | same | Run each call via `dispatchWithHook` → `agent::call`. If the gate returns `pending`, append the call to `awaiting_approval` and transition to `function_awaiting_approval` (the rest of the batch is left for the resumed step). Each call is bracketed by a `function_execution_start` / `function_execution_end` pair; the `end` event carries `duration_ms` (wall-clock between the matching start and end), persisted on `ExecutedEntry` so resumed runs replay the original timing instead of the ~0ms it takes to re-emit. Approval wait time is naturally excluded — pending calls return without an end emit, and the resumed step re-emits a fresh start that resets the timer. |
+| `function_execute` | same | Run each call via `dispatchWithHook` → `agent::trigger`. If the gate returns `pending`, append the call to `awaiting_approval` and transition to `function_awaiting_approval` (the rest of the batch is left for the resumed step). Each call is bracketed by a `function_execution_start` / `function_execution_end` pair; the `end` event carries `duration_ms` (wall-clock between the matching start and end), persisted on `ExecutedEntry` so resumed runs replay the original timing instead of the ~0ms it takes to re-emit. Approval wait time is naturally excluded — pending calls return without an end emit, and the resumed step re-emits a fresh start that resets the timer. |
 | `function_awaiting_approval` | same (`handleAwaitingApproval`) | Read `approvals/<sid>/<cid>` for every entry in `awaiting_approval`. While any decision is still missing, return without stepping (the next `turn::approval_resume` invoke will wake `turn::step`). When all decisions are present, fold them into the prepared snapshot — `allow` → `pre_approved: true`, `deny`/`aborted` → `blocked` with a denial result — clear `awaiting_approval`, and transition back to `function_execute`. |
 | `function_finalize` | same | Persist results; emit `function_call_end` + `turn_end` events. |
 | `steering_check` | [states/steering.ts](harness-node/src/turn-orchestrator/states/steering.ts) | Decide whether to continue, stop, or hit `max_turns`. |
 | `tearing_down` | [states/tearing-down.ts](harness-node/src/turn-orchestrator/states/tearing-down.ts) | Emit `agent_end` once, free the sandbox if any. |
 | `stopped` | (no-op) | Terminal. Idempotent. |
 
-`dispatchWithHook` in [agent-call.ts](harness-node/src/turn-orchestrator/agent-call.ts)
+`dispatchWithHook` in [agent-trigger.ts](harness-node/src/turn-orchestrator/agent-trigger.ts)
 now returns one of three shapes: `{ kind: 'result' }`, `{ kind: 'deny' }`,
 or `{ kind: 'pending' }`. Pending is what triggers the
 `function_awaiting_approval` park.
@@ -123,11 +123,11 @@ From
 | File | Purpose |
 |---|---|
 | [src/turn-orchestrator/main.ts](harness-node/src/turn-orchestrator/main.ts) | Binary entry point. |
-| [src/turn-orchestrator/register.ts](harness-node/src/turn-orchestrator/register.ts) | Composes `run::start*`, `agent::call`, `turn::step`, the abort-signal and terminal-state state triggers, and kicks off the bootstrap. |
+| [src/turn-orchestrator/register.ts](harness-node/src/turn-orchestrator/register.ts) | Composes `run::start*`, `agent::trigger`, `turn::step`, the abort-signal and terminal-state state triggers, and kicks off the bootstrap. |
 | [src/turn-orchestrator/run-start.ts](harness-node/src/turn-orchestrator/run-start.ts) | `run::start` + `run::start_and_wait` handlers and the `publishStep` helper. `executeSync` installs a terminal-state waiter, kicks the run, then races the waiter against `sync_default_timeout_ms` — no polling. |
 | [src/turn-orchestrator/get-state.ts](harness-node/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader that returns the current `TurnStateRecord` for a session. UI clients call this on reload to recover in-progress modals; the orchestrator owns the state schema/key layout so clients never read iii state directly. |
 | [src/turn-orchestrator/on-terminal.ts](harness-node/src/turn-orchestrator/on-terminal.ts) | State trigger adapter — `turn::is_terminal_state_write` (condition) + `turn::on_terminal_state` (handler) — plus the in-process `installTerminalWaiter` / `clearTerminalWaiter` API used by `executeSync` to await a terminal `turn_state` write reactively. |
-| [src/turn-orchestrator/agent-call.ts](harness-node/src/turn-orchestrator/agent-call.ts) | The dispatcher chokepoint; `dispatchWithHook` runs `consultBefore` before triggering the function and returns `result` / `deny` / `pending`. |
+| [src/turn-orchestrator/agent-trigger.ts](harness-node/src/turn-orchestrator/agent-trigger.ts) | The dispatcher chokepoint; `dispatchWithHook` runs `consultBefore` before triggering the function and returns `result` / `deny` / `pending`. |
 | [src/turn-orchestrator/hook.ts](harness-node/src/turn-orchestrator/hook.ts) | `consultBefore` — calls `policy::check_permissions` directly (5 s timeout) and maps the reply via `parsePolicyReply` (`approval-gate/schemas.ts`) to `allow` / `pending` / `deny`; fails closed with a `gate_unavailable` envelope. `publishAfter` still routes through `hook-fanout::publish_collect` for the after-hook fanout path. |
 | [src/turn-orchestrator/approval-resume.ts](harness-node/src/turn-orchestrator/approval-resume.ts) | Per-call `turn::approval_resume` registration, handler (persist + `turn::step`), and startup recovery for parked sessions. |
 | [src/turn-orchestrator/abort.ts](harness-node/src/turn-orchestrator/abort.ts) | `performAbortSideEffects` — writes `session/<sid>/abort_signal = true` and, for turns paused on approvals, triggers each `turn::approval_resume` fn with `{decision: 'aborted'}`. |

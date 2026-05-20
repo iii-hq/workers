@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import * as agentCallModule from '../../src/turn-orchestrator/agent-call.js';
+import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
 import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe('handleExecute new flow', () => {
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
-    const dispatchSpy = vi.spyOn(agentCallModule, 'dispatchWithHook');
+    const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
     const registerResumeSpy = vi
       .spyOn(approvalResumeModule, 'registerApprovalResume')

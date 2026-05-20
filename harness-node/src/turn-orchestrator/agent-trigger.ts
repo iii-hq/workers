@@ -1,5 +1,5 @@
 /**
- * `agent::call` dispatcher + chokepoint. Mirrors
+ * `agent::trigger` dispatcher + chokepoint. Mirrors
  * `turn-orchestrator/src/agent_call.rs`.
  *
  * `dispatchWithHook` is the single chokepoint: every agent-issued tool
@@ -14,15 +14,15 @@ import type { ContentBlock } from '../types/content.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './hook.js';
 
-export const TOOL_NAME = 'agent_call';
-export const FUNCTION_ID = 'agent::call';
+export const TOOL_NAME = 'agent_trigger';
+export const FUNCTION_ID = 'agent::trigger';
 
 export type DispatchResult =
   | { kind: 'result'; result: FunctionResult }
   | { kind: 'deny'; result: FunctionResult }
   | { kind: 'pending' };
 
-export function agentCallTool(): unknown {
+export function agentTriggerTool(): unknown {
   return {
     name: TOOL_NAME,
     description:
@@ -41,7 +41,7 @@ export function agentCallTool(): unknown {
       },
       required: ['function'],
     },
-    label: 'agent_call',
+    label: 'agent_trigger',
     execution_mode: 'parallel',
     prepare_arguments_supported: false,
   };
@@ -109,7 +109,7 @@ export async function dispatchWithHook(
       kind: 'result',
       result: errorResult({
         error: 'missing_function',
-        message: 'agent_call requires a non-empty `function` string field',
+        message: 'agent_trigger requires a non-empty `function` string field',
       }),
     };
   }
@@ -164,11 +164,11 @@ export async function dispatch(
   if (typeof fn !== 'string' || fn.length === 0) {
     return errorResult({
       error: 'missing_function',
-      message: 'agent_call requires a non-empty `function` string field',
+      message: 'agent_trigger requires a non-empty `function` string field',
     });
   }
   const fc: FunctionCall = {
-    id: `agent_call-${uuidLike()}`,
+    id: `agent_trigger-${uuidLike()}`,
     function_id: fn,
     arguments: payload ?? {},
   };

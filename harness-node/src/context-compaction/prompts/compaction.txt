@@ -4,13 +4,13 @@ Summarize only the conversation history you are given. The newest turns are kept
 
 If the prompt includes a <previous-summary> block, treat it as the current anchored summary. Update it with the new history by preserving still-true details, removing stale details, and merging in new facts. Never drop a still-true detail just because the new turns don't mention it.
 
-Follow this exact output structure. Keep every section heading even if a section is empty (write `(none)`). Prefer terse bullets to paragraphs. Preserve exact file paths, bus function ids (e.g. `shell::fs::read`, `agent_call`, `state::set`), session ids, call_ids, and other identifiers verbatim. Target a total length under 10% of the original conversation token count.
+Follow this exact output structure. Keep every section heading even if a section is empty (write `(none)`). Prefer terse bullets to paragraphs. Preserve exact file paths, bus function ids (e.g. `shell::fs::read`, `agent_trigger`, `state::set`), session ids, call_ids, and other identifiers verbatim. Target a total length under 10% of the original conversation token count.
 
 # Goal
 One or two bullets describing what the user is actually trying to accomplish in this session.
 
 # Worked on so far
-Chronological bullets of the meaningful actions taken. Each bullet should name the agent_call function used and the salient argument or result (path, command, summary of effect). Skip routine reads and noise.
+Chronological bullets of the meaningful actions taken. Each bullet should name the agent_trigger function used and the salient argument or result (path, command, summary of effect). Skip routine reads and noise.
 
 # Files touched
 Two sub-lists: `read:` (paths the agent inspected) and `modified:` (paths the agent created or edited).

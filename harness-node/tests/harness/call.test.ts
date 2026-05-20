@@ -91,7 +91,7 @@ describe('harness::call', () => {
     const handler = registered.get('harness::call')?.handler;
     if (!handler) throw new Error('handler not registered');
 
-    await handler({ body: { function_id: 'harness::status' } });
+    await handler({ body: { function_id: 'state::get' } });
 
     const triggerArg = trigger.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(triggerArg.payload).toEqual({});

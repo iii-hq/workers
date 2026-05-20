@@ -26,7 +26,6 @@ rules:
   - '!router::abort'
 
   # Read-only / introspection (extend below for your tools).
-  - harness::status
   - state::get
   - state::list
   - models::list

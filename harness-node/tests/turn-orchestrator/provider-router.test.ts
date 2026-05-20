@@ -36,7 +36,7 @@ describe('buildInput', () => {
       { channel_id: 'c', access_key: 'k', direction: 'write' },
       'sys',
       [{ role: 'user', content: [{ type: 'text', text: 'hi' }], timestamp: 0 }],
-      [{ name: 'agent_call', description: 'd', parameters: {} }],
+      [{ name: 'agent_trigger', description: 'd', parameters: {} }],
     );
     expect(input.model).toBe('claude');
     expect(input.tools).toHaveLength(1);

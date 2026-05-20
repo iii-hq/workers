@@ -18,8 +18,8 @@ workers.
 
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
-| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `harness::status` / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
-| turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::call`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
+| harness | [src/harness/](harness-node/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::call` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness-node/docs/workers/harness.md) |
+| turn-orchestrator | [src/turn-orchestrator/](harness-node/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::trigger`. | [workers/turn-orchestrator.md](harness-node/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness-node/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness-node/docs/workers/approval-gate.md) |
 | session | [src/session/](harness-node/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness-node/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness-node/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness-node/docs/workers/llm-budget.md) |
@@ -58,12 +58,12 @@ flowchart LR
 
   client -- "harness::call(run::start, ...)" --> harness
   harness -- "iii.trigger run::start" --> turnOrch
-  client -- "ui::subscribe / harness::status" --> harness
+  client -- "ui::subscribe" --> harness
 
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "agent::call → hook-fanout::publish_collect (after-hook)" --> hook
+  turnOrch -- "agent::trigger → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
 
@@ -169,7 +169,7 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `oauth::openai-codex::login`, `run::start`, `run::start_and_wait`,
 `router::stream_assistant`, `router::abort`.
 
-Bare-string allow rules: `harness::status`, `state::get`, `state::list`,
+Bare-string allow rules: `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,
 `auth::list_providers`, `auth::status`, `oauth::anthropic::status`,
 `oauth::openai-codex::status`, the `directory::engine::*` introspection

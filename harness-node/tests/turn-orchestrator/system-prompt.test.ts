@@ -24,7 +24,7 @@ describe('buildSystemPrompt', () => {
   it('preamble identity preserved', () => {
     const out = buildSystemPrompt([], null);
     expect(out).toContain('You are an iii agent worker.');
-    expect(out).toContain('agent_call');
+    expect(out).toContain('agent_trigger');
     expect(out).toContain('directory::skills::get');
   });
 

@@ -6,13 +6,11 @@ import { spawnPumps } from './fanout/index.js';
 import { register as registerFs } from './fs.js';
 import { registerPolicy } from './policy/check-permissions.js';
 import { loadAndWatch } from './policy/handle.js';
-import { register as registerStatus } from './status.js';
 import { FanoutState, registerSubscriptions } from './ui-subscribe.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string; url: string }): Promise<void> {
   const cfg = await loadConfig(ctx.configPath);
   const harness = loadHarnessConfig(cfg);
-  registerStatus(iii);
   registerCall(iii);
   const fanoutState = new FanoutState();
   registerSubscriptions(iii, fanoutState);
