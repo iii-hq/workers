@@ -131,7 +131,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export const mockBackend: ChatBackend = {
   id: 'mock',
   stream: mockStream,
-  async compactSession(_sessionId, _model, _history) {
+  async compactSession(_sessionId, _model, _history, _contextWindow) {
     return { status: 'empty' }
   },
 }

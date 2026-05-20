@@ -96,12 +96,14 @@ export interface ChatBackend {
     decision: 'allow' | 'deny',
   ): Promise<void>
   /**
-   * Powers `/compact`. `history` is reconciled into session-tree before
-   * compacting so a stale mirror doesn't yield a spurious 'empty'.
+   * Powers `/compact`. `history` is reconciled into session-tree first so a
+   * stale mirror doesn't yield a spurious 'empty'. `contextWindow` skips
+   * the server's `models::get` lookup when known.
    */
   compactSession?(
     sessionId: string,
     model: ModelId,
     history?: AgentMessage[],
+    contextWindow?: number,
   ): Promise<CompactResult>
 }

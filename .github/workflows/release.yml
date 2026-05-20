@@ -5,7 +5,7 @@ on:
     tags:
       - 'acp/v*'
       - 'console/v*'
-      - 'iii-database/v*'
+      - 'database/v*'
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'

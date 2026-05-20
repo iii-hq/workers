@@ -10,7 +10,7 @@ on:
         options:
           - acp
           - console
-          - iii-database
+          - database
           - iii-directory
           - iii-lsp
           - iii-lsp-vscode

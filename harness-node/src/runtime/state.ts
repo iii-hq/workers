@@ -12,12 +12,17 @@ import { logger } from './otel.js';
 
 export type { StateListInput } from 'iii-sdk/state';
 
+// Mirrors engine `UpdateOp` (sdk/packages/rust/iii/src/types.rs). Variants
+// that target a JSON field (`set`, `increment`, `decrement`, `remove`) take
+// a required `path` string — `""` (FieldPath::root) means "the whole value".
+// `merge`/`append` accept an optional MergePath (string or array of strings).
 export type StateUpdateOp =
-  | { type: 'set'; value: unknown }
-  | { type: 'merge'; value: Record<string, unknown> }
-  | { type: 'append'; value: unknown }
-  | { type: 'increment'; value: number }
-  | { type: 'delete' }
+  | { type: 'set'; path: string; value: unknown }
+  | { type: 'merge'; path?: string | string[]; value: Record<string, unknown> }
+  | { type: 'append'; path?: string | string[]; value: unknown }
+  | { type: 'increment'; path: string; by: number }
+  | { type: 'decrement'; path: string; by: number }
+  | { type: 'remove'; path: string }
   | { type: string; [k: string]: unknown };
 
 /** One row from a keyed `state::list` envelope (`{ items: [...] }`), when present. */

@@ -188,6 +188,7 @@ async function realCompactSession(
   sessionId: string,
   model: ModelId,
   history?: AgentMessage[],
+  contextWindow?: number,
 ): Promise<CompactResult> {
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
@@ -196,6 +197,7 @@ async function realCompactSession(
     // stale tree (only the first turn mirrored) doesn't yield a spurious
     // 'empty' when the UI has plenty to summarise. No-op when the tree
     // already has equal-or-more entries.
+    let reconcileFailed = false
     if (history && history.length > 0) {
       await client
         .call('session-tree::ensure', { session_id: sessionId })
@@ -206,13 +208,32 @@ async function realCompactSession(
           state_snapshot: history,
         })
         .catch((err) => {
+          // A failed reconcile can yield a spurious 'empty' from a stale tree.
+          reconcileFailed = true
           if (import.meta.env.DEV) {
             console.warn(
-              '[compact_session] reconcile failed; compacting as-is',
+              '[compact_session] reconcile failed; compacting against current session-tree',
               err,
             )
           }
         })
+    }
+
+    // Passing limit.context lets the server skip the models::get lookup.
+    // We don't know max_output here; 4096 is the same conservative default
+    // the server falls back to when models::get returns nothing.
+    const DEFAULT_MAX_OUTPUT = 4_096
+    const modelPayload: {
+      id: string
+      providerID: string
+      limit?: { context: number; input: number; output: number }
+    } = { id: modelId, providerID: provider }
+    if (typeof contextWindow === 'number' && contextWindow > 0) {
+      modelPayload.limit = {
+        context: contextWindow,
+        input: contextWindow,
+        output: DEFAULT_MAX_OUTPUT,
+      }
     }
 
     const resp = await client.call<{
@@ -225,13 +246,23 @@ async function realCompactSession(
       reason?: string
     }>('context-compaction::compact_session', {
       session_id: sessionId,
-      model: { id: modelId, providerID: provider },
+      model: modelPayload,
     })
+    // Empty + reconcileFailed → likely stale tree; tell the user to retry.
+    const surfaceEmpty = (): CompactResult =>
+      reconcileFailed
+        ? {
+            status: 'error',
+            message:
+              'compact: could not sync session history to server; retry /compact',
+          }
+        : { status: 'empty' }
+
     if (resp?.status === 'ok') {
       const tokensBefore =
         typeof resp.tokens_before === 'number' ? resp.tokens_before : 0
       // Surface zero-token "ok" as semantic empty.
-      if (tokensBefore === 0) return { status: 'empty' }
+      if (tokensBefore === 0) return surfaceEmpty()
       // Fallback placeholder for engines that predate summary_text on the
       // wire; without it the marker has no <conversation-summary> to ship.
       const summaryText =
@@ -257,7 +288,7 @@ async function realCompactSession(
             : 'unknown summariser error'
       return { status: 'overflow', message }
     }
-    if (resp?.status === 'empty') return { status: 'empty' }
+    if (resp?.status === 'empty') return surfaceEmpty()
     return {
       status: 'error',
       message: `unexpected status: ${String(resp?.status ?? 'null')}`,

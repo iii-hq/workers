@@ -41,8 +41,8 @@ describe('lease helpers', () => {
 });
 
 // Minimal in-memory ISdk stub for lease integration tests.
-// stateGet returns the raw trigger response (the value itself, not wrapped).
-// stateSet stores payload.value at payload.key.
+// state::update is atomic by construction (Map ops are synchronous), which
+// matches what we need from iii-database in production.
 function makeStateIii() {
   const store = new Map<string, unknown>();
   const iii = {
@@ -60,6 +60,21 @@ function makeStateIii() {
           store.set(p['key'] as string, v);
         }
         return { ok: true };
+      }
+      if (function_id === 'state::update') {
+        const key = p['key'] as string;
+        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const oldValue = store.has(key) ? store.get(key) : null;
+        let newValue: unknown = oldValue;
+        for (const op of ops) {
+          if (op.type === 'set') newValue = op.value;
+        }
+        if (newValue === null || newValue === undefined) {
+          store.delete(key);
+        } else {
+          store.set(key, newValue);
+        }
+        return { old_value: oldValue ?? null, new_value: newValue ?? null };
       }
       return null;
     }),
@@ -98,5 +113,158 @@ describe('acquireLeaseWithWait', () => {
     // Now acquireLeaseWithWait should give up quickly (50 ms timeout).
     const result = await acquireLeaseWithWait(iii, 'sid2', 'compaction', 50);
     expect(result).toBeNull();
+  });
+});
+
+// Adds artificial latency to BOTH state::set and state::update, mimicking
+// a real state store (iii-database over IPC, remote Redis). The key
+// invariant is that state::update remains atomic — read+write inside a
+// single async function tick — which is what iii-database guarantees.
+function makeRacyStateIii(writeLatencyMs: number) {
+  const store = new Map<string, unknown>();
+  const iii = {
+    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+      const p = payload as Record<string, unknown>;
+      if (function_id === 'state::get') {
+        const v = store.get(p['key'] as string);
+        return v !== undefined ? v : null;
+      }
+      if (function_id === 'state::set') {
+        await new Promise((r) => setTimeout(r, writeLatencyMs));
+        const v = p['value'];
+        if (v === null || v === undefined) {
+          store.delete(p['key'] as string);
+        } else {
+          store.set(p['key'] as string, v);
+        }
+        return { ok: true };
+      }
+      if (function_id === 'state::update') {
+        await new Promise((r) => setTimeout(r, writeLatencyMs));
+        const key = p['key'] as string;
+        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const oldValue = store.has(key) ? store.get(key) : null;
+        let newValue: unknown = oldValue;
+        for (const op of ops) {
+          if (op.type === 'set') newValue = op.value;
+        }
+        if (newValue === null || newValue === undefined) {
+          store.delete(key);
+        } else {
+          store.set(key, newValue);
+        }
+        return { old_value: oldValue ?? null, new_value: newValue ?? null };
+      }
+      return null;
+    }),
+  };
+  return { iii: iii as unknown as Parameters<typeof acquireLease>[0], store };
+}
+
+// Simulates a transient state-store outage: state::update fails (returns
+// null) while state::get still works. acquireLease must refuse to claim
+// the lease in this case — otherwise every concurrent caller becomes a
+// "winner" during the outage and the single-writer invariant breaks.
+function makeFailingUpdateIii() {
+  const store = new Map<string, unknown>();
+  const iii = {
+    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+      const p = payload as Record<string, unknown>;
+      if (function_id === 'state::get') {
+        const v = store.get(p['key'] as string);
+        return v !== undefined ? v : null;
+      }
+      if (function_id === 'state::set') {
+        const v = p['value'];
+        if (v === null || v === undefined) {
+          store.delete(p['key'] as string);
+        } else {
+          store.set(p['key'] as string, v);
+        }
+        return { ok: true };
+      }
+      if (function_id === 'state::update') {
+        // Simulate the stateUpdate wrapper's error path: backend failed,
+        // wrapper swallowed and returned null.
+        return null;
+      }
+      return null;
+    }),
+  };
+  return { iii: iii as unknown as Parameters<typeof acquireLease>[0], store };
+}
+
+describe('acquireLease wire shape', () => {
+  it('sends state::update with path: "" (root) on the set op', async () => {
+    // Regression: the engine UpdateOp::Set requires a path field
+    // (FieldPath; "" = root). A previous version of the lease shipped
+    // ops without `path`, the engine failed to deserialize, the wrapper
+    // returned null, and every /compact bailed in production.
+    const captured: Array<{ type: string; path?: unknown; value?: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+          const p = payload as Record<string, unknown>;
+          if (function_id === 'state::get') return null;
+          if (function_id === 'state::update') {
+            const ops = (p['ops'] ?? []) as Array<{
+              type: string;
+              path?: unknown;
+              value?: unknown;
+            }>;
+            for (const op of ops) captured.push(op);
+            return { old_value: null, new_value: { dummy: true } };
+          }
+          return null;
+        },
+      ),
+    };
+    const nonce = await acquireLease(
+      iii as unknown as Parameters<typeof acquireLease>[0],
+      'wireshape-sid',
+      'compaction',
+    );
+    expect(nonce).not.toBeNull();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.type).toBe('set');
+    expect(captured[0]?.path).toBe('');
+    expect(captured[0]?.value).toMatchObject({ nonce, ts: expect.any(Number) });
+  });
+});
+
+describe('acquireLease state-store failures', () => {
+  it('returns null when state::update fails (does not falsely claim the lease)', async () => {
+    const { iii } = makeFailingUpdateIii();
+    const got = await acquireLease(iii, 'failsid', 'compaction');
+    expect(got).toBeNull();
+  });
+
+  it('still returns null for every concurrent caller during an outage', async () => {
+    const { iii } = makeFailingUpdateIii();
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => acquireLease(iii, 'failsid-many', 'compaction')),
+    );
+    expect(results.every((r) => r === null)).toBe(true);
+  });
+});
+
+describe('acquireLease concurrency', () => {
+  it('lets exactly one of two concurrent acquirers win even with write latency', async () => {
+    const { iii } = makeRacyStateIii(10);
+    const results = await Promise.all([
+      acquireLease(iii, 'race-sid', 'compaction'),
+      acquireLease(iii, 'race-sid', 'compaction'),
+    ]);
+    const winners = results.filter((r) => r !== null);
+    expect(winners.length).toBe(1);
+  });
+
+  it('lets exactly one of many concurrent acquirers win', async () => {
+    const { iii } = makeRacyStateIii(10);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => acquireLease(iii, 'race-sid-multi', 'compaction')),
+    );
+    const winners = results.filter((r) => r !== null);
+    expect(winners.length).toBe(1);
   });
 });
