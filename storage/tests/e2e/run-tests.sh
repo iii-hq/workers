@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E orchestrator for the storage worker, modelled on
-# iii-database/tests/e2e/run-tests.sh. Builds the worker binary, starts the
+# database/tests/e2e/run-tests.sh. Builds the worker binary, starts the
 # engine, launches the TS harness, greps for the HARNESS_DONE sentinel,
 # pretty-prints the report, and propagates pass/fail as the exit code.
 #

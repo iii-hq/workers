@@ -14,7 +14,7 @@ asset for the host from the workers registry API.
 |---|---|---|
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
 | [`harness-node`](harness-node/) | Node | TS port of the iii harness stack — bundles `harness`, `turn-orchestrator`, `approval-gate`, `session`, `hook-fanout`, `auth-credentials`, `models-catalog`, `provider-anthropic`, `provider-openai`, `llm-budget`, and `context-compaction` as one pnpm monorepo. See [`harness-node/README.md`](harness-node/README.md). |
-| [`iii-database`](iii-database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
+| [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`iii-lsp-vscode`](iii-lsp-vscode/) | Node | VS Code extension that embeds `iii-lsp`. |
