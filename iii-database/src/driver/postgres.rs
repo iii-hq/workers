@@ -693,7 +693,7 @@ mod tests {
         let u = url()?;
         let tls = crate::config::TlsConfig {
             mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+            ..Default::default()
         };
         Some(
             PostgresPool::new(&u, &PoolConfig::default(), &tls)

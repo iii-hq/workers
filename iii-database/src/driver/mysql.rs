@@ -343,7 +343,7 @@ mod tests {
     async fn pool() -> Option<MysqlPool> {
         let tls = crate::config::TlsConfig {
             mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+            ..Default::default()
         };
         Some(MysqlPool::new(&url()?, &PoolConfig::default(), &tls).unwrap())
     }

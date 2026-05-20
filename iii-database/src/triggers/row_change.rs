@@ -382,7 +382,7 @@ mod tests {
         };
         let tls = crate::config::TlsConfig {
             mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+            ..Default::default()
         };
         let mut client = connect_for_setup(&u, &tls).await.unwrap();
         // Cleanup from prior run

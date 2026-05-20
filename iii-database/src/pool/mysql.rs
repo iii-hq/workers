@@ -60,20 +60,23 @@ impl MysqlPool {
         match tokio::time::timeout(self.acquire_timeout, fut).await {
             Ok(Ok(conn)) => Ok(conn),
             Ok(Err(e)) => {
+                let class = classify_mysql_error(&e);
                 // `mysql_async::Error::Display` can echo the server address,
                 // username, and other connection details. Log the full error
-                // operator-side via tracing; surface a generic message in
-                // the RPC reply so untrusted callers don't see infra details.
+                // operator-side via tracing; surface a generic message plus
+                // a coarse class hint in the RPC reply so untrusted callers
+                // can self-triage without seeing infra details.
                 tracing::warn!(
                     driver = "mysql",
                     db = %db_name,
+                    class,
                     error = ?e,
                     "pool acquire failed"
                 );
                 Err(DbError::DriverError {
                     driver: "mysql".into(),
                     code: None,
-                    message: "pool connection failed; check server availability".into(),
+                    message: format!("pool connection failed ({class})"),
                     failed_index: None,
                 })
             }
@@ -85,9 +88,38 @@ impl MysqlPool {
     }
 }
 
+/// Classify a `mysql_async::Error` into a coarse hint word for the RPC
+/// reply. Same closed set as the postgres classifier — `tls`, `auth`,
+/// `network`, `server-policy`, or `unknown` — and the same redaction
+/// contract (no host/userinfo/db ever appears in the returned word).
+///
+/// `mysql_async::Error` is a public exhaustive enum, so this is a
+/// straight `match` — no `Debug`-string sniffing required.
+fn classify_mysql_error(err: &mysql_async::Error) -> &'static str {
+    use mysql_async::{DriverError, Error, IoError};
+    match err {
+        // TLS handshake / cert chain failure (gated on the `rustls-tls`
+        // feature that we already enable in Cargo.toml).
+        Error::Io(IoError::Tls(_)) => "tls",
+        // TCP refuse, DNS, route, peer reset, etc.
+        Error::Io(IoError::Io(_)) => "network",
+        // Server-side rejections by error code. The codes here cover the
+        // standard auth surface (access denied, host blocked, bad SSL).
+        // Everything else from the server (max_connections, replication
+        // lag, etc.) lands under server-policy.
+        Error::Server(s) if matches!(s.code, 1045 | 1129 | 1130 | 1156 | 1251 | 1698) => "auth",
+        Error::Server(_) => "server-policy",
+        Error::Driver(DriverError::ConnectionClosed) => "network",
+        // `Url(_)` shouldn't happen here — pool construction already
+        // parsed the URL via `Opts::from_url`. Classify defensively.
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{TlsConfig, TlsMode};
 
     fn url() -> Option<String> {
         std::env::var("TEST_MYSQL_URL").ok()
@@ -97,9 +129,9 @@ mod tests {
     async fn mysql_pool_acquires() {
         let Some(u) = url() else { return };
         // Local docker mysql in tests is plaintext; explicitly disable TLS.
-        let tls = crate::config::TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+        let tls = TlsConfig {
+            mode: TlsMode::Disable,
+            ..Default::default()
         };
         let pool = MysqlPool::new(&u, &PoolConfig::default(), &tls).unwrap();
         let mut conn = pool.acquire().await.unwrap();
@@ -113,15 +145,16 @@ mod tests {
         // Hits a port that nothing listens on so mysql_async surfaces a
         // connect error — the non-Timeout path that previously echoed the
         // underlying error verbatim. Asserts the RPC body uses the generic
-        // message and does not leak userinfo/host fragments.
+        // message, carries the `(network)` class hint, and does not leak
+        // userinfo/host fragments.
         let cfg = PoolConfig {
             max: 1,
             idle_timeout_ms: 1_000,
             acquire_timeout_ms: 500,
         };
-        let tls = crate::config::TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+        let tls = TlsConfig {
+            mode: TlsMode::Disable,
+            ..Default::default()
         };
         let url = "mysql://leaky_user:leaky_pass@127.0.0.1:1/some_db";
         let pool = MysqlPool::new(url, &cfg, &tls).unwrap();
@@ -131,11 +164,38 @@ mod tests {
             body.contains("pool connection failed"),
             "expected generic message; got: {body}"
         );
+        assert!(
+            body.contains("(network)"),
+            "expected (network) class hint for TCP-refused port 1; got: {body}"
+        );
         for forbidden in ["leaky_user", "leaky_pass", "some_db"] {
             assert!(
                 !body.contains(forbidden),
                 "leaked `{forbidden}` in RPC body: {body}"
             );
         }
+    }
+
+    /// Unit-check the variants of `classify_mysql_error` we can construct
+    /// without a live server. `mysql_async::Error` is public so each branch
+    /// is exercised directly; covers the contract that auth maps to "auth"
+    /// and other server errors map to "server-policy".
+    #[test]
+    fn classify_mysql_error_branches() {
+        use mysql_async::{Error, ServerError};
+        // 1045 = ER_ACCESS_DENIED_ERROR — the canonical "wrong password".
+        let auth = Error::Server(ServerError {
+            code: 1045,
+            message: "Access denied".into(),
+            state: "28000".into(),
+        });
+        assert_eq!(classify_mysql_error(&auth), "auth");
+        // 1040 = ER_CON_COUNT_ERROR ("too many connections") — server-policy.
+        let policy = Error::Server(ServerError {
+            code: 1040,
+            message: "Too many connections".into(),
+            state: "08004".into(),
+        });
+        assert_eq!(classify_mysql_error(&policy), "server-policy");
     }
 }
