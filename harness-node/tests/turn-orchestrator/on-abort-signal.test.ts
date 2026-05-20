@@ -77,7 +77,7 @@ describe('isAbortSignalWrite condition', () => {
       isAbortSignalWrite({
         event_type: 'state:updated',
         scope: 'agent',
-        key: 'harness/cwd/abc/last_session_id',
+        key: 'harness/index/abc/last_session_id',
         old_value: null,
         new_value: 'sess-1',
         message_type: 'state',

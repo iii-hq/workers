@@ -8,8 +8,6 @@ import type { AgentMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 import {
   type TurnStateRecord,
-  cwdIndexKey,
-  cwdKey,
   functionSchemasKey,
   lastSessionTreeLenKey,
   messagesKey,
@@ -141,14 +139,6 @@ export async function loadRunRequest(
 ): Promise<Record<string, unknown>> {
   const v = await stateGet(iii, runRequestKey(session_id));
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-}
-
-export async function saveCwd(iii: ISdk, session_id: string, cwd: string): Promise<void> {
-  await stateSet(iii, cwdKey(session_id), cwd);
-}
-
-export async function saveCwdIndex(iii: ISdk, cwd_hash: string, session_id: string): Promise<void> {
-  await stateSet(iii, cwdIndexKey(cwd_hash), session_id);
 }
 
 export async function loadSandboxId(iii: ISdk, session_id: string): Promise<string | null> {

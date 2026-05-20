@@ -76,14 +76,13 @@ export async function handleProvisioning(
 
   const overrideRaw = request.system_prompt;
   const override = typeof overrideRaw === 'string' && overrideRaw.length > 0 ? overrideRaw : null;
-  const cwd = typeof request.cwd === 'string' ? (request.cwd as string) : null;
   const mode = asMode(request.mode);
 
   const [skillsIndex, bodies] = await Promise.all([
     fetchSkillsIndex(iii),
     fetchDefaultSkills(iii, cfg.system_default_skills),
   ]);
-  const prompt = buildSystemPrompt(bodies, cwd, override, mode, skillsIndex);
+  const prompt = buildSystemPrompt(bodies, null, override, mode, skillsIndex);
 
   const updated = { ...request, system_prompt: prompt };
   await persistence.saveRunRequest(iii, rec.session_id, updated);

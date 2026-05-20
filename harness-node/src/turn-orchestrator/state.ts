@@ -67,8 +67,6 @@ export function isTerminal(rec: TurnStateRecord): boolean {
 export const messagesKey = (sid: string) => `session/${sid}/messages`;
 export const turnStateKey = (sid: string) => `session/${sid}/turn_state`;
 export const runRequestKey = (sid: string) => `session/${sid}/run_request`;
-export const cwdKey = (sid: string) => `session/${sid}/cwd`;
-export const cwdIndexKey = (hash: string) => `harness/cwd/${hash}/last_session_id`;
 export const sandboxIdKey = (sid: string) => `session/${sid}/sandbox_id`;
 export const functionSchemasKey = (sid: string) => `session/${sid}/function_schemas`;
 export const toolSchemasKey = (sid: string) => `session/${sid}/tool_schemas`;

@@ -8,7 +8,6 @@ engine_url: "ws://127.0.0.1:49134"
 permissions_path: "./iii-permissions.yaml"
 
 # turn-orchestrator
-sync_default_timeout_ms: 120000
 system_default_skills:
   - "iii://iii-directory/index"
 

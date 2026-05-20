@@ -21,7 +21,6 @@ rules:
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
-  - '!run::start_and_wait'
   - '!router::stream_assistant'
   - '!router::abort'
 

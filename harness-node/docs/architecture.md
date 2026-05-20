@@ -166,7 +166,7 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `policy::check_permissions`, `hook-fanout::publish_collect`, `state::set`,
 `state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
 `auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
-`oauth::openai-codex::login`, `run::start`, `run::start_and_wait`,
+`oauth::openai-codex::login`, `run::start`,
 `router::stream_assistant`, `router::abort`.
 
 Bare-string allow rules: `state::get`, `state::list`,

@@ -412,7 +412,6 @@ describe('shipped iii-permissions.yaml', () => {
     'auth::set_token',
     'auth::delete_token',
     'run::start',
-    'run::start_and_wait',
     'router::stream_assistant',
     'router::abort',
   ];
