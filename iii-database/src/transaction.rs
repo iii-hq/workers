@@ -236,6 +236,12 @@ impl TxRegistry {
     pub async fn len(&self) -> usize {
         self.inner.read().await.len()
     }
+
+    /// Whether the registry currently tracks no transactions. Test helper.
+    #[cfg(test)]
+    pub async fn is_empty(&self) -> bool {
+        self.inner.read().await.is_empty()
+    }
 }
 
 /// Map `DriverKind` to the OTel `db.system` semantic-convention value.
