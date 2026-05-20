@@ -184,6 +184,12 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: [pre-build, matrix, web-build]
+    # `web-build` is gated on `inputs.web_bundle`, so it is skipped for any
+    # worker without a `web/package.json` (database, shell, mcp, …). GitHub
+    # Actions' default `success()` gate treats a skipped need as "not
+    # succeeded", which would cascade-skip every matrix shard and leak
+    # downstream as an empty GitHub Release — see #66 (database/v0.1.0).
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
