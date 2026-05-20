@@ -5,7 +5,7 @@ functions (`shell::exec`, `shell::exec_bg`, `shell::kill`, `shell::status`,
 `shell::list`), every safety guardrail (allowlist, denylist, timeout, output
 truncation, env scrubbing), and the background-job lifecycle in one command.
 
-Modeled on `iii-database/tests/e2e/`.
+Modeled on `database/tests/e2e/`.
 
 ## Prerequisites
 

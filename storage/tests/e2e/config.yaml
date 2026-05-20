@@ -8,7 +8,7 @@
 # The storage worker config is inlined under its worker entry. The
 # engine serializes this `config:` value to a temp YAML and threads
 # `--config <path>` through to the spawned binary (same delivery path
-# iii-database uses for its e2e config).
+# database uses for its e2e config).
 #
 # Triggers are registered DYNAMICALLY by the harness via the SDK
 # (`registerTrigger` in runner.ts) so the harness can route dispatches to

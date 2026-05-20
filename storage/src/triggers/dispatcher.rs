@@ -77,7 +77,7 @@ impl EventDispatcher for EngineDispatcher {
             .await
             {
                 Ok(Ok(value)) => {
-                    // Match iii-database's contract: `null` from a void-returning
+                    // Match database's contract: `null` from a void-returning
                     // function counts as ack=true; otherwise the function may
                     // return `{ack: bool}` to control redelivery explicitly.
                     if value.is_null() {

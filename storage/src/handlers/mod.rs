@@ -31,7 +31,7 @@ impl AppState {
     }
 }
 
-/// JSON-string error body, mirroring iii-database's err_to_str.
+/// JSON-string error body, mirroring database's err_to_str.
 pub fn err_to_str(e: StorageError) -> String {
     e.to_wire_string()
 }

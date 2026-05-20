@@ -1,5 +1,5 @@
 //! Discriminated, stable error codes returned to the engine. Mirrors
-//! `iii-database/src/error.rs`. The `code` field is the contract; the rest
+//! `database/src/error.rs`. The `code` field is the contract; the rest
 //! is diagnostic.
 
 use crate::backend::BackendError;
@@ -77,7 +77,7 @@ pub enum StorageError {
 
 impl StorageError {
     /// Convert into the JSON string body that handlers return as their `Err`.
-    /// Mirrors `iii-database`'s `err_to_str`.
+    /// Mirrors `database`'s `err_to_str`.
     pub fn to_wire_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| {
             format!(
