@@ -261,7 +261,10 @@ mod tests {
         // every code in the auth/network/server-policy families used by
         // upstream falls in the 2-char prefixes we match on. This guards
         // against accidental table drift.
-        assert_eq!(&SqlState::INVALID_AUTHORIZATION_SPECIFICATION.code()[..2], "28");
+        assert_eq!(
+            &SqlState::INVALID_AUTHORIZATION_SPECIFICATION.code()[..2],
+            "28"
+        );
         assert_eq!(&SqlState::INVALID_PASSWORD.code()[..2], "28");
         assert_eq!(&SqlState::CONNECTION_EXCEPTION.code()[..2], "08");
     }
