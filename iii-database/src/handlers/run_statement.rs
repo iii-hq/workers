@@ -59,6 +59,8 @@ mod tests {
         AppState {
             pools: Arc::new(pools),
             handles: Arc::new(HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_sdk::Logger::new(),
         }
     }
 
@@ -73,6 +75,8 @@ mod tests {
         let st = AppState {
             pools: Arc::new(pools),
             handles: Arc::new(HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_sdk::Logger::new(),
         };
         (st, tmp)
     }

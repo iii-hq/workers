@@ -21,6 +21,10 @@ pub enum DbError {
     #[error("statement handle {handle_id} not found or expired")]
     StatementNotFound { handle_id: String },
 
+    #[serde(rename = "TRANSACTION_NOT_FOUND")]
+    #[error("transaction {transaction_id} not found, ended, or timed out")]
+    TransactionNotFound { transaction_id: String },
+
     #[serde(rename = "UNKNOWN_DB")]
     #[error("unknown db {db}")]
     UnknownDb { db: String },
@@ -86,6 +90,16 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "UNKNOWN_DB");
+    }
+
+    #[test]
+    fn transaction_not_found_serializes_with_stable_code() {
+        let e = DbError::TransactionNotFound {
+            transaction_id: "tx-123".into(),
+        };
+        let v: serde_json::Value = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "TRANSACTION_NOT_FOUND");
+        assert_eq!(v["transaction_id"], "tx-123");
     }
 
     #[test]

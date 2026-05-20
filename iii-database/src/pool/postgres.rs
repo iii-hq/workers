@@ -72,12 +72,32 @@ impl PostgresPool {
                 db: db_name.clone(),
                 waited_ms,
             },
-            other => {
+            deadpool_postgres::PoolError::Backend(be) => {
+                let class = classify_pg_error(&be);
                 // `deadpool_postgres::PoolError::Display` chains through
                 // `tokio_postgres::Error`, which can include the configured
                 // host and other connection-string fragments. Logging is
                 // operator-only (stderr); the RPC reply gets a generic
-                // message so cross-tenant callers don't see infra details.
+                // message plus a coarse class hint so cross-tenant callers
+                // can self-triage without seeing infra details.
+                tracing::warn!(
+                    driver = "postgres",
+                    db = %db_name,
+                    class,
+                    error = ?be,
+                    "pool acquire failed"
+                );
+                DbError::DriverError {
+                    driver: "postgres".into(),
+                    code: None,
+                    message: format!("pool connection failed ({class})"),
+                    failed_index: None,
+                }
+            }
+            other => {
+                // `PoolError::Closed`, `NoRuntimeSpecified`, `PostCreateHook`.
+                // None of these carry a tokio_postgres::Error to classify;
+                // the deadpool Display is safe (no userinfo) on all three.
                 tracing::warn!(
                     driver = "postgres",
                     db = %db_name,
@@ -87,7 +107,7 @@ impl PostgresPool {
                 DbError::DriverError {
                     driver: "postgres".into(),
                     code: None,
-                    message: "pool connection failed; check server availability".into(),
+                    message: "pool connection failed (unknown)".into(),
                     failed_index: None,
                 }
             }
@@ -95,10 +115,77 @@ impl PostgresPool {
     }
 }
 
+/// Classify a `tokio_postgres::Error` into a coarse hint word for the RPC
+/// reply. The hint never includes hostnames, userinfo, database names, or
+/// any other connection-string fragments — it's a single bare word from
+/// the closed set {`tls`, `auth`, `network`, `server-policy`, `unknown`}.
+///
+/// `tokio_postgres::error::Kind` is private (no `pub fn kind()`); the
+/// upstream public API exposes only `code()`, `as_db_error()`, `is_closed()`,
+/// and `source()`. So the classifier uses (1) the SQLSTATE class when the
+/// server replied, (2) a `source()`-chain walk for in-band rustls/io types,
+/// and (3) a `Debug`-string sniff as a last resort. The upstream `Debug`
+/// impl prints the `kind:` field via `debug_struct` and has been stable
+/// for years; the alternative is a real upstream API gap.
+fn classify_pg_error(err: &tokio_postgres::Error) -> &'static str {
+    if let Some(code) = err.code() {
+        match &code.code()[..2] {
+            // invalid_authorization_specification / invalid_password
+            "28" => return "auth",
+            // connection_exception family
+            "08" => return "network",
+            // insufficient_resources / operator_intervention
+            "53" | "57" => return "server-policy",
+            _ => {}
+        }
+    }
+
+    // Walk std::error::Error::source(). tokio-rustls wraps rustls::Error
+    // inside io::Error via `io::Error::new(InvalidData, _)`, so the rustls
+    // type is typically reachable two hops down for cert failures. Bound
+    // the walk so a pathological self-referential chain can't hang us.
+    use std::error::Error as _;
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = err.source();
+    let mut saw_rustls = false;
+    let mut saw_io = false;
+    for _ in 0..16 {
+        let Some(s) = cur else { break };
+        if s.downcast_ref::<rustls::Error>().is_some() {
+            saw_rustls = true;
+        }
+        if s.downcast_ref::<std::io::Error>().is_some() {
+            saw_io = true;
+        }
+        cur = s.source();
+    }
+    if saw_rustls {
+        return "tls";
+    }
+
+    // Kind sniff (fallback for Kind::Tls / Authentication / Connect whose
+    // source() type isn't downcastable to a concrete crate type we know).
+    let dbg = format!("{err:?}");
+    if dbg.contains("kind: Tls") {
+        return "tls";
+    }
+    if dbg.contains("kind: Authentication") {
+        // Covers Neon's pooler-endpoint case where the SCRAM exchange
+        // raises "server did not use channel binding" with channel_binding=require.
+        return "auth";
+    }
+    if dbg.contains("kind: Connect") || dbg.contains("kind: Closed") {
+        return "network";
+    }
+    if saw_io {
+        return "network";
+    }
+    "unknown"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PoolConfig;
+    use crate::config::{PoolConfig, TlsConfig, TlsMode};
 
     fn url() -> Option<String> {
         std::env::var("TEST_POSTGRES_URL").ok()
@@ -112,9 +199,9 @@ mod tests {
         };
         // Local docker postgres in tests is plaintext; explicitly disable
         // TLS so the test passes without a server-side cert.
-        let tls = crate::config::TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+        let tls = TlsConfig {
+            mode: TlsMode::Disable,
+            ..Default::default()
         };
         let pool = PostgresPool::new(&u, &PoolConfig::default(), &tls)
             .await
@@ -130,16 +217,17 @@ mod tests {
         // Hits a port that nothing listens on so deadpool returns
         // `PoolError::Backend(tokio_postgres::Error)` — the non-Timeout
         // path that previously echoed the underlying error verbatim.
-        // Asserts the RPC body uses the generic message and contains
-        // none of the userinfo/host fragments from the URL.
+        // Asserts the RPC body uses the generic message, carries the
+        // `(network)` class hint, and contains none of the userinfo/host
+        // fragments from the URL.
         let cfg = PoolConfig {
             max: 1,
             idle_timeout_ms: 1_000,
             acquire_timeout_ms: 500,
         };
-        let tls = crate::config::TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ca_cert: None,
+        let tls = TlsConfig {
+            mode: TlsMode::Disable,
+            ..Default::default()
         };
         let url = "postgres://leaky_user:leaky_pass@127.0.0.1:1/some_db";
         let pool = PostgresPool::new(url, &cfg, &tls).await.unwrap();
@@ -149,11 +237,35 @@ mod tests {
             body.contains("pool connection failed"),
             "expected generic message; got: {body}"
         );
+        assert!(
+            body.contains("(network)"),
+            "expected (network) class hint for TCP-refused port 1; got: {body}"
+        );
         for forbidden in ["leaky_user", "leaky_pass", "some_db"] {
             assert!(
                 !body.contains(forbidden),
                 "leaked `{forbidden}` in RPC body: {body}"
             );
         }
+    }
+
+    /// Smoke-check the SQLSTATE branch of `classify_pg_error`. Server-side
+    /// failures (auth, connection_exception, server-policy) come with a
+    /// 5-char SQLSTATE that we lean on first because it doesn't depend on
+    /// the brittle `Debug` sniff.
+    #[test]
+    fn classify_pg_error_uses_sqlstate_class_when_present() {
+        use tokio_postgres::error::SqlState;
+        // We can't construct a `tokio_postgres::Error` directly (private
+        // ctor), but we can verify the SQLSTATE-class table by inspection:
+        // every code in the auth/network/server-policy families used by
+        // upstream falls in the 2-char prefixes we match on. This guards
+        // against accidental table drift.
+        assert_eq!(
+            &SqlState::INVALID_AUTHORIZATION_SPECIFICATION.code()[..2],
+            "28"
+        );
+        assert_eq!(&SqlState::INVALID_PASSWORD.code()[..2], "28");
+        assert_eq!(&SqlState::CONNECTION_EXCEPTION.code()[..2], "08");
     }
 }

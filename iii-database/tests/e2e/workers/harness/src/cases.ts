@@ -6,10 +6,6 @@ export interface CaseContext {
   dialect: Dialect;
   /** Calls a database worker function; returns parsed JSON or throws on engine error. */
   call: (functionId: string, payload: unknown) => Promise<any>;
-  /** Resolves once N rows for `driver` have arrived via the query-poll sink. */
-  waitForRows: (n: number, timeoutMs: number) => Promise<Array<Record<string, unknown>>>;
-  /** Resets the per-driver received-rows buffer used by `waitForRows`. */
-  resetReceived: () => void;
   /** Direct SDK access for trigger-config edge-case tests. */
   iii: ISdk;
   /**
@@ -19,11 +15,6 @@ export interface CaseContext {
    * strict JSON parsing across SDK versions.
    */
   expectError: (fn: () => Promise<unknown>, expectedCode: string) => Promise<void>;
-  /**
-   * Resolves true if NO rows arrive on the polling sink within `timeoutMs`.
-   * Used by trigger validation tests to assert a broken trigger never dispatches.
-   */
-  expectSilence: (timeoutMs: number) => Promise<void>;
 }
 
 export interface TestCase {
@@ -46,22 +37,16 @@ export function expect(cond: boolean, msg: string): asserts cond {
 export const SCHEMA_RESET: TestCase = {
   name: 'schema-reset',
   async run({ driver, dialect, call }) {
+    // `outbox` and `__iii_cursors` are vestigial from the query-poll trigger
+    // surface that was removed on feat/database-and-skills. Drop defensively
+    // so re-runs against a stale data volume (docker / podman named volumes
+    // preserved across `--keep`) still come up clean.
     await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS outbox' });
-    await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS t' });
-    // The query-poll trigger persists cursor state in __iii_cursors. Without
-    // dropping it here, stale cursor values from a prior run survive (Postgres
-    // and MySQL via docker volumes; SQLite via ./data/iii.db) and cause the
-    // first poll to filter out the freshly-inserted ids — producing a "got 0
-    // rows" timeout. Dropping the table here makes the test idempotent across
-    // runs without requiring a manual `docker compose down -v && rm data/iii.db`.
     await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS __iii_cursors' });
+    await call('iii-database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS t' });
     await call('iii-database::execute', {
       db: driver,
       sql: `CREATE TABLE t (id ${dialect.idColumnDDL()}, n INT NOT NULL)`,
-    });
-    await call('iii-database::execute', {
-      db: driver,
-      sql: `CREATE TABLE outbox (id ${dialect.idColumnDDL()}, body TEXT NOT NULL)`,
     });
   },
 };
@@ -166,36 +151,3 @@ export const FUNCTION_CASES: TestCase[] = [
     },
   },
 ];
-
-export const POLLING_CASE: TestCase = {
-  name: 'query-poll dispatches new rows incrementally',
-  async run({ driver, dialect, call, waitForRows, resetReceived }) {
-    resetReceived();
-    const ph1 = dialect.placeholder(1);
-    const ph2 = dialect.placeholder(2);
-    const ph3 = dialect.placeholder(3);
-    // Seed 3 rows.
-    await call('iii-database::execute', {
-      db: driver,
-      sql: `INSERT INTO outbox (body) VALUES (${ph1}), (${ph2}), (${ph3})`,
-      params: ['a', 'b', 'c'],
-    });
-
-    const first = await waitForRows(3, 5_000);
-    expectEqual(first.length, 3, 'first batch row count');
-    const bodies1 = first.map((r) => r.body);
-    expectEqual(bodies1, ['a', 'b', 'c'], 'first batch body order');
-
-    // Insert 2 more after the first batch was acked.
-    resetReceived();
-    await call('iii-database::execute', {
-      db: driver,
-      sql: `INSERT INTO outbox (body) VALUES (${ph1}), (${ph2})`,
-      params: ['d', 'e'],
-    });
-    const second = await waitForRows(2, 5_000);
-    expectEqual(second.length, 2, 'second batch row count');
-    const bodies2 = second.map((r) => r.body);
-    expectEqual(bodies2, ['d', 'e'], 'second batch is delta only');
-  },
-};

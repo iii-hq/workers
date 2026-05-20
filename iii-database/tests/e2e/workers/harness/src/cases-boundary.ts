@@ -4,7 +4,7 @@ import { expect, expectEqual } from './cases.ts';
 /**
  * Boundary-value cases targeting type encoding, NULL handling, and string
  * round-trip. Each test creates and drops its own scratch table so it stays
- * independent of the shared `t` / `outbox` tables touched by the function suite.
+ * independent of the shared `t` table touched by the function suite.
  *
  * i64 boundary tests use inline SQL literals because JSON cannot carry an
  * exact i64 across all values (JS Number tops out at 2^53-1). The bug surface

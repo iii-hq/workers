@@ -3,16 +3,24 @@ use clap::Parser;
 use iii_database::config::WorkerConfig;
 use iii_database::handle::HandleRegistry;
 use iii_database::handlers::{
+    begin_transaction::{self, BeginTxReq},
+    commit_transaction::{self, CommitTxReq},
     execute::{self, ExecuteReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
+    rollback_transaction::{self, RollbackTxReq},
     run_statement::{self, RunReq},
     transaction::{self, TxReq},
+    transaction_execute::{self, TxExecuteReq},
+    transaction_query::{self, TxQueryReq},
     AppState,
 };
 use iii_database::pool;
-use iii_database::triggers::handler::{QueryPollTrigger, RowChangeTrigger};
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction, RegisterTriggerType};
+use iii_database::transaction::TxRegistry;
+use iii_database::triggers::handler::RowChangeTrigger;
+use iii_sdk::{
+    register_worker, InitOptions, Logger, OtelConfig, RegisterFunction, RegisterTriggerType,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -63,12 +71,17 @@ async fn main() -> Result<()> {
     }
 
     let handles = Arc::new(HandleRegistry::new());
+    let transactions = TxRegistry::new();
+    let log = Logger::new();
     let state = AppState {
         pools: Arc::new(pools),
         handles: handles.clone(),
+        transactions: transactions.clone(),
+        log: log.clone(),
     };
 
     let _evictor = handles.spawn_evictor();
+    let _tx_watcher = transactions.spawn_timeout_watcher(log.clone());
 
     let iii = register_worker(
         &cli.url,
@@ -131,12 +144,78 @@ async fn main() -> Result<()> {
             .description("Run a sequence of statements atomically."),
         );
     }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::beginTransaction",
+                move |req: BeginTxReq| {
+                    let st = st.clone();
+                    async move { begin_transaction::handle(&st, req).await }
+                },
+            )
+            .description(
+                "Open an interactive transaction; returns a handle to use with \
+                 transactionQuery/transactionExecute/commitTransaction/rollbackTransaction.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::transactionQuery",
+                move |req: TxQueryReq| {
+                    let st = st.clone();
+                    async move { transaction_query::handle(&st, req).await }
+                },
+            )
+            .description("Run a read-only SQL query inside an interactive transaction."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::transactionExecute",
+                move |req: TxExecuteReq| {
+                    let st = st.clone();
+                    async move { transaction_execute::handle(&st, req).await }
+                },
+            )
+            .description(
+                "Run a write statement inside an interactive transaction. \
+                 BEGIN/COMMIT/ROLLBACK are rejected; use commit/rollbackTransaction.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::commitTransaction",
+                move |req: CommitTxReq| {
+                    let st = st.clone();
+                    async move { commit_transaction::handle(&st, req).await }
+                },
+            )
+            .description("Commit and finalize an interactive transaction."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            RegisterFunction::new_async(
+                "iii-database::rollbackTransaction",
+                move |req: RollbackTxReq| {
+                    let st = st.clone();
+                    async move { rollback_transaction::handle(&st, req).await }
+                },
+            )
+            .description("Rollback and finalize an interactive transaction."),
+        );
+    }
 
-    let _query_poll = iii.register_trigger_type(RegisterTriggerType::new(
-        "iii-database::query-poll",
-        "Polls a SQL query at a fixed interval and dispatches new rows since the last cursor.",
-        QueryPollTrigger::new(state.clone(), iii.clone()),
-    ));
     let _row_change = iii.register_trigger_type(RegisterTriggerType::new(
         "iii-database::row-change",
         "Postgres logical replication. Stubbed in v1.0 pending tokio-postgres replication API.",
@@ -144,7 +223,7 @@ async fn main() -> Result<()> {
     ));
 
     tracing::info!(
-        "iii-database worker registered 5 functions and 2 trigger types, waiting for invocations"
+        "iii-database worker registered 10 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("iii-database worker shutting down");
