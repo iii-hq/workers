@@ -141,21 +141,22 @@ cleanup() {
     wait "$ENGINE_PID" 2>/dev/null || true
   fi
 
-  # Belt-and-suspenders: rustfs is the storage worker's child (a grandchild
-  # of this script), so the original `pkill -P $$` never matched it. On
-  # Linux, storage's spawn now sets PR_SET_PDEATHSIG=SIGKILL and the kernel
-  # reaps rustfs automatically — this loop is a no-op. On macOS (no
-  # PDEATHSIG) or if storage was killed before the pre-exec hook ran, the
-  # snapshot above is the actual safety net.
-  #
-  # SIGKILL, not SIGTERM: rustfs's graceful-shutdown handler exceeds the
-  # SIGINT script-test's 2s post-kill window. By the time we get here the
-  # engine is already dead and any chance of clean flush is gone — there
-  # is nothing to negotiate, so go straight to KILL.
+  # Belt-and-suspenders #1: SIGKILL the rustfs PIDs we snapshotted. This
+  # is the surgical path that only touches processes we know are ours.
   local pid
   for pid in $rustfs_pids; do
     kill -KILL "$pid" 2>/dev/null || true
   done
+
+  # Belt-and-suspenders #2: in CI the iii engine has been observed to
+  # spawn storage in a way that defeats the descendant walk above
+  # (process group / setsid / etc — the precise mechanism lives outside
+  # this repo and shouldn't be load-bearing here). Independent of how
+  # the tree is laid out, any rustfs process must be one we just spawned
+  # — we only ever run one sidecar per test, and CI is single-user. Use
+  # `-x` to match the exact comm name so we don't pick up processes
+  # whose cmdline incidentally mentions "rustfs".
+  pkill -KILL -x rustfs 2>/dev/null || true
 
   if [[ "$NEEDS_DOCKER" -eq 1 && "$KEEP" -eq 0 ]]; then
     (cd "$ROOT_DIR" && docker compose --profile cloud down -v --remove-orphans 2>/dev/null) || true
