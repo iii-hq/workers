@@ -6,6 +6,7 @@ on:
       - 'acp/v*'
       - 'console/v*'
       - 'database/v*'
+      - 'harness-node/v*'
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
@@ -146,11 +147,29 @@ jobs:
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
+  # Bundle path: build a single-file archive (Node/Python), upload
+  # as a GitHub Release asset for `_publish-registry.yml` to resolve.
+  # ──────────────────────────────────────────────────────────────
+  bundle-build:
+    name: Bundle build
+    needs: [setup, create-release]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.deploy == 'bundle' }}
+    uses: ./.github/workflows/_bundle.yml
+    with:
+      worker: ${{ needs.setup.outputs.worker }}
+      version: ${{ needs.setup.outputs.version }}
+      language: ${{ needs.setup.outputs.language }}
+      tag_name: ${{ needs.setup.outputs.tag }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+    secrets: inherit
+
+  # ──────────────────────────────────────────────────────────────
   # Publish to the workers registry API.
   # ──────────────────────────────────────────────────────────────
   publish:
     name: Publish to registry
-    needs: [setup, binary-build, container-build]
+    needs: [setup, binary-build, container-build, bundle-build]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
     uses: ./.github/workflows/_publish-registry.yml
     with:

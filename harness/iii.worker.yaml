@@ -1,0 +1,17 @@
+iii: v1
+name: harness
+language: node
+deploy: bundle
+manifest: package.json
+description: Meta-worker that composes the modular Node workers backing the iii chat surface.
+
+runtime:
+  kind: node
+
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  iii-state: "^0.11.0"
+  iii-stream: "^0.11.0"
+  iii-directory: "^0.5.1"
