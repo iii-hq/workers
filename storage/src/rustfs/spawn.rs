@@ -116,6 +116,64 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
         // register the webhook target via rustfs's admin API AFTER the
         // receiver is up (see `local::register_webhook_target`).
     }
+
+    // Belt-and-suspenders against orphaned sidecars: if storage is SIGKILLed
+    // (or otherwise dies without running Drop), `kill_on_drop(true)` above is
+    // useless because Drop never runs. Ask the Linux kernel to deliver
+    // SIGKILL to rustfs the moment our (parent) thread dies, regardless of
+    // cause. This is what makes the e2e SIGINT-mid-run test deterministic:
+    // even if the iii engine force-kills the worker on shutdown timeout,
+    // rustfs is reaped automatically.
+    //
+    // Why SIGKILL and not SIGTERM: the normal-shutdown path in
+    // `spawn::shutdown` already does SIGTERM with a 10s grace window and
+    // falls back to SIGKILL. PDEATHSIG only fires when *that* path didn't
+    // run (panic, parent SIGKILLed, etc.) — we've already lost any chance
+    // of a graceful flush, so racing rustfs's slow SIGTERM handler against
+    // the e2e test's 2s post-SIGINT window is the wrong tradeoff.
+    //
+    // Caveat: PR_SET_PDEATHSIG fires when the calling thread dies, not the
+    // process. In tokio, `spawn` runs on whichever runtime thread tokio
+    // picks. If that worker thread ever exits before the runtime shuts
+    // down, rustfs would be reaped prematurely. In practice we only call
+    // this once during startup on a multi-thread runtime, and tokio doesn't
+    // tear down individual worker threads while the runtime is live, so
+    // the trigger condition equals "storage process is exiting" — exactly
+    // what we want.
+    // (tokio's `Command::pre_exec` is an inherent method; no need for
+    // the std::os::unix::process::CommandExt trait to be in scope.)
+    //
+    // Race-condition guard: PR_SET_PDEATHSIG fires only when the parent
+    // dies *after* the prctl call. If storage exits between fork() and
+    // the closure's prctl(), the death has already happened — the signal
+    // is silently lost and rustfs ends up unsupervised. Linux's prctl
+    // manpage explicitly recommends re-checking getppid() after the
+    // prctl call to detect this window. Capture storage's PID in the
+    // parent before forking and compare against the child's getppid()
+    // inside the closure; mismatch means the parent already died, so
+    // fail the spawn rather than launch an orphan rustfs.
+    #[cfg(target_os = "linux")]
+    {
+        let parent_pid = unsafe { libc::getpid() };
+        unsafe {
+            cmd.pre_exec(move || {
+                // SAFETY: prctl(PR_SET_PDEATHSIG, ...) and getppid() are
+                // async-signal-safe and documented to be callable from a
+                // pre_exec hook (between fork and exec). The signal value
+                // is a constant.
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent_pid {
+                    return Err(std::io::Error::other(
+                        "storage exited between fork and PR_SET_PDEATHSIG; refusing to orphan rustfs",
+                    ));
+                }
+                Ok(())
+            });
+        }
+    }
+
     let child = cmd
         .spawn()
         .map_err(|e| StorageError::LocalBackendBootFailed {

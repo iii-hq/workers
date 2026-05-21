@@ -100,10 +100,38 @@ for p in "${PROVIDER_LIST[@]}"; do
   if [[ "$p" != "local" ]]; then NEEDS_DOCKER=1; break; fi
 done
 
+# Recursively list descendant PIDs of the given pid. Used by cleanup() to
+# find rustfs, which is a *grandchild* of this script (script → iii →
+# storage → rustfs) and therefore invisible to a flat `pkill -P $$` filter.
+list_descendant_pids() {
+  local parent="$1" child
+  for child in $(pgrep -P "$parent" 2>/dev/null); do
+    echo "$child"
+    list_descendant_pids "$child"
+  done
+}
+
 ENGINE_PID=""
 HARNESS_PID=""
 cleanup() {
   local code=$?
+
+  # Snapshot rustfs descendants BEFORE we kill the engine. Once iii dies,
+  # storage gets reparented to init and rustfs leaves our subtree — a
+  # post-kill walk would come up empty and orphan the sidecar.
+  # NB: space-separated string instead of a bash array. macOS ships bash
+  # 3.2 by default, and `${arr[@]}` on an empty array trips `set -u` with
+  # "unbound variable" — which broke the `port already in use` early-exit
+  # path during local validation. Word-splitting on an empty string is
+  # a no-op, so this stays correct when there are no descendants yet.
+  local rustfs_pids=""
+  local desc_pid
+  for desc_pid in $(list_descendant_pids $$); do
+    if ps -p "$desc_pid" -o comm= 2>/dev/null | grep -qx rustfs; then
+      rustfs_pids="$rustfs_pids $desc_pid"
+    fi
+  done
+
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
@@ -112,8 +140,26 @@ cleanup() {
     kill "$ENGINE_PID" 2>/dev/null || true
     wait "$ENGINE_PID" 2>/dev/null || true
   fi
-  # Belt-and-suspenders: rustfs sometimes outlives the engine on SIGKILL paths.
-  pkill -P $$ -f rustfs 2>/dev/null || true
+
+  # Belt-and-suspenders #1: SIGKILL the rustfs PIDs we snapshotted. This
+  # is the surgical path that only touches processes we know are ours.
+  local pid
+  for pid in $rustfs_pids; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+
+  # Belt-and-suspenders #2: in CI the iii engine spawns storage in a way
+  # that takes it out of this script's pgrep -P subtree (likely setsid),
+  # so the descendant walk above misses it and PDEATHSIG's parent-thread
+  # tracking is similarly bypassed. Independent of how the tree is laid
+  # out, any rustfs process at this point must be one we just spawned —
+  # we only ever run one sidecar per test, and CI is single-user. Match
+  # by comm and by cmdline path so we cover both. After SIGKILL, rustfs
+  # may linger briefly as <defunct> until init reaps it; the script-test
+  # treats zombies as gone.
+  pkill -KILL -x rustfs 2>/dev/null || true
+  pkill -KILL -f 'target/release/rustfs' 2>/dev/null || true
+
   if [[ "$NEEDS_DOCKER" -eq 1 && "$KEEP" -eq 0 ]]; then
     (cd "$ROOT_DIR" && docker compose --profile cloud down -v --remove-orphans 2>/dev/null) || true
   fi
