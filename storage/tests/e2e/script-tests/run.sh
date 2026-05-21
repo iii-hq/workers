@@ -100,6 +100,14 @@ else
   fi
   if pgrep -f rustfs >/dev/null; then
     echo "  FAIL: rustfs still running after SIGINT"
+    # Diagnostic: run-tests.sh's output (including cleanup() diagnostic)
+    # was redirected to /tmp/sigint-test.log by the launcher above. Surface
+    # it here so CI can see what the cleanup trap actually did.
+    echo "  --- /tmp/sigint-test.log (last 100 lines) ---"
+    tail -100 /tmp/sigint-test.log 2>/dev/null || echo "  (log not present)"
+    echo "  --- live rustfs/storage/iii processes ---"
+    ps -eo pid,ppid,pgid,sid,stat,comm,args 2>/dev/null | awk 'NR==1 || /rustfs|storage|iii/' | head -20
+    echo "  --- end diagnostic ---"
     FAIL=$((FAIL+1))
   else
     echo "  PASS: rustfs gone"
