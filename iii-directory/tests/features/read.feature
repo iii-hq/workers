@@ -151,6 +151,16 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I get skill "https://example.com"
     Then the get fails with a message mentioning "iii://"
 
+  Scenario: directory::skills::get accepts a bare worker name as alias for <worker>/index
+    Given a skill file at "sandbox/index.md" with body:
+      """
+      # Sandbox
+      Worker overview.
+      """
+    When I get skill "sandbox"
+    Then the get response has id "sandbox/index"
+    And  the get response body contains "Worker overview."
+
   # ── invalid id rejection ─────────────────────────────────────────────
 
   Scenario: a skill file with uppercase in its name is skipped from the listing
