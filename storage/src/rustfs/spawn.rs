@@ -116,6 +116,37 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
         // register the webhook target via rustfs's admin API AFTER the
         // receiver is up (see `local::register_webhook_target`).
     }
+
+    // Belt-and-suspenders against orphaned sidecars: if storage is SIGKILLed
+    // (or otherwise dies without running Drop), `kill_on_drop(true)` above is
+    // useless because Drop never runs. Ask the Linux kernel to deliver
+    // SIGTERM to rustfs the moment our (parent) thread dies, regardless of
+    // cause. This is what makes the e2e SIGINT-mid-run test deterministic:
+    // even if the iii engine force-kills the worker on shutdown timeout,
+    // rustfs is reaped automatically.
+    //
+    // Caveat: PR_SET_PDEATHSIG fires when the calling thread dies, not the
+    // process. In tokio, `spawn` runs on whichever runtime thread tokio
+    // picks. If that worker thread ever exits before the runtime shuts
+    // down, rustfs would be reaped prematurely. In practice we only call
+    // this once during startup on a multi-thread runtime, and tokio doesn't
+    // tear down individual worker threads while the runtime is live, so
+    // the trigger condition equals "storage process is exiting" — exactly
+    // what we want.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // SAFETY: prctl(PR_SET_PDEATHSIG, ...) is async-signal-safe and
+            // documented to be callable from a pre_exec hook (between fork
+            // and exec). The signal value is a constant.
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     let child = cmd
         .spawn()
         .map_err(|e| StorageError::LocalBackendBootFailed {
