@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  appendMessage,
-  createSession,
-  updatePart,
-} from '../../src/session/tree/operations.js';
+import { appendMessage, createSession, updatePart } from '../../src/session/tree/operations.js';
 import { InMemoryStore } from '../../src/session/tree/store.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
 
@@ -29,7 +25,10 @@ describe('updatePart', () => {
     const sid = await createSession(store);
     const entryId = await appendMessage(store, sid, null, functionResultMsg('original output'));
 
-    await updatePart(store, sid, entryId, { output: 'compacted output', compacted_at: '2024-01-01' });
+    await updatePart(store, sid, entryId, {
+      output: 'compacted output',
+      compacted_at: '2024-01-01',
+    });
 
     const entries = await store.loadEntries(sid);
     const updated = entries.find((e) => e.id === entryId);

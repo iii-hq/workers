@@ -87,10 +87,7 @@ describe('turn-step reactive wake', () => {
     });
     await Promise.resolve();
 
-    expect(stepInvocations).toEqual([
-      { session_id: 'sess-b' },
-      { session_id: 'sess-b' },
-    ]);
+    expect(stepInvocations).toEqual([{ session_id: 'sess-b' }, { session_id: 'sess-b' }]);
   });
 
   it('parking in function_awaiting_approval does NOT wake', async () => {

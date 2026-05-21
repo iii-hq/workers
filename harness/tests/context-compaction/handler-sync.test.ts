@@ -12,7 +12,7 @@ function makeStubIii(triggerOverrides: Record<string, unknown> = {}): ISdk {
   return {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       // Honour explicit overrides first
-      if (Object.prototype.hasOwnProperty.call(triggerOverrides, function_id)) {
+      if (Object.hasOwn(triggerOverrides, function_id)) {
         const v = triggerOverrides[function_id];
         return typeof v === 'function' ? (v as () => unknown)() : v;
       }

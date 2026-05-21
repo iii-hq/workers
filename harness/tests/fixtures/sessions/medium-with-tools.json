@@ -43,7 +43,12 @@
         "role": "function_result",
         "function_call_id": "fc1",
         "function_id": "shell::fs::ls",
-        "content": [{ "type": "text", "text": "README.md\nsrc/\ntests/\npackage.json\ntsconfig.json\nvitest.config.ts\nbiome.json\npnpm-lock.yaml\nscripts/\ndocs/\n\nTotal: 10 items in the directory listing output here with sizes and permissions shown." }],
+        "content": [
+          {
+            "type": "text",
+            "text": "README.md\nsrc/\ntests/\npackage.json\ntsconfig.json\nvitest.config.ts\nbiome.json\npnpm-lock.yaml\nscripts/\ndocs/\n\nTotal: 10 items in the directory listing output here with sizes and permissions shown."
+          }
+        ],
         "details": {},
         "is_error": false,
         "timestamp": 1747600002000
@@ -56,7 +61,12 @@
       "type": "message",
       "message": {
         "role": "assistant",
-        "content": [{ "type": "text", "text": "Here are the files: README.md, src/, tests/, package.json, tsconfig.json, vitest.config.ts, biome.json, pnpm-lock.yaml, scripts/, docs/." }],
+        "content": [
+          {
+            "type": "text",
+            "text": "Here are the files: README.md, src/, tests/, package.json, tsconfig.json, vitest.config.ts, biome.json, pnpm-lock.yaml, scripts/, docs/."
+          }
+        ],
         "stop_reason": "end",
         "model": "claude-haiku-4-5",
         "provider": "anthropic",
@@ -105,7 +115,12 @@
         "role": "function_result",
         "function_call_id": "fc2",
         "function_id": "shell::fs::cat",
-        "content": [{ "type": "text", "text": "# Harness Node\n\nThis is the Node.js harness for the motia worker platform. It provides runtime support for executing worker functions, managing sessions, and handling context compaction for long-running conversations. The compaction system ensures that context windows are managed efficiently by summarizing older parts of a conversation while preserving recent context. It supports both synchronous and asynchronous compaction modes, with lease-based serialization to prevent concurrent compaction runs." }],
+        "content": [
+          {
+            "type": "text",
+            "text": "# Harness Node\n\nThis is the Node.js harness for the motia worker platform. It provides runtime support for executing worker functions, managing sessions, and handling context compaction for long-running conversations. The compaction system ensures that context windows are managed efficiently by summarizing older parts of a conversation while preserving recent context. It supports both synchronous and asynchronous compaction modes, with lease-based serialization to prevent concurrent compaction runs."
+          }
+        ],
         "details": {},
         "is_error": false,
         "timestamp": 1747600006000
@@ -118,7 +133,12 @@
       "type": "message",
       "message": {
         "role": "assistant",
-        "content": [{ "type": "text", "text": "The README describes the harness-node project — a Node.js runtime for motia workers with context compaction support." }],
+        "content": [
+          {
+            "type": "text",
+            "text": "The README describes the harness-node project — a Node.js runtime for motia workers with context compaction support."
+          }
+        ],
         "stop_reason": "end",
         "model": "claude-haiku-4-5",
         "provider": "anthropic",
@@ -167,7 +187,12 @@
         "role": "function_result",
         "function_call_id": "fc3",
         "function_id": "shell::run",
-        "content": [{ "type": "text", "text": "PASS tests/context-compaction/overflow.test.ts\nPASS tests/context-compaction/selection.test.ts\nPASS tests/context-compaction/lease.test.ts\nPASS tests/context-compaction/summarize.test.ts\nPASS tests/context-compaction/prune.test.ts\nPASS tests/context-compaction/replay.test.ts\nPASS tests/context-compaction/strip-media.test.ts\nPASS tests/context-compaction/template.test.ts\n\nTest Suites: 8 passed, 8 total\nTests: 42 passed, 42 total\nTime: 1.234s" }],
+        "content": [
+          {
+            "type": "text",
+            "text": "PASS tests/context-compaction/overflow.test.ts\nPASS tests/context-compaction/selection.test.ts\nPASS tests/context-compaction/lease.test.ts\nPASS tests/context-compaction/summarize.test.ts\nPASS tests/context-compaction/prune.test.ts\nPASS tests/context-compaction/replay.test.ts\nPASS tests/context-compaction/strip-media.test.ts\nPASS tests/context-compaction/template.test.ts\n\nTest Suites: 8 passed, 8 total\nTests: 42 passed, 42 total\nTime: 1.234s"
+          }
+        ],
         "details": {},
         "is_error": false,
         "timestamp": 1747600010000
@@ -180,7 +205,9 @@
       "type": "message",
       "message": {
         "role": "assistant",
-        "content": [{ "type": "text", "text": "All 42 tests passed across 8 test suites in 1.234 seconds." }],
+        "content": [
+          { "type": "text", "text": "All 42 tests passed across 8 test suites in 1.234 seconds." }
+        ],
         "stop_reason": "end",
         "model": "claude-haiku-4-5",
         "provider": "anthropic",
@@ -256,7 +283,9 @@
       "type": "message",
       "message": {
         "role": "user",
-        "content": [{ "type": "text", "text": "Great, can you look at the context-compaction source files?" }],
+        "content": [
+          { "type": "text", "text": "Great, can you look at the context-compaction source files?" }
+        ],
         "timestamp": 1747600016000
       }
     },
@@ -290,7 +319,12 @@
         "role": "function_result",
         "function_call_id": "fc5",
         "function_id": "shell::fs::ls",
-        "content": [{ "type": "text", "text": "config.ts\nhandler-async.ts\nhandler-sync.ts\nlease.ts\noverflow.ts\nprune.ts\nreplay.ts\nselection.ts\nstream-collect.ts\nstrip-media.ts\nsummarize.ts\ntemplate.ts\nregister.ts" }],
+        "content": [
+          {
+            "type": "text",
+            "text": "config.ts\nhandler-async.ts\nhandler-sync.ts\nlease.ts\noverflow.ts\nprune.ts\nreplay.ts\nselection.ts\nstream-collect.ts\nstrip-media.ts\nsummarize.ts\ntemplate.ts\nregister.ts"
+          }
+        ],
         "details": {},
         "is_error": false,
         "timestamp": 1747600018000
@@ -303,7 +337,12 @@
       "type": "message",
       "message": {
         "role": "assistant",
-        "content": [{ "type": "text", "text": "The context-compaction module contains 13 source files covering configuration, handlers, lease management, overflow detection, pruning, replay, selection, streaming, media stripping, summarization, template building, and function registration." }],
+        "content": [
+          {
+            "type": "text",
+            "text": "The context-compaction module contains 13 source files covering configuration, handlers, lease management, overflow detection, pruning, replay, selection, streaming, media stripping, summarization, template building, and function registration."
+          }
+        ],
         "stop_reason": "end",
         "model": "claude-haiku-4-5",
         "provider": "anthropic",

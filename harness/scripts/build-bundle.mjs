@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * Single-file ESM bundle for harness-node (`dist/bundle/index.mjs`).
  *
@@ -20,10 +21,10 @@
  * call `require("node:events")` etc. continue to work inside the ESM bundle.
  */
 
-import { build } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

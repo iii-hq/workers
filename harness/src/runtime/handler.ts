@@ -11,11 +11,7 @@
 export function unwrapBody(input: unknown): Record<string, unknown> {
   if (typeof input !== 'object' || input === null) return {};
   const obj = input as Record<string, unknown>;
-  if (
-    Object.prototype.hasOwnProperty.call(obj, 'body') &&
-    obj.body !== null &&
-    typeof obj.body === 'object'
-  ) {
+  if (Object.hasOwn(obj, 'body') && obj.body !== null && typeof obj.body === 'object') {
     return obj.body as Record<string, unknown>;
   }
   return obj;

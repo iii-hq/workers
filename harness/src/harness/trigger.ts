@@ -3,7 +3,7 @@
  *
  * Accepts `{ function_id, session_id?, message_id?, payload }` (or the same
  * fields at the top level over WS), calls `iii.trigger` for the inner
- * function, and returns `{ status_code, headers, body }`. 
+ * function, and returns `{ status_code, headers, body }`.
  *
  * console/web routes chat turns through this function instead of calling
  * `run::start` directly so `instrumentHandler` can read `session_id` and

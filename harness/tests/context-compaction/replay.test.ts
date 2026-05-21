@@ -44,7 +44,10 @@ describe('reinjectReplay', () => {
     const iii = { trigger } as unknown as Parameters<typeof reinjectReplay>[0];
     await reinjectReplay(iii, 'sid', user('q2'));
     expect(trigger).toHaveBeenCalledTimes(1);
-    const call = trigger.mock.calls[0]![0] as { function_id: string; payload: { session_id: string; message: { role: string } } };
+    const call = trigger.mock.calls[0]![0] as {
+      function_id: string;
+      payload: { session_id: string; message: { role: string } };
+    };
     expect(call.function_id).toBe('session-tree::append');
     expect(call.payload.session_id).toBe('sid');
     expect(call.payload.message.role).toBe('user');

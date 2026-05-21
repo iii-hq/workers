@@ -21,14 +21,12 @@ import type { ISdk } from '../../src/runtime/iii.js';
 // ISdk stub factory (mirrors handler-sync.test.ts)
 // ---------------------------------------------------------------------------
 
-function makeStubIii(
-  triggerOverrides: Record<string, unknown> = {},
-): ISdk {
+function makeStubIii(triggerOverrides: Record<string, unknown> = {}): ISdk {
   const stateStore = new Map<string, unknown>();
 
   return {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (Object.prototype.hasOwnProperty.call(triggerOverrides, function_id)) {
+      if (Object.hasOwn(triggerOverrides, function_id)) {
         const v = triggerOverrides[function_id];
         return typeof v === 'function' ? (v as () => unknown)() : v;
       }
@@ -200,37 +198,39 @@ describe('compact_session smoke', () => {
     });
 
     const iii = {
-      trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-        const p = (payload ?? {}) as Record<string, unknown>;
-        if (function_id === 'session-tree::messages') return { messages: [] };
-        if (function_id === 'session-tree::compactions') return { entries: [] };
-        if (function_id === 'models::get') {
-          return { context_window: 200_000, max_output_tokens: 4_096 };
-        }
-        if (function_id === 'state::get') {
-          const v = stateStore.get(p['key'] as string);
-          return v !== undefined ? v : null;
-        }
-        if (function_id === 'state::set') {
-          const v = p['value'];
-          if (v === null || v === undefined) stateStore.delete(p['key'] as string);
-          else stateStore.set(p['key'] as string, v);
-          return { ok: true };
-        }
-        if (function_id === 'state::update') {
-          const key = p['key'] as string;
-          const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
-          const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
-          let newValue: unknown = oldValue;
-          for (const op of ops) {
-            if (op.type === 'set') newValue = op.value;
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+          const p = (payload ?? {}) as Record<string, unknown>;
+          if (function_id === 'session-tree::messages') return { messages: [] };
+          if (function_id === 'session-tree::compactions') return { entries: [] };
+          if (function_id === 'models::get') {
+            return { context_window: 200_000, max_output_tokens: 4_096 };
           }
-          if (newValue === null || newValue === undefined) stateStore.delete(key);
-          else stateStore.set(key, newValue);
-          return { old_value: oldValue ?? null, new_value: newValue ?? null };
-        }
-        return null;
-      }),
+          if (function_id === 'state::get') {
+            const v = stateStore.get(p['key'] as string);
+            return v !== undefined ? v : null;
+          }
+          if (function_id === 'state::set') {
+            const v = p['value'];
+            if (v === null || v === undefined) stateStore.delete(p['key'] as string);
+            else stateStore.set(p['key'] as string, v);
+            return { ok: true };
+          }
+          if (function_id === 'state::update') {
+            const key = p['key'] as string;
+            const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+            const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+            let newValue: unknown = oldValue;
+            for (const op of ops) {
+              if (op.type === 'set') newValue = op.value;
+            }
+            if (newValue === null || newValue === undefined) stateStore.delete(key);
+            else stateStore.set(key, newValue);
+            return { old_value: oldValue ?? null, new_value: newValue ?? null };
+          }
+          return null;
+        },
+      ),
       registerFunction: vi.fn(),
       registerTrigger: vi.fn(),
       publish: vi.fn(),
@@ -247,34 +247,36 @@ describe('compact_session smoke', () => {
     // exists, an explicit model in the payload takes precedence.
     const stateStore = new Map<string, unknown>();
     const iii = {
-      trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-        const p = (payload ?? {}) as Record<string, unknown>;
-        if (function_id === 'session-tree::messages') return { messages: [] };
-        if (function_id === 'session-tree::compactions') return { entries: [] };
-        if (function_id === 'state::get') {
-          const v = stateStore.get(p['key'] as string);
-          return v !== undefined ? v : null;
-        }
-        if (function_id === 'state::set') {
-          const v = p['value'];
-          if (v === null || v === undefined) stateStore.delete(p['key'] as string);
-          else stateStore.set(p['key'] as string, v);
-          return { ok: true };
-        }
-        if (function_id === 'state::update') {
-          const key = p['key'] as string;
-          const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
-          const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
-          let newValue: unknown = oldValue;
-          for (const op of ops) {
-            if (op.type === 'set') newValue = op.value;
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+          const p = (payload ?? {}) as Record<string, unknown>;
+          if (function_id === 'session-tree::messages') return { messages: [] };
+          if (function_id === 'session-tree::compactions') return { entries: [] };
+          if (function_id === 'state::get') {
+            const v = stateStore.get(p['key'] as string);
+            return v !== undefined ? v : null;
           }
-          if (newValue === null || newValue === undefined) stateStore.delete(key);
-          else stateStore.set(key, newValue);
-          return { old_value: oldValue ?? null, new_value: newValue ?? null };
-        }
-        return null;
-      }),
+          if (function_id === 'state::set') {
+            const v = p['value'];
+            if (v === null || v === undefined) stateStore.delete(p['key'] as string);
+            else stateStore.set(p['key'] as string, v);
+            return { ok: true };
+          }
+          if (function_id === 'state::update') {
+            const key = p['key'] as string;
+            const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+            const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
+            let newValue: unknown = oldValue;
+            for (const op of ops) {
+              if (op.type === 'set') newValue = op.value;
+            }
+            if (newValue === null || newValue === undefined) stateStore.delete(key);
+            else stateStore.set(key, newValue);
+            return { old_value: oldValue ?? null, new_value: newValue ?? null };
+          }
+          return null;
+        },
+      ),
       registerFunction: vi.fn(),
       registerTrigger: vi.fn(),
       publish: vi.fn(),

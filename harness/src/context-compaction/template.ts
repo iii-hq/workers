@@ -40,10 +40,7 @@ Rules:
 - Preserve exact file paths, commands, error strings, and identifiers when known.
 - Do not mention the summary process or that context was compacted.`;
 
-export function buildPrompt(input: {
-  previousSummary?: string;
-  context: string[];
-}): string {
+export function buildPrompt(input: { previousSummary?: string; context: string[] }): string {
   const anchor = input.previousSummary
     ? [
         'Update the anchored summary below using the conversation history above.',

@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  extractEventPayload,
-  turnEndUsage,
-} from '../../src/context-compaction/handler-async.js';
+import { extractEventPayload, turnEndUsage } from '../../src/context-compaction/handler-async.js';
 
 describe('extractEventPayload', () => {
   it('handles camelCase envelope (event.data shape)', () => {

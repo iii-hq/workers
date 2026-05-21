@@ -1,10 +1,6 @@
 // tests/context-compaction/overflow.test.ts
 import { describe, expect, it } from 'vitest';
-import {
-  usable,
-  isOverflow,
-  preserveRecentBudget,
-} from '../../src/context-compaction/overflow.js';
+import { usable, isOverflow, preserveRecentBudget } from '../../src/context-compaction/overflow.js';
 
 const MODEL_INPUT_LIMITED = {
   id: 'm1',
