@@ -2,24 +2,19 @@
  * Embedded model seed loaded from `models.json`. Used both as the
  * sync-fallback catalog and as the bus-state seed when the engine's
  * `models:` prefix is empty.
+ *
+ * `models.json` is imported statically so esbuild can inline it into the
+ * single-file bundle (`dist/bundle/index.mjs`). The async signatures are
+ * preserved so callers (state.ts) don't need to change.
  */
 
-import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import modelsJson from './models.json' with { type: 'json' };
 import type { Model } from './types.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-let cached: Model[] | null = null;
+const EMBEDDED: readonly Model[] = (modelsJson as { models?: Model[] }).models ?? [];
 
 export async function loadEmbeddedCatalog(): Promise<Model[]> {
-  if (cached) return cached;
-  const text = await readFile(join(__dirname, 'models.json'), 'utf8');
-  const parsed = JSON.parse(text) as { models?: Model[] };
-  cached = parsed.models ?? [];
-  return cached;
+  return [...EMBEDDED];
 }
 
 export type ListFilter = {

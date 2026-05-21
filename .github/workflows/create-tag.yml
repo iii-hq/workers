@@ -11,6 +11,7 @@ on:
           - acp
           - console
           - database
+          - harness-node
           - iii-directory
           - iii-lsp
           - iii-lsp-vscode

@@ -65,7 +65,8 @@ def cmd_deploy_mode(args: argparse.Namespace) -> int:
 
     Decides how _publish-registry should start a local copy of the worker
     for interface collection. Output is one of:
-      release-binary  -> download from GitHub Release
+      release-binary  -> download binary tarball from GitHub Release
+      release-bundle  -> download bundle tar.gz from GitHub Release
       iii-add         -> `iii worker add ./<dir>` (worker is self-bootstrapping)
       cargo-run       -> `cargo run` from source
       unsupported     -> can't collect locally
@@ -85,6 +86,8 @@ def cmd_deploy_mode(args: argparse.Namespace) -> int:
 
     if m.deploy == "binary":
         print("release-binary")
+    elif m.deploy == "bundle":
+        print("release-bundle")
     elif has_scripts_start or has_runtime:
         print("iii-add")
     elif (m.language or "").lower() == "rust":

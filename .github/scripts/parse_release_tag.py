@@ -48,9 +48,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::{e}", file=sys.stderr)
         return 1
 
-    if wm.deploy not in ("binary", "image"):
+    if wm.deploy not in ("binary", "image", "bundle"):
         print(
-            f"::error::{worker}: deploy must be binary|image (got {wm.deploy!r})",
+            f"::error::{worker}: deploy must be binary|image|bundle (got {wm.deploy!r})",
             file=sys.stderr,
         )
         return 1

@@ -200,6 +200,7 @@ def build_payload(
     interface: dict[str, Any],
     binaries: dict[str, Any],
     image_tag: str,
+    bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = repo_root / worker
     meta = _read_yaml(root / "iii.worker.yaml") or {}
@@ -245,6 +246,19 @@ def build_payload(
         if not image_tag:
             raise ValueError("deploy=image requires image_tag")
         payload["image_tag"] = image_tag
+    elif deploy == "bundle":
+        # `PublishRequestBundle` requires both `archive_url` and `sha256`.
+        # See tmp/openapi.yaml#PublishRequestBundle (lines 286-347).
+        if not bundle:
+            raise ValueError("deploy=bundle requires non-empty bundle artefact")
+        archive_url = bundle.get("archive_url")
+        sha256 = bundle.get("sha256")
+        if not isinstance(archive_url, str) or not archive_url:
+            raise ValueError("deploy=bundle requires bundle.archive_url")
+        if not isinstance(sha256, str) or not sha256:
+            raise ValueError("deploy=bundle requires bundle.sha256")
+        payload["archive_url"] = archive_url
+        payload["sha256"] = sha256
     else:
         raise ValueError(f"unsupported deploy={deploy}")
 
@@ -256,10 +270,11 @@ def main() -> int:
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--registry-tag", default="latest")
-    parser.add_argument("--deploy", required=True, choices=["binary", "image"])
+    parser.add_argument("--deploy", required=True, choices=["binary", "image", "bundle"])
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
     parser.add_argument("--binaries-json", default="")
+    parser.add_argument("--bundle-json", default="")
     parser.add_argument("--image-tag", default="")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--out", default="payload.json")
@@ -269,6 +284,9 @@ def main() -> int:
     binaries = {}
     if args.binaries_json:
         binaries = json.loads(pathlib.Path(args.binaries_json).read_text(encoding="utf-8"))
+    bundle: dict[str, Any] | None = None
+    if args.bundle_json:
+        bundle = json.loads(pathlib.Path(args.bundle_json).read_text(encoding="utf-8"))
 
     payload = build_payload(
         repo_root=pathlib.Path(args.repo_root),
@@ -280,6 +298,7 @@ def main() -> int:
         interface=interface,
         binaries=binaries,
         image_tag=args.image_tag,
+        bundle=bundle,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))
