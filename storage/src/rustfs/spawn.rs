@@ -140,9 +140,10 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
     // tear down individual worker threads while the runtime is live, so
     // the trigger condition equals "storage process is exiting" — exactly
     // what we want.
+    // (tokio's `Command::pre_exec` is an inherent method; no need for
+    // the std::os::unix::process::CommandExt trait to be in scope.)
     #[cfg(target_os = "linux")]
     unsafe {
-        use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
             // SAFETY: prctl(PR_SET_PDEATHSIG, ...) is async-signal-safe and
             // documented to be callable from a pre_exec hook (between fork
