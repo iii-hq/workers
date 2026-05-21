@@ -120,10 +120,17 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
     // Belt-and-suspenders against orphaned sidecars: if storage is SIGKILLed
     // (or otherwise dies without running Drop), `kill_on_drop(true)` above is
     // useless because Drop never runs. Ask the Linux kernel to deliver
-    // SIGTERM to rustfs the moment our (parent) thread dies, regardless of
+    // SIGKILL to rustfs the moment our (parent) thread dies, regardless of
     // cause. This is what makes the e2e SIGINT-mid-run test deterministic:
     // even if the iii engine force-kills the worker on shutdown timeout,
     // rustfs is reaped automatically.
+    //
+    // Why SIGKILL and not SIGTERM: the normal-shutdown path in
+    // `spawn::shutdown` already does SIGTERM with a 10s grace window and
+    // falls back to SIGKILL. PDEATHSIG only fires when *that* path didn't
+    // run (panic, parent SIGKILLed, etc.) — we've already lost any chance
+    // of a graceful flush, so racing rustfs's slow SIGTERM handler against
+    // the e2e test's 2s post-SIGINT window is the wrong tradeoff.
     //
     // Caveat: PR_SET_PDEATHSIG fires when the calling thread dies, not the
     // process. In tokio, `spawn` runs on whichever runtime thread tokio
@@ -140,7 +147,7 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
             // SAFETY: prctl(PR_SET_PDEATHSIG, ...) is async-signal-safe and
             // documented to be callable from a pre_exec hook (between fork
             // and exec). The signal value is a constant.
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())

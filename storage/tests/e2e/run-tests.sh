@@ -143,13 +143,18 @@ cleanup() {
 
   # Belt-and-suspenders: rustfs is the storage worker's child (a grandchild
   # of this script), so the original `pkill -P $$` never matched it. On
-  # Linux, storage's spawn now sets PR_SET_PDEATHSIG and the kernel reaps
-  # rustfs automatically — this loop is a no-op. On macOS (no PDEATHSIG)
-  # or if storage was killed before pre_exec ran, the snapshot above is
-  # the actual safety net.
+  # Linux, storage's spawn now sets PR_SET_PDEATHSIG=SIGKILL and the kernel
+  # reaps rustfs automatically — this loop is a no-op. On macOS (no
+  # PDEATHSIG) or if storage was killed before the pre-exec hook ran, the
+  # snapshot above is the actual safety net.
+  #
+  # SIGKILL, not SIGTERM: rustfs's graceful-shutdown handler exceeds the
+  # SIGINT script-test's 2s post-kill window. By the time we get here the
+  # engine is already dead and any chance of clean flush is gone — there
+  # is nothing to negotiate, so go straight to KILL.
   local pid
   for pid in $rustfs_pids; do
-    kill "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
   done
 
   if [[ "$NEEDS_DOCKER" -eq 1 && "$KEEP" -eq 0 ]]; then
