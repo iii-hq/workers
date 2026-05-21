@@ -153,10 +153,20 @@ cleanup() {
   # (process group / setsid / etc — the precise mechanism lives outside
   # this repo and shouldn't be load-bearing here). Independent of how
   # the tree is laid out, any rustfs process must be one we just spawned
-  # — we only ever run one sidecar per test, and CI is single-user. Use
-  # `-x` to match the exact comm name so we don't pick up processes
-  # whose cmdline incidentally mentions "rustfs".
+  # — we only ever run one sidecar per test, and CI is single-user.
+  # Match on both comm name (-x rustfs) and full cmdline (-f rustfs)
+  # since the previous run showed `-x` alone wasn't sufficient (likely
+  # because rustfs sets its own thread name via prctl(PR_SET_NAME) and
+  # the leader's comm gets shadowed). `-f` catches any process whose
+  # cmdline mentions rustfs, which on a single-tenant CI runner can
+  # only be ours.
+  echo "[cleanup-diag] PID=$$ ENGINE_PID=$ENGINE_PID rustfs_pids='$rustfs_pids'" >&2
+  ps -eo pid,ppid,comm,args 2>/dev/null | awk '/rustfs|target\/release\/storage|iii/ && !/awk/' >&2 || true
   pkill -KILL -x rustfs 2>/dev/null || true
+  pkill -KILL -f 'target/release/rustfs' 2>/dev/null || true
+  pkill -KILL -f '/rustfs server ' 2>/dev/null || true
+  echo "[cleanup-diag] after pkill, remaining rustfs:" >&2
+  ps -eo pid,ppid,comm,args 2>/dev/null | awk '/rustfs/ && !/awk/' >&2 || true
 
   if [[ "$NEEDS_DOCKER" -eq 1 && "$KEEP" -eq 0 ]]; then
     (cd "$ROOT_DIR" && docker compose --profile cloud down -v --remove-orphans 2>/dev/null) || true
