@@ -13,7 +13,7 @@
  * can safely react.
  *
  * Mirror of the canonical pattern in
- * `harness-node/src/harness/fanout/sessions-poll.ts`.
+ * `harness/src/harness/fanout/sessions-poll.ts`.
  */
 
 import type { ISdk } from '../runtime/iii.js';

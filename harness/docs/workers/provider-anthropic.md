@@ -20,9 +20,9 @@ final `AssistantMessage`.
 
 Prompt-cache control blocks, tool definitions, and thinking-budget knobs
 are translated by
-[src/provider-anthropic/wire-messages.ts](harness-node/src/provider-anthropic/wire-messages.ts)
+[src/provider-anthropic/wire-messages.ts](harness/src/provider-anthropic/wire-messages.ts)
 and
-[src/provider-anthropic/wire-tools.ts](harness-node/src/provider-anthropic/wire-tools.ts)
+[src/provider-anthropic/wire-tools.ts](harness/src/provider-anthropic/wire-tools.ts)
 to match the API contract.
 
 ## Registered functions
@@ -37,12 +37,12 @@ None.
 ## State keys
 
 None. The worker is stateless beyond the in-process credential cache used
-by [src/provider-anthropic/cache.ts](harness-node/src/provider-anthropic/cache.ts).
+by [src/provider-anthropic/cache.ts](harness/src/provider-anthropic/cache.ts).
 
 ## Configuration
 
 From the `provider_anthropic` section of
-[config.yaml](harness-node/config.yaml):
+[config.yaml](harness/config.yaml):
 
 - `default_max_tokens` (default `8192`) — upper bound for the request's
   `max_tokens` field when the caller omits it.
@@ -52,7 +52,7 @@ From the `provider_anthropic` section of
 ## Dependencies
 
 From
-[src/provider-anthropic/iii.worker.yaml](harness-node/src/provider-anthropic/iii.worker.yaml):
+[src/provider-anthropic/iii.worker.yaml](harness/src/provider-anthropic/iii.worker.yaml):
 `auth-credentials ^0.2.0`. The worker also calls the SDK-provided
 `ChannelWriter` injected into the `writer_ref` field of the stream input.
 
@@ -60,16 +60,16 @@ From
 
 | File | Purpose |
 |---|---|
-| [src/provider-anthropic/main.ts](harness-node/src/provider-anthropic/main.ts) | Binary entry point (`iii-provider-anthropic`). |
-| [src/provider-anthropic/register.ts](harness-node/src/provider-anthropic/register.ts) | Registers both functions. |
-| [src/provider-anthropic/config.ts](harness-node/src/provider-anthropic/config.ts) | Loads the `provider_anthropic` section. |
-| [src/provider-anthropic/types.ts](harness-node/src/provider-anthropic/types.ts) | `AnthropicConfig` + `configWithCredential` builder. |
-| [src/provider-anthropic/auth.ts](harness-node/src/provider-anthropic/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`. |
-| [src/provider-anthropic/cache.ts](harness-node/src/provider-anthropic/cache.ts) | In-process credential / config cache. |
-| [src/provider-anthropic/stream.ts](harness-node/src/provider-anthropic/stream.ts) | `streamAnthropic` async generator: builds request body, fetches SSE, yields `AssistantMessageEvent`s. |
-| [src/provider-anthropic/sse.ts](harness-node/src/provider-anthropic/sse.ts) | SSE parser. |
-| [src/provider-anthropic/wire-messages.ts](harness-node/src/provider-anthropic/wire-messages.ts) | `AgentMessage[]` → Anthropic `messages` translation (text, tool calls, tool results, thinking blocks, cache markers). |
-| [src/provider-anthropic/wire-tools.ts](harness-node/src/provider-anthropic/wire-tools.ts) | `AgentFunction[]` → Anthropic `tools` translation. |
-| [src/provider-anthropic/stream-fn.ts](harness-node/src/provider-anthropic/stream-fn.ts) | `provider::anthropic::stream` handler. |
-| [src/provider-anthropic/complete.ts](harness-node/src/provider-anthropic/complete.ts) | `provider::anthropic::complete` handler (legacy drain-and-return). |
-| [src/provider-anthropic/iii.worker.yaml](harness-node/src/provider-anthropic/iii.worker.yaml) | Worker manifest. |
+| [src/provider-anthropic/main.ts](harness/src/provider-anthropic/main.ts) | Binary entry point (`iii-provider-anthropic`). |
+| [src/provider-anthropic/register.ts](harness/src/provider-anthropic/register.ts) | Registers both functions. |
+| [src/provider-anthropic/config.ts](harness/src/provider-anthropic/config.ts) | Loads the `provider_anthropic` section. |
+| [src/provider-anthropic/types.ts](harness/src/provider-anthropic/types.ts) | `AnthropicConfig` + `configWithCredential` builder. |
+| [src/provider-anthropic/auth.ts](harness/src/provider-anthropic/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`. |
+| [src/provider-anthropic/cache.ts](harness/src/provider-anthropic/cache.ts) | In-process credential / config cache. |
+| [src/provider-anthropic/stream.ts](harness/src/provider-anthropic/stream.ts) | `streamAnthropic` async generator: builds request body, fetches SSE, yields `AssistantMessageEvent`s. |
+| [src/provider-anthropic/sse.ts](harness/src/provider-anthropic/sse.ts) | SSE parser. |
+| [src/provider-anthropic/wire-messages.ts](harness/src/provider-anthropic/wire-messages.ts) | `AgentMessage[]` → Anthropic `messages` translation (text, tool calls, tool results, thinking blocks, cache markers). |
+| [src/provider-anthropic/wire-tools.ts](harness/src/provider-anthropic/wire-tools.ts) | `AgentFunction[]` → Anthropic `tools` translation. |
+| [src/provider-anthropic/stream-fn.ts](harness/src/provider-anthropic/stream-fn.ts) | `provider::anthropic::stream` handler. |
+| [src/provider-anthropic/complete.ts](harness/src/provider-anthropic/complete.ts) | `provider::anthropic::complete` handler (legacy drain-and-return). |
+| [src/provider-anthropic/iii.worker.yaml](harness/src/provider-anthropic/iii.worker.yaml) | Worker manifest. |

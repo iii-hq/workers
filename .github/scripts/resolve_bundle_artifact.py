@@ -8,7 +8,7 @@
 This CLI mirrors `resolve_binary_artifacts.py` but for the single-artefact
 shape used by `PublishRequestBundle`. It writes a JSON file like:
 
-    { "archive_url": "https://.../harness-node.tar.gz",
+    { "archive_url": "https://.../harness.tar.gz",
       "sha256":      "9f86d08..." }
 
 …which `build_publish_payload.py` reads to populate the `bundle`

@@ -136,7 +136,7 @@
         "content": [
           {
             "type": "text",
-            "text": "The README describes the harness-node project — a Node.js runtime for motia workers with context compaction support."
+            "text": "The README describes the harness project — a Node.js runtime for motia workers with context compaction support."
           }
         ],
         "stop_reason": "end",

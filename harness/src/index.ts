@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Composite entry-point: spins up every harness-node worker in one
+ * Composite entry-point: spins up every harness worker in one
  * process. CLI parsing happens once here so the per-worker
  * `bootstrapWorker` calls don't fight over `process.argv`. Each worker's
  * register callback is reused as-is from its own folder, so the bus
@@ -104,8 +104,8 @@ const WORKERS: readonly WorkerDefinition[] = [
 
 async function main(): Promise<void> {
   const program = new Command()
-    .name('harness-node')
-    .description('Run every harness-node worker in one process.')
+    .name('harness')
+    .description('Run every harness worker in one process.')
     .option('--config <path>', 'config file path', DEFAULT_CONFIG_PATH)
     .option('--url <url>', 'iii engine WebSocket URL', process.env.III_URL ?? DEFAULT_URL)
     .option('--manifest', 'print combined manifest JSON and exit')
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  logger.info('harness-node starting', {
+  logger.info('harness starting', {
     url: cli.url,
     config: cli.config,
     workers: WORKERS.length,
@@ -138,15 +138,15 @@ async function main(): Promise<void> {
       handles.push(handle);
     }
   } catch (err) {
-    logger.error('harness-node startup failed; tearing down workers', { err: String(err) });
+    logger.error('harness startup failed; tearing down workers', { err: String(err) });
     await shutdownAll(handles);
     throw err;
   }
 
-  logger.info('harness-node ready', { workers: handles.map((h) => h.name) });
+  logger.info('harness ready', { workers: handles.map((h) => h.name) });
 
   await waitForShutdown();
-  logger.info('harness-node shutting down');
+  logger.info('harness shutting down');
   await shutdownAll(handles);
 }
 

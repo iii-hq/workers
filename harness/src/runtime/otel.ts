@@ -54,7 +54,7 @@ export type Logger = {
 // `warn!` / `error!` becomes both a span event and an OTel log,
 // correlated to the active trace via context propagation). The Node
 // port uses `pino`, which writes to stderr only. Without this bridge,
-// the `LOGS` tab in the traces UI is silent on every harness-node
+// the `LOGS` tab in the traces UI is silent on every harness
 // span — even though the same workers in Rust populate it.
 //
 // We keep `pino` for stderr (devs still see logs in their terminal)
@@ -255,7 +255,7 @@ export type Handler<TIn = unknown, TOut = unknown> = (input: TIn) => Promise<TOu
  *   - `exception`             — only on throw, with type/message/stack
  *
  * This is what populates the "EVENTS" tab in the traces UI for
- * harness-node-emitted spans. Without it, harness-node spans look
+ * harness-emitted spans. Without it, harness spans look
  * "empty" compared to Rust harness spans, because the Rust harness
  * gets the same events for free via `iii-sdk-rust` (and via the
  * `tracing-opentelemetry::OpenTelemetryLayer` bridge, which doesn't

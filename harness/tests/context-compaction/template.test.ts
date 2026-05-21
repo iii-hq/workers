@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SUMMARY_TEMPLATE, buildPrompt } from '../../src/context-compaction/template.js';
 
 describe('SUMMARY_TEMPLATE', () => {
-  it('contains the harness-node-specific Tool Calls Made section', () => {
+  it('contains the harness-specific Tool Calls Made section', () => {
     expect(SUMMARY_TEMPLATE).toContain('## Tool Calls Made');
   });
   it('contains all required sections', () => {

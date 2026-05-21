@@ -21,7 +21,7 @@ and route it to the correct per-call resume function.
 ## Resolution flow
 
 1. While parked, the orchestrator calls `registerApprovalResume` for each
-   pending call (see [approval-resume.ts](harness-node/src/turn-orchestrator/approval-resume.ts)).
+   pending call (see [approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts)).
 2. The console calls `approval::resolve` with `{ session_id, function_call_id, decision, reason? }`.
 3. `approval::resolve` triggers `turn::approval_resume::<sid>/<cid>` with the decision payload.
 4. The resume handler writes `approvals/<sid>/<cid>` (if not already set), invokes `turn::step`, and unregisters the resume fn.
@@ -42,7 +42,7 @@ Per-call resume functions are registered by the turn-orchestrator, not this work
 ## State keys
 
 All decision records use scope `approvals` (constant `STATE_SCOPE` in
-[src/approval-gate/schemas.ts](harness-node/src/approval-gate/schemas.ts)):
+[src/approval-gate/schemas.ts](harness/src/approval-gate/schemas.ts)):
 
 | Key shape | Value | Purpose |
 |---|---|---|
@@ -53,10 +53,10 @@ separate rows under `approvals` until a decision lands.
 
 ## Denial envelopes
 
-[src/approval-gate/denial.ts](harness-node/src/approval-gate/denial.ts) builds
+[src/approval-gate/denial.ts](harness/src/approval-gate/denial.ts) builds
 `DenialEnvelope` values for policy denies (`permissionsDenyEnvelope` via
-`consultBefore` in [hook.ts](harness-node/src/turn-orchestrator/hook.ts)).
-[src/approval-gate/redact.ts](harness-node/src/approval-gate/redact.ts)
+`consultBefore` in [hook.ts](harness/src/turn-orchestrator/hook.ts)).
+[src/approval-gate/redact.ts](harness/src/approval-gate/redact.ts)
 sanitizes tool args for `args_excerpt` on those envelopes.
 
 ## Pending-approval signalling
@@ -68,7 +68,7 @@ record. On reload it uses `turn::get_state` (not direct iii state reads).
 
 ## Configuration
 
-There is no `approval_gate` section in [config.yaml](harness-node/config.yaml).
+There is no `approval_gate` section in [config.yaml](harness/config.yaml).
 Scope `approvals` is fixed in code (`STATE_SCOPE`).
 
 Policy consultation is a direct `iii.trigger` to `policy::check_permissions`
@@ -78,20 +78,20 @@ from turn-orchestrator `consultBefore`. See
 ## Dependencies
 
 From
-[src/approval-gate/iii.worker.yaml](harness-node/src/approval-gate/iii.worker.yaml):
+[src/approval-gate/iii.worker.yaml](harness/src/approval-gate/iii.worker.yaml):
 no explicit dependency block.
 
 ## Source layout
 
 | File | Purpose |
 |---|---|
-| [src/approval-gate/main.ts](harness-node/src/approval-gate/main.ts) | Binary entry point (`iii-approval-gate`). |
-| [src/approval-gate/resolve.ts](harness-node/src/approval-gate/resolve.ts) | Registers `approval::resolve`; triggers per-call resume fns. |
-| [src/approval-gate/schemas.ts](harness-node/src/approval-gate/schemas.ts) | `STATE_SCOPE`, wire schemas, `parsePolicyReply`, `pendingKey`, `approvalResumeFnId`, `ResolvePayloadSchema`. |
-| [src/approval-gate/denial.ts](harness-node/src/approval-gate/denial.ts) | `permissionsDenyEnvelope` and related helpers. |
-| [src/approval-gate/redact.ts](harness-node/src/approval-gate/redact.ts) | `redact` / `clip` for safe `args_excerpt` on denials. |
-| [src/approval-gate/iii.worker.yaml](harness-node/src/approval-gate/iii.worker.yaml) | Worker manifest. |
+| [src/approval-gate/main.ts](harness/src/approval-gate/main.ts) | Binary entry point (`iii-approval-gate`). |
+| [src/approval-gate/resolve.ts](harness/src/approval-gate/resolve.ts) | Registers `approval::resolve`; triggers per-call resume fns. |
+| [src/approval-gate/schemas.ts](harness/src/approval-gate/schemas.ts) | `STATE_SCOPE`, wire schemas, `parsePolicyReply`, `pendingKey`, `approvalResumeFnId`, `ResolvePayloadSchema`. |
+| [src/approval-gate/denial.ts](harness/src/approval-gate/denial.ts) | `permissionsDenyEnvelope` and related helpers. |
+| [src/approval-gate/redact.ts](harness/src/approval-gate/redact.ts) | `redact` / `clip` for safe `args_excerpt` on denials. |
+| [src/approval-gate/iii.worker.yaml](harness/src/approval-gate/iii.worker.yaml) | Worker manifest. |
 
 Related orchestrator code:
-[approval-resume.ts](harness-node/src/turn-orchestrator/approval-resume.ts),
-[hook.ts](harness-node/src/turn-orchestrator/hook.ts).
+[approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts),
+[hook.ts](harness/src/turn-orchestrator/hook.ts).

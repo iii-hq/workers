@@ -6,7 +6,7 @@ on:
       - 'acp/v*'
       - 'console/v*'
       - 'database/v*'
-      - 'harness-node/v*'
+      - 'harness/v*'
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'

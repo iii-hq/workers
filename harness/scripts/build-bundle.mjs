@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Single-file ESM bundle for harness-node (`dist/bundle/index.mjs`).
+ * Single-file ESM bundle for harness (`dist/bundle/index.mjs`).
  *
  * Two real-world bundling quirks the CLI form of esbuild can't handle:
  *

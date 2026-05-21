@@ -104,10 +104,10 @@ describe('logger -> OTel bridge', () => {
   });
 
   it('child(bindings) merges bindings into every emitted log', () => {
-    const child = logger.child({ worker: 'harness-node', request_id: 'r-1' });
+    const child = logger.child({ worker: 'harness', request_id: 'r-1' });
     child.info('handled');
     expect(captured[0].attributes).toMatchObject({
-      worker: 'harness-node',
+      worker: 'harness',
       request_id: 'r-1',
     });
   });
