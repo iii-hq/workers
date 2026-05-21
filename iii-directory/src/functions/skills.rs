@@ -212,7 +212,16 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let id = normalize_get_id(&req.id)?;
     validate_id(&id)?;
     let Some(fs) = find_fs_skill(cfg, &id) else {
-        return Err(format!("Skill not found: {id}"));
+        // Include a remediation hint in the error so a calling LLM agent
+        // can self-correct on the next turn. Without this, models tend to
+        // hallucinate a sibling id and retry the same not-found pattern
+        // instead of listing what actually exists. Investigation:
+        // model asked for "sandbox/create" which doesn't exist; agent
+        // would have recovered if the error pointed at the catalog.
+        return Err(format!(
+            "Skill not found: {id}. List available skills via `directory::skills::list`, \
+             or browse worker overviews via `directory::skills::index`."
+        ));
     };
     let (fm, body) = fs_source::read_skill_with_frontmatter(&fs.abs_path)?;
     let title = resolve_title(&fm, &body, &fs.id);
@@ -427,9 +436,29 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
 
 /// Targeted lookup for the read path. Returns `None` if no file under
 /// `skills_folder` matches `id`.
+///
+/// A **bare worker name** with no `/` is treated as shorthand for
+/// `<id>/index`. So `find_fs_skill(cfg, "sandbox")` returns the same
+/// skill as `find_fs_skill(cfg, "sandbox/index")` whenever
+/// `sandbox/index.md` exists and no literal `sandbox.md` shadows it.
+/// Multi-segment ids (`sandbox/exec`) must match literally — no
+/// recursive `/index` expansion, so a typo never silently resolves to
+/// the wrong skill.
 fn find_fs_skill(cfg: &SkillsConfig, id: &str) -> Option<FsSkill> {
     let (fs, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
-    fs.into_iter().find(|s| s.id == id)
+    let alias = (!id.contains('/')).then(|| format!("{id}/index"));
+    let mut exact: Option<FsSkill> = None;
+    let mut aliased: Option<FsSkill> = None;
+    for skill in fs {
+        if skill.id == id {
+            exact = Some(skill);
+            continue;
+        }
+        if alias.as_deref() == Some(skill.id.as_str()) {
+            aliased = Some(skill);
+        }
+    }
+    exact.or(aliased)
 }
 
 /// Build a `SkillEntry` for `list` output. Reads the file body and
@@ -874,6 +903,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_skill_not_found_error_points_agent_at_directory_skills_list() {
+        // LLM agents calling directory::skills::get tend to guess skill
+        // ids (observed: "sandbox/create" hallucinated). The error must
+        // include a remediation hint that gets the agent into a recovery
+        // loop instead of doubling down on the wrong path.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/create".into(),
+            },
+        )
+        .await
+        .expect_err("should error on missing skill");
+        // The id itself stays in the message so logs still pin which id
+        // was requested.
+        assert!(
+            err.contains("Skill not found: sandbox/create"),
+            "missing id in error: {err}",
+        );
+        // The hint must mention the catalog-listing function the agent
+        // should call next.
+        assert!(
+            err.contains("directory::skills::list"),
+            "missing list-hint in error: {err}",
+        );
+        assert!(
+            err.contains("directory::skills::index"),
+            "missing index-hint in error: {err}",
+        );
+    }
+
+    #[tokio::test]
     async fn get_serialises_type_field_with_correct_json_key() {
         let tmp = tempfile::tempdir().unwrap();
         let ns = tmp.path().join("ns");
@@ -896,6 +959,120 @@ mod tests {
         assert_eq!(v["type"].as_str(), Some("index"));
         assert!(v.get("kind").is_none(), "kind should be renamed to type");
         assert!(v["title"].as_str() == Some("T"));
+    }
+
+    // ── bare worker name → <worker>/index alias ─────────────────────────
+
+    #[tokio::test]
+    async fn get_accepts_bare_worker_name_as_alias_for_index() {
+        // The user-facing requirement: agents reach for the worker name
+        // (e.g. `sandbox`) when they want the worker overview. That call
+        // must resolve to `<worker>/index.md` and the response must carry
+        // the CANONICAL id so the agent learns the real form on the way
+        // through.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Sandbox\n\nWorker overview.\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.id, "sandbox/index",
+            "response must carry the canonical id, not the shorthand the caller sent"
+        );
+        assert!(out.body.contains("Worker overview."));
+    }
+
+    #[tokio::test]
+    async fn bare_name_and_explicit_index_return_same_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(
+            ns.join("index.md"),
+            "---\ntitle: Sandbox\ntype: index\n---\n# Sandbox\n\nShared body.\n",
+        )
+        .unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let bare = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let explicit = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/index".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(bare.id, explicit.id);
+        assert_eq!(bare.title, explicit.title);
+        assert_eq!(bare.body, explicit.body);
+        assert_eq!(bare.kind, explicit.kind);
+    }
+
+    #[tokio::test]
+    async fn multi_segment_id_does_not_auto_alias_to_slash_index() {
+        // Multi-segment ids must match literally. Without this guard a
+        // typo like `sandbox/exec` would silently fall back to
+        // `sandbox/exec/index`, which is the wrong skill.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Sandbox\n\nOverview.\n").unwrap();
+        // Note: we deliberately do NOT create sandbox/exec/index.md.
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/exec".into(),
+            },
+        )
+        .await
+        .expect_err("multi-segment id must not auto-alias to /index");
+        assert!(
+            err.contains("Skill not found: sandbox/exec"),
+            "expected literal-id miss, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_id_with_literal_root_skill_wins_over_index_alias() {
+        // When both `<root>/sandbox.md` and `<root>/sandbox/index.md`
+        // exist, the literal root skill takes precedence over the
+        // bare-name → index alias. Documents the precedence rule so a
+        // future refactor doesn't silently flip it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("sandbox.md"), "# Root\n\nRoot body.\n").unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Index\n\nIndex body.\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.id, "sandbox",
+            "literal root skill must win over the index alias"
+        );
+        assert!(out.body.contains("Root body."));
     }
 
     // ── render_index_markdown ───────────────────────────────────────────
