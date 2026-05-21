@@ -21,31 +21,45 @@ Upload a profile photo, hand the browser a presigned URL for the next
 upload, then read it back.
 
 ```ts
-import { call } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-await call('storage::putObject', {
-  bucket: 'uploads',
-  key: 'u/1/profile.jpg',
-  body_base64: fileBase64,         // ≤ 10 MiB inline; use presignUrl above that
-  content_type: 'image/jpeg',
+const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
+
+await iii.trigger({
+  function_id: 'storage::putObject',
+  payload: {
+    bucket: 'uploads',
+    key: 'u/1/profile.jpg',
+    body_base64: fileBase64,         // ≤ 10 MiB inline; use presignUrl above that
+    content_type: 'image/jpeg',
+  },
 })
 
-const { url, expires_at } = await call('storage::presignUrl', {
-  bucket: 'uploads',
-  key: 'u/1/next.jpg',
-  method: 'PUT',
-  expires_in_seconds: 600,
-  content_type: 'image/jpeg',      // pinned into the signature
+const { url, expires_at } = await iii.trigger({
+  function_id: 'storage::presignUrl',
+  payload: {
+    bucket: 'uploads',
+    key: 'u/1/next.jpg',
+    method: 'PUT',
+    expires_in_seconds: 600,
+    content_type: 'image/jpeg',      // pinned into the signature
+  },
 })
 
-const { body_base64, content_type } = await call('storage::getObject', {
-  bucket: 'uploads',
-  key: 'u/1/profile.jpg',
+const { body_base64, content_type } = await iii.trigger({
+  function_id: 'storage::getObject',
+  payload: {
+    bucket: 'uploads',
+    key: 'u/1/profile.jpg',
+  },
 })
 
-await call('storage::deleteObject', {
-  bucket: 'uploads',
-  key: 'u/1/profile.jpg',
+await iii.trigger({
+  function_id: 'storage::deleteObject',
+  payload: {
+    bucket: 'uploads',
+    key: 'u/1/profile.jpg',
+  },
 })                                  // idempotent: returns { deleted: false } if absent
 ```
 
