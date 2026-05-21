@@ -142,17 +142,37 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
     // what we want.
     // (tokio's `Command::pre_exec` is an inherent method; no need for
     // the std::os::unix::process::CommandExt trait to be in scope.)
+    //
+    // Race-condition guard: PR_SET_PDEATHSIG fires only when the parent
+    // dies *after* the prctl call. If storage exits between fork() and
+    // the closure's prctl(), the death has already happened — the signal
+    // is silently lost and rustfs ends up unsupervised. Linux's prctl
+    // manpage explicitly recommends re-checking getppid() after the
+    // prctl call to detect this window. Capture storage's PID in the
+    // parent before forking and compare against the child's getppid()
+    // inside the closure; mismatch means the parent already died, so
+    // fail the spawn rather than launch an orphan rustfs.
     #[cfg(target_os = "linux")]
-    unsafe {
-        cmd.pre_exec(|| {
-            // SAFETY: prctl(PR_SET_PDEATHSIG, ...) is async-signal-safe and
-            // documented to be callable from a pre_exec hook (between fork
-            // and exec). The signal value is a constant.
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+    {
+        let parent_pid = unsafe { libc::getpid() };
+        unsafe {
+            cmd.pre_exec(move || {
+                // SAFETY: prctl(PR_SET_PDEATHSIG, ...) and getppid() are
+                // async-signal-safe and documented to be callable from a
+                // pre_exec hook (between fork and exec). The signal value
+                // is a constant.
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent_pid {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "storage exited between fork and PR_SET_PDEATHSIG; refusing to orphan rustfs",
+                    ));
+                }
+                Ok(())
+            });
+        }
     }
 
     let child = cmd
