@@ -91,18 +91,30 @@ else
   wait "$SCRIPT_PID" 2>/dev/null || true
   sleep 2
   # Both processes should be gone.
-  if pgrep -f 'target/release/storage' >/dev/null; then
+  # Zombies (<defunct> / state Z) are "dead enough" for this test's
+  # intent: the process has been killed, the kernel just hasn't reaped
+  # the /proc entry yet (parent died alongside it, init reaps when
+  # scheduled). `pgrep -f` still matches a zombie's comm, so we need to
+  # filter on process state explicitly. `ps -o state=` prints the state
+  # column; "Z" / "X" mean dead. (No `xargs -r` because BSD xargs on
+  # macOS doesn't have it.)
+  is_alive() {
+    local pat=$1 pid state
+    for pid in $(pgrep -f "$pat" 2>/dev/null); do
+      state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')
+      [[ -n "$state" && "$state" != "Z" && "$state" != "X" ]] && return 0
+    done
+    return 1
+  }
+  if is_alive 'target/release/storage'; then
     echo "  FAIL: storage worker still running after SIGINT"
     FAIL=$((FAIL+1))
   else
     echo "  PASS: storage gone"
     PASS=$((PASS+1))
   fi
-  if pgrep -f rustfs >/dev/null; then
+  if is_alive rustfs; then
     echo "  FAIL: rustfs still running after SIGINT"
-    # Diagnostic: run-tests.sh's output (including cleanup() diagnostic)
-    # was redirected to /tmp/sigint-test.log by the launcher above. Surface
-    # it here so CI can see what the cleanup trap actually did.
     echo "  --- /tmp/sigint-test.log (last 100 lines) ---"
     tail -100 /tmp/sigint-test.log 2>/dev/null || echo "  (log not present)"
     echo "  --- live rustfs/storage/iii processes ---"
