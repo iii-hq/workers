@@ -165,8 +165,7 @@ pub async fn spawn(opts: RustfsSpawnOpts) -> Result<RustfsHandle, StorageError> 
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::getppid() != parent_pid {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    return Err(std::io::Error::other(
                         "storage exited between fork and PR_SET_PDEATHSIG; refusing to orphan rustfs",
                     ));
                 }
