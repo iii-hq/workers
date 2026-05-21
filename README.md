@@ -13,7 +13,7 @@ asset for the host from the workers registry API.
 | Worker | Kind | Summary |
 |---|---|---|
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
-| [`harness-node`](harness-node/) | Node | TS port of the iii harness stack — bundles `harness`, `turn-orchestrator`, `approval-gate`, `session`, `hook-fanout`, `auth-credentials`, `models-catalog`, `provider-anthropic`, `provider-openai`, `llm-budget`, and `context-compaction` as one pnpm monorepo. See [`harness-node/README.md`](harness-node/README.md). |
+| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness`, `turn-orchestrator`, `approval-gate`, `session`, `hook-fanout`, `auth-credentials`, `models-catalog`, `provider-anthropic`, `provider-openai`, `llm-budget`, and `context-compaction` as one pnpm monorepo. See [`harness/README.md`](harness/README.md). |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
@@ -47,7 +47,7 @@ cargo build --release
 ```
 
 Node/Python workers follow the standard `npm install` / `pip install -e .`
-flow — see each module's README for specifics. `harness-node` is a pnpm
+flow — see each module's README for specifics. `harness` is a pnpm
 monorepo (`pnpm install && pnpm build`).
 
 ## Binary releases

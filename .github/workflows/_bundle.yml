@@ -14,7 +14,7 @@ on:
   workflow_call:
     inputs:
       worker:
-        description: 'Worker name (folder), e.g. harness-node'
+        description: 'Worker name (folder), e.g. harness'
         required: true
         type: string
       version:
@@ -22,7 +22,7 @@ on:
         required: true
         type: string
       tag_name:
-        description: 'Git tag for the GitHub Release (e.g., harness-node/v0.1.0)'
+        description: 'Git tag for the GitHub Release (e.g., harness/v0.1.0)'
         required: true
         type: string
       language:

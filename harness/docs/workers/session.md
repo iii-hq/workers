@@ -70,7 +70,7 @@ ids are non-monotonic relative to wall-clock order.
 
 ## Configuration
 
-From the `session` section of [config.yaml](harness-node/config.yaml):
+From the `session` section of [config.yaml](harness/config.yaml):
 
 - `store_backend` (default `iii_state`; alternative `memory`) — which
   `SessionStore` implementation `register()` instantiates.
@@ -81,20 +81,20 @@ From the `session` section of [config.yaml](harness-node/config.yaml):
 
 ## Dependencies
 
-From [src/session/iii.worker.yaml](harness-node/src/session/iii.worker.yaml):
+From [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml):
 `iii-state ^0.11.0`.
 
 ## Source layout
 
 | File | Purpose |
 |---|---|
-| [src/session/main.ts](harness-node/src/session/main.ts) | Binary entry point (`iii-session`). |
-| [src/session/register.ts](harness-node/src/session/register.ts) | Picks the backend and wires both sub-surfaces. |
-| [src/session/config.ts](harness-node/src/session/config.ts) | Loads the `session` config section. |
-| [src/session/tree/register.ts](harness-node/src/session/tree/register.ts) | Registers all 11 `session-tree::*` functions; exports `FUNCTION_IDS`. |
-| [src/session/tree/operations.ts](harness-node/src/session/tree/operations.ts) | Pure tree algorithms: create, fork, clone, compact, active path, messages, reconcile, tree, export_html, list. |
-| [src/session/tree/store.ts](harness-node/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
-| [src/session/tree/types.ts](harness-node/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |
-| [src/session/inbox/handlers.ts](harness-node/src/session/inbox/handlers.ts) | Registers the three `session-inbox::*` functions. |
-| [src/session/inbox/key.ts](harness-node/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "session/<sid>/<name>"`. |
-| [src/session/iii.worker.yaml](harness-node/src/session/iii.worker.yaml) | Worker manifest. |
+| [src/session/main.ts](harness/src/session/main.ts) | Binary entry point (`iii-session`). |
+| [src/session/register.ts](harness/src/session/register.ts) | Picks the backend and wires both sub-surfaces. |
+| [src/session/config.ts](harness/src/session/config.ts) | Loads the `session` config section. |
+| [src/session/tree/register.ts](harness/src/session/tree/register.ts) | Registers all 11 `session-tree::*` functions; exports `FUNCTION_IDS`. |
+| [src/session/tree/operations.ts](harness/src/session/tree/operations.ts) | Pure tree algorithms: create, fork, clone, compact, active path, messages, reconcile, tree, export_html, list. |
+| [src/session/tree/store.ts](harness/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
+| [src/session/tree/types.ts](harness/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |
+| [src/session/inbox/handlers.ts](harness/src/session/inbox/handlers.ts) | Registers the three `session-inbox::*` functions. |
+| [src/session/inbox/key.ts](harness/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "session/<sid>/<name>"`. |
+| [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml) | Worker manifest. |

@@ -99,7 +99,7 @@ export async function runWorker(opts: RunWorkerOptions): Promise<WorkerHandle> {
  * pass through unchanged — there's no local handler to wrap.
  *
  * This is the single point of correctness for trace correlation: every
- * harness-node `register.ts` calls `iii.registerFunction(...)` on an SDK
+ * harness `register.ts` calls `iii.registerFunction(...)` on an SDK
  * instance that flowed out of this function, so no per-callsite changes
  * are needed and no new register.ts can accidentally skip the wrap.
  */

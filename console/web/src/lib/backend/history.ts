@@ -5,15 +5,9 @@
  */
 
 import type { Message } from '@/types/chat'
-import type {
-  AgentMessage,
-  AssistantMessage,
-  UserMessage,
-} from '@/types/iii-agent-event'
+import type { AgentMessage, AssistantMessage, UserMessage } from '@/types/iii-agent-event'
 
-export function translateUiHistoryForBackend(
-  messages: readonly Message[],
-): AgentMessage[] {
+export function translateUiHistoryForBackend(messages: readonly Message[]): AgentMessage[] {
   // Stacked compactions: only the most recent summary needs to ship since
   // the anchored prompt in summarize.ts already folds the prior one in.
   let lastCompactIdx = -1
@@ -29,13 +23,10 @@ export function translateUiHistoryForBackend(
   const start = lastCompactIdx >= 0 ? lastCompactIdx : 0
 
   if (lastCompactIdx >= 0) {
-    const marker = messages[lastCompactIdx] as Extract<
-      Message,
-      { role: 'system' }
-    >
+    const marker = messages[lastCompactIdx] as Extract<Message, { role: 'system' }>
     const summary = marker.summaryText ?? ''
     if (summary.length > 0) {
-      // Wire-identical to harness-node's buildSummaryMessage.
+      // Wire-identical to harness's buildSummaryMessage.
       out.push({
         role: 'assistant',
         content: [
@@ -52,11 +43,7 @@ export function translateUiHistoryForBackend(
     }
   }
 
-  for (
-    let i = start + (lastCompactIdx >= 0 ? 1 : 0);
-    i < messages.length;
-    i++
-  ) {
+  for (let i = start + (lastCompactIdx >= 0 ? 1 : 0); i < messages.length; i++) {
     const m = messages[i]
     if (m.role === 'user') out.push(toUserMessage(m))
     else if (m.role === 'assistant') {
@@ -75,9 +62,7 @@ function toUserMessage(m: Extract<Message, { role: 'user' }>): UserMessage {
   }
 }
 
-function toAssistantMessage(
-  m: Extract<Message, { role: 'assistant' }>,
-): AssistantMessage | null {
+function toAssistantMessage(m: Extract<Message, { role: 'assistant' }>): AssistantMessage | null {
   // Empty-content assistant messages confuse providers; the wire shape
   // requires at least one text block.
   if (!m.content || m.content.length === 0) return null

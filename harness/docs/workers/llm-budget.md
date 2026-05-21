@@ -40,7 +40,7 @@ None.
 ## State keys
 
 All keys live under iii state scope `budgets`. From
-[src/llm-budget/types.ts](harness-node/src/llm-budget/types.ts):
+[src/llm-budget/types.ts](harness/src/llm-budget/types.ts):
 
 | Key shape | Value |
 |---|---|
@@ -52,24 +52,24 @@ All keys live under iii state scope `budgets`. From
 
 The worker reads no top-level config keys; period defaults and rollover
 math live in
-[src/llm-budget/periods.ts](harness-node/src/llm-budget/periods.ts).
+[src/llm-budget/periods.ts](harness/src/llm-budget/periods.ts).
 
 ## Dependencies
 
 From
-[src/llm-budget/iii.worker.yaml](harness-node/src/llm-budget/iii.worker.yaml):
+[src/llm-budget/iii.worker.yaml](harness/src/llm-budget/iii.worker.yaml):
 `iii-state ^0.11.0`.
 
 ## Source layout
 
 | File | Purpose |
 |---|---|
-| [src/llm-budget/main.ts](harness-node/src/llm-budget/main.ts) | Binary entry point (`iii-llm-budget`). |
-| [src/llm-budget/register.ts](harness-node/src/llm-budget/register.ts) | Registers all 14 `budget::*` handlers. |
-| [src/llm-budget/types.ts](harness-node/src/llm-budget/types.ts) | `Budget`, `Alert`, `Exemption`, `SpendLogEntry`, plus the `budgetKey` / `spendLogKey` / `resetLogKey` helpers. |
-| [src/llm-budget/store.ts](harness-node/src/llm-budget/store.ts) | State CRUD: `loadBudget`, `saveBudget`, `deleteBudgetRecord`, `listAllBudgets`, `saveSpendLog`, `listSpendLogs`. |
-| [src/llm-budget/periods.ts](harness-node/src/llm-budget/periods.ts) | `periodStart` / `nextPeriodStart` for `day` / `week` / `month`. |
-| [src/llm-budget/ops.ts](harness-node/src/llm-budget/ops.ts) | Higher-level ops shared across handlers (rollover, alert firing, exemption checks). |
-| [src/llm-budget/handlers/*.ts](harness-node/src/llm-budget/handlers/) | One handler per registered function (`create.ts`, `list.ts`, `get.ts`, `update.ts`, `delete.ts`, `check.ts`, `record.ts`, `reset.ts`, `alert-set.ts`, `usage.ts`, `forecast.ts`, `enforce.ts`, `exempt.ts`, `pause.ts`). |
-| [src/llm-budget/handlers/index.ts](harness-node/src/llm-budget/handlers/index.ts) | Re-exports the per-handler `register*` functions. |
-| [src/llm-budget/iii.worker.yaml](harness-node/src/llm-budget/iii.worker.yaml) | Worker manifest. |
+| [src/llm-budget/main.ts](harness/src/llm-budget/main.ts) | Binary entry point (`iii-llm-budget`). |
+| [src/llm-budget/register.ts](harness/src/llm-budget/register.ts) | Registers all 14 `budget::*` handlers. |
+| [src/llm-budget/types.ts](harness/src/llm-budget/types.ts) | `Budget`, `Alert`, `Exemption`, `SpendLogEntry`, plus the `budgetKey` / `spendLogKey` / `resetLogKey` helpers. |
+| [src/llm-budget/store.ts](harness/src/llm-budget/store.ts) | State CRUD: `loadBudget`, `saveBudget`, `deleteBudgetRecord`, `listAllBudgets`, `saveSpendLog`, `listSpendLogs`. |
+| [src/llm-budget/periods.ts](harness/src/llm-budget/periods.ts) | `periodStart` / `nextPeriodStart` for `day` / `week` / `month`. |
+| [src/llm-budget/ops.ts](harness/src/llm-budget/ops.ts) | Higher-level ops shared across handlers (rollover, alert firing, exemption checks). |
+| [src/llm-budget/handlers/*.ts](harness/src/llm-budget/handlers/) | One handler per registered function (`create.ts`, `list.ts`, `get.ts`, `update.ts`, `delete.ts`, `check.ts`, `record.ts`, `reset.ts`, `alert-set.ts`, `usage.ts`, `forecast.ts`, `enforce.ts`, `exempt.ts`, `pause.ts`). |
+| [src/llm-budget/handlers/index.ts](harness/src/llm-budget/handlers/index.ts) | Re-exports the per-handler `register*` functions. |
+| [src/llm-budget/iii.worker.yaml](harness/src/llm-budget/iii.worker.yaml) | Worker manifest. |

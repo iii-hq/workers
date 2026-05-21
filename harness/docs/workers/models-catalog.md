@@ -13,7 +13,7 @@ and optional `thinking_budgets` / `transports` / `pricing` fields. The
 catalogue is state-first: reads go to iii state under scope `models`,
 prefix `models:`; if state is empty the worker falls back to (and seeds
 state from) the JSON file embedded at
-[src/models-catalog/models.json](harness-node/src/models-catalog/models.json).
+[src/models-catalog/models.json](harness/src/models-catalog/models.json).
 
 The seed happens lazily at `register()` time and never blocks boot.
 Operators can layer their own entries on top with `models::register`.
@@ -57,27 +57,27 @@ match no models from `models::list`.
 
 The worker reads no top-level config keys. The state-request timeout is
 hard-coded to 5 s in
-[src/models-catalog/state.ts](harness-node/src/models-catalog/state.ts)
+[src/models-catalog/state.ts](harness/src/models-catalog/state.ts)
 (`DEFAULT_STATE_CONFIG.state_request_timeout_ms`).
 
 ## Dependencies
 
 From
-[src/models-catalog/iii.worker.yaml](harness-node/src/models-catalog/iii.worker.yaml):
+[src/models-catalog/iii.worker.yaml](harness/src/models-catalog/iii.worker.yaml):
 `iii-state ^0.11.0`.
 
 ## Source layout
 
 | File | Purpose |
 |---|---|
-| [src/models-catalog/main.ts](harness-node/src/models-catalog/main.ts) | Binary entry point (`iii-models-catalog`). |
-| [src/models-catalog/register.ts](harness-node/src/models-catalog/register.ts) | Kicks off `seedStateIfEmpty` and registers the four handlers. |
-| [src/models-catalog/types.ts](harness-node/src/models-catalog/types.ts) | `Model`, `Pricing`, `ThinkingBudgets`, `Capability`, `parseCapability`, `supportsModel`. |
-| [src/models-catalog/catalog.ts](harness-node/src/models-catalog/catalog.ts) | `loadEmbeddedCatalog` reads `models.json` and caches the parsed list. |
-| [src/models-catalog/state.ts](harness-node/src/models-catalog/state.ts) | `seedStateIfEmpty` + state-first `listFromStateOrSeed` / `getFromStateOrSeed`. |
-| [src/models-catalog/models.json](harness-node/src/models-catalog/models.json) | Baked-in baseline catalogue. |
-| [src/models-catalog/handlers/list.ts](harness-node/src/models-catalog/handlers/list.ts) | `models::list` handler. |
-| [src/models-catalog/handlers/get.ts](harness-node/src/models-catalog/handlers/get.ts) | `models::get` handler. |
-| [src/models-catalog/handlers/supports.ts](harness-node/src/models-catalog/handlers/supports.ts) | `models::supports` handler. |
-| [src/models-catalog/handlers/register.ts](harness-node/src/models-catalog/handlers/register.ts) | `models::register` handler. |
-| [src/models-catalog/iii.worker.yaml](harness-node/src/models-catalog/iii.worker.yaml) | Worker manifest. |
+| [src/models-catalog/main.ts](harness/src/models-catalog/main.ts) | Binary entry point (`iii-models-catalog`). |
+| [src/models-catalog/register.ts](harness/src/models-catalog/register.ts) | Kicks off `seedStateIfEmpty` and registers the four handlers. |
+| [src/models-catalog/types.ts](harness/src/models-catalog/types.ts) | `Model`, `Pricing`, `ThinkingBudgets`, `Capability`, `parseCapability`, `supportsModel`. |
+| [src/models-catalog/catalog.ts](harness/src/models-catalog/catalog.ts) | `loadEmbeddedCatalog` reads `models.json` and caches the parsed list. |
+| [src/models-catalog/state.ts](harness/src/models-catalog/state.ts) | `seedStateIfEmpty` + state-first `listFromStateOrSeed` / `getFromStateOrSeed`. |
+| [src/models-catalog/models.json](harness/src/models-catalog/models.json) | Baked-in baseline catalogue. |
+| [src/models-catalog/handlers/list.ts](harness/src/models-catalog/handlers/list.ts) | `models::list` handler. |
+| [src/models-catalog/handlers/get.ts](harness/src/models-catalog/handlers/get.ts) | `models::get` handler. |
+| [src/models-catalog/handlers/supports.ts](harness/src/models-catalog/handlers/supports.ts) | `models::supports` handler. |
+| [src/models-catalog/handlers/register.ts](harness/src/models-catalog/handlers/register.ts) | `models::register` handler. |
+| [src/models-catalog/iii.worker.yaml](harness/src/models-catalog/iii.worker.yaml) | Worker manifest. |

@@ -31,7 +31,7 @@ true }`. The orchestrator's `consultBefore` treats `publish_failed` as a
 `gate_unavailable` denial.
 
 Three merge rules are implemented in
-[src/hook-fanout/merge.ts](harness-node/src/hook-fanout/merge.ts):
+[src/hook-fanout/merge.ts](harness/src/hook-fanout/merge.ts):
 
 | Merge rule | Behaviour |
 |---|---|
@@ -58,8 +58,8 @@ held in the process-local pending map until the call resolves.
 ## Configuration
 
 From the optional `hook_fanout` section of
-[config.yaml](harness-node/config.yaml) (defaults from
-[src/hook-fanout/publish-collect.ts](harness-node/src/hook-fanout/publish-collect.ts)):
+[config.yaml](harness/config.yaml) (defaults from
+[src/hook-fanout/publish-collect.ts](harness/src/hook-fanout/publish-collect.ts)):
 
 - `default_timeout_ms` (default `10000`) — fallback for callers that omit
   `timeout_ms`.
@@ -71,7 +71,7 @@ From the optional `hook_fanout` section of
 ## Dependencies
 
 From
-[src/hook-fanout/iii.worker.yaml](harness-node/src/hook-fanout/iii.worker.yaml):
+[src/hook-fanout/iii.worker.yaml](harness/src/hook-fanout/iii.worker.yaml):
 `iii-stream ^0.11.0`. The worker calls `iii::durable::publish` over the
 bus and consumes `agent::hook_reply` via the stream trigger.
 
@@ -79,11 +79,11 @@ bus and consumes `agent::hook_reply` via the stream trigger.
 
 | File | Purpose |
 |---|---|
-| [src/hook-fanout/main.ts](harness-node/src/hook-fanout/main.ts) | Binary entry point (`iii-hook-fanout`). |
-| [src/hook-fanout/register.ts](harness-node/src/hook-fanout/register.ts) | Wires the public function and the internal stream-trigger handler. |
-| [src/hook-fanout/config.ts](harness-node/src/hook-fanout/config.ts) | Loads the `hook_fanout` config section. |
-| [src/hook-fanout/types.ts](harness-node/src/hook-fanout/types.ts) | `FUNCTION_ID`, `REPLY_HANDLER_FN_ID`, `HOOK_REPLY_STREAM`, `MergeRule`, request/response wire types. |
-| [src/hook-fanout/publish-collect.ts](harness-node/src/hook-fanout/publish-collect.ts) | `execute` (installs the collector, publishes, awaits the exit reason, applies merge_rule, builds the response) + `handleStreamReply` (stream-trigger callback that dispatches replies into pending collectors). |
-| [src/hook-fanout/exit.ts](harness-node/src/hook-fanout/exit.ts) | `ExitReason` enum shared with the publish-collect waiter. |
-| [src/hook-fanout/merge.ts](harness-node/src/hook-fanout/merge.ts) | Pure implementations of the three merge rules. |
-| [src/hook-fanout/iii.worker.yaml](harness-node/src/hook-fanout/iii.worker.yaml) | Worker manifest. |
+| [src/hook-fanout/main.ts](harness/src/hook-fanout/main.ts) | Binary entry point (`iii-hook-fanout`). |
+| [src/hook-fanout/register.ts](harness/src/hook-fanout/register.ts) | Wires the public function and the internal stream-trigger handler. |
+| [src/hook-fanout/config.ts](harness/src/hook-fanout/config.ts) | Loads the `hook_fanout` config section. |
+| [src/hook-fanout/types.ts](harness/src/hook-fanout/types.ts) | `FUNCTION_ID`, `REPLY_HANDLER_FN_ID`, `HOOK_REPLY_STREAM`, `MergeRule`, request/response wire types. |
+| [src/hook-fanout/publish-collect.ts](harness/src/hook-fanout/publish-collect.ts) | `execute` (installs the collector, publishes, awaits the exit reason, applies merge_rule, builds the response) + `handleStreamReply` (stream-trigger callback that dispatches replies into pending collectors). |
+| [src/hook-fanout/exit.ts](harness/src/hook-fanout/exit.ts) | `ExitReason` enum shared with the publish-collect waiter. |
+| [src/hook-fanout/merge.ts](harness/src/hook-fanout/merge.ts) | Pure implementations of the three merge rules. |
+| [src/hook-fanout/iii.worker.yaml](harness/src/hook-fanout/iii.worker.yaml) | Worker manifest. |

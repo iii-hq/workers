@@ -1,5 +1,5 @@
 {
-  "name": "harness-node",
+  "name": "harness",
   "version": "0.1.0",
   "private": true,
   "description": "Node port of the iii harness stack: harness, approval-gate, turn-orchestrator, session, llm-budget, providers, and side-cars.",
@@ -35,7 +35,7 @@
     "dev:context-compaction": "tsx src/context-compaction/main.ts"
   },
   "bin": {
-    "harness-node": "./dist/index.js",
+    "harness": "./dist/index.js",
     "iii-harness": "./dist/harness/main.js",
     "iii-approval-gate": "./dist/approval-gate/main.js",
     "iii-turn-orchestrator": "./dist/turn-orchestrator/main.js",

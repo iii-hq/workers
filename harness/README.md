@@ -1,4 +1,4 @@
-# harness-node
+# harness
 
 Node/TypeScript port of the iii harness stack. One package, one folder per
 worker, one feature per file. Each worker is independently runnable as
@@ -6,7 +6,7 @@ worker, one feature per file. Each worker is independently runnable as
 
 The Rust workers `shell`, `iii-directory`, and the engine's `state::*`/
 `stream::*`/`iii::durable::*` primitives are NOT ported — they run
-alongside `harness-node` over the iii bus.
+alongside `harness` over the iii bus.
 
 ## Workers
 

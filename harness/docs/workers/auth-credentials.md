@@ -14,7 +14,7 @@ serialize through an in-process write queue and use atomic `tmp` +
 `auth::get_token` is the resolver every consumer calls. It first looks up
 a stored credential; if none, it falls back to the per-provider
 environment variable defined in
-[src/auth-credentials/types.ts](harness-node/src/auth-credentials/types.ts)
+[src/auth-credentials/types.ts](harness/src/auth-credentials/types.ts)
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_ACCESS_KEY_ID`,
 `HF_TOKEN`, etc.) and synthesises an `ApiKey` credential. `auth::status`
 reports `{ configured, source: "stored" | "environment", label }` without
@@ -46,7 +46,7 @@ None.
 ## Configuration
 
 From the `auth_credentials` section of
-[config.yaml](harness-node/config.yaml):
+[config.yaml](harness/config.yaml):
 
 - `store_path` (default `~/.iii/auth-credentials.json`) — leading `~/` is
   expanded against the OS home directory.
@@ -54,7 +54,7 @@ From the `auth_credentials` section of
 ## Dependencies
 
 From
-[src/auth-credentials/iii.worker.yaml](harness-node/src/auth-credentials/iii.worker.yaml):
+[src/auth-credentials/iii.worker.yaml](harness/src/auth-credentials/iii.worker.yaml):
 no explicit dependency block; the worker only touches the local
 filesystem and the process environment.
 
@@ -62,15 +62,15 @@ filesystem and the process environment.
 
 | File | Purpose |
 |---|---|
-| [src/auth-credentials/main.ts](harness-node/src/auth-credentials/main.ts) | Binary entry point (`iii-auth-credentials`). |
-| [src/auth-credentials/register.ts](harness-node/src/auth-credentials/register.ts) | Composes the five handlers around a single `FileStore`. |
-| [src/auth-credentials/config.ts](harness-node/src/auth-credentials/config.ts) | Loads the `auth_credentials` section. |
-| [src/auth-credentials/types.ts](harness-node/src/auth-credentials/types.ts) | `Credential`, `AuthStatus`, `AuthSource`, `EnvKeyMatch`, and the `ENV_VAR_MAP` per-provider env table. |
-| [src/auth-credentials/store.ts](harness-node/src/auth-credentials/store.ts) | `CredentialStore` interface + `InMemoryStore` + `FileStore` (atomic tmp+rename, in-process queue). |
-| [src/auth-credentials/resolve.ts](harness-node/src/auth-credentials/resolve.ts) | Pure `resolveCredential` / `statusFor` / `findEnvKeys` helpers. |
-| [src/auth-credentials/handlers/get-token.ts](harness-node/src/auth-credentials/handlers/get-token.ts) | `auth::get_token` handler. |
-| [src/auth-credentials/handlers/set-token.ts](harness-node/src/auth-credentials/handlers/set-token.ts) | `auth::set_token` handler. |
-| [src/auth-credentials/handlers/delete-token.ts](harness-node/src/auth-credentials/handlers/delete-token.ts) | `auth::delete_token` handler. |
-| [src/auth-credentials/handlers/list-providers.ts](harness-node/src/auth-credentials/handlers/list-providers.ts) | `auth::list_providers` handler. |
-| [src/auth-credentials/handlers/status.ts](harness-node/src/auth-credentials/handlers/status.ts) | `auth::status` handler. |
-| [src/auth-credentials/iii.worker.yaml](harness-node/src/auth-credentials/iii.worker.yaml) | Worker manifest. |
+| [src/auth-credentials/main.ts](harness/src/auth-credentials/main.ts) | Binary entry point (`iii-auth-credentials`). |
+| [src/auth-credentials/register.ts](harness/src/auth-credentials/register.ts) | Composes the five handlers around a single `FileStore`. |
+| [src/auth-credentials/config.ts](harness/src/auth-credentials/config.ts) | Loads the `auth_credentials` section. |
+| [src/auth-credentials/types.ts](harness/src/auth-credentials/types.ts) | `Credential`, `AuthStatus`, `AuthSource`, `EnvKeyMatch`, and the `ENV_VAR_MAP` per-provider env table. |
+| [src/auth-credentials/store.ts](harness/src/auth-credentials/store.ts) | `CredentialStore` interface + `InMemoryStore` + `FileStore` (atomic tmp+rename, in-process queue). |
+| [src/auth-credentials/resolve.ts](harness/src/auth-credentials/resolve.ts) | Pure `resolveCredential` / `statusFor` / `findEnvKeys` helpers. |
+| [src/auth-credentials/handlers/get-token.ts](harness/src/auth-credentials/handlers/get-token.ts) | `auth::get_token` handler. |
+| [src/auth-credentials/handlers/set-token.ts](harness/src/auth-credentials/handlers/set-token.ts) | `auth::set_token` handler. |
+| [src/auth-credentials/handlers/delete-token.ts](harness/src/auth-credentials/handlers/delete-token.ts) | `auth::delete_token` handler. |
+| [src/auth-credentials/handlers/list-providers.ts](harness/src/auth-credentials/handlers/list-providers.ts) | `auth::list_providers` handler. |
+| [src/auth-credentials/handlers/status.ts](harness/src/auth-credentials/handlers/status.ts) | `auth::status` handler. |
+| [src/auth-credentials/iii.worker.yaml](harness/src/auth-credentials/iii.worker.yaml) | Worker manifest. |
