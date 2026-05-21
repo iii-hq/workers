@@ -1,40 +1,43 @@
 /**
- * `turn::step` durable subscriber.
+ * `turn::step` — one FSM transition for a session.
+ *
+ * **Incoming** (both paths deliver the same flat shape):
+ * - Direct `iii.trigger`: `{ session_id }` from `on-record-written`, `approval-resume`
+ * - `durable:subscriber` on `turn::step_requested`: `{ session_id }` only — producers
+ *   call `iii::durable::publish` with `{ topic, data: { session_id } }` but the engine
+ *   enqueues `data`, not the publish envelope
+ *
+ * **Outgoing**: `StepResult` — never throws for unknown/terminal; throws on transition failure
  */
 
+import { z } from 'zod';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnOrchestratorConfig } from './config.js';
 import * as persistence from './persistence.js';
-import { isTerminal } from './state.js';
+import { isTerminal, type TurnState } from './state.js';
 import { step } from './transitions.js';
 
-const STEP_TOPIC = 'turn::step_requested';
+export const StepPayloadSchema = z.object({
+  session_id: z.string().min(1),
+});
 
-function extractSessionId(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const obj = payload as Record<string, unknown>;
-  const inner =
-    obj.payload && typeof obj.payload === 'object'
-      ? (obj.payload as Record<string, unknown>)
-      : obj.data && typeof obj.data === 'object'
-        ? (obj.data as Record<string, unknown>)
-        : obj;
-  return typeof inner.session_id === 'string' ? inner.session_id : null;
-}
+export type StepPayload = z.infer<typeof StepPayloadSchema>;
+
+export type StepResult =
+  | { ok: true; terminal: true }
+  | { ok: true; from_state: TurnState; to_state: TurnState }
+  | { ok: false; reason: 'unknown_session' };
 
 export async function execute(
   iii: ISdk,
   cfg: TurnOrchestratorConfig,
-  payload: unknown,
-): Promise<unknown> {
-  const session_id = extractSessionId(payload);
-  if (!session_id) {
-    throw new Error('turn::step_requested payload missing session_id');
-  }
+  payload: StepPayload,
+): Promise<StepResult> {
+  const { session_id } = payload;
   const rec = await persistence.loadRecord(iii, session_id);
   if (!rec) {
-    logger.warn('turn::step_requested for unknown session', { session_id });
+    logger.warn('turn::step for unknown session', { session_id });
     return { ok: false, reason: 'unknown_session' };
   }
   if (isTerminal(rec)) {
@@ -51,12 +54,16 @@ export async function execute(
 }
 
 export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
-  iii.registerFunction('turn::step', async (payload: unknown) => execute(iii, cfg, payload), {
-    description: 'Run one durable state machine transition for a session.',
-  });
+  iii.registerFunction(
+    'turn::step',
+    async (payload: unknown) => execute(iii, cfg, StepPayloadSchema.parse(payload)),
+    {
+      description: 'Run one durable state machine transition for a session.',
+    },
+  );
   iii.registerTrigger({
     type: 'durable:subscriber',
     function_id: 'turn::step',
-    config: { topic: STEP_TOPIC },
+    config: { topic: 'turn::step_requested' },
   });
 }

@@ -13,8 +13,7 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
-import { logger } from '../runtime/otel.js';
-import { TurnStateWriteEventSchema, type ParsedTurnStateWrite } from './on-turn-state-changed.js';
+import { TurnStateWriteEventSchema } from './on-turn-state-changed.js';
 import type { TurnState } from './state.js';
 
 const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'function_awaiting_approval']);
@@ -25,45 +24,21 @@ const StepableTurnStateWriteSchema = TurnStateWriteEventSchema.refine(
   (data) => data.event_type !== 'state:updated' || data.old_value?.state !== data.new_value.state,
 );
 
-export type StepableWrite = Pick<ParsedTurnStateWrite, 'session_id'> & { state: TurnState };
+export type StepableWrite = { session_id: string };
 
 export function parseStepableWrite(event: unknown): StepableWrite | null {
   const result = StepableTurnStateWriteSchema.safeParse(event);
   if (!result.success) return null;
-  return { session_id: result.data.session_id, state: result.data.new_value.state as TurnState };
-}
-
-export async function stepOnStepableWrite(iii: ISdk, write: StepableWrite): Promise<void> {
-  try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'turn::step',
-      payload: { session_id: write.session_id },
-    });
-    return;
-  } catch (err) {
-    logger.warn(
-      'turn::on_record_written: direct turn::step failed; falling back to durable publish',
-      { session_id: write.session_id, err: String(err) },
-    );
-    try {
-      await iii.trigger<unknown, unknown>({
-        function_id: 'iii::durable::publish',
-        payload: { topic: 'turn::step_requested', data: { session_id: write.session_id } },
-      });
-    } catch (publishErr) {
-      logger.error(
-        'turn::on_record_written: durable publish fallback also failed; session may be stuck',
-        { session_id: write.session_id, err: String(publishErr) },
-      );
-    }
-  }
+  return { session_id: result.data.session_id };
 }
 
 export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Promise<void> {
   const write = parseStepableWrite(event);
-  if (write) {
-    await stepOnStepableWrite(iii, write);
-  }
+  if (!write) return;
+  await iii.trigger<unknown, unknown>({
+    function_id: 'turn::step',
+    payload: { session_id: write.session_id },
+  });
 }
 
 export function register(iii: ISdk): void {
