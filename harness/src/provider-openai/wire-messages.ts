@@ -49,7 +49,21 @@ export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string
         content: text,
       };
       if (m.is_error) row.is_error = true;
-      out.push(row);
+      // Boundary dedup: never ship two tool messages with the same
+      // tool_call_id. Some OpenAI-compatible servers accept duplicates
+      // and silently overwrite; others (Anthropic's compat shim,
+      // strict gateways) reject. Latest-wins: replace any prior tool
+      // message with the same id rather than appending.
+      const existingIdx = out.findIndex(
+        (e) =>
+          (e as { role?: string }).role === 'tool' &&
+          (e as { tool_call_id?: string }).tool_call_id === m.function_call_id,
+      );
+      if (existingIdx >= 0) {
+        out[existingIdx] = row;
+      } else {
+        out.push(row);
+      }
     }
     // custom messages are skipped
   }

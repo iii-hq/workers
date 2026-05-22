@@ -5,6 +5,7 @@
 
 import { STATE_SCOPE } from '../../approval-gate/schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
+import { logger } from '../../runtime/otel.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type {
   AgentMessage,
@@ -366,13 +367,41 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
     });
   }
   const messages = await persistence.loadMessages(iii, rec.session_id);
-  for (const r of function_results) messages.push(r as AgentMessage);
+  // Idempotency guard: handleFinalize can re-enter (durable trigger retry,
+  // step-fanout race, crash mid-finalize before transitionTo persists).
+  // executedCalls is only cleared at the start of the NEXT handlePrepare,
+  // so a second run reads the SAME results and would push duplicates into
+  // flat-state. Skip any function_result whose function_call_id is already
+  // present. Anthropic rejects duplicate `tool_result` blocks with id:
+  //   "each tool_use must have a single result. Found multiple tool_result
+  //    blocks with id: toolu_..."
+  // and any provider's wire-messages flush would produce them otherwise.
+  const existingResultIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'function_result') existingResultIds.add(m.function_call_id);
+  }
+  let appended = 0;
+  for (const r of function_results) {
+    if (existingResultIds.has(r.function_call_id)) continue;
+    messages.push(r as AgentMessage);
+    existingResultIds.add(r.function_call_id);
+    appended++;
+  }
+  if (appended < function_results.length) {
+    logger.warn('handleFinalize: skipped duplicate function_results (re-entry detected)', {
+      session_id: rec.session_id,
+      total: function_results.length,
+      appended,
+      skipped: function_results.length - appended,
+    });
+  }
   await persistence.saveMessages(iii, rec.session_id, messages);
 
   const asst = rec.last_assistant;
   if (!asst) {
     rec.function_results = function_results;
     rec.pending_function_calls = [];
+    await persistence.saveExecutedCalls(iii, rec.session_id, []);
     transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
     return;
   }
@@ -382,5 +411,11 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
   rec.turn_end_emitted = true;
   rec.function_results = function_results;
   rec.pending_function_calls = [];
+  // Clear persisted executedCalls now so a re-entry into handleFinalize
+  // (durable retry, crash before transitionTo) finds an empty set and
+  // produces zero new function_results to push. Belt+suspenders alongside
+  // the idempotency guard above. handlePrepare also clears at the start
+  // of the NEXT turn, but that's too late if re-entry happens before then.
+  await persistence.saveExecutedCalls(iii, rec.session_id, []);
   transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
 }

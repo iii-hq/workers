@@ -4,6 +4,8 @@ function_id: directory::skills::list
 title: Enumerate every skill on disk with title and description
 ---
 
+> **Function id:** `directory::skills::list` — pass this to `agent_trigger { function: "directory::skills::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::skills::list` when you need an enumeration of every

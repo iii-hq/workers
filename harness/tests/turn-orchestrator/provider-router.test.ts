@@ -18,6 +18,20 @@ describe('decide', () => {
     expect(decide({ provider: 'kimi', model: 'kimi-k2-0905-preview' }).provider).toBe('kimi');
   });
 
+  it('routes lmstudio when provider=lmstudio (no model-name heuristic)', () => {
+    expect(decide({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' }).provider).toBe(
+      'lmstudio',
+    );
+    expect(
+      decide({
+        provider: 'lmstudio',
+        model: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
+      }).provider,
+    ).toBe('lmstudio');
+    // No heuristic — a bare model name without provider does NOT route to lmstudio.
+    expect(decide({ model: 'qwen/qwen3-4b-2507' }).provider).toBe('anthropic');
+  });
+
   it('falls back to model heuristic when provider missing', () => {
     expect(decide({ model: 'gpt-5' }).provider).toBe('openai');
     expect(decide({ model: 'claude-opus-4-7' }).provider).toBe('anthropic');
@@ -36,6 +50,9 @@ describe('targetFunctionId', () => {
     );
     expect(targetFunctionId({ provider: 'openai', model: 'm' })).toBe('provider::openai::stream');
     expect(targetFunctionId({ provider: 'kimi', model: 'm' })).toBe('provider::kimi::stream');
+    expect(targetFunctionId({ provider: 'lmstudio', model: 'm' })).toBe(
+      'provider::lmstudio::stream',
+    );
   });
 });
 

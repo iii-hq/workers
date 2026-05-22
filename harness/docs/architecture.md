@@ -29,6 +29,7 @@ workers.
 | provider-anthropic | [src/provider-anthropic/](harness/src/provider-anthropic/) | Anthropic Messages API SSE → channel writer. | [workers/provider-anthropic.md](harness/docs/workers/provider-anthropic.md) |
 | provider-openai | [src/provider-openai/](harness/src/provider-openai/) | OpenAI Chat Completions SSE → channel writer. | [workers/provider-openai.md](harness/docs/workers/provider-openai.md) |
 | provider-kimi | [src/provider-kimi/](harness/src/provider-kimi/) | Kimi Chat Completions SSE → channel writer. | [workers/provider-kimi.md](harness/docs/workers/provider-kimi.md) |
+| provider-lmstudio | [src/provider-lmstudio/](harness/src/provider-lmstudio/) | LM Studio (localhost) Chat Completions SSE → channel writer. | [workers/provider-lmstudio.md](harness/docs/workers/provider-lmstudio.md) |
 | context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::events` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
 
 ## System diagram
@@ -49,6 +50,7 @@ flowchart LR
     provAnth[provider-anthropic]
     provOAI[provider-openai]
     provKimi[provider-kimi]
+    provLms[provider-lmstudio]
     compact[context-compaction]
   end
 
@@ -65,6 +67,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
   turnOrch -- "provider::*::stream" --> provKimi
+  turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
   turnOrch -- "agent::trigger → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
@@ -78,6 +81,7 @@ flowchart LR
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
   provKimi -- "auth::get_token" --> auth
+  provLms -- "auth::get_token (optional)" --> auth
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
@@ -202,14 +206,17 @@ flowchart TD
   auth[auth-credentials] --> provAnth[provider-anthropic]
   auth --> provOAI[provider-openai]
   auth --> provKimi[provider-kimi]
+  auth --> provLms[provider-lmstudio]
   provAnth --> turnOrch
   provOAI --> turnOrch
   provKimi --> turnOrch
+  provLms --> turnOrch
   hook[hook-fanout] --> approval
   session --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact
   provKimi --> compact
+  provLms --> compact
   budget[llm-budget]
 ```
 

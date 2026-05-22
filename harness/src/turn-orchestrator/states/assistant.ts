@@ -305,8 +305,29 @@ export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<v
   // LLM's next-turn context doesn't accumulate transient infra noise.
   if (!isErrorOrAborted) {
     const messages = await persistence.loadMessages(iii, rec.session_id);
-    messages.push(asst);
-    await persistence.saveMessages(iii, rec.session_id, messages);
+    // Idempotency guard: handleFinished can re-enter (durable trigger
+    // retry, crash before transitionTo persists). Without this guard a
+    // second run pushes the SAME assistant message again. If that
+    // assistant has tool_calls, Anthropic rejects the next request with:
+    //   "each tool_use must have a unique id".
+    // Detect by comparing timestamp + content shape against the last
+    // assistant message in flat-state; skip the push when they match.
+    const last = messages[messages.length - 1];
+    const alreadyPersisted =
+      last &&
+      last.role === 'assistant' &&
+      last.timestamp === asst.timestamp &&
+      last.model === asst.model &&
+      last.provider === asst.provider;
+    if (alreadyPersisted) {
+      logger.warn('handleFinished: skipping duplicate assistant push (re-entry detected)', {
+        session_id: rec.session_id,
+        timestamp: asst.timestamp,
+      });
+    } else {
+      messages.push(asst);
+      await persistence.saveMessages(iii, rec.session_id, messages);
+    }
   }
 
   if (isErrorOrAborted) {

@@ -1,9 +1,13 @@
 import { Copy, X } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { uid } from '@/hooks/use-conversations'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import type { ChatBackend } from '@/lib/backend'
+import {
+  nextApprovalsToAutoResolve,
+  type PendingApprovalCandidate,
+} from '@/lib/backend/auto-accept'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
 import { makeSessionId } from '@/lib/session-id'
@@ -62,6 +66,34 @@ function compactResultTone(result: CompactResult): 'info' | 'warn' | 'error' {
   return 'warn'
 }
 
+/**
+ * Render a `stop-reason` StreamEvent as user-readable notice text.
+ * Used when an assistant turn ends abnormally (max_tokens hit, provider
+ * error, abort) so the user sees a clear cause instead of a silently
+ * truncated reply.
+ */
+function formatStopReason(
+  reason: 'length' | 'error' | 'aborted' | 'function_call',
+  message?: string,
+): string {
+  switch (reason) {
+    case 'length':
+      return (
+        'response truncated — the model hit its max output tokens before finishing. ' +
+        'increase the provider worker\'s `default_max_tokens` (or the model\'s `max_output_tokens` in the catalog), ' +
+        'or send "continue" to resume.'
+      )
+    case 'error':
+      return message
+        ? `response failed: ${message}`
+        : 'response failed mid-stream (no error message from the provider).'
+    case 'aborted':
+      return 'response aborted before completion.'
+    case 'function_call':
+      return 'response paused for tool call.'
+  }
+}
+
 interface ChatViewProps {
   conversation: Conversation
   backend: ChatBackend
@@ -72,6 +104,7 @@ interface ChatViewProps {
   onClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
+  onUpdateAutoAccept: (id: string, autoAccept: boolean) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -86,6 +119,7 @@ export function ChatView({
   onClose,
   onUpdateModel,
   onUpdateMode,
+  onUpdateAutoAccept,
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
@@ -105,6 +139,59 @@ export function ChatView({
     const match = modelOptions.find((o) => o.id === conversation.model)
     return match?.contextWindow
   }, [modelOptions, conversation.model])
+
+  /* Per-conversation auto-accept. When `conversation.autoAccept` is
+   * true, any pending function-call approval that surfaces in the
+   * transcript is auto-resolved with `decision: "allow"` so the user
+   * doesn't have to click. The approval card still renders briefly
+   * for audit — we just press the button on their behalf.
+   *
+   * Dedupe by iii `function_call_id` in a ref so the effect (which
+   * re-runs on every message-list patch) doesn't fire `resolve`
+   * twice for the same pending entry. The ref resets when the
+   * conversation id changes — a fresh conversation starts with a
+   * clean slate. */
+  const autoResolvedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    autoResolvedRef.current = new Set()
+  }, [conversation.id])
+
+  useEffect(() => {
+    if (!conversation.autoAccept) return
+    if (!backend.resolveApproval) return
+    const candidates: PendingApprovalCandidate[] = []
+    for (const m of conversation.messages) {
+      if (
+        m.role === 'function-call' &&
+        m.pendingApproval === true &&
+        typeof m.functionCallId === 'string' &&
+        typeof m.sessionId === 'string'
+      ) {
+        candidates.push({
+          functionCallId: m.functionCallId,
+          sessionId: m.sessionId,
+        })
+      }
+    }
+    const todo = nextApprovalsToAutoResolve(candidates, autoResolvedRef.current)
+    if (todo.length === 0) return
+    for (const p of todo) {
+      autoResolvedRef.current.add(p.functionCallId)
+      void backend.resolveApproval(p.sessionId, p.functionCallId, 'allow').catch(
+        (err) => {
+          /* Same warn-and-continue posture as the per-card resolve
+           * handler — a transient failure shouldn't break the loop
+           * for the next pending entry. The orchestrator will keep
+           * the approval pending; the user can still click manually. */
+          console.warn(
+            '[chat] auto-accept: approval::resolve failed',
+            { functionCallId: p.functionCallId, sessionId: p.sessionId, err },
+          )
+          autoResolvedRef.current.delete(p.functionCallId)
+        },
+      )
+    }
+  }, [conversation.autoAccept, conversation.messages, backend])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -323,6 +410,45 @@ export function ChatView({
               assistantBuffer = ''
               break
             }
+            case 'compaction': {
+              // Server-side context-compaction finished rewriting the
+              // session's flat-state. Append a marker so:
+              //   1. The user sees that compaction happened.
+              //   2. estimateConversationTokens stops counting pre-marker
+              //      messages → the CTX bar drops to the real value.
+              // We append (not replace) so the transcript stays scrollable.
+              const marker: SystemMessage = {
+                id: uid(),
+                role: 'system',
+                kind: 'compaction',
+                content:
+                  event.mode === 'sync'
+                    ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
+                    : `compacted ${event.tokensBefore.toLocaleString()} tokens (background)`,
+                tone: 'info',
+                summaryText: event.summaryText,
+                tokensBefore: event.tokensBefore,
+                createdAt: Date.now(),
+              }
+              onAppendMessage(conversationId, marker)
+              break
+            }
+            case 'stop-reason': {
+              // The assistant turn ended abnormally — show the user why
+              // instead of leaving the response looking like it just
+              // ran out of words. Pre-fix this event didn't exist and
+              // the same condition produced a silently truncated reply.
+              const notice: SystemMessage = {
+                id: uid(),
+                role: 'system',
+                kind: 'notice',
+                content: formatStopReason(event.reason, event.message),
+                tone: event.reason === 'error' ? 'error' : 'warn',
+                createdAt: Date.now(),
+              }
+              onAppendMessage(conversationId, notice)
+              break
+            }
           }
           if (
             event.kind === 'fcall-start' ||
@@ -489,8 +615,12 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             functionEntries={functionEntries}
+            autoAccept={conversation.autoAccept}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
+            onAutoAcceptChange={(next) =>
+              onUpdateAutoAccept(conversation.id, next)
+            }
             onSubmit={handleSubmit}
             onStop={handleStop}
             isStreaming={isStreaming}

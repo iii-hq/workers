@@ -4,6 +4,8 @@ function_id: directory::engine::registered-triggers::info
 title: Inspect one registered trigger (instance + type + function)
 ---
 
+> **Function id:** `directory::engine::registered-triggers::info` — pass this to `agent_trigger { function: "directory::engine::registered-triggers::info" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::engine::registered-triggers::info` when you have a

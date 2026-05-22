@@ -4,6 +4,8 @@ function_id: directory::registry::workers::info
 title: Inspect one worker's full registry metadata
 ---
 
+> **Function id:** `directory::registry::workers::info` — pass this to `agent_trigger { function: "directory::registry::workers::info" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::registry::workers::info` to pull the FULL published

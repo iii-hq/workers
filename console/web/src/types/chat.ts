@@ -148,6 +148,17 @@ export interface Conversation {
   titleManual?: boolean
   model: ModelId
   mode: Mode
+  /**
+   * When true, the chat client auto-fires `approval::resolve {
+   * decision: "allow" }` for every new pending approval that surfaces
+   * in this conversation's state, instead of waiting for the user to
+   * click "approve". Persists per-conversation; a fresh conversation
+   * defaults to false so "yolo" doesn't carry across sessions.
+   *
+   * The approval card still renders briefly in the transcript for
+   * audit — we just click the button for the user.
+   */
+  autoAccept: boolean
   messages: Message[]
   createdAt: number
   updatedAt: number

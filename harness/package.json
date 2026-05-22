@@ -32,6 +32,7 @@
     "dev:provider-anthropic": "tsx src/provider-anthropic/main.ts",
     "dev:provider-openai": "tsx src/provider-openai/main.ts",
     "dev:provider-kimi": "tsx src/provider-kimi/main.ts",
+    "dev:provider-lmstudio": "tsx src/provider-lmstudio/main.ts",
     "dev:context-compaction": "tsx src/context-compaction/main.ts"
   },
   "bin": {
@@ -47,6 +48,7 @@
     "iii-provider-anthropic": "./dist/provider-anthropic/main.js",
     "iii-provider-openai": "./dist/provider-openai/main.js",
     "iii-provider-kimi": "./dist/provider-kimi/main.js",
+    "iii-provider-lmstudio": "./dist/provider-lmstudio/main.js",
     "iii-context-compaction": "./dist/context-compaction/main.js"
   },
   "dependencies": {

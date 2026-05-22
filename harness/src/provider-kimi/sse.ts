@@ -9,6 +9,16 @@ type PartialToolCall = { id: string; function_id: string; args_json: string };
 
 export type PartialState = {
   text: string;
+  /**
+   * Accumulated reasoning content emitted by Kimi K2 / K2.6 thinking mode
+   * via `delta.reasoning_content`. Persisted as a `thinking` ContentBlock
+   * on the AssistantMessage so subsequent turns can replay it back via
+   * the `reasoning_content` field on the wire — Kimi rejects assistant
+   * messages with tool_calls but no reasoning_content when thinking is
+   * enabled ("thinking is enabled but reasoning_content is missing in
+   * assistant tool call message at index N").
+   */
+  reasoning_text: string;
   tool_calls: PartialToolCall[];
   usage: Usage;
   stop_reason: StopReason;
@@ -17,6 +27,7 @@ export type PartialState = {
 export function emptyPartial(): PartialState {
   return {
     text: '',
+    reasoning_text: '',
     tool_calls: [],
     usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
     stop_reason: 'end',
@@ -25,6 +36,12 @@ export function emptyPartial(): PartialState {
 
 function buildContent(state: PartialState): ContentBlock[] {
   const out: ContentBlock[] = [];
+  // Thinking goes FIRST so the provider-agnostic ContentBlock[] preserves
+  // the natural order: think → answer / tool_call. Kimi's wire format
+  // also lists reasoning_content before content / tool_calls.
+  if (state.reasoning_text.length > 0) {
+    out.push({ type: 'thinking', text: state.reasoning_text });
+  }
   if (state.text.length > 0) out.push({ type: 'text', text: state.text });
   for (const tc of state.tool_calls) {
     if (tc.function_id.length === 0) continue;
@@ -126,6 +143,24 @@ export function handleChunk(
   if (finish) state.stop_reason = mapFinishReason(finish);
   const delta = choice.delta as Record<string, unknown> | undefined;
   if (!delta) return events;
+
+  // Reasoning tokens — Kimi K2.6 thinking mode streams these on
+  // `delta.reasoning_content` BEFORE any content/tool_calls. We surface
+  // them as thinking_* events (mirrors Anthropic's extended thinking
+  // shape) and persist them on the AssistantMessage so the next request
+  // can echo them back via `reasoning_content`, which Kimi requires on
+  // assistant tool-call messages when thinking is enabled.
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+    if (state.reasoning_text.length === 0) {
+      events.push({ type: 'thinking_start', partial: buildPartial(state, model, provider) });
+    }
+    state.reasoning_text += delta.reasoning_content;
+    events.push({
+      type: 'thinking_delta',
+      partial: buildPartial(state, model, provider),
+      delta: delta.reasoning_content,
+    });
+  }
 
   if (typeof delta.content === 'string' && delta.content.length > 0) {
     if (state.text.length === 0) {

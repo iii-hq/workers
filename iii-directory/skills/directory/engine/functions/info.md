@@ -4,6 +4,8 @@ function_id: directory::engine::functions::info
 title: Inspect one function's schemas, owner, and how-to skill
 ---
 
+> **Function id:** `directory::engine::functions::info` — pass this to `agent_trigger { function: "directory::engine::functions::info" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::engine::functions::info` once you've identified a

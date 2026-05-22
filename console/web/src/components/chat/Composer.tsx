@@ -5,6 +5,7 @@ import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
 import type { FunctionEntry } from '@/lib/functions'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { AutoAcceptToggle } from './AutoAcceptToggle'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
@@ -19,8 +20,16 @@ interface ComposerProps {
   model: ModelId
   modelOptions: ModelOption[]
   catalogLoading?: boolean
+  /**
+   * Per-conversation auto-accept-all-approvals flag. When true, the
+   * chat client auto-resolves every pending approval that surfaces
+   * for this conversation. Rendered as a sibling pill of the mode
+   * picker.
+   */
+  autoAccept: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
+  onAutoAcceptChange: (next: boolean) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
   isStreaming?: boolean
@@ -36,8 +45,10 @@ export function Composer({
   model,
   modelOptions,
   catalogLoading,
+  autoAccept,
   onModeChange,
   onModelChange,
+  onAutoAcceptChange,
   onSubmit,
   onStop,
   isStreaming,
@@ -100,6 +111,11 @@ export function Composer({
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
         <AttachmentButton onAttach={handleAttach} disabled={isStreaming} />
         <ModePicker value={mode} onChange={onModeChange} />
+        <AutoAcceptToggle
+          value={autoAccept}
+          onChange={onAutoAcceptChange}
+          disabled={isStreaming}
+        />
         <div className="flex-1 min-w-0" />
         <ModelPicker
           value={model}

@@ -17,6 +17,7 @@ import { register as registerLlmBudget } from './llm-budget/register.js';
 import { register as registerModelsCatalog } from './models-catalog/register.js';
 import { register as registerProviderAnthropic } from './provider-anthropic/register.js';
 import { register as registerProviderKimi } from './provider-kimi/register.js';
+import { register as registerProviderLmstudio } from './provider-lmstudio/register.js';
 import { register as registerProviderOpenai } from './provider-openai/register.js';
 import { logger } from './runtime/otel.js';
 import {
@@ -88,6 +89,12 @@ const WORKERS: readonly WorkerDefinition[] = [
     description:
       'Kimi (Moonshot) Chat Completions streaming provider on the iii bus (provider::kimi::stream + ::complete).',
     register: (iii, ctx) => registerProviderKimi(iii, ctx),
+  },
+  {
+    name: 'provider-lmstudio',
+    description:
+      'LM Studio (localhost) Chat Completions streaming provider on the iii bus (provider::lmstudio::stream + ::complete).',
+    register: (iii, ctx) => registerProviderLmstudio(iii, ctx),
   },
   {
     name: 'llm-budget',

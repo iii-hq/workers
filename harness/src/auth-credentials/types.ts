@@ -60,6 +60,7 @@ export const ENV_VAR_MAP: ReadonlyArray<readonly [string, string]> = [
   ['fireworks', 'FIREWORKS_API_KEY'],
   ['kimi', 'MOONSHOT_API_KEY'],
   ['kimi-coding', 'MOONSHOT_API_KEY'],
+  ['lmstudio', 'LMSTUDIO_API_KEY'],
   ['opencode-zen', 'OPENCODE_ZEN_API_KEY'],
   ['opencode-go', 'OPENCODE_GO_API_KEY'],
 ] as const;

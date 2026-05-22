@@ -98,6 +98,65 @@ describe('estimateConversationTokens', () => {
   it('returns 0 for an empty conversation', () => {
     expect(estimateConversationTokens([])).toBe(0)
   })
+
+  it('skips messages older than the most-recent compaction marker', () => {
+    // After server-side compaction, the messages BEFORE the marker have
+    // been summarised away on the server. Counting them would keep the
+    // CTX bar pinned at pre-compaction levels and lie about reality.
+    const compactionMarker: Message = {
+      id: 'c',
+      role: 'system',
+      kind: 'compaction',
+      content: 'compacted',
+      summaryText: 'short summary',
+      createdAt: 0,
+    }
+    const msgs: Message[] = [
+      userMsg('this user msg is no longer in flat-state'),
+      asstMsg('this assistant reply is also gone server-side'),
+      compactionMarker,
+      userMsg('post-compaction message'),
+    ]
+    const expected =
+      Math.ceil('short summary'.length / 4) +
+      Math.ceil('post-compaction message'.length / 4)
+    expect(estimateConversationTokens(msgs)).toBe(expected)
+  })
+
+  it('honours only the LAST marker when several compactions have stacked', () => {
+    const marker1: Message = {
+      id: 'c1',
+      role: 'system',
+      kind: 'compaction',
+      content: 'compacted',
+      summaryText: 'first summary',
+      createdAt: 0,
+    }
+    const marker2: Message = {
+      id: 'c2',
+      role: 'system',
+      kind: 'compaction',
+      content: 'compacted again',
+      summaryText: 'second summary',
+      createdAt: 0,
+    }
+    const msgs: Message[] = [
+      userMsg('ancient'),
+      marker1,
+      userMsg('middle, also discarded after re-compact'),
+      marker2,
+      userMsg('current'),
+    ]
+    // Only marker2's summary + the trailing user message count.
+    const expected =
+      Math.ceil('second summary'.length / 4) + Math.ceil('current'.length / 4)
+    expect(estimateConversationTokens(msgs)).toBe(expected)
+  })
+
+  it('counts every message when no compaction marker is present', () => {
+    const msgs = [userMsg('a'.repeat(40)), asstMsg('b'.repeat(40))]
+    expect(estimateConversationTokens(msgs)).toBe(Math.ceil(40 / 4) * 2)
+  })
 })
 
 describe('formatTokenCount', () => {

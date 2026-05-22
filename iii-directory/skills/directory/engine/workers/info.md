@@ -4,6 +4,8 @@ function_id: directory::engine::workers::info
 title: Inspect one connected worker's full surface
 ---
 
+> **Function id:** `directory::engine::workers::info` — pass this to `agent_trigger { function: "directory::engine::workers::info" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::engine::workers::info` to see everything one connected

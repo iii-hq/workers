@@ -12,6 +12,10 @@ export function loadConversations(): Conversation[] {
     if (!Array.isArray(parsed)) return []
     return parsed.filter(isConversation).map((c) => ({
       ...c,
+      /* `autoAccept` was added later; legacy localStorage payloads
+       * don't carry it. Default to false so old conversations don't
+       * silently inherit auto-approve. */
+      autoAccept: typeof c.autoAccept === 'boolean' ? c.autoAccept : false,
       messages: c.messages.filter(isValidMessage),
     }))
   } catch {
