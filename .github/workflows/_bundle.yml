@@ -126,7 +126,7 @@ jobs:
           exit 1
 
       - name: Unsupported language
-        if: inputs.language != 'node' && inputs.language != 'python'
+        if: inputs.language != 'javascript' && inputs.language != 'python'
         env:
           LANG_IN: ${{ inputs.language }}
         run: |
