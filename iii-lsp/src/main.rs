@@ -9,6 +9,7 @@ mod analyzer;
 mod completions;
 mod diagnostics;
 mod engine_client;
+mod engine_introspection;
 mod hover;
 
 #[derive(ClapParser, Debug)]

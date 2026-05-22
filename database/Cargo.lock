@@ -596,7 +596,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "database"
-version = "0.0.4"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1310,9 +1310,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.12.0-next.1"
+version = "0.13.0-next.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60ce447ddd571bfa8fc40270a9de6e7655a91d2b949f0d5c12842cde14e107bd"
+checksum = "17cf728e12b30b11c37295304e0a5807cf677cca430b66609b7ae3c6044c358d"
 dependencies = [
  "async-trait",
  "futures-util",
