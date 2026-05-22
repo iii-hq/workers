@@ -1,9 +1,15 @@
 /**
  * Self-loop wake: a state trigger on `scope: 'agent'` filtered by the
  * turn_state key shape and a stepable state TRANSITION (new state differs
- * from old, non-terminal, non-awaiting) invokes `turn::step`. Saving the
- * record on a real transition is the wake — replaces the durable
- * `turn::step_requested` self-publish that used to live in `subscriber.ts`.
+ * from old, non-terminal, non-awaiting) publishes `turn::step_requested`.
+ * Saving the record on a real transition is the wake.
+ *
+ * **Incoming**: agent state write event (`TurnStateWriteEventSchema`) where
+ * `new_value.state` is stepable (not `stopped` / `function_awaiting_approval`)
+ * and `state:updated` changes `old_value.state`.
+ * **Outgoing**: `iii::durable::publish` with
+ * `{ topic: 'turn::step_requested', data: { session_id } }` — the durable
+ * subscriber receives flat `{ session_id }` only.
  *
  * Same-state writes (e.g. `handlePrepare` calling `saveRecord` while still
  * in `function_prepare` to persist normalized calls) MUST NOT wake step,
@@ -18,7 +24,7 @@ import type { TurnState } from './state.js';
 
 const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'function_awaiting_approval']);
 
-const StepableTurnStateWriteSchema = TurnStateWriteEventSchema.refine(
+export const StepableTurnStateWriteSchema = TurnStateWriteEventSchema.refine(
   (data) => !NON_STEPABLE_STATES.has(data.new_value.state as TurnState),
 ).refine(
   (data) => data.event_type !== 'state:updated' || data.old_value?.state !== data.new_value.state,
@@ -36,8 +42,8 @@ export async function handleStepableRecordWrite(iii: ISdk, event: unknown): Prom
   const write = parseStepableWrite(event);
   if (!write) return;
   await iii.trigger<unknown, unknown>({
-    function_id: 'turn::step',
-    payload: { session_id: write.session_id },
+    function_id: 'iii::durable::publish',
+    payload: { topic: 'turn::step_requested', data: { session_id: write.session_id } },
   });
 }
 
@@ -56,7 +62,7 @@ export function register(iii: ISdk): void {
     async (event: unknown) => handleStepableRecordWrite(iii, event),
     {
       description:
-        'State trigger adapter on scope=agent for stepable turn_state writes; invokes turn::step. Replaces the imperative publishStep self-publish.',
+        'State trigger adapter on scope=agent for stepable turn_state writes; publishes turn::step_requested.',
     },
   );
 

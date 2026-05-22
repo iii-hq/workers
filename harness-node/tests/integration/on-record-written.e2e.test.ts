@@ -33,8 +33,11 @@ function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> 
         return null;
       }
 
-      if (function_id === 'turn::step') {
-        stepInvocations.push(payload as { session_id: string });
+      if (function_id === 'iii::durable::publish') {
+        const p = payload as { topic: string; data: { session_id: string } };
+        if (p.topic === 'turn::step_requested') {
+          stepInvocations.push({ session_id: p.data.session_id });
+        }
         return null;
       }
 
@@ -46,7 +49,7 @@ function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> 
 }
 
 describe('turn-step reactive wake', () => {
-  it('writing session/<sid>/turn_state with a stepable state invokes turn::step', async () => {
+  it('writing session/<sid>/turn_state with a stepable state publishes turn::step_requested', async () => {
     const { iii, stepInvocations } = fakeIii();
 
     await iii.trigger({
@@ -63,7 +66,7 @@ describe('turn-step reactive wake', () => {
     expect(stepInvocations).toEqual([{ session_id: 'sess-a' }]);
   });
 
-  it('subsequent transitions also wake turn::step', async () => {
+  it('subsequent transitions also publish turn::step_requested', async () => {
     const { iii, stepInvocations } = fakeIii();
 
     await iii.trigger({

@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
 import * as transitions from '../../src/turn-orchestrator/transitions.js';
-import { execute, StepPayloadSchema } from '../../src/turn-orchestrator/subscriber.js';
+import { execute, shouldStep, StepPayloadSchema } from '../../src/turn-orchestrator/subscriber.js';
 
 const cfg: TurnOrchestratorConfig = { system_default_skills: [] };
 
@@ -49,36 +49,70 @@ describe('StepPayloadSchema', () => {
   });
 });
 
-describe('execute', () => {
-  it('returns unknown_session when the record does not exist', async () => {
+describe('shouldStep', () => {
+  it('returns false when the record does not exist', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     vi.spyOn(persistence, 'loadRecord').mockResolvedValue(null);
 
-    await expect(execute(iii, cfg, { session_id: 'missing' })).resolves.toEqual({
-      ok: false,
-      reason: 'unknown_session',
-    });
+    await expect(shouldStep(iii, { session_id: 'missing' })).resolves.toBe(false);
   });
 
-  it('returns terminal without stepping when the record is stopped', async () => {
+  it('returns false when the record is stopped', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'stopped';
     vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const stepSpy = vi.spyOn(transitions, 'step');
 
-    await expect(execute(iii, cfg, { session_id: 's1' })).resolves.toEqual({
-      ok: true,
-      terminal: true,
-    });
-    expect(stepSpy).not.toHaveBeenCalled();
+    await expect(shouldStep(iii, { session_id: 's1' })).resolves.toBe(false);
+  });
+
+  it('returns true for a known non-terminal session', async () => {
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    const rec = newRecord('s1');
+    rec.state = 'provisioning';
+    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
+
+    await expect(shouldStep(iii, { session_id: 's1' })).resolves.toBe(true);
+  });
+
+  it('rejects malformed payloads', async () => {
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    const loadSpy = vi.spyOn(persistence, 'loadRecord');
+
+    await expect(shouldStep(iii, {})).resolves.toBe(false);
+    expect(loadSpy).not.toHaveBeenCalled();
+  });
+});
+
+function mockTurnStateGet(iii: ISdk, rec: ReturnType<typeof newRecord> | null): void {
+  vi.mocked(iii.trigger).mockImplementation(async (req) => {
+    if (
+      req.function_id === 'state::get' &&
+      req.payload &&
+      typeof req.payload === 'object' &&
+      (req.payload as { key?: string }).key === turnStateKey(rec?.session_id ?? 'missing')
+    ) {
+      return rec;
+    }
+    throw new Error(`unexpected trigger ${req.function_id}`);
+  });
+}
+
+describe('execute', () => {
+  it('throws when the record does not exist', async () => {
+    const iii = { trigger: vi.fn() } as unknown as ISdk;
+    mockTurnStateGet(iii, null);
+
+    await expect(execute(iii, cfg, { session_id: 'missing' })).rejects.toThrow(
+      'turn::step invariant: missing session missing',
+    );
   });
 
   it('steps, persists, and returns from_state/to_state on success', async () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'provisioning';
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
+    mockTurnStateGet(iii, rec);
     vi.spyOn(transitions, 'step').mockImplementation(async (_iii, _cfg, r) => {
       r.state = 'awaiting_assistant';
     });
@@ -96,7 +130,7 @@ describe('execute', () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
+    mockTurnStateGet(iii, rec);
     vi.spyOn(transitions, 'step').mockRejectedValue(new Error('sandbox gone'));
 
     await expect(execute(iii, cfg, { session_id: 's1' })).rejects.toThrow(

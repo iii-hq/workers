@@ -2,8 +2,28 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   handleTurnStateWrite,
+  isTurnStateWrite,
   parseTurnStateWrite,
+  TurnStateWriteEventSchema,
 } from '../../src/turn-orchestrator/on-turn-state-changed.js';
+
+const canonicalCreated = {
+  event_type: 'state:created' as const,
+  scope: 'agent' as const,
+  key: 'session/sess-a/turn_state',
+  old_value: null,
+  new_value: { state: 'provisioning' },
+  message_type: 'state' as const,
+};
+
+const canonicalUpdated = {
+  event_type: 'state:updated' as const,
+  scope: 'agent' as const,
+  key: 'session/sess-a/turn_state',
+  old_value: { state: 'function_execute' },
+  new_value: { state: 'function_awaiting_approval' },
+  message_type: 'state' as const,
+};
 
 function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unknown }> } {
   const emits: Array<{ session_id: string; event: unknown }> = [];
@@ -20,8 +40,26 @@ function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unkno
   return { iii, emits };
 }
 
-describe('parseTurnStateWrite', () => {
-  it('parses state:created on session/<sid>/turn_state', () => {
+describe('TurnStateWriteEventSchema / isTurnStateWrite', () => {
+  it('accepts the canonical agent state write shape from the iii engine', () => {
+    expect(TurnStateWriteEventSchema.parse(canonicalCreated)).toEqual({
+      session_id: 'sess-a',
+      event_type: 'state:created',
+      new_value: { state: 'provisioning' },
+    });
+
+    expect(TurnStateWriteEventSchema.parse(canonicalUpdated)).toEqual({
+      session_id: 'sess-a',
+      event_type: 'state:updated',
+      new_value: { state: 'function_awaiting_approval' },
+      old_value: { state: 'function_execute' },
+    });
+
+    expect(isTurnStateWrite(canonicalCreated)).toBe(true);
+    expect(isTurnStateWrite(canonicalUpdated)).toBe(true);
+  });
+
+  it('accepts minimal shapes without optional engine metadata', () => {
     expect(
       parseTurnStateWrite({
         event_type: 'state:created',
@@ -35,40 +73,42 @@ describe('parseTurnStateWrite', () => {
     });
   });
 
-  it('parses state:updated on session/<sid>/turn_state', () => {
-    expect(
-      parseTurnStateWrite({
-        event_type: 'state:updated',
-        key: 'session/sess-a/turn_state',
-        new_value: { state: 'function_awaiting_approval' },
-        old_value: { state: 'function_execute' },
-      }),
-    ).toEqual({
-      session_id: 'sess-a',
-      event_type: 'state:updated',
-      new_value: { state: 'function_awaiting_approval' },
-      old_value: { state: 'function_execute' },
-    });
+  it('rejects nested payload wrappers (no in-repo caller uses them)', () => {
+    expect(() => TurnStateWriteEventSchema.parse({ payload: canonicalCreated })).toThrow();
+    expect(() => TurnStateWriteEventSchema.parse({ data: canonicalCreated })).toThrow();
+    expect(isTurnStateWrite({ payload: canonicalCreated })).toBe(false);
   });
 
   it('rejects non-turn_state agent keys', () => {
     expect(
-      parseTurnStateWrite({
-        event_type: 'state:created',
+      isTurnStateWrite({
+        ...canonicalCreated,
         key: 'session/sess-a/abort_signal',
         new_value: { state: 'true' },
       }),
-    ).toBeNull();
+    ).toBe(false);
   });
 
   it('rejects state:deleted', () => {
     expect(
-      parseTurnStateWrite({
+      isTurnStateWrite({
         event_type: 'state:deleted',
+        scope: 'agent',
         key: 'session/sess-a/turn_state',
-        new_value: { state: 'provisioning' },
+        old_value: { state: 'provisioning' },
+        new_value: null,
+        message_type: 'state',
       }),
-    ).toBeNull();
+    ).toBe(false);
+  });
+
+  it('rejects missing key, empty session id segment, or malformed new_value', () => {
+    expect(isTurnStateWrite({ ...canonicalCreated, key: undefined })).toBe(false);
+    expect(isTurnStateWrite({ ...canonicalCreated, key: 'session//turn_state' })).toBe(false);
+    expect(isTurnStateWrite({ ...canonicalCreated, new_value: { not_state: 'x' } })).toBe(false);
+    expect(isTurnStateWrite({ ...canonicalCreated, new_value: null })).toBe(false);
+    expect(isTurnStateWrite(null)).toBe(false);
+    expect(isTurnStateWrite(undefined)).toBe(false);
   });
 });
 
@@ -76,8 +116,7 @@ describe('handleTurnStateWrite', () => {
   it('emits turn_state_changed on agent::events with group_id = session_id', async () => {
     const { iii, emits } = fakeIii();
     await handleTurnStateWrite(iii, {
-      event_type: 'state:updated',
-      key: 'session/sess-a/turn_state',
+      ...canonicalUpdated,
       new_value: { state: 'function_awaiting_approval', awaiting_approval: [] },
       old_value: { state: 'function_execute', awaiting_approval: null },
     });
@@ -91,12 +130,15 @@ describe('handleTurnStateWrite', () => {
     });
   });
 
-  it('is a no-op when the event does not match the condition', async () => {
+  it('no-ops when the event does not match the condition (direct invoke bypasses engine condition)', async () => {
     const { iii, emits } = fakeIii();
     await handleTurnStateWrite(iii, {
       event_type: 'state:created',
+      scope: 'agent',
       key: 'session/sess-a/abort_signal',
+      old_value: null,
       new_value: true,
+      message_type: 'state',
     });
     expect(emits).toEqual([]);
   });
@@ -107,23 +149,12 @@ describe('handleTurnStateWrite', () => {
         throw new Error('stream::set down');
       }),
     } as unknown as ISdk;
-    // Should NOT throw.
-    await expect(
-      handleTurnStateWrite(iii, {
-        event_type: 'state:created',
-        key: 'session/sess-a/turn_state',
-        new_value: { state: 'provisioning' },
-      }),
-    ).resolves.toBeUndefined();
+    await expect(handleTurnStateWrite(iii, canonicalCreated)).resolves.toBeUndefined();
   });
 
   it('omits old_value from the emitted event when state:created', async () => {
     const { iii, emits } = fakeIii();
-    await handleTurnStateWrite(iii, {
-      event_type: 'state:created',
-      key: 'session/sess-a/turn_state',
-      new_value: { state: 'provisioning' },
-    });
+    await handleTurnStateWrite(iii, canonicalCreated);
     expect(emits).toHaveLength(1);
     const event = emits[0]?.event as Record<string, unknown>;
     expect(event.type).toBe('turn_state_changed');

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
+import type { AgentMessage } from '../../src/types/agent-message.js';
+import * as events from '../../src/turn-orchestrator/events.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { handleTearingDown } from '../../src/turn-orchestrator/states/tearing-down.js';
@@ -30,24 +32,26 @@ afterEach(() => {
 });
 
 describe('handleTearingDown', () => {
-  it('proceeds with normal teardown without approval::consume resurrection', async () => {
+  it('transitions to stopped and emits agent_end with session messages', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'tearing_down' };
-    const { iii, calls } = fakeIii();
+    const messages: AgentMessage[] = [{ role: 'user', content: 'hi' }];
+    const { iii } = fakeIii();
     vi.spyOn(persistence, 'loadSandboxId').mockResolvedValue(null);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue(messages);
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleTearingDown(iii, rec);
 
     expect(rec.state).toBe('stopped');
-    expect(calls.some((c) => c.function_id === 'approval::consume')).toBe(false);
-    expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
+    expect(emitSpy).toHaveBeenCalledWith(iii, 's1', { type: 'agent_end', messages });
   });
 
-  it('stops the sandbox before ending the agent when a sandbox id exists', async () => {
+  it('calls sandbox::stop before ending the agent when a sandbox id exists', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'tearing_down' };
     const { iii, calls } = fakeIii();
     vi.spyOn(persistence, 'loadSandboxId').mockResolvedValue('sandbox-1');
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleTearingDown(iii, rec);
 

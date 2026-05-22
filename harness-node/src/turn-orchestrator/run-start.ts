@@ -1,5 +1,12 @@
 /**
  * `run::start`. Mirrors `turn-orchestrator/src/run_start.rs`.
+ *
+ * **Incoming**: flat run request from `harness::trigger` (`body.payload` after
+ * `HarnessTriggerInputSchema` parse); console/web sends
+ * `{ session_id, message_id?, provider, model, mode?, messages }` and omits
+ * `system_prompt`, `image`, `idle_timeout_secs`, `max_turns` (schema defaults).
+ * **Outgoing**: `{ session_id }` — persists run config, messages, and seeds
+ * `turn_state` to provisioning via `saveRecord`.
  */
 
 import { z } from 'zod';

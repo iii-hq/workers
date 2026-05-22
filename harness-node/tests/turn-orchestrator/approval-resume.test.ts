@@ -20,7 +20,7 @@ function makeIiiWithRegistry(
   agentTurnStates: TurnStateRecord[] = [],
 ) {
   const registered = new Map<string, RegisteredFn>();
-  const stepCalls: Array<{ session_id: string }> = [];
+  const wakeCalls: Array<{ session_id: string }> = [];
 
   const iii = {
     registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
@@ -45,15 +45,18 @@ function makeIiiWithRegistry(
       if (function_id === 'state::list') {
         return agentTurnStates;
       }
-      if (function_id === 'turn::step') {
-        stepCalls.push(payload as { session_id: string });
+      if (function_id === 'iii::durable::publish') {
+        const p = payload as { topic: string; data: { session_id: string } };
+        if (p.topic === 'turn::step_requested') {
+          wakeCalls.push({ session_id: p.data.session_id });
+        }
         return null;
       }
       return null;
     }),
   } as unknown as ISdk;
 
-  return { iii, registered, stepCalls, stateStore };
+  return { iii, registered, wakeCalls, stateStore };
 }
 
 afterEach(() => {
@@ -85,15 +88,15 @@ describe('registerApprovalResume', () => {
 });
 
 describe('approval resume handler', () => {
-  it('persists decision, triggers turn::step, and unregisters', async () => {
-    const { iii, registered, stepCalls, stateStore } = makeIiiWithRegistry();
+  it('persists decision, publishes turn::step_requested, and unregisters', async () => {
+    const { iii, registered, wakeCalls, stateStore } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1');
     expect(entry).toBeDefined();
     await entry!.handler({ decision: 'allow', reason: null });
 
     expect(stateStore.get('approvals/s1/fc-1')).toEqual({ decision: 'allow', reason: null });
-    expect(stepCalls).toEqual([{ session_id: 's1' }]);
+    expect(wakeCalls).toEqual([{ session_id: 's1' }]);
     expect(entry!.unregister).toHaveBeenCalled();
   });
 
@@ -111,15 +114,15 @@ describe('approval resume handler', () => {
     });
   });
 
-  it('does not trigger turn::step again after unregister on second invoke', async () => {
-    const { iii, registered, stepCalls } = makeIiiWithRegistry();
+  it('does not publish turn::step_requested again after unregister on second invoke', async () => {
+    const { iii, registered, wakeCalls } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1')!;
     await entry.handler({ decision: 'deny', reason: 'nope' });
-    stepCalls.length = 0;
+    wakeCalls.length = 0;
 
     await entry.handler({ decision: 'allow', reason: null });
-    expect(stepCalls).toHaveLength(0);
+    expect(wakeCalls).toHaveLength(0);
   });
 });
 

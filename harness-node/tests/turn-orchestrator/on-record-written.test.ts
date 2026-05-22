@@ -6,6 +6,16 @@ import {
 } from '../../src/turn-orchestrator/on-record-written.js';
 
 describe('parseStepableWrite condition', () => {
+  it('accepts minimal required fields (matches TurnStateWriteEventSchema callers)', () => {
+    expect(
+      parseStepableWrite({
+        event_type: 'state:created',
+        key: 'session/sess-a/turn_state',
+        new_value: { state: 'provisioning' },
+      }),
+    ).toEqual({ session_id: 'sess-a' });
+  });
+
   it('matches turn_state writes with a non-terminal, non-awaiting state', () => {
     expect(
       parseStepableWrite({
@@ -106,6 +116,31 @@ describe('parseStepableWrite condition', () => {
     ).toEqual({ session_id: 'sess-abc' });
   });
 
+  it('rejects publish envelope shapes — state triggers receive flat events', () => {
+    expect(
+      parseStepableWrite({
+        topic: 'turn::step_requested',
+        data: { session_id: 'sess-abc' },
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects nested payload wrappers (no in-repo caller uses them)', () => {
+    const inner = {
+      event_type: 'state:created',
+      key: 'session/sess-abc/turn_state',
+      new_value: { state: 'provisioning' },
+    };
+    expect(parseStepableWrite({ data: inner })).toBeNull();
+    expect(parseStepableWrite({ payload: inner })).toBeNull();
+  });
+
+  it('rejects null, undefined, and non-object events', () => {
+    expect(parseStepableWrite(null)).toBeNull();
+    expect(parseStepableWrite(undefined)).toBeNull();
+    expect(parseStepableWrite('state:created')).toBeNull();
+  });
+
   it('rejects writes whose new_value lacks a string state', () => {
     expect(
       parseStepableWrite({
@@ -132,7 +167,7 @@ describe('parseStepableWrite condition', () => {
 });
 
 describe('handleStepableRecordWrite', () => {
-  it('extracts session_id and invokes turn::step directly', async () => {
+  it('extracts session_id and publishes turn::step_requested', async () => {
     const triggers: Array<{ function_id: string; payload: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -151,8 +186,11 @@ describe('handleStepableRecordWrite', () => {
     });
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('turn::step');
-    expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
+    expect(triggers[0]?.function_id).toBe('iii::durable::publish');
+    expect(triggers[0]?.payload).toEqual({
+      topic: 'turn::step_requested',
+      data: { session_id: 'sess-abc' },
+    });
   });
 
   it('no-ops when the event is not stepable (direct invoke bypasses engine condition)', async () => {

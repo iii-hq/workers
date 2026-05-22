@@ -12,49 +12,62 @@
  * soon as the current one finishes — which is the earliest moment we
  * can safely react.
  *
- * Mirror of the canonical pattern in
- * `harness-node/src/harness/fanout/sessions-poll.ts`.
+ * **Incoming**: agent-scope `state:created` / `state:updated` on
+ * `session/<id>/abort_signal` with `new_value === true` (from `state::set` via
+ * `performAbortSideEffects` / `router::abort`). Same envelope the engine passes
+ * to state trigger adapters.
+ *
+ * **Outgoing**: `iii::durable::publish` with `{ topic: 'turn::step_requested',
+ * data: { session_id } }`; durable subscriber receives flat `{ session_id }` only.
  */
 
+import { z } from 'zod';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 
-const ABORT_SIGNAL_KEY_RE = /^session\/([^/]+)\/abort_signal$/;
+const AgentAbortSignalWriteEventSchema = z.object({
+  type: z.literal('state').optional(),
+  scope: z.literal('agent').optional(),
+  event_type: z.enum(['state:created', 'state:updated']),
+  key: z.string().regex(/^session\/[^/]+\/abort_signal$/),
+  new_value: z.literal(true),
+  old_value: z.union([z.literal(true), z.literal(false), z.null()]).optional(),
+});
+
+export const AbortSignalWriteEventSchema = AgentAbortSignalWriteEventSchema.transform((data) => {
+  const session_id = data.key.slice('session/'.length, -'/abort_signal'.length);
+  return { session_id };
+});
+
+export type ParsedAbortSignalWrite = z.infer<typeof AbortSignalWriteEventSchema>;
+
+export function parseAbortSignalWrite(event: unknown): ParsedAbortSignalWrite | null {
+  const result = AbortSignalWriteEventSchema.safeParse(event);
+  return result.success ? result.data : null;
+}
 
 export function isAbortSignalWrite(event: unknown): boolean {
-  if (!event || typeof event !== 'object') return false;
-  const obj = event as Record<string, unknown>;
-  if (obj.event_type !== 'state:created' && obj.event_type !== 'state:updated') return false;
-  if (obj.new_value !== true) return false;
-  const key = obj.key;
-  if (typeof key !== 'string') return false;
-  return ABORT_SIGNAL_KEY_RE.test(key);
+  return parseAbortSignalWrite(event) !== null;
 }
 
-function extractSessionId(key: string): string | null {
-  const m = ABORT_SIGNAL_KEY_RE.exec(key);
-  return m ? (m[1] ?? null) : null;
-}
-
-export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise<void> {
-  if (!event || typeof event !== 'object') return;
-  const obj = event as Record<string, unknown>;
-  const key = obj.key;
-  if (typeof key !== 'string') return;
-  const session_id = extractSessionId(key);
-  if (!session_id) return;
-
+export async function execute(iii: ISdk, write: ParsedAbortSignalWrite): Promise<void> {
   try {
     await iii.trigger<unknown, unknown>({
       function_id: 'iii::durable::publish',
-      payload: { topic: 'turn::step_requested', data: { session_id } },
+      payload: { topic: 'turn::step_requested', data: { session_id: write.session_id } },
     });
   } catch (err) {
-    logger.warn('turn::on_abort_signal: publish failed', {
-      session_id,
+    logger.warn('turn::on_abort_signal: wake failed', {
+      session_id: write.session_id,
       err: String(err),
     });
   }
+}
+
+export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise<void> {
+  const write = parseAbortSignalWrite(event);
+  if (!write) return;
+  await execute(iii, write);
 }
 
 export function register(iii: ISdk): void {

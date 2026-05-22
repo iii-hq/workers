@@ -1,8 +1,12 @@
 /**
- * State-trigger adapter that mirrors `on-record-written` but emits a
- * `turn_state_changed` agent event instead of triggering `turn::step`.
- * Gives the frontend a live signal carrying the new turn_state record
- * so it can derive pending approvals from state directly.
+ * State-trigger adapter on `scope: 'agent'` for writes to
+ * `session/<id>/turn_state`. Emits `turn_state_changed` on `agent::events`
+ * so the UI can derive pending approvals from live state.
+ *
+ * **Incoming**: agent state write event from the iii engine (`event_type`,
+ * `scope`, `key`, `old_value`, `new_value`, `message_type`; key must match
+ * `session/<sid>/turn_state`)
+ * **Outgoing**: void — side effect via `emit()`; swallow emit failures (log only)
  */
 
 import { z } from 'zod';
@@ -31,7 +35,7 @@ export const TurnStateWriteEventSchema = AgentTurnStateWriteEventSchema.transfor
   };
 });
 
-export type ParsedTurnStateWrite = z.infer<typeof TurnStateWriteEventSchema>;
+type ParsedTurnStateWrite = z.infer<typeof TurnStateWriteEventSchema>;
 
 export function parseTurnStateWrite(event: unknown): ParsedTurnStateWrite | null {
   const result = TurnStateWriteEventSchema.safeParse(event);
