@@ -7,6 +7,7 @@ import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 import {
+  type TurnState,
   type TurnStateRecord,
   functionSchemasKey,
   lastSessionTreeLenKey,
@@ -16,6 +17,8 @@ import {
   toolSchemasKey,
   turnStateKey,
 } from './state.js';
+import { emitTurnStateChanged } from './turn-state-write.js';
+import { shouldWakeStep, wakeState } from './wake.js';
 
 const SCOPE = 'agent';
 
@@ -49,8 +52,30 @@ export async function loadRecord(iii: ISdk, session_id: string): Promise<TurnSta
   return v as TurnStateRecord;
 }
 
-export async function saveRecord(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+/** Persist turn_state and emit UI event — no FSM wake (mid-handler saves). */
+export async function persistRecord(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const previous = await loadRecord(iii, rec.session_id);
+  const eventType = previous === null ? 'state:created' : 'state:updated';
+
   await stateSet(iii, turnStateKey(rec.session_id), rec);
+
+  await emitTurnStateChanged(
+    iii,
+    rec.session_id,
+    eventType,
+    rec as unknown as Record<string, unknown>,
+    previous !== null ? (previous as unknown as Record<string, unknown>) : undefined,
+  );
+}
+
+export async function saveRecord(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const previous = await loadRecord(iii, rec.session_id);
+  const previousState: TurnState | null = previous?.state ?? null;
+  await persistRecord(iii, rec);
+
+  if (shouldWakeStep(previousState, rec.state)) {
+    await wakeState(iii, rec.session_id, rec.state);
+  }
 }
 
 export async function loadMessages(iii: ISdk, session_id: string): Promise<AgentMessage[]> {

@@ -8,13 +8,10 @@ import type { FunctionCall } from '../types/function.js';
 
 export type TurnState =
   | 'provisioning'
-  | 'awaiting_assistant'
   | 'assistant_streaming'
   | 'assistant_finished'
-  | 'function_prepare'
   | 'function_execute'
   | 'function_awaiting_approval'
-  | 'function_finalize'
   | 'steering_check'
   | 'tearing_down'
   | 'stopped';
@@ -62,6 +59,10 @@ export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
 
 export function isTerminal(rec: TurnStateRecord): boolean {
   return rec.state === 'stopped';
+}
+
+export function turnFnId(state: TurnState): string {
+  return `turn::${state}`;
 }
 
 export const messagesKey = (sid: string) => `session/${sid}/messages`;

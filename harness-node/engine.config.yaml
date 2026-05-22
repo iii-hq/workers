@@ -1,0 +1,21 @@
+# iii engine configuration for harness-node local/dev.
+# Pass to the engine via `iii -c engine.config.yaml`.
+#
+# Worker binaries use harness-node/config.yaml separately (--config ./config.yaml).
+
+workers:
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+      queue_configs:
+        turn-step:
+          type: fifo
+          message_group_field: session_id
+          max_retries: 5
+          concurrency: 1
+
+  - name: iii-state
+    config:
+      adapter:
+        name: file_based

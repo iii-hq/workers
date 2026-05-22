@@ -1,7 +1,7 @@
 /**
  * Per-call resume functions for parked approvals. Registered when a call
  * enters `function_awaiting_approval`; invoked by `approval::resolve` or
- * abort. Persists to scope `approvals` and publishes `turn::step_requested`.
+ * abort. Persists to scope `approvals` and enqueues `turn::{state}` via wakeFromRecord.
  */
 
 import {
@@ -19,6 +19,7 @@ import {
   stateSet,
 } from '../runtime/state.js';
 import type { TurnStateRecord } from './state.js';
+import { wakeFromRecord } from './wake.js';
 
 const resumeRefs = new Map<string, FunctionRef>();
 const TURN_STATE_KEY_RE = /^session\/[^/]+\/turn_state$/;
@@ -89,10 +90,7 @@ async function handleApprovalResume(
   }
 
   try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: 'turn::step_requested', data: { session_id } },
-    });
+    await wakeFromRecord(iii, session_id);
   } catch (err) {
     logger.warn('approval resume: turn step wake failed', { session_id, err: String(err) });
   }
@@ -114,7 +112,7 @@ export function registerApprovalResume(
     async (payload: unknown) => handleApprovalResume(iii, session_id, function_call_id, payload),
     {
       description:
-        'Resume a parked approval: persist decision to approvals scope and publish turn::step_requested.',
+        'Resume a parked approval: persist decision to approvals scope and enqueue turn::{state}.',
     },
   );
   resumeRefs.set(fnId, ref);

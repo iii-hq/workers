@@ -1,56 +1,27 @@
 /**
- * `awaiting_assistant`, `assistant_streaming`, `assistant_finished`. Phase 2.A
- * channel-based streaming lives in `handleStreaming`.
+ * `turn::assistant_streaming`. Start turn, stream provider response, advance to finished.
+ *
+ * **Incoming**: flat `{ session_id }` via FIFO enqueue on `turn-step`.
+ * **Outgoing**: `{ ok, from_state, to_state }` on success; stale skip when state drifted.
  */
 
 import type { ISdk, StreamChannelRef } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
-import type { AgentEvent } from '../../types/agent-event.js';
-import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
-import type { ContentBlock } from '../../types/content.js';
-import type { AgentFunction, FunctionCall } from '../../types/function.js';
+import type { AssistantMessage } from '../../types/agent-message.js';
+import type { AgentFunction } from '../../types/function.js';
 import type { ProviderStreamInput } from '../../types/provider.js';
-import type { AssistantMessageEvent, StopReason } from '../../types/stream-event.js';
+import type { AssistantMessageEvent } from '../../types/stream-event.js';
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
-import { buildInput, decide, targetFunctionId } from '../provider-router.js';
 import { runPreflight } from '../preflight.js';
+import { buildInput, decide, targetFunctionId } from '../provider-router.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-
-export async function handleAwaiting(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  if (rec.max_turns !== undefined && rec.turn_count >= rec.max_turns) {
-    const cap = rec.max_turns ?? 0;
-    const exhausted: AssistantMessage = {
-      role: 'assistant',
-      content: [{ type: 'text', text: `loop stopped: max_turns (${cap}) reached` }],
-      stop_reason: 'end',
-      error_message: null,
-      error_kind: null,
-      usage: null,
-      model: '',
-      provider: '',
-      timestamp: Date.now(),
-    };
-    await emit(iii, rec.session_id, { type: 'message_start', message: exhausted });
-    await emit(iii, rec.session_id, { type: 'message_end', message: exhausted });
-    await emit(iii, rec.session_id, {
-      type: 'turn_end',
-      message: exhausted,
-      function_results: [],
-    });
-    rec.turn_end_emitted = true;
-    rec.last_assistant = exhausted;
-    const messages = await persistence.loadMessages(iii, rec.session_id);
-    messages.push(exhausted);
-    await persistence.saveMessages(iii, rec.session_id, messages);
-    transitionTo(rec, 'tearing_down');
-    return;
-  }
-  rec.turn_count++;
-  rec.turn_end_emitted = false;
-  await emit(iii, rec.session_id, { type: 'turn_start' });
-  transitionTo(rec, 'assistant_streaming');
-}
+import {
+  TurnStepPayloadSchema,
+  type TurnStepPayload,
+  type TurnStepResult,
+  staleSkipResult,
+} from '../turn-step-payload.js';
 
 function eventPartial(ev: AssistantMessageEvent): AssistantMessage | null {
   if ('partial' in ev) return ev.partial;
@@ -89,12 +60,6 @@ function syntheticErrorAssistant(
   };
 }
 
-/**
- * Strip iii-sdk's `IIIInvocationError: invocation_failed: ` framing from
- * a thrown trigger error so the user-visible message is just the
- * underlying cause (e.g. "auth::get_token returned no credential for
- * provider=openai").
- */
 function formatProviderError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw
@@ -104,6 +69,38 @@ function formatProviderError(err: unknown): string {
 }
 
 export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  if (rec.max_turns !== undefined && rec.turn_count >= rec.max_turns) {
+    const cap = rec.max_turns ?? 0;
+    const exhausted: AssistantMessage = {
+      role: 'assistant',
+      content: [{ type: 'text', text: `loop stopped: max_turns (${cap}) reached` }],
+      stop_reason: 'end',
+      error_message: null,
+      error_kind: null,
+      usage: null,
+      model: '',
+      provider: '',
+      timestamp: Date.now(),
+    };
+    await emit(iii, rec.session_id, { type: 'message_start', message: exhausted });
+    await emit(iii, rec.session_id, { type: 'message_end', message: exhausted });
+    await emit(iii, rec.session_id, {
+      type: 'turn_end',
+      message: exhausted,
+      function_results: [],
+    });
+    rec.turn_end_emitted = true;
+    rec.last_assistant = exhausted;
+    const messages = await persistence.loadMessages(iii, rec.session_id);
+    messages.push(exhausted);
+    await persistence.saveMessages(iii, rec.session_id, messages);
+    transitionTo(rec, 'tearing_down');
+    return;
+  }
+  rec.turn_count++;
+  rec.turn_end_emitted = false;
+  await emit(iii, rec.session_id, { type: 'turn_start' });
+
   const request = await persistence.loadRunRequest(iii, rec.session_id);
   let messages = await persistence.loadMessages(iii, rec.session_id);
   const schemas = await persistence.loadFunctionSchemas(iii, rec.session_id);
@@ -117,12 +114,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   const decision = decide({ provider, model });
   const targetFn = targetFunctionId(decision);
 
-  // Pre-flight: if projected token usage would overflow the model's context
-  // window, trigger compact_now synchronously before opening the provider
-  // channel. On compaction, reload messages so the provider sees the trimmed
-  // history. ContextOverflowError / CompactionBusyError propagate up and are
-  // handled as a transient error by the step loop (the session will retry on
-  // the next wake or surface the error to the caller).
   const preflightResult = await runPreflight(
     iii,
     rec.session_id,
@@ -134,7 +125,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     messages = await persistence.loadMessages(iii, rec.session_id);
   }
 
-  // Open a channel; provider writes AssistantMessageEvent JSON into it.
   let channel: Awaited<ReturnType<ISdk['createChannel']>>;
   try {
     channel = await iii.createChannel();
@@ -162,9 +152,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
       fn();
     }
   });
-  // iii-sdk@0.12.0's ChannelReader.onMessage doesn't open the read-side
-  // WebSocket — only stream.read / readAll do. Without this resume(), the
-  // provider's writes are dropped engine-side and the queue stays empty.
   channel.reader.stream.resume();
 
   const input: ProviderStreamInput = buildInput(
@@ -175,9 +162,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     tools,
   );
 
-  // Capture the trigger error (if any) so the synthetic assistant message
-  // below carries the *actual* cause (e.g. "no credential for
-  // provider=openai") instead of a generic "channel closed without final".
   let triggerError: string | null = null;
   const triggerPromise = iii
     .trigger<unknown, unknown>({
@@ -237,7 +221,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
           }
           continue;
         }
-        // Terminal event: capture final message and break out.
         if (event.type === 'done') final = event.message;
         else final = event.error;
         done = true;
@@ -255,11 +238,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   if (finalMsg) {
     rec.last_assistant = finalMsg;
   } else {
-    // Trigger failed or channel closed without a terminal frame. The
-    // provider didn't get to stream any text_delta events, so the UI
-    // never populated its renderer. Emit a synthetic message_update
-    // carrying the error as a text_delta so the existing UI translator
-    // (which assumes deltas drive the chat text) shows the error.
     const errorText = triggerError ?? 'provider channel closed without final';
     const synthetic = syntheticErrorAssistant(decision.provider, decision.model, errorText);
     await emit(iii, rec.session_id, {
@@ -272,59 +250,31 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   transitionTo(rec, 'assistant_finished');
 }
 
-function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
-  const out: FunctionCall[] = [];
-  for (const b of msg.content) {
-    if (b.type === 'function_call') {
-      out.push({ id: b.id, function_id: b.function_id, arguments: b.arguments });
-    }
+export async function execute(iii: ISdk, payload: TurnStepPayload): Promise<TurnStepResult> {
+  const rec = await persistence.loadRecord(iii, payload.session_id);
+  if (!rec) {
+    throw new Error(`turn::assistant_streaming invariant: missing session ${payload.session_id}`);
   }
-  return out;
+  const skipped = staleSkipResult('assistant_streaming', rec);
+  if (skipped) return skipped;
+
+  const from_state = rec.state;
+  try {
+    await handleStreaming(iii, rec);
+  } catch (err) {
+    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
+  }
+  await persistence.saveRecord(iii, rec);
+  return { ok: true, from_state, to_state: rec.state };
 }
 
-export function assistantLifecycleEvents(asst: AssistantMessage): AgentEvent[] {
-  return [
-    { type: 'message_start', message: asst },
-    { type: 'message_end', message: asst },
-  ];
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::assistant_streaming',
+    async (payload: unknown) => execute(iii, TurnStepPayloadSchema.parse(payload)),
+    {
+      description:
+        'Run one durable FSM transition for session in state assistant_streaming: start turn and stream provider response.',
+    },
+  );
 }
-
-export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const asst = rec.last_assistant;
-  if (!asst) {
-    throw new Error('assistant_finished without last_assistant');
-  }
-  for (const evt of assistantLifecycleEvents(asst)) {
-    await emit(iii, rec.session_id, evt);
-  }
-  const isErrorOrAborted = asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
-  // Error/aborted assistant messages (e.g. provider auth failures,
-  // network blips, user aborts) are surfaced to the UI via the
-  // MessageStart/MessageEnd events emitted above, but we deliberately
-  // keep them out of the session's persisted message history so the
-  // LLM's next-turn context doesn't accumulate transient infra noise.
-  if (!isErrorOrAborted) {
-    const messages = await persistence.loadMessages(iii, rec.session_id);
-    messages.push(asst);
-    await persistence.saveMessages(iii, rec.session_id, messages);
-  }
-
-  if (isErrorOrAborted) {
-    await emit(iii, rec.session_id, {
-      type: 'turn_end',
-      message: asst,
-      function_results: [],
-    });
-    rec.turn_end_emitted = true;
-    transitionTo(rec, 'tearing_down');
-    return;
-  }
-  const calls = extractFunctionCalls(asst);
-  if (calls.length === 0) {
-    transitionTo(rec, 'steering_check');
-  } else {
-    rec.pending_function_calls = calls;
-    transitionTo(rec, 'function_prepare');
-  }
-}
-// reload 1779112003

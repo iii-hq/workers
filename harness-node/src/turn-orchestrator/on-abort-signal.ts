@@ -2,7 +2,7 @@
  * Reactive abort wake. A `state` trigger on `scope: 'agent'` filtered by
  * the abort_signal key shape (`session/<id>/abort_signal`) and a
  * `new_value === true` write fires this adapter, which publishes
- * `turn::step_requested` so the orchestrator's FSM advances to
+ * `turn::{state}` on the durable FIFO queue so the orchestrator's FSM advances to
  * `steering_check` and observes the abort flag promptly.
  *
  * Without this wake, a session mid-streaming would only check
@@ -17,13 +17,13 @@
  * `performAbortSideEffects` / `router::abort`). Same envelope the engine passes
  * to state trigger adapters.
  *
- * **Outgoing**: `iii::durable::publish` with `{ topic: 'turn::step_requested',
- * data: { session_id } }`; durable subscriber receives flat `{ session_id }` only.
+ * **Outgoing**: `wakeFromRecord` enqueues `{ session_id }` on the `turn-step` queue.
  */
 
 import { z } from 'zod';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { wakeFromRecord } from './wake.js';
 
 const AgentAbortSignalWriteEventSchema = z.object({
   type: z.literal('state').optional(),
@@ -52,10 +52,7 @@ export function isAbortSignalWrite(event: unknown): boolean {
 
 export async function execute(iii: ISdk, write: ParsedAbortSignalWrite): Promise<void> {
   try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: 'turn::step_requested', data: { session_id: write.session_id } },
-    });
+    await wakeFromRecord(iii, write.session_id);
   } catch (err) {
     logger.warn('turn::on_abort_signal: wake failed', {
       session_id: write.session_id,
@@ -85,7 +82,7 @@ export function register(iii: ISdk): void {
     async (event: unknown) => handleAbortSignalWrite(iii, event),
     {
       description:
-        'State trigger adapter on scope=agent for abort_signal writes; publishes turn::step_requested so the orchestrator picks up the abort promptly.',
+        'State trigger adapter on scope=agent for abort_signal writes; enqueues turn::{state} so the orchestrator picks up the abort promptly.',
     },
   );
 

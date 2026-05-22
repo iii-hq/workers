@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import { RunStartPayloadSchema, execute, register } from '../../src/turn-orchestrator/run-start.js';
 
-type TriggerCall = { function_id: string; payload: unknown };
+type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
 function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
   const calls: TriggerCall[] = [];
   const iii = {
-    trigger: async <T, R>(req: { function_id: string; payload: T }): Promise<R> => {
-      calls.push({ function_id: req.function_id, payload: req.payload });
+    trigger: async <T, R>(req: {
+      function_id: string;
+      payload: T;
+      action?: unknown;
+    }): Promise<R> => {
+      calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
       return null as R;
     },
     registerFunction: vi.fn(),
@@ -140,7 +144,7 @@ describe('register', () => {
 });
 
 describe('execute', () => {
-  it('saves initial session state to wake the reactive step trigger', async () => {
+  it('saves initial session state and enqueues turn::provisioning via saveRecord wake', async () => {
     const { iii, calls } = fakeIii();
 
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
@@ -158,7 +162,9 @@ describe('execute', () => {
       'provisioning',
     );
 
-    const publish = calls.find((c) => c.function_id === 'iii::durable::publish');
-    expect(publish).toBeUndefined();
+    const wake = calls.find((c) => c.function_id === 'turn::provisioning');
+    expect(wake).toBeDefined();
+    expect(wake?.payload).toEqual({ session_id: 'sess-1' });
+    expect(wake?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
   });
 });

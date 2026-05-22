@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import {
   AbortSignalWriteEventSchema,
   execute,
@@ -7,6 +7,7 @@ import {
   isAbortSignalWrite,
   parseAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
+import { newRecord } from '../../src/turn-orchestrator/state.js';
 
 const matchingEvent = {
   event_type: 'state:created' as const,
@@ -133,29 +134,41 @@ describe('parseAbortSignalWrite condition', () => {
   });
 });
 
+function mockIiiWithTurnState(rec: ReturnType<typeof newRecord>): {
+  iii: ISdk;
+  triggers: Array<{ function_id: string; payload: unknown; action?: unknown }>;
+} {
+  const triggers: Array<{ function_id: string; payload: unknown; action?: unknown }> = [];
+  const iii = {
+    trigger: vi.fn(async (req: { function_id: string; payload: unknown; action?: unknown }) => {
+      if (req.function_id === 'state::get') return rec;
+      triggers.push(req);
+      return null;
+    }),
+  } as unknown as ISdk;
+  return { iii, triggers };
+}
+
 describe('execute', () => {
-  it('publishes turn::step_requested via durable publish', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
+  it('enqueues turn::{state} on the turn-step FIFO queue', async () => {
+    const rec = newRecord('sess-abc');
+    rec.state = 'assistant_streaming';
+    const { iii, triggers } = mockIiiWithTurnState(rec);
 
     await execute(iii, { session_id: 'sess-abc' });
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('iii::durable::publish');
-    expect(triggers[0]?.payload).toEqual({
-      topic: 'turn::step_requested',
-      data: { session_id: 'sess-abc' },
-    });
+    expect(triggers[0]?.function_id).toBe('turn::assistant_streaming');
+    expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
+    expect(triggers[0]?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
   });
 
-  it('swallows publish failures (logs only, never rethrows)', async () => {
+  it('swallows enqueue failures (logs only, never rethrows)', async () => {
+    const rec = newRecord('sess-abc');
+    rec.state = 'provisioning';
     const iii = {
-      trigger: vi.fn(async () => {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        if (req.function_id === 'state::get') return rec;
         throw new Error('durable down');
       }),
     } as unknown as ISdk;
@@ -165,23 +178,17 @@ describe('execute', () => {
 });
 
 describe('handleAbortSignalWrite', () => {
-  it('extracts session_id and publishes turn::step_requested', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
+  it('extracts session_id and enqueues turn::{state}', async () => {
+    const rec = newRecord('sess-abc');
+    rec.state = 'function_execute';
+    const { iii, triggers } = mockIiiWithTurnState(rec);
 
     await handleAbortSignalWrite(iii, matchingEvent);
 
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('iii::durable::publish');
-    expect(triggers[0]?.payload).toEqual({
-      topic: 'turn::step_requested',
-      data: { session_id: 'sess-abc' },
-    });
+    expect(triggers[0]?.function_id).toBe('turn::function_execute');
+    expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
+    expect(triggers[0]?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
   });
 
   it('no-ops when key does not match the abort_signal pattern', async () => {

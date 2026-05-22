@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import type {
   AwaitingApprovalEntry,
   TurnState,
@@ -13,7 +12,7 @@ import {
   transitionTo,
   turnStateKey,
 } from '../../src/turn-orchestrator/state.js';
-import { step } from '../../src/turn-orchestrator/transitions.js';
+import { handleAwaitingApproval } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
 
 describe('TurnStateRecord', () => {
   it('starts in provisioning', () => {
@@ -64,14 +63,13 @@ describe('awaiting_approval field', () => {
   });
 });
 
-describe('step dispatches function_awaiting_approval', () => {
-  it('runs the awaiting-approval handler for that state', async () => {
-    const cfg = {} as TurnOrchestratorConfig;
+describe('handleAwaitingApproval with empty queue', () => {
+  it('advances to function_execute when awaiting_approval is empty', async () => {
     const rec = newRecord('s1');
     transitionTo(rec, 'function_awaiting_approval');
     rec.awaiting_approval = [];
 
-    await step({} as ISdk, cfg, rec);
+    await handleAwaitingApproval({} as ISdk, rec);
 
     expect(rec.state).toBe('function_execute');
   });

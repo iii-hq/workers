@@ -1,12 +1,9 @@
 /**
- * `provisioning`. First FSM step after `run::start`: materialize tool schemas,
+ * `turn::provisioning`. First FSM step after `run::start`: materialize tool schemas,
  * assemble the system prompt, persist the enriched run request, then advance.
  *
- * **Incoming**: provisioning `TurnStateRecord` (`rec.session_id`) plus persisted
- * run request from `persistence.loadRunRequest` (written by `run::start`).
- * **Outgoing**: `transitionTo(rec, 'awaiting_assistant')`; side effects:
- * `saveFunctionSchemas` (agent_trigger), `saveRunRequest` (built prompt),
- * directory skill fetches for default skills + index.
+ * **Incoming**: flat `{ session_id }` via FIFO enqueue on `turn-step`.
+ * **Outgoing**: `{ ok, from_state, to_state }` on success; stale skip when state drifted.
  */
 
 import type { ISdk } from '../../runtime/iii.js';
@@ -15,6 +12,12 @@ import { agentTriggerTool } from '../agent-trigger.js';
 import type { TurnOrchestratorConfig } from '../config.js';
 import * as persistence from '../persistence.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
+import {
+  TurnStepPayloadSchema,
+  type TurnStepPayload,
+  type TurnStepResult,
+  staleSkipResult,
+} from '../turn-step-payload.js';
 import {
   type DefaultSkillBody,
   type Mode,
@@ -103,7 +106,6 @@ export async function handleProvisioning(
 ): Promise<void> {
   const request = parseRunRequest(await persistence.loadRunRequest(iii, rec.session_id));
 
-  // The single tool LLMs see is `agent_trigger`.
   await persistence.saveFunctionSchemas(iii, rec.session_id, [agentTriggerTool()]);
 
   const override = request.system_prompt.length > 0 ? request.system_prompt : null;
@@ -117,5 +119,38 @@ export async function handleProvisioning(
   const updated: RunRequest = { ...request, system_prompt: prompt };
   await persistence.saveRunRequest(iii, rec.session_id, updated);
 
-  transitionTo(rec, 'awaiting_assistant');
+  transitionTo(rec, 'assistant_streaming');
+}
+
+export async function execute(
+  iii: ISdk,
+  cfg: TurnOrchestratorConfig,
+  payload: TurnStepPayload,
+): Promise<TurnStepResult> {
+  const rec = await persistence.loadRecord(iii, payload.session_id);
+  if (!rec) {
+    throw new Error(`turn::provisioning invariant: missing session ${payload.session_id}`);
+  }
+  const skipped = staleSkipResult('provisioning', rec);
+  if (skipped) return skipped;
+
+  const from_state = rec.state;
+  try {
+    await handleProvisioning(iii, cfg, rec);
+  } catch (err) {
+    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
+  }
+  await persistence.saveRecord(iii, rec);
+  return { ok: true, from_state, to_state: rec.state };
+}
+
+export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
+  iii.registerFunction(
+    'turn::provisioning',
+    async (payload: unknown) => execute(iii, cfg, TurnStepPayloadSchema.parse(payload)),
+    {
+      description:
+        'Run one durable FSM transition for session in state provisioning: materialize tool schemas, build system prompt, advance to assistant_streaming.',
+    },
+  );
 }
