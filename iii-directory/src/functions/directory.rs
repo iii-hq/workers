@@ -42,7 +42,7 @@ use crate::how_to::{self, RelatedSkillRef};
 
 /// Function information returned by `engine::functions::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SdkFunctionInfo {
+pub(crate) struct SdkFunctionInfo {
     pub function_id: String,
     pub description: Option<String>,
     pub request_format: Option<Value>,
@@ -52,7 +52,7 @@ struct SdkFunctionInfo {
 
 /// Trigger information returned by `engine::triggers::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SdkTriggerInfo {
+pub(crate) struct SdkTriggerInfo {
     pub id: String,
     pub trigger_type: String,
     pub function_id: String,
@@ -62,7 +62,7 @@ struct SdkTriggerInfo {
 
 /// Trigger type information returned by `engine::trigger-types::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TriggerTypeInfo {
+pub(crate) struct TriggerTypeInfo {
     pub id: String,
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,7 +73,7 @@ struct TriggerTypeInfo {
 
 /// Worker information returned by `engine::workers::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkerInfo {
+pub(crate) struct WorkerInfo {
     pub id: String,
     pub name: Option<String>,
     pub runtime: Option<String>,
@@ -834,7 +834,7 @@ pub async fn worker_info(iii: &III, input: WorkerInfoInput) -> Result<WorkerInfo
 /// `description` is always `None` since the engine carries no
 /// description for connected workers — the field exists for shape
 /// parity with `registry::Worker`.
-pub fn worker_envelope_from_sdk(w: WorkerInfo) -> Worker {
+pub(crate) fn worker_envelope_from_sdk(w: WorkerInfo) -> Worker {
     Worker {
         name: w.name,
         description: None,
@@ -854,7 +854,7 @@ pub fn worker_envelope_from_sdk(w: WorkerInfo) -> Worker {
 /// Build a `function_id → worker_name` map from `WorkerInfo.functions[]`.
 /// This is the canonical attribution; the namespace-segment fallback is
 /// used only for unknown ids.
-pub fn build_function_owner_map(
+pub(crate) fn build_function_owner_map(
     workers: &[WorkerInfo],
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -898,7 +898,7 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 /// Internal: assemble `FunctionInfoOutput` from already-fetched lists.
 /// The composite `registered-trigger-info` calls this so the bus isn't
 /// hit twice for the same data.
-pub fn function_info_core(
+pub(crate) fn function_info_core(
     functions: &[SdkFunctionInfo],
     workers: &[WorkerInfo],
     triggers: &[SdkTriggerInfo],
@@ -952,7 +952,7 @@ pub fn function_info_core(
 }
 
 /// Internal: assemble `TriggerInfoOutput` from already-fetched lists.
-pub fn trigger_info_core(
+pub(crate) fn trigger_info_core(
     trigger_types: &[TriggerTypeInfo],
     triggers: &[SdkTriggerInfo],
     id: &str,
