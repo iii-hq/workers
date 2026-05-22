@@ -1,12 +1,12 @@
 iii: v1
 name: harness
-language: node
+language: javascript
 deploy: bundle
 manifest: package.json
 description: Meta-worker that composes the modular Node workers backing the iii chat surface.
 
 runtime:
-  kind: node
+  kind: javascript
 
 scripts:
   start: node ./index.mjs
