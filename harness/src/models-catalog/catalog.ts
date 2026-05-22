@@ -34,13 +34,16 @@ export async function syncGet(provider: string, model_id: string): Promise<Model
   const all = await loadEmbeddedCatalog();
   const exact = all.find((m) => m.provider === provider && m.id === model_id);
   if (exact) return exact;
-  // LM Studio model IDs are user-controlled (any GGUF the user has loaded),
-  // so an exact catalog match is the exception not the rule. Fall back to the
-  // `lmstudio-local` placeholder so capability gating (supports_tools, etc.)
-  // still works for arbitrary user-supplied IDs. Other providers keep the
-  // strict null-on-miss behaviour.
+  // Local-runtime providers (LM Studio, llama.cpp) accept arbitrary
+  // user-loaded GGUFs so the catalog can't enumerate every id. Fall
+  // back to a per-provider placeholder so capability gating
+  // (supports_tools, etc.) still works for whatever the user picked.
+  // Other providers keep the strict null-on-miss behaviour.
   if (provider === 'lmstudio') {
     return all.find((m) => m.provider === 'lmstudio' && m.id === 'lmstudio-local') ?? null;
+  }
+  if (provider === 'llamacpp') {
+    return all.find((m) => m.provider === 'llamacpp' && m.id === 'llamacpp-local') ?? null;
   }
   return null;
 }

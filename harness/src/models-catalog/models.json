@@ -181,6 +181,20 @@
       "supports_vision": false,
       "supports_cache": false,
       "transports": ["sse"]
+    },
+    {
+      "id": "llamacpp-local",
+      "provider": "llamacpp",
+      "api": "openai-completions",
+      "display_name": "llama.cpp (local)",
+      "context_window": 32768,
+      "max_output_tokens": 8192,
+      "supports_thinking": false,
+      "supports_xhigh": false,
+      "supports_tools": true,
+      "supports_vision": false,
+      "supports_cache": false,
+      "transports": ["sse"]
     }
   ]
 }

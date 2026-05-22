@@ -18,6 +18,22 @@ describe('decide', () => {
     expect(decide({ provider: 'kimi', model: 'kimi-k2-0905-preview' }).provider).toBe('kimi');
   });
 
+  it('routes llamacpp when provider=llamacpp', () => {
+    expect(decide({ provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' }).provider).toBe(
+      'llamacpp',
+    );
+    // No heuristic — bare model id without explicit provider does not
+    // route to llamacpp (same posture as lmstudio; user-controlled ids
+    // overlap with HF-style ids from other services).
+    expect(decide({ model: 'Meta-Llama-3.1-8B' }).provider).toBe('anthropic');
+  });
+
+  it('maps targetFunctionId for llamacpp', () => {
+    expect(targetFunctionId({ provider: 'llamacpp', model: 'm' })).toBe(
+      'provider::llamacpp::stream',
+    );
+  });
+
   it('routes lmstudio when provider=lmstudio (no model-name heuristic)', () => {
     expect(decide({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' }).provider).toBe(
       'lmstudio',
@@ -28,8 +44,24 @@ describe('decide', () => {
         model: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
       }).provider,
     ).toBe('lmstudio');
-    // No heuristic — a bare model name without provider does NOT route to lmstudio.
-    expect(decide({ model: 'qwen/qwen3-4b-2507' }).provider).toBe('anthropic');
+    // No heuristic — a bare HF-style model id without an explicit
+    // provider MUST default to anthropic, not be magically routed to
+    // lmstudio because the namespace looks like a HF org/repo. This
+    // is the regression that the route's comment warns about
+    // ("model IDs are user-controlled … overlap with HF-style IDs").
+    const ambiguousIds = [
+      'qwen/qwen3-4b-2507',
+      'google/gemma-2-9b-it',
+      'google/gemma-3-e4b',
+      'meta-llama/Llama-3-70B',
+      'mistralai/Mistral-7B-v0.3',
+      'TheBloke/Llama-2-7B-GGUF',
+      'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
+      'deepseek-ai/DeepSeek-R1',
+    ];
+    for (const model of ambiguousIds) {
+      expect(decide({ model }).provider, `model=${model}`).toBe('anthropic');
+    }
   });
 
   it('falls back to model heuristic when provider missing', () => {
