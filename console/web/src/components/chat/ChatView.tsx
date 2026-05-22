@@ -1,15 +1,15 @@
 import { Copy, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { useAutoAcceptApprovals } from '@/hooks/use-auto-accept-approvals'
 import { uid } from '@/hooks/use-conversations'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
+import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
-import {
-  nextApprovalsToAutoResolve,
-  type PendingApprovalCandidate,
-} from '@/lib/backend/auto-accept'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
+import { formatStopReason } from '@/lib/format-stop-reason'
 import { makeSessionId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import type {
@@ -66,34 +66,6 @@ function compactResultTone(result: CompactResult): 'info' | 'warn' | 'error' {
   return 'warn'
 }
 
-/**
- * Render a `stop-reason` StreamEvent as user-readable notice text.
- * Used when an assistant turn ends abnormally (max_tokens hit, provider
- * error, abort) so the user sees a clear cause instead of a silently
- * truncated reply.
- */
-function formatStopReason(
-  reason: 'length' | 'error' | 'aborted' | 'function_call',
-  message?: string,
-): string {
-  switch (reason) {
-    case 'length':
-      return (
-        'response truncated — the model hit its max output tokens before finishing. ' +
-        'increase the provider worker\'s `default_max_tokens` (or the model\'s `max_output_tokens` in the catalog), ' +
-        'or send "continue" to resume.'
-      )
-    case 'error':
-      return message
-        ? `response failed: ${message}`
-        : 'response failed mid-stream (no error message from the provider).'
-    case 'aborted':
-      return 'response aborted before completion.'
-    case 'function_call':
-      return 'response paused for tool call.'
-  }
-}
-
 interface ChatViewProps {
   conversation: Conversation
   backend: ChatBackend
@@ -140,58 +112,43 @@ export function ChatView({
     return match?.contextWindow
   }, [modelOptions, conversation.model])
 
-  /* Per-conversation auto-accept. When `conversation.autoAccept` is
-   * true, any pending function-call approval that surfaces in the
-   * transcript is auto-resolved with `decision: "allow"` so the user
-   * doesn't have to click. The approval card still renders briefly
-   * for audit — we just press the button on their behalf.
-   *
-   * Dedupe by iii `function_call_id` in a ref so the effect (which
-   * re-runs on every message-list patch) doesn't fire `resolve`
-   * twice for the same pending entry. The ref resets when the
-   * conversation id changes — a fresh conversation starts with a
-   * clean slate. */
-  const autoResolvedRef = useRef<Set<string>>(new Set())
-  useEffect(() => {
-    autoResolvedRef.current = new Set()
-  }, [conversation.id])
+  /* Shared live region: SR announcements for auto-accept, stop-reason
+   * notices, and compaction markers route through this hook. Sighted
+   * users see the same messages in the transcript; visually-impaired
+   * users hear them via the polite/assertive ARIA live regions
+   * rendered at the bottom of the component. */
+  const announcer = useLiveAnnouncer()
 
-  useEffect(() => {
-    if (!conversation.autoAccept) return
-    if (!backend.resolveApproval) return
-    const candidates: PendingApprovalCandidate[] = []
-    for (const m of conversation.messages) {
-      if (
-        m.role === 'function-call' &&
-        m.pendingApproval === true &&
-        typeof m.functionCallId === 'string' &&
-        typeof m.sessionId === 'string'
-      ) {
-        candidates.push({
-          functionCallId: m.functionCallId,
-          sessionId: m.sessionId,
-        })
-      }
-    }
-    const todo = nextApprovalsToAutoResolve(candidates, autoResolvedRef.current)
-    if (todo.length === 0) return
-    for (const p of todo) {
-      autoResolvedRef.current.add(p.functionCallId)
-      void backend.resolveApproval(p.sessionId, p.functionCallId, 'allow').catch(
-        (err) => {
-          /* Same warn-and-continue posture as the per-card resolve
-           * handler — a transient failure shouldn't break the loop
-           * for the next pending entry. The orchestrator will keep
-           * the approval pending; the user can still click manually. */
-          console.warn(
-            '[chat] auto-accept: approval::resolve failed',
-            { functionCallId: p.functionCallId, sessionId: p.sessionId, err },
-          )
-          autoResolvedRef.current.delete(p.functionCallId)
-        },
+  /* Wrap the backend's resolver in a stable callback so MessageList
+   * row-level memoization isn't broken by a fresh lambda identity on
+   * every render, and so the auto-accept hook's deps don't shift
+   * every render. */
+  const resolveApproval = useMemo(() => {
+    const fn = backend.resolveApproval
+    if (!fn) return undefined
+    return (
+      sessionId: string,
+      functionCallId: string,
+      decision: 'allow' | 'deny',
+    ) => fn(sessionId, functionCallId, decision)
+  }, [backend])
+
+  useAutoAcceptApprovals({
+    conversationId: conversation.id,
+    enabled: !!conversation.autoAccept,
+    messages: conversation.messages,
+    resolveApproval,
+    onAccepted: (functionId) => {
+      announcer.announce(`auto-accepted: ${functionId}`)
+    },
+    onDenied: (functionId) => {
+      /* The policy refused — leave the card for manual click. Tell
+       * SR users so they know to navigate to it. */
+      announcer.announce(
+        `auto-accept refused for ${functionId}: high-risk call requires manual approval`,
       )
-    }
-  }, [conversation.autoAccept, conversation.messages, backend])
+    },
+  })
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -201,13 +158,22 @@ export function ChatView({
     })
   }, [sessionId])
 
+  /* Read the messages snapshot through a ref inside handleSubmit so
+   * the callback identity is stable across token-by-token re-renders.
+   * Pre-fix, listing `conversation.messages` in the deps array
+   * rebuilt handleSubmit on every assistant/thought delta, which
+   * cascaded into Composer rebuilding and `LexicalShell` re-binding
+   * its `KEY_ENTER_COMMAND` listener once per token. */
+  const messagesRef = useRef(conversation.messages)
+  messagesRef.current = conversation.messages
+
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       const conversationId = conversation.id
 
       // Snapshot prior history BEFORE appending the new user msg —
       // run::start overwrites flat state with whatever we send.
-      const priorHistory = translateUiHistoryForBackend(conversation.messages)
+      const priorHistory = translateUiHistoryForBackend(messagesRef.current)
 
       const userMsg: UserMessage = {
         id: uid(),
@@ -417,20 +383,22 @@ export function ChatView({
               //   2. estimateConversationTokens stops counting pre-marker
               //      messages → the CTX bar drops to the real value.
               // We append (not replace) so the transcript stays scrollable.
+              const compactionContent =
+                event.mode === 'sync'
+                  ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
+                  : `compacted ${event.tokensBefore.toLocaleString()} tokens (background)`
               const marker: SystemMessage = {
                 id: uid(),
                 role: 'system',
                 kind: 'compaction',
-                content:
-                  event.mode === 'sync'
-                    ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
-                    : `compacted ${event.tokensBefore.toLocaleString()} tokens (background)`,
+                content: compactionContent,
                 tone: 'info',
                 summaryText: event.summaryText,
                 tokensBefore: event.tokensBefore,
                 createdAt: Date.now(),
               }
               onAppendMessage(conversationId, marker)
+              announcer.announce(compactionContent)
               break
             }
             case 'stop-reason': {
@@ -438,15 +406,21 @@ export function ChatView({
               // instead of leaving the response looking like it just
               // ran out of words. Pre-fix this event didn't exist and
               // the same condition produced a silently truncated reply.
+              const noticeContent = formatStopReason(event.reason, event.message)
               const notice: SystemMessage = {
                 id: uid(),
                 role: 'system',
                 kind: 'notice',
-                content: formatStopReason(event.reason, event.message),
+                content: noticeContent,
                 tone: event.reason === 'error' ? 'error' : 'warn',
                 createdAt: Date.now(),
               }
               onAppendMessage(conversationId, notice)
+              if (event.reason === 'error') {
+                announcer.announceAssertive(noticeContent)
+              } else {
+                announcer.announce(noticeContent)
+              }
               break
             }
           }
@@ -481,9 +455,10 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
-      conversation.messages,
       sessionId,
+      contextWindow,
       backend,
+      announcer,
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
@@ -594,18 +569,9 @@ export function ChatView({
         messages={conversation.messages}
         isThinking={isThinking}
         density={density}
-        onResolveApproval={
-          backend.resolveApproval
-            ? async (sessionId, functionCallId, decision) => {
-                await backend.resolveApproval?.(
-                  sessionId,
-                  functionCallId,
-                  decision,
-                )
-              }
-            : undefined
-        }
+        onResolveApproval={resolveApproval}
       />
+      <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
