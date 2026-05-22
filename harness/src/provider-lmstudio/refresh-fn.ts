@@ -25,7 +25,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
     FUNCTION_ID,
     async (): Promise<RefreshResult> => {
       try {
-        const headers = await buildAuthHeaders(iii);
+        const headers = await buildAuthHeaders(iii, worker.default_api_url);
         const registered = await discoverAndRegister(
           iii,
           worker.default_api_url,

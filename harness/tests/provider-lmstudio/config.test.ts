@@ -57,4 +57,28 @@ describe('loadWorkerConfig (lmstudio)', () => {
     });
     expect(cfg.default_api_url).toBe('http://yaml-host:5678/v1/chat/completions');
   });
+
+  it('rejects malformed LMSTUDIO_BASE_URL and falls through to yaml', () => {
+    process.env.LMSTUDIO_BASE_URL = 'not a url at all';
+    const cfg = loadWorkerConfig({
+      provider_lmstudio: { default_api_url: 'http://yaml-host:5678/v1/chat/completions' },
+    });
+    expect(cfg.default_api_url).toBe('http://yaml-host:5678/v1/chat/completions');
+  });
+
+  it('rejects non-http(s) schemes and falls through to yaml', () => {
+    process.env.LMSTUDIO_BASE_URL = 'file:///etc/passwd';
+    const cfg = loadWorkerConfig({
+      provider_lmstudio: { default_api_url: 'http://yaml-host:5678/v1/chat/completions' },
+    });
+    expect(cfg.default_api_url).toBe('http://yaml-host:5678/v1/chat/completions');
+  });
+
+  it('falls back to the localhost DEFAULT when BOTH env and yaml are malformed', () => {
+    process.env.LMSTUDIO_BASE_URL = 'not-a-url';
+    const cfg = loadWorkerConfig({
+      provider_lmstudio: { default_api_url: 'also-not-a-url' },
+    });
+    expect(cfg.default_api_url).toBe(DEFAULT_API_URL);
+  });
 });

@@ -206,9 +206,15 @@ describe('formatLmstudioError', () => {
 });
 
 describe('syntheticErrorEvent applies the load-failure hint', () => {
-  it('puts the formatted message into content[0].text AND error_message', () => {
-    // Regression: the unformatted wire string used to land verbatim in
-    // both spots, giving the user no recoverable next step.
+  it('puts the formatted message into error_message ONLY (not into content)', () => {
+    // Security-hardened contract: the formatted text now lives only in
+    // `error_message` (which the UI's translate layer surfaces via
+    // `stop-reason`). Pre-fix this same string was ALSO injected as a
+    // `text` ContentBlock — a malicious LM Studio backend or MITM
+    // could then smuggle "tool approved" lines or markup into the
+    // assistant content stream, where it would be persisted and
+    // re-fed to the next provider call as trusted context. Keeping
+    // content empty closes that prompt-injection sink.
     const ev = syntheticErrorEvent(
       'The model has crashed without additional information. (Exit code: null)',
       'zai-org/glm-4.7-flash',
@@ -220,16 +226,14 @@ describe('syntheticErrorEvent applies the load-failure hint', () => {
     const final = ev.error;
     expect(final.error_message).toContain('LM Studio could not load the model');
     expect(final.error_message).toContain('Original error: The model has crashed');
-    expect(final.content[0]).toBeDefined();
-    expect(final.content[0]?.type).toBe('text');
-    if (final.content[0]?.type !== 'text') throw new Error('unreachable');
-    expect(final.content[0].text).toBe(final.error_message);
+    expect(final.content).toEqual([]);
   });
 
   it('leaves non-load-failure errors unmodified', () => {
     const ev = syntheticErrorEvent('rate limited', 'm', 'lmstudio', 'rate_limited');
     if (ev.type !== 'error') throw new Error('unreachable');
     expect(ev.error.error_message).toBe('rate limited');
+    expect(ev.error.content).toEqual([]);
   });
 });
 
@@ -310,8 +314,10 @@ describe('handleChunk — SSE error chunks', () => {
     const err = events[0] as Extract<(typeof events)[number], { type: 'error' }>;
     // classifyLmstudioError doesn't have a specific regex for "No user
     // query" — falls through to 'permanent'. That's fine: the UI's
-    // stop-reason surfacing still shows the real message.
-    expect(err.error.error_kind).toBeDefined();
+    // stop-reason surfacing still shows the real message. Pin the
+    // value (rather than `toBeDefined`) so a future reclassification
+    // (e.g. accidentally routing it through auth_expired) is caught.
+    expect(err.error.error_kind).toBe('permanent');
   });
 
   it('classifies context-overflow error chunks as context_overflow', () => {

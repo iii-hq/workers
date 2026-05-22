@@ -212,4 +212,56 @@ describe('toOpenaiMessages (lmstudio) — boundary dedup of duplicate tool messa
     expect(tools).toHaveLength(1);
     expect(tools[0]?.content).toBe('second');
   });
+
+  it('preserves order of distinct tool_call_ids while deduping repeats', () => {
+    // Ported from provider-anthropic — keeps the two implementations
+    // in lockstep so a future divergence (e.g. earliest-wins on one
+    // provider) is caught.
+    const out = toOpenaiMessages(
+      [
+        mkResult('a', 'A1'),
+        mkResult('b', 'B1'),
+        mkResult('a', 'A2'),
+        mkResult('c', 'C1'),
+        mkResult('b', 'B2'),
+      ],
+      '',
+    ) as Array<Record<string, unknown>>;
+    const tools = out.filter((m) => m.role === 'tool') as Array<
+      { tool_call_id: string; content: string }
+    >;
+    expect(tools.map((t) => t.tool_call_id)).toEqual(['a', 'b', 'c']);
+    expect(tools[0]?.content).toBe('A2');
+    expect(tools[1]?.content).toBe('B2');
+    expect(tools[2]?.content).toBe('C1');
+  });
+
+  it('dedup is scoped to the pending batch (across-batch repeats stay separate for openai-format too)', () => {
+    // OpenAI/LM Studio's wire format is flat (no batched user-msg
+    // wrapper like Anthropic), so duplicates here just become a
+    // single tool entry regardless of an assistant gap. We still
+    // verify the assistant boundary doesn't merge tool entries from
+    // different turns into one row.
+    const msgs: AgentMessage[] = [
+      mkResult('a', 'r1'),
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'thinking…' }],
+        stop_reason: 'end',
+        model: 'qwen/qwen3-4b-2507',
+        provider: 'lmstudio',
+        timestamp: 0,
+      },
+      mkResult('a', 'r2'),
+    ];
+    const out = toOpenaiMessages(msgs, '') as Array<Record<string, unknown>>;
+    const tools = out.filter((m) => m.role === 'tool') as Array<
+      { tool_call_id: string; content: string }
+    >;
+    // Latest-wins: a single tool row carries the most recent body.
+    // The assistant message between them survives intact.
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.content).toBe('r2');
+    expect(out.filter((m) => m.role === 'assistant')).toHaveLength(1);
+  });
 });

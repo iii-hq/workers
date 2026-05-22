@@ -33,7 +33,7 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
 
 async function runStartupDiscovery(iii: ISdk, chatUrl: string): Promise<void> {
   try {
-    const headers = await buildAuthHeaders(iii);
+    const headers = await buildAuthHeaders(iii, chatUrl);
     await discoverAndRegister(iii, chatUrl, headers);
   } catch (err) {
     // discoverAndRegister already logs its own failures; this catch

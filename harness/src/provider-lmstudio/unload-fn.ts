@@ -34,7 +34,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
         return { ok: false, error: 'invalid payload: { instance_id: string } is required' };
       }
       try {
-        const headers = await buildAuthHeaders(iii);
+        const headers = await buildAuthHeaders(iii, worker.default_api_url);
         return await unloadModel(worker.default_api_url, headers, payload.instance_id);
       } catch (err) {
         logger.warn('provider::lmstudio::unload_model failed', {

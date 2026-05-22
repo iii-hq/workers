@@ -125,10 +125,12 @@ describe('loadModel', () => {
   });
 
   it('throws a timeout error when the load fetch aborts', async () => {
+    let abortedFromController = false;
     globalThis.fetch = vi.fn((_url, init) => {
       const signal = (init as RequestInit).signal;
       return new Promise<Response>((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
+          abortedFromController = true;
           const err = new Error('aborted');
           (err as Error & { name: string }).name = 'AbortError';
           reject(err);
@@ -145,8 +147,17 @@ describe('loadModel', () => {
       {},
       'huge/model',
     );
+    // Eagerly attach a no-op catch so vitest's "unhandled rejection"
+    // detector doesn't trip during fake-timer advancement (the
+    // rejection lands before the `expect(...).rejects` await binds,
+    // and the same Promise reference reaches both consumers fine).
+    promise.catch(() => {});
     await vi.advanceTimersByTimeAsync(120_001);
+    // Assert the AbortController fired (not just that the promise
+    // rejected with a /timed out/ message) so a refactor that returns
+    // a timeout error WITHOUT actually aborting the fetch is caught.
     await expect(promise).rejects.toThrow(/timed out/i);
+    expect(abortedFromController).toBe(true);
     vi.useRealTimers();
   });
 

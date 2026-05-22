@@ -8,7 +8,7 @@
 import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { emit } from '../turn-orchestrator/events.js';
+import { emitCompactionDone } from './emit.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { busyTimeoutMs, pruneMinFree, pruneProtect, pruneProtectedTools } from './config.js';
 import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
@@ -133,21 +133,12 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       // re-estimate context usage. Best-effort: a publish failure must
       // not derail the in-flight turn — the orchestrator is waiting on
       // our return.
-      try {
-        await emit(iii, input.session_id, {
-          type: 'compaction_done',
-          mode: 'sync',
-          summary_text: result.summary_text,
-          tokens_before: result.tokens_before,
-          compaction_entry_id: result.compaction_entry_id,
-          tail_start_id: result.tail_start_id,
-        });
-      } catch (err) {
-        logger.warn('handler-sync: compaction_done emit failed', {
-          session_id: input.session_id,
-          err: String(err),
-        });
-      }
+      await emitCompactionDone(iii, input.session_id, 'sync', {
+        summary_text: result.summary_text,
+        tokens_before: result.tokens_before,
+        compaction_entry_id: result.compaction_entry_id,
+        tail_start_id: result.tail_start_id,
+      });
 
       return {
         status: 'ok',

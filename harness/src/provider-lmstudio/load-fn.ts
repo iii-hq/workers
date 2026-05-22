@@ -38,7 +38,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
         return { ok: false, error: 'invalid payload: { model: string } is required' };
       }
       try {
-        const headers = await buildAuthHeaders(iii);
+        const headers = await buildAuthHeaders(iii, worker.default_api_url);
         return await loadModel(worker.default_api_url, headers, payload.model, {
           context_length: payload.context_length,
           eval_batch_size: payload.eval_batch_size,

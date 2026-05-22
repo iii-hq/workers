@@ -136,11 +136,20 @@ async function* attemptStream(
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
+    // Truncate + strip control chars before surfacing — non-2xx
+    // responses can carry HTML auth-redirect bodies, proxy error
+    // pages, or attacker-controlled content. Length cap keeps the
+    // message readable; control-char strip avoids ANSI / newline
+    // injection into log lines and live regions.
+    const safeText = text
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+      .slice(0, 256);
     yield syntheticErrorEvent(
-      text || `lmstudio http ${resp.status}`,
+      safeText || `lmstudio http ${resp.status}`,
       cfg.model,
       cfg.provider_name,
-      classifyLmstudioError(text, resp.status),
+      classifyLmstudioError(safeText, resp.status),
     );
     return;
   }

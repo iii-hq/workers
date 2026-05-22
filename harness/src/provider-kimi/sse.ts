@@ -179,7 +179,17 @@ export function handleChunk(
     for (const tc of tool_calls) {
       if (!tc || typeof tc !== 'object') continue;
       const tcObj = tc as Record<string, unknown>;
-      const index = typeof tcObj.index === 'number' ? tcObj.index : 0;
+      const rawIndex = typeof tcObj.index === 'number' ? tcObj.index : 0;
+      // Reject attacker-controlled indices that would force unbounded
+      // allocation. Same DoS guard as provider-lmstudio/sse.ts.
+      if (
+        !Number.isInteger(rawIndex) ||
+        rawIndex < 0 ||
+        rawIndex > 256
+      ) {
+        continue;
+      }
+      const index = rawIndex;
       while (state.tool_calls.length <= index) {
         state.tool_calls.push({ id: '', function_id: '', args_json: '' });
       }

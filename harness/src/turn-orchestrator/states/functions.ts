@@ -376,9 +376,37 @@ export async function handleFinalize(iii: ISdk, rec: TurnStateRecord): Promise<v
   //   "each tool_use must have a single result. Found multiple tool_result
   //    blocks with id: toolu_..."
   // and any provider's wire-messages flush would produce them otherwise.
+  // Only the most-recent function_result block matters for dedup —
+  // duplicates only appear when the re-entry runs against a slice
+  // we already wrote in this same finalize, so walking from the tail
+  // and stopping once we pass the boundary of pre-existing results
+  // is sufficient. Pre-fix this scanned every message from the head
+  // on every finalize, which grew O(history) per turn for a guard
+  // that only ever protects against ~10 entries.
+  const incomingIds = new Set<string>();
+  for (const r of function_results) incomingIds.add(r.function_call_id);
   const existingResultIds = new Set<string>();
-  for (const m of messages) {
-    if (m.role === 'function_result') existingResultIds.add(m.function_call_id);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === 'function_result') {
+      existingResultIds.add(m.function_call_id);
+      continue;
+    }
+    if (m.role === 'assistant') {
+      // Once we cross an assistant boundary BEFORE seeing any
+      // pending incoming id we've passed the turn this finalize
+      // is writing for — earlier function_result blocks can't be
+      // duplicates of `function_results`.
+      let unseen = false;
+      for (const id of incomingIds) {
+        if (!existingResultIds.has(id)) {
+          unseen = true;
+          break;
+        }
+      }
+      if (!unseen) break;
+    }
   }
   let appended = 0;
   for (const r of function_results) {

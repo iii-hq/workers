@@ -162,9 +162,17 @@ export function syntheticErrorEvent(
   error_kind: ErrorKind = 'transient',
 ): AssistantMessageEvent {
   const formatted = formatLmstudioError(message);
+  // Carry the formatted text ONLY in `error_message` (which the UI's
+  // translate layer routes through the `stop-reason` notice channel).
+  // Do NOT inject it as a `text` ContentBlock — pre-fix that meant a
+  // malicious LM Studio backend or MITM could inject "tool approved"
+  // lines or attacker-controlled markup into the assistant message
+  // stream, where it would be persisted and re-fed to the next
+  // provider call as trusted context (a prompt-injection vector via
+  // the local model server's error channel).
   const final: AssistantMessage = {
     role: 'assistant',
-    content: [{ type: 'text', text: formatted }],
+    content: [],
     stop_reason: 'error',
     error_message: formatted,
     error_kind,
@@ -265,7 +273,21 @@ export function handleChunk(
     for (const tc of tool_calls) {
       if (!tc || typeof tc !== 'object') continue;
       const tcObj = tc as Record<string, unknown>;
-      const index = typeof tcObj.index === 'number' ? tcObj.index : 0;
+      const rawIndex = typeof tcObj.index === 'number' ? tcObj.index : 0;
+      // Reject attacker-controlled indices that would force unbounded
+      // allocation. Without this guard, a hostile (or buggy) LM Studio
+      // backend can DoS the worker by sending `{"index": 1e9}` in a
+      // delta.tool_calls entry — the while-loop below would allocate
+      // billions of slots. 256 is well above any realistic tool-call
+      // fan-out from a single model turn.
+      if (
+        !Number.isInteger(rawIndex) ||
+        rawIndex < 0 ||
+        rawIndex > 256
+      ) {
+        continue;
+      }
+      const index = rawIndex;
       while (state.tool_calls.length <= index) {
         state.tool_calls.push({ id: '', function_id: '', args_json: '' });
       }

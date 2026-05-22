@@ -214,27 +214,39 @@ export async function discoverLoadedIds(
  * Register each discovered model via the `models::register` bus function.
  * Best-effort per-model: failures are logged and skipped, the rest are
  * still registered.
+ *
+ * Fan out in parallel via Promise.allSettled — the bus has no ordering
+ * requirement between registers, and serializing them stretched
+ * startup-blocking time to N × REGISTER_TIMEOUT_MS for users with
+ * many downloaded models. Pre-fix: 30 models × 5s timeout could leave
+ * the worker un-discoverable for 150s. Now: ~5s worst case regardless
+ * of N.
  */
 export async function registerDiscovered(
   iii: ISdk,
   models: readonly Model[],
 ): Promise<string[]> {
-  const registered: string[] = [];
-  for (const m of models) {
-    try {
+  const settled = await Promise.allSettled(
+    models.map(async (m) => {
       await iii.trigger({
         function_id: 'models::register',
         payload: m,
         timeoutMs: REGISTER_TIMEOUT_MS,
       });
-      registered.push(m.id);
-    } catch (err) {
+      return m.id;
+    }),
+  );
+  const registered: string[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') {
+      registered.push(r.value);
+    } else {
       logger.warn('lmstudio discovery: register failed', {
-        id: m.id,
-        err: String(err),
+        id: models[i]?.id,
+        err: String(r.reason),
       });
     }
-  }
+  });
   return registered;
 }
 
@@ -258,8 +270,13 @@ export async function discoverAndRegister(
     return [];
   }
   const registered = await registerDiscovered(iii, models);
+  // Log count at INFO; full id list at DEBUG so model identifiers
+  // (which may carry fine-tune / org context) don't leak into
+  // shared observability tooling on the cheaper tier.
   logger.info('lmstudio discovery: registered models', {
     count: registered.length,
+  });
+  logger.debug('lmstudio discovery: registered model ids', {
     ids: registered,
   });
   return registered;

@@ -212,6 +212,9 @@ describe('streamLmstudio', () => {
   it('aborts the fetch after the configured timeout when the URL is unreachable', async () => {
     // Simulate fetch hanging indefinitely — the AbortController should
     // fire and we should emit a clear timeout error, not hang the worker.
+    // Fake timers so we can advance past the production FETCH_TIMEOUT_MS
+    // (30s) in milliseconds rather than seconds of wall-clock.
+    vi.useFakeTimers();
     let abortedFromController = false;
     globalThis.fetch = vi.fn((_url, init) => {
       const signal = (init as RequestInit | undefined)?.signal;
@@ -225,13 +228,20 @@ describe('streamLmstudio', () => {
       });
     }) as typeof globalThis.fetch;
 
-    const final = await collect(
-      streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
-    );
-    expect(abortedFromController).toBe(true);
-    expect(final.stop_reason).toBe('error');
-    expect(final.error_message).toMatch(/timed out/i);
-  }, 60_000);
+    try {
+      const final$ = collect(
+        streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
+      );
+      // FETCH_TIMEOUT_MS is 30_000 in stream.ts — advance just past it.
+      await vi.advanceTimersByTimeAsync(30_001);
+      const final = await final$;
+      expect(abortedFromController).toBe(true);
+      expect(final.stop_reason).toBe('error');
+      expect(final.error_message).toMatch(/timed out/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('resolves placeholder model `lmstudio-local` by querying /v1/models', async () => {
     const calls: string[] = [];

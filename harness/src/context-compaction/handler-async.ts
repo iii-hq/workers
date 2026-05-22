@@ -7,7 +7,7 @@
 import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { emit } from '../turn-orchestrator/events.js';
+import { emitCompactionDone } from './emit.js';
 import { pruneMinFree, pruneProtect, pruneProtectedTools, reservedTokens } from './config.js';
 import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
 import { acquireLease, releaseLease } from './lease.js';
@@ -185,21 +185,12 @@ export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
         // Tell the UI we just compacted so it can insert a marker and
         // re-estimate context usage. Best-effort: a publish failure must
         // not leak out of the background handler.
-        try {
-          await emit(iii, payload.session_id, {
-            type: 'compaction_done',
-            mode: 'async',
-            summary_text: result.summary_text,
-            tokens_before: result.tokens_before,
-            compaction_entry_id: result.compaction_entry_id,
-            tail_start_id: result.tail_start_id,
-          });
-        } catch (err) {
-          logger.warn('handler-async: compaction_done emit failed', {
-            session_id: payload.session_id,
-            err: String(err),
-          });
-        }
+        await emitCompactionDone(iii, payload.session_id, 'async', {
+          summary_text: result.summary_text,
+          tokens_before: result.tokens_before,
+          compaction_entry_id: result.compaction_entry_id,
+          tail_start_id: result.tail_start_id,
+        });
       }
     } catch (err) {
       logger.warn('handler-async: compaction failed', {

@@ -34,6 +34,13 @@ function hasUserMessage(wire: readonly unknown[]): boolean {
 
 export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string): unknown[] {
   const out: unknown[] = [];
+  // Index of `tool_call_id → out[]` slot for O(1) latest-wins dedup
+  // of function_result rows. Pre-fix this was an `out.findIndex` scan
+  // per function_result, which gave O(M²) translation cost when the
+  // history carried many tool calls — amplified on LM Studio because
+  // the auto-load retry can re-translate the same history twice in
+  // one user turn.
+  const toolResultIndexById = new Map<string, number>();
   if (system_prompt.length > 0) {
     out.push({ role: 'system', content: system_prompt });
   }
@@ -90,14 +97,13 @@ export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string
       // Boundary dedup — see provider-anthropic/wire-messages.ts for why.
       // LM Studio's jinja templates vary by GGUF; some accept duplicates,
       // some don't. Latest-wins replace keeps every template happy.
-      const existingIdx = out.findIndex(
-        (e) =>
-          (e as { role?: string }).role === 'tool' &&
-          (e as { tool_call_id?: string }).tool_call_id === m.function_call_id,
-      );
-      if (existingIdx >= 0) {
+      // O(1) lookup via the index map (see top-of-function note on
+      // why we don't scan `out` linearly here).
+      const existingIdx = toolResultIndexById.get(m.function_call_id);
+      if (existingIdx !== undefined) {
         out[existingIdx] = row;
       } else {
+        toolResultIndexById.set(m.function_call_id, out.length);
         out.push(row);
       }
     }
