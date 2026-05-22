@@ -4,6 +4,8 @@ function_id: directory::engine::functions::list
 title: List functions registered with the engine
 ---
 
+> **Function id:** `directory::engine::functions::list` — pass this to `agent_trigger { function: "directory::engine::functions::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Reach for `directory::engine::functions::list` when you need to

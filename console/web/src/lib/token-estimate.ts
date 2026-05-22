@@ -37,8 +37,27 @@ export function estimateMessageTokens(message: Message): number {
 export function estimateConversationTokens(
   messages: readonly Message[],
 ): number {
+  // Messages older than the most-recent compaction marker are no longer
+  // in the server's flat-state — they were replaced by the summary the
+  // marker carries. Counting them would keep the CTX bar pinned at
+  // pre-compaction levels even after the server rewrote the session.
+  //
+  // We honour the *last* marker (compactions can stack across long
+  // sessions) and count it + everything after it. The marker itself
+  // contributes its summaryText tokens via estimateMessageTokens.
+  let lastCompactionIdx = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m && m.role === 'system' && m.kind === 'compaction') {
+      lastCompactionIdx = i
+      break
+    }
+  }
+  const start = lastCompactionIdx >= 0 ? lastCompactionIdx : 0
   let total = 0
-  for (const m of messages) total += estimateMessageTokens(m)
+  for (let i = start; i < messages.length; i++) {
+    total += estimateMessageTokens(messages[i])
+  }
   return total
 }
 

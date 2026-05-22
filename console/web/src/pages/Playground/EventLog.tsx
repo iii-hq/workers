@@ -180,6 +180,10 @@ function toneFor(kind: StreamEvent['kind']): string {
       return 'text-ink-ghost'
     case 'assistant-end':
       return 'text-ink'
+    case 'compaction':
+      return 'text-warn'
+    case 'stop-reason':
+      return 'text-warn'
   }
 }
 

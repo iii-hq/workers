@@ -197,6 +197,21 @@ export type AgentEvent =
       new_value: Record<string, unknown>
       old_value?: Record<string, unknown>
     }
+  | {
+      /**
+       * Emitted by the harness-node context-compaction worker after a
+       * successful flat-state rewrite. Lets the UI insert a marker into
+       * the rendered transcript and re-estimate context usage so the
+       * CTX bar reflects post-compaction reality.
+       */
+      type: 'compaction_done'
+      /** 'async' = TurnEnd background; 'sync' = pre-flight in-turn. */
+      mode: 'async' | 'sync'
+      summary_text: string
+      tokens_before: number
+      compaction_entry_id: string
+      tail_start_id: string | null
+    }
 
 export type TurnStateChangedEvent = Extract<
   AgentEvent,

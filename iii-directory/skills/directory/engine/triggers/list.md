@@ -4,6 +4,8 @@ function_id: directory::engine::triggers::list
 title: List trigger types registered with the engine
 ---
 
+> **Function id:** `directory::engine::triggers::list` — pass this to `agent_trigger { function: "directory::engine::triggers::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Use `directory::engine::triggers::list` to enumerate trigger TYPES —

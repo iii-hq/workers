@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       deploy:
-        description: 'binary | image'
+        description: 'binary | image | bundle'
         required: true
         type: string
       registry_tag:
@@ -51,6 +51,15 @@ jobs:
 
       - name: Install pyyaml
         run: pip install --quiet pyyaml
+
+      # Bundle workers run `scripts.start: node ./index.mjs`; make sure
+      # Node 22+ is available on the runner before we spawn the extracted
+      # bundle. No-op for the binary / image paths.
+      - name: Install Node (bundle deploy)
+        if: inputs.deploy == 'bundle'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install iii CLI
         env:
@@ -115,7 +124,7 @@ jobs:
 
           case "$mode" in
             iii-add)
-              iii worker add "./$WORKER" --force --reset-config --wait
+              iii worker add "./$WORKER" --force --reset-config
               ;;
             release-binary)
               bin_name="${BIN:-$WORKER}"
@@ -131,6 +140,37 @@ jobs:
               echo "Starting local worker with: (cd $WORKER && $bin_path)"
               "$bin_path" > "../$worker_log" 2>&1 &
               echo "$!" > ../worker.pid
+              popd >/dev/null
+
+              sleep 2
+              if ! kill -0 "$(cat worker.pid)" 2>/dev/null; then
+                echo "::error::$WORKER exited before interface collection"
+                cat "$worker_log" || true
+                exit 1
+              fi
+              ;;
+            release-bundle)
+              # `_bundle.yml` uploaded `<worker>.tar.gz` (containing
+              # `index.mjs` + `iii.worker.yaml`) to the GitHub Release.
+              # Download, extract, and spawn `scripts.start` directly on
+              # the runner (same pattern as `release-binary`). Avoids
+              # `iii worker add`, which no longer accepts `--wait` and
+              # boots local dirs in a VM sandbox unsuitable for CI.
+              bundle_url="$REPO_URL/releases/download/$TAG/${WORKER}.tar.gz"
+              echo "Fetching prebuilt bundle: $bundle_url"
+              curl -fsSL "$bundle_url" -o /tmp/worker-bundle.tar.gz
+              stage_dir="/tmp/${WORKER}-bundle"
+              rm -rf "$stage_dir"
+              mkdir -p "$stage_dir"
+              tar -xzf /tmp/worker-bundle.tar.gz -C "$stage_dir"
+              ls -la "$stage_dir"
+
+              worker_log="worker-$WORKER.log"
+              workspace_root="$PWD"
+              echo "Starting local worker with: (cd $stage_dir && node ./index.mjs)"
+              pushd "$stage_dir" >/dev/null
+              node ./index.mjs > "$workspace_root/$worker_log" 2>&1 &
+              echo "$!" > "$workspace_root/worker.pid"
               popd >/dev/null
 
               sleep 2
@@ -209,6 +249,24 @@ jobs:
         run: |
           printf '{}\n' > binaries.json
 
+      - name: Resolve bundle artifact
+        if: inputs.deploy == 'bundle'
+        env:
+          TAG: ${{ inputs.tag }}
+          WORKER: ${{ inputs.worker }}
+          REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+        run: |
+          python3 .github/scripts/resolve_bundle_artifact.py \
+            --repo-url "$REPO_URL" \
+            --tag "$TAG" \
+            --worker "$WORKER" \
+            --out bundle.json
+
+      - name: Create empty bundle artifact
+        if: inputs.deploy != 'bundle'
+        run: |
+          printf '{}\n' > bundle.json
+
       - name: Build payload
         env:
           WORKER: ${{ inputs.worker }}
@@ -226,6 +284,7 @@ jobs:
             --repo-url "$REPO_URL" \
             --interface-json worker-interface.json \
             --binaries-json binaries.json \
+            --bundle-json bundle.json \
             --image-tag "$IMAGE_TAG" \
             --out payload.json
 

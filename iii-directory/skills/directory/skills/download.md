@@ -4,6 +4,8 @@ function_id: directory::skills::download
 title: Download skills + prompts into skills_folder
 ---
 
+> **Function id:** `directory::skills::download` — pass this to `agent_trigger { function: "directory::skills::download" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::skills::download` when you want to populate

@@ -1,0 +1,17 @@
+iii: v1
+name: provider-llamacpp
+language: node
+deploy: binary
+manifest: package.json
+bin: iii-provider-llamacpp
+description: llama.cpp llama-server (localhost) Chat Completions streaming provider; exposes provider::llamacpp::stream and provider::llamacpp::complete on the iii bus.
+
+runtime:
+  kind: node
+
+scripts:
+  install: pnpm install
+  start: node ./dist/provider-llamacpp/main.js --config ./config.yaml
+
+dependencies:
+  auth-credentials: "^0.2.0"

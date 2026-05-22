@@ -79,7 +79,10 @@ def language_of(worker_dir: pathlib.Path) -> str | None:
     for line in meta.read_text().splitlines():
         s = line.strip()
         if s.startswith("language:"):
-            return s.split(":", 1)[1].strip()
+            lang = s.split(":", 1)[1].strip()
+            if lang == "javascript":
+                return "node"
+            return lang
     return None
 
 

@@ -4,6 +4,8 @@ function_id: directory::engine::registered-triggers::list
 title: List registered trigger instances (subscriber rows)
 ---
 
+> **Function id:** `directory::engine::registered-triggers::list` — pass this to `agent_trigger { function: "directory::engine::registered-triggers::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Use `directory::engine::registered-triggers::list` to enumerate the

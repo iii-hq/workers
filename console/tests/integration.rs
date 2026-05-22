@@ -119,7 +119,7 @@ async fn end_to_end_http_and_ws_proxy() {
 
     // 2. Pluck the first asset href out of index.html and GET it.
     let asset_path = parse_first_asset(&body).expect("no asset link in index.html");
-    let asset_url = format!("{base}{asset_path}");
+    let asset_url = resolve_asset_url(&base, &asset_path);
     let res = reqwest::get(&asset_url)
         .await
         .unwrap_or_else(|e| panic!("GET {asset_url} failed: {e}"));
@@ -181,17 +181,31 @@ async fn end_to_end_http_and_ws_proxy() {
 }
 
 fn parse_first_asset(html: &str) -> Option<String> {
-    // Look for `src="/assets/...js"` or `href="/assets/...css"`.
-    for needle in ["src=\"/assets/", "href=\"/assets/"] {
-        if let Some(start) = html.find(needle) {
-            let prefix_len = needle.len() - "/assets/".len();
-            let after_attr = &html[start + prefix_len..];
+    for attr in ["src=\"", "href=\""] {
+        let mut search_from = 0;
+        while let Some(rel_start) = html[search_from..].find(attr) {
+            let value_start = search_from + rel_start + attr.len();
+            let after_attr = &html[value_start..];
             if let Some(end) = after_attr.find('"') {
-                return Some(after_attr[..end].to_string());
+                let path = &after_attr[..end];
+                if path.contains("assets/") && (path.ends_with(".js") || path.ends_with(".css")) {
+                    return Some(path.to_string());
+                }
             }
+            search_from = value_start;
         }
     }
     None
+}
+
+fn resolve_asset_url(base: &str, asset_path: &str) -> String {
+    if asset_path.starts_with('/') {
+        format!("{base}{asset_path}")
+    } else {
+        let base = base.trim_end_matches('/');
+        let path = asset_path.strip_prefix("./").unwrap_or(asset_path);
+        format!("{base}/{path}")
+    }
 }
 
 #[test]
@@ -208,5 +222,27 @@ fn parse_first_asset_picks_script_or_link() {
         Some("/assets/style-1.css")
     );
 
+    let html = r#"<html><head><script type="module" src="./assets/index-abc.js"></script><link href="./assets/index-def.css"/></head></html>"#;
+    assert_eq!(
+        parse_first_asset(html).as_deref(),
+        Some("./assets/index-abc.js")
+    );
+
     assert!(parse_first_asset("<html></html>").is_none());
+}
+
+#[test]
+fn resolve_asset_url_joins_relative_paths() {
+    assert_eq!(
+        resolve_asset_url("http://127.0.0.1:3113", "/assets/index.js"),
+        "http://127.0.0.1:3113/assets/index.js"
+    );
+    assert_eq!(
+        resolve_asset_url("http://127.0.0.1:3113", "./assets/index.js"),
+        "http://127.0.0.1:3113/assets/index.js"
+    );
+    assert_eq!(
+        resolve_asset_url("http://127.0.0.1:3113/", "assets/index.js"),
+        "http://127.0.0.1:3113/assets/index.js"
+    );
 }

@@ -4,6 +4,8 @@ function_id: directory::engine::workers::list
 title: List workers connected to the engine
 ---
 
+> **Function id:** `directory::engine::workers::list` — pass this to `agent_trigger { function: "directory::engine::workers::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Use `directory::engine::workers::list` to enumerate every worker

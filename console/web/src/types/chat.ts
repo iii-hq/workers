@@ -1,6 +1,6 @@
 export type Mode = 'plan' | 'ask' | 'agent'
 
-/** Composite `provider::<catalog_model_id>` (matches harness-node models-catalog). */
+/** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
 export const CATALOG_MODEL_KEY_SEP = '::' as const
 
 export type ModelId = string
@@ -13,7 +13,7 @@ export interface ModelOption {
 
 /**
  * When the engine is down or mock backend runs, picker still needs options.
- * Ids mirror the seeded catalog (`harness-node/.../models.json`).
+ * Ids mirror the seeded catalog (`harness/.../models.json`).
  */
 export const STATIC_MODEL_OPTIONS: ModelOption[] = [
   {
@@ -114,12 +114,7 @@ export interface SystemMessage extends BaseMessage {
   tokensBefore?: number
 }
 
-export type Message =
-  | UserMessage
-  | AssistantMessage
-  | ThoughtMessage
-  | FunctionCallMessage
-  | SystemMessage
+export type Message = UserMessage | AssistantMessage | ThoughtMessage | FunctionCallMessage | SystemMessage
 
 /**
  * Loose patch shape passed to updateMessage(). Lists every patchable field
@@ -153,17 +148,23 @@ export interface Conversation {
   titleManual?: boolean
   model: ModelId
   mode: Mode
+  /**
+   * When true, the chat client auto-fires `approval::resolve {
+   * decision: "allow" }` for every new pending approval that surfaces
+   * in this conversation's state, instead of waiting for the user to
+   * click "approve". Persists per-conversation; a fresh conversation
+   * defaults to false so "yolo" doesn't carry across sessions.
+   *
+   * The approval card still renders briefly in the transcript for
+   * audit — we just click the button for the user.
+   */
+  autoAccept: boolean
   messages: Message[]
   createdAt: number
   updatedAt: number
 }
 
-const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>([
-  'user',
-  'assistant',
-  'thought',
-  'function-call',
-])
+const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>(['user', 'assistant', 'thought', 'function-call'])
 
 export function isKnownRole(role: unknown): role is Role {
   return typeof role === 'string' && KNOWN_ROLES.has(role as Role)

@@ -1,6 +1,6 @@
 use crate::analyzer::CompletionContext;
 use crate::engine_client::EngineClient;
-use iii_sdk::{FunctionInfo, TriggerTypeInfo};
+use crate::engine_introspection::{FunctionInfo, TriggerTypeInfo};
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 

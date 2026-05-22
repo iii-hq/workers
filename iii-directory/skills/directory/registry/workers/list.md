@@ -4,6 +4,8 @@ function_id: directory::registry::workers::list
 title: List workers from the public registry
 ---
 
+> **Function id:** `directory::registry::workers::list` — pass this to `agent_trigger { function: "directory::registry::workers::list" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Use `directory::registry::workers::list` to browse or search the public

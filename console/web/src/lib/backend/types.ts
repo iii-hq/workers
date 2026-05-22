@@ -31,6 +31,35 @@ export type StreamEvent =
   | { kind: 'fcall-end'; output: unknown; durationMs: number }
   | { kind: 'assistant-token'; token: string }
   | { kind: 'assistant-end' }
+  | {
+      /**
+       * Server-side context-compaction finished rewriting the session's
+       * flat-state. ChatView consumes this to append a compaction marker
+       * into the conversation so the CTX bar drops to the post-compaction
+       * count without wiping the user's transcript.
+       */
+      kind: 'compaction'
+      /** 'async' = post-TurnEnd background; 'sync' = pre-flight in-turn. */
+      mode: 'async' | 'sync'
+      summaryText: string
+      tokensBefore: number
+      compactionEntryId: string
+      tailStartId: string | null
+    }
+  | {
+      /**
+       * Surfaces the assistant turn's terminal `stop_reason` when it's
+       * NOT a clean `end`. Without this the UI used to swallow every
+       * non-clean termination — `length` (max_tokens hit), `error`
+       * (provider failure mid-stream), `aborted` (user/timeout abort)
+       * — and the user saw a truncated reply with no indication of why.
+       * ChatView renders this as a system notice with appropriate tone.
+       */
+      kind: 'stop-reason'
+      reason: 'length' | 'error' | 'aborted' | 'function_call'
+      /** Optional explanatory text, e.g. the provider's error_message. */
+      message?: string
+    }
 
 export interface ChatStreamOptions {
   signal?: AbortSignal

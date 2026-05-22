@@ -1,0 +1,180 @@
+name: Bundle Release
+
+# Reusable workflow that builds a single-file bundle for a Node/Python
+# worker, packs it (plus `iii.worker.yaml`) into `<worker>.tar.gz`, and
+# uploads the archive + a sidecar `<worker>.sha256` to the GitHub Release
+# for the tag. Sibling of `_rust-binary.yml` and `_container.yml`; called
+# from `release.yml` when `iii.worker.yaml` declares `deploy: bundle`.
+#
+# The resulting asset URL follows the same convention as the Rust binary
+# path so `_publish-registry.yml` can resolve it deterministically:
+#   https://github.com/<repo>/releases/download/<tag>/<worker>.tar.gz
+
+on:
+  workflow_call:
+    inputs:
+      worker:
+        description: 'Worker name (folder), e.g. harness'
+        required: true
+        type: string
+      version:
+        description: 'Semver version (e.g., 0.1.0)'
+        required: true
+        type: string
+      tag_name:
+        description: 'Git tag for the GitHub Release (e.g., harness/v0.1.0)'
+        required: true
+        type: string
+      language:
+        description: "Runtime language: 'node' or 'python'"
+        required: true
+        type: string
+      is_prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+      skip_create_release:
+        description: 'Skip GH release creation (assumes release already exists for the tag)'
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: 'Build the archive but skip uploading to the release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  pre-build:
+    name: Pre-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        if: inputs.skip_create_release != true && inputs.dry_run != true
+
+      - name: Create GitHub Release
+        if: inputs.skip_create_release != true && inputs.dry_run != true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: ${{ inputs.worker }} ${{ inputs.tag_name }}
+          draft: false
+          prerelease: ${{ inputs.is_prerelease }}
+          generate_release_notes: true
+
+  build:
+    name: Bundle ${{ inputs.worker }}
+    needs: [pre-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node bundle path ─────────────────────────────────────────────
+      # esbuild produces `<worker>/dist/bundle/index.mjs`, a single ESM
+      # file with all npm deps + JSON assets inlined. Only Node built-ins
+      # and `fsevents` (macOS-only optional native dep used by chokidar)
+      # are external. See `<worker>/scripts/build-bundle.mjs`.
+      - uses: pnpm/action-setup@v4
+        if: inputs.language == 'node' || inputs.language == 'javascript'
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        if: inputs.language == 'node' || inputs.language == 'javascript'
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: ${{ inputs.worker }}/pnpm-lock.yaml
+
+      - name: pnpm install
+        if: inputs.language == 'node' || inputs.language == 'javascript'
+        working-directory: ${{ inputs.worker }}
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm run build:bundle
+        if: inputs.language == 'node' || inputs.language == 'javascript'
+        working-directory: ${{ inputs.worker }}
+        run: pnpm run build:bundle
+
+      - name: Stage Node artefact
+        if: inputs.language == 'node' || inputs.language == 'javascript'
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/bundle-stage"
+          mkdir -p "$stage"
+          cp "$WORKER/dist/bundle/index.mjs" "$stage/index.mjs"
+          cp "$WORKER/iii.worker.yaml"       "$stage/iii.worker.yaml"
+          echo "STAGE_DIR=$stage" >> "$GITHUB_ENV"
+
+      # ── Python bundle path (TODO) ────────────────────────────────────
+      # When the first Python worker with `deploy: bundle` lands, choose
+      # a single-file packaging tool (PEP 723 / shiv / pex / PyOxidizer)
+      # and produce the same `index.mjs`-equivalent entrypoint + per-tool
+      # `iii.worker.yaml` in $STAGE_DIR. Until then, fail loudly.
+      - name: Python bundle (unsupported)
+        if: inputs.language == 'python'
+        run: |
+          echo "::error::Python bundle path is not implemented yet"
+          exit 1
+
+      - name: Unsupported language
+        if: inputs.language != 'node' && inputs.language != 'javascript' && inputs.language != 'python'
+        env:
+          LANG_IN: ${{ inputs.language }}
+        run: |
+          echo "::error::_bundle.yml does not support language=$LANG_IN"
+          exit 1
+
+      - name: Verify staged artefact
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          ls -la "$STAGE_DIR"
+          for required in index.mjs iii.worker.yaml; do
+            if [[ ! -f "$STAGE_DIR/$required" ]]; then
+              echo "::error::staged bundle missing $required"
+              exit 1
+            fi
+          done
+
+      - name: Pack tar.gz + sha256
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          out_dir="$RUNNER_TEMP/bundle-out"
+          mkdir -p "$out_dir"
+
+          archive="$out_dir/${WORKER}.tar.gz"
+          checksum="$out_dir/${WORKER}.sha256"
+
+          # `tar -C` so the archive contents are rooted at the staged
+          # files, not at `$STAGE_DIR`. The resulting archive expands
+          # straight to `index.mjs` + `iii.worker.yaml`.
+          tar -C "$STAGE_DIR" -czf "$archive" index.mjs iii.worker.yaml
+
+          digest=$(sha256sum "$archive" | awk '{print $1}')
+          printf '%s  %s\n' "$digest" "${WORKER}.tar.gz" > "$checksum"
+
+          echo "ARCHIVE_PATH=$archive"       >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=$checksum"     >> "$GITHUB_ENV"
+          echo "::notice::Built $archive ($(stat -c%s "$archive") bytes, sha256=$digest)"
+
+      - name: Upload to GitHub Release
+        if: inputs.dry_run != true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          files: |
+            ${{ env.ARCHIVE_PATH }}
+            ${{ env.CHECKSUM_PATH }}
+          fail_on_unmatched_files: true

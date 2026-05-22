@@ -4,6 +4,8 @@ function_id: directory::engine::triggers::info
 title: Inspect one trigger type's schemas + live instance count
 ---
 
+> **Function id:** `directory::engine::triggers::info` — pass this to `agent_trigger { function: "directory::engine::triggers::info" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::engine::triggers::info` once you've identified a

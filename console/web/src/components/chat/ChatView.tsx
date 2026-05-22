@@ -1,11 +1,15 @@
 import { Copy, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { useAutoAcceptApprovals } from '@/hooks/use-auto-accept-approvals'
 import { uid } from '@/hooks/use-conversations'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
+import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
+import { formatStopReason } from '@/lib/format-stop-reason'
 import { makeSessionId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import type {
@@ -72,6 +76,7 @@ interface ChatViewProps {
   onClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
+  onUpdateAutoAccept: (id: string, autoAccept: boolean) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -86,6 +91,7 @@ export function ChatView({
   onClose,
   onUpdateModel,
   onUpdateMode,
+  onUpdateAutoAccept,
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
@@ -106,6 +112,44 @@ export function ChatView({
     return match?.contextWindow
   }, [modelOptions, conversation.model])
 
+  /* Shared live region: SR announcements for auto-accept, stop-reason
+   * notices, and compaction markers route through this hook. Sighted
+   * users see the same messages in the transcript; visually-impaired
+   * users hear them via the polite/assertive ARIA live regions
+   * rendered at the bottom of the component. */
+  const announcer = useLiveAnnouncer()
+
+  /* Wrap the backend's resolver in a stable callback so MessageList
+   * row-level memoization isn't broken by a fresh lambda identity on
+   * every render, and so the auto-accept hook's deps don't shift
+   * every render. */
+  const resolveApproval = useMemo(() => {
+    const fn = backend.resolveApproval
+    if (!fn) return undefined
+    return (
+      sessionId: string,
+      functionCallId: string,
+      decision: 'allow' | 'deny',
+    ) => fn(sessionId, functionCallId, decision)
+  }, [backend])
+
+  useAutoAcceptApprovals({
+    conversationId: conversation.id,
+    enabled: !!conversation.autoAccept,
+    messages: conversation.messages,
+    resolveApproval,
+    onAccepted: (functionId) => {
+      announcer.announce(`auto-accepted: ${functionId}`)
+    },
+    onDenied: (functionId) => {
+      /* The policy refused — leave the card for manual click. Tell
+       * SR users so they know to navigate to it. */
+      announcer.announce(
+        `auto-accept refused for ${functionId}: high-risk call requires manual approval`,
+      )
+    },
+  })
+
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
     void navigator.clipboard.writeText(sessionId).then(() => {
@@ -114,13 +158,22 @@ export function ChatView({
     })
   }, [sessionId])
 
+  /* Read the messages snapshot through a ref inside handleSubmit so
+   * the callback identity is stable across token-by-token re-renders.
+   * Pre-fix, listing `conversation.messages` in the deps array
+   * rebuilt handleSubmit on every assistant/thought delta, which
+   * cascaded into Composer rebuilding and `LexicalShell` re-binding
+   * its `KEY_ENTER_COMMAND` listener once per token. */
+  const messagesRef = useRef(conversation.messages)
+  messagesRef.current = conversation.messages
+
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       const conversationId = conversation.id
 
       // Snapshot prior history BEFORE appending the new user msg —
       // run::start overwrites flat state with whatever we send.
-      const priorHistory = translateUiHistoryForBackend(conversation.messages)
+      const priorHistory = translateUiHistoryForBackend(messagesRef.current)
 
       const userMsg: UserMessage = {
         id: uid(),
@@ -323,6 +376,53 @@ export function ChatView({
               assistantBuffer = ''
               break
             }
+            case 'compaction': {
+              // Server-side context-compaction finished rewriting the
+              // session's flat-state. Append a marker so:
+              //   1. The user sees that compaction happened.
+              //   2. estimateConversationTokens stops counting pre-marker
+              //      messages → the CTX bar drops to the real value.
+              // We append (not replace) so the transcript stays scrollable.
+              const compactionContent =
+                event.mode === 'sync'
+                  ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
+                  : `compacted ${event.tokensBefore.toLocaleString()} tokens (background)`
+              const marker: SystemMessage = {
+                id: uid(),
+                role: 'system',
+                kind: 'compaction',
+                content: compactionContent,
+                tone: 'info',
+                summaryText: event.summaryText,
+                tokensBefore: event.tokensBefore,
+                createdAt: Date.now(),
+              }
+              onAppendMessage(conversationId, marker)
+              announcer.announce(compactionContent)
+              break
+            }
+            case 'stop-reason': {
+              // The assistant turn ended abnormally — show the user why
+              // instead of leaving the response looking like it just
+              // ran out of words. Pre-fix this event didn't exist and
+              // the same condition produced a silently truncated reply.
+              const noticeContent = formatStopReason(event.reason, event.message)
+              const notice: SystemMessage = {
+                id: uid(),
+                role: 'system',
+                kind: 'notice',
+                content: noticeContent,
+                tone: event.reason === 'error' ? 'error' : 'warn',
+                createdAt: Date.now(),
+              }
+              onAppendMessage(conversationId, notice)
+              if (event.reason === 'error') {
+                announcer.announceAssertive(noticeContent)
+              } else {
+                announcer.announce(noticeContent)
+              }
+              break
+            }
           }
           if (
             event.kind === 'fcall-start' ||
@@ -355,9 +455,10 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
-      conversation.messages,
       sessionId,
+      contextWindow,
       backend,
+      announcer,
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
@@ -468,18 +569,9 @@ export function ChatView({
         messages={conversation.messages}
         isThinking={isThinking}
         density={density}
-        onResolveApproval={
-          backend.resolveApproval
-            ? async (sessionId, functionCallId, decision) => {
-                await backend.resolveApproval?.(
-                  sessionId,
-                  functionCallId,
-                  decision,
-                )
-              }
-            : undefined
-        }
+        onResolveApproval={resolveApproval}
       />
+      <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
@@ -489,8 +581,12 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             functionEntries={functionEntries}
+            autoAccept={conversation.autoAccept}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
+            onAutoAcceptChange={(next) =>
+              onUpdateAutoAccept(conversation.id, next)
+            }
             onSubmit={handleSubmit}
             onStop={handleStop}
             isStreaming={isStreaming}

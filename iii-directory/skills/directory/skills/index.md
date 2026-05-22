@@ -4,6 +4,8 @@ function_id: directory::skills::index
 title: Bootstrap an agent harness with a short per-worker skills index
 ---
 
+> **Function id:** `directory::skills::index` — pass this to `agent_trigger { function: "directory::skills::index" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::skills::index` when an agent harness needs to know

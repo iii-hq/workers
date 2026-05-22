@@ -89,11 +89,11 @@ def main(argv: list[str] | None = None) -> int:
                 hard(f"{worker}/iii.worker.yaml is missing key: {key}")
         if m.name != worker:
             hard(f"{worker}/iii.worker.yaml name={m.name!r} does not match folder")
-        if m.deploy not in ("binary", "image"):
-            hard(f"{worker}/iii.worker.yaml deploy must be 'binary' or 'image'")
-        if m.language not in ("rust", "node", "python"):
+        if m.deploy not in ("binary", "image", "bundle"):
+            hard(f"{worker}/iii.worker.yaml deploy must be 'binary', 'image', or 'bundle'")
+        if m.language not in ("rust", "node", "python", "javascript"):
             hard(
-                f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python'"
+                f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python' | 'javascript'"
             )
 
     # 3. Manifest version >= base

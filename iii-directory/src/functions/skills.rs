@@ -78,6 +78,13 @@ struct SkillEntry {
     /// `null` when the file has no frontmatter or omits the key.
     #[serde(rename = "type")]
     kind: Option<String>,
+    /// Frontmatter `function_id:` when present — the canonical bus
+    /// function id this skill documents (e.g. `sandbox::create`). The
+    /// row's `id` field is the SKILL path on disk (e.g.
+    /// `sandbox/skills/sandbox/create`); `function_id` is what an
+    /// agent should pass to `agent_trigger`. `null` for skills that
+    /// aren't 1:1 with a single function (index/reference).
+    function_id: Option<String>,
     /// First paragraph of the body, empty when the file has only headings.
     description: String,
     bytes: usize,
@@ -127,6 +134,12 @@ pub struct SkillGetOutput {
     /// `null` when the file has no frontmatter or omits the key.
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    /// Frontmatter `function_id:` when present — the canonical bus
+    /// function id this skill documents (e.g. `sandbox::create`). The
+    /// response's `id` field is the SKILL path on disk; `function_id`
+    /// is what the agent should pass to `agent_trigger`. `null` when
+    /// the skill isn't 1:1 with a single function.
+    pub function_id: Option<String>,
     pub description: String,
     /// Raw markdown body (post-frontmatter) from disk.
     pub body: String,
@@ -212,17 +225,39 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let id = normalize_get_id(&req.id)?;
     validate_id(&id)?;
     let Some(fs) = find_fs_skill(cfg, &id) else {
-        return Err(format!("Skill not found: {id}"));
+        // Include a remediation hint in the error so a calling LLM agent
+        // can self-correct on the next turn. Without this, models tend to
+        // hallucinate a sibling id and retry the same not-found pattern
+        // instead of listing what actually exists.
+        //
+        // When the miss happens on a multi-segment id (the agent's
+        // common case — guessing `sandbox/exec` by analogy with
+        // `directory/skills/get` even though the sandbox skills sit
+        // one folder deeper at `sandbox/skills/sandbox/exec`), scan
+        // the catalog for a unique skill whose first AND last
+        // segments match the request. If we find exactly one, name it
+        // so the agent self-corrects in a single turn instead of
+        // calling `directory::skills::list` and re-discovering it
+        // through prefix-match.
+        let suggestion = suggest_id_for_miss(cfg, &id)
+            .map(|s| format!(" Did you mean `{s}`?"))
+            .unwrap_or_default();
+        return Err(format!(
+            "Skill not found: {id}.{suggestion} List available skills via `directory::skills::list`, \
+             or browse worker overviews via `directory::skills::index`."
+        ));
     };
     let (fm, body) = fs_source::read_skill_with_frontmatter(&fs.abs_path)?;
     let title = resolve_title(&fm, &body, &fs.id);
     let kind = clean_optional(fm.kind);
+    let function_id = clean_optional(fm.function_id);
     let description = extract_description(&body).unwrap_or_default();
     let (_, modified_at) = fs_metadata(&fs);
     Ok(SkillGetOutput {
         id: fs.id,
         title,
         kind,
+        function_id,
         description,
         body,
         modified_at,
@@ -346,8 +381,17 @@ pub fn clean_optional(s: Option<String>) -> Option<String> {
 
 pub fn extract_description(markdown: &str) -> Option<String> {
     let mut buf = String::new();
+    let mut in_blockquote = false;
     for line in markdown.lines() {
         let trimmed = line.trim();
+        let is_quote = trimmed.starts_with('>');
+        // A blockquote ends at the first line that doesn't continue it.
+        // Clear the flag eagerly so the rest of the body parses normally
+        // — including the case where a heading appears immediately
+        // after the callout with no blank-line separator.
+        if in_blockquote && !is_quote {
+            in_blockquote = false;
+        }
         if trimmed.is_empty() {
             if !buf.is_empty() {
                 break;
@@ -358,6 +402,17 @@ pub fn extract_description(markdown: &str) -> Option<String> {
             if !buf.is_empty() {
                 break;
             }
+            continue;
+        }
+        // Skip leading blockquote callouts (`> ...`) — used for
+        // "Function id:" hints under the frontmatter so agents see the
+        // callable name. The picker / list UI wants the first real
+        // paragraph, not the operator-side preamble.
+        if is_quote {
+            if !buf.is_empty() {
+                break;
+            }
+            in_blockquote = true;
             continue;
         }
         if !buf.is_empty() {
@@ -427,31 +482,98 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
 
 /// Targeted lookup for the read path. Returns `None` if no file under
 /// `skills_folder` matches `id`.
+///
+/// A **bare worker name** with no `/` is treated as shorthand for
+/// `<id>/index`. So `find_fs_skill(cfg, "sandbox")` returns the same
+/// skill as `find_fs_skill(cfg, "sandbox/index")` whenever
+/// `sandbox/index.md` exists and no literal `sandbox.md` shadows it.
+/// Multi-segment ids (`sandbox/exec`) must match literally — no
+/// recursive `/index` expansion, so a typo never silently resolves to
+/// the wrong skill.
 fn find_fs_skill(cfg: &SkillsConfig, id: &str) -> Option<FsSkill> {
     let (fs, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
-    fs.into_iter().find(|s| s.id == id)
+    let alias = (!id.contains('/')).then(|| format!("{id}/index"));
+    let mut exact: Option<FsSkill> = None;
+    let mut aliased: Option<FsSkill> = None;
+    for skill in fs {
+        if skill.id == id {
+            exact = Some(skill);
+            continue;
+        }
+        if alias.as_deref() == Some(skill.id.as_str()) {
+            aliased = Some(skill);
+        }
+    }
+    exact.or(aliased)
+}
+
+/// Best-effort suggestion when [`find_fs_skill`] misses on a
+/// multi-segment id. Returns the canonical id of the **only** skill
+/// whose first AND last path segments match `missed`; returns `None`
+/// when zero or many candidates match (ambiguity is worse than no
+/// suggestion).
+///
+/// Motivating case: an agent reading the iii-directory skills (where
+/// ids look like `directory/skills/get`) guesses `sandbox/exec` by
+/// analogy, but the sandbox worker laid its skills out one folder
+/// deeper at `sandbox/skills/sandbox/exec.md`. With this suggestion,
+/// the not-found error names the real id, so the agent recovers in
+/// one turn instead of falling back to `directory::skills::list` +
+/// substring search.
+///
+/// Discriminating on BOTH ends (not just the last segment) keeps the
+/// suggestion specific:
+///
+/// - `sandbox/exec` → finds `sandbox/skills/sandbox/exec` ✓
+/// - `other/exec`   → won't match `sandbox/skills/sandbox/exec`
+///   (different first segment) — we don't cross worker namespaces.
+///
+/// Single-segment ids return `None`: the bare-name → `<id>/index`
+/// alias already covers that case in [`find_fs_skill`] itself.
+fn suggest_id_for_miss(cfg: &SkillsConfig, missed: &str) -> Option<String> {
+    if !missed.contains('/') {
+        return None;
+    }
+    let parts: Vec<&str> = missed.split('/').filter(|s| !s.is_empty()).collect();
+    let first = *parts.first()?;
+    let last = *parts.last()?;
+    let (fs, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
+    let mut matches = fs.into_iter().filter(|s| {
+        let segs: Vec<&str> = s.id.split('/').collect();
+        segs.first().copied() == Some(first) && segs.last().copied() == Some(last)
+    });
+    let first_match = matches.next()?;
+    // Ambiguous? Refuse to guess — a wrong suggestion is worse than
+    // no suggestion.
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first_match.id)
 }
 
 /// Build a `SkillEntry` for `list` output. Reads the file body and
-/// frontmatter so the row carries title + type + description; on read
-/// failure the row still surfaces the id with empty title / null type /
-/// empty description so a single broken file doesn't hide every other
-/// skill from the picker.
+/// frontmatter so the row carries title + type + function_id +
+/// description; on read failure the row still surfaces the id with
+/// empty title / null type / null function_id / empty description so a
+/// single broken file doesn't hide every other skill from the picker.
 fn skill_entry_from_fs(fs: FsSkill) -> SkillEntry {
     let (bytes, modified_at) = fs_metadata(&fs);
-    let (title, kind, description) = match fs_source::read_skill_with_frontmatter(&fs.abs_path) {
-        Ok((fm, body)) => {
-            let title = resolve_title(&fm, &body, &fs.id);
-            let kind = clean_optional(fm.kind);
-            let description = extract_description(&body).unwrap_or_default();
-            (title, kind, description)
-        }
-        Err(_) => (fs.id.clone(), None, String::new()),
-    };
+    let (title, kind, function_id, description) =
+        match fs_source::read_skill_with_frontmatter(&fs.abs_path) {
+            Ok((fm, body)) => {
+                let title = resolve_title(&fm, &body, &fs.id);
+                let kind = clean_optional(fm.kind);
+                let function_id = clean_optional(fm.function_id);
+                let description = extract_description(&body).unwrap_or_default();
+                (title, kind, function_id, description)
+            }
+            Err(_) => (fs.id.clone(), None, None, String::new()),
+        };
     SkillEntry {
         id: fs.id,
         title,
         kind,
+        function_id,
         description,
         bytes,
         modified_at,
@@ -679,6 +801,52 @@ mod tests {
     }
 
     #[test]
+    fn extract_description_skips_leading_blockquote_callout() {
+        // The "Function id:" callouts ship as blockquotes right under
+        // the frontmatter so agents see the callable name without
+        // hunting through the body. They must NOT become the picker's
+        // description — that's reserved for the first real paragraph.
+        let md = "\
+> **Function id:** `sandbox::create` — pass this to agent_trigger.
+
+# When to use
+
+Boot a sandbox to run untrusted code.
+";
+        assert_eq!(
+            extract_description(md),
+            Some("Boot a sandbox to run untrusted code.".into()),
+        );
+    }
+
+    #[test]
+    fn extract_description_skips_multi_line_blockquote_callout() {
+        let md = "\
+> **Function id:** `sandbox::create`
+> Pass this to agent_trigger, not the skill path.
+
+The actual description starts here.
+";
+        assert_eq!(
+            extract_description(md),
+            Some("The actual description starts here.".into()),
+        );
+    }
+
+    #[test]
+    fn extract_description_after_blockquote_with_no_blank_separator() {
+        // Edge case: blockquote followed directly by a heading (no
+        // blank line). Still treats the heading as a separator and
+        // returns the first paragraph after it.
+        let md = "\
+> **Function id:** `x::y`
+# Heading
+First paragraph.
+";
+        assert_eq!(extract_description(md), Some("First paragraph.".into()),);
+    }
+
+    #[test]
     fn extract_description_keeps_long_first_paragraph() {
         let body = "x".repeat(200);
         let md = format!("# t\n\n{body}\n");
@@ -702,7 +870,7 @@ mod tests {
     fn resolve_title_prefers_frontmatter_over_h1() {
         let fm = SkillFrontmatter {
             title: Some("Frontmatter wins".into()),
-            kind: None,
+            ..Default::default()
         };
         assert_eq!(
             resolve_title(&fm, "# Body H1\n\nbody", "ns/foo"),
@@ -714,7 +882,7 @@ mod tests {
     fn resolve_title_trims_frontmatter_whitespace() {
         let fm = SkillFrontmatter {
             title: Some("   spaced   ".into()),
-            kind: None,
+            ..Default::default()
         };
         assert_eq!(resolve_title(&fm, "# H1", "id"), "spaced");
     }
@@ -729,7 +897,7 @@ mod tests {
     fn resolve_title_falls_back_to_h1_when_frontmatter_blank() {
         let fm = SkillFrontmatter {
             title: Some("   ".into()),
-            kind: None,
+            ..Default::default()
         };
         assert_eq!(resolve_title(&fm, "# Body H1", "ns/foo"), "Body H1");
     }
@@ -874,6 +1042,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_skill_not_found_error_points_agent_at_directory_skills_list() {
+        // LLM agents calling directory::skills::get tend to guess skill
+        // ids (observed: "sandbox/create" hallucinated). The error must
+        // include a remediation hint that gets the agent into a recovery
+        // loop instead of doubling down on the wrong path.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/create".into(),
+            },
+        )
+        .await
+        .expect_err("should error on missing skill");
+        // The id itself stays in the message so logs still pin which id
+        // was requested.
+        assert!(
+            err.contains("Skill not found: sandbox/create"),
+            "missing id in error: {err}",
+        );
+        // The hint must mention the catalog-listing function the agent
+        // should call next.
+        assert!(
+            err.contains("directory::skills::list"),
+            "missing list-hint in error: {err}",
+        );
+        assert!(
+            err.contains("directory::skills::index"),
+            "missing index-hint in error: {err}",
+        );
+    }
+
+    // ── suggest_id_for_miss (option 1 — agent reasoning by analogy) ──────
+
+    #[tokio::test]
+    async fn get_suggests_nested_skill_id_on_two_segment_miss() {
+        // Reported case: agent calls `directory::skills::get { id:
+        // "sandbox/exec" }` by analogy with the iii-directory layout
+        // (`directory/skills/get`), but the sandbox worker lays its
+        // skills one folder deeper. Error must name the canonical id
+        // so recovery costs ONE turn, not a `list` + substring search.
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("sandbox").join("skills").join("sandbox");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join("exec.md"),
+            "---\nfunction_id: sandbox::exec\n---\n# Exec\n\nRun a command.\n",
+        )
+        .unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/exec".into(),
+            },
+        )
+        .await
+        .expect_err("two-segment shorthand must miss");
+        assert!(
+            err.contains("Skill not found: sandbox/exec"),
+            "expected the requested id in the error, got: {err}",
+        );
+        assert!(
+            err.contains("Did you mean `sandbox/skills/sandbox/exec`?"),
+            "expected single-candidate suggestion, got: {err}",
+        );
+        // The original discovery hints stay (the agent can still fall
+        // back to a list/index walk if the suggestion is wrong).
+        assert!(err.contains("directory::skills::list"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn get_omits_suggestion_when_multiple_candidates_share_first_and_last_segments() {
+        // Two skills under `sandbox/...` whose paths both end in `exec`
+        // — ambiguous, so refuse to guess.
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("sandbox").join("skills").join("sandbox");
+        let b = tmp.path().join("sandbox").join("skills").join("legacy");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("exec.md"), "# A\n").unwrap();
+        std::fs::write(b.join("exec.md"), "# B\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/exec".into(),
+            },
+        )
+        .await
+        .expect_err("multi-segment id must miss");
+        assert!(
+            !err.contains("Did you mean"),
+            "must not suggest when ambiguous, got: {err}",
+        );
+        assert!(err.contains("Skill not found: sandbox/exec"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn get_omits_suggestion_when_first_segment_does_not_match() {
+        // The skill exists, but the request's first segment names a
+        // different worker. Don't cross worker namespaces — silently
+        // suggesting `sandbox/skills/sandbox/exec` when the caller
+        // asked for `other-worker/exec` would be more confusing than
+        // helpful.
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("sandbox").join("skills").join("sandbox");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("exec.md"), "# Exec\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "other-worker/exec".into(),
+            },
+        )
+        .await
+        .expect_err("multi-segment id must miss");
+        assert!(
+            !err.contains("Did you mean"),
+            "must not cross worker namespaces, got: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn get_omits_suggestion_for_single_segment_miss() {
+        // Bare-name input (`sandbox`) already has a dedicated alias
+        // (PR #177 — bare-worker → `<worker>/index`). When that alias
+        // misses too, fall through to the generic error — don't fire
+        // the multi-segment suggestion path.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("noise.md"), "# Noise\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "nothing".into(),
+            },
+        )
+        .await
+        .expect_err("single-segment miss");
+        assert!(
+            !err.contains("Did you mean"),
+            "single-segment ids must not trip the multi-segment hint, got: {err}",
+        );
+    }
+
+    #[tokio::test]
     async fn get_serialises_type_field_with_correct_json_key() {
         let tmp = tempfile::tempdir().unwrap();
         let ns = tmp.path().join("ns");
@@ -898,6 +1215,215 @@ mod tests {
         assert!(v["title"].as_str() == Some("T"));
     }
 
+    // ── bare worker name → <worker>/index alias ─────────────────────────
+
+    #[tokio::test]
+    async fn get_accepts_bare_worker_name_as_alias_for_index() {
+        // The user-facing requirement: agents reach for the worker name
+        // (e.g. `sandbox`) when they want the worker overview. That call
+        // must resolve to `<worker>/index.md` and the response must carry
+        // the CANONICAL id so the agent learns the real form on the way
+        // through.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Sandbox\n\nWorker overview.\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.id, "sandbox/index",
+            "response must carry the canonical id, not the shorthand the caller sent"
+        );
+        assert!(out.body.contains("Worker overview."));
+    }
+
+    #[tokio::test]
+    async fn bare_name_and_explicit_index_return_same_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(
+            ns.join("index.md"),
+            "---\ntitle: Sandbox\ntype: index\n---\n# Sandbox\n\nShared body.\n",
+        )
+        .unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let bare = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let explicit = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/index".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(bare.id, explicit.id);
+        assert_eq!(bare.title, explicit.title);
+        assert_eq!(bare.body, explicit.body);
+        assert_eq!(bare.kind, explicit.kind);
+    }
+
+    #[tokio::test]
+    async fn multi_segment_id_does_not_auto_alias_to_slash_index() {
+        // Multi-segment ids must match literally. Without this guard a
+        // typo like `sandbox/exec` would silently fall back to
+        // `sandbox/exec/index`, which is the wrong skill.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Sandbox\n\nOverview.\n").unwrap();
+        // Note: we deliberately do NOT create sandbox/exec/index.md.
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let err = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/exec".into(),
+            },
+        )
+        .await
+        .expect_err("multi-segment id must not auto-alias to /index");
+        assert!(
+            err.contains("Skill not found: sandbox/exec"),
+            "expected literal-id miss, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_id_with_literal_root_skill_wins_over_index_alias() {
+        // When both `<root>/sandbox.md` and `<root>/sandbox/index.md`
+        // exist, the literal root skill takes precedence over the
+        // bare-name → index alias. Documents the precedence rule so a
+        // future refactor doesn't silently flip it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("sandbox.md"), "# Root\n\nRoot body.\n").unwrap();
+        let ns = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("index.md"), "# Index\n\nIndex body.\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.id, "sandbox",
+            "literal root skill must win over the index alias"
+        );
+        assert!(out.body.contains("Root body."));
+    }
+
+    // ── function_id surfacing (fix a — eliminates skill-id vs function-id confusion) ──
+
+    #[tokio::test]
+    async fn get_surfaces_function_id_from_frontmatter() {
+        // Documents the canonical bus function id alongside the skill
+        // id so callers don't conflate the two. Models call
+        // `agent_trigger { function: <skill_id> }` when only the id is
+        // visible, then loop on `function_not_found`.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("sandbox").join("skills").join("sandbox");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(
+            ns.join("create.md"),
+            "---\nfunction_id: sandbox::create\ntype: how-to\ntitle: Boot a sandbox\n---\n# Create\n\nBody.\n",
+        )
+        .unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "sandbox/skills/sandbox/create".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.id, "sandbox/skills/sandbox/create");
+        assert_eq!(
+            out.function_id.as_deref(),
+            Some("sandbox::create"),
+            "frontmatter function_id must surface verbatim",
+        );
+    }
+
+    #[tokio::test]
+    async fn get_function_id_is_null_when_frontmatter_omits_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("readme.md"), "# Just a readme\n\nNo function.\n").unwrap();
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "ns/readme".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.function_id, None);
+        // Serialises as JSON null — same contract as `type`.
+        let v = serde_json::to_value(&out).unwrap();
+        assert!(v["function_id"].is_null());
+    }
+
+    #[test]
+    fn list_row_surfaces_function_id_from_frontmatter() {
+        // A picker / agent listing the catalog must be able to read off
+        // the function id without a follow-up `get` call. Without this,
+        // models conflate the row's `id` (skill path) with the callable
+        // function id and burn turns on `function_not_found`.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("create.md");
+        std::fs::write(
+            &path,
+            "---\nfunction_id: sandbox::create\ntype: how-to\n---\n# Create\n\nBoot a VM.\n",
+        )
+        .unwrap();
+        let entry = skill_entry_from_fs(FsSkill {
+            id: "sandbox/skills/sandbox/create".into(),
+            abs_path: path,
+        });
+        assert_eq!(entry.function_id.as_deref(), Some("sandbox::create"));
+        assert_eq!(entry.kind.as_deref(), Some("how-to"));
+        // Serialises as JSON with both fields visible to the agent.
+        let v = serde_json::to_value(&entry).unwrap();
+        assert_eq!(v["function_id"].as_str(), Some("sandbox::create"));
+        assert_eq!(v["id"].as_str(), Some("sandbox/skills/sandbox/create"));
+    }
+
+    #[test]
+    fn list_row_function_id_is_null_when_frontmatter_omits_it() {
+        // Index-type skills and free-form references aren't 1:1 with a
+        // single function. Their row must carry null, not a guess.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.md");
+        std::fs::write(&path, "---\ntype: index\n---\n# Sandbox\n\nOverview.\n").unwrap();
+        let entry = skill_entry_from_fs(FsSkill {
+            id: "sandbox/index".into(),
+            abs_path: path,
+        });
+        assert_eq!(entry.function_id, None);
+        let v = serde_json::to_value(&entry).unwrap();
+        assert!(v["function_id"].is_null());
+    }
+
     // ── render_index_markdown ───────────────────────────────────────────
 
     /// Build a `SkillEntry` for renderer tests. The `kind` argument
@@ -909,6 +1435,7 @@ mod tests {
             id: id.into(),
             title: title.into(),
             kind: kind.map(String::from),
+            function_id: None,
             description: description.into(),
             bytes: 0,
             modified_at: String::new(),
@@ -1078,6 +1605,7 @@ mod tests {
             id: "agent-memory/index".into(),
             title: "agent-memory".into(),
             kind: Some("index".into()),
+            function_id: None,
             description: "Memory worker overview.".into(),
             bytes: 10,
             modified_at: String::new(),
