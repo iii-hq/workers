@@ -188,9 +188,7 @@ fn parse_first_asset(html: &str) -> Option<String> {
             let after_attr = &html[value_start..];
             if let Some(end) = after_attr.find('"') {
                 let path = &after_attr[..end];
-                if path.contains("assets/")
-                    && (path.ends_with(".js") || path.ends_with(".css"))
-                {
+                if path.contains("assets/") && (path.ends_with(".js") || path.ends_with(".css")) {
                     return Some(path.to_string());
                 }
             }
