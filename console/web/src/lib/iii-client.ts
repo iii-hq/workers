@@ -179,8 +179,9 @@ function resolveWsUrl(): string {
     return override
   }
   if (typeof window !== 'undefined' && window.location) {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${window.location.host}/ws`
+    const url = new URL('./ws', window.location.href)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    return url.href
   }
   return 'ws://127.0.0.1:49134'
 }
