@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Relative asset paths so the embedded SPA works behind a reverse
+  // proxy that mounts the console at an arbitrary subpath.
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
