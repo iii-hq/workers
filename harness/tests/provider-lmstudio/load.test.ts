@@ -83,11 +83,7 @@ describe('loadModel', () => {
       ) as typeof globalThis.fetch;
 
     await expect(
-      loadModel(
-        'http://localhost:1234/v1/chat/completions',
-        {},
-        'missing/model',
-      ),
+      loadModel('http://localhost:1234/v1/chat/completions', {}, 'missing/model'),
     ).rejects.toThrow(/lmstudio load failed \(404\).*model not downloaded/);
   });
 
@@ -98,9 +94,9 @@ describe('loadModel', () => {
       .fn()
       .mockResolvedValue(new Response('Not Found', { status: 404 })) as typeof globalThis.fetch;
 
-    await expect(
-      loadModel('http://localhost:1234/v1/chat/completions', {}, 'm'),
-    ).rejects.toThrow(/LM Studio 0\.4\+ only/i);
+    await expect(loadModel('http://localhost:1234/v1/chat/completions', {}, 'm')).rejects.toThrow(
+      /LM Studio 0\.4\+ only/i,
+    );
   });
 
   it('attaches a generic common-causes hint on 500 responses', async () => {
@@ -108,16 +104,14 @@ describe('loadModel', () => {
     // 500 with `{"error":{"type":"model_load_failed",...}}`. The user
     // needs a checklist (downloaded, template, VRAM, quantization), not
     // a bare "Failed to load model." pass-through.
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            error: { type: 'model_load_failed', message: 'Failed to load model.' },
-          }),
-          { status: 500 },
-        ),
-      ) as typeof globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { type: 'model_load_failed', message: 'Failed to load model.' },
+        }),
+        { status: 500 },
+      ),
+    ) as typeof globalThis.fetch;
 
     await expect(
       loadModel('http://localhost:1234/v1/chat/completions', {}, 'zai-org/glm-4.7-flash'),
@@ -142,11 +136,7 @@ describe('loadModel', () => {
     // would be 120s; we just need to prove the abort path surfaces a
     // clear timeout error rather than the raw AbortError.
     vi.useFakeTimers();
-    const promise = loadModel(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-      'huge/model',
-    );
+    const promise = loadModel('http://localhost:1234/v1/chat/completions', {}, 'huge/model');
     // Eagerly attach a no-op catch so vitest's "unhandled rejection"
     // detector doesn't trip during fake-timer advancement (the
     // rejection lands before the `expect(...).rejects` await binds,
@@ -165,9 +155,9 @@ describe('loadModel', () => {
     globalThis.fetch = vi
       .fn()
       .mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:1234')) as typeof globalThis.fetch;
-    await expect(
-      loadModel('http://localhost:1234/v1/chat/completions', {}, 'm'),
-    ).rejects.toThrow(/ECONNREFUSED/);
+    await expect(loadModel('http://localhost:1234/v1/chat/completions', {}, 'm')).rejects.toThrow(
+      /ECONNREFUSED/,
+    );
   });
 });
 
@@ -185,10 +175,10 @@ describe('unloadModel', () => {
 
   it('POSTs to /api/v1/models/unload with the instance_id and returns the response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({ instance_id: 'qwen/qwen3-4b-2507' }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
+      new Response(JSON.stringify({ instance_id: 'qwen/qwen3-4b-2507' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
     );
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
@@ -209,11 +199,9 @@ describe('unloadModel', () => {
   it('throws when LM Studio returns a non-2xx response', async () => {
     globalThis.fetch = vi
       .fn()
-      .mockResolvedValue(
-        new Response('not loaded', { status: 400 }),
-      ) as typeof globalThis.fetch;
-    await expect(
-      unloadModel('http://localhost:1234/v1/chat/completions', {}, 'm'),
-    ).rejects.toThrow(/lmstudio unload failed \(400\)/);
+      .mockResolvedValue(new Response('not loaded', { status: 400 })) as typeof globalThis.fetch;
+    await expect(unloadModel('http://localhost:1234/v1/chat/completions', {}, 'm')).rejects.toThrow(
+      /lmstudio unload failed \(400\)/,
+    );
   });
 });

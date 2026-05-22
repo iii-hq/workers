@@ -97,12 +97,7 @@ describe('toOpenaiMessages', () => {
 
     it('preserves order of distinct tool_call_ids', () => {
       const out = toOpenaiMessages(
-        [
-          mkResult('a', 'A1'),
-          mkResult('b', 'B1'),
-          mkResult('a', 'A2'),
-          mkResult('c', 'C1'),
-        ],
+        [mkResult('a', 'A1'), mkResult('b', 'B1'), mkResult('a', 'A2'), mkResult('c', 'C1')],
         '',
       ) as Array<Record<string, unknown>>;
       const tools = out.filter((m) => m.role === 'tool');

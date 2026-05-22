@@ -80,9 +80,7 @@ export function toWireMessages(messages: AgentMessage[]): unknown[] {
       // blocks and regular content in the same user message — and it
       // forbids consecutive user messages, which a separate `flush()`
       // would create.
-      const userContent = m.content
-        .map(contentBlockToWire)
-        .filter((v): v is unknown => v !== null);
+      const userContent = m.content.map(contentBlockToWire).filter((v): v is unknown => v !== null);
       const content = [...pending, ...userContent];
       pending = [];
       out.push({ role: 'user', content });

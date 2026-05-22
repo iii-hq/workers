@@ -118,15 +118,11 @@ export function functionNotFoundHint(badFunctionId: string): string {
   const generic =
     'Skill ids are NOT function ids. `agent_trigger` expects the function id ' +
     '(`worker::fn`) — that is the `function_id` field on each row returned by ' +
-    '`directory::skills::list`, not the row\'s `id` field (which is the on-disk ' +
+    "`directory::skills::list`, not the row's `id` field (which is the on-disk " +
     'skill path).';
   const segments = badFunctionId.split('/').filter((s) => s.length > 0);
   let suggestion: string | null = null;
-  if (
-    segments.length >= 4 &&
-    segments[1] === 'skills' &&
-    segments[0] === segments[2]
-  ) {
+  if (segments.length >= 4 && segments[1] === 'skills' && segments[0] === segments[2]) {
     // sandbox/skills/sandbox/create → sandbox::create
     // worker-a/skills/worker-a/nested/fn → worker-a::nested::fn
     suggestion = `${segments[0]}::${segments.slice(3).join('::')}`;

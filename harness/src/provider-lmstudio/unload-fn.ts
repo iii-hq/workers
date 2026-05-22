@@ -26,11 +26,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
     FUNCTION_ID,
     async (raw: unknown): Promise<UnloadModelResult> => {
       const payload = raw as Partial<UnloadModelPayload> | null | undefined;
-      if (
-        !payload ||
-        typeof payload.instance_id !== 'string' ||
-        payload.instance_id.length === 0
-      ) {
+      if (!payload || typeof payload.instance_id !== 'string' || payload.instance_id.length === 0) {
         return { ok: false, error: 'invalid payload: { instance_id: string } is required' };
       }
       try {
@@ -45,8 +41,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
       }
     },
     {
-      description:
-        'Unload an LM Studio model instance via POST /api/v1/models/unload.',
+      description: 'Unload an LM Studio model instance via POST /api/v1/models/unload.',
     },
   );
 }

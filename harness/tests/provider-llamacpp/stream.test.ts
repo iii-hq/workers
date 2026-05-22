@@ -46,7 +46,9 @@ describe('streamLlamacpp', () => {
         ]),
       ),
     ) as typeof globalThis.fetch;
-    const final = await collect(streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }));
+    const final = await collect(
+      streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }),
+    );
     expect(final.stop_reason).toBe('end');
     const text = final.content.find((c) => c.type === 'text');
     if (text?.type !== 'text') throw new Error('missing text block');
@@ -93,13 +95,16 @@ describe('streamLlamacpp', () => {
   });
 
   it('surfaces a clear error when llama-server returns a non-2xx body (truncated)', async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(`<html>${'x'.repeat(2000)}</html>`, {
-        status: 500,
-        headers: { 'content-type': 'text/html' },
-      }),
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(`<html>${'x'.repeat(2000)}</html>`, {
+          status: 500,
+          headers: { 'content-type': 'text/html' },
+        }),
     ) as typeof globalThis.fetch;
-    const final = await collect(streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }));
+    const final = await collect(
+      streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }),
+    );
     expect(final.stop_reason).toBe('error');
     expect(final.error_kind).toBe('transient');
     // Length-capped to ~256 bytes (the truncation guard).
@@ -115,19 +120,24 @@ describe('streamLlamacpp', () => {
         ]),
       ),
     ) as typeof globalThis.fetch;
-    const final = await collect(streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }));
+    const final = await collect(
+      streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }),
+    );
     expect(final.stop_reason).toBe('error');
     expect(final.error_message).toMatch(/stream closed mid-response/);
   });
 
   it('surfaces a clear error when a 200 response has no SSE chunks (wrong URL / HTML page)', async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response('<html>dashboard</html>', {
-        status: 200,
-        headers: { 'content-type': 'text/html' },
-      }),
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response('<html>dashboard</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
     ) as typeof globalThis.fetch;
-    const final = await collect(streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }));
+    const final = await collect(
+      streamLlamacpp({ cfg, system_prompt: '', messages: [], tools: [] }),
+    );
     expect(final.stop_reason).toBe('error');
     expect(final.error_message).toMatch(/non-SSE body/);
   });

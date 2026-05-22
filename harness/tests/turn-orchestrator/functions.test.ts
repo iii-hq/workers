@@ -220,8 +220,9 @@ describe('handleFinalize idempotency', () => {
     rec.turn_end_emitted = false;
     await handleFinalize(iii, rec);
 
-    const fnResults = (storedMessages as Array<{ role?: string; function_call_id?: string }>)
-      .filter((m) => m.role === 'function_result');
+    const fnResults = (
+      storedMessages as Array<{ role?: string; function_call_id?: string }>
+    ).filter((m) => m.role === 'function_result');
     expect(fnResults).toHaveLength(2);
     expect(fnResults.map((m) => m.function_call_id).sort()).toEqual(['toolu_01', 'toolu_02']);
   });
@@ -236,9 +237,7 @@ describe('handleFinalize idempotency', () => {
         duration_ms: 1,
       },
     ]);
-    const saveExecutedSpy = vi
-      .spyOn(persistence, 'saveExecutedCalls')
-      .mockResolvedValue(undefined);
+    const saveExecutedSpy = vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
     vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(null as never);

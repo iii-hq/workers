@@ -76,24 +76,14 @@ describe('syntheticErrorEvent', () => {
 describe('handleChunk', () => {
   it('emits text_start + text_delta on first content delta', () => {
     const state = emptyPartial();
-    const events = handleChunk(
-      { choices: [{ delta: { content: 'Hi' } }] },
-      state,
-      'm',
-      'llamacpp',
-    );
+    const events = handleChunk({ choices: [{ delta: { content: 'Hi' } }] }, state, 'm', 'llamacpp');
     expect(events.map((e) => e.type)).toEqual(['text_start', 'text_delta']);
   });
 
   it('only emits text_start once across deltas', () => {
     const state = emptyPartial();
     handleChunk({ choices: [{ delta: { content: 'A' } }] }, state, 'm', 'llamacpp');
-    const events = handleChunk(
-      { choices: [{ delta: { content: 'B' } }] },
-      state,
-      'm',
-      'llamacpp',
-    );
+    const events = handleChunk({ choices: [{ delta: { content: 'B' } }] }, state, 'm', 'llamacpp');
     expect(events.map((e) => e.type)).toEqual(['text_delta']);
   });
 
@@ -110,12 +100,7 @@ describe('handleChunk', () => {
 
   it('records finish_reason and stop_reason mapping', () => {
     const state = emptyPartial();
-    handleChunk(
-      { choices: [{ finish_reason: 'length', delta: {} }] },
-      state,
-      'm',
-      'llamacpp',
-    );
+    handleChunk({ choices: [{ finish_reason: 'length', delta: {} }] }, state, 'm', 'llamacpp');
     expect(state.saw_finish_reason).toBe(true);
     expect(state.stop_reason).toBe('length');
   });
@@ -127,9 +112,7 @@ describe('handleChunk', () => {
         choices: [
           {
             delta: {
-              tool_calls: [
-                { index: 1e9, id: 't1', function: { name: 'x' } },
-              ],
+              tool_calls: [{ index: 1e9, id: 't1', function: { name: 'x' } }],
             },
           },
         ],

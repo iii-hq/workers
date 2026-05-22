@@ -68,10 +68,7 @@ export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
  *   warning log so operators see they're hitting a remote without
  *   credentials.
  */
-export function selectAuthKey(
-  cred: Credential | null,
-  url: string,
-): string | null {
+export function selectAuthKey(cred: Credential | null, url: string): string | null {
   const key = extractKey(cred);
   if (key.length > 0) return key;
   if (isLoopbackUrl(url)) return null;
@@ -116,10 +113,7 @@ export async function buildConfig(
  * credential lookup, loopback-vs-remote decision — lives in exactly
  * one place. Authorization is omitted when no credential applies.
  */
-export async function buildAuthHeaders(
-  iii: ISdk,
-  url: string,
-): Promise<Record<string, string>> {
+export async function buildAuthHeaders(iii: ISdk, url: string): Promise<Record<string, string>> {
   const cred = await fetchCredential(iii);
   const token = selectAuthKey(cred, url);
   const base: Record<string, string> = {

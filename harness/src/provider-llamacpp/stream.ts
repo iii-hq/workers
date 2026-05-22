@@ -84,6 +84,23 @@ async function fetchWithTimeout(
   }
 }
 
+/**
+ * Strip C0 control chars (except TAB / LF / CR) and DEL. Mirrors
+ * provider-lmstudio's helper. Written as a charCodeAt loop rather
+ * than a regex literal so Biome's `noControlCharactersInRegex` is
+ * happy.
+ */
+function stripControlChars(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) continue;
+    if (code === 127) continue;
+    out += s[i];
+  }
+  return out;
+}
+
 export async function* streamLlamacpp({
   cfg,
   system_prompt,
@@ -136,10 +153,7 @@ export async function* streamLlamacpp({
     // responses can carry HTML, proxy error pages, or attacker-
     // controlled bodies. Length cap keeps the message readable;
     // control-char strip avoids ANSI / newline injection.
-    const safeText = text
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-      .slice(0, 256);
+    const safeText = stripControlChars(text).slice(0, 256);
     yield syntheticErrorEvent(
       safeText || `llamacpp http ${resp.status}`,
       cfg.model,
@@ -163,11 +177,7 @@ export async function* streamLlamacpp({
 
   const state = emptyPartial();
   if (!resp.body) {
-    yield syntheticErrorEvent(
-      'llamacpp response missing body',
-      effectiveModel,
-      cfg.provider_name,
-    );
+    yield syntheticErrorEvent('llamacpp response missing body', effectiveModel, cfg.provider_name);
     return;
   }
   const reader = resp.body.getReader();

@@ -98,10 +98,9 @@ describe('toOpenaiMessages (llamacpp)', () => {
       is_error: false,
       timestamp: 0,
     });
-    const out = toOpenaiMessages(
-      [mk('a', 'first'), mk('a', 'second')],
-      '',
-    ) as Array<Record<string, unknown>>;
+    const out = toOpenaiMessages([mk('a', 'first'), mk('a', 'second')], '') as Array<
+      Record<string, unknown>
+    >;
     const tools = out.filter((m) => m.role === 'tool');
     expect(tools).toHaveLength(1);
     expect(tools[0]?.content).toBe('second');
@@ -121,9 +120,10 @@ describe('toOpenaiMessages (llamacpp)', () => {
       [mk('a', 'A1'), mk('b', 'B1'), mk('a', 'A2'), mk('c', 'C1'), mk('b', 'B2')],
       '',
     ) as Array<Record<string, unknown>>;
-    const tools = out.filter((m) => m.role === 'tool') as Array<
-      { tool_call_id: string; content: string }
-    >;
+    const tools = out.filter((m) => m.role === 'tool') as Array<{
+      tool_call_id: string;
+      content: string;
+    }>;
     expect(tools.map((t) => t.tool_call_id)).toEqual(['a', 'b', 'c']);
     expect(tools[0]?.content).toBe('A2');
     expect(tools[1]?.content).toBe('B2');

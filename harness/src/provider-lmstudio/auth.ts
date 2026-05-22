@@ -75,10 +75,7 @@ export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
  *   to an arbitrary host can leak the provider fingerprint to whoever
  *   operates that host.
  */
-export function selectAuthKey(
-  cred: Credential | null,
-  url: string,
-): string | null {
+export function selectAuthKey(cred: Credential | null, url: string): string | null {
   const key = extractKey(cred);
   if (key.length > 0) return key;
   if (isLoopbackUrl(url)) return FALLBACK_API_KEY;
@@ -116,7 +113,9 @@ export async function buildConfig(
   // null-key case omits the Authorization header.
   const effective: Credential =
     key !== null
-      ? (cred && extractKey(cred).length > 0 ? (cred as Credential) : { type: 'api_key', key })
+      ? cred && extractKey(cred).length > 0
+        ? (cred as Credential)
+        : { type: 'api_key', key }
       : { type: 'api_key', key: FALLBACK_API_KEY };
   return configFromCredential(
     worker.default_api_url,
@@ -133,10 +132,7 @@ export async function buildConfig(
  * dance — credential lookup, loopback-vs-remote decision — lives in
  * exactly one place.
  */
-export async function buildAuthHeaders(
-  iii: ISdk,
-  url: string,
-): Promise<Record<string, string>> {
+export async function buildAuthHeaders(iii: ISdk, url: string): Promise<Record<string, string>> {
   const cred = await fetchCredential(iii);
   const token = selectAuthKey(cred, url);
   const base: Record<string, string> = {

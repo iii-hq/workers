@@ -72,11 +72,7 @@ async function fetchModelIds(
 ): Promise<string[]> {
   let resp: Response;
   try {
-    resp = await fetchWithTimeout(
-      modelsEndpoint,
-      { method: 'GET', headers },
-      DISCOVERY_TIMEOUT_MS,
-    );
+    resp = await fetchWithTimeout(modelsEndpoint, { method: 'GET', headers }, DISCOVERY_TIMEOUT_MS);
   } catch (err) {
     logger.warn('llamacpp discovery: fetch failed', {
       url: modelsEndpoint,
@@ -151,10 +147,7 @@ export async function discoverLoadedModel(
  * Parallel via Promise.allSettled — same rationale as
  * provider-lmstudio: serializing register calls bottlenecks startup.
  */
-export async function registerDiscovered(
-  iii: ISdk,
-  models: readonly Model[],
-): Promise<string[]> {
+export async function registerDiscovered(iii: ISdk, models: readonly Model[]): Promise<string[]> {
   const settled = await Promise.allSettled(
     models.map(async (m) => {
       await iii.trigger({

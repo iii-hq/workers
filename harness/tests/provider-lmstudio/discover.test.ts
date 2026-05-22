@@ -126,10 +126,9 @@ describe('discoverLoadedModels', () => {
       ),
     ) as typeof globalThis.fetch;
 
-    const out = await discoverLoadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      { Authorization: 'Bearer lm-studio' },
-    );
+    const out = await discoverLoadedModels('http://localhost:1234/v1/chat/completions', {
+      Authorization: 'Bearer lm-studio',
+    });
     expect(out.map((m) => m.id)).toEqual(['a/llm-loaded', 'd/vlm-loaded']);
     expect(out[1]?.supports_vision).toBe(true);
   });
@@ -138,10 +137,7 @@ describe('discoverLoadedModels', () => {
     globalThis.fetch = vi
       .fn()
       .mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:1234')) as typeof globalThis.fetch;
-    const out = await discoverLoadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverLoadedModels('http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual([]);
   });
 
@@ -149,10 +145,7 @@ describe('discoverLoadedModels', () => {
     globalThis.fetch = vi
       .fn()
       .mockResolvedValue(new Response('nope', { status: 500 })) as typeof globalThis.fetch;
-    const out = await discoverLoadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverLoadedModels('http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual([]);
   });
 
@@ -163,26 +156,27 @@ describe('discoverLoadedModels', () => {
         headers: { 'content-type': 'text/html' },
       }),
     ) as typeof globalThis.fetch;
-    const out = await discoverLoadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverLoadedModels('http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual([]);
   });
 
   it('hits the /api/v0/models endpoint derived from the chat URL', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ data: [] }), { status: 200 }),
-    ) as typeof globalThis.fetch;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      ) as typeof globalThis.fetch;
     globalThis.fetch = fetchMock;
 
-    await discoverLoadedModels(
-      'http://192.168.0.206:1234/v1/chat/completions',
-      { Authorization: 'Bearer secret' },
-    );
+    await discoverLoadedModels('http://192.168.0.206:1234/v1/chat/completions', {
+      Authorization: 'Bearer secret',
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = (fetchMock as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const [url, init] = (fetchMock as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
     expect(url).toBe('http://192.168.0.206:1234/api/v0/models');
     expect(init.method).toBe('GET');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret');
@@ -202,10 +196,7 @@ describe('discoverLoadedModels', () => {
       });
     }) as typeof globalThis.fetch;
 
-    const out = await discoverLoadedModels(
-      'http://10.0.0.1:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverLoadedModels('http://10.0.0.1:1234/v1/chat/completions', {});
     expect(out).toEqual([]);
     expect(aborted).toBe(true);
   }, 15_000);
@@ -253,11 +244,7 @@ describe('registerDiscovered', () => {
         .mockResolvedValueOnce({ ok: true }),
     } as unknown as ISdk;
 
-    const out = await registerDiscovered(iii, [
-      makeModel('a'),
-      makeModel('b'),
-      makeModel('c'),
-    ]);
+    const out = await registerDiscovered(iii, [makeModel('a'), makeModel('b'), makeModel('c')]);
     expect(out).toEqual(['a', 'c']);
   });
 });
@@ -289,19 +276,15 @@ describe('discoverAllDownloadedModels', () => {
       ),
     ) as typeof globalThis.fetch;
 
-    const out = await discoverAllDownloadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverAllDownloadedModels('http://localhost:1234/v1/chat/completions', {});
     expect(out.map((m) => m.id)).toEqual(['a/llm-loaded', 'b/llm-cold', 'd/vlm']);
   });
 
   it('returns [] when LM Studio is unreachable', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) as typeof globalThis.fetch;
-    const out = await discoverAllDownloadedModels(
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new Error('ECONNREFUSED')) as typeof globalThis.fetch;
+    const out = await discoverAllDownloadedModels('http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual([]);
   });
 });
@@ -354,7 +337,9 @@ describe('discoverLoadedIds', () => {
   });
 
   it('returns an empty Set when LM Studio is unreachable', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) as typeof globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new Error('ECONNREFUSED')) as typeof globalThis.fetch;
     const out = await discoverLoadedIds('http://localhost:1234/v1/chat/completions', {});
     expect(out.size).toBe(0);
   });
@@ -390,11 +375,7 @@ describe('discoverAndRegister', () => {
       trigger: vi.fn().mockResolvedValue({ ok: true }),
     } as unknown as ISdk;
 
-    const out = await discoverAndRegister(
-      iii,
-      'http://localhost:1234/v1/chat/completions',
-      {},
-    );
+    const out = await discoverAndRegister(iii, 'http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual(['qwen/qwen3-4b-2507', 'meta/llama3.2-3b']);
     expect((iii.trigger as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
   });

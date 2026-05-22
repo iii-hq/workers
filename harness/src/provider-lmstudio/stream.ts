@@ -36,7 +36,11 @@ export type StreamArgs = {
  * misconfigured URL (typo, dead LAN host) hangs for ~75s (macOS SYN
  * timeout) and the UI stays stuck on "thinking…" the whole time.
  */
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -44,6 +48,23 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Strip C0 control chars (except TAB / LF / CR) and DEL. Used to
+ * sanitize non-2xx response bodies before they land in user-visible
+ * messages or log lines. Written as a charCodeAt loop rather than
+ * `/[\x00-\x1f]/` so Biome's `noControlCharactersInRegex` is happy.
+ */
+function stripControlChars(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) continue;
+    if (code === 127) continue;
+    out += s[i];
+  }
+  return out;
 }
 
 /**
@@ -68,14 +89,13 @@ function modelsUrl(chatUrl: string): string {
  * loaded, either LM Studio's JIT setting auto-loads it, or the caller can
  * pre-load it via the `provider::lmstudio::load_model` bus function.
  */
-async function resolveModel(cfg: ChatCompletionsConfig, headers: Record<string, string>): Promise<string> {
+async function resolveModel(
+  cfg: ChatCompletionsConfig,
+  headers: Record<string, string>,
+): Promise<string> {
   if (cfg.model !== PLACEHOLDER_MODEL_ID) return cfg.model;
   try {
-    const resp = await fetchWithTimeout(
-      modelsUrl(cfg.url),
-      { method: 'GET', headers },
-      5_000,
-    );
+    const resp = await fetchWithTimeout(modelsUrl(cfg.url), { method: 'GET', headers }, 5_000);
     if (!resp.ok) {
       logger.warn('lmstudio /v1/models returned non-2xx; using placeholder', {
         status: resp.status,
@@ -83,7 +103,9 @@ async function resolveModel(cfg: ChatCompletionsConfig, headers: Record<string, 
       return cfg.model;
     }
     const parsed = (await resp.json()) as { data?: Array<{ id?: string }> };
-    const first = parsed.data?.find((m) => typeof m?.id === 'string' && (m.id as string).length > 0)?.id;
+    const first = parsed.data?.find(
+      (m) => typeof m?.id === 'string' && (m.id as string).length > 0,
+    )?.id;
     if (first) {
       logger.info('lmstudio: resolved placeholder to loaded model', { model: first });
       return first;
@@ -140,11 +162,10 @@ async function* attemptStream(
     // responses can carry HTML auth-redirect bodies, proxy error
     // pages, or attacker-controlled content. Length cap keeps the
     // message readable; control-char strip avoids ANSI / newline
-    // injection into log lines and live regions.
-    const safeText = text
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-      .slice(0, 256);
+    // injection into log lines and live regions. Uses a charCodeAt
+    // loop rather than a regex literal so Biome's
+    // `noControlCharactersInRegex` doesn't trip.
+    const safeText = stripControlChars(text).slice(0, 256);
     yield syntheticErrorEvent(
       safeText || `lmstudio http ${resp.status}`,
       cfg.model,
@@ -218,7 +239,11 @@ async function* attemptStream(
     }
   } catch (err) {
     logger.warn('lmstudio stream read failed', { err: String(err) });
-    yield syntheticErrorEvent(`stream read failed: ${String(err)}`, effectiveModel, cfg.provider_name);
+    yield syntheticErrorEvent(
+      `stream read failed: ${String(err)}`,
+      effectiveModel,
+      cfg.provider_name,
+    );
     return;
   }
   if (parsedChunkCount === 0) {
@@ -308,11 +333,7 @@ export async function* streamLmstudio({
           bufferedStart = ev;
           continue;
         }
-        if (
-          ev.type === 'error' &&
-          !retried &&
-          isLoadFailureMessage(ev.error.error_message ?? '')
-        ) {
+        if (ev.type === 'error' && !retried && isLoadFailureMessage(ev.error.error_message ?? '')) {
           retryRequested = true;
           break;
         }

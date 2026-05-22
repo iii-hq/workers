@@ -206,9 +206,7 @@ describe('functionNotFoundHint', () => {
   });
 
   it('rewrites the weaker <w>/<fn> shorthand', () => {
-    expect(functionNotFoundHint('sandbox/create')).toMatch(
-      /Did you mean `sandbox::create`\?/,
-    );
+    expect(functionNotFoundHint('sandbox/create')).toMatch(/Did you mean `sandbox::create`\?/);
   });
 
   it('does not rewrite <w>/index (would shadow the bare-name alias)', () => {

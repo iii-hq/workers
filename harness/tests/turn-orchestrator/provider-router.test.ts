@@ -19,9 +19,7 @@ describe('decide', () => {
   });
 
   it('routes llamacpp when provider=llamacpp', () => {
-    expect(decide({ provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' }).provider).toBe(
-      'llamacpp',
-    );
+    expect(decide({ provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' }).provider).toBe('llamacpp');
     // No heuristic — bare model id without explicit provider does not
     // route to llamacpp (same posture as lmstudio; user-controlled ids
     // overlap with HF-style ids from other services).
@@ -35,9 +33,7 @@ describe('decide', () => {
   });
 
   it('routes lmstudio when provider=lmstudio (no model-name heuristic)', () => {
-    expect(decide({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' }).provider).toBe(
-      'lmstudio',
-    );
+    expect(decide({ provider: 'lmstudio', model: 'qwen/qwen3-4b-2507' }).provider).toBe('lmstudio');
     expect(
       decide({
         provider: 'lmstudio',

@@ -68,9 +68,7 @@ describe('streamLmstudio', () => {
   });
 
   it('classifies HTTP 502 (LM Studio not running) as transient', async () => {
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(errorResponse(502, 'connection refused upstream'));
+    globalThis.fetch = vi.fn().mockResolvedValue(errorResponse(502, 'connection refused upstream'));
     const final = await collect(
       streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
     );
@@ -126,14 +124,12 @@ describe('streamLmstudio', () => {
     // LM Studio's UI dashboard at the wrong endpoint, or some builds when no
     // model is loaded, return 200 + HTML. The stream must NOT silently
     // succeed with an empty assistant message — emit a clear error event.
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response('<html><body>LM Studio dashboard</body></html>', {
-          status: 200,
-          headers: { 'content-type': 'text/html' },
-        }),
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response('<html><body>LM Studio dashboard</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
     const final = await collect(
       streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
     );
@@ -150,14 +146,12 @@ describe('streamLmstudio', () => {
     // the user saw a half-written reply and zero error indication. The
     // fix promotes this to an explicit error event so the UI can show a
     // clear "stream closed mid-response" notice.
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        sseResponse([
-          'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
-          // No [DONE], no finish_reason — body just ends here.
-        ]),
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        // No [DONE], no finish_reason — body just ends here.
+      ]),
+    );
     const final = await collect(
       streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
     );
@@ -193,15 +187,13 @@ describe('streamLmstudio', () => {
     // Some servers omit the trailing `data: [DONE]\n\n` line but DO send
     // a chunk with finish_reason. That's a legitimate end — we should
     // NOT promote it to an error; the server explicitly said "stop".
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        sseResponse([
-          'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
-          'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',
-          // No [DONE] sentinel after — body just ends.
-        ]),
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',
+        // No [DONE] sentinel after — body just ends.
+      ]),
+    );
     const final = await collect(
       streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
     );
@@ -229,9 +221,7 @@ describe('streamLmstudio', () => {
     }) as typeof globalThis.fetch;
 
     try {
-      const final$ = collect(
-        streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }),
-      );
+      const final$ = collect(streamLmstudio({ cfg, system_prompt: '', messages: [], tools: [] }));
       // FETCH_TIMEOUT_MS is 30_000 in stream.ts — advance just past it.
       await vi.advanceTimersByTimeAsync(30_001);
       const final = await final$;
@@ -248,10 +238,10 @@ describe('streamLmstudio', () => {
     globalThis.fetch = vi.fn(async (url, init) => {
       calls.push(String(url));
       if (String(url).endsWith('/v1/models')) {
-        return new Response(
-          JSON.stringify({ data: [{ id: 'qwen/qwen3.6-35b-a3b' }] }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ data: [{ id: 'qwen/qwen3.6-35b-a3b' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       // Stream call — capture the body to verify the model id was substituted.
       const body = JSON.parse((init as RequestInit).body as string) as { model: string };
@@ -347,14 +337,16 @@ describe('streamLmstudio — auto-load retry on load-failure error', () => {
     globalThis.fetch = vi.fn(async (url) => {
       const u = String(url);
       urls.push(u);
-      if (u.endsWith('/v1/chat/completions') && urls.filter((x) => x.endsWith('/v1/chat/completions')).length === 1) {
+      if (
+        u.endsWith('/v1/chat/completions') &&
+        urls.filter((x) => x.endsWith('/v1/chat/completions')).length === 1
+      ) {
         // First attempt: LM Studio returns the crash error as 400 body.
         return new Response(
           JSON.stringify({
             error: {
               type: 'model_load_failed',
-              message:
-                "The model has crashed without additional information. (Exit code: null)",
+              message: 'The model has crashed without additional information. (Exit code: null)',
             },
           }),
           { status: 400, headers: { 'content-type': 'application/json' } },
@@ -481,10 +473,10 @@ describe('streamLmstudio — auto-load retry on load-failure error', () => {
     let chatCallCount = 0;
     globalThis.fetch = vi.fn(async () => {
       chatCallCount++;
-      return new Response(
-        JSON.stringify({ error: { message: 'context length exceeded' } }),
-        { status: 400, headers: { 'content-type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ error: { message: 'context length exceeded' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
     }) as typeof globalThis.fetch;
 
     const final = await collect(

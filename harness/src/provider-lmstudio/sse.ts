@@ -280,11 +280,7 @@ export function handleChunk(
       // delta.tool_calls entry — the while-loop below would allocate
       // billions of slots. 256 is well above any realistic tool-call
       // fan-out from a single model turn.
-      if (
-        !Number.isInteger(rawIndex) ||
-        rawIndex < 0 ||
-        rawIndex > 256
-      ) {
+      if (!Number.isInteger(rawIndex) || rawIndex < 0 || rawIndex > 256) {
         continue;
       }
       const index = rawIndex;

@@ -203,7 +203,7 @@ describe('toWireMessages', () => {
       expect(content[0]?.type).toBe('tool_result');
       expect(content[0]?.tool_use_id).toBe('toolu_orphan');
       expect(content[0]?.is_error).toBe(true);
-      expect((content[0]?.content as string)).toMatch(/interrupted before completing/i);
+      expect(content[0]?.content as string).toMatch(/interrupted before completing/i);
     });
 
     it('does NOT inject anything when every tool_use already has a function_result (no-op happy path)', () => {
@@ -223,7 +223,7 @@ describe('toWireMessages', () => {
       expect(content[0]?.tool_use_id).toBe('toolu_a');
       expect(content[0]?.is_error).toBe(false);
       // The synthetic placeholder text must NOT appear.
-      expect((content[0]?.content as string)).not.toMatch(/interrupted before completing/i);
+      expect(content[0]?.content as string).not.toMatch(/interrupted before completing/i);
     });
 
     it('mixes synthetic placeholders alongside real tool_results when only SOME tool_uses are orphaned', () => {
@@ -262,15 +262,11 @@ describe('toWireMessages', () => {
       expect(wire).toHaveLength(3);
       const content = (wire[2] as { content: Array<Record<string, unknown>> }).content;
       expect(content).toHaveLength(2);
-      const byId = new Map(
-        content.map((b) => [b.tool_use_id as string, b]),
-      );
+      const byId = new Map(content.map((b) => [b.tool_use_id as string, b]));
       expect(byId.get('toolu_done')?.is_error).toBe(false);
       expect(byId.get('toolu_done')?.content).toBe('completed output');
       expect(byId.get('toolu_orphan')?.is_error).toBe(true);
-      expect((byId.get('toolu_orphan')?.content as string)).toMatch(
-        /interrupted before completing/i,
-      );
+      expect(byId.get('toolu_orphan')?.content as string).toMatch(/interrupted before completing/i);
     });
 
     it('injects placeholders in turn-order across multiple orphan turns', () => {
@@ -304,8 +300,7 @@ describe('toWireMessages', () => {
       const m2 = wire[2] as { content: Array<Record<string, unknown>> };
       const placeholderBlock = m2.content.find(
         (b) =>
-          b.type === 'tool_result' &&
-          (b as { tool_use_id?: string }).tool_use_id === 'toolu_x',
+          b.type === 'tool_result' && (b as { tool_use_id?: string }).tool_use_id === 'toolu_x',
       );
       expect(placeholderBlock).toBeDefined();
       const q2TextBlock = m2.content.find(
@@ -313,9 +308,7 @@ describe('toWireMessages', () => {
       );
       expect(q2TextBlock).toBeDefined();
       // Tool_result must come BEFORE the user text (Anthropic convention).
-      const placeholderIdx = m2.content.findIndex(
-        (b) => b.type === 'tool_result',
-      );
+      const placeholderIdx = m2.content.findIndex((b) => b.type === 'tool_result');
       const textIdx = m2.content.findIndex((b) => b.type === 'text');
       expect(placeholderIdx).toBeLessThan(textIdx);
       // The final user (after toolu_y assistant) carries the toolu_y placeholder.
@@ -329,10 +322,7 @@ describe('toWireMessages', () => {
       // resolved so the second skips. Anthropic gets one placeholder for
       // the id; the second tool_use will be unmatched in its own batch
       // but at least we don't generate two placeholders.
-      const msgs: AgentMessage[] = [
-        mkAsstWithToolUse('toolu_dup'),
-        mkAsstWithToolUse('toolu_dup'),
-      ];
+      const msgs: AgentMessage[] = [mkAsstWithToolUse('toolu_dup'), mkAsstWithToolUse('toolu_dup')];
       const wire = toWireMessages(msgs) as Array<Record<string, unknown>>;
       let placeholderCount = 0;
       for (const m of wire) {

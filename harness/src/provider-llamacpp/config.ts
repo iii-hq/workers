@@ -66,10 +66,9 @@ function resolveApiUrl(yamlValue: string): string {
     if (validatedUrl(withPath)) {
       candidate = withPath;
     } else {
-      logger.warn(
-        'llamacpp.config: LLAMACPP_BASE_URL is not a valid http(s) URL — ignoring',
-        { code: 'llamacpp_base_url_invalid' },
-      );
+      logger.warn('llamacpp.config: LLAMACPP_BASE_URL is not a valid http(s) URL — ignoring', {
+        code: 'llamacpp_base_url_invalid',
+      });
     }
   }
   if (candidate === null) candidate = yamlValue;

@@ -182,11 +182,7 @@ export function handleChunk(
       const rawIndex = typeof tcObj.index === 'number' ? tcObj.index : 0;
       // Reject attacker-controlled indices that would force unbounded
       // allocation. Same DoS guard as provider-lmstudio/sse.ts.
-      if (
-        !Number.isInteger(rawIndex) ||
-        rawIndex < 0 ||
-        rawIndex > 256
-      ) {
+      if (!Number.isInteger(rawIndex) || rawIndex < 0 || rawIndex > 256) {
         continue;
       }
       const index = rawIndex;

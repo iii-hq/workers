@@ -136,12 +136,7 @@ describe('handleChunk — Kimi K2 thinking mode reasoning_content', () => {
 
   it('emits thinking_delta only (no second thinking_start) on subsequent reasoning chunks', () => {
     const state = emptyPartial();
-    handleChunk(
-      { choices: [{ delta: { reasoning_content: 'first ' } }] },
-      state,
-      'm',
-      'kimi',
-    );
+    handleChunk({ choices: [{ delta: { reasoning_content: 'first ' } }] }, state, 'm', 'kimi');
     const events = handleChunk(
       { choices: [{ delta: { reasoning_content: 'second' } }] },
       state,
@@ -160,12 +155,7 @@ describe('handleChunk — Kimi K2 thinking mode reasoning_content', () => {
       'kimi-k2.6',
       'kimi',
     );
-    handleChunk(
-      { choices: [{ delta: { content: 'ok' } }] },
-      state,
-      'kimi-k2.6',
-      'kimi',
-    );
+    handleChunk({ choices: [{ delta: { content: 'ok' } }] }, state, 'kimi-k2.6', 'kimi');
     const partial = buildPartial(state, 'kimi-k2.6', 'kimi');
     // Thinking must come FIRST so wire-messages can project it back as
     // reasoning_content on the assistant entry before content/tool_calls.

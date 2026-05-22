@@ -120,9 +120,9 @@ describe('classifyLmstudioError', () => {
   });
 
   it('maps "no model loaded" 4xx to transient', () => {
-    expect(
-      classifyLmstudioError('No model is loaded. Please load a model first.', 404),
-    ).toBe('transient');
+    expect(classifyLmstudioError('No model is loaded. Please load a model first.', 404)).toBe(
+      'transient',
+    );
     expect(classifyLmstudioError('model not found: foo/bar', 400)).toBe('transient');
   });
 
@@ -139,9 +139,9 @@ describe('classifyLmstudioError', () => {
   });
 
   it('maps model_load_failed type marker to transient', () => {
-    expect(
-      classifyLmstudioError("{\"type\":\"model_load_failed\",\"message\":\"...\"}", 400),
-    ).toBe('transient');
+    expect(classifyLmstudioError('{"type":"model_load_failed","message":"..."}', 400)).toBe(
+      'transient',
+    );
   });
 
   it('maps "Failed to load LLM" to transient', () => {
@@ -253,15 +253,13 @@ describe('extractErrorMessage', () => {
   });
 
   it('falls back to .error.error_message when nested under that alias', () => {
-    expect(
-      extractErrorMessage({ error: { error_message: 'OOM during generation' } }),
-    ).toBe('OOM during generation');
+    expect(extractErrorMessage({ error: { error_message: 'OOM during generation' } })).toBe(
+      'OOM during generation',
+    );
   });
 
   it('falls back to .error.detail (used by some llama.cpp builds)', () => {
-    expect(extractErrorMessage({ error: { detail: 'context exceeded' } })).toBe(
-      'context exceeded',
-    );
+    expect(extractErrorMessage({ error: { detail: 'context exceeded' } })).toBe('context exceeded');
   });
 
   it('returns null when no error field is present', () => {
@@ -334,12 +332,7 @@ describe('handleChunk — SSE error chunks', () => {
 
   it('continues normally when the chunk has choices and no error', () => {
     const state = emptyPartial();
-    const events = handleChunk(
-      { choices: [{ delta: { content: 'hi' } }] },
-      state,
-      'm',
-      'lmstudio',
-    );
+    const events = handleChunk({ choices: [{ delta: { content: 'hi' } }] }, state, 'm', 'lmstudio');
     expect(events.some((e) => e.type === 'error')).toBe(false);
     expect(state.text).toBe('hi');
   });
@@ -371,12 +364,7 @@ describe('handleChunk — thinking-mode reasoning_content (qwen3 / glm / deepsee
       'm',
       'lmstudio',
     );
-    handleChunk(
-      { choices: [{ delta: { content: 'answer' } }] },
-      state,
-      'm',
-      'lmstudio',
-    );
+    handleChunk({ choices: [{ delta: { content: 'answer' } }] }, state, 'm', 'lmstudio');
     const partial = buildPartial(state, 'm', 'lmstudio');
     expect(partial.content[0]).toEqual({ type: 'thinking', text: 'planning' });
     expect(partial.content[1]).toEqual({ type: 'text', text: 'answer' });

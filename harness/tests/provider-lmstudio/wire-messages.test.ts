@@ -101,10 +101,9 @@ describe('toOpenaiMessages — placeholder injection for strict templates', () =
       is_error: false,
       timestamp: 0,
     };
-    const out = toOpenaiMessages(
-      [assistantWithToolCall, toolResult],
-      'be helpful',
-    ) as Array<Record<string, unknown>>;
+    const out = toOpenaiMessages([assistantWithToolCall, toolResult], 'be helpful') as Array<
+      Record<string, unknown>
+    >;
     // system + assistant(tool_call) + tool + placeholder user
     expect(out).toHaveLength(4);
     expect(out[3]).toEqual({ role: 'user', content: PLACEHOLDER_USER_MESSAGE });
@@ -135,10 +134,7 @@ describe('toOpenaiMessages — placeholder injection for strict templates', () =
       provider: 'lmstudio',
       timestamp: 0,
     };
-    const out = toOpenaiMessages(
-      [assistantOnly],
-      'be terse',
-    ) as Array<Record<string, unknown>>;
+    const out = toOpenaiMessages([assistantOnly], 'be terse') as Array<Record<string, unknown>>;
     expect(out).toHaveLength(3);
     expect(out[0]?.role).toBe('system');
     expect(out[1]?.role).toBe('assistant');
@@ -227,9 +223,10 @@ describe('toOpenaiMessages (lmstudio) — boundary dedup of duplicate tool messa
       ],
       '',
     ) as Array<Record<string, unknown>>;
-    const tools = out.filter((m) => m.role === 'tool') as Array<
-      { tool_call_id: string; content: string }
-    >;
+    const tools = out.filter((m) => m.role === 'tool') as Array<{
+      tool_call_id: string;
+      content: string;
+    }>;
     expect(tools.map((t) => t.tool_call_id)).toEqual(['a', 'b', 'c']);
     expect(tools[0]?.content).toBe('A2');
     expect(tools[1]?.content).toBe('B2');
@@ -255,9 +252,10 @@ describe('toOpenaiMessages (lmstudio) — boundary dedup of duplicate tool messa
       mkResult('a', 'r2'),
     ];
     const out = toOpenaiMessages(msgs, '') as Array<Record<string, unknown>>;
-    const tools = out.filter((m) => m.role === 'tool') as Array<
-      { tool_call_id: string; content: string }
-    >;
+    const tools = out.filter((m) => m.role === 'tool') as Array<{
+      tool_call_id: string;
+      content: string;
+    }>;
     // Latest-wins: a single tool row carries the most recent body.
     // The assistant message between them survives intact.
     expect(tools).toHaveLength(1);

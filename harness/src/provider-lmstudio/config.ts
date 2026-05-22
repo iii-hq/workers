@@ -65,10 +65,9 @@ function resolveApiUrl(yamlValue: string): string {
     if (validatedUrl(withPath)) {
       candidate = withPath;
     } else {
-      logger.warn(
-        'lmstudio.config: LMSTUDIO_BASE_URL is not a valid http(s) URL — ignoring',
-        { code: 'lmstudio_base_url_invalid' },
-      );
+      logger.warn('lmstudio.config: LMSTUDIO_BASE_URL is not a valid http(s) URL — ignoring', {
+        code: 'lmstudio_base_url_invalid',
+      });
     }
   }
   if (candidate === null) candidate = yamlValue;

@@ -21,7 +21,6 @@ export function configFromCredential(
   cred: Credential | null,
   max_tokens: number,
 ): ChatCompletionsConfig {
-  const api_key =
-    cred === null ? '' : cred.type === 'api_key' ? cred.key : cred.access_token;
+  const api_key = cred === null ? '' : cred.type === 'api_key' ? cred.key : cred.access_token;
   return { url, provider_name, model, api_key, max_tokens };
 }

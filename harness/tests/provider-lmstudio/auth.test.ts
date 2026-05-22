@@ -94,12 +94,12 @@ describe('isLoopbackUrl', () => {
 
 describe('selectAuthKey', () => {
   it('returns the explicit key when one is configured', () => {
-    expect(
-      selectAuthKey({ type: 'api_key', key: 'sk-explicit' }, 'http://localhost:1234/'),
-    ).toBe('sk-explicit');
-    expect(
-      selectAuthKey({ type: 'api_key', key: 'sk-explicit' }, 'https://remote.example/'),
-    ).toBe('sk-explicit');
+    expect(selectAuthKey({ type: 'api_key', key: 'sk-explicit' }, 'http://localhost:1234/')).toBe(
+      'sk-explicit',
+    );
+    expect(selectAuthKey({ type: 'api_key', key: 'sk-explicit' }, 'https://remote.example/')).toBe(
+      'sk-explicit',
+    );
   });
 
   it('returns the fallback for loopback when no credential is configured', () => {

@@ -26,11 +26,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
     async (): Promise<RefreshResult> => {
       try {
         const headers = await buildAuthHeaders(iii, worker.default_api_url);
-        const registered = await discoverAndRegister(
-          iii,
-          worker.default_api_url,
-          headers,
-        );
+        const registered = await discoverAndRegister(iii, worker.default_api_url, headers);
         return { registered };
       } catch (err) {
         // Never throw across the bus boundary — refresh is a best-effort

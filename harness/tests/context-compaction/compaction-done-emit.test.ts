@@ -67,7 +67,7 @@ function makeStubIii(extra: Record<string, unknown> = {}): {
 
   const trigger = vi.fn(
     async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (Object.prototype.hasOwnProperty.call(extra, function_id)) {
+      if (Object.hasOwn(extra, function_id)) {
         const v = extra[function_id];
         return typeof v === 'function' ? (v as () => unknown)() : v;
       }

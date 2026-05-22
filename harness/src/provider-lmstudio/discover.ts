@@ -131,11 +131,7 @@ async function fetchRawModels(
   const url = nativeModelsUrl(chatUrl);
   let resp: Response;
   try {
-    resp = await fetchWithTimeout(
-      url,
-      { method: 'GET', headers },
-      DISCOVERY_TIMEOUT_MS,
-    );
+    resp = await fetchWithTimeout(url, { method: 'GET', headers }, DISCOVERY_TIMEOUT_MS);
   } catch (err) {
     logger.warn('lmstudio discovery: fetch failed', { url, err: String(err) });
     return [];
@@ -222,10 +218,7 @@ export async function discoverLoadedIds(
  * the worker un-discoverable for 150s. Now: ~5s worst case regardless
  * of N.
  */
-export async function registerDiscovered(
-  iii: ISdk,
-  models: readonly Model[],
-): Promise<string[]> {
+export async function registerDiscovered(iii: ISdk, models: readonly Model[]): Promise<string[]> {
   const settled = await Promise.allSettled(
     models.map(async (m) => {
       await iii.trigger({
