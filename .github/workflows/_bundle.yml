@@ -81,29 +81,29 @@ jobs:
       # and `fsevents` (macOS-only optional native dep used by chokidar)
       # are external. See `<worker>/scripts/build-bundle.mjs`.
       - uses: pnpm/action-setup@v4
-        if: inputs.language == 'node'
+        if: inputs.language == 'node' || inputs.language == 'javascript'
         with:
           version: 10
 
       - uses: actions/setup-node@v4
-        if: inputs.language == 'node'
+        if: inputs.language == 'node' || inputs.language == 'javascript'
         with:
           node-version: 22
           cache: 'pnpm'
           cache-dependency-path: ${{ inputs.worker }}/pnpm-lock.yaml
 
       - name: pnpm install
-        if: inputs.language == 'node'
+        if: inputs.language == 'node' || inputs.language == 'javascript'
         working-directory: ${{ inputs.worker }}
         run: pnpm install --frozen-lockfile
 
       - name: pnpm run build:bundle
-        if: inputs.language == 'node'
+        if: inputs.language == 'node' || inputs.language == 'javascript'
         working-directory: ${{ inputs.worker }}
         run: pnpm run build:bundle
 
       - name: Stage Node artefact
-        if: inputs.language == 'node'
+        if: inputs.language == 'node' || inputs.language == 'javascript'
         env:
           WORKER: ${{ inputs.worker }}
         run: |
@@ -126,7 +126,7 @@ jobs:
           exit 1
 
       - name: Unsupported language
-        if: inputs.language != 'javascript' && inputs.language != 'python'
+        if: inputs.language != 'node' && inputs.language != 'javascript' && inputs.language != 'python'
         env:
           LANG_IN: ${{ inputs.language }}
         run: |
