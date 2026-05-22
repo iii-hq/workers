@@ -149,3 +149,175 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('function_finalize');
   });
 });
+
+describe('handleFinalize idempotency', () => {
+  // Production failure: Anthropic rejected with "each tool_use must have a
+  // single result. Found multiple tool_result blocks with id: toolu_...".
+  // Root cause: handleFinalize re-entered with the same executedCalls in
+  // state and pushed the same function_result AgentMessages onto flat-state
+  // a second time. This test pins the idempotent behavior.
+
+  it('does NOT duplicate function_results when handleFinalize runs twice with the same executedCalls', async () => {
+    const { handleFinalize } = await import('../../src/turn-orchestrator/states/functions.js');
+
+    const executedCalls = [
+      {
+        function_call: {
+          id: 'toolu_01',
+          function_id: 'shell::run',
+          arguments: { command: 'ls' },
+        },
+        result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
+        is_error: false,
+        duration_ms: 5,
+      },
+      {
+        function_call: {
+          id: 'toolu_02',
+          function_id: 'fs::read',
+          arguments: { path: '/etc/hosts' },
+        },
+        result: { content: [{ type: 'text' as const, text: '127.0.0.1' }], details: {} },
+        is_error: false,
+        duration_ms: 3,
+      },
+    ];
+
+    // executedCalls is still present across both calls — the production
+    // failure mode where state wasn't cleared between handleFinalize entries.
+    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue(executedCalls);
+    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+
+    let storedMessages: unknown[] = [];
+    vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
+    vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
+      storedMessages = msgs as never;
+    });
+    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(null as never);
+
+    const iii = {
+      trigger: vi.fn().mockResolvedValue({ old_value: 0 }),
+    } as unknown as ISdk;
+
+    const rec: TurnStateRecord = newRecord('sess-finalize-idem');
+    rec.state = 'function_finalize';
+    rec.last_assistant = {
+      role: 'assistant',
+      content: [],
+      stop_reason: 'function_call',
+      error_message: null,
+      error_kind: null,
+      usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 },
+      model: 'claude',
+      provider: 'anthropic',
+      timestamp: 0,
+    };
+
+    await handleFinalize(iii, rec);
+    // Critical: simulate re-entry — handleFinalize fires again with the
+    // SAME executedCalls (the production failure mode).
+    rec.state = 'function_finalize';
+    rec.turn_end_emitted = false;
+    await handleFinalize(iii, rec);
+
+    const fnResults = (
+      storedMessages as Array<{ role?: string; function_call_id?: string }>
+    ).filter((m) => m.role === 'function_result');
+    expect(fnResults).toHaveLength(2);
+    expect(fnResults.map((m) => m.function_call_id).sort()).toEqual(['toolu_01', 'toolu_02']);
+  });
+
+  it('clears executedCalls at the end so a future re-entry produces zero new results', async () => {
+    const { handleFinalize } = await import('../../src/turn-orchestrator/states/functions.js');
+    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
+      {
+        function_call: { id: 'toolu_x', function_id: 'f', arguments: {} },
+        result: { content: [], details: {} },
+        is_error: false,
+        duration_ms: 1,
+      },
+    ]);
+    const saveExecutedSpy = vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(null as never);
+
+    const iii = {
+      trigger: vi.fn().mockResolvedValue({ old_value: 0 }),
+    } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('sess-clear');
+    rec.state = 'function_finalize';
+    rec.last_assistant = {
+      role: 'assistant',
+      content: [],
+      stop_reason: 'function_call',
+      error_message: null,
+      error_kind: null,
+      usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      model: 'claude',
+      provider: 'anthropic',
+      timestamp: 0,
+    };
+
+    await handleFinalize(iii, rec);
+
+    // saveExecutedCalls(..., []) must have been called at the END.
+    const clearCalls = saveExecutedSpy.mock.calls.filter(
+      ([, , calls]) => Array.isArray(calls) && (calls as unknown[]).length === 0,
+    );
+    expect(clearCalls.length).toBeGreaterThan(0);
+  });
+});
+
+describe('handleFinished idempotency', () => {
+  // Sibling hazard to handleFinalize: re-entry pushes the same assistant
+  // message twice. If that assistant has tool_calls, Anthropic rejects
+  // with "each tool_use must have a unique id".
+
+  it('does NOT duplicate the assistant message when handleFinished runs twice', async () => {
+    const { handleFinished } = await import('../../src/turn-orchestrator/states/assistant.js');
+
+    const assistantMsg = {
+      role: 'assistant' as const,
+      content: [
+        {
+          type: 'function_call' as const,
+          id: 'toolu_42',
+          function_id: 'shell::run',
+          arguments: { command: 'pwd' },
+        },
+      ],
+      stop_reason: 'function_call' as const,
+      error_message: null,
+      error_kind: null,
+      usage: { input: 10, output: 5, cache_read: 0, cache_write: 0 },
+      model: 'claude',
+      provider: 'anthropic',
+      timestamp: 1700000000,
+    };
+
+    let storedMessages: unknown[] = [];
+    vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
+    vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
+      storedMessages = msgs as never;
+    });
+
+    const iii = {
+      trigger: vi.fn().mockResolvedValue({ old_value: 0 }),
+    } as unknown as ISdk;
+
+    const rec: TurnStateRecord = newRecord('sess-finished-idem');
+    rec.state = 'assistant_finished';
+    rec.last_assistant = assistantMsg;
+
+    await handleFinished(iii, rec);
+    rec.state = 'assistant_finished';
+    rec.turn_end_emitted = false;
+    await handleFinished(iii, rec);
+
+    const asstMsgs = (storedMessages as Array<{ role?: string }>).filter(
+      (m) => m.role === 'assistant',
+    );
+    expect(asstMsgs).toHaveLength(1);
+  });
+});

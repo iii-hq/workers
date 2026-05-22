@@ -4,6 +4,8 @@ function_id: directory::skills::get
 title: Read one skill body by id
 ---
 
+> **Function id:** `directory::skills::get` — pass this to `agent_trigger { function: "directory::skills::get" }` (NOT the skill path you saw in `directory::skills::list`; that's a documentation id, not a callable function id).
+
 # When to use
 
 Call `directory::skills::get` whenever you need the **body** of one

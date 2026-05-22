@@ -36,6 +36,7 @@ function emptyConversation(
     title: 'new chat',
     model: defaultModel,
     mode: DEFAULT_MODE,
+    autoAccept: false,
     messages: [],
     createdAt: now,
     updatedAt: now,
@@ -52,6 +53,7 @@ export interface ConversationsApi {
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
   setMode: (id: string, mode: Mode) => void
+  setAutoAccept: (id: string, autoAccept: boolean) => void
   appendMessage: (id: string, message: Message) => void
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
@@ -181,6 +183,16 @@ export function useConversations(
     [patchConversation],
   )
 
+  const setAutoAccept = useCallback(
+    (id: string, autoAccept: boolean) =>
+      patchConversation(id, (c) => ({
+        ...c,
+        autoAccept,
+        updatedAt: Date.now(),
+      })),
+    [patchConversation],
+  )
+
   const appendMessage = useCallback(
     (id: string, message: Message) =>
       patchConversation(id, (c) => {
@@ -234,6 +246,7 @@ export function useConversations(
     remove,
     setModel,
     setMode,
+    setAutoAccept,
     appendMessage,
     updateMessage,
     compactConversation,

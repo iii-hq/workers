@@ -91,6 +91,49 @@ function isFunctionNotFound(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Build the `hint` field on a `function_not_found` result. Models
+ * regularly confuse the SKILL id (`sandbox/skills/sandbox/create`, the
+ * on-disk path returned by `directory::skills::list`) with the FUNCTION
+ * id (`sandbox::create`, what `agent_trigger` actually expects) and
+ * then retry the same wrong id 3+ times before recovering. When the
+ * caller's `function_id` contains a `/` we can usually reconstruct the
+ * canonical worker::fn form and surface it as a "did you mean" — that
+ * collapses the typical 4-turn recovery to a 2-turn recovery.
+ *
+ * Cases recognised:
+ * - `<w>/skills/<w>/<fn...>`  → `<w>::<fn...>`  (the canonical skill-id
+ *   shape produced by `directory::skills::list` for a how-to that
+ *   declares `function_id:` in its frontmatter).
+ * - `<w>/<fn>`                → `<w>::<fn>`     (weaker guess, but
+ *   matches what models often hallucinate as a shorthand).
+ *
+ * Anything else (no `/`, or shapes we can't confidently rewrite) gets
+ * the generic hint pointing at the skills surface.
+ */
+export function functionNotFoundHint(badFunctionId: string): string {
+  if (!badFunctionId.includes('/')) {
+    return 'load the relevant skill via directory::skills::get, or check the function id';
+  }
+  const generic =
+    'Skill ids are NOT function ids. `agent_trigger` expects the function id ' +
+    '(`worker::fn`) — that is the `function_id` field on each row returned by ' +
+    "`directory::skills::list`, not the row's `id` field (which is the on-disk " +
+    'skill path).';
+  const segments = badFunctionId.split('/').filter((s) => s.length > 0);
+  let suggestion: string | null = null;
+  if (segments.length >= 4 && segments[1] === 'skills' && segments[0] === segments[2]) {
+    // sandbox/skills/sandbox/create → sandbox::create
+    // worker-a/skills/worker-a/nested/fn → worker-a::nested::fn
+    suggestion = `${segments[0]}::${segments.slice(3).join('::')}`;
+  } else if (segments.length === 2 && segments[1] !== 'index') {
+    // sandbox/create → sandbox::create  (also catches accidental
+    // `<worker>/<fn>` shorthand the model invented from the skill path)
+    suggestion = `${segments[0]}::${segments[1]}`;
+  }
+  return suggestion ? `Did you mean \`${suggestion}\`? ${generic}` : generic;
+}
+
 function isTimeout(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const obj = err as Record<string, unknown>;
@@ -132,7 +175,7 @@ export async function dispatchWithHook(
         result: errorResult({
           error: 'function_not_found',
           function: function_call.function_id,
-          hint: 'load the relevant skill via directory::skills::get, or check the function id',
+          hint: functionNotFoundHint(function_call.function_id),
         }),
       };
     }

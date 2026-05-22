@@ -98,9 +98,17 @@ export function MessageList({
      (We dedupe via lastPendingIdRef so React's re-renders don't keep
      forcing the scroll while the user is reading the request body.) */
   useEffect(() => {
-    const newestPending = [...messages]
-      .reverse()
-      .find((m) => m.role === 'function-call' && m.pendingApproval === true)
+    // Walk backwards instead of spreading + reversing — the spread
+    // copies the whole array every render, which is a real cost on
+    // token-by-token re-renders during streaming.
+    let newestPending: (typeof messages)[number] | null = null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'function-call' && m.pendingApproval === true) {
+        newestPending = m
+        break
+      }
+    }
     if (!newestPending) {
       lastPendingIdRef.current = null
       return

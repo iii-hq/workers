@@ -76,13 +76,6 @@ struct PromptFrontmatter {
     description: Option<String>,
 }
 
-/// Subset of skill frontmatter fields surfaced by
-/// `directory::skills::list` and `directory::skills::get`. Anything else
-/// in the YAML block is preserved verbatim by [`split_frontmatter`] but
-/// ignored here. Both fields are optional so files without frontmatter
-/// (or without these keys) parse as `Default::default()` rather than
-/// erroring — the reader still falls back to the body H1 / id for the
-/// title and serialises a `null` type.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct SkillFrontmatter {
     /// Optional human-readable title. When non-empty (after trim) the
@@ -93,6 +86,15 @@ pub struct SkillFrontmatter {
     /// Renamed from the YAML key `type` to avoid the Rust reserved word.
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
+    /// Canonical bus function id this skill documents (e.g.
+    /// `sandbox::create`). When present, surfaced verbatim by
+    /// `directory::skills::list` / `::get` so a calling agent can tell
+    /// the SKILL id (`sandbox/skills/sandbox/create`, the on-disk path)
+    /// apart from the FUNCTION id (`sandbox::create`, what
+    /// `agent_trigger` actually expects). Missing for index-type and
+    /// reference-type skills that aren't 1:1 with a single function.
+    #[serde(default)]
+    pub function_id: Option<String>,
 }
 
 // ───────────────────────── pure helpers ──────────────────────────────

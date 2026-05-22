@@ -10,7 +10,9 @@ import type { ProviderStreamInput, StreamChannelRef } from '../types/provider.js
 export type RouteDecision =
   | { provider: 'anthropic'; model: string }
   | { provider: 'openai'; model: string }
-  | { provider: 'kimi'; model: string };
+  | { provider: 'kimi'; model: string }
+  | { provider: 'lmstudio'; model: string }
+  | { provider: 'llamacpp'; model: string };
 
 export type RouteRequest = {
   provider?: string;
@@ -22,7 +24,13 @@ export function decide(req: RouteRequest): RouteDecision {
   const p = (req.provider ?? '').toLowerCase();
   if (p === 'openai') return { provider: 'openai', model: req.model };
   if (p === 'kimi') return { provider: 'kimi', model: req.model };
+  if (p === 'lmstudio') return { provider: 'lmstudio', model: req.model };
+  if (p === 'llamacpp') return { provider: 'llamacpp', model: req.model };
   // Heuristic for missing provider: model name disambiguates.
+  // Local runtimes (LM Studio, llama.cpp) are intentionally excluded —
+  // their model IDs are user-controlled (e.g. `qwen/qwen3-4b-2507`,
+  // `Meta-Llama-3.1-8B`) and overlap with HF-style IDs from other
+  // services; require explicit provider='lmstudio' / 'llamacpp'.
   if (!p && /^gpt-|^o\d-/i.test(req.model)) {
     return { provider: 'openai', model: req.model };
   }
@@ -40,6 +48,10 @@ export function targetFunctionId(d: RouteDecision): string {
       return 'provider::openai::stream';
     case 'kimi':
       return 'provider::kimi::stream';
+    case 'lmstudio':
+      return 'provider::lmstudio::stream';
+    case 'llamacpp':
+      return 'provider::llamacpp::stream';
   }
 }
 

@@ -25,6 +25,18 @@ export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string
         )
         .map((c) => c.text)
         .join('\n');
+      // Kimi K2 thinking mode: when this assistant turn produced reasoning,
+      // we MUST echo it back on subsequent requests under `reasoning_content`
+      // — otherwise Kimi rejects with "thinking is enabled but
+      // reasoning_content is missing in assistant tool call message".
+      // sse.ts persists it as a ThinkingContent block; we project that here.
+      const reasoning = m.content
+        .filter(
+          (c): c is Extract<(typeof m.content)[number], { type: 'thinking' }> =>
+            c.type === 'thinking',
+        )
+        .map((c) => c.text)
+        .join('');
       const tool_calls = m.content
         .filter(
           (c): c is Extract<(typeof m.content)[number], { type: 'function_call' }> =>
@@ -36,6 +48,7 @@ export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string
           function: { name: c.function_id, arguments: JSON.stringify(c.arguments) },
         }));
       const entry: Record<string, unknown> = { role: 'assistant' };
+      if (reasoning.length > 0) entry.reasoning_content = reasoning;
       if (text.length > 0) entry.content = text;
       if (tool_calls.length > 0) entry.tool_calls = tool_calls;
       out.push(entry);
@@ -47,7 +60,18 @@ export function toOpenaiMessages(messages: AgentMessage[], system_prompt: string
         content: text,
       };
       if (m.is_error) row.is_error = true;
-      out.push(row);
+      // Boundary dedup — see provider-anthropic/wire-messages.ts for why.
+      // Latest-wins replace, so the freshest tool result is what Kimi sees.
+      const existingIdx = out.findIndex(
+        (e) =>
+          (e as { role?: string }).role === 'tool' &&
+          (e as { tool_call_id?: string }).tool_call_id === m.function_call_id,
+      );
+      if (existingIdx >= 0) {
+        out[existingIdx] = row;
+      } else {
+        out.push(row);
+      }
     }
     // custom messages are skipped
   }

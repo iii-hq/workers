@@ -34,6 +34,17 @@ describe('buildSystemPrompt', () => {
     expect(out).toContain('@fn(directory::skills::get)');
   });
 
+  it('preamble instructs fetching per-function skill before first call', () => {
+    // Regression: kimi-k2.6 (and other LLMs) often jump from the worker
+    // index straight to a function call, guess field names, and burn
+    // turns on retries. The preamble must explicitly tell them to fetch
+    // the per-function skill body first.
+    const out = buildSystemPrompt([], null);
+    expect(out).toContain('FIRST time');
+    expect(out).toContain('<worker>/<function>');
+    expect(out).toContain('sandbox/exec');
+  });
+
   it('skills appear in config order', () => {
     const out = buildSystemPrompt(
       [defaultSkillBody('iii://iii', 'AAA'), defaultSkillBody('iii://shell', 'BBB')],

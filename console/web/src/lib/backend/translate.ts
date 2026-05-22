@@ -31,6 +31,7 @@
 import type {
   AgentEvent,
   AgentMessage,
+  AssistantMessage,
   AssistantMessageEvent,
   ContentBlock,
   FunctionResult,
@@ -52,10 +53,8 @@ export function translateAgentEvent(event: AgentEvent, sessionId?: string): Stre
       return []
 
     case 'message_end':
-      if (event.message.role === 'assistant') {
-        return [{ kind: 'assistant-end' }]
-      }
-      return []
+      if (event.message.role !== 'assistant') return []
+      return translateAssistantMessageEnd(event.message)
 
     case 'message_update':
       return translateMessageUpdate(event.llm_event)
@@ -91,6 +90,18 @@ export function translateAgentEvent(event: AgentEvent, sessionId?: string): Stre
 
     case 'agent_end':
       return [{ kind: 'assistant-end' }]
+
+    case 'compaction_done':
+      return [
+        {
+          kind: 'compaction',
+          mode: event.mode,
+          summaryText: event.summary_text,
+          tokensBefore: event.tokens_before,
+          compactionEntryId: event.compaction_entry_id,
+          tailStartId: event.tail_start_id,
+        },
+      ]
   }
 }
 
@@ -132,6 +143,36 @@ function translateMessageStart(message: AgentMessage): StreamEvent[] {
   const out: StreamEvent[] = []
   for (const block of message.content) {
     appendBlock(block, out)
+  }
+  return out
+}
+
+/**
+ * Emits `assistant-end` plus, when the turn terminated abnormally, a
+ * `stop-reason` notice so the UI can render a system message with the
+ * cause. Pre-fix this branch dropped `stop_reason` and `error_message`
+ * on the floor — the user saw a truncated reply with no diagnostic.
+ */
+function translateAssistantMessageEnd(message: AssistantMessage): StreamEvent[] {
+  const out: StreamEvent[] = [{ kind: 'assistant-end' }]
+  const stop = message.stop_reason as
+    | 'end'
+    | 'length'
+    | 'error'
+    | 'aborted'
+    | 'function_call'
+    | undefined
+  // Clean ends and tool-call hops don't need a notice — the next turn
+  // will visibly continue. We only surface terminal anomalies.
+  if (stop === 'length' || stop === 'error' || stop === 'aborted') {
+    out.push({
+      kind: 'stop-reason',
+      reason: stop,
+      message:
+        typeof message.error_message === 'string' && message.error_message.length > 0
+          ? message.error_message
+          : undefined,
+    })
   }
   return out
 }

@@ -8,6 +8,7 @@
 import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { emitCompactionDone } from './emit.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { busyTimeoutMs, pruneMinFree, pruneProtect, pruneProtectedTools } from './config.js';
 import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
@@ -127,6 +128,17 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       ];
       if (replay) new_flat_messages.push(replay.message);
       await rewriteFlatMessages(iii, input.session_id, new_flat_messages);
+
+      // Tell the UI we just compacted so it can render a marker and
+      // re-estimate context usage. Best-effort: a publish failure must
+      // not derail the in-flight turn — the orchestrator is waiting on
+      // our return.
+      await emitCompactionDone(iii, input.session_id, 'sync', {
+        summary_text: result.summary_text,
+        tokens_before: result.tokens_before,
+        compaction_entry_id: result.compaction_entry_id,
+        tail_start_id: result.tail_start_id,
+      });
 
       return {
         status: 'ok',

@@ -57,4 +57,23 @@ export type AgentEvent =
       /** Previous record, present on state:updated; absent on state:created. */
       old_value?: Record<string, unknown>;
       event_type: 'state:created' | 'state:updated';
+    }
+  | {
+      /**
+       * Emitted by context-compaction after a successful flat-state rewrite.
+       * Lets the UI insert a "compaction" marker into the rendered transcript
+       * and re-estimate context usage — without this, the UI's CTX bar keeps
+       * counting messages the server has already summarised.
+       */
+      type: 'compaction_done';
+      /** 'async' = TurnEnd-driven background; 'sync' = pre-flight in-turn. */
+      mode: 'async' | 'sync';
+      /** The summary written into the session-tree Compaction entry. */
+      summary_text: string;
+      /** Estimated tokens of the pre-compaction head (what got summarised). */
+      tokens_before: number;
+      /** session-tree entry_id of the new Compaction node. */
+      compaction_entry_id: string;
+      /** First entry_id of the preserved tail; null when nothing was kept. */
+      tail_start_id: string | null;
     };

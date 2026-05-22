@@ -66,4 +66,43 @@ describe('toOpenaiMessages', () => {
     const out = toOpenaiMessages([msg], '') as Array<Record<string, unknown>>;
     expect(out[0]?.content).toBe('one\ntwo');
   });
+
+  describe('boundary dedup of duplicate tool messages', () => {
+    // OpenAI's wire shape emits one `{role:'tool', tool_call_id}` message
+    // per function_result (not a bundled content array like Anthropic).
+    // Without dedup, orchestrator re-entry would ship two tool messages
+    // with the same tool_call_id — some servers reject this, some silently
+    // overwrite. Dedup makes behavior deterministic regardless.
+
+    const mkResult = (id: string, text: string): AgentMessage => ({
+      role: 'function_result',
+      function_call_id: id,
+      function_id: 'shell::run',
+      content: [{ type: 'text', text }],
+      details: {},
+      is_error: false,
+      timestamp: 0,
+    });
+
+    it('keeps exactly one tool message per tool_call_id (latest wins)', () => {
+      const out = toOpenaiMessages(
+        [mkResult('call_01', 'first'), mkResult('call_01', 'second')],
+        '',
+      ) as Array<Record<string, unknown>>;
+      const tools = out.filter((m) => m.role === 'tool');
+      expect(tools).toHaveLength(1);
+      expect(tools[0]?.tool_call_id).toBe('call_01');
+      expect(tools[0]?.content).toBe('second');
+    });
+
+    it('preserves order of distinct tool_call_ids', () => {
+      const out = toOpenaiMessages(
+        [mkResult('a', 'A1'), mkResult('b', 'B1'), mkResult('a', 'A2'), mkResult('c', 'C1')],
+        '',
+      ) as Array<Record<string, unknown>>;
+      const tools = out.filter((m) => m.role === 'tool');
+      expect(tools.map((t) => t.tool_call_id)).toEqual(['a', 'b', 'c']);
+      expect(tools[0]?.content).toBe('A2');
+    });
+  });
 });

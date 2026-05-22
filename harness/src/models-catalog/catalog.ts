@@ -32,5 +32,18 @@ export async function syncList(filter: ListFilter): Promise<Model[]> {
 
 export async function syncGet(provider: string, model_id: string): Promise<Model | null> {
   const all = await loadEmbeddedCatalog();
-  return all.find((m) => m.provider === provider && m.id === model_id) ?? null;
+  const exact = all.find((m) => m.provider === provider && m.id === model_id);
+  if (exact) return exact;
+  // Local-runtime providers (LM Studio, llama.cpp) accept arbitrary
+  // user-loaded GGUFs so the catalog can't enumerate every id. Fall
+  // back to a per-provider placeholder so capability gating
+  // (supports_tools, etc.) still works for whatever the user picked.
+  // Other providers keep the strict null-on-miss behaviour.
+  if (provider === 'lmstudio') {
+    return all.find((m) => m.provider === 'lmstudio' && m.id === 'lmstudio-local') ?? null;
+  }
+  if (provider === 'llamacpp') {
+    return all.find((m) => m.provider === 'llamacpp' && m.id === 'llamacpp-local') ?? null;
+  }
+  return null;
 }
