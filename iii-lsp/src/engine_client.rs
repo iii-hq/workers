@@ -1,9 +1,8 @@
 use dashmap::{DashMap, DashSet};
-use iii_sdk::{
-    register_worker, FunctionInfo, FunctionsAvailableGuard, IIIConnectionState, InitOptions,
-    TriggerInfo, TriggerTypeInfo, WorkerInfo, WorkerMetadata, III,
-};
+use iii_sdk::{register_worker, IIIConnectionState, InitOptions, WorkerMetadata, III};
 use std::sync::{Arc, Mutex};
+
+use crate::engine_introspection::{self, FunctionInfo, TriggerInfo, TriggerTypeInfo, WorkerInfo};
 
 pub struct EngineClient {
     iii: III,
@@ -15,7 +14,7 @@ pub struct EngineClient {
     pub known_topics: DashSet<String>,
     pub known_api_paths: DashSet<String>,
     pub known_scopes: DashSet<String>,
-    guard: Mutex<Option<FunctionsAvailableGuard>>,
+    poll_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl EngineClient {
@@ -45,7 +44,7 @@ impl EngineClient {
             known_topics: DashSet::new(),
             known_api_paths: DashSet::new(),
             known_scopes: DashSet::new(),
-            guard: Mutex::new(None),
+            poll_task: Mutex::new(None),
         })
     }
 
@@ -53,31 +52,40 @@ impl EngineClient {
         self.seed_cache().await;
 
         let weak = Arc::downgrade(self);
-        let guard = self.iii.on_functions_available(move |functions| {
-            let Some(client) = weak.upgrade() else {
-                return;
-            };
-            client.functions.clear();
-            for func in &functions {
-                client
-                    .functions
-                    .insert(func.function_id.clone(), func.clone());
-            }
-
-            let weak = Arc::downgrade(&client);
-            tokio::task::spawn(async move {
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
                 let Some(client) = weak.upgrade() else {
-                    return;
+                    break;
                 };
-                client.reseed_secondary_caches().await;
-            });
+                if !client.is_connected() {
+                    continue;
+                }
+                if let Ok(functions) = engine_introspection::list_functions(&client.iii).await {
+                    let changed = functions.len() != client.functions.len()
+                        || functions.iter().any(|f| {
+                            client
+                                .functions
+                                .get(&f.function_id)
+                                .is_none_or(|existing| existing.value() != f)
+                        });
+                    if changed {
+                        client.functions.clear();
+                        for func in functions {
+                            client.functions.insert(func.function_id.clone(), func);
+                        }
+                        client.reseed_secondary_caches().await;
+                    }
+                }
+            }
         });
 
-        *self.guard.lock().unwrap() = Some(guard);
+        *self.poll_task.lock().unwrap() = Some(handle);
     }
 
     async fn seed_cache(&self) {
-        if let Ok(functions) = self.iii.list_functions().await {
+        if let Ok(functions) = engine_introspection::list_functions(&self.iii).await {
             for func in functions {
                 self.functions.insert(func.function_id.clone(), func);
             }
@@ -86,14 +94,15 @@ impl EngineClient {
     }
 
     async fn reseed_secondary_caches(&self) {
-        if let Ok(trigger_types) = self.iii.list_trigger_types(false).await {
+        if let Ok(trigger_types) = engine_introspection::list_trigger_types(&self.iii, false).await
+        {
             self.trigger_types.clear();
             for tt in trigger_types {
                 self.trigger_types.insert(tt.id.clone(), tt);
             }
         }
 
-        if let Ok(workers) = self.iii.list_workers().await {
+        if let Ok(workers) = engine_introspection::list_workers(&self.iii).await {
             self.workers.clear();
             for w in workers {
                 self.workers.insert(w.id.clone(), w);
@@ -101,7 +110,7 @@ impl EngineClient {
         }
 
         // Extract known names from trigger configs
-        if let Ok(triggers) = self.iii.list_triggers(false).await {
+        if let Ok(triggers) = engine_introspection::list_triggers(&self.iii, false).await {
             self.extract_known_values(&triggers);
         }
     }
@@ -180,8 +189,10 @@ impl EngineClient {
     }
 
     pub async fn shutdown(&self) {
-        if let Ok(mut guard) = self.guard.lock() {
-            *guard = None;
+        if let Ok(mut guard) = self.poll_task.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
         }
         self.iii.shutdown_async().await;
     }

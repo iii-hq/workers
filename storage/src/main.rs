@@ -170,6 +170,7 @@ async fn main() -> Result<()> {
                 os: std::env::consts::OS.to_string(),
                 pid: Some(std::process::id()),
                 telemetry: None,
+                ..WorkerMetadata::default()
             }),
             ..Default::default()
         },
