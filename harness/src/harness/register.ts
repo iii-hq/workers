@@ -13,12 +13,12 @@ export async function register(iii: ISdk, ctx: { configPath: string; url: string
 
   const cfg = await loadConfig(ctx.configPath);
   const harness = loadHarnessConfig(cfg);
-  
+
   registerTrigger(iii);
   registerSubscriptions(iii, fanoutState);
   spawnPumps(iii, fanoutState);
   registerFs(iii, ctx.url);
-  
+
   const handle = await loadAndWatch(harness.permissions_path);
   registerPolicy(iii, handle);
 }

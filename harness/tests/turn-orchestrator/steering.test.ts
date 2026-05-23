@@ -24,12 +24,9 @@ describe('steering route()', () => {
     [false, false, true, false, 'followup'],
     [false, false, false, true, 'continue_after_function'],
     [false, false, false, false, 'end_turn'],
-  ] as const)(
-    'route(%s, %s, %s, %s) -> %s',
-    (abort, has_steering, has_followup, has_function_results, expected) => {
-      expect(route(abort, has_steering, has_followup, has_function_results)).toBe(expected);
-    },
-  );
+  ] as const)('route(%s, %s, %s, %s) -> %s', (abort, has_steering, has_followup, has_function_results, expected) => {
+    expect(route(abort, has_steering, has_followup, has_function_results)).toBe(expected);
+  });
 });
 
 function userMessage(text: string): AgentMessage {
@@ -37,11 +34,7 @@ function userMessage(text: string): AgentMessage {
 }
 
 function makeIii(
-  opts: {
-    abort?: boolean;
-    steeringItems?: AgentMessage[];
-    followupItems?: AgentMessage[];
-  } = {},
+  opts: { abort?: boolean; steeringItems?: AgentMessage[]; followupItems?: AgentMessage[] } = {},
 ) {
   const { abort = false, steeringItems = [], followupItems = [] } = opts;
   const drainCalls: Array<{ name: string; session_id: string }> = [];
