@@ -4,7 +4,7 @@
  */
 
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
-import type { FunctionCall } from '../types/function.js';
+import type { FunctionCall, FunctionResult } from '../types/function.js';
 
 export type TurnState =
   | 'provisioning'
@@ -14,12 +14,31 @@ export type TurnState =
   | 'function_awaiting_approval'
   | 'steering_check'
   | 'tearing_down'
-  | 'stopped';
+  | 'stopped'
+  | 'failed';
 
 export type AwaitingApprovalEntry = {
   function_call_id: string;
   function_id: string;
   args: unknown;
+};
+
+export type PreparedEntry = {
+  function_call: FunctionCall;
+  blocked: FunctionResult | null;
+  pre_approved?: boolean;
+};
+
+export type ExecutedEntry = {
+  function_call: FunctionCall;
+  result: FunctionResult;
+  is_error: boolean;
+  duration_ms: number;
+};
+
+export type TurnWork = {
+  batch: PreparedEntry[];
+  results: ExecutedEntry[];
 };
 
 export type TurnStateRecord = {
@@ -36,6 +55,8 @@ export type TurnStateRecord = {
   awaiting_approval?: AwaitingApprovalEntry[];
   /** Set during assistant_streaming when message_update deltas were emitted. */
   assistant_body_streamed?: boolean;
+  work?: TurnWork;
+  error?: { kind: string; message: string };
 };
 
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
@@ -57,6 +78,10 @@ export function newRecord(session_id: string, max_turns?: number): TurnStateReco
 export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.state = next;
   rec.updated_at_ms = Date.now();
+}
+
+export function isTerminal(rec: TurnStateRecord): boolean {
+  return rec.state === 'stopped' || rec.state === 'failed';
 }
 
 export const messagesKey = (sid: string) => `session/${sid}/messages`;

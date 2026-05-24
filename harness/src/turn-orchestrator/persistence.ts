@@ -8,6 +8,8 @@ import type { AgentMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 import { type RunRequest, parseRunRequest } from './run-request.js';
 import {
+  type ExecutedEntry,
+  type PreparedEntry,
   type TurnStateRecord,
   functionSchemasKey,
   lastSessionTreeLenKey,
@@ -17,6 +19,8 @@ import {
 } from './state.js';
 import { emitTurnStateChanged } from './turn-state-write.js';
 import { shouldWakeStep, wakeState } from './wake.js';
+
+export type { ExecutedEntry, PreparedEntry } from './state.js';
 
 const SCOPE = 'agent';
 
@@ -195,22 +199,6 @@ async function stagingGet(iii: ISdk, session_id: string, suffix: string): Promis
   return Array.isArray(v) ? v : [];
 }
 
-export type PreparedEntry = {
-  function_call: FunctionCall;
-  blocked: FunctionResult | null;
-  pre_approved?: boolean;
-};
-export type ExecutedEntry = {
-  function_call: FunctionCall;
-  result: FunctionResult;
-  is_error: boolean;
-  /** Wall-clock ms between the matching function_execution_start and end.
-   *  Persisted so resumed runs replay the original timing instead of the
-   *  ~0ms it takes to re-emit the end event. Defaults to 0 in
-   *  loadExecutedCalls so records persisted by an older binary survive
-   *  the upgrade. */
-  duration_ms: number;
-};
 
 export async function savePreparedCalls(
   iii: ISdk,

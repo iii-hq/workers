@@ -10,7 +10,7 @@ import { type TurnState, type TurnStateRecord } from './state.js';
 
 export const TURN_STEP_QUEUE = 'turn-step';
 
-const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'function_awaiting_approval']);
+const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'failed', 'function_awaiting_approval']);
 
 /** True when a persisted turn_state transition should enqueue `turn::{newState}`. */
 export function shouldWakeStep(previousState: TurnState | null, newState: TurnState): boolean {
