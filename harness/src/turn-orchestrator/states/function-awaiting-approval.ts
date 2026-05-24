@@ -10,7 +10,6 @@ import type { z } from 'zod';
 import type { ISdk } from '../../runtime/iii.js';
 import type { FunctionResult } from '../../types/function.js';
 import { text } from '../../types/content.js';
-import * as persistence from '../persistence.js';
 import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
@@ -69,29 +68,25 @@ export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): P
     return;
   }
 
-  const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
+  const batch = rec.work?.batch ?? [];
   for (let i = 0; i < awaiting.length; i++) {
     const entry = awaiting[i];
     const decision = decisions[i];
     if (!entry || !decision) continue;
-    const idx = prepared.findIndex(
-      (preparedEntry) => preparedEntry.function_call.id === entry.function_call_id,
-    );
+    const idx = batch.findIndex((pe) => pe.function_call.id === entry.function_call_id);
     if (idx < 0) continue;
-    const current = prepared[idx];
+    const current = batch[idx];
     if (!current) continue;
     if (decision.decision === 'allow') {
-      prepared[idx] = { ...current, pre_approved: true, blocked: null };
+      batch[idx] = { ...current, pre_approved: true, blocked: null };
     } else {
-      prepared[idx] = {
+      batch[idx] = {
         ...current,
         pre_approved: false,
         blocked: denialResultFromDecision(decision),
       };
     }
   }
-
-  await persistence.savePreparedCalls(iii, rec.session_id, prepared);
 
   rec.awaiting_approval = [];
   transitionTo(rec, 'function_execute');

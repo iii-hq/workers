@@ -14,14 +14,14 @@ import type {
   FunctionResultMessage,
 } from '../../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
-import { dispatchWithHook, isErrorResult, triggerFunctionCall } from '../agent-trigger.js';
+import { dispatchWithHook, isErrorResult, missingFunctionResult, triggerFunctionCall, unwrapAgentTrigger } from '../agent-trigger.js';
 import { registerApprovalResume } from '../approval-resume.js';
 import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
 import * as persistence from '../persistence.js';
 import type { ExecutedEntry } from '../persistence.js';
 import { runTransition } from '../run-transition.js';
-import { type TurnStateRecord, transitionTo } from '../state.js';
+import { type PreparedEntry, type TurnWork, type TurnStateRecord, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 function buildFunctionExecutionEnd(
@@ -61,10 +61,39 @@ function augmentFunctionCall(fc: FunctionCall, session_id: string): FunctionCall
   return { id: fc.id, function_id: fc.function_id, arguments: augmented_args };
 }
 
+function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
+  const out: FunctionCall[] = [];
+  for (const b of msg.content) {
+    if (b.type === 'function_call') {
+      out.push({ id: b.id, function_id: b.function_id, arguments: b.arguments });
+    }
+  }
+  return out;
+}
+
+function buildBatch(asst: AssistantMessage): PreparedEntry[] {
+  return extractFunctionCalls(asst).map((raw) => {
+    const function_call = unwrapAgentTrigger(raw);
+    if (!function_call.function_id) {
+      return { function_call, blocked: missingFunctionResult() };
+    }
+    return { function_call, blocked: null };
+  });
+}
+
+function ensureWork(rec: TurnStateRecord): TurnWork {
+  if (!rec.work) {
+    const asst = rec.last_assistant;
+    if (!asst) throw new Error('function_execute without last_assistant');
+    rec.work = { batch: buildBatch(asst), results: [] };
+  }
+  return rec.work;
+}
+
 async function commitExecutedCall(
   iii: ISdk,
   rec: TurnStateRecord,
-  results: ExecutedEntry[],
+  work: TurnWork,
   fc: FunctionCall,
   result: FunctionResult,
   startedAt: number,
@@ -72,26 +101,19 @@ async function commitExecutedCall(
 ): Promise<void> {
   const duration_ms = Date.now() - startedAt;
   const error = is_error ?? isErrorResult(result);
-  persistence.upsertExecutedCall(results, {
+  persistence.upsertExecutedCall(work.results, {
     function_call: fc,
     result,
     is_error: error,
     duration_ms,
   });
-  await persistence.saveExecutedCalls(iii, rec.session_id, results);
+  await persistence.writeRecord(iii, rec);
   await emit(iii, rec.session_id, buildFunctionExecutionEnd(fc, result, error, duration_ms));
 }
 
-function buildFinalizeLifecycle(
-  asst: AssistantMessage,
-  results: FunctionResultMessage[],
-): AgentEvent[] {
-  const out: AgentEvent[] = [{ type: 'turn_end', message: asst, function_results: results }];
-  return out;
-}
-
 async function finalizeExecutedCalls(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const executed = await persistence.loadExecutedCalls(iii, rec.session_id);
+  const work = rec.work ?? { batch: [], results: [] };
+  const executed: ExecutedEntry[] = work.results;
   const function_results: FunctionResultMessage[] = [];
   let all_terminate = executed.length > 0;
   for (const e of executed) {
@@ -177,27 +199,19 @@ async function finalizeExecutedCalls(iii: ISdk, rec: TurnStateRecord): Promise<v
   const asst = rec.last_assistant;
   rec.function_results = function_results;
   rec.pending_function_calls = [];
-  // Clear persisted executedCalls now so a re-entry into handleFinalize
-  // (durable retry, crash before transitionTo) finds an empty set and
-  // produces zero new function_results to push. Belt+suspenders alongside
-  // the idempotency guard above. handlePrepare also clears at the start
-  // of the NEXT turn, but that's too late if re-entry happens before then.
-  await persistence.saveExecutedCalls(iii, rec.session_id, []);
+  rec.work = undefined;
 
   if (asst) {
-    for (const evt of buildFinalizeLifecycle(asst, function_results)) {
-      await emit(iii, rec.session_id, evt);
-    }
+    await emit(iii, rec.session_id, { type: 'turn_end', message: asst, function_results });
     rec.turn_end_emitted = true;
   }
   transitionTo(rec, all_terminate ? 'tearing_down' : 'steering_check');
 }
 
 export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const prepared = await persistence.loadPreparedCalls(iii, rec.session_id);
-  const results = await persistence.loadExecutedCalls(iii, rec.session_id);
+  const work = ensureWork(rec);
 
-  for (const entry of prepared) {
+  for (const entry of work.batch) {
     const fc = entry.function_call;
     await emit(iii, rec.session_id, {
       type: 'function_execution_start',
@@ -207,7 +221,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     });
     const startedAt = Date.now();
 
-    const existing = persistence.findExecutedCall(results, fc.id);
+    const existing = persistence.findExecutedCall(work.results, fc.id);
     if (existing) {
       await emit(
         iii,
@@ -221,7 +235,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       await commitExecutedCall(
         iii,
         rec,
-        results,
+        work,
         fc,
         await triggerFunctionCall(iii, fc),
         startedAt,
@@ -230,7 +244,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
     }
 
     if (entry.blocked) {
-      await commitExecutedCall(iii, rec, results, fc, entry.blocked, startedAt, true);
+      await commitExecutedCall(iii, rec, work, fc, entry.blocked, startedAt, true);
       continue;
     }
 
@@ -247,7 +261,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       return;
     }
 
-    await commitExecutedCall(iii, rec, results, fc, out.result, startedAt);
+    await commitExecutedCall(iii, rec, work, fc, out.result, startedAt);
   }
   await finalizeExecutedCalls(iii, rec);
 }
