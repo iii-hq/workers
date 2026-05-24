@@ -49,10 +49,22 @@ async function stateSet(iii: ISdk, key: string, value: unknown): Promise<void> {
   }
 }
 
+/** Defensive coercion for records persisted before assistant_finished was
+ *  removed. Drain-before-cutover is preferred; this prevents a crash on an
+ *  in-flight legacy record. */
+export function migrateLegacyRecord(rec: TurnStateRecord): TurnStateRecord {
+  if ((rec.state as string) === 'assistant_finished') {
+    const asst = rec.last_assistant;
+    const hasCalls = !!asst && asst.content.some((b) => b.type === 'function_call');
+    return { ...rec, state: hasCalls ? 'function_execute' : 'steering_check' };
+  }
+  return rec;
+}
+
 export async function loadRecord(iii: ISdk, session_id: string): Promise<TurnStateRecord | null> {
   const v = await stateGet(iii, turnStateKey(session_id));
   if (!v || typeof v !== 'object') return null;
-  return v as TurnStateRecord;
+  return migrateLegacyRecord(v as TurnStateRecord);
 }
 
 /** Persist the record with no UI event and no FSM wake — for mid-handler,
