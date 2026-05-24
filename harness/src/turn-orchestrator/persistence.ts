@@ -54,6 +54,12 @@ export async function loadRecord(iii: ISdk, session_id: string): Promise<TurnSta
   return v as TurnStateRecord;
 }
 
+/** Persist the record with no UI event and no FSM wake — for mid-handler,
+ *  same-state checkpoints (e.g. per function-call result during execute). */
+export async function writeRecord(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  await stateSet(iii, turnStateKey(rec.session_id), rec);
+}
+
 /**
  * Persist turn_state and emit UI event — no FSM wake (mid-handler saves).
  * Pass `previous` (the pre-write record) to skip the `state::get` that would

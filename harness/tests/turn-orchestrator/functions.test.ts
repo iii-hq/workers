@@ -9,6 +9,7 @@ import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.j
 import * as approvalResumeModule from '../../src/turn-orchestrator/approval-resume.js';
 import { parseApprovalDecision } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
 import { handleExecute } from '../../src/turn-orchestrator/states/function-execute.js';
+import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,6 +19,28 @@ function mockFinalizePersistence(): void {
   vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
   vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
   vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
+}
+
+/** Build a minimal AssistantMessage with the given function_call content blocks. */
+function makeAssistant(
+  calls: Array<{ id: string; function_id: string; arguments?: unknown }>,
+): AssistantMessage {
+  return {
+    role: 'assistant',
+    content: calls.map((c) => ({
+      type: 'function_call' as const,
+      id: c.id,
+      function_id: c.function_id,
+      arguments: c.arguments ?? {},
+    })),
+    stop_reason: 'function_call',
+    error_message: null,
+    error_kind: null,
+    usage: null,
+    model: 'm',
+    provider: 'p',
+    timestamp: 1,
+  };
 }
 
 describe('parseApprovalDecision', () => {
@@ -54,6 +77,32 @@ describe('parseApprovalDecision', () => {
 });
 
 describe('handleExecute new flow', () => {
+  it('builds work.batch from last_assistant when work is absent', async () => {
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'result',
+      result: {
+        content: [{ type: 'text' as const, text: 'ok' }],
+        details: {},
+        terminate: false,
+      },
+    });
+    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    rec.state = 'function_execute';
+    rec.last_assistant = makeAssistant([
+      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
+    ]);
+
+    mockFinalizePersistence();
+    await handleExecute(iii, rec);
+
+    // work should be cleared after finalize
+    expect(rec.work).toBeUndefined();
+    expect(rec.state).toBe('steering_check');
+    expect(rec.function_results).toHaveLength(1);
+    expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
+  });
+
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
@@ -64,25 +113,18 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::run',
-          arguments: { command: 'ls' },
-        },
-        blocked: null,
-      },
+    rec.last_assistant = makeAssistant([
+      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
     ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+
     await handleExecute(iii, rec);
 
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
     expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
     expect(registerResumeSpy).toHaveBeenCalledWith(iii, 's1', 'fc-1');
+    // work.batch should still be populated (re-entry will continue from it)
+    expect(rec.work?.batch).toHaveLength(1);
   });
 
   it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
@@ -90,21 +132,23 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::run',
-          arguments: { command: 'ls' },
+    // Supply via rec.work (simulates re-entry after approval was granted)
+    rec.work = {
+      batch: [
+        {
+          function_call: {
+            id: 'fc-1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+          blocked: null,
+          pre_approved: true,
         },
-        blocked: null,
-        pre_approved: true,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+      ],
+      results: [],
+    };
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
+    mockFinalizePersistence();
 
     await handleExecute(iii, rec);
 
@@ -125,35 +169,29 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::fs::write',
-          arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
+    rec.work = {
+      batch: [
+        {
+          function_call: {
+            id: 'fc-1',
+            function_id: 'shell::fs::write',
+            arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
+          },
+          blocked: null,
+          pre_approved: true,
         },
-        blocked: null,
-        pre_approved: true,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    const saveSpy = vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+      ],
+      results: [],
+    };
     mockFinalizePersistence();
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
     expect(rec.state).toBe('steering_check');
-    expect(saveSpy).toHaveBeenCalled();
-    // saveExecutedCalls is invoked twice: once with the synthesized error
-    // result, then once with `[]` as the idempotency guard clears executed
-    // calls at the end of finalize. Inspect the persisted-results call, not
-    // the trailing clear.
-    const savedResults = saveSpy.mock.calls
-      .map((c) => c[2] as Array<{ is_error: boolean; result: { details: unknown } }>)
-      .find((arr) => Array.isArray(arr) && arr.length > 0);
-    expect(savedResults?.[0]?.is_error).toBe(true);
-    const details = savedResults?.[0]?.result.details as Record<string, unknown>;
+    // The result should be an error with denied details
+    expect(rec.function_results).toHaveLength(1);
+    expect(rec.function_results[0]?.is_error).toBe(true);
+    const details = rec.function_results[0]?.details as Record<string, unknown>;
     expect(details?.status).toBe('denied');
     expect(details?.denied_by).toBe('gate_unavailable');
     expect(details?.function_id).toBe('shell::fs::write');
@@ -171,15 +209,16 @@ describe('handleExecute new flow', () => {
       details: { approval_denied: true, decision: 'deny' as const },
       terminate: false,
     };
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: denial,
-        pre_approved: false,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    rec.work = {
+      batch: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          blocked: denial,
+          pre_approved: false,
+        },
+      ],
+      results: [],
+    };
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
@@ -190,7 +229,7 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('steering_check');
   });
 
-  it('replays persisted executed calls without re-dispatching', async () => {
+  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.results)', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
@@ -202,21 +241,23 @@ describe('handleExecute new flow', () => {
       details: {},
       terminate: false,
     };
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: null,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: existingResult,
-        is_error: false,
-        duration_ms: 42,
-      },
-    ]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    // Pre-populate rec.work with batch + already-executed result
+    rec.work = {
+      batch: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          blocked: null,
+        },
+      ],
+      results: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: existingResult,
+          is_error: false,
+          duration_ms: 42,
+        },
+      ],
+    };
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -237,41 +278,43 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: null,
-      },
+    rec.last_assistant = makeAssistant([
+      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
     ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
-    mockFinalizePersistence();
 
+    mockFinalizePersistence();
     await handleExecute(iii, rec);
 
     expect(rec.state).toBe('steering_check');
   });
 
-  it('transitions to steering_check when last_assistant is missing after execute', async () => {
+  it('transitions to steering_check when last_assistant is missing after execute (with pre-populated work)', async () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
     rec.last_assistant = null;
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: {
-          content: [{ type: 'text' as const, text: 'ok' }],
-          details: {},
-          terminate: false,
+    // Supply pre-populated work so ensureWork doesn't throw on null last_assistant
+    rec.work = {
+      batch: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          blocked: null,
         },
-        is_error: false,
-        duration_ms: 1,
-      },
-    ]);
+      ],
+      results: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: {
+            content: [{ type: 'text' as const, text: 'ok' }],
+            details: {},
+            terminate: false,
+          },
+          is_error: false,
+          duration_ms: 1,
+        },
+      ],
+    };
     vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
@@ -282,7 +325,8 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('steering_check');
     expect(rec.pending_function_calls).toEqual([]);
     expect(rec.function_results).toHaveLength(1);
-    expect(emitSpy).not.toHaveBeenCalled();
+    // No turn_end emitted when last_assistant is null
+    expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(false);
   });
 
   it('emits turn lifecycle and sets turn_end_emitted when last_assistant is present', async () => {
@@ -301,19 +345,22 @@ describe('handleExecute new flow', () => {
       timestamp: 1,
     };
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: {
-          content: [{ type: 'text' as const, text: 'ok' }],
-          details: {},
-          terminate: false,
+    // Supply pre-populated work (last_assistant has no function_call blocks here)
+    rec.work = {
+      batch: [],
+      results: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: {
+            content: [{ type: 'text' as const, text: 'ok' }],
+            details: {},
+            terminate: false,
+          },
+          is_error: false,
+          duration_ms: 1,
         },
-        is_error: false,
-        duration_ms: 1,
-      },
-    ]);
+      ],
+    };
     vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
@@ -328,26 +375,21 @@ describe('handleExecute new flow', () => {
 
   it('does NOT duplicate function_results in flat-state when handleExecute re-enters', async () => {
     // Idempotency guard: a durable retry / step-fanout race can replay the
-    // finalize path with the same persisted executedCalls. Re-pushing the
-    // same function_result blocks makes Anthropic reject with "each tool_use
-    // must have a single result. Found multiple tool_result blocks with id".
-    const executed = [
-      {
-        function_call: { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } },
-        result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
-        is_error: false,
-        duration_ms: 5,
-      },
-    ];
+    // finalize path with the same work. Re-pushing the same function_result
+    // blocks makes Anthropic reject with "each tool_use must have a single
+    // result. Found multiple tool_result blocks with id".
+    const existingResult = {
+      content: [{ type: 'text' as const, text: 'ok' }],
+      details: {},
+      terminate: false,
+    };
+    const fc = { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } };
+
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
+    rec.last_assistant = makeAssistant([{ id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } }]);
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      { function_call: executed[0].function_call, blocked: null },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue(executed);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     let storedMessages: unknown[] = [];
     vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
     vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
@@ -355,12 +397,23 @@ describe('handleExecute new flow', () => {
     });
     vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
+      kind: 'result',
+      result: existingResult,
+    });
 
     await handleExecute(iii, rec);
-    // Re-entry: same persisted executedCalls, before the transition was
-    // durably observed.
+
+    // Re-entry: simulate state was reset before durable confirmation
     rec.state = 'function_execute';
     rec.turn_end_emitted = false;
+    // work.results already has the executed call after first run cleared rec.work,
+    // so we need to re-populate work for re-entry simulation
+    rec.work = {
+      batch: [{ function_call: fc, blocked: null }],
+      results: [{ function_call: fc, result: existingResult, is_error: false, duration_ms: 5 }],
+    };
+
     await handleExecute(iii, rec);
 
     const fnResults = (
