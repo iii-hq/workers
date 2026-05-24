@@ -1,9 +1,16 @@
 /**
- * System-prompt assembly. Mirrors
- * `turn-orchestrator/src/system_prompt.rs`.
+ * System-prompt assembly: turns the run's mode, default-skill bodies, and the
+ * skills index into the single system prompt string sent to the provider.
  */
 
 export type Mode = 'plan' | 'ask' | 'agent';
+
+const III_URI_PREFIX = 'iii://';
+
+/** Bare skill id from a skill URI (`iii://a/b` → `a/b`; bare ids pass through). */
+export function skillIdFromUri(uri: string): string {
+  return uri.startsWith(III_URI_PREFIX) ? uri.slice(III_URI_PREFIX.length) : uri;
+}
 
 const MODE_PARAGRAPHS: Record<Mode, string> = {
   plan: `You are operating in plan mode: investigate first, then produce a concise numbered plan.
@@ -58,20 +65,25 @@ export type DefaultSkillBody = {
 };
 
 export function defaultSkillBody(uri: string, body: string | null): DefaultSkillBody {
-  const id = uri.startsWith('iii://') ? uri.slice('iii://'.length) : uri;
-  return { uri, id, body };
+  return { uri, id: skillIdFromUri(uri), body };
 }
+
+export type SystemPromptOptions = {
+  /** Caller-supplied prompt; when non-empty it is returned verbatim. */
+  override?: string | null;
+  /** Operating mode; prepends a mode paragraph before the identity preamble. */
+  mode?: Mode | null;
+  /** Skills index block appended after the preamble. */
+  skillsIndex?: string | null;
+};
 
 export function buildSystemPrompt(
   skills: DefaultSkillBody[],
-  cwd?: string | null,
-  override?: string | null,
-  mode?: Mode | null,
-  skillsIndex?: string | null,
+  opts: SystemPromptOptions = {},
 ): string {
+  const { override, mode, skillsIndex } = opts;
   if (override && override.length > 0) return override;
   let out = isMode(mode) ? `${MODE_PARAGRAPHS[mode]}\n\n${IDENTITY_PREAMBLE}` : IDENTITY_PREAMBLE;
-  if (cwd && cwd.length > 0) out += `\n\nWorking directory: ${cwd}`;
   if (skillsIndex && skillsIndex.length > 0) out += `\n\n${skillsIndex}`;
   for (const s of skills) {
     out += `\n\n# ${s.uri}\n\n`;

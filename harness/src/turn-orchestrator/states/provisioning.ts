@@ -1,6 +1,7 @@
 /**
- * `turn::provisioning`. First FSM step after `run::start`: materialize tool schemas,
- * assemble the system prompt, persist the enriched run request, then advance.
+ * `turn::provisioning`. First FSM step after `run::start`: assemble the system
+ * prompt, attach the agent_trigger function schema to the run request, then
+ * advance to assistant_streaming.
  *
  * **Incoming**: flat `{ session_id }` via FIFO enqueue on `turn-step`.
  * **Outgoing**: `{ ok, from_state, to_state }` on success; stale skip when state drifted.
@@ -15,7 +16,12 @@ import { type RunRequest } from '../run-request.js';
 import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
-import { type DefaultSkillBody, buildSystemPrompt, defaultSkillBody } from '../system-prompt.js';
+import {
+  type DefaultSkillBody,
+  buildSystemPrompt,
+  defaultSkillBody,
+  skillIdFromUri,
+} from '../system-prompt.js';
 
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -45,8 +51,7 @@ async function fetchSkill(iii: ISdk, id: string): Promise<string | null> {
 async function fetchDefaultSkills(iii: ISdk, uris: readonly string[]): Promise<DefaultSkillBody[]> {
   const bodies: DefaultSkillBody[] = [];
   for (const uri of uris) {
-    const id = uri.startsWith('iii://') ? uri.slice('iii://'.length) : uri;
-    const body = await fetchSkill(iii, id);
+    const body = await fetchSkill(iii, skillIdFromUri(uri));
     bodies.push(defaultSkillBody(uri, body));
   }
   return bodies;
@@ -80,7 +85,7 @@ export async function handleProvisioning(
     fetchSkillsIndex(iii),
     fetchDefaultSkills(iii, cfg.system_default_skills),
   ]);
-  const prompt = buildSystemPrompt(bodies, null, override, request.mode, skillsIndex);
+  const prompt = buildSystemPrompt(bodies, { override, mode: request.mode, skillsIndex });
 
   const updated: RunRequest = { ...request, system_prompt: prompt, function_schemas: [agentTriggerTool()] };
   await persistence.saveRunRequest(iii, rec.session_id, updated);
@@ -102,7 +107,7 @@ export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state provisioning: materialize tool schemas, build system prompt, advance to assistant_streaming.',
+        'Run one durable FSM transition for session in state provisioning: build the system prompt, attach the agent_trigger function schema, advance to assistant_streaming.',
     },
   );
 }

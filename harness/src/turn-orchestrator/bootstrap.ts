@@ -1,18 +1,17 @@
 /**
- * Best-effort fetch of default skills at boot. Mirrors
- * `turn-orchestrator/src/bootstrap.rs`. Failures are logged and never
- * abort startup.
+ * Best-effort download of default-skill namespaces at boot. Failures are logged
+ * and never abort startup.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { TurnOrchestratorConfig } from './config.js';
+import { skillIdFromUri } from './system-prompt.js';
 
 export async function run(iii: ISdk, cfg: TurnOrchestratorConfig): Promise<void> {
   const namespaces = new Set<string>();
   for (const uri of cfg.system_default_skills) {
-    const id = uri.startsWith('iii://') ? uri.slice('iii://'.length) : uri;
-    const ns = id.split('/')[0];
+    const ns = skillIdFromUri(uri).split('/')[0];
     if (ns) namespaces.add(ns);
   }
   for (const ns of namespaces) {
