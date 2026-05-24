@@ -82,9 +82,9 @@ describe('handleStreaming turn start', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
@@ -113,9 +113,9 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
@@ -144,9 +144,9 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
     const saveSpy = vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
 
@@ -173,9 +173,9 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
     vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
 
@@ -216,9 +216,9 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
     vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
 
@@ -238,9 +238,9 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
     const saveSpy = vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
 
@@ -273,12 +273,12 @@ describe('handleStreaming', () => {
       model: 'gpt-4o',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
     vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
     vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
       storedMessages = msgs as never;
     });
-    vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
     await handleStreaming(iii, rec);
