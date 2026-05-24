@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '@/types/iii-agent-event'
-import { createTurnStateTranslator, translateAgentEvent } from './translate'
+import { createAgentEventTranslator } from './translate'
 
-describe('translateAgentEvent — message_complete', () => {
+describe('createAgentEventTranslator — message_complete', () => {
+  const { translate } = createAgentEventTranslator()
+
   const baseAssistant = {
     role: 'assistant' as const,
     content: [{ type: 'text' as const, text: 'partial reply…' }],
@@ -17,7 +19,7 @@ describe('translateAgentEvent — message_complete', () => {
       message: { ...baseAssistant, stop_reason: 'end' },
       body_streamed: true,
     }
-    expect(translateAgentEvent(event)).toEqual([{ kind: 'assistant-end' }])
+    expect(translate(event)).toEqual([{ kind: 'assistant-end' }])
   })
 
   it('emits assistant-token blocks and assistant-end for a non-streamed batch message', () => {
@@ -30,7 +32,7 @@ describe('translateAgentEvent — message_complete', () => {
       },
       body_streamed: false,
     }
-    expect(translateAgentEvent(event)).toEqual([
+    expect(translate(event)).toEqual([
       { kind: 'assistant-token', token: 'hello batch' },
       { kind: 'assistant-end' },
     ])
@@ -42,7 +44,7 @@ describe('translateAgentEvent — message_complete', () => {
       message: { ...baseAssistant, stop_reason: 'length' },
       body_streamed: true,
     }
-    const out = translateAgentEvent(event)
+    const out = translate(event)
     expect(out[0]).toEqual({ kind: 'assistant-end' })
     expect(out[1]).toMatchObject({ kind: 'stop-reason', reason: 'length' })
   })
@@ -58,7 +60,7 @@ describe('translateAgentEvent — message_complete', () => {
       },
       body_streamed: true,
     }
-    const out = translateAgentEvent(event)
+    const out = translate(event)
     expect(out[0]).toEqual({ kind: 'assistant-end' })
     expect(out[1]).toEqual({
       kind: 'stop-reason',
@@ -73,7 +75,7 @@ describe('translateAgentEvent — message_complete', () => {
       message: { ...baseAssistant, stop_reason: 'aborted' },
       body_streamed: true,
     }
-    const out = translateAgentEvent(event)
+    const out = translate(event)
     expect(out).toHaveLength(2)
     expect((out[1] as { kind: string; reason: string }).reason).toBe('aborted')
   })
@@ -84,7 +86,7 @@ describe('translateAgentEvent — message_complete', () => {
       message: { ...baseAssistant, stop_reason: 'function_call' },
       body_streamed: true,
     }
-    expect(translateAgentEvent(event)).toEqual([{ kind: 'assistant-end' }])
+    expect(translate(event)).toEqual([{ kind: 'assistant-end' }])
   })
 
   it('returns [] for non-assistant message_complete (user/function_result messages)', () => {
@@ -96,7 +98,7 @@ describe('translateAgentEvent — message_complete', () => {
         timestamp: 0,
       },
     }
-    expect(translateAgentEvent(event)).toEqual([])
+    expect(translate(event)).toEqual([])
   })
 
   it('omits the error_message field when none was provided', () => {
@@ -105,12 +107,14 @@ describe('translateAgentEvent — message_complete', () => {
       message: { ...baseAssistant, stop_reason: 'length' },
       body_streamed: true,
     }
-    const out = translateAgentEvent(event)
+    const out = translate(event)
     expect(out[1]).toEqual({ kind: 'stop-reason', reason: 'length' })
   })
 })
 
-describe('translateAgentEvent — compaction_done', () => {
+describe('createAgentEventTranslator — compaction_done', () => {
+  const { translate } = createAgentEventTranslator()
+
   it('translates compaction_done to a single compaction StreamEvent carrying the summary + tokens_before', () => {
     const event: AgentEvent = {
       type: 'compaction_done',
@@ -120,7 +124,7 @@ describe('translateAgentEvent — compaction_done', () => {
       compaction_entry_id: 'entry-c-1',
       tail_start_id: 'entry-t-1',
     }
-    expect(translateAgentEvent(event, 'sess-1')).toEqual([
+    expect(translate(event, 'sess-1')).toEqual([
       {
         kind: 'compaction',
         mode: 'async',
@@ -141,7 +145,7 @@ describe('translateAgentEvent — compaction_done', () => {
       compaction_entry_id: 'e',
       tail_start_id: null,
     }
-    const out = translateAgentEvent(event, 'sess-x')
+    const out = translate(event, 'sess-x')
     expect(out).toHaveLength(1)
     expect(
       (out[0] as { kind: 'compaction'; mode: 'sync' | 'async' }).mode,
@@ -157,7 +161,7 @@ describe('translateAgentEvent — compaction_done', () => {
       compaction_entry_id: 'e',
       tail_start_id: null,
     }
-    const out = translateAgentEvent(event, 'sess-y')
+    const out = translate(event, 'sess-y')
     expect(
       (out[0] as { kind: 'compaction'; tailStartId: string | null })
         .tailStartId,
@@ -165,9 +169,9 @@ describe('translateAgentEvent — compaction_done', () => {
   })
 })
 
-describe('createTurnStateTranslator', () => {
+describe('createAgentEventTranslator — turn_state_changed', () => {
   it('emits fcall-start { pendingApproval: true } when a new entry appears', () => {
-    const translate = createTurnStateTranslator()
+    const { translate } = createAgentEventTranslator()
     const event: AgentEvent = {
       type: 'turn_state_changed',
       event_type: 'state:updated',
@@ -199,7 +203,7 @@ describe('createTurnStateTranslator', () => {
   })
 
   it('emits nothing when the awaiting_approval list is unchanged', () => {
-    const translate = createTurnStateTranslator()
+    const { translate } = createAgentEventTranslator()
     const same = {
       state: 'function_awaiting_approval',
       awaiting_approval: [
@@ -228,7 +232,7 @@ describe('createTurnStateTranslator', () => {
   })
 
   it('emits nothing when state leaves function_awaiting_approval (the orchestrator emits the matching function_execution_end)', () => {
-    const translate = createTurnStateTranslator()
+    const { translate } = createAgentEventTranslator()
     translate(
       {
         type: 'turn_state_changed',
@@ -265,7 +269,7 @@ describe('createTurnStateTranslator', () => {
   })
 
   it('partitions mirrors by sessionId so two chats do not interfere', () => {
-    const translate = createTurnStateTranslator()
+    const { translate } = createAgentEventTranslator()
     const pending = {
       state: 'function_awaiting_approval',
       awaiting_approval: [

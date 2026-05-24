@@ -1039,8 +1039,8 @@ mod tests {
 
     #[test]
     fn translate_unknown_event_drops_silently() {
-        assert!(translate_agent_event(&json!({ "type": "agent_start" })).is_none());
-        assert!(translate_agent_event(&json!({ "type": "turn_start" })).is_none());
+        assert!(translate_agent_event(&json!({ "type": "not_a_real_event" })).is_none());
+        assert!(translate_agent_event(&json!({ "type": "message_start" })).is_none());
     }
 
     #[test]

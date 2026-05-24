@@ -12,7 +12,7 @@ import type {
   AgentMessage,
   SessionEventEnvelope,
 } from '@/types/iii-agent-event'
-import { createTurnStateTranslator, translateAgentEvent } from './translate'
+import { createAgentEventTranslator } from './translate'
 import type {
   ChatBackend,
   ChatStreamOptions,
@@ -75,7 +75,7 @@ async function* realStream(
     })
     subscribed = true
 
-    const turnStateTranslator = createTurnStateTranslator()
+    const { translate } = createAgentEventTranslator()
 
     client
       .call<Record<string, unknown> | null>('turn::get_state', {
@@ -147,10 +147,7 @@ async function* realStream(
       if (kickoffError) continue
       const event = queue.shift()
       if (!event) continue
-      const streamEvents =
-        event.type === 'turn_state_changed'
-          ? turnStateTranslator(event, sessionId)
-          : translateAgentEvent(event, sessionId)
+      const streamEvents = translate(event, sessionId)
       for (const streamEvent of streamEvents) {
         yield streamEvent
       }

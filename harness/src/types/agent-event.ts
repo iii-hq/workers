@@ -11,9 +11,7 @@ import type { FunctionResult } from './function.js';
 import type { AssistantMessageEvent } from './stream-event.js';
 
 export type AgentEvent =
-  | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
-  | { type: 'turn_start' }
   | {
       type: 'turn_end';
       message: AgentMessage;
@@ -35,13 +33,6 @@ export type AgentEvent =
       function_call_id: string;
       function_id: string;
       args: unknown;
-    }
-  | {
-      type: 'function_execution_update';
-      function_call_id: string;
-      function_id: string;
-      args: unknown;
-      partial_result: unknown;
     }
   | {
       type: 'function_execution_end';

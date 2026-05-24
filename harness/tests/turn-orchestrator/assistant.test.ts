@@ -72,7 +72,7 @@ describe('handleStreaming turn start', () => {
     expect(rec.turn_count).toBe(1);
     expect(rec.turn_end_emitted).toBe(false);
     expect(calls.some((c) => c.function_id === 'approval::consume')).toBe(false);
-    expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
+    expect(calls.some((c) => c.function_id === 'stream::set')).toBe(false);
   });
 
   it('exhausts max_turns and transitions to tearing_down', async () => {

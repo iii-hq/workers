@@ -26,18 +26,6 @@ function eventPartial(ev: AssistantMessageEvent): AssistantMessage | null {
   return null;
 }
 
-function latestFunctionCall(
-  msg: AssistantMessage,
-): { id: string; function_id: string; args: unknown } | null {
-  for (let i = msg.content.length - 1; i >= 0; i--) {
-    const b = msg.content[i];
-    if (b?.type === 'function_call') {
-      return { id: b.id, function_id: b.function_id, args: b.arguments };
-    }
-  }
-  return null;
-}
-
 function syntheticErrorAssistant(
   provider: string,
   model: string,
@@ -99,7 +87,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   rec.turn_count++;
   rec.turn_end_emitted = false;
   rec.assistant_body_streamed = false;
-  await emit(iii, rec.session_id, { type: 'turn_start' });
 
   const request = await persistence.loadRunRequest(iii, rec.session_id);
   let messages = await persistence.loadMessages(iii, rec.session_id);
@@ -205,18 +192,6 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
             });
             if (event.type === 'text_delta' || event.type === 'thinking_delta') {
               rec.assistant_body_streamed = true;
-            }
-            if (event.type === 'functioncall_start' || event.type === 'functioncall_delta') {
-              const fc = latestFunctionCall(partial);
-              if (fc) {
-                await emit(iii, rec.session_id, {
-                  type: 'function_execution_update',
-                  function_call_id: fc.id,
-                  function_id: fc.function_id,
-                  args: fc.args,
-                  partial_result: null,
-                });
-              }
             }
           }
           continue;

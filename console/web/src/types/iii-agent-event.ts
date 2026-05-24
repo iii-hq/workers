@@ -156,14 +156,9 @@ export type AssistantMessageEvent =
 
 /**
  * Discriminated `AgentEvent` matching the wire shape on `agent::events`.
- * `MessageUpdate` and `FunctionExecutionUpdate` are present in the enum but
- * not emitted by today's turn-orchestrator — the translator stubs them out
- * but accepts them so a Phase 2 backend lands without a frontend change.
  */
 export type AgentEvent =
-  | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
-  | { type: 'turn_start' }
   | {
       type: 'turn_end'
       message: AgentMessage
@@ -185,13 +180,6 @@ export type AgentEvent =
       function_call_id: string
       function_id: string
       args: unknown
-    }
-  | {
-      type: 'function_execution_update'
-      function_call_id: string
-      function_id: string
-      args: unknown
-      partial_result: unknown
     }
   | {
       type: 'function_execution_end'

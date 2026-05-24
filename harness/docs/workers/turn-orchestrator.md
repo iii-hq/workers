@@ -50,7 +50,7 @@ The 11 states from
 |---|---|---|
 | `provisioning` | [states/provisioning.ts](harness/src/turn-orchestrator/states/provisioning.ts) | Boot the sandbox, prime the system prompt, fetch function schemas. |
 | `awaiting_assistant` | [states/assistant.ts](harness/src/turn-orchestrator/states/assistant.ts) | Request an assistant turn via `provider::<name>::stream`. |
-| `assistant_streaming` | same | Drain the channel; relay events. |
+| `assistant_streaming` | same | Drain the provider channel; relay `message_update` (token/thinking deltas) on `agent::events`. Tool args appear at `function_execution_start` when execute runs — no `turn_start` or streaming `function_execution_update` events. |
 | `assistant_finished` | same | Persist the final `AssistantMessage`; pick next state. |
 | `function_prepare` | [states/functions.ts](harness/src/turn-orchestrator/states/functions.ts) | Snapshot the pending function calls. |
 | `function_execute` | same | Run each call via `dispatchWithHook` (pre-approved resume calls use `triggerFunctionCall` and skip the gate). If the gate returns `pending`, append the call to `awaiting_approval` and transition to `function_awaiting_approval` (the rest of the batch is left for the resumed step). Each call is bracketed by a `function_execution_start` / `function_execution_end` pair; the `end` event carries `duration_ms` (wall-clock between the matching start and end), persisted on `ExecutedEntry` so resumed runs replay the original timing instead of the ~0ms it takes to re-emit. Approval wait time is naturally excluded — pending calls return without an end emit, and the resumed step re-emits a fresh start that resets the timer. |
