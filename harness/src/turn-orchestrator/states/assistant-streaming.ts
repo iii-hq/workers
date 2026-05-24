@@ -104,37 +104,6 @@ async function finalizeAssistant(iii: ISdk, rec: TurnStateRecord): Promise<void>
 }
 
 export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  if (rec.max_turns !== undefined && rec.turn_count >= rec.max_turns) {
-    const cap = rec.max_turns ?? 0;
-    const exhausted: AssistantMessage = {
-      role: 'assistant',
-      content: [{ type: 'text', text: `loop stopped: max_turns (${cap}) reached` }],
-      stop_reason: 'end',
-      error_message: null,
-      error_kind: null,
-      usage: null,
-      model: '',
-      provider: '',
-      timestamp: Date.now(),
-    };
-    await emit(iii, rec.session_id, {
-      type: 'message_complete',
-      message: exhausted,
-      body_streamed: false,
-    });
-    await emit(iii, rec.session_id, {
-      type: 'turn_end',
-      message: exhausted,
-      function_results: [],
-    });
-    rec.turn_end_emitted = true;
-    rec.last_assistant = exhausted;
-    const messages = await persistence.loadMessages(iii, rec.session_id);
-    messages.push(exhausted);
-    await persistence.saveMessages(iii, rec.session_id, messages);
-    transitionTo(rec, 'tearing_down');
-    return;
-  }
   rec.turn_count++;
   rec.turn_end_emitted = false;
   rec.assistant_body_streamed = false;

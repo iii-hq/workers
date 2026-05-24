@@ -73,6 +73,36 @@ function abortedMessage(): AssistantMessage {
   };
 }
 
+function maxTurnsReached(rec: TurnStateRecord): boolean {
+  return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
+}
+
+function maxTurnsAssistant(cap: number): AssistantMessage {
+  return {
+    role: 'assistant',
+    content: [{ type: 'text', text: `loop stopped: max_turns (${cap}) reached` }],
+    stop_reason: 'end',
+    error_message: null,
+    error_kind: null,
+    usage: null,
+    model: '',
+    provider: '',
+    timestamp: Date.now(),
+  };
+}
+
+async function endForMaxTurns(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const msg = maxTurnsAssistant(rec.max_turns ?? 0);
+  rec.last_assistant = msg;
+  const messages = await persistence.loadMessages(iii, rec.session_id);
+  messages.push(msg);
+  await persistence.saveMessages(iii, rec.session_id, messages);
+  await emit(iii, rec.session_id, { type: 'message_complete', message: msg, body_streamed: false });
+  await emit(iii, rec.session_id, { type: 'turn_end', message: msg, function_results: [] });
+  rec.turn_end_emitted = true;
+  transitionTo(rec, 'tearing_down');
+}
+
 async function emitTurnEndOnce(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   if (rec.turn_end_emitted) return;
   const last =
@@ -128,6 +158,10 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
     }
     case 'steering':
     case 'followup': {
+      if (maxTurnsReached(rec)) {
+        await endForMaxTurns(iii, rec);
+        break;
+      }
       const inbox = decision === 'steering' ? steering : followup;
       await emitTurnEndOnce(iii, rec);
       const messages = await persistence.loadMessages(iii, rec.session_id);
@@ -138,6 +172,10 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
       break;
     }
     case 'continue_after_function': {
+      if (maxTurnsReached(rec)) {
+        await endForMaxTurns(iii, rec);
+        break;
+      }
       rec.function_results = [];
       transitionTo(rec, 'assistant_streaming');
       break;

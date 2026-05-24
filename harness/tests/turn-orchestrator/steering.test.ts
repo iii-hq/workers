@@ -213,4 +213,82 @@ describe('handleSteering', () => {
       }),
     );
   });
+
+  it('caps at max_turns: emits a max_turns assistant + message_complete + turn_end and tears down instead of continuing', async () => {
+    const { iii } = makeIii();
+    const rec = steeringRec('s1', {
+      max_turns: 2,
+      turn_count: 2,
+      function_results: [{ role: 'function_result', content: [] }] as never,
+    });
+    const loadSpy = vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    const saveSpy = vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+
+    await handleSteering(iii, rec);
+
+    expect(rec.state).toBe('tearing_down');
+    expect(rec.turn_end_emitted).toBe(true);
+    expect(rec.last_assistant?.content[0]).toEqual(
+      expect.objectContaining({ type: 'text', text: expect.stringContaining('max_turns') }),
+    );
+    expect(emitSpy).toHaveBeenCalledWith(
+      iii,
+      's1',
+      expect.objectContaining({ type: 'message_complete' }),
+    );
+    expect(emitSpy).toHaveBeenCalledWith(
+      iii,
+      's1',
+      expect.objectContaining({ type: 'turn_end' }),
+    );
+    expect(loadSpy).toHaveBeenCalledWith(iii, 's1');
+    expect(saveSpy).toHaveBeenCalledWith(
+      iii,
+      's1',
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining('max_turns') }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it('caps at max_turns via steering route: tears down instead of continuing to assistant_streaming', async () => {
+    const { iii } = makeIii({ steeringItems: [userMessage('steer-me')] });
+    const rec = steeringRec('s1', {
+      max_turns: 3,
+      turn_count: 3,
+    });
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+
+    await handleSteering(iii, rec);
+
+    expect(rec.state).toBe('tearing_down');
+    expect(rec.turn_end_emitted).toBe(true);
+    expect(rec.last_assistant?.content[0]).toEqual(
+      expect.objectContaining({ text: expect.stringContaining('max_turns') }),
+    );
+  });
+
+  it('continues to assistant_streaming when under max_turns (continue_after_function route)', async () => {
+    const { iii } = makeIii();
+    const rec = steeringRec('s1', {
+      max_turns: 5,
+      turn_count: 2,
+      function_results: [{ role: 'function_result', content: [] }] as never,
+    });
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+
+    await handleSteering(iii, rec);
+
+    expect(rec.state).toBe('assistant_streaming');
+    expect(rec.function_results).toEqual([]);
+  });
 });
