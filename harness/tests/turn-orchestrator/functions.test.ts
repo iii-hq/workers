@@ -103,6 +103,51 @@ describe('handleExecute new flow', () => {
     expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
   });
 
+  it('does not re-emit function_execution_start for already-executed calls on re-entry', async () => {
+    const emitted: Array<{ type: string; function_call_id?: string }> = [];
+    vi.spyOn(events, 'emit').mockImplementation(async (_iii, _sid, ev: never) => {
+      emitted.push(ev as { type: string; function_call_id?: string });
+    });
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'result',
+      result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
+    });
+    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    rec.state = 'function_execute';
+    // Re-entry: fc-1 already in results (executed before park), fc-2 still pending.
+    rec.work = {
+      batch: [
+        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+        { function_call: { id: 'fc-2', function_id: 'shell::run', arguments: {} }, blocked: null },
+      ],
+      results: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: {
+            content: [{ type: 'text' as const, text: 'done' }],
+            details: {},
+            terminate: false,
+          },
+          is_error: false,
+          duration_ms: 5,
+        },
+      ],
+    };
+    mockFinalizePersistence();
+
+    await handleExecute(iii, rec);
+
+    const starts = emitted
+      .filter((e) => e.type === 'function_execution_start')
+      .map((e) => e.function_call_id);
+    expect(starts).toEqual(['fc-2']); // fc-1 NOT restarted on re-entry
+    const fc1Ends = emitted.filter(
+      (e) => e.type === 'function_execution_end' && e.function_call_id === 'fc-1',
+    );
+    expect(fc1Ends).toHaveLength(1); // fc-1 end replayed exactly once
+  });
+
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
