@@ -3,17 +3,20 @@
  * same load → null-check → stale-skip → handle → save sequence; this owns it so
  * each per-state file only contributes its handler.
  *
- * The record loaded here is snapshotted before the handler mutates it and
- * threaded into `saveRecord`, so the save path needs no extra `state::get` to
- * compute the wake decision or the UI event's `old_value` — one read per
- * transition instead of three.
+ * On an unexpected handler throw the session is routed to the `failed`
+ * terminal (acked, so the durable queue stops retrying) and the failure is
+ * surfaced to the UI. A handler may throw `TransientError` to opt into the
+ * queue's retry/backoff/DLQ instead.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import type { AssistantMessage } from '../types/agent-message.js';
+import { TransientError } from './errors.js';
+import { emit } from './events.js';
 import * as persistence from './persistence.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
-import { type TurnState, type TurnStateRecord } from './state.js';
+import { type TurnState, type TurnStateRecord, transitionTo } from './state.js';
 
 export type TransitionHandler = (iii: ISdk, rec: TurnStateRecord) => Promise<void>;
 
@@ -26,6 +29,46 @@ function staleSkipResult(expectedState: TurnState, rec: TurnStateRecord): TurnSt
     actual: rec.state,
   });
   return { ok: true, skipped: true, reason: 'stale' };
+}
+
+async function failTransition(
+  iii: ISdk,
+  rec: TurnStateRecord,
+  previous: TurnStateRecord,
+  from_state: TurnState,
+  err: unknown,
+): Promise<TurnStepResult> {
+  const message = err instanceof Error ? err.message : String(err);
+  rec.error = { kind: 'transition_error', message: `from ${from_state}: ${message}` };
+  transitionTo(rec, 'failed');
+  await persistence.saveRecord(iii, rec, previous);
+
+  // Surface the failure to the live UI (mirrors the graceful error path):
+  // message_complete{stop_reason:'error'} → the translator emits a `stop-reason`
+  // event so the user sees WHY; a bare agent_end renders as a silent end.
+  // error_kind:'transient' matches syntheticErrorAssistant's union usage;
+  // the UI translator only reads stop_reason, not error_kind.
+  const failed: AssistantMessage = {
+    role: 'assistant',
+    content: [{ type: 'text', text: rec.error.message }],
+    stop_reason: 'error',
+    error_message: rec.error.message,
+    error_kind: 'transient',
+    usage: null,
+    model: '',
+    provider: '',
+    timestamp: Date.now(),
+  };
+  await emit(iii, rec.session_id, { type: 'message_complete', message: failed, body_streamed: false });
+
+  const messages = await persistence.loadMessages(iii, rec.session_id);
+  await emit(iii, rec.session_id, { type: 'agent_end', messages });
+  logger.error('transition failed; session marked failed', {
+    session_id: rec.session_id,
+    from_state,
+    err: message,
+  });
+  return { ok: true, from_state, to_state: 'failed' };
 }
 
 export async function runTransition(
@@ -47,7 +90,8 @@ export async function runTransition(
   try {
     await handle(iii, rec);
   } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
+    if (err instanceof TransientError) throw err;
+    return failTransition(iii, rec, previous, from_state, err);
   }
   await persistence.saveRecord(iii, rec, previous);
   return { ok: true, from_state, to_state: rec.state };
