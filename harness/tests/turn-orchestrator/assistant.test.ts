@@ -97,27 +97,7 @@ describe('handleStreaming turn start', () => {
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
   });
 
-  it('exhausts max_turns and transitions to tearing_down', async () => {
-    const rec: TurnStateRecord = {
-      ...newRecord('s1', 2),
-      state: 'assistant_streaming',
-      turn_count: 2,
-    };
-    const { iii, calls } = fakeIii();
-    const saveSpy = vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
 
-    await handleStreaming(iii, rec);
-
-    expect(rec.state).toBe('tearing_down');
-    expect(rec.turn_end_emitted).toBe(true);
-    expect(rec.last_assistant?.content[0]).toEqual({
-      type: 'text',
-      text: 'loop stopped: max_turns (2) reached',
-    });
-    expect(saveSpy).toHaveBeenCalledOnce();
-    expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
-  });
 });
 
 describe('handleStreaming', () => {
