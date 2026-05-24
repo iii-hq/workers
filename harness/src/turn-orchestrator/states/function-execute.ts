@@ -213,14 +213,10 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
 
   for (const entry of work.batch) {
     const fc = entry.function_call;
-    await emit(iii, rec.session_id, {
-      type: 'function_execution_start',
-      function_call_id: fc.id,
-      function_id: fc.function_id,
-      args: fc.arguments,
-    });
-    const startedAt = Date.now();
 
+    // Re-entry (approval resume / crash mid-batch): a call already in
+    // work.results replays its end event only. Emitting the start first
+    // would make the UI show a phantom restart of a completed tool.
     const existing = persistence.findExecutedCall(work.results, fc.id);
     if (existing) {
       await emit(
@@ -230,6 +226,14 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
       );
       continue;
     }
+
+    await emit(iii, rec.session_id, {
+      type: 'function_execution_start',
+      function_call_id: fc.id,
+      function_id: fc.function_id,
+      args: fc.arguments,
+    });
+    const startedAt = Date.now();
 
     if (entry.pre_approved === true) {
       await commitExecutedCall(

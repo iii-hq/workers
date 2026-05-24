@@ -91,4 +91,22 @@ describe('wakeFromRecord', () => {
     await wakeFromRecord(iii, 'sess-y');
     expect(iii.trigger).toHaveBeenCalledTimes(1);
   });
+
+  it('no-ops when session is failed (no turn::failed handler exists)', async () => {
+    const rec = newRecord('sess-z');
+    rec.state = 'failed';
+    const triggers: Array<{ function_id: string }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        if (req.function_id === 'state::get') return rec;
+        triggers.push(req);
+        return null;
+      }),
+    } as unknown as ISdk;
+
+    await wakeFromRecord(iii, 'sess-z');
+    // only the state::get read — no enqueue of an unregistered turn::failed
+    expect(iii.trigger).toHaveBeenCalledTimes(1);
+    expect(triggers).toHaveLength(0);
+  });
 });
