@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import type { AgentMessage } from '../types/agent-message.js';
-import type { TurnState, TurnStateRecord } from './state.js';
+import type { AwaitingApprovalEntry, TurnState, TurnStateRecord } from './state.js';
 import type { Mode } from './system-prompt.js';
 
 /** Shared `{ session_id }` payload — `turn::{state}` steps and `turn::get_state`. */
@@ -38,7 +38,30 @@ export type TurnStepResult =
 // --- turn::get_state ---
 export const GetStatePayloadSchema = SessionIdPayloadSchema;
 export type GetStatePayload = z.infer<typeof GetStatePayloadSchema>;
-export type GetStateResult = TurnStateRecord | null;
+
+/** Lean projection of TurnStateRecord sent to the UI and returned by turn::get_state.
+ *  Excludes heavy internal fields (work, last_assistant) not needed by consumers. */
+export type TurnStateView = {
+  session_id: string;
+  state: TurnState;
+  turn_count: number;
+  max_turns?: number;
+  awaiting_approval?: AwaitingApprovalEntry[];
+  error?: { kind: string; message: string };
+};
+
+export function toView(rec: TurnStateRecord): TurnStateView {
+  return {
+    session_id: rec.session_id,
+    state: rec.state,
+    turn_count: rec.turn_count,
+    max_turns: rec.max_turns,
+    awaiting_approval: rec.awaiting_approval,
+    error: rec.error,
+  };
+}
+
+export type GetStateResult = TurnStateView | null;
 
 // --- turn::is_abort_signal_set / turn::on_abort_signal (agent-scope state event) ---
 const AgentAbortSignalWriteEventSchema = z.object({

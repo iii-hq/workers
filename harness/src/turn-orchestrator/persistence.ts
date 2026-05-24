@@ -17,6 +17,7 @@ import {
   runRequestKey,
   turnStateKey,
 } from './state.js';
+import { toView } from './schemas.js';
 import { emitTurnStateChanged } from './turn-state-write.js';
 import { shouldWakeStep, wakeState } from './wake.js';
 
@@ -79,8 +80,8 @@ export async function persistRecord(
     iii,
     rec.session_id,
     eventType,
-    rec as unknown as Record<string, unknown>,
-    prev !== null ? (prev as unknown as Record<string, unknown>) : undefined,
+    toView(rec) as unknown as Record<string, unknown>,
+    prev !== null ? (toView(prev) as unknown as Record<string, unknown>) : undefined,
   );
 }
 
