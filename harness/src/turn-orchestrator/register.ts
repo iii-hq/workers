@@ -7,7 +7,6 @@ import { register as registerOnAbortSignal } from './on-abort-signal.js';
 import { register as registerRunStart } from './run-start.js';
 import { recoverPendingApprovals } from './approval-resume.js';
 import {
-  registerAssistantFinished,
   registerAssistantStreaming,
   registerFunctionAwaitingApproval,
   registerFunctionExecute,
@@ -22,7 +21,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerRunStart(iii);
   registerProvisioning(iii, orchestratorCfg);
   registerAssistantStreaming(iii);
-  registerAssistantFinished(iii);
   registerFunctionExecute(iii);
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
