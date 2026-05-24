@@ -13,7 +13,7 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
-import { type TurnState, type TurnStateRecord, cloneRecord } from './state.js';
+import { type TurnState, type TurnStateRecord } from './state.js';
 
 export type TransitionHandler = (iii: ISdk, rec: TurnStateRecord) => Promise<void>;
 
@@ -41,7 +41,8 @@ export async function runTransition(
   const skipped = staleSkipResult(state, rec);
   if (skipped) return skipped;
 
-  const previous = cloneRecord(rec);
+  // JSON round-trip matches a persisted reload — snapshot before handler mutates.
+  const previous = JSON.parse(JSON.stringify(rec)) as TurnStateRecord;
   const from_state = rec.state;
   try {
     await handle(iii, rec);

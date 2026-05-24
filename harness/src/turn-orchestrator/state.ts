@@ -59,24 +59,6 @@ export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.updated_at_ms = Date.now();
 }
 
-/**
- * Deep copy of a record via JSON round-trip — faithful to a `state::get`
- * reload (the record is persisted as JSON), so the runner can snapshot the
- * pre-mutation record and thread it into `saveRecord` instead of paying a
- * second `state::get` to recover the previous state.
- */
-export function cloneRecord(rec: TurnStateRecord): TurnStateRecord {
-  return JSON.parse(JSON.stringify(rec)) as TurnStateRecord;
-}
-
-export function isTerminal(rec: TurnStateRecord): boolean {
-  return rec.state === 'stopped';
-}
-
-export function turnFnId(state: TurnState): string {
-  return `turn::${state}`;
-}
-
 export const messagesKey = (sid: string) => `session/${sid}/messages`;
 export const turnStateKey = (sid: string) => `session/${sid}/turn_state`;
 export const runRequestKey = (sid: string) => `session/${sid}/run_request`;
