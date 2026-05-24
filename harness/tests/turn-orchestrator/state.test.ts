@@ -6,6 +6,7 @@ import type {
   TurnStateRecord,
 } from '../../src/turn-orchestrator/state.js';
 import {
+  isTerminal,
   messagesKey,
   newRecord,
   transitionTo,
@@ -78,5 +79,20 @@ describe('state keys', () => {
   it('namespace by session', () => {
     expect(turnStateKey('abc')).toBe('session/abc/turn_state');
     expect(messagesKey('abc')).toBe('session/abc/messages');
+  });
+});
+
+describe('state record', () => {
+  it('newRecord starts in provisioning, non-terminal, no work', () => {
+    const r = newRecord('s1', 5);
+    expect(r.state).toBe('provisioning');
+    expect(isTerminal(r)).toBe(false);
+    expect(r.work).toBeUndefined();
+    expect(r.max_turns).toBe(5);
+  });
+
+  it('failed is terminal', () => {
+    const r: TurnStateRecord = { ...newRecord('s1'), state: 'failed', error: { kind: 'bug', message: 'x' } };
+    expect(isTerminal(r)).toBe(true);
   });
 });
