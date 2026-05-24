@@ -1,5 +1,5 @@
 /**
- * `run::start`. Mirrors `turn-orchestrator/src/run_start.rs`.
+ * `run::start`. Persist run config + messages and seed the FSM at `provisioning`.
  *
  * **Incoming**: flat run request from `harness::trigger` (`body.payload` after
  * `HarnessTriggerInputSchema` parse); console/web sends
@@ -20,6 +20,7 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
   await persistence.saveRunRequest(iii, session_id, {
     ...run,
     mode: run.mode ?? null,
+    function_schemas: [],
   });
   await persistence.saveMessages(iii, session_id, messages);
 
