@@ -6,7 +6,7 @@
 import { TriggerAction, type ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
-import { turnFnId, type TurnState, type TurnStateRecord } from './state.js';
+import { type TurnState, type TurnStateRecord } from './state.js';
 
 export const TURN_STEP_QUEUE = 'turn-step';
 
@@ -28,7 +28,7 @@ export function shouldRunStep(rec: TurnStateRecord | null): boolean {
 export async function wakeState(iii: ISdk, session_id: string, state: TurnState): Promise<void> {
   try {
     await iii.trigger({
-      function_id: turnFnId(state),
+      function_id: `turn::${state}`,
       payload: { session_id },
       action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
     });

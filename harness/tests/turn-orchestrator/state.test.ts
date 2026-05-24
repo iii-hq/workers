@@ -6,7 +6,6 @@ import type {
   TurnStateRecord,
 } from '../../src/turn-orchestrator/state.js';
 import {
-  isTerminal,
   messagesKey,
   newRecord,
   transitionTo,
@@ -20,13 +19,13 @@ describe('TurnStateRecord', () => {
     expect(r.state).toBe('provisioning');
     expect(r.session_id).toBe('s1');
     expect(r.max_turns).toBe(32);
-    expect(isTerminal(r)).toBe(false);
+    expect(r.state).not.toBe('stopped');
   });
 
   it('transitionTo stopped marks terminal', () => {
     const r = newRecord('s1');
     transitionTo(r, 'stopped');
-    expect(isTerminal(r)).toBe(true);
+    expect(r.state).toBe('stopped');
   });
 });
 
@@ -40,7 +39,7 @@ describe('function_awaiting_approval state', () => {
   it('is non-terminal', () => {
     const rec = newRecord('s1');
     transitionTo(rec, 'function_awaiting_approval' as TurnState);
-    expect(isTerminal(rec)).toBe(false);
+    expect(rec.state).not.toBe('stopped');
   });
 });
 
