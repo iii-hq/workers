@@ -9,7 +9,6 @@ import type { FunctionCall, FunctionResult } from '../types/function.js';
 export type TurnState =
   | 'provisioning'
   | 'assistant_streaming'
-  | 'assistant_finished'
   | 'function_execute'
   | 'function_awaiting_approval'
   | 'steering_check'

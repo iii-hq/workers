@@ -11,7 +11,7 @@ describe('shouldWakeStep', () => {
 
   it('accepts transitions to another stepable state', () => {
     expect(shouldWakeStep('provisioning', 'assistant_streaming')).toBe(true);
-    expect(shouldWakeStep('assistant_finished', 'function_execute')).toBe(true);
+    expect(shouldWakeStep('assistant_streaming', 'function_execute')).toBe(true);
   });
 
   it('rejects terminal state (stopped)', () => {

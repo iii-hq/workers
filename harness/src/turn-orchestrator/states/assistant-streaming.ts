@@ -1,5 +1,5 @@
 /**
- * `turn::assistant_streaming`. Start turn, stream provider response, advance to finished.
+ * `turn::assistant_streaming`. Start turn, stream provider response, finalize, and route onward.
  *
  * **Incoming**: flat `{ session_id }` via FIFO enqueue on `turn-step`.
  * **Outgoing**: `{ ok, from_state, to_state }` on success; stale skip when state drifted.
@@ -50,6 +50,57 @@ function formatProviderError(err: unknown): string {
     .replace(/^IIIInvocationError:\s*/i, '')
     .replace(/^invocation_failed:\s*/i, '')
     .trim();
+}
+
+function isErrorOrAborted(asst: AssistantMessage): boolean {
+  return asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
+}
+
+async function finalizeAssistant(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const asst = rec.last_assistant;
+  if (!asst) throw new Error('assistant_streaming finalize without last_assistant');
+
+  await emit(iii, rec.session_id, {
+    type: 'message_complete',
+    message: asst,
+    body_streamed: rec.assistant_body_streamed === true,
+  });
+
+  const errored = isErrorOrAborted(asst);
+  if (!errored) {
+    const messages = await persistence.loadMessages(iii, rec.session_id);
+    const last = messages[messages.length - 1];
+    const dup =
+      last &&
+      last.role === 'assistant' &&
+      last.timestamp === asst.timestamp &&
+      last.model === asst.model &&
+      last.provider === asst.provider;
+    if (!dup) {
+      messages.push(asst);
+      await persistence.saveMessages(iii, rec.session_id, messages);
+    } else {
+      logger.warn('finalizeAssistant: skipping duplicate assistant push (re-entry detected)', {
+        session_id: rec.session_id,
+        timestamp: asst.timestamp,
+      });
+    }
+  }
+
+  if (errored) {
+    await emit(iii, rec.session_id, { type: 'turn_end', message: asst, function_results: [] });
+    rec.turn_end_emitted = true;
+    transitionTo(rec, 'tearing_down');
+    return;
+  }
+  const hasCalls = asst.content.some((b) => b.type === 'function_call');
+  if (!hasCalls) {
+    transitionTo(rec, 'steering_check');
+    return;
+  }
+  rec.function_results = [];
+  rec.work = undefined; // function_execute builds the batch from last_assistant
+  transitionTo(rec, 'function_execute');
 }
 
 export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<void> {
@@ -121,7 +172,7 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
       decision.model,
       `create_channel failed: ${String(err)}`,
     );
-    transitionTo(rec, 'assistant_finished');
+    await finalizeAssistant(iii, rec);
     return;
   }
 
@@ -222,7 +273,7 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     });
     rec.last_assistant = synthetic;
   }
-  transitionTo(rec, 'assistant_finished');
+  await finalizeAssistant(iii, rec);
 }
 
 export function register(iii: ISdk): void {
@@ -234,7 +285,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state assistant_streaming: start turn and stream provider response.',
+        'Run one durable FSM transition for session in state assistant_streaming: start turn, stream provider response, finalize, and route onward.',
     },
   );
 }
