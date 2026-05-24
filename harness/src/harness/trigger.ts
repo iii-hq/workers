@@ -18,7 +18,7 @@ import {
   RunStartPayloadSchema,
   type RunStartPayload,
   type RunStartResult,
-} from '../turn-orchestrator/run-start.js';
+} from '../turn-orchestrator/schemas.js';
 
 const HarnessTriggerInputSchema = z.object({
   session_id: z.string().optional(),

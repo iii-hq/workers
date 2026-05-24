@@ -1,15 +1,14 @@
 /**
- * `agent::trigger` dispatcher + chokepoint. Mirrors
- * `turn-orchestrator/src/agent_call.rs`.
+ * Agent tool-call dispatcher + approval chokepoint.
  *
- * `dispatchWithHook` is the single chokepoint: every agent-issued tool
- * call goes through `consultBefore` before reaching the inner trigger.
- * Fail-closed: a hook timeout / error / missing subscriber denies the
- * call with a `gate_unavailable` envelope (Phase 2.B §F).
+ * `dispatchWithHook` is the single chokepoint for FSM-issued calls: every
+ * agent tool call goes through `consultBefore` before reaching the inner
+ * trigger. `triggerFunctionCall` is the shared trigger/decode/error path
+ * used by both the hook gate and pre-approved resume execution.
  */
 
-import { uuidLike } from '../runtime/ids.js';
 import type { ISdk } from '../runtime/iii.js';
+import { z } from 'zod';
 import type { ContentBlock } from '../types/content.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './hook.js';
@@ -20,6 +19,21 @@ export type DispatchResult =
   | { kind: 'result'; result: FunctionResult }
   | { kind: 'deny'; result: FunctionResult }
   | { kind: 'pending' };
+
+export function missingFunctionResult(): FunctionResult {
+  return errorResult({
+    error: 'missing_function',
+    message: 'agent_trigger requires a non-empty `function` string field',
+  });
+}
+
+export function unwrapAgentTrigger(fc: FunctionCall): FunctionCall {
+  if (fc.function_id !== TOOL_NAME) return fc;
+  const args = (fc.arguments ?? {}) as Record<string, unknown>;
+  const fn = typeof args.function === 'string' ? args.function : '';
+  const payload = args.payload ?? {};
+  return { id: fc.id, function_id: fn, arguments: payload };
+}
 
 export function agentTriggerTool(): unknown {
   return {
@@ -59,7 +73,7 @@ function denialResult(denial: DenialEnvelope): FunctionResult {
   };
 }
 
-function decodeOrPassthrough(value: unknown): FunctionResult {
+export function decodeOrPassthrough(value: unknown): FunctionResult {
   if (
     value &&
     typeof value === 'object' &&
@@ -90,26 +104,6 @@ function isFunctionNotFound(err: unknown): boolean {
   return false;
 }
 
-/**
- * Build the `hint` field on a `function_not_found` result. Models
- * regularly confuse the SKILL id (`sandbox/skills/sandbox/create`, the
- * on-disk path returned by `directory::skills::list`) with the FUNCTION
- * id (`sandbox::create`, what `agent_trigger` actually expects) and
- * then retry the same wrong id 3+ times before recovering. When the
- * caller's `function_id` contains a `/` we can usually reconstruct the
- * canonical worker::fn form and surface it as a "did you mean" — that
- * collapses the typical 4-turn recovery to a 2-turn recovery.
- *
- * Cases recognised:
- * - `<w>/skills/<w>/<fn...>`  → `<w>::<fn...>`  (the canonical skill-id
- *   shape produced by `directory::skills::list` for a how-to that
- *   declares `function_id:` in its frontmatter).
- * - `<w>/<fn>`                → `<w>::<fn>`     (weaker guess, but
- *   matches what models often hallucinate as a shorthand).
- *
- * Anything else (no `/`, or shapes we can't confidently rewrite) gets
- * the generic hint pointing at the skills surface.
- */
 export function functionNotFoundHint(badFunctionId: string): string {
   if (!badFunctionId.includes('/')) {
     return 'load the relevant skill via directory::skills::get, or check the function id';
@@ -122,131 +116,60 @@ export function functionNotFoundHint(badFunctionId: string): string {
   const segments = badFunctionId.split('/').filter((s) => s.length > 0);
   let suggestion: string | null = null;
   if (segments.length >= 4 && segments[1] === 'skills' && segments[0] === segments[2]) {
-    // sandbox/skills/sandbox/create → sandbox::create
-    // worker-a/skills/worker-a/nested/fn → worker-a::nested::fn
     suggestion = `${segments[0]}::${segments.slice(3).join('::')}`;
   } else if (segments.length === 2 && segments[1] !== 'index') {
-    // sandbox/create → sandbox::create  (also catches accidental
-    // `<worker>/<fn>` shorthand the model invented from the skill path)
     suggestion = `${segments[0]}::${segments[1]}`;
   }
   return suggestion ? `Did you mean \`${suggestion}\`? ${generic}` : generic;
 }
 
-function isTimeout(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const obj = err as Record<string, unknown>;
-  if (obj.code === 'timeout') return true;
-  if (typeof obj.message === 'string' && /^Timeout|timed out/.test(obj.message)) return true;
-  return false;
-}
 
-export async function dispatchWithHook(
+/** Trigger a function call and normalize success/error into a FunctionResult. */
+export async function triggerFunctionCall(
   iii: ISdk,
   function_call: FunctionCall,
-  session_id: string | undefined,
-): Promise<DispatchResult> {
-  if (!function_call.function_id || function_call.function_id.length === 0) {
-    return {
-      kind: 'result',
-      result: errorResult({
-        error: 'missing_function',
-        message: 'agent_trigger requires a non-empty `function` string field',
-      }),
-    };
-  }
-  const outcome = await consultBefore(iii, function_call);
-  if (outcome.kind === 'deny') return { kind: 'deny', result: denialResult(outcome.denial) };
-  if (outcome.kind === 'pending') {
-    return { kind: 'pending' };
-  }
-
+): Promise<FunctionResult> {
   try {
     const value = await iii.trigger<unknown, unknown>({
       function_id: function_call.function_id,
       payload: function_call.arguments ?? {},
     });
-    return { kind: 'result', result: decodeOrPassthrough(value) };
+    return decodeOrPassthrough(value);
   } catch (err) {
     if (isFunctionNotFound(err)) {
-      return {
-        kind: 'result',
-        result: errorResult({
-          error: 'function_not_found',
-          function: function_call.function_id,
-          hint: functionNotFoundHint(function_call.function_id),
-        }),
-      };
+      return errorResult({
+        error: 'function_not_found',
+        function: function_call.function_id,
+        hint: functionNotFoundHint(function_call.function_id),
+      });
     }
-    if (isTimeout(err)) {
-      return {
-        kind: 'result',
-        result: errorResult({
-          error: 'timeout',
-          function: function_call.function_id,
-          message: String(err),
-        }),
-      };
-    }
-    return {
-      kind: 'deny',
-      result: denialResult(
-        gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
-      ),
-    };
+    return denialResult(
+      gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),
+    );
   }
 }
 
-export async function dispatch(
+export async function dispatchWithHook(
   iii: ISdk,
-  session_id: string,
-  fn: unknown,
-  payload: unknown,
-): Promise<FunctionResult> {
-  if (typeof fn !== 'string' || fn.length === 0) {
-    return errorResult({
-      error: 'missing_function',
-      message: 'agent_trigger requires a non-empty `function` string field',
-    });
+  function_call: FunctionCall,
+): Promise<DispatchResult> {
+  const outcome = await consultBefore(iii, function_call);
+  if (outcome.kind === 'deny') {
+    return { kind: 'deny', result: denialResult(outcome.denial) };
   }
-  const fc: FunctionCall = {
-    id: `agent_trigger-${uuidLike()}`,
-    function_id: fn,
-    arguments: payload ?? {},
-  };
-  const out = await dispatchWithHook(iii, fc, session_id);
-  if (out.kind === 'pending') {
-    return errorResult({
-      error: 'awaiting_approval',
-      function: fc.function_id,
-      message: 'This call requires human approval. Approve via the console and retry.',
-    });
+  if (outcome.kind === 'pending') {
+    return { kind: 'pending' };
   }
-  return out.result;
+
+  const result = await triggerFunctionCall(iii, function_call);
+  return { kind: 'result', result };
 }
 
-export function register(iii: ISdk): void {
-  iii.registerFunction(
-    'agent::trigger',
-    async (payload: unknown) => {
-      const obj = (payload ?? {}) as Record<string, unknown>;
-      const session_id = typeof obj.session_id === 'string' ? obj.session_id : '';
-      const fn = obj.function;
-      const inner = obj.payload ?? {};
-      return await dispatch(iii, session_id, fn, inner);
-    },
-    {
-      description:
-        'LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult.',
-    },
-  );
-}
+const errorResultDetailsSchema = z.union([
+  z.object({ error: z.string() }),
+  z.object({ status: z.literal('denied') }),
+]);
 
 export function isErrorResult(result: FunctionResult): boolean {
-  const details = result.details;
-  if (!details || typeof details !== 'object') return false;
-  const obj = details as Record<string, unknown>;
-  if (typeof obj.error === 'string') return true;
-  if (obj.status === 'denied') return true;
-  return false;
+  return errorResultDetailsSchema.safeParse(result.details).success;
 }

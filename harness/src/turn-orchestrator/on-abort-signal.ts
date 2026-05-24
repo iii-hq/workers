@@ -20,26 +20,10 @@
  * **Outgoing**: `wakeFromRecord` enqueues `{ session_id }` on the `turn-step` queue.
  */
 
-import { z } from 'zod';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { AbortSignalWriteEventSchema, type ParsedAbortSignalWrite } from './schemas.js';
 import { wakeFromRecord } from './wake.js';
-
-const AgentAbortSignalWriteEventSchema = z.object({
-  type: z.literal('state').optional(),
-  scope: z.literal('agent').optional(),
-  event_type: z.enum(['state:created', 'state:updated']),
-  key: z.string().regex(/^session\/[^/]+\/abort_signal$/),
-  new_value: z.literal(true),
-  old_value: z.union([z.literal(true), z.literal(false), z.null()]).optional(),
-});
-
-export const AbortSignalWriteEventSchema = AgentAbortSignalWriteEventSchema.transform((data) => {
-  const session_id = data.key.slice('session/'.length, -'/abort_signal'.length);
-  return { session_id };
-});
-
-export type ParsedAbortSignalWrite = z.infer<typeof AbortSignalWriteEventSchema>;
 
 export function parseAbortSignalWrite(event: unknown): ParsedAbortSignalWrite | null {
   const result = AbortSignalWriteEventSchema.safeParse(event);

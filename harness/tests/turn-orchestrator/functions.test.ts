@@ -85,7 +85,7 @@ describe('handleExecute new flow', () => {
     expect(registerResumeSpy).toHaveBeenCalledWith(iii, 's1', 'fc-1');
   });
 
-  it('skips dispatchWithHook on pre_approved entries and calls iii.trigger directly', async () => {
+  it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
     const triggerSpy = vi.fn().mockResolvedValue({ ok: true });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -115,7 +115,7 @@ describe('handleExecute new flow', () => {
     expect(triggerCalls).toContain('shell::run');
   });
 
-  it('synthesizes an error result when a pre_approved trigger rejects (does not throw out of handleExecute)', async () => {
+  it('synthesizes a gate_unavailable denial when a pre_approved trigger rejects', async () => {
     const triggerSpy = vi.fn(async (req: { function_id: string }) => {
       if (req.function_id === 'shell::fs::write') {
         throw new Error('handler error: {"code":"S210","message":"bad write payload"}');
@@ -154,9 +154,10 @@ describe('handleExecute new flow', () => {
       .find((arr) => Array.isArray(arr) && arr.length > 0);
     expect(savedResults?.[0]?.is_error).toBe(true);
     const details = savedResults?.[0]?.result.details as Record<string, unknown>;
-    expect(details?.error).toBe('trigger_failed');
-    expect(details?.function).toBe('shell::fs::write');
-    expect(String(details?.message)).toContain('S210');
+    expect(details?.status).toBe('denied');
+    expect(details?.denied_by).toBe('gate_unavailable');
+    expect(details?.function_id).toBe('shell::fs::write');
+    expect(String(details?.reason)).toContain('S210');
   });
 
   it('emits denial result without dispatching when blocked is set', async () => {

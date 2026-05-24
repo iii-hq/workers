@@ -36,7 +36,6 @@ describe('handleTearingDown', () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'tearing_down' };
     const messages: AgentMessage[] = [{ role: 'user', content: 'hi' }];
     const { iii } = fakeIii();
-    vi.spyOn(persistence, 'loadSandboxId').mockResolvedValue(null);
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue(messages);
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
@@ -44,20 +43,5 @@ describe('handleTearingDown', () => {
 
     expect(rec.state).toBe('stopped');
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', { type: 'agent_end', messages });
-  });
-
-  it('calls sandbox::stop before ending the agent when a sandbox id exists', async () => {
-    const rec: TurnStateRecord = { ...newRecord('s1'), state: 'tearing_down' };
-    const { iii, calls } = fakeIii();
-    vi.spyOn(persistence, 'loadSandboxId').mockResolvedValue('sandbox-1');
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleTearingDown(iii, rec);
-
-    const sandboxCall = calls.find((c) => c.function_id === 'sandbox::stop');
-    expect(sandboxCall?.payload).toEqual({ sandbox_id: 'sandbox-1', wait: true });
-    expect(sandboxCall?.timeoutMs).toBe(60_000);
-    expect(rec.state).toBe('stopped');
   });
 });

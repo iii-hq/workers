@@ -11,45 +11,13 @@ import { logger } from '../../runtime/otel.js';
 import { agentTriggerTool } from '../agent-trigger.js';
 import type { TurnOrchestratorConfig } from '../config.js';
 import * as persistence from '../persistence.js';
+import { type RunRequest } from '../run-request.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-import {
-  TurnStepPayloadSchema,
-  type TurnStepPayload,
-  type TurnStepResult,
-  staleSkipResult,
-} from '../turn-step-payload.js';
-import {
-  type DefaultSkillBody,
-  type Mode,
-  buildSystemPrompt,
-  defaultSkillBody,
-} from '../system-prompt.js';
-
-type RunRequest = {
-  provider: string;
-  model: string;
-  mode: Mode | null;
-  system_prompt: string;
-  image: string;
-  idle_timeout_secs: number;
-};
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
+import { type DefaultSkillBody, buildSystemPrompt, defaultSkillBody } from '../system-prompt.js';
 
 const FETCH_TIMEOUT_MS = 10_000;
-
-function parseMode(value: unknown): Mode | null {
-  return value === 'plan' || value === 'ask' || value === 'agent' ? value : null;
-}
-
-export function parseRunRequest(raw: Record<string, unknown>): RunRequest {
-  return {
-    provider: typeof raw.provider === 'string' ? raw.provider : '',
-    model: typeof raw.model === 'string' ? raw.model : '',
-    mode: parseMode(raw.mode),
-    system_prompt: typeof raw.system_prompt === 'string' ? raw.system_prompt : '',
-    image: typeof raw.image === 'string' ? raw.image : 'python',
-    idle_timeout_secs: typeof raw.idle_timeout_secs === 'number' ? raw.idle_timeout_secs : 300,
-  };
-}
 
 export function parseDirectoryBody(resp: unknown): string | null {
   if (typeof resp === 'string') return resp;
@@ -104,7 +72,7 @@ export async function handleProvisioning(
   cfg: TurnOrchestratorConfig,
   rec: TurnStateRecord,
 ): Promise<void> {
-  const request = parseRunRequest(await persistence.loadRunRequest(iii, rec.session_id));
+  const request = await persistence.loadRunRequest(iii, rec.session_id);
 
   await persistence.saveFunctionSchemas(iii, rec.session_id, [agentTriggerTool()]);
 
@@ -122,32 +90,13 @@ export async function handleProvisioning(
   transitionTo(rec, 'assistant_streaming');
 }
 
-export async function execute(
-  iii: ISdk,
-  cfg: TurnOrchestratorConfig,
-  payload: TurnStepPayload,
-): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
-  if (!rec) {
-    throw new Error(`turn::provisioning invariant: missing session ${payload.session_id}`);
-  }
-  const skipped = staleSkipResult('provisioning', rec);
-  if (skipped) return skipped;
-
-  const from_state = rec.state;
-  try {
-    await handleProvisioning(iii, cfg, rec);
-  } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
-  }
-  await persistence.saveRecord(iii, rec);
-  return { ok: true, from_state, to_state: rec.state };
-}
-
 export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
   iii.registerFunction(
     'turn::provisioning',
-    async (payload: unknown) => execute(iii, cfg, TurnStepPayloadSchema.parse(payload)),
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'provisioning', (i, rec) => handleProvisioning(i, cfg, rec), parsed);
+    },
     {
       description:
         'Run one durable FSM transition for session in state provisioning: materialize tool schemas, build system prompt, advance to assistant_streaming.',

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import { execute, GetStatePayloadSchema } from '../../src/turn-orchestrator/get-state.js';
+import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { GetStatePayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 
 describe('GetStatePayloadSchema', () => {
   it('accepts the flat shape the real backend sends', () => {

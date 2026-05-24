@@ -60,6 +60,8 @@ describe('handleStreaming turn start', () => {
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
       provider: 'openai',
       model: 'gpt-4o',
+      mode: null,
+      system_prompt: '',
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
@@ -107,6 +109,8 @@ describe('handleStreaming', () => {
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
       provider: 'openai',
       model: 'gpt-4o',
+      mode: null,
+      system_prompt: '',
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
@@ -148,6 +152,8 @@ describe('handleStreaming', () => {
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
       provider: 'openai',
       model: 'gpt-4o',
+      mode: null,
+      system_prompt: '',
     });
     vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     vi.spyOn(persistence, 'loadFunctionSchemas').mockResolvedValue([]);
@@ -321,5 +327,38 @@ describe('handleFinished', () => {
         blocked: null,
       },
     ]);
+  });
+
+  it('blocks agent_trigger calls with missing or empty function at prepare time', async () => {
+    const rec: TurnStateRecord = {
+      ...newRecord('s1'),
+      state: 'assistant_finished',
+      last_assistant: assistant({
+        content: [
+          {
+            type: 'function_call',
+            id: 'fc-bad',
+            function_id: TOOL_NAME,
+            arguments: { payload: { command: 'ls' } },
+          },
+        ],
+      }),
+    };
+    const { iii } = fakeIii();
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    const savePreparedSpy = vi.spyOn(persistence, 'savePreparedCalls').mockResolvedValue(undefined);
+
+    await handleFinished(iii, rec);
+
+    expect(rec.state).toBe('function_execute');
+    const prepared = savePreparedSpy.mock.calls[0]?.[2];
+    expect(prepared?.[0]?.function_call).toEqual({
+      id: 'fc-bad',
+      function_id: '',
+      arguments: { command: 'ls' },
+    });
+    expect(prepared?.[0]?.blocked?.details).toMatchObject({ error: 'missing_function' });
   });
 });

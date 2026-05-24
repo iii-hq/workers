@@ -9,13 +9,9 @@ import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
-import {
-  TurnStepPayloadSchema,
-  type TurnStepPayload,
-  type TurnStepResult,
-  staleSkipResult,
-} from '../turn-step-payload.js';
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 export type SteeringRoute =
   | 'abort'
@@ -154,28 +150,13 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
   }
 }
 
-export async function execute(iii: ISdk, payload: TurnStepPayload): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
-  if (!rec) {
-    throw new Error(`turn::steering_check invariant: missing session ${payload.session_id}`);
-  }
-  const skipped = staleSkipResult('steering_check', rec);
-  if (skipped) return skipped;
-
-  const from_state = rec.state;
-  try {
-    await handleSteering(iii, rec);
-  } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
-  }
-  await persistence.saveRecord(iii, rec);
-  return { ok: true, from_state, to_state: rec.state };
-}
-
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::steering_check',
-    async (payload: unknown) => execute(iii, TurnStepPayloadSchema.parse(payload)),
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'steering_check', handleSteering, parsed);
+    },
     {
       description:
         'Run one durable FSM transition for session in state steering_check: drain inboxes and route onward.',

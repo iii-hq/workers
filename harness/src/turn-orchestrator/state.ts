@@ -34,6 +34,8 @@ export type TurnStateRecord = {
   started_at_ms: number;
   updated_at_ms: number;
   awaiting_approval?: AwaitingApprovalEntry[];
+  /** Set during assistant_streaming when message_update deltas were emitted. */
+  assistant_body_streamed?: boolean;
 };
 
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
@@ -57,6 +59,16 @@ export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.updated_at_ms = Date.now();
 }
 
+/**
+ * Deep copy of a record via JSON round-trip — faithful to a `state::get`
+ * reload (the record is persisted as JSON), so the runner can snapshot the
+ * pre-mutation record and thread it into `saveRecord` instead of paying a
+ * second `state::get` to recover the previous state.
+ */
+export function cloneRecord(rec: TurnStateRecord): TurnStateRecord {
+  return JSON.parse(JSON.stringify(rec)) as TurnStateRecord;
+}
+
 export function isTerminal(rec: TurnStateRecord): boolean {
   return rec.state === 'stopped';
 }
@@ -68,12 +80,7 @@ export function turnFnId(state: TurnState): string {
 export const messagesKey = (sid: string) => `session/${sid}/messages`;
 export const turnStateKey = (sid: string) => `session/${sid}/turn_state`;
 export const runRequestKey = (sid: string) => `session/${sid}/run_request`;
-export const sandboxIdKey = (sid: string) => `session/${sid}/sandbox_id`;
 export const functionSchemasKey = (sid: string) => `session/${sid}/function_schemas`;
-export const toolSchemasKey = (sid: string) => `session/${sid}/tool_schemas`;
 export const lastSessionTreeLenKey = (sid: string) => `session/${sid}/session_tree_mirror_len`;
-export const lastCompactionAtKey = (sid: string) => `session/${sid}/last_compaction_at`;
-export const lastCompactionConsumedAtKey = (sid: string) =>
-  `session/${sid}/last_compaction_consumed_at`;
 export const eventCounterKey = (sid: string) => `session/${sid}/event_counter`;
 export const abortSignalKey = (sid: string) => `session/${sid}/abort_signal`;

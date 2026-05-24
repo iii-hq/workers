@@ -19,13 +19,17 @@ export type AgentEvent =
       message: AgentMessage;
       function_results: FunctionResultMessage[];
     }
-  | { type: 'message_start'; message: AgentMessage }
   | {
       type: 'message_update';
       message: AgentMessage;
       llm_event: AssistantMessageEvent;
     }
-  | { type: 'message_end'; message: AgentMessage }
+  | {
+      type: 'message_complete';
+      message: AgentMessage;
+      /** When true, text/thinking were already delivered via message_update. */
+      body_streamed?: boolean;
+    }
   | {
       type: 'function_execution_start';
       function_call_id: string;

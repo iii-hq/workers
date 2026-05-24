@@ -11,13 +11,9 @@ import type { ISdk } from '../../runtime/iii.js';
 import type { FunctionResult } from '../../types/function.js';
 import { text } from '../../types/content.js';
 import * as persistence from '../persistence.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-import {
-  TurnStepPayloadSchema,
-  type TurnStepPayload,
-  type TurnStepResult,
-  staleSkipResult,
-} from '../turn-step-payload.js';
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 export type ApprovalDecision = z.infer<typeof ApprovalResumePayloadSchema>;
 
@@ -101,30 +97,13 @@ export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): P
   transitionTo(rec, 'function_execute');
 }
 
-export async function execute(iii: ISdk, payload: TurnStepPayload): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
-  if (!rec) {
-    throw new Error(
-      `turn::function_awaiting_approval invariant: missing session ${payload.session_id}`,
-    );
-  }
-  const skipped = staleSkipResult('function_awaiting_approval', rec);
-  if (skipped) return skipped;
-
-  const from_state = rec.state;
-  try {
-    await handleAwaitingApproval(iii, rec);
-  } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
-  }
-  await persistence.saveRecord(iii, rec);
-  return { ok: true, from_state, to_state: rec.state };
-}
-
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::function_awaiting_approval',
-    async (payload: unknown) => execute(iii, TurnStepPayloadSchema.parse(payload)),
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'function_awaiting_approval', handleAwaitingApproval, parsed);
+    },
     {
       description:
         'Run one durable FSM transition for session in state function_awaiting_approval: read approval decisions and resume.',

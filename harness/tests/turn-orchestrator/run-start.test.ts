@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
-import { RunStartPayloadSchema, execute, register } from '../../src/turn-orchestrator/run-start.js';
+import { execute, register } from '../../src/turn-orchestrator/run-start.js';
+import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 
 type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
@@ -59,8 +60,6 @@ describe('RunStartPayloadSchema', () => {
       model: 'claude-sonnet-4-6',
       mode: 'agent',
       system_prompt: '',
-      image: 'python',
-      idle_timeout_secs: 300,
       messages: consoleRunStartPayload.messages,
     });
   });
@@ -71,8 +70,6 @@ describe('RunStartPayloadSchema', () => {
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       system_prompt: '',
-      image: 'python',
-      idle_timeout_secs: 300,
       messages: harnessRunStartPayload.messages,
     });
   });

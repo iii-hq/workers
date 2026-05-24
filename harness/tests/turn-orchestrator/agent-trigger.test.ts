@@ -7,6 +7,7 @@ import {
   dispatchWithHook,
   functionNotFoundHint,
   isErrorResult,
+  triggerFunctionCall,
 } from '../../src/turn-orchestrator/agent-trigger.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
 
@@ -77,14 +78,32 @@ describe('isErrorResult', () => {
   });
 });
 
+describe('triggerFunctionCall', () => {
+  it('returns gate_unavailable denial on trigger failure', async () => {
+    const iii = {
+      trigger: vi.fn().mockRejectedValue(new Error('handler error')),
+    } as unknown as ISdk;
+    const result = await triggerFunctionCall(iii, {
+      id: 'fc-1',
+      function_id: 'shell::fs::write',
+      arguments: {},
+    });
+    expect(isErrorResult(result)).toBe(true);
+    expect(result.details).toMatchObject({
+      status: 'denied',
+      denied_by: 'gate_unavailable',
+      function_id: 'shell::fs::write',
+    });
+  });
+});
+
 describe('dispatchWithHook returns DispatchResult', () => {
   it('returns kind:pending when consultBefore returns pending', async () => {
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending' });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
-      's1',
+      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } }
     );
     expect(out.kind).toBe('pending');
   });
@@ -103,8 +122,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     const iii = { trigger: vi.fn() } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-      's1',
+      { id: 'fc-1', function_id: 'shell::run', arguments: {} }
     );
     expect(out.kind).toBe('deny');
     if (out.kind === 'deny') {
@@ -119,8 +137,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-      's1',
+      { id: 'fc-1', function_id: 'shell::run', arguments: {} }
     );
     expect(out.kind).toBe('result');
   });
@@ -141,8 +158,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
         id: 'fc-1',
         function_id: 'sandbox/skills/sandbox/create',
         arguments: { image: 'node' },
-      },
-      's1',
+      }
     );
     expect(out.kind).toBe('result');
     if (out.kind !== 'result') return;
@@ -160,8 +176,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,
-      { id: 'fc-1', function_id: 'some/odd/three-segment/id', arguments: {} },
-      's1',
+      { id: 'fc-1', function_id: 'some/odd/three-segment/id', arguments: {} }
     );
     if (out.kind !== 'result') throw new Error('expected result kind');
     const details = out.result.details as Record<string, unknown>;
@@ -179,8 +194,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     } as unknown as ISdk;
     const out = await dispatchWithHook(
       iii,
-      { id: 'fc-1', function_id: 'misspelled', arguments: {} },
-      's1',
+      { id: 'fc-1', function_id: 'misspelled', arguments: {} }
     );
     if (out.kind !== 'result') throw new Error('expected result kind');
     const details = out.result.details as Record<string, unknown>;

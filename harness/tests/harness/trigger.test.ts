@@ -62,8 +62,6 @@ describe('harness::trigger', () => {
     expect(triggerArg.payload).toMatchObject(runStartPayload);
     expect(triggerArg.payload).toMatchObject({
       system_prompt: '',
-      image: 'python',
-      idle_timeout_secs: 300,
     });
     expect(result.status_code).toBe(200);
     expect(result.body).toEqual({ session_id: 'sess' });

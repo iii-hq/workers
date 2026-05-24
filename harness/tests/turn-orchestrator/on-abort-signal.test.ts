@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import {
-  AbortSignalWriteEventSchema,
   execute,
   handleAbortSignalWrite,
   isAbortSignalWrite,
   parseAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
+import { AbortSignalWriteEventSchema } from '../../src/turn-orchestrator/schemas.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 
 const matchingEvent = {

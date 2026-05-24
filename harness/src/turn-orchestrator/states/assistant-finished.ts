@@ -10,25 +10,13 @@ import { logger } from '../../runtime/otel.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type { AssistantMessage } from '../../types/agent-message.js';
 import type { FunctionCall } from '../../types/function.js';
-import { TOOL_NAME } from '../agent-trigger.js';
+import { missingFunctionResult, unwrapAgentTrigger } from '../agent-trigger.js';
 import { emit } from '../events.js';
 import type { PreparedEntry } from '../persistence.js';
 import * as persistence from '../persistence.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-import {
-  TurnStepPayloadSchema,
-  type TurnStepPayload,
-  type TurnStepResult,
-  staleSkipResult,
-} from '../turn-step-payload.js';
-
-function unwrapAgentTrigger(fc: FunctionCall): FunctionCall {
-  if (fc.function_id !== TOOL_NAME) return fc;
-  const args = (fc.arguments ?? {}) as Record<string, unknown>;
-  const fn = typeof args.function === 'string' ? args.function : '';
-  const payload = args.payload ?? {};
-  return { id: fc.id, function_id: fn, arguments: payload };
-}
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
   const out: FunctionCall[] = [];
@@ -40,11 +28,11 @@ function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
   return out;
 }
 
-function assistantLifecycleEvents(asst: AssistantMessage): AgentEvent[] {
-  return [
-    { type: 'message_start', message: asst },
-    { type: 'message_end', message: asst },
-  ];
+function assistantMessageComplete(
+  asst: AssistantMessage,
+  body_streamed: boolean,
+): AgentEvent {
+  return { type: 'message_complete', message: asst, body_streamed };
 }
 
 export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<void> {
@@ -52,13 +40,15 @@ export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<v
   if (!asst) {
     throw new Error('assistant_finished without last_assistant');
   }
-  for (const evt of assistantLifecycleEvents(asst)) {
-    await emit(iii, rec.session_id, evt);
-  }
+  await emit(
+    iii,
+    rec.session_id,
+    assistantMessageComplete(asst, rec.assistant_body_streamed === true),
+  );
   const isErrorOrAborted = asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
   // Error/aborted assistant messages (e.g. provider auth failures,
   // network blips, user aborts) are surfaced to the UI via the
-  // message_start/message_end events emitted above, but we deliberately
+  // message_complete emitted above, but we deliberately
   // keep them out of the session's persisted message history so the
   // LLM's next-turn context doesn't accumulate transient infra noise.
   if (!isErrorOrAborted) {
@@ -107,38 +97,26 @@ export async function handleFinished(iii: ISdk, rec: TurnStateRecord): Promise<v
   rec.function_results = [];
   rec.pending_function_calls = calls.map(unwrapAgentTrigger);
 
-  const prepared: PreparedEntry[] = rec.pending_function_calls.map((fc) => ({
-    function_call: fc,
-    blocked: null,
-  }));
+  const prepared: PreparedEntry[] = calls.map((raw) => {
+    const function_call = unwrapAgentTrigger(raw);
+    if (!function_call.function_id) {
+      return { function_call, blocked: missingFunctionResult() };
+    }
+    return { function_call, blocked: null };
+  });
 
   await persistence.saveExecutedCalls(iii, rec.session_id, []);
   await persistence.savePreparedCalls(iii, rec.session_id, prepared);
   transitionTo(rec, 'function_execute');
 }
 
-export async function execute(iii: ISdk, payload: TurnStepPayload): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
-  if (!rec) {
-    throw new Error(`turn::assistant_finished invariant: missing session ${payload.session_id}`);
-  }
-  const skipped = staleSkipResult('assistant_finished', rec);
-  if (skipped) return skipped;
-
-  const from_state = rec.state;
-  try {
-    await handleFinished(iii, rec);
-  } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
-  }
-  await persistence.saveRecord(iii, rec);
-  return { ok: true, from_state, to_state: rec.state };
-}
-
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::assistant_finished',
-    async (payload: unknown) => execute(iii, TurnStepPayloadSchema.parse(payload)),
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'assistant_finished', handleFinished, parsed);
+    },
     {
       description:
         'Run one durable FSM transition for session in state assistant_finished: finalize assistant and route onward.',

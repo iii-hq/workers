@@ -3,12 +3,11 @@ import type { ISdk } from '../../src/runtime/iii.js';
 import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
-import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/turn-step-payload.js';
+import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import {
-  execute,
   handleProvisioning,
   parseDirectoryBody,
-  parseRunRequest,
+  register,
 } from '../../src/turn-orchestrator/states/provisioning.js';
 
 type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
@@ -34,24 +33,6 @@ function fakeIii(responses: Record<string, unknown> = {}): { iii: ISdk; calls: T
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe('parseRunRequest', () => {
-  it('maps persisted run::start fields with defaults for missing keys', () => {
-    expect(parseRunRequest({})).toEqual({
-      provider: '',
-      model: '',
-      mode: null,
-      system_prompt: '',
-      image: 'python',
-      idle_timeout_secs: 300,
-    });
-  });
-
-  it('rejects invalid mode values', () => {
-    expect(parseRunRequest({ mode: 'invalid' }).mode).toBeNull();
-    expect(parseRunRequest({ mode: 'plan' }).mode).toBe('plan');
-  });
 });
 
 describe('parseDirectoryBody', () => {
@@ -81,8 +62,6 @@ describe('handleProvisioning', () => {
       model: 'gpt-4',
       mode: 'agent',
       system_prompt: '',
-      image: 'python',
-      idle_timeout_secs: 300,
     });
     const saveSchemas = vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
@@ -114,6 +93,7 @@ describe('handleProvisioning', () => {
     vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
       provider: 'openai',
       model: 'gpt-4',
+      mode: null,
       system_prompt: 'custom override',
     });
     vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
@@ -133,7 +113,12 @@ describe('handleProvisioning', () => {
     const { iii } = fakeIii();
     const cfg = { system_default_skills: ['iii://missing'] };
 
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({});
+    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
+      provider: '',
+      model: '',
+      mode: null,
+      system_prompt: '',
+    });
     vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
@@ -156,40 +141,59 @@ describe('TurnStepPayloadSchema', () => {
   });
 });
 
-describe('execute', () => {
+describe('register', () => {
   const cfg: TurnOrchestratorConfig = { system_default_skills: [] };
 
-  it('throws when the session record is missing', async () => {
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(null);
+  type Handler = (payload: unknown) => Promise<unknown>;
 
-    await expect(execute({} as ISdk, cfg, { session_id: 'missing' })).rejects.toThrow(
-      'turn::provisioning invariant: missing session missing',
-    );
-  });
+  function captureHandler(): { iii: ISdk; getHandler: () => Handler; getId: () => string } {
+    let handler: Handler | null = null;
+    let registeredId = '';
+    const iii = {
+      registerFunction: (id: string, fn: Handler) => {
+        registeredId = id;
+        handler = fn;
+        return { unregister: () => {} };
+      },
+      trigger: async () => null,
+    } as unknown as ISdk;
+    return {
+      iii,
+      getHandler: () => {
+        if (!handler) throw new Error('handler not registered');
+        return handler;
+      },
+      getId: () => registeredId,
+    };
+  }
 
-  it('returns stale skip when persisted state drifted', async () => {
-    const rec = { ...newRecord('s1'), state: 'assistant_streaming' as const };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
-
-    const result = await execute({} as ISdk, cfg, { session_id: 's1' });
-
-    expect(result).toEqual({ ok: true, skipped: true, reason: 'stale' });
-    expect(saveRecord).not.toHaveBeenCalled();
-  });
-
-  it('runs handleProvisioning, saves the record, and returns transition metadata', async () => {
+  it('registers turn::provisioning, threads cfg into the runner, and returns metadata', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    const { iii } = fakeIii();
     vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
     const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({});
+    const loadRunRequest = vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
+      provider: '',
+      model: '',
+      mode: null,
+      system_prompt: '',
+    });
     vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
-    const result = await execute(iii, cfg, { session_id: 's1' });
+    const { iii, getHandler, getId } = captureHandler();
+    register(iii, cfg);
+    expect(getId()).toBe('turn::provisioning');
 
-    expect(saveRecord).toHaveBeenCalledWith(iii, rec);
+    const result = await getHandler()({ session_id: 's1' });
+
+    // cfg flows through to handleProvisioning (which reads the run request),
+    // and the runner threads the pre-mutation snapshot into saveRecord.
+    expect(loadRunRequest).toHaveBeenCalledWith(iii, 's1');
+    expect(saveRecord).toHaveBeenCalledWith(
+      iii,
+      rec,
+      expect.objectContaining({ state: 'provisioning' }),
+    );
     expect(result).toEqual({
       ok: true,
       from_state: 'provisioning',
@@ -197,14 +201,9 @@ describe('execute', () => {
     });
   });
 
-  it('wraps handler failures as transition errors', async () => {
-    const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
-    vi.spyOn(persistence, 'loadRunRequest').mockRejectedValue(new Error('boom'));
-
-    await expect(execute({} as ISdk, cfg, { session_id: 's1' })).rejects.toThrow(
-      'transition from provisioning failed: Error: boom',
-    );
+  it('rejects payloads missing session_id', async () => {
+    const { iii, getHandler } = captureHandler();
+    register(iii, cfg);
+    await expect(getHandler()({})).rejects.toThrow();
   });
 });

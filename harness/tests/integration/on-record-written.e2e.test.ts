@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction } from '../../src/runtime/iii.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
 
 function fakeIii(): {
   iii: ISdk;
@@ -122,5 +122,37 @@ describe('saveRecord wake integration', () => {
     await persistence.saveRecord(iii, rec);
 
     expect(wakeInvocations).toEqual([]);
+  });
+});
+
+function turnStateGets(iii: ISdk, session_id: string): number {
+  const trigger = iii.trigger as unknown as {
+    mock: { calls: Array<[{ function_id: string; payload?: { key?: string } }]> };
+  };
+  return trigger.mock.calls.filter(
+    ([arg]) => arg.function_id === 'state::get' && arg.payload?.key === turnStateKey(session_id),
+  ).length;
+}
+
+describe('saveRecord read elimination (#5)', () => {
+  it('2-arg saveRecord reads turn_state exactly once (no double load)', async () => {
+    const { iii } = fakeIii();
+    const rec = newRecord('sess-r1');
+    rec.state = 'provisioning';
+
+    await persistence.saveRecord(iii, rec);
+
+    expect(turnStateGets(iii, 'sess-r1')).toBe(1);
+  });
+
+  it('saveRecord with a threaded previous reads turn_state zero times', async () => {
+    const { iii } = fakeIii();
+    const previous = newRecord('sess-r2');
+    previous.state = 'provisioning';
+    const next = { ...previous, state: 'assistant_streaming' as const };
+
+    await persistence.saveRecord(iii, next, previous);
+
+    expect(turnStateGets(iii, 'sess-r2')).toBe(0);
   });
 });

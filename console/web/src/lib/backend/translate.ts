@@ -3,13 +3,12 @@
  * `agent::events`) to console/web's `StreamEvent` contract documented in
  * `PLAYGROUND.md`.
  *
- * Phase 2.A: `turn-orchestrator` now emits `MessageUpdate` events with a
+ * Phase 2.A: `turn-orchestrator` emits `message_update` events with a
  * provider `AssistantMessageEvent` payload for every non-terminal frame,
  * so token-by-token streaming flows through the `message_update` branch
- * below. The terminal `MessageStart`/`MessageEnd` for the assistant
- * message are still emitted, but `translateMessageStart` no longer
- * re-emits the body (the deltas already populated the renderer); it
- * just emits any function-call blocks that ride on the same message.
+ * below. Terminal assistant turns emit a single `message_complete` event;
+ * when `body_streamed` is false the full body is translated here, otherwise
+ * only `assistant-end` (+ abnormal `stop-reason`) is emitted.
  *
  * Wire mapping:
  *   - `text_delta`     → `assistant-token { token: delta }`
@@ -23,7 +22,7 @@
  *   - `function_execution_start` → `fcall-start` (with args).
  *   - `function_execution_end`   → `fcall-end` (with result).
  *   - `agent_end` → `assistant-end`.
- *   - `agent_start` / `turn_start` / `turn_end` / `message_end` /
+ *   - `agent_start` / `turn_start` / `turn_end` /
  *     `function_execution_update` → noop.
  *   - `turn_state_changed` → noop (routed through `createTurnStateTranslator`).
  */
@@ -31,7 +30,6 @@
 import type {
   AgentEvent,
   AgentMessage,
-  AssistantMessage,
   AssistantMessageEvent,
   ContentBlock,
   FunctionResult,
@@ -41,7 +39,10 @@ import { diffPending, type PendingApproval } from './pending-approvals-store'
 import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
-export function translateAgentEvent(event: AgentEvent, sessionId?: string): StreamEvent[] {
+export function translateAgentEvent(
+  event: AgentEvent,
+  sessionId?: string,
+): StreamEvent[] {
   switch (event.type) {
     case 'agent_start':
     case 'turn_start':
@@ -52,15 +53,14 @@ export function translateAgentEvent(event: AgentEvent, sessionId?: string): Stre
     case 'turn_state_changed':
       return []
 
-    case 'message_end':
-      if (event.message.role !== 'assistant') return []
-      return translateAssistantMessageEnd(event.message)
+    case 'message_complete':
+      return translateMessageComplete(
+        event.message,
+        event.body_streamed === true,
+      )
 
     case 'message_update':
       return translateMessageUpdate(event.llm_event)
-
-    case 'message_start':
-      return translateMessageStart(event.message)
 
     case 'function_execution_start':
       return [
@@ -110,7 +110,7 @@ export function translateAgentEvent(event: AgentEvent, sessionId?: string): Stre
  * `AgentEvent.MessageUpdate.llm_event`) into the StreamEvent contract.
  * Non-terminal text and thinking deltas drive the renderer; everything
  * else is silently dropped — the terminal `Done`/`Error` event is
- * mirrored by a `MessageEnd` (and ultimately by `agent_end` →
+ * mirrored by `message_complete` (and ultimately by `agent_end` →
  * `assistant-end`), so we don't need to surface them here.
  */
 function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
@@ -130,31 +130,20 @@ function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
   }
 }
 
-function translateMessageStart(message: AgentMessage): StreamEvent[] {
+function translateMessageComplete(
+  message: AgentMessage,
+  bodyStreamed: boolean,
+): StreamEvent[] {
   if (message.role !== 'assistant') {
     return []
   }
-  const hasStreamableContent = message.content.some((b) => b.type === 'text' || b.type === 'thinking')
-
-  if (hasStreamableContent) {
-    // The provider streamed; nothing to re-emit.
-    return []
-  }
   const out: StreamEvent[] = []
-  for (const block of message.content) {
-    appendBlock(block, out)
+  if (!bodyStreamed) {
+    for (const block of message.content) {
+      appendBlock(block, out)
+    }
   }
-  return out
-}
-
-/**
- * Emits `assistant-end` plus, when the turn terminated abnormally, a
- * `stop-reason` notice so the UI can render a system message with the
- * cause. Pre-fix this branch dropped `stop_reason` and `error_message`
- * on the floor — the user saw a truncated reply with no diagnostic.
- */
-function translateAssistantMessageEnd(message: AssistantMessage): StreamEvent[] {
-  const out: StreamEvent[] = [{ kind: 'assistant-end' }]
+  out.push({ kind: 'assistant-end' })
   const stop = message.stop_reason as
     | 'end'
     | 'length'
@@ -162,14 +151,13 @@ function translateAssistantMessageEnd(message: AssistantMessage): StreamEvent[] 
     | 'aborted'
     | 'function_call'
     | undefined
-  // Clean ends and tool-call hops don't need a notice — the next turn
-  // will visibly continue. We only surface terminal anomalies.
   if (stop === 'length' || stop === 'error' || stop === 'aborted') {
     out.push({
       kind: 'stop-reason',
       reason: stop,
       message:
-        typeof message.error_message === 'string' && message.error_message.length > 0
+        typeof message.error_message === 'string' &&
+        message.error_message.length > 0
           ? message.error_message
           : undefined,
     })
@@ -211,7 +199,10 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
  * through its existing path. Removing the entry from our mirror is
  * bookkeeping only.
  */
-export function createTurnStateTranslator(): (event: TurnStateChangedEvent, sessionId: string) => StreamEvent[] {
+export function createTurnStateTranslator(): (
+  event: TurnStateChangedEvent,
+  sessionId: string,
+) => StreamEvent[] {
   const mirrors = new Map<string, PendingApproval[]>()
   return (event, sessionId) => {
     const prev = mirrors.get(sessionId) ?? []
@@ -239,7 +230,12 @@ export function createTurnStateTranslator(): (event: TurnStateChangedEvent, sess
  * `kind: 'denied'`).
  */
 function wrapErrorOutput(result: FunctionResult): {
-  error: { kind: string; message: string; details: unknown; content: ContentBlock[] }
+  error: {
+    kind: string
+    message: string
+    details: unknown
+    content: ContentBlock[]
+  }
 } {
   return {
     error: {

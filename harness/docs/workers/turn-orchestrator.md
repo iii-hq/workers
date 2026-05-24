@@ -10,12 +10,12 @@ immediately; the rest of the work happens inside the durable `turn::step`
 state machine, woken once per state transition by a publish to the
 `turn::step_requested` topic. The FSM provisions the sandbox, streams the
 assistant turn from a provider, executes any returned function calls
-through the `agent::trigger` chokepoint, emits `agent::events` for the
+through `dispatchWithHook`, emits `agent::events` for the
 harness fanout, and persists everything to iii state so the run survives
 restarts.
 
-`agent::trigger` is the single dispatcher every agent-issued tool call passes
-through. It runs `consultBefore` before forwarding to the target function
+`dispatchWithHook` in [agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) is the single
+dispatcher every agent-issued tool call passes through. It runs `consultBefore` before forwarding to the target function
 id. `consultBefore` triggers `policy::check_permissions` directly (5 s
 timeout) and maps the reply to allow / deny / pending. Fail-closed: policy
 unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
@@ -25,7 +25,6 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 - `run::start` — Start a durable agent session and return immediately.
 - `turn::step` — Run one durable state machine transition for a session.
 - `turn::get_state` — Read the current `TurnStateRecord` for a session (or null for unknown sessions). UI clients use this on reload to recover any in-progress modals (e.g. `function_awaiting_approval`) without reading iii state directly.
-- `agent::trigger` — LLM-facing dispatcher: dispatches an iii function and returns a FunctionResult.
 - `turn::is_abort_signal_set` — Condition function bound to the agent-scope state trigger; matches `state:created`/`state:updated` writes that set `session/<id>/abort_signal` to `true`.
 - `turn::on_abort_signal` — State trigger adapter: publishes `turn::step_requested` when the abort signal is set so the FSM advances on the next safe boundary.
 - `turn::is_stepable_record_write` — Condition function bound to the record-written state trigger; matches `turn_state` writes whose `new_value.state` is non-terminal and non-parking (i.e. excludes `stopped` and `function_awaiting_approval`).
@@ -54,7 +53,7 @@ The 11 states from
 | `assistant_streaming` | same | Drain the channel; relay events. |
 | `assistant_finished` | same | Persist the final `AssistantMessage`; pick next state. |
 | `function_prepare` | [states/functions.ts](harness/src/turn-orchestrator/states/functions.ts) | Snapshot the pending function calls. |
-| `function_execute` | same | Run each call via `dispatchWithHook` → `agent::trigger`. If the gate returns `pending`, append the call to `awaiting_approval` and transition to `function_awaiting_approval` (the rest of the batch is left for the resumed step). Each call is bracketed by a `function_execution_start` / `function_execution_end` pair; the `end` event carries `duration_ms` (wall-clock between the matching start and end), persisted on `ExecutedEntry` so resumed runs replay the original timing instead of the ~0ms it takes to re-emit. Approval wait time is naturally excluded — pending calls return without an end emit, and the resumed step re-emits a fresh start that resets the timer. |
+| `function_execute` | same | Run each call via `dispatchWithHook` (pre-approved resume calls use `triggerFunctionCall` and skip the gate). If the gate returns `pending`, append the call to `awaiting_approval` and transition to `function_awaiting_approval` (the rest of the batch is left for the resumed step). Each call is bracketed by a `function_execution_start` / `function_execution_end` pair; the `end` event carries `duration_ms` (wall-clock between the matching start and end), persisted on `ExecutedEntry` so resumed runs replay the original timing instead of the ~0ms it takes to re-emit. Approval wait time is naturally excluded — pending calls return without an end emit, and the resumed step re-emits a fresh start that resets the timer. |
 | `function_awaiting_approval` | same (`handleAwaitingApproval`) | Read `approvals/<sid>/<cid>` for every entry in `awaiting_approval`. While any decision is still missing, return without stepping (the next `turn::approval_resume` invoke will wake `turn::step`). When all decisions are present, fold them into the prepared snapshot — `allow` → `pre_approved: true`, `deny`/`aborted` → `blocked` with a denial result — clear `awaiting_approval`, and transition back to `function_execute`. |
 | `function_finalize` | same | Persist results; emit `function_call_end` + `turn_end` events. |
 | `steering_check` | [states/steering.ts](harness/src/turn-orchestrator/states/steering.ts) | Decide whether to continue, stop, or hit `max_turns`. |
@@ -114,7 +113,7 @@ From
 | File | Purpose |
 |---|---|
 | [src/turn-orchestrator/main.ts](harness/src/turn-orchestrator/main.ts) | Binary entry point. |
-| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes `run::start`, `agent::trigger`, `turn::step`, abort-signal and record-written state triggers, and kicks off the bootstrap. |
+| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes `run::start`, per-state `turn::{state}` handlers, abort-signal trigger, and kicks off the bootstrap. |
 | [src/turn-orchestrator/run-start.ts](harness/src/turn-orchestrator/run-start.ts) | `run::start` handler — persists run config and messages, seeds `turn_state`, and wakes the FSM via the record-written state trigger. |
 | [src/turn-orchestrator/get-state.ts](harness/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader that returns the current `TurnStateRecord` for a session. UI clients call this on reload to recover in-progress modals; the orchestrator owns the state schema/key layout so clients never read iii state directly. |
 | [src/turn-orchestrator/agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) | The dispatcher chokepoint; `dispatchWithHook` runs `consultBefore` before triggering the function and returns `result` / `deny` / `pending`. |

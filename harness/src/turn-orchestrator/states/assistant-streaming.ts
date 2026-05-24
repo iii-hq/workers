@@ -15,13 +15,9 @@ import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
 import { runPreflight } from '../preflight.js';
 import { buildInput, decide, targetFunctionId } from '../provider-router.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
-import {
-  TurnStepPayloadSchema,
-  type TurnStepPayload,
-  type TurnStepResult,
-  staleSkipResult,
-} from '../turn-step-payload.js';
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 function eventPartial(ev: AssistantMessageEvent): AssistantMessage | null {
   if ('partial' in ev) return ev.partial;
@@ -82,8 +78,11 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
       provider: '',
       timestamp: Date.now(),
     };
-    await emit(iii, rec.session_id, { type: 'message_start', message: exhausted });
-    await emit(iii, rec.session_id, { type: 'message_end', message: exhausted });
+    await emit(iii, rec.session_id, {
+      type: 'message_complete',
+      message: exhausted,
+      body_streamed: false,
+    });
     await emit(iii, rec.session_id, {
       type: 'turn_end',
       message: exhausted,
@@ -99,16 +98,14 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   }
   rec.turn_count++;
   rec.turn_end_emitted = false;
+  rec.assistant_body_streamed = false;
   await emit(iii, rec.session_id, { type: 'turn_start' });
 
   const request = await persistence.loadRunRequest(iii, rec.session_id);
   let messages = await persistence.loadMessages(iii, rec.session_id);
   const schemas = await persistence.loadFunctionSchemas(iii, rec.session_id);
 
-  const provider = typeof request.provider === 'string' ? (request.provider as string) : '';
-  const model = typeof request.model === 'string' ? (request.model as string) : '';
-  const system_prompt =
-    typeof request.system_prompt === 'string' ? (request.system_prompt as string) : null;
+  const { provider, model, system_prompt } = request;
   const tools = (Array.isArray(schemas) ? schemas : []) as AgentFunction[];
 
   const decision = decide({ provider, model });
@@ -206,6 +203,9 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
               message: partial,
               llm_event: event,
             });
+            if (event.type === 'text_delta' || event.type === 'thinking_delta') {
+              rec.assistant_body_streamed = true;
+            }
             if (event.type === 'functioncall_start' || event.type === 'functioncall_delta') {
               const fc = latestFunctionCall(partial);
               if (fc) {
@@ -250,28 +250,13 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   transitionTo(rec, 'assistant_finished');
 }
 
-export async function execute(iii: ISdk, payload: TurnStepPayload): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
-  if (!rec) {
-    throw new Error(`turn::assistant_streaming invariant: missing session ${payload.session_id}`);
-  }
-  const skipped = staleSkipResult('assistant_streaming', rec);
-  if (skipped) return skipped;
-
-  const from_state = rec.state;
-  try {
-    await handleStreaming(iii, rec);
-  } catch (err) {
-    throw new Error(`transition from ${from_state} failed: ${String(err)}`);
-  }
-  await persistence.saveRecord(iii, rec);
-  return { ok: true, from_state, to_state: rec.state };
-}
-
 export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::assistant_streaming',
-    async (payload: unknown) => execute(iii, TurnStepPayloadSchema.parse(payload)),
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'assistant_streaming', handleStreaming, parsed);
+    },
     {
       description:
         'Run one durable FSM transition for session in state assistant_streaming: start turn and stream provider response.',

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '@/types/iii-agent-event'
 import { createTurnStateTranslator, translateAgentEvent } from './translate'
 
-describe('translateAgentEvent — message_end stop_reason surfacing', () => {
+describe('translateAgentEvent — message_complete', () => {
   const baseAssistant = {
     role: 'assistant' as const,
     content: [{ type: 'text' as const, text: 'partial reply…' }],
@@ -11,18 +11,36 @@ describe('translateAgentEvent — message_end stop_reason surfacing', () => {
     timestamp: 0,
   }
 
-  it('emits ONLY assistant-end for a clean stop_reason="end"', () => {
+  it('emits ONLY assistant-end for a clean stop_reason="end" when body was streamed', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: { ...baseAssistant, stop_reason: 'end' },
+      body_streamed: true,
     }
     expect(translateAgentEvent(event)).toEqual([{ kind: 'assistant-end' }])
   })
 
+  it('emits assistant-token blocks and assistant-end for a non-streamed batch message', () => {
+    const event: AgentEvent = {
+      type: 'message_complete',
+      message: {
+        ...baseAssistant,
+        stop_reason: 'end',
+        content: [{ type: 'text', text: 'hello batch' }],
+      },
+      body_streamed: false,
+    }
+    expect(translateAgentEvent(event)).toEqual([
+      { kind: 'assistant-token', token: 'hello batch' },
+      { kind: 'assistant-end' },
+    ])
+  })
+
   it('emits assistant-end + stop-reason notice when the turn hit max_tokens (stop_reason="length")', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: { ...baseAssistant, stop_reason: 'length' },
+      body_streamed: true,
     }
     const out = translateAgentEvent(event)
     expect(out[0]).toEqual({ kind: 'assistant-end' })
@@ -31,12 +49,14 @@ describe('translateAgentEvent — message_end stop_reason surfacing', () => {
 
   it('emits assistant-end + stop-reason notice carrying error_message when stop_reason="error"', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: {
         ...baseAssistant,
         stop_reason: 'error',
-        error_message: 'lmstudio stream closed mid-response after ~3214 output tokens',
+        error_message:
+          'lmstudio stream closed mid-response after ~3214 output tokens',
       },
+      body_streamed: true,
     }
     const out = translateAgentEvent(event)
     expect(out[0]).toEqual({ kind: 'assistant-end' })
@@ -49,8 +69,9 @@ describe('translateAgentEvent — message_end stop_reason surfacing', () => {
 
   it('emits assistant-end + stop-reason on abort', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: { ...baseAssistant, stop_reason: 'aborted' },
+      body_streamed: true,
     }
     const out = translateAgentEvent(event)
     expect(out).toHaveLength(2)
@@ -59,15 +80,16 @@ describe('translateAgentEvent — message_end stop_reason surfacing', () => {
 
   it('does NOT emit a stop-reason notice for function_call (turn will continue)', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: { ...baseAssistant, stop_reason: 'function_call' },
+      body_streamed: true,
     }
     expect(translateAgentEvent(event)).toEqual([{ kind: 'assistant-end' }])
   })
 
-  it('returns [] for non-assistant message_end (user/function_result messages)', () => {
+  it('returns [] for non-assistant message_complete (user/function_result messages)', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: {
         role: 'user',
         content: [{ type: 'text', text: 'hi' }],
@@ -79,8 +101,9 @@ describe('translateAgentEvent — message_end stop_reason surfacing', () => {
 
   it('omits the error_message field when none was provided', () => {
     const event: AgentEvent = {
-      type: 'message_end',
+      type: 'message_complete',
       message: { ...baseAssistant, stop_reason: 'length' },
+      body_streamed: true,
     }
     const out = translateAgentEvent(event)
     expect(out[1]).toEqual({ kind: 'stop-reason', reason: 'length' })
@@ -136,7 +159,8 @@ describe('translateAgentEvent — compaction_done', () => {
     }
     const out = translateAgentEvent(event, 'sess-y')
     expect(
-      (out[0] as { kind: 'compaction'; tailStartId: string | null }).tailStartId,
+      (out[0] as { kind: 'compaction'; tailStartId: string | null })
+        .tailStartId,
     ).toBeNull()
   })
 })
@@ -227,7 +251,11 @@ describe('createTurnStateTranslator', () => {
           old_value: {
             state: 'function_awaiting_approval',
             awaiting_approval: [
-              { function_call_id: 'fc-1', function_id: 'shell::shell', args: {} },
+              {
+                function_call_id: 'fc-1',
+                function_id: 'shell::shell',
+                args: {},
+              },
             ],
           },
         },
@@ -245,12 +273,20 @@ describe('createTurnStateTranslator', () => {
       ],
     }
     translate(
-      { type: 'turn_state_changed', event_type: 'state:created', new_value: pending },
+      {
+        type: 'turn_state_changed',
+        event_type: 'state:created',
+        new_value: pending,
+      },
       'sess-a',
     )
     expect(
       translate(
-        { type: 'turn_state_changed', event_type: 'state:created', new_value: pending },
+        {
+          type: 'turn_state_changed',
+          event_type: 'state:created',
+          new_value: pending,
+        },
         'sess-b',
       ),
     ).toHaveLength(1)
