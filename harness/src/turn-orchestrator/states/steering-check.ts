@@ -10,7 +10,7 @@ import type { AgentMessage, AssistantMessage } from '../../types/agent-message.j
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
 import { runTransition } from '../run-transition.js';
-import { type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
+import { AGENT_SCOPE, type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 export type SteeringRoute =
@@ -38,7 +38,7 @@ async function abortSet(iii: ISdk, session_id: string): Promise<boolean> {
   try {
     const v = await iii.trigger<unknown, unknown>({
       function_id: 'state::get',
-      payload: { scope: 'agent', key: abortSignalKey(session_id) },
+      payload: { scope: AGENT_SCOPE, key: abortSignalKey(session_id) },
     });
     return v === true;
   } catch {
