@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { TransientError } from '../../src/turn-orchestrator/errors.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
 import {
   type TurnStateRecord,
@@ -82,17 +83,65 @@ describe('runTransition', () => {
     expect(captured?.awaiting_approval).toEqual([]);
   });
 
-  it('wraps handler failures as transition errors tagged with the from-state', async () => {
+  it('routes an unexpected handler throw to failed without re-throwing', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'steering_check' };
     vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
     const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
+    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
     const handle = vi.fn(async () => {
       throw new Error('boom');
     });
 
+    // Should NOT re-throw — returns { ok: true, to_state: 'failed' }
+    const result = await runTransition({} as ISdk, 'steering_check', handle, { session_id: 's1' });
+    expect(result).toMatchObject({ ok: true, to_state: 'failed' });
+    expect(saveRecord).toHaveBeenCalled();
+  });
+});
+
+function fakeIii(record: unknown) {
+  const writes: Array<{ function_id: string; payload: any }> = [];
+  const iii = {
+    trigger: vi.fn(async ({ function_id, payload }: any) => {
+      writes.push({ function_id, payload });
+      if (function_id === 'state::get' && payload.key.endsWith('/turn_state')) return record;
+      return null;
+    }),
+  } as any;
+  return { iii, writes };
+}
+
+describe('runTransition error model', () => {
+  const base = {
+    session_id: 's1', state: 'function_execute', turn_count: 1,
+    pending_function_calls: [], function_results: [], turn_end_emitted: false,
+    started_at_ms: 1, updated_at_ms: 1,
+  };
+
+  it('routes an unexpected throw to failed and does not re-throw', async () => {
+    const { iii, writes } = fakeIii({ ...base });
+    const res = await runTransition(iii, 'function_execute', async () => {
+      throw new Error('boom');
+    }, { session_id: 's1' });
+    expect(res).toMatchObject({ ok: true, to_state: 'failed' });
+    const saved = writes.find((w) => w.function_id === 'state::set' && w.payload.key.endsWith('/turn_state'));
+    expect(saved?.payload.value.state).toBe('failed');
+    expect(saved?.payload.value.error.message).toContain('boom');
+    const surfaced = writes.some((w) =>
+      w.function_id === 'stream::set'
+      && w.payload.data?.type === 'message_complete'
+      && w.payload.data?.message?.stop_reason === 'error');
+    expect(surfaced).toBe(true);
+    const ended = writes.some((w) => w.function_id === 'stream::set' && w.payload.data?.type === 'agent_end');
+    expect(ended).toBe(true);
+  });
+
+  it('re-throws TransientError so the queue retries', async () => {
+    const { iii } = fakeIii({ ...base });
     await expect(
-      runTransition({} as ISdk, 'steering_check', handle, { session_id: 's1' }),
-    ).rejects.toThrow('transition from steering_check failed: Error: boom');
-    expect(saveRecord).not.toHaveBeenCalled();
+      runTransition(iii, 'function_execute', async () => {
+        throw new TransientError('retry me');
+      }, { session_id: 's1' }),
+    ).rejects.toThrow('retry me');
   });
 });
