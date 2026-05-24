@@ -8,13 +8,12 @@ import { approvalResumeFnId } from '../approval-gate/schemas.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
-
-const STATE_SCOPE_AGENT = 'agent';
+import { AGENT_SCOPE, abortSignalKey } from './state.js';
 
 export async function performAbortSideEffects(iii: ISdk, session_id: string): Promise<void> {
   await trigger(iii, 'state::set', {
-    scope: STATE_SCOPE_AGENT,
-    key: `session/${session_id}/abort_signal`,
+    scope: AGENT_SCOPE,
+    key: abortSignalKey(session_id),
     value: true,
   });
 
