@@ -12,6 +12,7 @@ export type RunRequest = {
   model: string;
   mode: Mode | null;
   system_prompt: string;
+  function_schemas: unknown[];
 };
 
 function parseMode(value: unknown): Mode | null {
@@ -24,5 +25,6 @@ export function parseRunRequest(raw: Record<string, unknown>): RunRequest {
     model: typeof raw.model === 'string' ? raw.model : '',
     mode: parseMode(raw.mode),
     system_prompt: typeof raw.system_prompt === 'string' ? raw.system_prompt : '',
+    function_schemas: Array.isArray(raw.function_schemas) ? raw.function_schemas : [],
   };
 }

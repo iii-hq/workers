@@ -62,16 +62,13 @@ describe('handleProvisioning', () => {
       model: 'gpt-4',
       mode: 'agent',
       system_prompt: '',
+      function_schemas: [],
     });
-    const saveSchemas = vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
     await handleProvisioning(iii, cfg, rec);
 
     expect(rec.state).toBe('assistant_streaming');
-    expect(saveSchemas).toHaveBeenCalledWith(iii, 's1', [
-      expect.objectContaining({ name: 'agent_trigger' }),
-    ]);
     expect(saveRunRequest).toHaveBeenCalledWith(
       iii,
       's1',
@@ -79,6 +76,7 @@ describe('handleProvisioning', () => {
         provider: 'openai',
         model: 'gpt-4',
         system_prompt: expect.stringContaining('operating in agent mode'),
+        function_schemas: [expect.objectContaining({ name: 'agent_trigger' })],
       }),
     );
     expect(calls.some((c) => c.function_id === 'directory::skills::index')).toBe(true);
@@ -95,8 +93,8 @@ describe('handleProvisioning', () => {
       model: 'gpt-4',
       mode: null,
       system_prompt: 'custom override',
+      function_schemas: [],
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
     await handleProvisioning(iii, cfg, rec);
@@ -118,8 +116,8 @@ describe('handleProvisioning', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
     await handleProvisioning(iii, cfg, rec);
@@ -176,8 +174,8 @@ describe('register', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
     vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
 
     const { iii, getHandler, getId } = captureHandler();

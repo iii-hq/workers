@@ -110,10 +110,9 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
 
   const request = await persistence.loadRunRequest(iii, rec.session_id);
   let messages = await persistence.loadMessages(iii, rec.session_id);
-  const schemas = await persistence.loadFunctionSchemas(iii, rec.session_id);
 
   const { provider, model, system_prompt } = request;
-  const tools = (Array.isArray(schemas) ? schemas : []) as AgentFunction[];
+  const tools = (Array.isArray(request.function_schemas) ? request.function_schemas : []) as AgentFunction[];
 
   const decision = decide({ provider, model });
   const targetFn = targetFunctionId(decision);

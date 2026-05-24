@@ -8,6 +8,7 @@ describe('parseRunRequest', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
   });
 
@@ -17,6 +18,7 @@ describe('parseRunRequest', () => {
       model: 'gpt-4',
       mode: null,
       system_prompt: 'hi',
+      function_schemas: [],
     });
   });
 
@@ -33,6 +35,14 @@ describe('parseRunRequest', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
+  });
+});
+
+describe('parseRunRequest function_schemas', () => {
+  it('defaults to [] and carries an array', () => {
+    expect(parseRunRequest({}).function_schemas).toEqual([]);
+    expect(parseRunRequest({ function_schemas: [{ name: 'x' }] }).function_schemas).toHaveLength(1);
   });
 });

@@ -5,13 +5,11 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
-import type { FunctionCall, FunctionResult } from '../types/function.js';
 import { type RunRequest, parseRunRequest } from './run-request.js';
 import {
   type ExecutedEntry,
   type PreparedEntry,
   type TurnStateRecord,
-  functionSchemasKey,
   lastSessionTreeLenKey,
   messagesKey,
   runRequestKey,
@@ -193,85 +191,6 @@ export async function saveRunRequest(
 export async function loadRunRequest(iii: ISdk, session_id: string): Promise<RunRequest> {
   const v = await stateGet(iii, runRequestKey(session_id));
   return parseRunRequest(v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
-}
-
-export async function saveFunctionSchemas(
-  iii: ISdk,
-  session_id: string,
-  schemas: unknown,
-): Promise<void> {
-  await stateSet(iii, functionSchemasKey(session_id), schemas);
-}
-
-export async function loadFunctionSchemas(iii: ISdk, session_id: string): Promise<unknown[]> {
-  const v = await stateGet(iii, functionSchemasKey(session_id));
-  return Array.isArray(v) ? v : [];
-}
-
-const PREPARED_KEY = 'function_prepared';
-const EXECUTED_KEY = 'function_executed';
-
-const stagingKey = (sid: string, suffix: string) => `session/${sid}/${suffix}`;
-
-async function stagingGet(iii: ISdk, session_id: string, suffix: string): Promise<unknown[]> {
-  const v = await stateGet(iii, stagingKey(session_id, suffix));
-  return Array.isArray(v) ? v : [];
-}
-
-
-export async function savePreparedCalls(
-  iii: ISdk,
-  session_id: string,
-  prepared: PreparedEntry[],
-): Promise<void> {
-  const payload = prepared.map((e) => ({
-    function_call: e.function_call,
-    blocked: e.blocked,
-    pre_approved: e.pre_approved ?? false,
-  }));
-  await stateSet(iii, stagingKey(session_id, PREPARED_KEY), payload);
-}
-
-export async function loadPreparedCalls(iii: ISdk, session_id: string): Promise<PreparedEntry[]> {
-  const items = await stagingGet(iii, session_id, PREPARED_KEY);
-  const out: PreparedEntry[] = [];
-  for (const it of items) {
-    if (!it || typeof it !== 'object') continue;
-    const obj = it as Record<string, unknown>;
-    const fc = obj.function_call as FunctionCall | undefined;
-    if (!fc) continue;
-    const blocked = (obj.blocked as FunctionResult | null) ?? null;
-    const pre_approved = obj.pre_approved === true;
-    out.push({ function_call: fc, blocked, pre_approved });
-  }
-  return out;
-}
-
-export async function saveExecutedCalls(
-  iii: ISdk,
-  session_id: string,
-  executed: ExecutedEntry[],
-): Promise<void> {
-  await stateSet(iii, stagingKey(session_id, EXECUTED_KEY), executed);
-}
-
-export async function loadExecutedCalls(iii: ISdk, session_id: string): Promise<ExecutedEntry[]> {
-  const items = await stagingGet(iii, session_id, EXECUTED_KEY);
-  const out: ExecutedEntry[] = [];
-  for (const it of items) {
-    if (!it || typeof it !== 'object') continue;
-    const obj = it as Record<string, unknown>;
-    const fc = obj.function_call as FunctionCall | undefined;
-    const result = obj.result as FunctionResult | undefined;
-    if (!fc || !result) continue;
-    out.push({
-      function_call: fc,
-      result,
-      is_error: typeof obj.is_error === 'boolean' ? obj.is_error : false,
-      duration_ms: typeof obj.duration_ms === 'number' ? obj.duration_ms : 0,
-    });
-  }
-  return out;
 }
 
 export function findExecutedCall(

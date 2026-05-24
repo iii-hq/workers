@@ -74,8 +74,6 @@ export async function handleProvisioning(
 ): Promise<void> {
   const request = await persistence.loadRunRequest(iii, rec.session_id);
 
-  await persistence.saveFunctionSchemas(iii, rec.session_id, [agentTriggerTool()]);
-
   const override = request.system_prompt.length > 0 ? request.system_prompt : null;
 
   const [skillsIndex, bodies] = await Promise.all([
@@ -84,7 +82,7 @@ export async function handleProvisioning(
   ]);
   const prompt = buildSystemPrompt(bodies, null, override, request.mode, skillsIndex);
 
-  const updated: RunRequest = { ...request, system_prompt: prompt };
+  const updated: RunRequest = { ...request, system_prompt: prompt, function_schemas: [agentTriggerTool()] };
   await persistence.saveRunRequest(iii, rec.session_id, updated);
 
   transitionTo(rec, 'assistant_streaming');
