@@ -98,9 +98,7 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([
-      agentTriggerCall('fc-1', 'shell::run', { command: 'ls' }),
-    ]);
+    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]);
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
@@ -190,9 +188,7 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([
-      agentTriggerCall('fc-1', 'shell::run', { command: 'ls' }),
-    ]);
+    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]);
 
     await handleExecute(iii, rec);
 

@@ -7,11 +7,7 @@
 
 import { z } from 'zod';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
-import type {
-  ExecutedCall,
-  FunctionBatchWork,
-  PreparedCall,
-} from './function-execute/types.js';
+import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
 
 /** Shared iii scope names for turn-orchestrator persistence (key = session_id). */
 export const TURN_STATE_SCOPE = 'turn_state';

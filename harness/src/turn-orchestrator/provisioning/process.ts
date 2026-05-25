@@ -51,7 +51,10 @@ export async function applyProvisioningOutcome(
   transitionTo(rec, 'assistant_streaming');
 }
 
-export async function runProvisioning(ports: ProvisioningPorts, rec: TurnStateRecord): Promise<void> {
+export async function runProvisioning(
+  ports: ProvisioningPorts,
+  rec: TurnStateRecord,
+): Promise<void> {
   const outcome = await processProvisioning(ports, rec);
   await applyProvisioningOutcome(ports, rec, outcome);
 }

@@ -29,7 +29,9 @@ function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage 
   };
 }
 
-function stubStreamingPorts(overrides: Partial<AssistantStreamingPorts> = {}): AssistantStreamingPorts {
+function stubStreamingPorts(
+  overrides: Partial<AssistantStreamingPorts> = {},
+): AssistantStreamingPorts {
   return {
     loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
@@ -144,9 +146,7 @@ describe('finalizeAssistantTurn', () => {
     const ports = stubStreamingPorts();
     const rec = newRecord('s1');
     rec.last_assistant = assistant({
-      content: [
-        { type: 'function_call', id: 'fc-1', function_id: 'shell::run', arguments: {} },
-      ],
+      content: [{ type: 'function_call', id: 'fc-1', function_id: 'shell::run', arguments: {} }],
     });
 
     await finalizeAssistantTurn(ports, rec);

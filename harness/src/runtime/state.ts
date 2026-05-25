@@ -94,57 +94,79 @@ export function createState(iii: ISdk, opts: CreateStateOptions = {}): IState {
 
   return {
     get: <TData>(input: StateGetInput): Promise<TData | null> =>
-      run('state::get', { scope: input.scope, key: input.key }, async () => {
-        const v = await iii.trigger<StateGetInput, TData>({
-          function_id: 'state::get',
-          payload: input,
-        });
-        return normalizeGetResult<TData>(v);
-      }, null),
+      run(
+        'state::get',
+        { scope: input.scope, key: input.key },
+        async () => {
+          const v = await iii.trigger<StateGetInput, TData>({
+            function_id: 'state::get',
+            payload: input,
+          });
+          return normalizeGetResult<TData>(v);
+        },
+        null,
+      ),
 
     set: <TData>(input: StateSetInput): Promise<StateSetResult<TData> | null> =>
-      run('state::set', { scope: input.scope, key: input.key }, async () => {
-        const result = await iii.trigger<StateSetInput, StateSetResult<TData>>({
-          function_id: 'state::set',
-          payload: input,
-        });
-        return result ?? null;
-      }, null),
+      run(
+        'state::set',
+        { scope: input.scope, key: input.key },
+        async () => {
+          const result = await iii.trigger<StateSetInput, StateSetResult<TData>>({
+            function_id: 'state::set',
+            payload: input,
+          });
+          return result ?? null;
+        },
+        null,
+      ),
 
     delete: (input: StateDeleteInput): Promise<DeleteResult> =>
-      run('state::delete', { scope: input.scope, key: input.key }, async () => {
-        const result = await iii.trigger<StateDeleteInput, DeleteResult>({
-          function_id: 'state::delete',
-          payload: input,
-        });
-        return result ?? {};
-      }, {}),
+      run(
+        'state::delete',
+        { scope: input.scope, key: input.key },
+        async () => {
+          const result = await iii.trigger<StateDeleteInput, DeleteResult>({
+            function_id: 'state::delete',
+            payload: input,
+          });
+          return result ?? {};
+        },
+        {},
+      ),
 
     list: <TData>(input: StateListInput): Promise<TData[]> =>
-      run('state::list', { scope: input.scope }, async () => {
-        const resp = await iii.trigger<StateListInput, unknown>({
-          function_id: 'state::list',
-          payload: input,
-        });
-        return parseStateListValues<TData>(resp);
-      }, []),
+      run(
+        'state::list',
+        { scope: input.scope },
+        async () => {
+          const resp = await iii.trigger<StateListInput, unknown>({
+            function_id: 'state::list',
+            payload: input,
+          });
+          return parseStateListValues<TData>(resp);
+        },
+        [],
+      ),
 
     update: <TData>(input: StateUpdateInput): Promise<StateUpdateResult<TData> | null> =>
-      run('state::update', { scope: input.scope, key: input.key }, async () => {
-        const result = await iii.trigger<StateUpdateInput, StateUpdateResult<TData>>({
-          function_id: 'state::update',
-          payload: input,
-        });
-        return result ?? null;
-      }, null),
+      run(
+        'state::update',
+        { scope: input.scope, key: input.key },
+        async () => {
+          const result = await iii.trigger<StateUpdateInput, StateUpdateResult<TData>>({
+            function_id: 'state::update',
+            payload: input,
+          });
+          return result ?? null;
+        },
+        null,
+      ),
   };
 }
 
 /** Lists all scope names that contain state data. */
-export async function stateListGroups(
-  iii: ISdk,
-  opts: CreateStateOptions = {},
-): Promise<string[]> {
+export async function stateListGroups(iii: ISdk, opts: CreateStateOptions = {}): Promise<string[]> {
   const tolerant = opts.tolerant !== false;
   try {
     const result = await iii.trigger<Record<string, never>, StateListGroupsResult | string[]>({

@@ -117,16 +117,25 @@ function fakeIii(record: unknown) {
 
 describe('runTransition error model', () => {
   const base = {
-    session_id: 's1', state: 'function_execute', turn_count: 1,
-    function_results: [], turn_end_emitted: false,
-    started_at_ms: 1, updated_at_ms: 1,
+    session_id: 's1',
+    state: 'function_execute',
+    turn_count: 1,
+    function_results: [],
+    turn_end_emitted: false,
+    started_at_ms: 1,
+    updated_at_ms: 1,
   };
 
   it('routes an unexpected throw to failed and does not re-throw', async () => {
     const { iii, writes } = fakeIii({ ...base });
-    const res = await runTransition(iii, 'function_execute', async () => {
-      throw new Error('boom');
-    }, { session_id: 's1' });
+    const res = await runTransition(
+      iii,
+      'function_execute',
+      async () => {
+        throw new Error('boom');
+      },
+      { session_id: 's1' },
+    );
     expect(res).toMatchObject({ ok: true, to_state: 'failed' });
     const saved = writes.find(
       (w) =>
@@ -136,21 +145,30 @@ describe('runTransition error model', () => {
     );
     expect(saved?.payload.value.state).toBe('failed');
     expect(saved?.payload.value.error.message).toContain('boom');
-    const surfaced = writes.some((w) =>
-      w.function_id === 'stream::set'
-      && w.payload.data?.type === 'message_complete'
-      && w.payload.data?.message?.stop_reason === 'error');
+    const surfaced = writes.some(
+      (w) =>
+        w.function_id === 'stream::set' &&
+        w.payload.data?.type === 'message_complete' &&
+        w.payload.data?.message?.stop_reason === 'error',
+    );
     expect(surfaced).toBe(true);
-    const ended = writes.some((w) => w.function_id === 'stream::set' && w.payload.data?.type === 'agent_end');
+    const ended = writes.some(
+      (w) => w.function_id === 'stream::set' && w.payload.data?.type === 'agent_end',
+    );
     expect(ended).toBe(true);
   });
 
   it('re-throws TransientError so the queue retries', async () => {
     const { iii } = fakeIii({ ...base });
     await expect(
-      runTransition(iii, 'function_execute', async () => {
-        throw new TransientError('retry me');
-      }, { session_id: 's1' }),
+      runTransition(
+        iii,
+        'function_execute',
+        async () => {
+          throw new TransientError('retry me');
+        },
+        { session_id: 's1' },
+      ),
     ).rejects.toThrow('retry me');
   });
 });

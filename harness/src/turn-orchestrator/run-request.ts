@@ -13,9 +13,7 @@ const RunRequestSchema = z.object({
   model: z.string().catch(''),
   mode: z
     .unknown()
-    .transform((v): Mode | null =>
-      v === 'plan' || v === 'ask' || v === 'agent' ? v : null,
-    ),
+    .transform((v): Mode | null => (v === 'plan' || v === 'ask' || v === 'agent' ? v : null)),
   system_prompt: z.string().catch(''),
   function_schemas: z.array(z.unknown()).catch([]),
 });

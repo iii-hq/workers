@@ -8,11 +8,7 @@ import { TriggerAction, type ISdk } from '../../runtime/iii.js';
 import { stateGet, stateListValues, stateSet } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentMessage } from '../../types/agent-message.js';
-import {
-  MESSAGES_SCOPE,
-  RUN_REQUEST_SCOPE,
-  TURN_STATE_SCOPE,
-} from '../state.js';
+import { MESSAGES_SCOPE, RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
 import { emit } from '../events.js';
 import { type RunRequest, parseRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
@@ -98,8 +94,7 @@ async function persistRecord(
   previous?: TurnStateRecord | null,
 ): Promise<TurnStateRecord | null> {
   const result = await scopedSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
-  const prev =
-    previous !== undefined ? previous : parseTurnStateRecord(result?.old_value ?? null);
+  const prev = previous !== undefined ? previous : parseTurnStateRecord(result?.old_value ?? null);
 
   await emitTurnStateChanged(
     iii,

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { missingFunctionResult, unwrapAgentTrigger } from '../../src/turn-orchestrator/agent-trigger.js';
+import {
+  missingFunctionResult,
+  unwrapAgentTrigger,
+} from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   finalizeBatch,
   FunctionExecuteInvariantError,
@@ -130,12 +133,7 @@ describe('runOneCall', () => {
       },
     };
 
-    const outcome = await runOneCall(
-      ports,
-      's1',
-      { route: 'dispatch', call: fc },
-      executed,
-    );
+    const outcome = await runOneCall(ports, 's1', { route: 'dispatch', call: fc }, executed);
 
     expect(outcome.kind).toBe('skipped');
     expect(ports.emitStart).not.toHaveBeenCalled();
@@ -150,12 +148,7 @@ describe('runOneCall', () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const executed: Record<string, ExecutedCall> = {};
 
-    const outcome = await runOneCall(
-      ports,
-      's1',
-      { route: 'dispatch', call: fc },
-      executed,
-    );
+    const outcome = await runOneCall(ports, 's1', { route: 'dispatch', call: fc }, executed);
 
     expect(outcome.kind).toBe('pending');
     expect(executed).toEqual({});

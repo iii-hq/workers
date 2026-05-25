@@ -8,10 +8,7 @@ import { dispatchWithHook, triggerFunctionCall } from '../agent-trigger.js';
 import { emit } from '../events.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
-import {
-  createTurnStatePorts,
-  type TurnStatePorts,
-} from '../state-runtime/ports.js';
+import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 import type { ExecutedCall } from './types.js';
 
 const RoutingEnvelopeSchema = z

@@ -138,7 +138,9 @@ describe('TurnStore.wakeStep', () => {
       }),
     } as unknown as ISdk;
 
-    await expect(createTurnStore(iii).wakeStep('sess-abc', 'provisioning')).resolves.toBeUndefined();
+    await expect(
+      createTurnStore(iii).wakeStep('sess-abc', 'provisioning'),
+    ).resolves.toBeUndefined();
   });
 });
 

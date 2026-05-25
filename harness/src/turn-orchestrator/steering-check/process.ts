@@ -7,10 +7,7 @@ import type { AgentMessage } from '../../types/agent-message.js';
 import { runTransition } from '../run-transition.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
-import {
-  emitTurnEndOnce,
-  resumeToAssistantStreaming,
-} from '../state-runtime/turn-end.js';
+import { emitTurnEndOnce, resumeToAssistantStreaming } from '../state-runtime/turn-end.js';
 import { type TurnStateRecord } from '../state.js';
 import { createSteeringCheckPorts, type SteeringCheckPorts } from './ports.js';
 
@@ -58,14 +55,9 @@ export async function processSteeringCheck(
   rec: TurnStateRecord,
 ): Promise<SteeringCheckOutcome> {
   const steering = await ports.drainInbox('steering', rec.session_id);
-  const followup =
-    steering.length > 0 ? [] : await ports.drainInbox('followup', rec.session_id);
+  const followup = steering.length > 0 ? [] : await ports.drainInbox('followup', rec.session_id);
 
-  const decision = route(
-    steering.length > 0,
-    followup.length > 0,
-    rec.function_results.length > 0,
-  );
+  const decision = route(steering.length > 0, followup.length > 0, rec.function_results.length > 0);
 
   if (
     (decision === 'steering' ||
@@ -113,7 +105,10 @@ export async function applySteeringCheckOutcome(
   }
 }
 
-export async function runSteeringCheck(ports: SteeringCheckPorts, rec: TurnStateRecord): Promise<void> {
+export async function runSteeringCheck(
+  ports: SteeringCheckPorts,
+  rec: TurnStateRecord,
+): Promise<void> {
   const outcome = await processSteeringCheck(ports, rec);
   await applySteeringCheckOutcome(ports, rec, outcome);
 }

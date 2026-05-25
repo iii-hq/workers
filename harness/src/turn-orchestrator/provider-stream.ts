@@ -123,7 +123,10 @@ export async function streamProviderTurn(
       timeoutMs: PROVIDER_STREAM_TIMEOUT_MS,
     })
     .catch((err) => {
-      logger.warn('provider stream trigger failed', { targetFn: params.targetFn, err: String(err) });
+      logger.warn('provider stream trigger failed', {
+        targetFn: params.targetFn,
+        err: String(err),
+      });
       error = formatProviderError(err);
       pump.end();
       return null;

@@ -15,9 +15,7 @@ import { type DenialEnvelope, consultBefore, gateUnavailableEnvelope } from './h
 
 export const TOOL_NAME = 'agent_trigger';
 
-export type DispatchResult =
-  | { kind: 'result'; result: FunctionResult }
-  | { kind: 'pending' };
+export type DispatchResult = { kind: 'result'; result: FunctionResult } | { kind: 'pending' };
 
 export function missingFunctionResult(): FunctionResult {
   return errorResult({

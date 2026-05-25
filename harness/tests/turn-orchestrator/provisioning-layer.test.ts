@@ -24,7 +24,9 @@ function stubPorts(overrides: Partial<ProvisioningPorts> = {}): ProvisioningPort
 
 describe('loadDefaultSkillBodies', () => {
   it('fetches each URI and maps to DefaultSkillBody', async () => {
-    const fetchSkillBody = vi.fn(async (id: string) => (id === 'iii-directory/index' ? 'BODY' : null));
+    const fetchSkillBody = vi.fn(async (id: string) =>
+      id === 'iii-directory/index' ? 'BODY' : null,
+    );
     const bodies = await loadDefaultSkillBodies({ fetchSkillBody }, ['iii://iii-directory/index']);
 
     expect(fetchSkillBody).toHaveBeenCalledWith('iii-directory/index');
@@ -34,10 +36,9 @@ describe('loadDefaultSkillBodies', () => {
   });
 
   it('preserves null bodies for unavailable skills', async () => {
-    const bodies = await loadDefaultSkillBodies(
-      { fetchSkillBody: vi.fn(async () => null) },
-      ['iii://missing'],
-    );
+    const bodies = await loadDefaultSkillBodies({ fetchSkillBody: vi.fn(async () => null) }, [
+      'iii://missing',
+    ]);
     expect(bodies[0]?.body).toBeNull();
   });
 });

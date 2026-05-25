@@ -21,10 +21,7 @@ export function persistedTrailingResultIds(messages: AgentMessage[]): Set<string
 }
 
 /** True when the trailing assistant message matches the candidate (re-entry dup). */
-export function isDuplicateAssistant(
-  messages: AgentMessage[],
-  asst: AssistantMessage,
-): boolean {
+export function isDuplicateAssistant(messages: AgentMessage[], asst: AssistantMessage): boolean {
   const last = messages[messages.length - 1];
   return (
     last !== undefined &&

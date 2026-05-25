@@ -110,9 +110,9 @@ describe('ApprovalDecisionSchema', () => {
 
   it('rejects a missing reason and an unknown decision', () => {
     expect(ApprovalDecisionSchema.safeParse({ decision: 'allow' }).success).toBe(false);
-    expect(
-      ApprovalDecisionSchema.safeParse({ decision: 'paused', reason: null }).success,
-    ).toBe(false);
+    expect(ApprovalDecisionSchema.safeParse({ decision: 'paused', reason: null }).success).toBe(
+      false,
+    );
   });
 
   it('keeps ApprovalResumePayloadSchema as a deprecated alias', () => {

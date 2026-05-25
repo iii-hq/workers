@@ -5,10 +5,7 @@ import { defaultRunRequest, installMockTurnStore } from './_helpers/mockTurnStor
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import { parseDirectoryBody } from '../../src/turn-orchestrator/provisioning/ports.js';
-import {
-  handleProvisioning,
-  register,
-} from '../../src/turn-orchestrator/provisioning/process.js';
+import { handleProvisioning, register } from '../../src/turn-orchestrator/provisioning/process.js';
 
 type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
 

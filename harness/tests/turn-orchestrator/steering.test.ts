@@ -27,9 +27,7 @@ function userMessage(text: string): AgentMessage {
   return { role: 'user', content: [{ type: 'text', text }] };
 }
 
-function makeIii(
-  opts: { steeringItems?: AgentMessage[]; followupItems?: AgentMessage[] } = {},
-) {
+function makeIii(opts: { steeringItems?: AgentMessage[]; followupItems?: AgentMessage[] } = {}) {
   const { steeringItems = [], followupItems = [] } = opts;
   const drainCalls: Array<{ name: string; session_id: string }> = [];
 
@@ -167,16 +165,13 @@ describe('handleSteering', () => {
     );
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
     expect(store.loadMessages).toHaveBeenCalledWith('s1');
-    expect(appendSpy).toHaveBeenCalledWith(
-      's1',
-      [
-        expect.objectContaining({
-          content: expect.arrayContaining([
-            expect.objectContaining({ text: expect.stringContaining('max_turns') }),
-          ]),
-        }),
-      ],
-    );
+    expect(appendSpy).toHaveBeenCalledWith('s1', [
+      expect.objectContaining({
+        content: expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining('max_turns') }),
+        ]),
+      }),
+    ]);
   });
 
   it('caps at max_turns via steering route: tears down instead of continuing to assistant_streaming', async () => {

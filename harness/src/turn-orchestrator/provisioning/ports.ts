@@ -28,10 +28,7 @@ export type ProvisioningPorts = {
   fetchSkillBody(id: string): Promise<string | null>;
 };
 
-export function createProvisioningPorts(
-  iii: ISdk,
-  cfg: TurnOrchestratorConfig,
-): ProvisioningPorts {
+export function createProvisioningPorts(iii: ISdk, cfg: TurnOrchestratorConfig): ProvisioningPorts {
   const store = createTurnStore(iii);
 
   return {

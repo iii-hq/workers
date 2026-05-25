@@ -98,5 +98,4 @@ describe('approval reactive trigger', () => {
       function_id: 'turn::function_awaiting_approval',
     });
   });
-
 });

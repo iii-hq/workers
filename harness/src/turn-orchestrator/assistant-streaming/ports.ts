@@ -14,10 +14,7 @@ import { runPreflight } from '../preflight.js';
 import { buildInput, targetFunctionId, type RouteDecision } from '../provider-router.js';
 import { streamProviderTurn } from '../provider-stream.js';
 import type { RunRequest } from '../run-request.js';
-import {
-  createTurnStatePorts,
-  type TurnStatePorts,
-} from '../state-runtime/ports.js';
+import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 import { isDuplicateAssistant } from '../state-runtime/transcript.js';
 
 export type StreamContext = {

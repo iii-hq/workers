@@ -115,11 +115,7 @@ export async function finalizeAssistantTurn(
     );
   }
 
-  await ports.emitMessageComplete(
-    rec.session_id,
-    asst,
-    rec.assistant_body_streamed === true,
-  );
+  await ports.emitMessageComplete(rec.session_id, asst, rec.assistant_body_streamed === true);
 
   const route = routeAssistantTurn(asst);
 

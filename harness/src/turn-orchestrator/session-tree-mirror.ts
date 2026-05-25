@@ -44,11 +44,11 @@ export async function mirrorMessagesToSessionTree(
   }
 
   for (const msg of messages.slice(alreadyMirrored)) {
-    const resp = await triggerSessionTree<{ entry_id?: string }>(
-      iii,
-      'session-tree::append',
-      { session_id, parent_id: lastAppended, message: msg },
-    );
+    const resp = await triggerSessionTree<{ entry_id?: string }>(iii, 'session-tree::append', {
+      session_id,
+      parent_id: lastAppended,
+      message: msg,
+    });
     if (!resp) return;
     lastAppended = resp.entry_id ?? lastAppended;
   }

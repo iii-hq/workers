@@ -49,7 +49,11 @@ async function failTransition(
   // event so the user sees WHY; a bare agent_end renders as a silent end.
   // (The UI translator reads stop_reason, not error_kind.)
   const failed = syntheticAssistant({ stop_reason: 'error', text: rec.error.message });
-  await emit(iii, rec.session_id, { type: 'message_complete', message: failed, body_streamed: false });
+  await emit(iii, rec.session_id, {
+    type: 'message_complete',
+    message: failed,
+    body_streamed: false,
+  });
 
   const messages = await store.loadMessages(rec.session_id);
   await emit(iii, rec.session_id, { type: 'agent_end', messages });

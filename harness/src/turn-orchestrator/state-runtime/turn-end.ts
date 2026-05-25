@@ -2,7 +2,11 @@
  * Shared turn-end and FSM resume helpers for step outcome application.
  */
 
-import { emptyAssistant, type AssistantMessage, type FunctionResultMessage } from '../../types/agent-message.js';
+import {
+  emptyAssistant,
+  type AssistantMessage,
+  type FunctionResultMessage,
+} from '../../types/agent-message.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
 
 export type TurnEndEmitter = {

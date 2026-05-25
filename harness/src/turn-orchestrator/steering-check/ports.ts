@@ -6,10 +6,7 @@ import type { ISdk } from '../../runtime/iii.js';
 import type { AgentEvent } from '../../types/agent-event.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import { emit } from '../events.js';
-import {
-  createTurnStatePorts,
-  type TurnStatePorts,
-} from '../state-runtime/ports.js';
+import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 
 /** Decode session-inbox drain responses. */
 export function parseDrainItems(resp: unknown): AgentMessage[] {
