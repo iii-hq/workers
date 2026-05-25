@@ -73,7 +73,7 @@ function denialResult(denial: DenialEnvelope): FunctionResult {
   };
 }
 
-export function decodeOrPassthrough(value: unknown): FunctionResult {
+function decodeOrPassthrough(value: unknown): FunctionResult {
   if (
     value &&
     typeof value === 'object' &&

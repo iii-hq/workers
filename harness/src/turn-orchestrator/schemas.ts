@@ -11,7 +11,7 @@ import type { AwaitingApprovalEntry, TurnState, TurnStateRecord } from './state.
 import type { Mode } from './system-prompt.js';
 
 /** Shared `{ session_id }` payload — `turn::{state}` steps and `turn::get_state`. */
-export const SessionIdPayloadSchema = z.object({
+const SessionIdPayloadSchema = z.object({
   session_id: z.string().min(1),
 });
 

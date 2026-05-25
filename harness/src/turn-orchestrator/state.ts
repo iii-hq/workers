@@ -77,7 +77,7 @@ const TURN_STATES = [
 ] as const satisfies readonly TurnState[];
 
 /** Minimal structural guard for persisted turn_state — nested fields pass through. */
-export const TurnStateRecordSchema = z
+const TurnStateRecordSchema = z
   .object({
     session_id: z.string(),
     state: z.enum(TURN_STATES),
