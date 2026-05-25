@@ -1,14 +1,16 @@
 /**
- * Approval resolution handler. `approval::resolve` routes the decision to
- * the per-call resume function owned by the turn-orchestrator.
+ * Approval resolution handler. `approval::resolve` persists the decision to the
+ * shared `approvals` scope; the turn-orchestrator's reactive trigger
+ * (turn::on_approval) wakes the parked session.
  */
 
 import type { ISdk } from 'iii-sdk';
 import { logger } from '../runtime/otel.js';
 import {
+  STATE_SCOPE,
   type ResolvePayloadInput,
   ResolvePayloadSchema,
-  approvalResumeFnId,
+  pendingKey,
   resolveFunctionOptions,
 } from './schemas.js';
 
@@ -24,15 +26,18 @@ export async function handleResolveRequest(
   if (!parsed.success) return { ok: false, error: 'invalid_payload' };
 
   const { session_id, function_call_id, decision, reason } = parsed.data;
-  const resumeFnId = approvalResumeFnId(session_id, function_call_id);
 
   try {
     await iii.trigger({
-      function_id: resumeFnId,
-      payload: { decision, reason },
+      function_id: 'state::set',
+      payload: {
+        scope: STATE_SCOPE,
+        key: pendingKey(session_id, function_call_id),
+        value: { decision, reason },
+      },
     });
   } catch (err) {
-    logger.error('approval-gate: resume fn invoke failed', { err: String(err), resumeFnId });
+    logger.error('approval-gate: decision write failed', { err: String(err), session_id });
     return { ok: false, error: 'resume_failed' };
   }
   return { ok: true };
