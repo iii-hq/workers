@@ -92,7 +92,11 @@ export interface CustomMessage {
   timestamp: number
 }
 
-export type AgentMessage = UserMessage | AssistantMessage | FunctionResultMessage | CustomMessage
+export type AgentMessage =
+  | UserMessage
+  | AssistantMessage
+  | FunctionResultMessage
+  | CustomMessage
 
 /** Function call request emitted by an assistant message. */
 export interface FunctionCall {
@@ -114,8 +118,8 @@ export interface FunctionResult {
  *
  * The orchestrator forwards each event verbatim inside an
  * `AgentEvent::MessageUpdate` so the frontend can render token-by-token
- * (Phase 2.A). `Done`/`Error` are terminal — the orchestrator emits a
- * separate `MessageStart`/`MessageEnd` pair after them.
+ * (Phase 2.A). `Done`/`Error` are terminal — the orchestrator emits
+ * `message_complete` after them.
  */
 export type AssistantMessageEvent =
   | { type: 'start'; partial: AssistantMessage }
@@ -140,45 +144,42 @@ export type AssistantMessageEvent =
       type: 'stop'
       stop_reason: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
       error_message?: string
-      error_kind?: 'auth_expired' | 'rate_limited' | 'context_overflow' | 'transient' | 'permanent'
+      error_kind?:
+        | 'auth_expired'
+        | 'rate_limited'
+        | 'context_overflow'
+        | 'transient'
+        | 'permanent'
     }
   | { type: 'done'; message: AssistantMessage }
   | { type: 'error'; error: AssistantMessage }
 
 /**
  * Discriminated `AgentEvent` matching the wire shape on `agent::events`.
- * `MessageUpdate` and `FunctionExecutionUpdate` are present in the enum but
- * not emitted by today's turn-orchestrator — the translator stubs them out
- * but accepts them so a Phase 2 backend lands without a frontend change.
  */
 export type AgentEvent =
-  | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
-  | { type: 'turn_start' }
   | {
       type: 'turn_end'
       message: AgentMessage
       function_results: FunctionResultMessage[]
     }
-  | { type: 'message_start'; message: AgentMessage }
   | {
       type: 'message_update'
       message: AgentMessage
       llm_event: AssistantMessageEvent
     }
-  | { type: 'message_end'; message: AgentMessage }
+  | {
+      type: 'message_complete'
+      message: AgentMessage
+      /** When true, text/thinking were already delivered via message_update. */
+      body_streamed?: boolean
+    }
   | {
       type: 'function_execution_start'
       function_call_id: string
       function_id: string
       args: unknown
-    }
-  | {
-      type: 'function_execution_update'
-      function_call_id: string
-      function_id: string
-      args: unknown
-      partial_result: unknown
     }
   | {
       type: 'function_execution_end'

@@ -11,11 +11,6 @@ import type { AssistantMessage } from '../../src/types/agent-message.js';
 import { formatFunctionResultContent } from '../../src/types/wire.js';
 
 describe('AgentEvent wire shape', () => {
-  it('agent_start serialises to {"type":"agent_start"}', () => {
-    const evt: AgentEvent = { type: 'agent_start' };
-    expect(JSON.parse(JSON.stringify(evt))).toEqual({ type: 'agent_start' });
-  });
-
   it('turn_end carries message + function_results', () => {
     const asst: AssistantMessage = {
       role: 'assistant',

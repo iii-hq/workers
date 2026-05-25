@@ -800,14 +800,11 @@ fn translate_agent_event(event: &Value) -> Option<Vec<Value>> {
                 "content": { "type": "text", "text": delta },
             })])
         }
-        // turn-orchestrator (current head) does not emit message_update
-        // text deltas — provider-router consumes the streaming response
-        // internally and returns the fully-assembled assistant message,
-        // surfaced as a single message_end event. Translate those to one
-        // agent_message_chunk per text content block so Zed renders the
-        // full reply. message_start and tool-result message_end variants
-        // are dropped to avoid duplication.
-        "message_end" => {
+        // Batch/non-delta clients receive the fully-assembled assistant
+        // message as a single message_complete event. Translate those to
+        // one agent_message_chunk per text content block so Zed renders the
+        // full reply.
+        "message_complete" => {
             let message = event.get("message")?;
             if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
                 return None;
@@ -1042,14 +1039,14 @@ mod tests {
 
     #[test]
     fn translate_unknown_event_drops_silently() {
-        assert!(translate_agent_event(&json!({ "type": "agent_start" })).is_none());
-        assert!(translate_agent_event(&json!({ "type": "turn_start" })).is_none());
+        assert!(translate_agent_event(&json!({ "type": "not_a_real_event" })).is_none());
+        assert!(translate_agent_event(&json!({ "type": "message_start" })).is_none());
     }
 
     #[test]
-    fn translate_message_end_assistant_emits_chunk() {
+    fn translate_message_complete_assistant_emits_chunk() {
         let ev = json!({
-            "type": "message_end",
+            "type": "message_complete",
             "message": {
                 "role": "assistant",
                 "content": [{ "type": "text", "text": "hi there" }],
@@ -1064,9 +1061,9 @@ mod tests {
     }
 
     #[test]
-    fn translate_message_end_user_dropped() {
+    fn translate_message_complete_user_dropped() {
         let ev = json!({
-            "type": "message_end",
+            "type": "message_complete",
             "message": {
                 "role": "user",
                 "content": [{ "type": "text", "text": "x" }],

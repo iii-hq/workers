@@ -1,140 +1,158 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TriggerAction } from '../../src/runtime/iii.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import {
-  STEP_FN_ID,
-  handleStepableRecordWrite,
-  isStepableRecordWrite,
-} from '../../src/turn-orchestrator/on-record-written.js';
+import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
 
-function fakeIii(): { iii: ISdk; stepInvocations: Array<{ session_id: string }> } {
+function fakeIii(): {
+  iii: ISdk;
+  wakeInvocations: Array<{ session_id: string; function_id: string; action?: unknown }>;
+  stateStore: Map<string, unknown>;
+} {
   const stateStore = new Map<string, unknown>();
-  const stepInvocations: Array<{ session_id: string }> = [];
+  const wakeInvocations: Array<{ session_id: string; function_id: string; action?: unknown }> = [];
   const iii = {
-    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (function_id === 'state::set') {
-        const p = payload as { scope: string; key: string; value: unknown };
-        const fullKey = `${p.scope}/${p.key}`;
-        const old_value = stateStore.get(fullKey) ?? null;
-        stateStore.set(fullKey, p.value);
-        if (p.scope === 'agent') {
-          const event = {
-            event_type: old_value == null ? 'state:created' : 'state:updated',
-            scope: p.scope,
-            key: p.key,
-            old_value,
-            new_value: p.value,
-            message_type: 'state',
-          };
-          if (isStepableRecordWrite(event)) {
-            queueMicrotask(() => {
-              void handleStepableRecordWrite(iii as unknown as ISdk, event);
-            });
-          }
+    trigger: vi.fn(
+      async ({
+        function_id,
+        payload,
+        action,
+      }: {
+        function_id: string;
+        payload: unknown;
+        action?: unknown;
+      }) => {
+        if (function_id === 'state::get') {
+          const p = payload as { scope: string; key: string };
+          const v = stateStore.get(`${p.scope}/${p.key}`);
+          return v === undefined ? null : structuredClone(v);
         }
-        return null;
-      }
 
-      if (function_id === STEP_FN_ID) {
-        stepInvocations.push(payload as { session_id: string });
-        return null;
-      }
+        if (function_id === 'state::set') {
+          const p = payload as { scope: string; key: string; value: unknown };
+          stateStore.set(`${p.scope}/${p.key}`, structuredClone(p.value));
+          return null;
+        }
 
-      return null;
-    }),
+        if (function_id === 'state::update') {
+          return { old_value: 0 };
+        }
+
+        if (function_id.startsWith('turn::')) {
+          const p = payload as { session_id: string };
+          wakeInvocations.push({ session_id: p.session_id, function_id, action });
+          return null;
+        }
+
+        return null;
+      },
+    ),
   };
 
-  return { iii: iii as unknown as ISdk, stepInvocations };
+  return { iii: iii as unknown as ISdk, wakeInvocations, stateStore };
 }
 
-describe('turn-step reactive wake', () => {
-  it('writing session/<sid>/turn_state with a stepable state invokes turn::step', async () => {
-    const { iii, stepInvocations } = fakeIii();
+describe('saveRecord wake integration', () => {
+  it('writing a new stepable turn_state enqueues turn::provisioning', async () => {
+    const { iii, wakeInvocations } = fakeIii();
+    const rec = newRecord('sess-a');
+    rec.state = 'provisioning';
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-a/turn_state',
-        value: { state: 'provisioning' },
+    await persistence.saveRecord(iii, rec);
+
+    expect(wakeInvocations).toEqual([
+      {
+        session_id: 'sess-a',
+        function_id: 'turn::provisioning',
+        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
       },
-    });
-
-    await Promise.resolve();
-
-    expect(stepInvocations).toEqual([{ session_id: 'sess-a' }]);
+    ]);
   });
 
-  it('subsequent transitions also wake turn::step', async () => {
-    const { iii, stepInvocations } = fakeIii();
+  it('subsequent transitions enqueue turn::{newState}', async () => {
+    const { iii, wakeInvocations } = fakeIii();
+    const rec = newRecord('sess-b');
+    rec.state = 'provisioning';
+    await persistence.saveRecord(iii, rec);
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-b/turn_state',
-        value: { state: 'provisioning' },
+    rec.state = 'assistant_streaming';
+    await persistence.saveRecord(iii, rec);
+
+    expect(wakeInvocations).toEqual([
+      {
+        session_id: 'sess-b',
+        function_id: 'turn::provisioning',
+        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
       },
-    });
-    await Promise.resolve();
-
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-b/turn_state',
-        value: { state: 'awaiting_assistant' },
+      {
+        session_id: 'sess-b',
+        function_id: 'turn::assistant_streaming',
+        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
       },
-    });
-    await Promise.resolve();
-
-    expect(stepInvocations).toEqual([{ session_id: 'sess-b' }, { session_id: 'sess-b' }]);
+    ]);
   });
 
   it('parking in function_awaiting_approval does NOT wake', async () => {
-    const { iii, stepInvocations } = fakeIii();
+    const { iii, wakeInvocations } = fakeIii();
+    const rec = newRecord('sess-c');
+    rec.state = 'function_awaiting_approval';
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-c/turn_state',
-        value: { state: 'function_awaiting_approval' },
-      },
-    });
-    await Promise.resolve();
+    await persistence.saveRecord(iii, rec);
 
-    expect(stepInvocations).toEqual([]);
+    expect(wakeInvocations).toEqual([]);
   });
 
   it('terminal stopped state does NOT wake', async () => {
-    const { iii, stepInvocations } = fakeIii();
+    const { iii, wakeInvocations } = fakeIii();
+    const rec = newRecord('sess-d');
+    rec.state = 'stopped';
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-d/turn_state',
-        value: { state: 'stopped' },
-      },
-    });
-    await Promise.resolve();
+    await persistence.saveRecord(iii, rec);
 
-    expect(stepInvocations).toEqual([]);
+    expect(wakeInvocations).toEqual([]);
   });
 
-  it('non-turn_state agent keys do NOT wake (no leakage from abort_signal etc.)', async () => {
-    const { iii, stepInvocations } = fakeIii();
+  it('same-state re-save does NOT wake', async () => {
+    const { iii, wakeInvocations } = fakeIii();
+    const rec = newRecord('sess-e');
+    rec.state = 'function_execute';
+    await persistence.saveRecord(iii, rec);
+    wakeInvocations.length = 0;
 
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-e/abort_signal',
-        value: true,
-      },
-    });
-    await Promise.resolve();
+    await persistence.saveRecord(iii, rec);
 
-    expect(stepInvocations).toEqual([]);
+    expect(wakeInvocations).toEqual([]);
+  });
+});
+
+function turnStateGets(iii: ISdk, session_id: string): number {
+  const trigger = iii.trigger as unknown as {
+    mock: { calls: Array<[{ function_id: string; payload?: { key?: string } }]> };
+  };
+  return trigger.mock.calls.filter(
+    ([arg]) => arg.function_id === 'state::get' && arg.payload?.key === turnStateKey(session_id),
+  ).length;
+}
+
+describe('saveRecord read elimination (#5)', () => {
+  it('2-arg saveRecord reads turn_state exactly once (no double load)', async () => {
+    const { iii } = fakeIii();
+    const rec = newRecord('sess-r1');
+    rec.state = 'provisioning';
+
+    await persistence.saveRecord(iii, rec);
+
+    expect(turnStateGets(iii, 'sess-r1')).toBe(1);
+  });
+
+  it('saveRecord with a threaded previous reads turn_state zero times', async () => {
+    const { iii } = fakeIii();
+    const previous = newRecord('sess-r2');
+    previous.state = 'provisioning';
+    const next = { ...previous, state: 'assistant_streaming' as const };
+
+    await persistence.saveRecord(iii, next, previous);
+
+    expect(turnStateGets(iii, 'sess-r2')).toBe(0);
   });
 });

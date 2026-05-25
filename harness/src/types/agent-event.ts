@@ -11,33 +11,28 @@ import type { FunctionResult } from './function.js';
 import type { AssistantMessageEvent } from './stream-event.js';
 
 export type AgentEvent =
-  | { type: 'agent_start' }
   | { type: 'agent_end'; messages: AgentMessage[] }
-  | { type: 'turn_start' }
   | {
       type: 'turn_end';
       message: AgentMessage;
       function_results: FunctionResultMessage[];
     }
-  | { type: 'message_start'; message: AgentMessage }
   | {
       type: 'message_update';
       message: AgentMessage;
       llm_event: AssistantMessageEvent;
     }
-  | { type: 'message_end'; message: AgentMessage }
+  | {
+      type: 'message_complete';
+      message: AgentMessage;
+      /** When true, text/thinking were already delivered via message_update. */
+      body_streamed?: boolean;
+    }
   | {
       type: 'function_execution_start';
       function_call_id: string;
       function_id: string;
       args: unknown;
-    }
-  | {
-      type: 'function_execution_update';
-      function_call_id: string;
-      function_id: string;
-      args: unknown;
-      partial_result: unknown;
     }
   | {
       type: 'function_execution_end';

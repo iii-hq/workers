@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import { approvalResumeFnId } from '../../src/approval-gate/schemas.js';
 import {
   clearApprovalResumeRegistry,
@@ -13,14 +13,18 @@ type RegisteredFn = {
   unregister: ReturnType<typeof vi.fn>;
 };
 
-import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
+import {
+  newRecord,
+  turnStateKey,
+  type TurnStateRecord,
+} from '../../src/turn-orchestrator/state.js';
 
 function makeIiiWithRegistry(
   stateStore = new Map<string, unknown>(),
   agentTurnStates: TurnStateRecord[] = [],
 ) {
   const registered = new Map<string, RegisteredFn>();
-  const stepCalls: Array<{ session_id: string }> = [];
+  const wakeCalls: Array<{ session_id: string; action?: unknown; function_id?: string }> = [];
 
   const iii = {
     registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
@@ -32,28 +36,43 @@ function makeIiiWithRegistry(
       registered.set(fnId, entry);
       return { unregister: entry.unregister };
     }),
-    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (function_id === 'state::get') {
-        const p = payload as { scope: string; key: string };
-        return stateStore.get(`${p.scope}/${p.key}`) ?? null;
-      }
-      if (function_id === 'state::set') {
-        const p = payload as { scope: string; key: string; value: unknown };
-        stateStore.set(`${p.scope}/${p.key}`, p.value);
+    trigger: vi.fn(
+      async ({
+        function_id,
+        payload,
+        action,
+      }: {
+        function_id: string;
+        payload: unknown;
+        action?: unknown;
+      }) => {
+        if (function_id === 'state::get') {
+          const p = payload as { scope: string; key: string };
+          return stateStore.get(`${p.scope}/${p.key}`) ?? null;
+        }
+        if (function_id === 'state::set') {
+          const p = payload as { scope: string; key: string; value: unknown };
+          stateStore.set(`${p.scope}/${p.key}`, p.value);
+          return null;
+        }
+        if (function_id === 'state::list') {
+          return agentTurnStates;
+        }
+        if (function_id.startsWith('turn::') && function_id !== 'turn::on_abort_signal') {
+          const p = payload as { session_id: string };
+          wakeCalls.push({
+            session_id: p.session_id,
+            action,
+            function_id,
+          });
+          return null;
+        }
         return null;
-      }
-      if (function_id === 'state::list') {
-        return agentTurnStates;
-      }
-      if (function_id === 'turn::step') {
-        stepCalls.push(payload as { session_id: string });
-        return null;
-      }
-      return null;
-    }),
+      },
+    ),
   } as unknown as ISdk;
 
-  return { iii, registered, stepCalls, stateStore };
+  return { iii, registered, wakeCalls, stateStore };
 }
 
 afterEach(() => {
@@ -85,16 +104,25 @@ describe('registerApprovalResume', () => {
 });
 
 describe('approval resume handler', () => {
-  it('persists decision, triggers turn::step, and unregisters', async () => {
-    const { iii, registered, stepCalls, stateStore } = makeIiiWithRegistry();
+  it('persists decision, enqueues turn::{state}, and unregisters', async () => {
+    const { iii, registered, wakeCalls, stateStore } = makeIiiWithRegistry();
+    const rec = newRecord('s1');
+    rec.state = 'function_awaiting_approval';
+    stateStore.set(`agent/${turnStateKey('s1')}`, rec);
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1');
     if (!entry) throw new Error('handler not registered');
     await entry.handler({ decision: 'allow', reason: null });
 
     expect(stateStore.get('approvals/s1/fc-1')).toEqual({ decision: 'allow', reason: null });
-    expect(stepCalls).toEqual([{ session_id: 's1' }]);
-    expect(entry.unregister).toHaveBeenCalled();
+    expect(wakeCalls).toEqual([
+      {
+        session_id: 's1',
+        function_id: 'turn::function_awaiting_approval',
+        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
+      },
+    ]);
+    expect(entry!.unregister).toHaveBeenCalled();
   });
 
   it('does not overwrite an existing decision (idempotent persist)', async () => {
@@ -113,16 +141,16 @@ describe('approval resume handler', () => {
     });
   });
 
-  it('does not trigger turn::step again after unregister on second invoke', async () => {
-    const { iii, registered, stepCalls } = makeIiiWithRegistry();
+  it('does not enqueue turn::{state} again after unregister on second invoke', async () => {
+    const { iii, registered, wakeCalls } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1');
     if (!entry) throw new Error('handler not registered');
     await entry.handler({ decision: 'deny', reason: 'nope' });
-    stepCalls.length = 0;
+    wakeCalls.length = 0;
 
     await entry.handler({ decision: 'allow', reason: null });
-    expect(stepCalls).toHaveLength(0);
+    expect(wakeCalls).toHaveLength(0);
   });
 });
 

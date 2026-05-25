@@ -9,10 +9,20 @@ import {
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
 import type { ISdk } from '../../src/runtime/iii.js';
+import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
 
-function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function fakeIii(): {
+  iii: ISdk;
+  wakeTriggers: Array<{ session_id: string; function_id: string }>;
+  stateStore: Map<string, unknown>;
+} {
   const stateStore = new Map<string, unknown>();
-  const stepTriggers: Array<{ session_id: string }> = [];
+  const wakeTriggers: Array<{ session_id: string; function_id: string }> = [];
   const handlers = new Map<string, (payload: unknown) => Promise<unknown>>();
 
   const iii = {
@@ -20,59 +30,62 @@ function fakeIii(): { iii: ISdk; stepTriggers: Array<{ session_id: string }> } {
       handlers.set(fnId, handler);
       return { unregister: vi.fn() };
     }),
-    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (function_id === 'state::set') {
-        const p = payload as { scope: string; key: string; value: unknown };
-        const fullKey = `${p.scope}/${p.key}`;
-        const old_value = stateStore.get(fullKey) ?? null;
-        stateStore.set(fullKey, p.value);
-        if (p.scope === 'agent') {
-          const event = {
-            event_type: old_value == null ? 'state:created' : 'state:updated',
-            scope: p.scope,
-            key: p.key,
-            old_value,
-            new_value: p.value,
-            message_type: 'state',
-          };
-          if (isAbortSignalWrite(event)) {
-            queueMicrotask(() => {
-              void handleAbortSignalWrite(iii as unknown as ISdk, event);
-            });
+    trigger: vi.fn(
+      async ({
+        function_id,
+        payload,
+        action,
+      }: {
+        function_id: string;
+        payload: unknown;
+        action?: unknown;
+      }) => {
+        if (function_id === 'state::set') {
+          const p = payload as { scope: string; key: string; value: unknown };
+          const fullKey = `${p.scope}/${p.key}`;
+          const old_value = stateStore.get(fullKey) ?? null;
+          stateStore.set(fullKey, p.value);
+          if (p.scope === 'agent') {
+            const event = {
+              event_type: old_value == null ? 'state:created' : 'state:updated',
+              scope: p.scope,
+              key: p.key,
+              old_value,
+              new_value: p.value,
+              message_type: 'state',
+            };
+            if (isAbortSignalWrite(event)) {
+              queueMicrotask(() => {
+                void handleAbortSignalWrite(iii as unknown as ISdk, event);
+              });
+            }
           }
+          return null;
         }
-        return null;
-      }
 
-      if (function_id === 'state::get') {
-        const p = payload as { scope: string; key: string };
-        return stateStore.get(`${p.scope}/${p.key}`) ?? null;
-      }
-
-      if (function_id === 'turn::step') {
-        stepTriggers.push(payload as { session_id: string });
-        return null;
-      }
-
-      const handler = handlers.get(function_id);
-      if (handler) {
-        await handler(payload);
-        return null;
-      }
-
-      if (function_id === 'iii::durable::publish') {
-        const p = payload as { topic: string; data: { session_id: string } };
-        if (p.topic === 'turn::step_requested') {
-          stepTriggers.push({ session_id: p.data.session_id });
+        if (function_id === 'state::get') {
+          const p = payload as { scope: string; key: string };
+          return stateStore.get(`${p.scope}/${p.key}`) ?? null;
         }
-        return null;
-      }
 
-      return null;
-    }),
+        if (function_id.startsWith('turn::') && action != null) {
+          const p = payload as { session_id: string };
+          wakeTriggers.push({ session_id: p.session_id, function_id });
+          return null;
+        }
+
+        const handler = handlers.get(function_id);
+        if (handler) {
+          await handler(payload);
+          return null;
+        }
+
+        return null;
+      },
+    ),
   };
 
-  return { iii: iii as unknown as ISdk, stepTriggers };
+  return { iii: iii as unknown as ISdk, wakeTriggers, stateStore };
 }
 
 describe('approval resume reactive trigger', () => {
@@ -80,8 +93,11 @@ describe('approval resume reactive trigger', () => {
     clearApprovalResumeRegistry();
   });
 
-  it('approval::resolve via resume fn automatically triggers turn::step', async () => {
-    const { iii, stepTriggers } = fakeIii();
+  it('approval::resolve via resume fn automatically enqueues turn::{state}', async () => {
+    const { iii, wakeTriggers, stateStore } = fakeIii();
+    const rec = newRecord('sess-x');
+    rec.state = 'function_awaiting_approval';
+    stateStore.set(`agent/${turnStateKey('sess-x')}`, rec);
     registerApprovalResume(iii, 'sess-x', 'fc-1');
 
     const out = await handleResolveRequest(iii, {
@@ -91,14 +107,20 @@ describe('approval resume reactive trigger', () => {
     });
     expect(out).toEqual({ ok: true });
 
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(stepTriggers).toHaveLength(1);
-    expect(stepTriggers[0]).toMatchObject({ session_id: 'sess-x' });
+    expect(wakeTriggers).toHaveLength(1);
+    expect(wakeTriggers[0]).toMatchObject({
+      session_id: 'sess-x',
+      function_id: 'turn::function_awaiting_approval',
+    });
   });
 
-  it('writing session/<sid>/abort_signal=true wakes turn::step (via durable publish)', async () => {
-    const { iii, stepTriggers } = fakeIii();
+  it('writing session/<sid>/abort_signal=true enqueues turn::{state}', async () => {
+    const { iii, wakeTriggers, stateStore } = fakeIii();
+    const rec = newRecord('sess-abort');
+    rec.state = 'assistant_streaming';
+    stateStore.set(`agent/${turnStateKey('sess-abort')}`, rec);
 
     await iii.trigger({
       function_id: 'state::set',
@@ -109,33 +131,39 @@ describe('approval resume reactive trigger', () => {
       },
     });
 
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(stepTriggers).toHaveLength(1);
-    expect(stepTriggers[0]).toMatchObject({ session_id: 'sess-abort' });
+    expect(wakeTriggers).toHaveLength(1);
+    expect(wakeTriggers[0]).toMatchObject({
+      session_id: 'sess-abort',
+      function_id: 'turn::assistant_streaming',
+    });
   });
 
   it('writing session/<sid>/abort_signal=false does NOT trigger (condition rejects clears)', async () => {
-    const { iii, stepTriggers } = fakeIii();
+    const { iii, wakeTriggers, stateStore } = fakeIii();
+    const rec = newRecord('sess-clear');
+    rec.state = 'function_execute';
+    stateStore.set(`agent/${turnStateKey('sess-clear')}`, rec);
 
     await iii.trigger({
       function_id: 'state::set',
       payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: true },
     });
-    await Promise.resolve();
-    stepTriggers.length = 0;
+    await flushMicrotasks();
+    wakeTriggers.length = 0;
 
     await iii.trigger({
       function_id: 'state::set',
       payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: false },
     });
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(stepTriggers).toHaveLength(0);
+    expect(wakeTriggers).toHaveLength(0);
   });
 
   it('writing an unrelated agent-scope key does NOT trigger', async () => {
-    const { iii, stepTriggers } = fakeIii();
+    const { iii, wakeTriggers } = fakeIii();
 
     await iii.trigger({
       function_id: 'state::set',
@@ -147,6 +175,6 @@ describe('approval resume reactive trigger', () => {
     });
     await Promise.resolve();
 
-    expect(stepTriggers).toHaveLength(0);
+    expect(wakeTriggers).toHaveLength(0);
   });
 });

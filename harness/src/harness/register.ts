@@ -9,13 +9,16 @@ import { loadAndWatch } from './policy/handle.js';
 import { FanoutState, registerSubscriptions } from './ui-subscribe.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string; url: string }): Promise<void> {
+  const fanoutState = new FanoutState();
+
   const cfg = await loadConfig(ctx.configPath);
   const harness = loadHarnessConfig(cfg);
+
   registerTrigger(iii);
-  const fanoutState = new FanoutState();
   registerSubscriptions(iii, fanoutState);
   spawnPumps(iii, fanoutState);
   registerFs(iii, ctx.url);
+
   const handle = await loadAndWatch(harness.permissions_path);
   registerPolicy(iii, handle);
 }

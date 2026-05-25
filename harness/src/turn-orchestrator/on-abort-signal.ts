@@ -2,7 +2,7 @@
  * Reactive abort wake. A `state` trigger on `scope: 'agent'` filtered by
  * the abort_signal key shape (`session/<id>/abort_signal`) and a
  * `new_value === true` write fires this adapter, which publishes
- * `turn::step_requested` so the orchestrator's FSM advances to
+ * `turn::{state}` on the durable FIFO queue so the orchestrator's FSM advances to
  * `steering_check` and observes the abort flag promptly.
  *
  * Without this wake, a session mid-streaming would only check
@@ -12,50 +12,70 @@
  * soon as the current one finishes — which is the earliest moment we
  * can safely react.
  *
- * Mirror of the canonical pattern in
- * `harness/src/harness/fanout/sessions-poll.ts`.
+ * **Incoming**: agent-scope `state:created` / `state:updated` on
+ * `session/<id>/abort_signal` with `new_value === true` (from `state::set` via
+ * `performAbortSideEffects` / `router::abort`). Same envelope the engine passes
+ * to state trigger adapters.
+ *
+ * **Outgoing**: `wakeFromRecord` enqueues `{ session_id }` on the `turn-step` queue.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { AbortSignalWriteEventSchema, type ParsedAbortSignalWrite } from './schemas.js';
+import { wakeFromRecord } from './wake.js';
 
-export const STEP_TOPIC = 'turn::step_requested';
-export const HANDLER_FN_ID = 'turn::on_abort_signal';
-export const CONDITION_FN_ID = 'turn::is_abort_signal_set';
-const ABORT_SIGNAL_KEY_RE = /^session\/([^/]+)\/abort_signal$/;
+export function parseAbortSignalWrite(event: unknown): ParsedAbortSignalWrite | null {
+  const result = AbortSignalWriteEventSchema.safeParse(event);
+  return result.success ? result.data : null;
+}
 
 export function isAbortSignalWrite(event: unknown): boolean {
-  if (!event || typeof event !== 'object') return false;
-  const obj = event as Record<string, unknown>;
-  if (obj.event_type !== 'state:created' && obj.event_type !== 'state:updated') return false;
-  if (obj.new_value !== true) return false;
-  const key = obj.key;
-  if (typeof key !== 'string') return false;
-  return ABORT_SIGNAL_KEY_RE.test(key);
+  return parseAbortSignalWrite(event) !== null;
 }
 
-function extractSessionId(key: string): string | null {
-  const m = ABORT_SIGNAL_KEY_RE.exec(key);
-  return m ? (m[1] ?? null) : null;
-}
-
-export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise<void> {
-  if (!event || typeof event !== 'object') return;
-  const obj = event as Record<string, unknown>;
-  const key = obj.key;
-  if (typeof key !== 'string') return;
-  const session_id = extractSessionId(key);
-  if (!session_id) return;
-
+export async function execute(iii: ISdk, write: ParsedAbortSignalWrite): Promise<void> {
   try {
-    await iii.trigger<unknown, unknown>({
-      function_id: 'iii::durable::publish',
-      payload: { topic: STEP_TOPIC, data: { session_id } },
-    });
+    await wakeFromRecord(iii, write.session_id);
   } catch (err) {
-    logger.warn('turn::on_abort_signal: publish failed', {
-      session_id,
+    logger.warn('turn::on_abort_signal: wake failed', {
+      session_id: write.session_id,
       err: String(err),
     });
   }
+}
+
+export async function handleAbortSignalWrite(iii: ISdk, event: unknown): Promise<void> {
+  const write = parseAbortSignalWrite(event);
+  if (!write) return;
+  await execute(iii, write);
+}
+
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::is_abort_signal_set',
+    async (event: unknown) => isAbortSignalWrite(event),
+    {
+      description:
+        'Condition: state event sets session/<id>/abort_signal = true (state:created or state:updated).',
+    },
+  );
+
+  iii.registerFunction(
+    'turn::on_abort_signal',
+    async (event: unknown) => handleAbortSignalWrite(iii, event),
+    {
+      description:
+        'State trigger adapter on scope=agent for abort_signal writes; enqueues turn::{state} so the orchestrator picks up the abort promptly.',
+    },
+  );
+
+  iii.registerTrigger({
+    type: 'state',
+    function_id: 'turn::on_abort_signal',
+    config: {
+      scope: 'agent',
+      condition_function_id: 'turn::is_abort_signal_set',
+    },
+  });
 }

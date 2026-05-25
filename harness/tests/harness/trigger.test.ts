@@ -1,11 +1,7 @@
 /**
  * Contract test for `harness::trigger`.
  *
- * Mirrors the Rust harness bridge (see `workers/harness/src/lib.rs:103-159`)
- * by forwarding `{ function_id, payload }` to `iii.trigger` and wrapping the
- * result in an HTTP-style envelope. This ensures console/web can route
- * browser-originated chat turns through a single instrumented bus function —
- * the same pattern `workers/harness/web/src/App.tsx` uses over HTTP.
+ * console/web forwards chat kickoff via a single flat payload over WS.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +24,19 @@ function makeFakeSdk(triggerResult: unknown = { ok: true }) {
   return { sdk, registered, trigger };
 }
 
+const runStartPayload = {
+  session_id: 'sess-1',
+  provider: 'anthropic',
+  model: 'claude-sonnet-4-6',
+  messages: [
+    {
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'hi' }],
+      timestamp: Date.now(),
+    },
+  ],
+};
+
 describe('harness::trigger', () => {
   it('registers a handler under id "harness::trigger"', () => {
     const { sdk, registered } = makeFakeSdk();
@@ -35,74 +44,41 @@ describe('harness::trigger', () => {
     expect(registered.has('harness::trigger')).toBe(true);
   });
 
-  it('forwards body.function_id and body.payload to iii.trigger', async () => {
+  it('forwards payload to run::start', async () => {
     const { sdk, registered, trigger } = makeFakeSdk({ session_id: 'sess' });
     register(sdk);
     const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
     const result = (await handler({
-      body: {
-        function_id: 'run::start',
-        session_id: 'sess-1',
-        message_id: 'msg-1',
-        payload: { session_id: 'sess-1', provider: 'anthropic', model: 'claude-sonnet-4-6' },
-      },
+      session_id: 'sess-1',
+      message_id: 'msg-1',
+      payload: runStartPayload,
     })) as Record<string, unknown>;
 
     expect(trigger).toHaveBeenCalledTimes(1);
     const triggerArg = trigger.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(triggerArg.function_id).toBe('run::start');
-    expect(triggerArg.payload).toEqual({
-      session_id: 'sess-1',
-      provider: 'anthropic',
-      model: 'claude-sonnet-4-6',
+    expect(triggerArg.payload).toMatchObject(runStartPayload);
+    expect(triggerArg.payload).toMatchObject({
+      system_prompt: '',
     });
     expect(result.status_code).toBe(200);
     expect(result.body).toEqual({ session_id: 'sess' });
   });
 
-  it('falls back to top-level when body envelope is absent (WS shape)', async () => {
-    const { sdk, registered, trigger } = makeFakeSdk();
-    register(sdk);
-    const handler = registered.get('harness::trigger')?.handler;
-    if (!handler) throw new Error('handler not registered');
-
-    await handler({
-      function_id: 'run::start',
-      session_id: 'sess-2',
-      message_id: 'msg-2',
-      payload: { session_id: 'sess-2', provider: 'openai', model: 'gpt-4o' },
-    });
-
-    const triggerArg = trigger.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(triggerArg.function_id).toBe('run::start');
-    expect(triggerArg.payload).toEqual({
-      session_id: 'sess-2',
-      provider: 'openai',
-      model: 'gpt-4o',
-    });
-  });
-
-  it('defaults payload to an empty object when omitted', async () => {
-    const { sdk, registered, trigger } = makeFakeSdk();
-    register(sdk);
-    const handler = registered.get('harness::trigger')?.handler;
-    if (!handler) throw new Error('handler not registered');
-
-    await handler({ body: { function_id: 'state::get' } });
-
-    const triggerArg = trigger.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(triggerArg.payload).toEqual({});
-  });
-
-  it('throws when function_id is missing', async () => {
+  it('rejects invalid run::start payload', async () => {
     const { sdk, registered } = makeFakeSdk();
     register(sdk);
     const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
 
-    await expect(handler({ body: { payload: {} } })).rejects.toThrow(/missing function_id/);
+    await expect(
+      handler({
+        session_id: 'sess-1',
+        payload: { provider: 'openai' },
+      }),
+    ).rejects.toThrow();
   });
 
   it('surfaces trigger errors (no swallowing)', async () => {
@@ -120,7 +96,9 @@ describe('harness::trigger', () => {
     if (!triggerHandler) throw new Error('handler not registered');
     await expect(
       // biome-ignore lint/style/noNonNullAssertion: defined above
-      triggerHandler!({ body: { function_id: 'run::start', payload: {} } }),
+      triggerHandler!({
+        payload: runStartPayload,
+      }),
     ).rejects.toThrow(/boom/);
   });
 });

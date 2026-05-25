@@ -281,7 +281,7 @@ connection at startup and translates each event:
 |---|---|
 | `message_update { llm_event: text_delta }` | `agent_message_chunk` |
 | `message_update { llm_event: thinking_delta }` | `agent_thought_chunk` |
-| `message_end` (assistant role, full text) | `agent_message_chunk` (one shot) |
+| `message_complete` (assistant role, full text) | `agent_message_chunk` (one shot) |
 | `tool_execution_start` | `tool_call` (status: `in_progress`) |
 | `tool_execution_end` | `tool_call_update` (status: `completed`/`failed`) |
 | other | dropped |

@@ -3,13 +3,9 @@
  * `agent::events`) to console/web's `StreamEvent` contract documented in
  * `PLAYGROUND.md`.
  *
- * Phase 2.A: `turn-orchestrator` now emits `MessageUpdate` events with a
- * provider `AssistantMessageEvent` payload for every non-terminal frame,
- * so token-by-token streaming flows through the `message_update` branch
- * below. The terminal `MessageStart`/`MessageEnd` for the assistant
- * message are still emitted, but `translateMessageStart` no longer
- * re-emits the body (the deltas already populated the renderer); it
- * just emits any function-call blocks that ride on the same message.
+ * Use `createAgentEventTranslator()` for a stateful translator that handles
+ * the full event surface, including `turn_state_changed` pending-approval
+ * mirroring.
  *
  * Wire mapping:
  *   - `text_delta`     → `assistant-token { token: delta }`
@@ -23,96 +19,103 @@
  *   - `function_execution_start` → `fcall-start` (with args).
  *   - `function_execution_end`   → `fcall-end` (with result).
  *   - `agent_end` → `assistant-end`.
- *   - `agent_start` / `turn_start` / `turn_end` / `message_end` /
- *     `function_execution_update` → noop.
- *   - `turn_state_changed` → noop (routed through `createTurnStateTranslator`).
+ *   - `turn_state_changed` → pending-approval `fcall-start` (stateful).
+ *   - `turn_end` → not translated (async compaction listens on raw wire).
  */
 
 import type {
   AgentEvent,
   AgentMessage,
-  AssistantMessage,
   AssistantMessageEvent,
   ContentBlock,
   FunctionResult,
-  TurnStateChangedEvent,
 } from '@/types/iii-agent-event'
 import { diffPending, type PendingApproval } from './pending-approvals-store'
 import { pendingApprovalsFromTurnState } from './turn-state-mirror'
 import type { StreamEvent } from './types'
 
-export function translateAgentEvent(event: AgentEvent, sessionId?: string): StreamEvent[] {
-  switch (event.type) {
-    case 'agent_start':
-    case 'turn_start':
-    case 'turn_end':
-    case 'function_execution_update':
-      return []
+export function createAgentEventTranslator(): {
+  translate(event: AgentEvent, sessionId?: string): StreamEvent[]
+} {
+  const mirrors = new Map<string, PendingApproval[]>()
 
-    case 'turn_state_changed':
-      return []
-
-    case 'message_end':
-      if (event.message.role !== 'assistant') return []
-      return translateAssistantMessageEnd(event.message)
-
-    case 'message_update':
-      return translateMessageUpdate(event.llm_event)
-
-    case 'message_start':
-      return translateMessageStart(event.message)
-
-    case 'function_execution_start':
-      return [
-        {
-          kind: 'fcall-start',
-          functionId: event.function_id,
-          input: event.args,
-          functionCallId: event.function_call_id,
-          sessionId,
-        },
-      ]
-
-    case 'function_execution_end':
-      return [
-        {
-          kind: 'fcall-end',
-          /* Soft failures are surfaced in the UI via the canonical
-             `{ error: { kind, message, ... } }` shape (see PLAYGROUND.md
-             "Error semantics"). The harness sends a raw FunctionResult and a
-             sibling `is_error: true` flag; the canonical shape is a UI
-             concern, so the wrap lives here rather than on the orchestrator
-             side. Keeps the wire format provider-agnostic. */
-          output: event.is_error ? wrapErrorOutput(event.result) : event.result,
-          durationMs: event.duration_ms,
-        },
-      ]
-
-    case 'agent_end':
-      return [{ kind: 'assistant-end' }]
-
-    case 'compaction_done':
-      return [
-        {
-          kind: 'compaction',
-          mode: event.mode,
-          summaryText: event.summary_text,
-          tokensBefore: event.tokens_before,
-          compactionEntryId: event.compaction_entry_id,
-          tailStartId: event.tail_start_id,
-        },
-      ]
+  function translateTurnStateChanged(
+    event: Extract<AgentEvent, { type: 'turn_state_changed' }>,
+    sessionId: string,
+  ): StreamEvent[] {
+    const prev = mirrors.get(sessionId) ?? []
+    const next = pendingApprovalsFromTurnState(event.new_value)
+    mirrors.set(sessionId, next)
+    const { added } = diffPending(prev, next)
+    return added.map((entry) => ({
+      kind: 'fcall-start' as const,
+      functionId: entry.function_id,
+      input: entry.args,
+      pendingApproval: true,
+      functionCallId: entry.function_call_id,
+      sessionId,
+    }))
   }
+
+  function translate(event: AgentEvent, sessionId?: string): StreamEvent[] {
+    switch (event.type) {
+      case 'turn_state_changed':
+        return sessionId ? translateTurnStateChanged(event, sessionId) : []
+
+      case 'message_complete':
+        return translateMessageComplete(
+          event.message,
+          event.body_streamed === true,
+        )
+
+      case 'message_update':
+        return translateMessageUpdate(event.llm_event)
+
+      case 'function_execution_start':
+        return [
+          {
+            kind: 'fcall-start',
+            functionId: event.function_id,
+            input: event.args,
+            functionCallId: event.function_call_id,
+            sessionId,
+          },
+        ]
+
+      case 'function_execution_end':
+        return [
+          {
+            kind: 'fcall-end',
+            output: event.is_error
+              ? wrapErrorOutput(event.result)
+              : event.result,
+            durationMs: event.duration_ms,
+          },
+        ]
+
+      case 'agent_end':
+        return [{ kind: 'assistant-end' }]
+
+      case 'turn_end':
+        return []
+
+      case 'compaction_done':
+        return [
+          {
+            kind: 'compaction',
+            mode: event.mode,
+            summaryText: event.summary_text,
+            tokensBefore: event.tokens_before,
+            compactionEntryId: event.compaction_entry_id,
+            tailStartId: event.tail_start_id,
+          },
+        ]
+    }
+  }
+
+  return { translate }
 }
 
-/**
- * Phase 2.A: translate a provider `AssistantMessageEvent` (carried inside
- * `AgentEvent.MessageUpdate.llm_event`) into the StreamEvent contract.
- * Non-terminal text and thinking deltas drive the renderer; everything
- * else is silently dropped — the terminal `Done`/`Error` event is
- * mirrored by a `MessageEnd` (and ultimately by `agent_end` →
- * `assistant-end`), so we don't need to surface them here.
- */
 function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
   switch (llm.type) {
     case 'text_delta':
@@ -130,31 +133,20 @@ function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
   }
 }
 
-function translateMessageStart(message: AgentMessage): StreamEvent[] {
+function translateMessageComplete(
+  message: AgentMessage,
+  bodyStreamed: boolean,
+): StreamEvent[] {
   if (message.role !== 'assistant') {
     return []
   }
-  const hasStreamableContent = message.content.some((b) => b.type === 'text' || b.type === 'thinking')
-
-  if (hasStreamableContent) {
-    // The provider streamed; nothing to re-emit.
-    return []
-  }
   const out: StreamEvent[] = []
-  for (const block of message.content) {
-    appendBlock(block, out)
+  if (!bodyStreamed) {
+    for (const block of message.content) {
+      appendBlock(block, out)
+    }
   }
-  return out
-}
-
-/**
- * Emits `assistant-end` plus, when the turn terminated abnormally, a
- * `stop-reason` notice so the UI can render a system message with the
- * cause. Pre-fix this branch dropped `stop_reason` and `error_message`
- * on the floor — the user saw a truncated reply with no diagnostic.
- */
-function translateAssistantMessageEnd(message: AssistantMessage): StreamEvent[] {
-  const out: StreamEvent[] = [{ kind: 'assistant-end' }]
+  out.push({ kind: 'assistant-end' })
   const stop = message.stop_reason as
     | 'end'
     | 'length'
@@ -162,14 +154,13 @@ function translateAssistantMessageEnd(message: AssistantMessage): StreamEvent[] 
     | 'aborted'
     | 'function_call'
     | undefined
-  // Clean ends and tool-call hops don't need a notice — the next turn
-  // will visibly continue. We only surface terminal anomalies.
   if (stop === 'length' || stop === 'error' || stop === 'aborted') {
     out.push({
       kind: 'stop-reason',
       reason: stop,
       message:
-        typeof message.error_message === 'string' && message.error_message.length > 0
+        typeof message.error_message === 'string' &&
+        message.error_message.length > 0
           ? message.error_message
           : undefined,
     })
@@ -198,48 +189,13 @@ function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
   }
 }
 
-/**
- * Stateful translator for `turn_state_changed` events. Holds a per-session
- * mirror of the previous `awaiting_approval` list so it can emit a
- * `fcall-start { pendingApproval: true }` exactly once per new pending
- * call, and suppress duplicates when the same record is re-broadcast
- * (the backend emits on every turn_state write, not just transitions
- * into the parking state).
- *
- * No `fcall-end` is emitted when the list shrinks — the orchestrator
- * already fires `function_execution_end` for resolved/denied calls
- * through its existing path. Removing the entry from our mirror is
- * bookkeeping only.
- */
-export function createTurnStateTranslator(): (event: TurnStateChangedEvent, sessionId: string) => StreamEvent[] {
-  const mirrors = new Map<string, PendingApproval[]>()
-  return (event, sessionId) => {
-    const prev = mirrors.get(sessionId) ?? []
-    const next = pendingApprovalsFromTurnState(event.new_value)
-    mirrors.set(sessionId, next)
-    const { added } = diffPending(prev, next)
-    return added.map((entry) => ({
-      kind: 'fcall-start' as const,
-      functionId: entry.function_id,
-      input: entry.args,
-      pendingApproval: true,
-      functionCallId: entry.function_call_id,
-      sessionId,
-    }))
-  }
-}
-
-/*
- * Wrap a soft function-execution failure into the canonical
- * `{ error: { kind, message, details, content } }` shape consumed by the
- * group accordion's failed counter and the embedded fcall's error view.
- * `details` / `content` carry the raw payload so the expanded response
- * pane still has everything to render. `kind: 'function_error'` matches
- * the rest of the translator's deny path (`approval_resolved` uses
- * `kind: 'denied'`).
- */
 function wrapErrorOutput(result: FunctionResult): {
-  error: { kind: string; message: string; details: unknown; content: ContentBlock[] }
+  error: {
+    kind: string
+    message: string
+    details: unknown
+    content: ContentBlock[]
+  }
 } {
   return {
     error: {
@@ -251,16 +207,9 @@ function wrapErrorOutput(result: FunctionResult): {
   }
 }
 
-/**
- * Pull a one-line message out of a FunctionResult's content blocks for the
- * canonical `error.message`. First non-empty text block wins; otherwise we
- * fall back to a generic string so the UI always has something to render.
- */
 function deriveErrorMessage(content: ContentBlock[]): string {
   for (const block of content) {
     if (block.type === 'text' && block.text.length > 0) {
-      // Collapse to a single line — the message field is the header; the
-      // full multi-line payload remains under error.content / details.
       return block.text.replace(/\s+/g, ' ').trim()
     }
   }

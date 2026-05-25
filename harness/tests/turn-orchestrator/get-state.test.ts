@@ -1,13 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import { FUNCTION_ID, execute } from '../../src/turn-orchestrator/get-state.js';
+import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { GetStatePayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 
-describe('turn::get_state', () => {
-  it('exposes the canonical function id', () => {
-    expect(FUNCTION_ID).toBe('turn::get_state');
+describe('GetStatePayloadSchema', () => {
+  it('accepts the flat shape the real backend sends', () => {
+    expect(GetStatePayloadSchema.parse({ session_id: 'sess-abc' })).toEqual({
+      session_id: 'sess-abc',
+    });
   });
 
+  it('strips extra keys (engine may add metadata later)', () => {
+    expect(GetStatePayloadSchema.parse({ session_id: 's1', trace_id: 't1' })).toEqual({
+      session_id: 's1',
+    });
+  });
+
+  it('rejects publish envelope shapes — no in-repo caller wraps get_state', () => {
+    expect(() =>
+      GetStatePayloadSchema.parse({
+        topic: 'turn::step_requested',
+        data: { session_id: 's1' },
+      }),
+    ).toThrow();
+  });
+
+  it('rejects nested payload wrappers (no in-repo caller uses them)', () => {
+    expect(() => GetStatePayloadSchema.parse({ data: { session_id: 's1' } })).toThrow();
+    expect(() => GetStatePayloadSchema.parse({ payload: { session_id: 's1' } })).toThrow();
+  });
+
+  it('rejects missing, empty, or non-string session_id', () => {
+    expect(() => GetStatePayloadSchema.parse({})).toThrow();
+    expect(() => GetStatePayloadSchema.parse({ session_id: '' })).toThrow();
+    expect(() => GetStatePayloadSchema.parse({ session_id: 42 })).toThrow();
+    expect(() => GetStatePayloadSchema.parse({ session_id: null })).toThrow();
+    expect(() => GetStatePayloadSchema.parse(null)).toThrow();
+    expect(() => GetStatePayloadSchema.parse(undefined)).toThrow();
+  });
+});
+
+describe('turn::get_state execute', () => {
   it('returns the turn_state record for a known session via persistence.loadRecord', async () => {
     const rec = newRecord('sess-abc');
     rec.state = 'function_awaiting_approval';
@@ -33,10 +67,5 @@ describe('turn::get_state', () => {
     } as unknown as ISdk;
     const out = await execute(iii, { session_id: 'unknown' });
     expect(out).toBeNull();
-  });
-
-  it('throws on missing session_id', async () => {
-    const iii = { trigger: vi.fn() } as unknown as ISdk;
-    await expect(execute(iii, {})).rejects.toThrow(/session_id/);
   });
 });

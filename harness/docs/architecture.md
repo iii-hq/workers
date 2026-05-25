@@ -19,7 +19,7 @@ workers.
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness/docs/workers/harness.md) |
-| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; chokepoint dispatcher for `agent::trigger`. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
+| turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
@@ -69,7 +69,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "agent::trigger → hook-fanout::publish_collect (after-hook)" --> hook
+  turnOrch -- "publishAfter → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
 
@@ -174,7 +174,7 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `policy::check_permissions`, `hook-fanout::publish_collect`, `state::set`,
 `state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
 `auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
-`oauth::openai-codex::login`, `run::start`, `run::start_and_wait`,
+`oauth::openai-codex::login`, `run::start`,
 `router::stream_assistant`, `router::abort`.
 
 Bare-string allow rules: `state::get`, `state::list`,
@@ -281,13 +281,13 @@ to write to stderr unchanged.
 **`harness::trigger` as the WS ingestion bridge.** Browser-originated
 requests hit `harness::trigger` (see
 [src/harness/trigger.ts](harness/src/harness/trigger.ts)), NOT
-`run::start` directly. The wrapping `instrumentHandler` reads
-`session_id`/`message_id` from the outer body and seeds baggage; the
-handler then forwards to `iii.trigger` with the inner `function_id` /
-`payload`. This is the symmetric counterpart of the Rust harness bridge
-(`workers/harness/src/lib.rs:103-159`; legacy bus id `harness::call`) and
-means the span tree looks the same regardless of whether the request
-landed on a Rust or Node deployment.
+`run::start` directly. The request body is `{session_id?, message_id?,
+payload}` with a flat `run::start` payload; the wrapping
+`instrumentHandler` reads `session_id`/`message_id` from the outer body and
+seeds baggage, then the handler forwards `payload` to `run::start` (the
+target function id is fixed, not client-supplied). Going through this hop
+seeds the baggage before the nested `run::start` span opens, so the span
+tree carries the session/message ids end-to-end.
 
 ```mermaid
 sequenceDiagram
@@ -297,7 +297,7 @@ sequenceDiagram
   participant Inner as run::start (turn-orchestrator)
   participant Trace as engine traces UI
 
-  Web->>Bridge: {function_id:"run::start", session_id, message_id, payload}
+  Web->>Bridge: {session_id, message_id, payload}
   Wrap->>Wrap: open span "harness.harness::trigger", stamp ids, push baggage
   Bridge->>Inner: iii.trigger(run::start, payload) -- baggage propagated
   Wrap->>Wrap: open span "harness.run::start", inherit ids from baggage

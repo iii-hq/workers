@@ -6,18 +6,17 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
+import { type RunRequest, parseRunRequest } from './run-request.js';
 import {
   type TurnStateRecord,
-  cwdIndexKey,
-  cwdKey,
   functionSchemasKey,
   lastSessionTreeLenKey,
   messagesKey,
   runRequestKey,
-  sandboxIdKey,
-  toolSchemasKey,
   turnStateKey,
 } from './state.js';
+import { emitTurnStateChanged } from './turn-state-write.js';
+import { shouldWakeStep, wakeState } from './wake.js';
 
 const SCOPE = 'agent';
 
@@ -51,8 +50,41 @@ export async function loadRecord(iii: ISdk, session_id: string): Promise<TurnSta
   return v as TurnStateRecord;
 }
 
-export async function saveRecord(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+/**
+ * Persist turn_state and emit UI event — no FSM wake (mid-handler saves).
+ * Pass `previous` (the pre-write record) to skip the `state::get` that would
+ * otherwise re-read it; omit it and the prior value is loaded here.
+ */
+export async function persistRecord(
+  iii: ISdk,
+  rec: TurnStateRecord,
+  previous?: TurnStateRecord | null,
+): Promise<void> {
+  const prev = previous !== undefined ? previous : await loadRecord(iii, rec.session_id);
+  const eventType = prev === null ? 'state:created' : 'state:updated';
+
   await stateSet(iii, turnStateKey(rec.session_id), rec);
+
+  await emitTurnStateChanged(
+    iii,
+    rec.session_id,
+    eventType,
+    rec as unknown as Record<string, unknown>,
+    prev !== null ? (prev as unknown as Record<string, unknown>) : undefined,
+  );
+}
+
+export async function saveRecord(
+  iii: ISdk,
+  rec: TurnStateRecord,
+  previous?: TurnStateRecord | null,
+): Promise<void> {
+  const prev = previous !== undefined ? previous : await loadRecord(iii, rec.session_id);
+  await persistRecord(iii, rec, prev);
+
+  if (shouldWakeStep(prev?.state ?? null, rec.state)) {
+    await wakeState(iii, rec.session_id, rec.state);
+  }
 }
 
 export async function loadMessages(iii: ISdk, session_id: string): Promise<AgentMessage[]> {
@@ -135,25 +167,9 @@ export async function saveRunRequest(
   await stateSet(iii, runRequestKey(session_id), request);
 }
 
-export async function loadRunRequest(
-  iii: ISdk,
-  session_id: string,
-): Promise<Record<string, unknown>> {
+export async function loadRunRequest(iii: ISdk, session_id: string): Promise<RunRequest> {
   const v = await stateGet(iii, runRequestKey(session_id));
-  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-}
-
-export async function saveCwd(iii: ISdk, session_id: string, cwd: string): Promise<void> {
-  await stateSet(iii, cwdKey(session_id), cwd);
-}
-
-export async function saveCwdIndex(iii: ISdk, cwd_hash: string, session_id: string): Promise<void> {
-  await stateSet(iii, cwdIndexKey(cwd_hash), session_id);
-}
-
-export async function loadSandboxId(iii: ISdk, session_id: string): Promise<string | null> {
-  const v = await stateGet(iii, sandboxIdKey(session_id));
-  return typeof v === 'string' ? v : null;
+  return parseRunRequest(v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 }
 
 export async function saveFunctionSchemas(
@@ -166,29 +182,17 @@ export async function saveFunctionSchemas(
 
 export async function loadFunctionSchemas(iii: ISdk, session_id: string): Promise<unknown[]> {
   const v = await stateGet(iii, functionSchemasKey(session_id));
-  if (Array.isArray(v)) return v;
-  const legacy = await stateGet(iii, toolSchemasKey(session_id));
-  if (Array.isArray(legacy)) return legacy;
-  return [];
+  return Array.isArray(v) ? v : [];
 }
 
 const PREPARED_KEY = 'function_prepared';
 const EXECUTED_KEY = 'function_executed';
-const LEGACY_PREPARED_KEY = 'tool_prepared';
-const LEGACY_EXECUTED_KEY = 'tool_executed';
 
 const stagingKey = (sid: string, suffix: string) => `session/${sid}/${suffix}`;
 
-async function stagingGetWithLegacy(
-  iii: ISdk,
-  session_id: string,
-  newSuffix: string,
-  legacySuffix: string,
-): Promise<unknown[]> {
-  const v = await stateGet(iii, stagingKey(session_id, newSuffix));
-  if (Array.isArray(v)) return v;
-  const legacy = await stateGet(iii, stagingKey(session_id, legacySuffix));
-  return Array.isArray(legacy) ? legacy : [];
+async function stagingGet(iii: ISdk, session_id: string, suffix: string): Promise<unknown[]> {
+  const v = await stateGet(iii, stagingKey(session_id, suffix));
+  return Array.isArray(v) ? v : [];
 }
 
 export type PreparedEntry = {
@@ -222,12 +226,12 @@ export async function savePreparedCalls(
 }
 
 export async function loadPreparedCalls(iii: ISdk, session_id: string): Promise<PreparedEntry[]> {
-  const items = await stagingGetWithLegacy(iii, session_id, PREPARED_KEY, LEGACY_PREPARED_KEY);
+  const items = await stagingGet(iii, session_id, PREPARED_KEY);
   const out: PreparedEntry[] = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
     const obj = it as Record<string, unknown>;
-    const fc = (obj.function_call ?? obj.tool_call) as FunctionCall | undefined;
+    const fc = obj.function_call as FunctionCall | undefined;
     if (!fc) continue;
     const blocked = (obj.blocked as FunctionResult | null) ?? null;
     const pre_approved = obj.pre_approved === true;
@@ -245,12 +249,12 @@ export async function saveExecutedCalls(
 }
 
 export async function loadExecutedCalls(iii: ISdk, session_id: string): Promise<ExecutedEntry[]> {
-  const items = await stagingGetWithLegacy(iii, session_id, EXECUTED_KEY, LEGACY_EXECUTED_KEY);
+  const items = await stagingGet(iii, session_id, EXECUTED_KEY);
   const out: ExecutedEntry[] = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
     const obj = it as Record<string, unknown>;
-    const fc = (obj.function_call ?? obj.tool_call) as FunctionCall | undefined;
+    const fc = obj.function_call as FunctionCall | undefined;
     const result = obj.result as FunctionResult | undefined;
     if (!fc || !result) continue;
     out.push({

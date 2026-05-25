@@ -1,14 +1,17 @@
 /**
- * `steering_check`. Drains the steering / followup inbox queues and the
- * abort flag, then routes onward. Mirrors
- * `turn-orchestrator/src/states/steering.rs`.
+ * `turn::steering_check`. Drains steering / followup inboxes and the abort flag, then routes onward.
+ *
+ * **Incoming**: flat `{ session_id }` via FIFO enqueue on `turn-step`.
+ * **Outgoing**: `{ ok, from_state, to_state }` on success; stale skip when state drifted.
  */
 
 import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
+import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
+import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 
 export type SteeringRoute =
   | 'abort'
@@ -17,6 +20,7 @@ export type SteeringRoute =
   | 'continue_after_function'
   | 'end_turn';
 
+/** Pure priority router — no I/O. */
 export function route(
   abort: boolean,
   has_steering: boolean,
@@ -122,28 +126,20 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
       transitionTo(rec, 'tearing_down');
       break;
     }
-    case 'steering': {
-      await emitTurnEndOnce(iii, rec);
-      const messages = await persistence.loadMessages(iii, rec.session_id);
-      messages.push(...steering);
-      await persistence.saveMessages(iii, rec.session_id, messages);
-      rec.function_results = [];
-      transitionTo(rec, 'awaiting_assistant');
-      break;
-    }
+    case 'steering':
     case 'followup': {
+      const inbox = decision === 'steering' ? steering : followup;
       await emitTurnEndOnce(iii, rec);
       const messages = await persistence.loadMessages(iii, rec.session_id);
-      messages.push(...followup);
+      messages.push(...inbox);
       await persistence.saveMessages(iii, rec.session_id, messages);
       rec.function_results = [];
-      transitionTo(rec, 'awaiting_assistant');
+      transitionTo(rec, 'assistant_streaming');
       break;
     }
     case 'continue_after_function': {
-      // function_finalize already emitted TurnEnd; just move on.
       rec.function_results = [];
-      transitionTo(rec, 'awaiting_assistant');
+      transitionTo(rec, 'assistant_streaming');
       break;
     }
     case 'end_turn': {
@@ -152,4 +148,18 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
       break;
     }
   }
+}
+
+export function register(iii: ISdk): void {
+  iii.registerFunction(
+    'turn::steering_check',
+    async (payload: TurnStepPayload) => {
+      const parsed = TurnStepPayloadSchema.parse(payload);
+      return runTransition(iii, 'steering_check', handleSteering, parsed);
+    },
+    {
+      description:
+        'Run one durable FSM transition for session in state steering_check: drain inboxes and route onward.',
+    },
+  );
 }

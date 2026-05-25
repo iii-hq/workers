@@ -4,7 +4,7 @@
  * mock the SDK in tests.
  */
 
-export { registerWorker } from 'iii-sdk';
+export { registerWorker, TriggerAction } from 'iii-sdk';
 export type {
   ISdk,
   Channel,
