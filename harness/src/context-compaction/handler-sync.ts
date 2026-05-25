@@ -8,15 +8,16 @@
 import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { emitCompactionDone } from './emit.js';
 import type { AgentMessage } from '../types/agent-message.js';
-import { busyTimeoutMs, pruneMinFree, pruneProtect, pruneProtectedTools } from './config.js';
-import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
+import { compactionConfig } from './config.js';
+import {
+  persistCompactionFlatState,
+  publishCompactionDone,
+  runSummarizeCompaction,
+} from './handler-pipeline.js';
 import { acquireLeaseWithWait, releaseLease } from './lease.js';
 import type { ModelLimit } from './overflow.js';
-import { prune } from './prune.js';
 import { type MessageWithEntryId, extractReplayTarget, reinjectReplay } from './replay.js';
-import { summarizeAndAppend } from './summarize.js';
 
 export type CompactNowInput = {
   session_id: string;
@@ -43,14 +44,18 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
     setCurrentSpanAttribute('session_id', input.session_id);
 
     const leaseStart = Date.now();
-    const nonce = await acquireLeaseWithWait(iii, input.session_id, 'compaction', busyTimeoutMs());
+    const nonce = await acquireLeaseWithWait(
+      iii,
+      input.session_id,
+      'compaction',
+      compactionConfig().busyTimeoutMs,
+    );
     const lease_wait_ms = Date.now() - leaseStart;
     setCurrentSpanAttribute('lease_wait_ms', lease_wait_ms);
 
     if (!nonce) return { status: 'busy' };
 
     try {
-      // Load entries with IDs from the session tree
       const resp = await iii.trigger<
         unknown,
         { messages?: Array<{ entry_id?: string; message?: AgentMessage }> }
@@ -73,14 +78,7 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
 
       setCurrentSpanAttribute('replayed', Boolean(replay));
 
-      // Prune older tool outputs first (cheap path)
-      await prune(iii, input.session_id, {
-        protectTokens: pruneProtect(),
-        minFree: pruneMinFree(),
-        protectedTools: pruneProtectedTools(),
-      });
-
-      const result = await summarizeAndAppend(
+      const result = await runSummarizeCompaction(
         iii,
         input.session_id,
         { mode: 'sync', truncatedEntries: truncatedMessages },
@@ -97,13 +95,10 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       }
 
       setCurrentSpanAttribute('tokens_before', result.tokens_before);
-      // tokens_kept attribute deferred — currently identical to tokens_before.
 
       const auto_continued = Boolean(replay);
       setCurrentSpanAttribute('auto_continued', auto_continued);
 
-      // Chain parent_id on the tree appends so the active path stays
-      // connected: Compaction -> replay user msg -> synthetic continue.
       let lastEntryId = result.compaction_entry_id || null;
       if (replay) {
         lastEntryId = await reinjectReplay(iii, input.session_id, replay, lastEntryId);
@@ -119,26 +114,15 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
         });
       }
 
-      // Rewrite the flat state used by the turn-orchestrator's provider
-      // input. Without this, persistence.loadMessages still returns the
-      // pre-compaction history and the next provider call overflows.
-      const new_flat_messages: AgentMessage[] = [
-        buildSummaryMessage(result.summary_text),
-        ...result.tail_messages,
-      ];
-      if (replay) new_flat_messages.push(replay.message);
-      await rewriteFlatMessages(iii, input.session_id, new_flat_messages);
+      await persistCompactionFlatState(
+        iii,
+        input.session_id,
+        result.summary_text,
+        result.tail_messages,
+        replay ? [replay.message] : undefined,
+      );
 
-      // Tell the UI we just compacted so it can render a marker and
-      // re-estimate context usage. Best-effort: a publish failure must
-      // not derail the in-flight turn — the orchestrator is waiting on
-      // our return.
-      await emitCompactionDone(iii, input.session_id, 'sync', {
-        summary_text: result.summary_text,
-        tokens_before: result.tokens_before,
-        compaction_entry_id: result.compaction_entry_id,
-        tail_start_id: result.tail_start_id,
-      });
+      await publishCompactionDone(iii, input.session_id, 'sync', result);
 
       return {
         status: 'ok',

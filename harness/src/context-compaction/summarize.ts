@@ -2,7 +2,7 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { decide, targetFunctionId } from '../turn-orchestrator/provider-router.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
-import { preserveRecentTokensOverride, tailTurns, toolOutputMaxChars } from './config.js';
+import { compactionConfig } from './config.js';
 import { stampLastCompaction } from './lease.js';
 import { type ModelLimit, preserveRecentBudget } from './overflow.js';
 import {
@@ -139,15 +139,16 @@ export async function summarizeAndAppend(
   const prior = completedCompactions(await loadCompactionEntries(iii, session_id));
   const previousSummary = prior.at(-1)?.summary;
 
+  const cfg = compactionConfig();
   const budget = preserveRecentBudget({
     model: { id: model.modelID, limit: model.modelLimit },
-    override: preserveRecentTokensOverride(),
+    override: cfg.preserveRecentTokensOverride,
   });
 
   const sel = selectWithEntryIds({
     entries,
     budget,
-    tailTurns: tailTurns(),
+    tailTurns: cfg.tailTurns,
     estimate: estimateTokenCount,
   });
   if (sel.head.length === 0) {
@@ -157,7 +158,7 @@ export async function summarizeAndAppend(
   const head_messages = sel.head.map((e) => e.message);
   const tail_messages: AgentMessage[] = entries.slice(sel.head.length).map((e) => e.message);
   const tokens_before = estimateTokenCount(head_messages);
-  const stripped = stripMedia(head_messages, { toolOutputMaxChars: toolOutputMaxChars() });
+  const stripped = stripMedia(head_messages, { toolOutputMaxChars: cfg.toolOutputMaxChars });
 
   const systemPrompt = buildPrompt({ previousSummary, context: [] });
   const userPrompt = renderUserPrompt(stripped);

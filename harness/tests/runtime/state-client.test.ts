@@ -20,9 +20,9 @@ describe('createState', () => {
     const iii = makeIii(() => {
       throw new Error('backend down');
     });
-    await expect(createState(iii, { tolerant: false }).get({ scope: 's', key: 'k' })).rejects.toThrow(
-      'backend down',
-    );
+    await expect(
+      createState(iii, { tolerant: false }).get({ scope: 's', key: 'k' }),
+    ).rejects.toThrow('backend down');
   });
 
   it('tolerant list returns [] on trigger failure', async () => {

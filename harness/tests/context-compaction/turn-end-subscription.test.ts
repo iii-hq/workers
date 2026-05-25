@@ -14,7 +14,9 @@ describe('context-compaction stream subscription', () => {
     await register(iii);
 
     const streamTriggers = registerTrigger.mock.calls
-      .map((c) => c[0] as { type?: string; function_id?: string; config?: { stream_name?: string } })
+      .map(
+        (c) => c[0] as { type?: string; function_id?: string; config?: { stream_name?: string } },
+      )
       .filter(
         (t) => t?.type === 'stream' && t?.function_id === 'context-compaction::on_agent_event',
       );

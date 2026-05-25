@@ -1,8 +1,7 @@
 import {
   MAX_PRESERVE_RECENT_TOKENS,
   MIN_PRESERVE_RECENT_TOKENS,
-  preserveRecentTokensOverride,
-  reservedTokens,
+  compactionConfig,
 } from './config.js';
 
 export type ModelLimit = {
@@ -27,7 +26,7 @@ export type TokensLike = {
 export function usable(input: { model: ModelLike; reserved?: number }): number {
   const { model } = input;
   if (model.limit.context === 0) return 0;
-  const reserved = input.reserved ?? reservedTokens();
+  const reserved = input.reserved ?? compactionConfig().reservedTokens;
   const base =
     model.limit.input > 0
       ? Math.max(0, model.limit.input - reserved)
@@ -58,7 +57,7 @@ export function preserveRecentBudget(input: {
   reserved?: number;
   override?: number;
 }): number {
-  const ovr = input.override ?? preserveRecentTokensOverride();
+  const ovr = input.override ?? compactionConfig().preserveRecentTokensOverride;
   if (ovr !== undefined) return ovr;
   const u = usable({ model: input.model, reserved: input.reserved });
   return Math.min(

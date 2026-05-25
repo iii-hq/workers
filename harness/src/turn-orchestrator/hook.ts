@@ -2,12 +2,6 @@
  * Approval consultation. Calls `policy::check_permissions` directly and maps
  * the reply to allow / deny / pending. Fail-closed on transport errors:
  * unreachable policy → deny with `gate_unavailable`.
- *
- * `publishAfter` goes through hook-fanout only when a durable subscriber is
- * registered for the after-hook topic. With no subscriber the publish/collect
- * would just block until its deadline and return an empty merge the caller
- * discards, so it is skipped. The after-hook stays a pluggable merge point for
- * any registered consumer (see subscriber-presence.ts).
  */
 
 import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
@@ -20,11 +14,7 @@ import type { ISdk } from '../runtime/iii.js';
 export type { DenialEnvelope } from '../approval-gate/schemas.js';
 import { logger } from '../runtime/otel.js';
 import type { FunctionCall } from '../types/function.js';
-import { hasDurableSubscriber } from './subscriber-presence.js';
 
-export const TOPIC_AFTER = 'agent::after_function_call';
-
-export const HOOK_TIMEOUT_MS = 500;
 /** Fail-closed budget for the synchronous policy consult before a call. */
 export const POLICY_TIMEOUT_MS = 5_000;
 
@@ -81,32 +71,5 @@ export async function consultBefore(iii: ISdk, function_call: FunctionCall): Pro
         `policy unreachable: ${String(err)}`,
       ),
     };
-  }
-}
-
-export async function publishAfter(
-  iii: ISdk,
-  function_call: FunctionCall,
-  result: unknown,
-): Promise<unknown> {
-  // No subscriber on the after-hook topic → publish_collect would just block
-  // until its deadline and return an empty merge that the caller discards.
-  // Skip the dead wait; callers treat `undefined` as "keep the original result".
-  if (!(await hasDurableSubscriber(iii, TOPIC_AFTER))) {
-    return undefined;
-  }
-  try {
-    const resp = await iii.trigger<unknown, { merged?: unknown }>({
-      function_id: 'hook-fanout::publish_collect',
-      payload: {
-        topic: TOPIC_AFTER,
-        payload: { function_call, result },
-        merge_rule: 'field_merge',
-        timeout_ms: HOOK_TIMEOUT_MS,
-      },
-    });
-    return resp.merged;
-  } catch {
-    return null;
   }
 }

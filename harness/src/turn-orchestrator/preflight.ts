@@ -12,7 +12,13 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { CompactionBusyError, ContextOverflowError } from './errors.js';
-import { estimateMessages } from './estimate.js';
+
+/** Cheap chars/4 token estimate — same heuristic as context-compaction's estimateTokenCount. */
+function estimateMessages(messages: AgentMessage[]): number {
+  let chars = 0;
+  for (const m of messages) chars += JSON.stringify(m).length;
+  return Math.floor(chars / 4);
+}
 
 function findLastUserEntryId(
   entries: Array<{ entry_id?: string; message?: { role?: string } }>,

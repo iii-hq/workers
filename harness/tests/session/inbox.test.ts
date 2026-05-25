@@ -3,6 +3,6 @@ import { inboxKey } from '../../src/session/inbox/key.js';
 
 describe('inboxKey', () => {
   it('namespaces by session and name', () => {
-    expect(inboxKey('steering', 's1')).toBe('session/s1/steering');
+    expect(inboxKey('steering', 's1')).toBe('s1/steering');
   });
 });

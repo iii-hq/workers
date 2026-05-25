@@ -13,7 +13,7 @@ alongside `harness` over the iii bus.
 | Folder | Bus surface | Role |
 |---|---|---|
 | `src/harness/` | `ui::subscribe`/`unsubscribe`, `harness::fs::read_inline`, `policy::check_permissions` | Meta-worker; loads `iii-permissions.yaml`; spins up `ui::*` fanout pumps. |
-| `src/approval-gate/` | `approval::resolve` | Routes operator decisions to per-call `turn::approval_resume` fns (registered by turn-orchestrator). |
+| `src/approval-gate/` | `approval::resolve` | Persists operator decisions to scope `approvals` (turn-orchestrator reacts via `turn::on_approval`). |
 | `src/turn-orchestrator/` | `run::start`, `turn::{state}`, `turn::get_state` | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. |
 | `src/session/` | `session-tree::*` (11 fns), `session-inbox::*` (3 fns) | Branching session storage + per-session inbox queues. |
 | `src/llm-budget/` | `budget::*` (14 fns) | Workspace + agent LLM spend caps. |

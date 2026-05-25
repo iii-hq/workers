@@ -8,6 +8,7 @@
  * 3. Lease held → status === 'busy'.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { payloadStoreKey, stateStoreKey } from '../../_helpers/stateStoreKey.js';
 import { handleSync } from '../../../src/context-compaction/handler-sync.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
 import { loadFixture } from '../../fixtures/load.js';
@@ -91,29 +92,35 @@ function buildSyncMock(opts: {
       return { ok: true };
     }
     if (function_id === 'state::get') {
-      const v = stateStore.get((payload as { key: string }).key);
+      const v = stateStore.get(payloadStoreKey(payload as { scope?: string; key?: string }));
       return v !== undefined ? v : null;
     }
     if (function_id === 'state::set') {
-      const p = payload as { key: string; value: unknown };
+      const p = payload as { key: string; value: unknown; scope?: string };
+      const storeKey = payloadStoreKey(p);
       if (p.value === null || p.value === undefined) {
-        stateStore.delete(p.key);
+        stateStore.delete(storeKey);
       } else {
-        stateStore.set(p.key, p.value);
+        stateStore.set(storeKey, p.value);
       }
       return { ok: true };
     }
     if (function_id === 'state::update') {
-      const p = payload as { key: string; ops: Array<{ type: string; value?: unknown }> };
-      const oldValue = stateStore.has(p.key) ? stateStore.get(p.key) : null;
+      const p = payload as {
+        key: string;
+        scope?: string;
+        ops: Array<{ type: string; value?: unknown }>;
+      };
+      const storeKey = payloadStoreKey(p);
+      const oldValue = stateStore.has(storeKey) ? stateStore.get(storeKey) : null;
       let newValue: unknown = oldValue;
       for (const op of p.ops ?? []) {
         if (op.type === 'set') newValue = op.value;
       }
       if (newValue === null || newValue === undefined) {
-        stateStore.delete(p.key);
+        stateStore.delete(storeKey);
       } else {
-        stateStore.set(p.key, newValue);
+        stateStore.set(storeKey, newValue);
       }
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
@@ -215,8 +222,8 @@ describe('flow-sync: lease held → busy', () => {
     // Pre-populate the state store with an active lease for this session
     const sessionId = `${mediumFixture.session_id}-busy`;
     const stateStore = new Map<string, unknown>();
-    const leaseKey = `session/${sessionId}/compaction_lease`;
-    stateStore.set(leaseKey, { nonce: 'held-by-another', ts: Date.now() - 1000 });
+    const leaseStoreKey = stateStoreKey('compaction_lease', sessionId);
+    stateStore.set(leaseStoreKey, { nonce: 'held-by-another', ts: Date.now() - 1000 });
 
     const { iii } = buildSyncMock({ fixtureMessages, stateStore });
 

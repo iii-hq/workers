@@ -1,16 +1,15 @@
 import type { ISdk, Trigger } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
-import { SESSION_INDEX_SCOPE } from '../../turn-orchestrator/state.js';
+import { TURN_STATE_SCOPE } from '../../turn-orchestrator/state.js';
 import type { FanoutState } from '../ui-subscribe.js';
 
 export const SESSION_CREATED_HANDLER_FN_ID = 'harness::fanout::session_created';
 
 /**
- * A new session is signalled by a one-time marker write on the dedicated
- * `session_index` scope (key = session id), made by the turn-orchestrator when
- * `turn_state` is first persisted. The state trigger matches that scope in
- * engine — no `condition_function_id` RPC per agent-scope write — so this
- * handler is the sole gate: it acts only on the `state:created` marker.
+ * A new session is signalled by the first `state:created` write on scope
+ * `turn_state` (key = session id). The state trigger matches that scope in
+ * engine — no `condition_function_id` RPC per turn_state update — so this
+ * handler is the sole gate: it acts only on `state:created`.
  */
 function sessionCreatedId(event: unknown): string | null {
   const obj = (event ?? {}) as Record<string, unknown>;
@@ -48,7 +47,7 @@ export function spawnSessionsPoll(iii: ISdk, state: FanoutState): () => void {
     trigger = iii.registerTrigger({
       type: 'state',
       function_id: SESSION_CREATED_HANDLER_FN_ID,
-      config: { scope: SESSION_INDEX_SCOPE },
+      config: { scope: TURN_STATE_SCOPE },
     });
   } catch (err) {
     logger.warn('sessions state trigger registration failed', { err: String(err) });

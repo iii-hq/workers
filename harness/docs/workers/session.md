@@ -62,11 +62,11 @@ resumed approval replies in the correct transcript position when their
 ids are non-monotonic relative to wall-clock order.
 
 `session-inbox::*` (under the configured `session.state_scope`, default
-`agent`):
+`inbox`):
 
-| Key shape | Value |
-|---|---|
-| `session/<session_id>/<inbox_name>` | An append-only JSON array of opaque items. |
+| Scope | Key | Value |
+|---|---|---|
+| `inbox` | `<session_id>/<inbox_name>` | An append-only JSON array of opaque items. |
 
 ## Configuration
 
@@ -74,7 +74,7 @@ From the `session` section of [config.yaml](harness/config.yaml):
 
 - `store_backend` (default `iii_state`; alternative `memory`) — which
   `SessionStore` implementation `register()` instantiates.
-- `state_scope` (default `agent`) — iii state scope used by
+- `state_scope` (default `inbox`) — iii state scope used by
   `session-inbox::*`. Note: the tree backend uses its own hard-coded
   scopes (`session_tree:*`, `session_tree_meta`); only the inbox honours
   this setting.
@@ -96,5 +96,5 @@ From [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml):
 | [src/session/tree/store.ts](harness/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
 | [src/session/tree/types.ts](harness/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |
 | [src/session/inbox/handlers.ts](harness/src/session/inbox/handlers.ts) | Registers the three `session-inbox::*` functions. |
-| [src/session/inbox/key.ts](harness/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "session/<sid>/<name>"`. |
+| [src/session/inbox/key.ts](harness/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "<sid>/<name>"` under scope `inbox`. |
 | [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml) | Worker manifest. |

@@ -20,7 +20,7 @@ workers.
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; persists decisions to scope `approvals` (turn-orchestrator reacts via `turn::on_approval`). | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
@@ -69,13 +69,12 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "publishAfter → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
-  approval -- "trigger turn::approval_resume::<sid>/<cid>" --> turnOrch
-  turnOrch -- "state::set approvals/<sid>/<cid>" --> state
+  approval -- "state::set approvals/<sid>/<cid>" --> state
+  state -- "state trigger (scope=approvals)" --> turnOrch
   turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
@@ -86,7 +85,7 @@ flowchart LR
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
   state -- "state trigger (scope=approvals)" --> turnOrch
-  state -- "state trigger (scope=session_index)" --> harness
+  state -- "state trigger (scope=turn_state)" --> harness
   harness -- "ui::session::event::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
 ```
@@ -94,13 +93,13 @@ flowchart LR
 ## Turn FSM
 
 [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts)
-defines an 8-state durable FSM. Each state is a registered `turn::{state}`
+defines a 7-state durable FSM. Each state is a registered `turn::{state}`
 function executed via `runTransition` and enqueued onto the `turn-step` FIFO
-queue by `wakeState` ([wake.ts](harness/src/turn-orchestrator/wake.ts)).
-`saveRecord` calls `shouldWakeStep` then `wakeState` when the persisted state
-transitions to a stepable state. Paused or terminal sessions are also woken by
+queue by `TurnStore.wakeStep` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
+`saveRecord` calls `shouldWakeStep` then `wakeStep` when the persisted state
+transitions to a stepable state. Paused sessions are also woken by
 the approval-decision state trigger (`turn::on_approval` on scope `approvals`)
-via `wakeFromRecord`.
+via `TurnStore.wakeFromRecord`.
 
 ```mermaid
 stateDiagram-v2
@@ -108,14 +107,13 @@ stateDiagram-v2
   provisioning --> assistant_streaming
   assistant_streaming --> function_execute: has function calls
   assistant_streaming --> steering_check: no function calls
-  assistant_streaming --> tearing_down: error or aborted
+  assistant_streaming --> stopped: error or aborted via finishSession
   function_execute --> function_awaiting_approval: any call needs approval
   function_execute --> steering_check: batch complete
-  function_execute --> tearing_down: all calls terminate session
+  function_execute --> stopped: all calls terminate session via finishSession
   function_awaiting_approval --> function_execute: all decisions written
   steering_check --> assistant_streaming: continue turn
-  steering_check --> tearing_down: stop or max turns
-  tearing_down --> stopped
+  steering_check --> stopped: stop or max turns via finishSession
   stopped --> [*]
   failed --> [*]
 ```
@@ -127,10 +125,10 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 
 The orchestrator consults `policy::check_permissions` directly inside
 `consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
-the before path. The orchestrator parks the turn in `function_awaiting_approval`,
-registers a `turn::approval_resume` function per pending call, and waits until
-`approval::resolve` (or abort) triggers that function, which persists the
-decision and invokes `wakeFromRecord` to re-enqueue the current state handler.
+the before path. The orchestrator parks the turn in `function_awaiting_approval`
+and waits until `approval::resolve` writes the decision to scope `approvals`,
+which fires `turn::on_approval` and calls `wakeFromRecord` to re-enqueue the
+current state handler.
 
 ```mermaid
 sequenceDiagram
@@ -144,15 +142,15 @@ sequenceDiagram
   alt rule.action == allow
     Harness-->>Turn: allow → dispatch the call
   else rule.action == deny
-    Harness-->>Turn: deny + DenialEnvelope → DenialResult
+    Harness-->>Turn: deny + DenialEnvelope → error FunctionResult
   else no rule (needs_approval)
     Harness-->>Turn: needs_approval → park in function_awaiting_approval
     Note over Turn,Bus: saveRecord does not wake stepable handlers for<br/>function_awaiting_approval. awaiting_approval pins open calls.
     User->>Gate: approval::resolve(decision, reason)
-    Gate->>Turn: trigger turn::approval_resume::<sid>/<cid>
-    Turn->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
+    Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
+    Bus-->>Turn: turn::on_approval state trigger
     Turn->>Turn: wakeFromRecord → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
-    Turn->>Turn: fold decisions into work batch,<br/>transition back to function_execute
+    Turn->>Turn: fold decisions into work.prepared,<br/>transition back to function_execute
   end
 ```
 

@@ -6,15 +6,18 @@ import { randomUUID } from 'node:crypto';
 import type { ISdk } from '../runtime/iii.js';
 import { stateGet, stateSet, stateUpdate } from '../runtime/state.js';
 
+const COMPACTION_LEASE_SCOPE = 'compaction_lease';
+const PRUNE_LEASE_SCOPE = 'prune_lease';
+const LAST_COMPACTION_AT_SCOPE = 'last_compaction_at';
+
 export type LeaseKind = 'compaction' | 'prune';
 
 export const LEASE_TTL_SECS = 300;
-const STATE_SCOPE = 'agent';
 
 let counter = 0;
 
-export function leaseKey(session_id: string, kind: LeaseKind = 'compaction'): string {
-  return `session/${session_id}/${kind}_lease`;
+function leaseScope(kind: LeaseKind): string {
+  return kind === 'compaction' ? COMPACTION_LEASE_SCOPE : PRUNE_LEASE_SCOPE;
 }
 
 export function mintLeaseNonce(): string {
@@ -41,19 +44,20 @@ export async function acquireLease(
   session_id: string,
   kind: LeaseKind = 'compaction',
 ): Promise<string | null> {
-  const key = leaseKey(session_id, kind);
+  const scope = leaseScope(kind);
+  const key = session_id;
   const now_ms = Date.now();
   const now_secs = Math.floor(now_ms / 1000);
 
   // Fast path: skip the atomic set when a valid lease is clearly held.
-  const existing = await stateGet(iii, STATE_SCOPE, key);
+  const existing = await stateGet(iii, scope, key);
   if (existing && isLeaseActive(existing, now_secs)) return null;
 
   const nonce = mintLeaseNonce();
   // path: '' targets FieldPath::root in the engine — set the whole value
   // atomically. Without `path`, the engine fails to deserialize the op and
   // stateUpdate falls into its catch + returns null.
-  const result = await stateUpdate(iii, STATE_SCOPE, key, [
+  const result = await stateUpdate(iii, scope, key, [
     { type: 'set', path: '', value: { nonce, ts: now_ms } },
   ]);
   // stateUpdate swallows backend errors and returns null. Treat a null
@@ -67,7 +71,7 @@ export async function acquireLease(
   // and bow out. stateUpdate is atomic, so only one caller can see
   // old_value == null (or expired) — exactly one winner.
   if (oldValue && isLeaseActive(oldValue, now_secs)) {
-    await stateSet(iii, STATE_SCOPE, key, oldValue);
+    await stateSet(iii, scope, key, oldValue);
     return null;
   }
   return nonce;
@@ -84,8 +88,9 @@ export async function releaseLease(
   ourNonce: string,
   kind: LeaseKind = 'compaction',
 ): Promise<void> {
-  const key = leaseKey(session_id, kind);
-  const stored = await stateGet(iii, STATE_SCOPE, key);
+  const scope = leaseScope(kind);
+  const key = session_id;
+  const stored = await stateGet(iii, scope, key);
   const storedNonce =
     stored &&
     typeof stored === 'object' &&
@@ -93,12 +98,12 @@ export async function releaseLease(
       ? ((stored as Record<string, unknown>).nonce as string)
       : null;
   if (storedNonce === ourNonce) {
-    await stateSet(iii, STATE_SCOPE, key, null);
+    await stateSet(iii, scope, key, null);
   }
 }
 
 export async function stampLastCompaction(iii: ISdk, session_id: string): Promise<void> {
-  await stateSet(iii, STATE_SCOPE, `session/${session_id}/last_compaction_at`, Date.now());
+  await stateSet(iii, LAST_COMPACTION_AT_SCOPE, session_id, Date.now());
 }
 
 export async function acquireLeaseWithWait(

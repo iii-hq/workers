@@ -1,26 +1,18 @@
 /**
- * TurnState + TurnStateRecord + agent-scope key helpers.
+ * TurnState + TurnStateRecord types and parsers.
  *
- * All turn-orchestrator persistence uses iii scope {@link AGENT_SCOPE} with
- * keys from the helpers below (`session/<sid>/turn_state`, etc.). Because
- * `state::list` returns values without keys, recovery paths filter listed
- * values with {@link parseTurnStateRecord} rather than key-prefix matching.
+ * Persistence uses semantic iii scopes (`turn_state`, `messages`, `run_request`, …)
+ * keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
  */
-
-/** iii-state scope for turn FSM records, flat messages, run_request, etc. */
-export const AGENT_SCOPE = 'agent' as const;
-
-/**
- * Dedicated iii-state scope indexing created sessions, keyed by `session_id`.
- * A one-time marker is written here when a session's `turn_state` is first
- * persisted, so the session-create fanout trigger matches in-engine by `scope`
- * alone — no `condition_function_id` RPC per agent-scope `turn_state` write.
- */
-export const SESSION_INDEX_SCOPE = 'session_index' as const;
 
 import { z } from 'zod';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
-import type { FunctionCall, FunctionResult } from '../types/function.js';
+import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
+
+/** Shared iii scope names for turn-orchestrator persistence (key = session_id). */
+export const TURN_STATE_SCOPE = 'turn_state';
+export const MESSAGES_SCOPE = 'messages';
+export const RUN_REQUEST_SCOPE = 'run_request';
 
 export type TurnState =
   | 'provisioning'
@@ -37,23 +29,10 @@ export type AwaitingApprovalEntry = {
   args: unknown;
 };
 
-export type PreparedEntry = {
-  function_call: FunctionCall;
-  blocked: FunctionResult | null;
-  pre_approved?: boolean;
-};
+/** Durable mid-batch work for function_execute. */
+export type TurnWork = FunctionBatchWork;
 
-export type ExecutedEntry = {
-  function_call: FunctionCall;
-  result: FunctionResult;
-  is_error: boolean;
-  duration_ms: number;
-};
-
-export type TurnWork = {
-  batch: PreparedEntry[];
-  results: ExecutedEntry[];
-};
+export type { ExecutedCall, FunctionBatchWork, PreparedCall };
 
 export type TurnStateRecord = {
   session_id: string;
@@ -119,9 +98,3 @@ export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.state = next;
   rec.updated_at_ms = Date.now();
 }
-
-export const messagesKey = (sid: string) => `session/${sid}/messages`;
-export const turnStateKey = (sid: string) => `session/${sid}/turn_state`;
-export const runRequestKey = (sid: string) => `session/${sid}/run_request`;
-export const lastSessionTreeLenKey = (sid: string) => `session/${sid}/session_tree_mirror_len`;
-export const eventCounterKey = (sid: string) => `session/${sid}/event_counter`;

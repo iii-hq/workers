@@ -10,22 +10,23 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
-import * as persistence from './persistence.js';
 import { RunStartPayloadSchema, type RunStartPayload, type RunStartResult } from './schemas.js';
+import { createTurnStore } from './state-runtime/store.js';
 import { newRecord } from './state.js';
 
 export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunStartResult> {
+  const store = createTurnStore(iii);
   const { session_id, messages, max_turns, message_id: _message_id, ...run } = payload;
 
-  await persistence.saveRunRequest(iii, session_id, {
+  await store.saveRunRequest(session_id, {
     ...run,
     mode: run.mode ?? null,
     function_schemas: [],
   });
-  await persistence.saveMessages(iii, session_id, messages);
+  await store.saveMessages(session_id, messages);
 
   const record = newRecord(session_id, max_turns);
-  await persistence.saveRecord(iii, record);
+  await store.saveRecord(record);
   return { session_id };
 }
 

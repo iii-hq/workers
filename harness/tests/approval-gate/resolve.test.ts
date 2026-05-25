@@ -11,7 +11,7 @@ import { fakeIii } from './_helpers/fakeIii.js';
 
 describe('handleResolveRequest — writing the decision', () => {
   it('writes the decision to approvals/<sid>/<cid> with a normalized payload', async () => {
-    const { iii, calls, resumeCalls } = fakeIii();
+    const { iii, calls } = fakeIii();
     const out = await handleResolveRequest(iii, {
       session_id: 's1',
       function_call_id: 'fc-1',
@@ -29,7 +29,6 @@ describe('handleResolveRequest — writing the decision', () => {
         },
       },
     ]);
-    expect(resumeCalls).toHaveLength(0);
   });
 
   it('never emits to the agent::events stream (denial flows via execution_end)', async () => {
@@ -94,7 +93,7 @@ describe('handleResolveRequest — hostile / malformed input is rejected, not cr
 });
 
 describe('handleResolveRequest — downstream failure is surfaced as resume_failed', () => {
-  it('returns resume_failed when the resume trigger rejects', async () => {
+  it('returns resume_failed when the state::set write rejects', async () => {
     const { iii } = fakeIii();
     (iii.trigger as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'));
     const out = await handleResolveRequest(iii, {

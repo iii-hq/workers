@@ -10,9 +10,8 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { listAgentTurnStateRecords } from './persistence.js';
 import { ApprovalDecisionEventSchema, type ParsedApprovalDecisionWrite } from './schemas.js';
-import { wakeFromRecord } from './wake.js';
+import { createTurnStore } from './state-runtime/store.js';
 
 export function parseApprovalDecisionWrite(event: unknown): ParsedApprovalDecisionWrite | null {
   const result = ApprovalDecisionEventSchema.safeParse(event);
@@ -24,8 +23,9 @@ export function isApprovalDecisionWrite(event: unknown): boolean {
 }
 
 export async function execute(iii: ISdk, write: ParsedApprovalDecisionWrite): Promise<void> {
+  const store = createTurnStore(iii);
   try {
-    await wakeFromRecord(iii, write.session_id);
+    await store.wakeFromRecord(write.session_id);
   } catch (err) {
     logger.warn('turn::on_approval: wake failed', {
       session_id: write.session_id,
@@ -42,11 +42,12 @@ export async function handleApprovalDecisionWrite(iii: ISdk, event: unknown): Pr
 
 /** Wake sessions still parked on approval (e.g. a decision arrived during downtime). */
 export async function recoverParkedApprovals(iii: ISdk): Promise<void> {
-  const records = await listAgentTurnStateRecords(iii);
+  const store = createTurnStore(iii);
+  const records = await store.listTurnStateRecords();
   for (const rec of records) {
     if (rec.state !== 'function_awaiting_approval') continue;
     try {
-      await wakeFromRecord(iii, rec.session_id);
+      await store.wakeFromRecord(rec.session_id);
     } catch (err) {
       logger.warn('recoverParkedApprovals: wake failed', {
         session_id: rec.session_id,
