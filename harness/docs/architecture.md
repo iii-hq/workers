@@ -281,13 +281,13 @@ to write to stderr unchanged.
 **`harness::trigger` as the WS ingestion bridge.** Browser-originated
 requests hit `harness::trigger` (see
 [src/harness/trigger.ts](harness/src/harness/trigger.ts)), NOT
-`run::start` directly. The wrapping `instrumentHandler` reads
-`session_id`/`message_id` from the outer body and seeds baggage; the
-handler then forwards to `iii.trigger` with the inner `function_id` /
-`payload`. This is the symmetric counterpart of the Rust harness bridge
-(`workers/harness/src/lib.rs:103-159`; legacy bus id `harness::call`) and
-means the span tree looks the same regardless of whether the request
-landed on a Rust or Node deployment.
+`run::start` directly. The request body is `{session_id?, message_id?,
+payload}` with a flat `run::start` payload; the wrapping
+`instrumentHandler` reads `session_id`/`message_id` from the outer body and
+seeds baggage, then the handler forwards `payload` to `run::start` (the
+target function id is fixed, not client-supplied). Going through this hop
+seeds the baggage before the nested `run::start` span opens, so the span
+tree carries the session/message ids end-to-end.
 
 ```mermaid
 sequenceDiagram
@@ -297,7 +297,7 @@ sequenceDiagram
   participant Inner as run::start (turn-orchestrator)
   participant Trace as engine traces UI
 
-  Web->>Bridge: {function_id:"run::start", session_id, message_id, payload}
+  Web->>Bridge: {session_id, message_id, payload}
   Wrap->>Wrap: open span "harness.harness::trigger", stamp ids, push baggage
   Bridge->>Inner: iii.trigger(run::start, payload) -- baggage propagated
   Wrap->>Wrap: open span "harness.run::start", inherit ids from baggage

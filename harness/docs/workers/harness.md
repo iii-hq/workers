@@ -18,7 +18,7 @@ that drive transitions; its fan-out trigger is a passive stream subscriber.
 
 ## Registered functions
 
-- `harness::trigger` — Forward `{function_id, session_id?, message_id?, payload}` to `iii.trigger` and return the result wrapped in an HTTP-style `{status_code, headers, body}` envelope. Used by console/web so the harness span wrapper can seed `iii.session.id` / `iii.message.id` baggage from the outer body (see [architecture.md § Telemetry & trace correlation](harness/docs/architecture.md#telemetry--trace-correlation)). Port of `workers/harness/src/lib.rs:103-159`.
+- `harness::trigger` — Browser kickoff for a chat turn: take `{session_id?, message_id?, payload}` (where `payload` is a flat `run::start` payload), forward `payload` to `run::start`, and return the result wrapped in an HTTP-style `{status_code, headers, body}` envelope. The target function id is always `run::start` — clients don't choose it. Routing through this hop (instead of calling `run::start` directly) lets the harness span wrapper seed `iii.session.id` / `iii.message.id` baggage from the outer body (see [architecture.md § Telemetry & trace correlation](harness/docs/architecture.md#telemetry--trace-correlation)).
 - `ui::subscribe` — Register a browser's interest in a session (or all sessions if session_id is null).
 - `ui::unsubscribe` — Remove a browser's subscription to a session (or its all-sessions sub if session_id is null).
 - `harness::fs::read_inline` — Read a host file via shell::fs::read, drain its channel, and return a `{content:[{text}], details:{size, truncated, bytes_read}}` envelope (max 256 KiB inline by default).
@@ -74,7 +74,7 @@ From [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml):
 | [src/harness/main.ts](harness/src/harness/main.ts) | Binary entry point (`iii-harness`). |
 | [src/harness/register.ts](harness/src/harness/register.ts) | Composes the worker's bus surface; called by both `main.ts` and the composite [src/index.ts](harness/src/index.ts). |
 | [src/harness/config.ts](harness/src/harness/config.ts) | Loads `engine_url` + `permissions_path` from `config.yaml`. |
-| [src/harness/trigger.ts](harness/src/harness/trigger.ts) | `harness::trigger` handler — WS ingestion bridge for browser-originated requests. Forwards `{function_id, payload}` to `iii.trigger`; the wrapping `instrumentHandler` (see `runtime/otel.ts`) reads `session_id`/`message_id` from the outer body and seeds baggage. Port of `workers/harness/src/lib.rs:103-159`. |
+| [src/harness/trigger.ts](harness/src/harness/trigger.ts) | `harness::trigger` handler — WS ingestion bridge for browser-originated chat turns. Forwards the flat `payload` to `run::start` (target function id hard-coded, not client-supplied); the wrapping `instrumentHandler` (see `runtime/otel.ts`) reads `session_id`/`message_id` from the outer body and seeds baggage. |
 | [src/harness/ui-subscribe.ts](harness/src/harness/ui-subscribe.ts) | In-memory `FanoutState` plus `ui::subscribe` / `ui::unsubscribe`. |
 | [src/harness/fs.ts](harness/src/harness/fs.ts) | `harness::fs::read_inline` — wraps `shell::fs::read` and inlines the channel into the legacy `{content, details}` envelope. |
 | [src/harness/policy/check-permissions.ts](harness/src/harness/policy/check-permissions.ts) | `registerPolicy` — registers `policy::check_permissions` and maps a `Decision` to the wire reply (`allow` / `deny` / `needs_approval`). |
