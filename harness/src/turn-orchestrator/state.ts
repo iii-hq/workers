@@ -20,7 +20,6 @@ export type TurnState =
   | 'function_execute'
   | 'function_awaiting_approval'
   | 'steering_check'
-  | 'tearing_down'
   | 'stopped'
   | 'failed';
 
@@ -71,7 +70,6 @@ const TURN_STATES = [
   'function_execute',
   'function_awaiting_approval',
   'steering_check',
-  'tearing_down',
   'stopped',
   'failed',
 ] as const satisfies readonly TurnState[];

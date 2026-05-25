@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-turn-orchestrator
-description: Durable run::start state machine that drives each agent turn through provisioning, assistant, function-execute, steering, and tearing-down.
+description: Durable run::start state machine that drives each agent turn through provisioning, assistant, function-execute, and steering.
 
 runtime:
   kind: node

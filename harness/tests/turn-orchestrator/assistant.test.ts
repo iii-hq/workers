@@ -99,7 +99,7 @@ describe('handleStreaming turn start', () => {
 });
 
 describe('handleStreaming', () => {
-  it('transitions to tearing_down with synthetic error when createChannel fails', async () => {
+  it('stops with a synthetic error when createChannel fails', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const { iii } = fakeIii({
       createChannel: async () => {
@@ -226,7 +226,7 @@ describe('handleStreaming', () => {
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 
-  it('routes error assistant to tearing_down without persisting transcript', async () => {
+  it('stops on an error assistant without persisting transcript', async () => {
     const finalMsg = assistant({ stop_reason: 'error', error_message: 'auth failed' });
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const { iii } = fakeIiiWithDone(finalMsg);

@@ -1,7 +1,7 @@
 /**
  * Terminal teardown: emit the final `agent_end` with the full transcript and
  * stop the session. Called inline by the FSM paths that end a turn (replaces
- * the former standalone `tearing_down` state).
+ * the former standalone teardown state).
  */
 
 import type { ISdk } from '../runtime/iii.js';

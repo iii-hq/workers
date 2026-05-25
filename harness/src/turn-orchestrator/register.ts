@@ -12,7 +12,6 @@ import {
   registerFunctionExecute,
   registerProvisioning,
   registerSteeringCheck,
-  registerTearingDown,
 } from './states/index.js';
 
 export async function register(iii: ISdk, ctx: { configPath: string }): Promise<void> {
@@ -24,7 +23,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerFunctionExecute(iii);
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
-  registerTearingDown(iii);
   registerGetState(iii);
   registerOnAbortSignal(iii);
   registerOnApproval(iii);
