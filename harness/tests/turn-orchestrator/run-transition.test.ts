@@ -114,7 +114,7 @@ function fakeIii(record: unknown) {
 describe('runTransition error model', () => {
   const base = {
     session_id: 's1', state: 'function_execute', turn_count: 1,
-    pending_function_calls: [], function_results: [], turn_end_emitted: false,
+    function_results: [], turn_end_emitted: false,
     started_at_ms: 1, updated_at_ms: 1,
   };
 

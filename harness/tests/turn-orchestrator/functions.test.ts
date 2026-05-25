@@ -368,7 +368,6 @@ describe('handleExecute new flow', () => {
     await handleExecute(iii, rec);
 
     expect(rec.state).toBe('steering_check');
-    expect(rec.pending_function_calls).toEqual([]);
     expect(rec.function_results).toHaveLength(1);
     // No turn_end emitted when last_assistant is null
     expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(false);

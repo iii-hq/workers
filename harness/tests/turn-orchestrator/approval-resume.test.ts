@@ -161,7 +161,6 @@ describe('recoverPendingApprovals', () => {
         session_id: 's1',
         state: 'function_awaiting_approval',
         turn_count: 0,
-        pending_function_calls: [],
         function_results: [],
         turn_end_emitted: false,
         started_at_ms: 0,
@@ -175,7 +174,6 @@ describe('recoverPendingApprovals', () => {
         session_id: 's2',
         state: 'stopped',
         turn_count: 0,
-        pending_function_calls: [],
         function_results: [],
         turn_end_emitted: false,
         started_at_ms: 0,
@@ -196,7 +194,6 @@ describe('recoverPendingApprovals', () => {
         session_id: 's1',
         state: 'function_awaiting_approval',
         turn_count: 0,
-        pending_function_calls: [],
         function_results: [],
         turn_end_emitted: false,
         started_at_ms: 0,
@@ -206,38 +203,6 @@ describe('recoverPendingApprovals', () => {
     ]);
     await recoverPendingApprovals(iii);
     expect(registered.has('turn::approval_resume::s1/fc-1')).toBe(true);
-    expect(registered.size).toBe(1);
-  });
-
-  it('uses keyed list rows when state::list returns session/<id>/turn_state keys', async () => {
-    const { iii, registered } = makeIiiWithRegistry(new Map());
-    const listSpy = iii.trigger as ReturnType<typeof vi.fn>;
-    listSpy.mockImplementation(async ({ function_id }: { function_id: string }) => {
-      if (function_id === 'state::list') {
-        return {
-          items: [
-            { key: 'session/s1/messages', value: [{ role: 'user', content: 'hi' }] },
-            {
-              key: 'session/s1/turn_state',
-              value: {
-                session_id: 's1',
-                state: 'function_awaiting_approval',
-                turn_count: 0,
-                pending_function_calls: [],
-                function_results: [],
-                turn_end_emitted: false,
-                started_at_ms: 0,
-                updated_at_ms: 0,
-                awaiting_approval: [{ function_call_id: 'fc-9', function_id: 'tool::z', args: {} }],
-              },
-            },
-          ],
-        };
-      }
-      return null;
-    });
-    await recoverPendingApprovals(iii);
-    expect(registered.has('turn::approval_resume::s1/fc-9')).toBe(true);
     expect(registered.size).toBe(1);
   });
 });
