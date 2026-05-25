@@ -10,7 +10,7 @@ import { AGENT_SCOPE, eventCounterKey } from './state.js';
 
 export const EVENTS_STREAM = 'agent::events';
 
-export function formatItemId(session_id: string, seq: number): string {
+function formatItemId(session_id: string, seq: number): string {
   return `${session_id}-${seq.toString().padStart(8, '0')}`;
 }
 
