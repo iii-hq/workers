@@ -21,6 +21,8 @@ import type { FunctionCall } from '../types/function.js';
 export const TOPIC_AFTER = 'agent::after_function_call';
 
 export const HOOK_TIMEOUT_MS = 500;
+/** Fail-closed budget for the synchronous policy consult before a call. */
+export const POLICY_TIMEOUT_MS = 5_000;
 
 export type HookOutcome =
   | { kind: 'allow' }
@@ -45,7 +47,7 @@ export async function consultBefore(iii: ISdk, function_call: FunctionCall): Pro
         function_id: function_call.function_id,
         args: function_call.arguments as CheckPermissionsPayload['args'],
       },
-      timeoutMs: 5_000,
+      timeoutMs: POLICY_TIMEOUT_MS,
     });
     switch (reply.decision) {
       case 'allow':
