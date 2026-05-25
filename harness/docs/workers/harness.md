@@ -80,7 +80,7 @@ From [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml):
 | [src/harness/policy/check-permissions.ts](harness/src/harness/policy/check-permissions.ts) | `registerPolicy` — registers `policy::check_permissions` and maps a `Decision` to the wire reply (`allow` / `deny` / `needs_approval`). |
 | [src/harness/policy/handle.ts](harness/src/harness/policy/handle.ts) | `PermissionsHandle` + `loadAndWatch` — loads `iii-permissions.yaml`, holds the current `Permissions`, and hot-reloads it via a debounced `chokidar` watcher. |
 | [src/harness/policy/permissions.ts](harness/src/harness/policy/permissions.ts) | `Permissions` — parses the YAML into compiled rules and evaluates a call via `check(function_id, args)` (first match wins → `Decision`). |
-| [src/harness/policy/compile.ts](harness/src/harness/policy/compile.ts) | `compileRule` / `matchConstraints` — compiles a `RuleSpec` into a `CompiledRule` and evaluates `equals` / `matches` (regex) arg constraints. |
+| [src/harness/policy/compile.ts](harness/src/harness/policy/compile.ts) | `compileRule` / `matchFunctionId` / `matchConstraints` — compiles a `RuleSpec` into a `CompiledRule`, matches a `function_id` by exact equality or `*` glob, and evaluates `equals` / `matches` (regex) arg constraints. |
 | [src/harness/policy/types.ts](harness/src/harness/policy/types.ts) | `RuleSpec`, `ConstraintSpec`, `Decision`, `MatchedConstraint` types for `iii-permissions.yaml` rules and evaluation results. |
 | [src/harness/fanout/index.ts](harness/src/harness/fanout/index.ts) | Spawns the two fan-out pumps. |
 | [src/harness/fanout/agent-events.ts](harness/src/harness/fanout/agent-events.ts) | `agent::events` stream subscriber → per-browser fan-out. |
