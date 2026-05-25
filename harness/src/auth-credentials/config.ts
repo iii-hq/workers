@@ -1,14 +1,15 @@
-import { getSection, getString } from '../runtime/config.js';
+import { getSection } from '../runtime/config.js';
+import { loadStorageConfig, resolveDatabaseName } from '../runtime/storage-config.js';
 
 export type AuthCredentialsConfig = {
-  store_path: string;
+  /** Logical database pool name to use (must match a key in iii-database's `databases:` map). */
+  database_name: string;
 };
-
-export const DEFAULT_STORE_PATH = '~/.iii/auth-credentials.json';
 
 export function loadAuthCredentialsConfig(cfg: Record<string, unknown>): AuthCredentialsConfig {
   const section = getSection(cfg, 'auth_credentials');
+  const storage = loadStorageConfig(cfg);
   return {
-    store_path: getString(section, 'store_path', DEFAULT_STORE_PATH),
+    database_name: resolveDatabaseName(section, storage),
   };
 }

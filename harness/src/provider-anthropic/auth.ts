@@ -1,9 +1,11 @@
 /**
- * Bridge to `auth::get_token`. The provider asks the auth worker for a
- * resolved Credential, then turns it into an AnthropicConfig.
+ * Bridge to `auth::get_token` and `provider_config::get`. The provider
+ * asks the auth worker for a resolved Credential and the provider-config
+ * worker for runtime overrides, then turns them into an AnthropicConfig.
  */
 
 import type { Credential } from '../auth-credentials/types.js';
+import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
 import type { WorkerConfig } from './config.js';
 import { type AnthropicConfig, configWithCredential } from './types.js';
@@ -25,6 +27,11 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<AnthropicConfig> {
-  const cred = await fetchCredential(iii);
-  return configWithCredential(model, cred, worker.default_max_tokens, worker.default_api_url);
+  const [cred, overrides] = await Promise.all([
+    fetchCredential(iii),
+    fetchOverrides(iii, 'anthropic'),
+  ]);
+  const apiUrl = overrides.default_api_url ?? worker.default_api_url;
+  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
+  return configWithCredential(model, cred, maxTokens, apiUrl);
 }

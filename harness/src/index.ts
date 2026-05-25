@@ -18,6 +18,7 @@ import { register as registerModelsCatalog } from './models-catalog/register.js'
 import { register as registerProviderAnthropic } from './provider-anthropic/register.js';
 import { register as registerProviderKimi } from './provider-kimi/register.js';
 import { register as registerProviderLlamacpp } from './provider-llamacpp/register.js';
+import { register as registerProviderConfig } from './provider-config/register.js';
 import { register as registerProviderLmstudio } from './provider-lmstudio/register.js';
 import { register as registerProviderOpenai } from './provider-openai/register.js';
 import { logger } from './runtime/otel.js';
@@ -67,6 +68,12 @@ const WORKERS: readonly WorkerDefinition[] = [
     name: 'auth-credentials',
     description: 'Credential store for provider API keys and OAuth tokens (auth::*).',
     register: (iii, ctx) => registerAuthCredentials(iii, ctx),
+  },
+  {
+    name: 'provider-config',
+    description:
+      'Runtime non-secret provider overrides on the iii bus (provider_config::*). Sibling to auth-credentials.',
+    register: (iii, ctx) => registerProviderConfig(iii, ctx),
   },
   {
     name: 'models-catalog',

@@ -89,19 +89,21 @@ describe('approval resume handler', () => {
     const { iii, registered, stepCalls, stateStore } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1');
-    expect(entry).toBeDefined();
-    await entry!.handler({ decision: 'allow', reason: null });
+    if (!entry) throw new Error('handler not registered');
+    await entry.handler({ decision: 'allow', reason: null });
 
     expect(stateStore.get('approvals/s1/fc-1')).toEqual({ decision: 'allow', reason: null });
     expect(stepCalls).toEqual([{ session_id: 's1' }]);
-    expect(entry!.unregister).toHaveBeenCalled();
+    expect(entry.unregister).toHaveBeenCalled();
   });
 
   it('does not overwrite an existing decision (idempotent persist)', async () => {
     const { iii, registered, stateStore } = makeIiiWithRegistry();
     stateStore.set('approvals/s1/fc-1', { decision: 'aborted', reason: 'session_aborted' });
     registerApprovalResume(iii, 's1', 'fc-1');
-    await registered.get('turn::approval_resume::s1/fc-1')!.handler({
+    const entry = registered.get('turn::approval_resume::s1/fc-1');
+    if (!entry) throw new Error('handler not registered');
+    await entry.handler({
       decision: 'allow',
       reason: null,
     });
@@ -114,7 +116,8 @@ describe('approval resume handler', () => {
   it('does not trigger turn::step again after unregister on second invoke', async () => {
     const { iii, registered, stepCalls } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
-    const entry = registered.get('turn::approval_resume::s1/fc-1')!;
+    const entry = registered.get('turn::approval_resume::s1/fc-1');
+    if (!entry) throw new Error('handler not registered');
     await entry.handler({ decision: 'deny', reason: 'nope' });
     stepCalls.length = 0;
 
