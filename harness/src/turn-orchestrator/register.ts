@@ -5,7 +5,7 @@ import { loadOrchestratorConfig } from './config.js';
 import { register as registerGetState } from './get-state.js';
 import { register as registerOnAbortSignal } from './on-abort-signal.js';
 import { register as registerRunStart } from './run-start.js';
-import { recoverPendingApprovals } from './approval-resume.js';
+import { recoverParkedApprovals, register as registerOnApproval } from './on-approval.js';
 import {
   registerAssistantStreaming,
   registerFunctionAwaitingApproval,
@@ -25,9 +25,10 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
   registerTearingDown(iii);
-  await recoverPendingApprovals(iii);
   registerGetState(iii);
   registerOnAbortSignal(iii);
+  registerOnApproval(iii);
+  await recoverParkedApprovals(iii);
 
   void bootstrap.run(iii, orchestratorCfg);
 }
