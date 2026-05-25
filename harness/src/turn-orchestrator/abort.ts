@@ -1,10 +1,11 @@
 /**
  * `router::abort` side-effects. The abort path writes the per-session abort
- * signal and, when a turn is paused on approvals, invokes each per-call resume
- * function with an aborted decision (which persists and wakes turn::step).
+ * signal and, when a turn is paused on approvals, writes an aborted decision to
+ * the `approvals` scope per parked call — the reactive approval trigger
+ * (turn::on_approval) then wakes the session.
  */
 
-import { approvalResumeFnId } from '../approval-gate/schemas.js';
+import { STATE_SCOPE, pendingKey } from '../approval-gate/schemas.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
@@ -23,9 +24,10 @@ export async function performAbortSideEffects(iii: ISdk, session_id: string): Pr
   }
 
   for (const entry of rec.awaiting_approval) {
-    await trigger(iii, approvalResumeFnId(session_id, entry.function_call_id), {
-      decision: 'aborted',
-      reason: 'session_aborted',
+    await trigger(iii, 'state::set', {
+      scope: STATE_SCOPE,
+      key: pendingKey(session_id, entry.function_call_id),
+      value: { decision: 'aborted', reason: 'session_aborted' },
     });
   }
 }

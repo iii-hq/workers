@@ -65,23 +65,15 @@ describe('performAbortSideEffects', () => {
 
     await performAbortSideEffects(iii, 's1');
 
-    const resumeTriggers = triggers.filter((t) =>
-      t.function_id.startsWith('turn::approval_resume::'),
-    );
-    expect(resumeTriggers).toHaveLength(2);
-    expect(resumeTriggers.map((t) => t.function_id).sort()).toEqual([
-      'turn::approval_resume::s1/fc-1',
-      'turn::approval_resume::s1/fc-2',
-    ]);
-    for (const t of resumeTriggers) {
-      expect(t.payload).toMatchObject({ decision: 'aborted', reason: 'session_aborted' });
-    }
-
-    const approvalWrites = triggers
+    const decisionWrites = triggers
       .filter((t) => t.function_id === 'state::set')
-      .map((t) => t.payload as Record<string, unknown>)
+      .map((t) => t.payload as { scope?: string; key?: string; value?: unknown })
       .filter((p) => p.scope === 'approvals');
-    expect(approvalWrites).toHaveLength(0);
+    expect(decisionWrites.map((p) => p.key).sort()).toEqual(['s1/fc-1', 's1/fc-2']);
+    for (const w of decisionWrites) {
+      expect(w.value).toEqual({ decision: 'aborted', reason: 'session_aborted' });
+    }
+    expect(triggers.some((t) => t.function_id.startsWith('turn::approval_resume'))).toBe(false);
 
     const publishes = triggers.filter((t) => t.function_id === 'iii::durable::publish');
     expect(publishes).toHaveLength(0);
