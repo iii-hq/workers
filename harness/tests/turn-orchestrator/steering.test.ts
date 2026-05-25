@@ -72,7 +72,7 @@ function steeringRec(
 }
 
 describe('handleSteering', () => {
-  it('abort: persists aborted assistant, emits turn_end, transitions to tearing_down', async () => {
+  it('abort: persists aborted assistant, emits turn_end, stops the session', async () => {
     const { iii } = makeIii({ abort: true });
     const rec = steeringRec('s1');
     const loadSpy = vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
