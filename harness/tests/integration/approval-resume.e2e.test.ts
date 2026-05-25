@@ -5,7 +5,8 @@ import {
   isApprovalDecisionWrite,
 } from '../../src/turn-orchestrator/on-approval.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
+import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
+import { newRecord } from '../../src/turn-orchestrator/state.js';
 
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
@@ -79,7 +80,7 @@ describe('approval reactive trigger', () => {
     const { iii, wakeTriggers, stateStore } = fakeIii();
     const rec = newRecord('sess-x');
     rec.state = 'function_awaiting_approval';
-    stateStore.set(`agent/${turnStateKey('sess-x')}`, rec);
+    stateStore.set(`${TURN_STATE_SCOPE}/sess-x`, rec);
 
     const out = await handleResolveRequest(iii, {
       session_id: 'sess-x',

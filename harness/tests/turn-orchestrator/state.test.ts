@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import {
-  AGENT_SCOPE,
-  messagesKey,
+  type TurnStateRecord,
   newRecord,
   transitionTo,
-  turnStateKey,
 } from '../../src/turn-orchestrator/state.js';
 
 describe('TurnStateRecord', () => {
@@ -26,13 +23,5 @@ describe('TurnStateRecord', () => {
   it('awaiting_approval defaults to undefined on fresh records', () => {
     const rec: TurnStateRecord = newRecord('s1');
     expect(rec.awaiting_approval).toBeUndefined();
-  });
-});
-
-describe('state keys', () => {
-  it('namespace by session under agent scope', () => {
-    expect(AGENT_SCOPE).toBe('agent');
-    expect(turnStateKey('abc')).toBe('session/abc/turn_state');
-    expect(messagesKey('abc')).toBe('session/abc/messages');
   });
 });

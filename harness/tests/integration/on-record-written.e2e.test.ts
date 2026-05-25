@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction } from '../../src/runtime/iii.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
+import { createTurnStore } from '../../src/turn-orchestrator/state-runtime/store.js';
+import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
+import { newRecord } from '../../src/turn-orchestrator/state.js';
 
 function fakeIii(): {
   iii: ISdk;
@@ -60,10 +61,11 @@ function fakeIii(): {
 describe('saveRecord wake integration', () => {
   it('writing a new stepable turn_state enqueues turn::provisioning', async () => {
     const { iii, wakeInvocations } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-a');
     rec.state = 'provisioning';
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(wakeInvocations).toEqual([
       {
@@ -76,12 +78,13 @@ describe('saveRecord wake integration', () => {
 
   it('subsequent transitions enqueue turn::{newState}', async () => {
     const { iii, wakeInvocations } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-b');
     rec.state = 'provisioning';
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     rec.state = 'assistant_streaming';
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(wakeInvocations).toEqual([
       {
@@ -99,32 +102,35 @@ describe('saveRecord wake integration', () => {
 
   it('parking in function_awaiting_approval does NOT wake', async () => {
     const { iii, wakeInvocations } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-c');
     rec.state = 'function_awaiting_approval';
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(wakeInvocations).toEqual([]);
   });
 
   it('terminal stopped state does NOT wake', async () => {
     const { iii, wakeInvocations } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-d');
     rec.state = 'stopped';
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(wakeInvocations).toEqual([]);
   });
 
   it('same-state re-save does NOT wake', async () => {
     const { iii, wakeInvocations } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-e');
     rec.state = 'function_execute';
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
     wakeInvocations.length = 0;
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(wakeInvocations).toEqual([]);
   });
@@ -132,67 +138,79 @@ describe('saveRecord wake integration', () => {
 
 function turnStateGets(iii: ISdk, session_id: string): number {
   const trigger = iii.trigger as unknown as {
-    mock: { calls: Array<[{ function_id: string; payload?: { key?: string } }]> };
+    mock: {
+      calls: Array<[{ function_id: string; payload?: { scope?: string; key?: string } }]>;
+    };
   };
   return trigger.mock.calls.filter(
-    ([arg]) => arg.function_id === 'state::get' && arg.payload?.key === turnStateKey(session_id),
+    ([arg]) =>
+      arg.function_id === 'state::get' &&
+      arg.payload?.scope === TURN_STATE_SCOPE &&
+      arg.payload?.key === session_id,
   ).length;
 }
 
-describe('session index marker (create-fanout source)', () => {
-  it('a newly-created session writes a session_index marker keyed by session id', async () => {
+describe('turn_state persistence (create-fanout source)', () => {
+  it('a newly-created session persists turn_state keyed by session id', async () => {
     const { iii, stateStore } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-new');
     rec.state = 'provisioning';
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
-    expect(stateStore.has('session_index/sess-new')).toBe(true);
+    expect(stateStore.has(`${TURN_STATE_SCOPE}/sess-new`)).toBe(true);
   });
 
-  it('a transition on an existing session writes NO new session_index marker', async () => {
+  it('a transition on an existing session updates the same turn_state key', async () => {
     const { iii, stateStore } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-x');
     rec.state = 'provisioning';
-    await persistence.saveRecord(iii, rec); // create → marker written
-    stateStore.delete('session_index/sess-x'); // clear so a re-write would be detectable
+    await store.saveRecord(rec);
 
     rec.state = 'assistant_streaming';
-    await persistence.saveRecord(iii, rec); // transition → must NOT re-mark
+    await store.saveRecord(rec);
 
-    expect(stateStore.has('session_index/sess-x')).toBe(false);
+    expect(stateStore.has(`${TURN_STATE_SCOPE}/sess-x`)).toBe(true);
+    expect((stateStore.get(`${TURN_STATE_SCOPE}/sess-x`) as { state: string }).state).toBe(
+      'assistant_streaming',
+    );
   });
 
-  it('a threaded previous record (transition) writes no marker', async () => {
+  it('a threaded previous record (transition) keeps one turn_state entry', async () => {
     const { iii, stateStore } = fakeIii();
+    const store = createTurnStore(iii);
     const previous = newRecord('sess-y');
     previous.state = 'provisioning';
     const next = { ...previous, state: 'assistant_streaming' as const };
 
-    await persistence.saveRecord(iii, next, previous);
+    await store.saveRecord(next, previous);
 
-    expect(stateStore.has('session_index/sess-y')).toBe(false);
+    expect(stateStore.has(`${TURN_STATE_SCOPE}/sess-y`)).toBe(true);
   });
 });
 
 describe('saveRecord read elimination (#5)', () => {
   it('2-arg saveRecord does not pre-read turn_state (uses state::set old_value)', async () => {
     const { iii } = fakeIii();
+    const store = createTurnStore(iii);
     const rec = newRecord('sess-r1');
     rec.state = 'provisioning';
 
-    await persistence.saveRecord(iii, rec);
+    await store.saveRecord(rec);
 
     expect(turnStateGets(iii, 'sess-r1')).toBe(0);
   });
 
   it('saveRecord with a threaded previous reads turn_state zero times', async () => {
     const { iii } = fakeIii();
+    const store = createTurnStore(iii);
     const previous = newRecord('sess-r2');
     previous.state = 'provisioning';
     const next = { ...previous, state: 'assistant_streaming' as const };
 
-    await persistence.saveRecord(iii, next, previous);
+    await store.saveRecord(next, previous);
 
     expect(turnStateGets(iii, 'sess-r2')).toBe(0);
   });

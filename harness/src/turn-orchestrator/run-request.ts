@@ -1,6 +1,6 @@
 /**
  * The persisted run request and its single typed parser. `loadRunRequest`
- * (persistence) parses the raw `session/<sid>/run_request` value through
+ * (persistence) parses the raw scope `run_request` value through
  * `parseRunRequest` once, so every consumer reads a fully-typed `RunRequest`
  * instead of re-guarding `unknown` fields.
  */
@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import type { Mode } from './system-prompt.js';
 
-export const RunRequestSchema = z.object({
+const RunRequestSchema = z.object({
   provider: z.string().catch(''),
   model: z.string().catch(''),
   mode: z

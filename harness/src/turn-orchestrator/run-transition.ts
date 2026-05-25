@@ -13,8 +13,8 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { TransientError } from './errors.js';
 import { emit } from './events.js';
-import * as persistence from './persistence.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
+import { createTurnStore } from './state-runtime/store.js';
 import { type TurnState, type TurnStateRecord, transitionTo } from './state.js';
 import { syntheticAssistant } from './synthetic-assistant.js';
 
@@ -38,10 +38,11 @@ async function failTransition(
   from_state: TurnState,
   err: unknown,
 ): Promise<TurnStepResult> {
+  const store = createTurnStore(iii);
   const message = err instanceof Error ? err.message : String(err);
   rec.error = { kind: 'transition_error', message: `from ${from_state}: ${message}` };
   transitionTo(rec, 'failed');
-  await persistence.saveRecord(iii, rec, previous);
+  await store.saveRecord(rec, previous);
 
   // Surface the failure to the live UI (mirrors the graceful error path):
   // message_complete{stop_reason:'error'} → the translator emits a `stop-reason`
@@ -50,7 +51,7 @@ async function failTransition(
   const failed = syntheticAssistant({ stop_reason: 'error', text: rec.error.message });
   await emit(iii, rec.session_id, { type: 'message_complete', message: failed, body_streamed: false });
 
-  const messages = await persistence.loadMessages(iii, rec.session_id);
+  const messages = await store.loadMessages(rec.session_id);
   await emit(iii, rec.session_id, { type: 'agent_end', messages });
   logger.error('transition failed; session marked failed', {
     session_id: rec.session_id,
@@ -66,7 +67,8 @@ export async function runTransition(
   handle: TransitionHandler,
   payload: TurnStepPayload,
 ): Promise<TurnStepResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
+  const store = createTurnStore(iii);
+  const rec = await store.loadRecord(payload.session_id);
   if (!rec) {
     throw new Error(`turn::${state} invariant: missing session ${payload.session_id}`);
   }
@@ -82,6 +84,6 @@ export async function runTransition(
     if (err instanceof TransientError) throw err;
     return failTransition(iii, rec, previous, from_state, err);
   }
-  await persistence.saveRecord(iii, rec, previous);
+  await store.saveRecord(rec, previous);
   return { ok: true, from_state, to_state: rec.state };
 }

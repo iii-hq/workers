@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import { finishSession } from '../../src/turn-orchestrator/finish.js';
+import { createTurnStatePorts } from '../../src/turn-orchestrator/state-runtime/ports.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 
-describe('finishSession', () => {
+describe('TurnStatePorts.finishSession', () => {
   it('emits agent_end with the transcript and sets state to stopped', async () => {
     const messages = [
       { role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }], timestamp: 1 },
     ];
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue(messages as never);
+    installMockTurnStore({ loadMessages: vi.fn(async () => messages) });
     const emitted: Array<{ type: string; messages?: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -22,7 +22,7 @@ describe('finishSession', () => {
 
     const rec = newRecord('s1');
     rec.state = 'steering_check';
-    await finishSession(iii, rec);
+    await createTurnStatePorts(iii).finishSession(rec);
 
     expect(rec.state).toBe('stopped');
     const agentEnd = emitted.find((e) => e.type === 'agent_end');

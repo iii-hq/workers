@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ApprovalDecisionSchema,
   ApprovalResumePayloadSchema,
   ResolvePayloadSchema,
   parsePolicyReply,
@@ -97,10 +98,10 @@ describe('state-key derivation — separator integrity', () => {
   });
 });
 
-describe('ApprovalResumePayloadSchema', () => {
+describe('ApprovalDecisionSchema', () => {
   it('accepts the three terminal decisions with an explicit reason', () => {
     for (const decision of ['allow', 'deny', 'aborted'] as const) {
-      expect(ApprovalResumePayloadSchema.parse({ decision, reason: null })).toEqual({
+      expect(ApprovalDecisionSchema.parse({ decision, reason: null })).toEqual({
         decision,
         reason: null,
       });
@@ -108,10 +109,14 @@ describe('ApprovalResumePayloadSchema', () => {
   });
 
   it('rejects a missing reason and an unknown decision', () => {
-    expect(ApprovalResumePayloadSchema.safeParse({ decision: 'allow' }).success).toBe(false);
+    expect(ApprovalDecisionSchema.safeParse({ decision: 'allow' }).success).toBe(false);
     expect(
-      ApprovalResumePayloadSchema.safeParse({ decision: 'paused', reason: null }).success,
+      ApprovalDecisionSchema.safeParse({ decision: 'paused', reason: null }).success,
     ).toBe(false);
+  });
+
+  it('keeps ApprovalResumePayloadSchema as a deprecated alias', () => {
+    expect(ApprovalResumePayloadSchema).toBe(ApprovalDecisionSchema);
   });
 });
 

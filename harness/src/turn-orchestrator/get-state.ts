@@ -6,16 +6,16 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
-import * as persistence from './persistence.js';
 import {
   GetStatePayloadSchema,
   type GetStatePayload,
   type GetStateResult,
   toView,
 } from './schemas.js';
+import { createTurnStore } from './state-runtime/store.js';
 
 export async function execute(iii: ISdk, payload: GetStatePayload): Promise<GetStateResult> {
-  const rec = await persistence.loadRecord(iii, payload.session_id);
+  const rec = await createTurnStore(iii).loadRecord(payload.session_id);
   return rec ? toView(rec) : null;
 }
 

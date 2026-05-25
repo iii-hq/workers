@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
@@ -64,7 +65,8 @@ describe('turn::get_state execute', () => {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
         if (
           req.function_id === 'state::get' &&
-          (req.payload as Record<string, unknown>).key === 'session/sess-abc/turn_state'
+          (req.payload as Record<string, unknown>).scope === TURN_STATE_SCOPE &&
+          (req.payload as Record<string, unknown>).key === 'sess-abc'
         ) {
           return rec;
         }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { PreparedEntry, TurnStateRecord, TurnWork } from '../../src/turn-orchestrator/state.js';
-import { handleAwaitingApproval } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
+import type { PreparedCall, TurnStateRecord, TurnWork } from '../../src/turn-orchestrator/state.js';
+import { handleAwaitingApproval } from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
 
 function fakeIii(stateGetImpl: (scope: string, key: string) => unknown): ISdk {
   return {
@@ -35,8 +35,8 @@ function recordWith(
   };
 }
 
-function workWith(batch: PreparedEntry[]): TurnWork {
-  return { batch, results: [] };
+function workWith(prepared: PreparedCall[]): TurnWork {
+  return { prepared, executed: {} };
 }
 
 describe('handleAwaitingApproval', () => {
@@ -52,17 +52,16 @@ describe('handleAwaitingApproval', () => {
     const rec = recordWith(
       [{ function_call_id: 'fc-1', function_id: 'shell::run', args: {} }],
       workWith([
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+        { route: 'dispatch', call: { id: 'fc-1', function_id: 'shell::run', arguments: {} } },
       ]),
     );
     await handleAwaitingApproval(iii, rec);
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
-    // batch unchanged — no decision folded in
-    expect(rec.work?.batch[0]?.pre_approved).toBeUndefined();
+    expect(rec.work?.prepared[0]?.route).toBe('dispatch');
   });
 
-  it('folds pre_approved into work.batch on allow and transitions to function_execute', async () => {
+  it('folds pre_approved route into work.prepared on allow and transitions to function_execute', async () => {
     const iii = fakeIii((_scope, key) => {
       if (key === 's1/fc-1') return { decision: 'allow', reason: null };
       return null;
@@ -71,8 +70,8 @@ describe('handleAwaitingApproval', () => {
       [{ function_call_id: 'fc-1', function_id: 'shell::run', args: { command: 'ls' } }],
       workWith([
         {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
-          blocked: null,
+          route: 'dispatch',
+          call: { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
         },
       ]),
     );
@@ -81,11 +80,10 @@ describe('handleAwaitingApproval', () => {
 
     expect(rec.state).toBe('function_execute');
     expect(rec.awaiting_approval).toEqual([]);
-    expect(rec.work?.batch[0]?.pre_approved).toBe(true);
-    expect(rec.work?.batch[0]?.blocked).toBeNull();
+    expect(rec.work?.prepared[0]?.route).toBe('pre_approved');
   });
 
-  it('sets blocked denial result in work.batch on deny and transitions to function_execute', async () => {
+  it('sets synthetic denial result in work.prepared on deny and transitions to function_execute', async () => {
     const iii = fakeIii((_scope, key) => {
       if (key === 's1/fc-1') return { decision: 'deny', reason: 'policy' };
       return null;
@@ -93,24 +91,25 @@ describe('handleAwaitingApproval', () => {
     const rec = recordWith(
       [{ function_call_id: 'fc-1', function_id: 'shell::run', args: {} }],
       workWith([
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+        { route: 'dispatch', call: { id: 'fc-1', function_id: 'shell::run', arguments: {} } },
       ]),
     );
 
     await handleAwaitingApproval(iii, rec);
 
     expect(rec.state).toBe('function_execute');
-    expect(rec.work?.batch[0]?.pre_approved).toBeFalsy();
-    expect(rec.work?.batch[0]?.blocked).toMatchObject({
-      details: expect.objectContaining({
+    const entry = rec.work?.prepared[0];
+    expect(entry?.route).toBe('synthetic');
+    if (entry?.route === 'synthetic') {
+      expect(entry.result.details).toMatchObject({
         approval_denied: true,
         decision: 'deny',
         reason: 'policy',
-      }),
-    });
+      });
+    }
   });
 
-  it('handles aborted decision like deny (folded into work.batch)', async () => {
+  it('handles aborted decision like deny (folded into work.prepared)', async () => {
     const iii = fakeIii((_scope, key) => {
       if (key === 's1/fc-1') return { decision: 'aborted', reason: 'session_aborted' };
       return null;
@@ -118,15 +117,18 @@ describe('handleAwaitingApproval', () => {
     const rec = recordWith(
       [{ function_call_id: 'fc-1', function_id: 'shell::run', args: {} }],
       workWith([
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+        { route: 'dispatch', call: { id: 'fc-1', function_id: 'shell::run', arguments: {} } },
       ]),
     );
 
     await handleAwaitingApproval(iii, rec);
 
     expect(rec.state).toBe('function_execute');
-    expect(rec.work?.batch[0]?.pre_approved).toBeFalsy();
-    expect(rec.work?.batch[0]?.blocked?.details).toMatchObject({ decision: 'aborted' });
+    const entry = rec.work?.prepared[0];
+    expect(entry?.route).toBe('synthetic');
+    if (entry?.route === 'synthetic') {
+      expect(entry.result.details).toMatchObject({ decision: 'aborted' });
+    }
   });
 
   it('folds independent decisions across a multi-call batch', async () => {
@@ -141,10 +143,10 @@ describe('handleAwaitingApproval', () => {
         { function_call_id: 'fc-2', function_id: 'shell::fs::write', args: {} },
       ],
       workWith([
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+        { route: 'dispatch', call: { id: 'fc-1', function_id: 'shell::run', arguments: {} } },
         {
-          function_call: { id: 'fc-2', function_id: 'shell::fs::write', arguments: {} },
-          blocked: null,
+          route: 'dispatch',
+          call: { id: 'fc-2', function_id: 'shell::fs::write', arguments: {} },
         },
       ]),
     );
@@ -152,9 +154,7 @@ describe('handleAwaitingApproval', () => {
     await handleAwaitingApproval(iii, rec);
 
     expect(rec.state).toBe('function_execute');
-    expect(rec.work?.batch[0]?.pre_approved).toBe(true);
-    expect(rec.work?.batch[0]?.blocked).toBeNull();
-    expect(rec.work?.batch[1]?.pre_approved).toBeFalsy();
-    expect(rec.work?.batch[1]?.blocked?.details).toMatchObject({ decision: 'deny' });
+    expect(rec.work?.prepared[0]?.route).toBe('pre_approved');
+    expect(rec.work?.prepared[1]?.route).toBe('synthetic');
   });
 });

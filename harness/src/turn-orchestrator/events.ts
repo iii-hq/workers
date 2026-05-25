@@ -7,7 +7,8 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
-import { AGENT_SCOPE, eventCounterKey } from './state.js';
+
+const EVENT_COUNTER_SCOPE = 'event_counter';
 
 export const EVENTS_STREAM = 'agent::events';
 /**
@@ -52,8 +53,8 @@ async function nextSeq(iii: ISdk, session_id: string): Promise<number> {
     const resp = await iii.trigger<unknown, { old_value?: number }>({
       function_id: 'state::update',
       payload: {
-        scope: AGENT_SCOPE,
-        key: eventCounterKey(session_id),
+        scope: EVENT_COUNTER_SCOPE,
+        key: session_id,
         ops: [{ type: 'increment', path: '', by: 1 }],
       },
     });

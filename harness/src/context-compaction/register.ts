@@ -1,6 +1,6 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { pruneMinFree, pruneProtect, pruneProtectedTools } from './config.js';
+import { compactionConfig } from './config.js';
 import { handleAsync } from './handler-async.js';
 import { type CompactNowInput, handleSync } from './handler-sync.js';
 import { acquireLease, releaseLease } from './lease.js';
@@ -118,10 +118,11 @@ export async function register(iii: ISdk): Promise<void> {
       const nonce = await acquireLease(iii, session_id, 'prune');
       if (!nonce) return { pruned_tokens: 0, pruned_parts: 0, scanned_parts: 0, busy: true };
       try {
+        const cfg = compactionConfig();
         return await prune(iii, session_id, {
-          protectTokens: pruneProtect(),
-          minFree: pruneMinFree(),
-          protectedTools: pruneProtectedTools(),
+          protectTokens: cfg.pruneProtect,
+          minFree: cfg.pruneMinFree,
+          protectedTools: cfg.pruneProtectedTools,
         });
       } finally {
         await releaseLease(iii, session_id, nonce, 'prune');

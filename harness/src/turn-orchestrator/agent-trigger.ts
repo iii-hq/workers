@@ -17,7 +17,6 @@ export const TOOL_NAME = 'agent_trigger';
 
 export type DispatchResult =
   | { kind: 'result'; result: FunctionResult }
-  | { kind: 'deny'; result: FunctionResult }
   | { kind: 'pending' };
 
 export function missingFunctionResult(): FunctionResult {
@@ -28,7 +27,6 @@ export function missingFunctionResult(): FunctionResult {
 }
 
 export function unwrapAgentTrigger(fc: FunctionCall): FunctionCall {
-  if (fc.function_id !== TOOL_NAME) return fc;
   const args = (fc.arguments ?? {}) as Record<string, unknown>;
   const fn = typeof args.function === 'string' ? args.function : '';
   const payload = args.payload ?? {};
@@ -154,7 +152,7 @@ export async function dispatchWithHook(
 ): Promise<DispatchResult> {
   const outcome = await consultBefore(iii, function_call);
   if (outcome.kind === 'deny') {
-    return { kind: 'deny', result: denialResult(outcome.denial) };
+    return { kind: 'result', result: denialResult(outcome.denial) };
   }
   if (outcome.kind === 'pending') {
     return { kind: 'pending' };

@@ -1,17 +1,17 @@
 # turn-orchestrator
 
 Durable `run::start` state machine that drives each agent turn through
-provisioning, assistant, function-execute, steering, and tearing-down.
+provisioning, assistant, function-execute, steering, and session finish.
 
 ## Purpose
 
 This is the heart of the bundle. `run::start` opens a session and returns
 immediately; the rest of the work happens inside per-state durable functions
 (`turn::provisioning`, `turn::assistant_streaming`, …), each enqueued onto
-the `turn-step` FIFO queue via `wakeState` ([wake.ts](harness/src/turn-orchestrator/wake.ts)).
+the `turn-step` FIFO queue via `TurnStore.wakeStep`.
 Saving the record with a new non-terminal, non-parking state automatically
 enqueues the next handler (`saveRecord` in
-[persistence.ts](harness/src/turn-orchestrator/persistence.ts) calls `shouldWakeStep` then `wakeState`).
+[state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) calls `shouldWakeStep` then `wakeStep`).
 
 Every per-state handler is wrapped by `runTransition`
 ([run-transition.ts](harness/src/turn-orchestrator/run-transition.ts)):
@@ -36,70 +36,68 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 - `run::start` — Persist run config and messages, seed `turn_state` to
   `provisioning`, and wake the FSM via `saveRecord`.
 - `turn::provisioning` — FSM step: build system prompt + single `agent_trigger` schema, write enriched `run_request`, advance to `assistant_streaming`.
-- `turn::assistant_streaming` — FSM step: stream the turn over a provider channel; on completion emit `message_complete`, persist the assistant message (dup-guarded), route to `function_execute` / `steering_check` / `tearing_down`.
-- `turn::function_execute` — FSM step: own the full function lifecycle via `rec.work`; build batch from `rec.last_assistant`, run each call, checkpoint per-call via `writeRecord`, park to `function_awaiting_approval` on a `pending` gate reply, finalize results into messages + emit `turn_end`, route to `steering_check` / `tearing_down`.
-- `turn::function_awaiting_approval` — FSM step: read decisions for `awaiting_approval[]`; fold them into `rec.work.batch` (`allow` → `pre_approved`, `deny`/`aborted` → `blocked`); clear `awaiting_approval`, advance to `function_execute`.
-- `turn::steering_check` — FSM step: drain `steering`/`followup` inboxes, enforce `max_turns` cap (emits synthetic `max_turns` message + `turn_end` → `tearing_down`), route to `assistant_streaming` / `tearing_down`.
-- `turn::tearing_down` — FSM step: emit `agent_end`, advance to `stopped`.
+- `turn::assistant_streaming` — FSM step: stream the turn over a provider channel; on completion emit `message_complete`, persist the assistant message (dup-guarded), route to `function_execute` / `steering_check` / `stopped` (via `finishSession`).
+- `turn::function_execute` — FSM step: own the full function lifecycle via `rec.work`; build batch from `rec.last_assistant`, run each call, checkpoint per-call via `writeRecord`, park to `function_awaiting_approval` on a `pending` gate reply, finalize results into messages + emit `turn_end`, route to `steering_check` / `stopped` (via `finishSession`).
+- `turn::function_awaiting_approval` — FSM step: read decisions for `awaiting_approval[]`; fold them into `rec.work.prepared` (`allow` → `pre_approved`, `deny`/`aborted` → `synthetic`); clear `awaiting_approval`, advance to `function_execute`.
+- `turn::steering_check` — FSM step: drain `steering`/`followup` inboxes, enforce `max_turns` cap (emits synthetic `max_turns` message + `turn_end` → `stopped` via `finishSession`), route to `assistant_streaming` / `stopped`.
 - `turn::get_state` — One-shot reader returning a lean `TurnStateView` (from `schemas.ts:toView`) for a session. UI clients call this on reload to recover in-progress modals (e.g. `function_awaiting_approval`) without reading iii state directly. Returns `null` for unknown sessions.
 
 ## Triggers
 
-The record-written wake is now inline in `saveRecord` (no separate `on-record-written` adapter): every `saveRecord` call that transitions to a non-terminal, non-parking state calls `wakeState` directly. Similarly, `turn_state_changed` events are emitted inline from `persistRecord` via `emitTurnStateChanged` ([turn-state-write.ts](harness/src/turn-orchestrator/turn-state-write.ts)) — there is no separate `on-turn-state-changed` state trigger.
+The record-written wake is now inline in `saveRecord` (no separate `on-record-written` adapter): every `saveRecord` call that transitions to a non-terminal, non-parking state calls `wakeStep` directly. Similarly, `turn_state_changed` events are emitted inline from `persistRecord` inside `TurnStore` — there is no separate `on-turn-state-changed` state trigger.
 
-Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` triggers each per-call `turn::approval_resume` function (see [approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts) and [workers/approval-gate.md](workers/approval-gate.md)). `recoverPendingApprovals` re-registers these resume functions at worker startup for sessions that were parked before a restart.
+Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` writes a decision to scope `approvals`, which fires the reactive `turn::on_approval` state trigger (see [on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) and [workers/approval-gate.md](workers/approval-gate.md)). `recoverParkedApprovals` re-wakes parked sessions at worker startup.
 
 ## Turn FSM
 
 Each state is a registered `turn::{state}` function executed via
-`runTransition` and enqueued onto the `turn-step` FIFO queue by `wakeState`.
-The 8 states from [state.ts](harness/src/turn-orchestrator/state.ts):
+`runTransition` and enqueued onto the `turn-step` FIFO queue by `TurnStore.wakeStep`.
+The 7 states from [state.ts](harness/src/turn-orchestrator/state.ts):
 
 | State | Handler file | Role |
 |---|---|---|
-| `provisioning` | [states/provisioning.ts](harness/src/turn-orchestrator/states/provisioning.ts) | Fetch skills index + default-skill bodies, build system prompt, write enriched `run_request` (with `function_schemas: [agentTriggerTool()]`), → `assistant_streaming`. |
-| `assistant_streaming` | [states/assistant-streaming.ts](harness/src/turn-orchestrator/states/assistant-streaming.ts) | Increment `turn_count`; create channel; trigger provider stream; relay `message_update` deltas; on completion call `finalizeAssistant` which emits `message_complete`, persists the assistant message (dup-guarded), then routes → `function_execute` (has calls) / `steering_check` (no calls) / `tearing_down` (error/aborted). |
-| `function_execute` | [states/function-execute.ts](harness/src/turn-orchestrator/states/function-execute.ts) | Build batch from `rec.last_assistant` (or reuse existing `rec.work`); for each call: emit `function_execution_start`, skip if already executed, dispatch via `dispatchWithHook`; if `pending` → append to `awaiting_approval`, register `turn::approval_resume`, → `function_awaiting_approval`; otherwise commit result (silent `writeRecord` checkpoint) + emit `function_execution_end`; after batch: fold results into messages + emit `turn_end` → `steering_check` / `tearing_down`. |
-| `function_awaiting_approval` | [states/function-awaiting-approval.ts](harness/src/turn-orchestrator/states/function-awaiting-approval.ts) | Read decision for each `awaiting_approval[]` entry; if any is still missing → return (park); when all present, fold into `rec.work.batch` (`allow` → `pre_approved: true`; `deny`/`aborted` → `blocked` with denial result); clear `awaiting_approval` → `function_execute`. |
-| `steering_check` | [states/steering-check.ts](harness/src/turn-orchestrator/states/steering-check.ts) | Priority route: steering msg → `assistant_streaming` (unless `max_turns` reached); followup msg → `assistant_streaming` (unless `max_turns` reached); function results present → `assistant_streaming` (unless `max_turns` reached); else emit `turn_end` once → `stopped`. `max_turns` path emits a synthetic `message_complete` + `turn_end`. |
-| `tearing_down` | [states/tearing-down.ts](harness/src/turn-orchestrator/states/tearing-down.ts) | Emit `agent_end` → `stopped`. |
-| `stopped` | (no handler) | Terminal. Idempotent. |
+| `provisioning` | [provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | Fetch skills index + default-skill bodies, build system prompt, write enriched `run_request` (with `function_schemas: [agentTriggerTool()]`), → `assistant_streaming`. |
+| `assistant_streaming` | [assistant-streaming/process.ts](harness/src/turn-orchestrator/assistant-streaming/process.ts) | Increment `turn_count`; create channel; trigger provider stream; relay `message_update` deltas; on completion call `finalizeAssistantTurn` which emits `message_complete`, persists the assistant message (dup-guarded), then routes → `function_execute` (has calls) / `steering_check` (no calls) / `stopped` via `finishSession` (error/aborted). |
+| `function_execute` | [function-execute/process.ts](harness/src/turn-orchestrator/function-execute/process.ts) | Build batch from `rec.last_assistant` (or reuse existing `rec.work`); for each call: emit `function_execution_start`, skip if already executed, dispatch via `dispatchWithHook`; if `pending` → append to `awaiting_approval`, → `function_awaiting_approval`; otherwise commit result (silent `writeRecord` checkpoint) + emit `function_execution_end`; after batch: fold results into messages + emit `turn_end` → `steering_check` / `stopped` via `finishSession`. |
+| `function_awaiting_approval` | [function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) | Read decision for each `awaiting_approval[]` entry; if any is still missing → return (park); when all present, fold into `rec.work.prepared` (`allow` → `pre_approved`; `deny`/`aborted` → `synthetic` with denial result); clear `awaiting_approval` → `function_execute`. |
+| `steering_check` | [steering-check/process.ts](harness/src/turn-orchestrator/steering-check/process.ts) | Priority route: steering msg → `assistant_streaming` (unless `max_turns` reached); followup msg → `assistant_streaming` (unless `max_turns` reached); function results present → `assistant_streaming` (unless `max_turns` reached); else emit `turn_end` once → `stopped` via `finishSession`. `max_turns` path emits a synthetic `message_complete` + `turn_end`. |
+| `stopped` | (no handler) | Terminal. Idempotent. Session teardown (`agent_end`) happens inline via `TurnStatePorts.finishSession` before entering this state. |
 | `failed` | (set by `runTransition` on unexpected throw) | Terminal. Carries `error: {kind, message}` on the record. Emits `message_complete{stop_reason:'error'}` + `agent_end` so the UI sees the reason. A handler may throw `TransientError` to use the queue's retry/DLQ instead. |
 
-`NON_STEPABLE_STATES` in [wake.ts](harness/src/turn-orchestrator/wake.ts) are
+`NON_STEPABLE_STATES` in [store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) are
 `stopped`, `failed`, and `function_awaiting_approval` — `saveRecord` does not
 enqueue a handler for these.
 
-`dispatchWithHook` returns one of three shapes: `{ kind: 'result' }`,
-`{ kind: 'deny' }`, or `{ kind: 'pending' }`. `pending` triggers the
-`function_awaiting_approval` park.
+`dispatchWithHook` returns `{ kind: 'result', result }` or `{ kind: 'pending' }`.
+Policy denies are returned as `{ kind: 'result' }` with a denied `FunctionResult`.
+`pending` triggers the `function_awaiting_approval` park.
 
-## State keys
+## State scopes
 
-All keys live under iii state scope `agent`. Key helpers are defined in
-[state.ts](harness/src/turn-orchestrator/state.ts); persistence helpers in
-[persistence.ts](harness/src/turn-orchestrator/persistence.ts).
+Session-scoped iii state uses semantic scopes from
+[state.ts](harness/src/turn-orchestrator/state.ts) with
+`session_id` as the key. I/O goes through
+[state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) (`TurnStore`).
 
-| Key shape | Purpose |
-|---|---|
-| `session/<sid>/turn_state` | Serialised `TurnStateRecord` (incl. `work?: TurnWork` and `error?: {kind, message}`). |
-| `session/<sid>/messages` | Active path `AgentMessage[]`; mirrored into `session-tree::*` on every save (inline in `persistence.saveMessages`). |
-| `session/<sid>/run_request` | The `run::start` payload enriched by `provisioning` to include `function_schemas: [agentTriggerTool()]` and the assembled `system_prompt`. Typed as `RunRequest` ([run-request.ts](harness/src/turn-orchestrator/run-request.ts)). |
-| `session/<sid>/session_tree_mirror_len` | High-water mark so the session-tree messages mirror is incremental. The session-tree mirror is still inline in `persistence.saveMessages` — its relocation to a reactive subscriber is tracked as a follow-up, not done. |
-| `session/<sid>/event_counter` | Monotonic counter for `agent::events` sequence numbers. |
+| Scope | Key | Purpose |
+|---|---|---|
+| `turn_state` | `<session_id>` | Serialised `TurnStateRecord` (incl. `work?: TurnWork` and `error?: {kind, message}`). |
+| `messages` | `<session_id>` | Active path `AgentMessage[]`; mirrored into `session-tree::*` on every save (inline in `TurnStore.saveMessages` / `appendMessages`). |
+| `run_request` | `<session_id>` | The `run::start` payload enriched by `provisioning` to include `function_schemas: [agentTriggerTool()]` and the assembled `system_prompt`. Typed as `RunRequest` ([run-request.ts](harness/src/turn-orchestrator/run-request.ts)). |
+| `session_tree_mirror_len` | `<session_id>` | High-water mark so the session-tree messages mirror is incremental. |
+| `event_counter` | `<session_id>` | Monotonic counter for `agent::events` sequence numbers. |
 
 Keys that no longer exist: `function_prepared`, `function_executed`,
 `function_schemas` (standalone), `tool_prepared`, `tool_executed`,
 `tool_schemas`, `sandbox_id`, `last_compaction_at`,
 `last_compaction_consumed_at` — these were removed in the rewrite.
 
-The `TurnStateRecord` carries `work?: TurnWork` (inline `{batch: PreparedEntry[]; results: ExecutedEntry[]}`) in place of the former separate state keys. `PreparedEntry`, `ExecutedEntry`, and `TurnWork` are all defined in [state.ts](harness/src/turn-orchestrator/state.ts).
+The `TurnStateRecord` carries `work?: TurnWork` (inline `{ prepared: PreparedCall[]; executed: Record<id, ExecutedCall> }`) in place of the former separate state keys. `PreparedCall`, `ExecutedCall`, and `TurnWork` are defined in [function-execute/types.ts](harness/src/turn-orchestrator/function-execute/types.ts).
 
 ## UI events
 
-`turn_state_changed` is emitted inline by `persistRecord` (via
-[turn-state-write.ts](harness/src/turn-orchestrator/turn-state-write.ts))
-on every `saveRecord` / `persistRecord` call. It carries a lean
+`turn_state_changed` is emitted inline by `TurnStore.saveRecord` on every
+persist that goes through the full save path. It carries a lean
 `TurnStateView` (not the full `TurnStateRecord`) as `new_value` (and
 `old_value` when updating). `TurnStateView` is defined in
 [schemas.ts](harness/src/turn-orchestrator/schemas.ts) and contains:
@@ -114,11 +112,9 @@ consumers.
 Unchanged from prior design: `dispatchWithHook` → `consultBefore` →
 `policy::check_permissions` (5 s timeout, fail-closed). A `needs_approval`
 reply returns `{ kind: 'pending' }` from `dispatchWithHook`, which parks the
-session to `function_awaiting_approval` and registers a per-call
-`turn::approval_resume` function. `approval::resolve` triggers that resume
-function, which persists the decision to scope `approvals` and calls
-`wakeFromRecord` to re-enqueue the
-session's current state handler.
+session to `function_awaiting_approval`. `approval::resolve` writes the
+decision to scope `approvals`, which fires `turn::on_approval` and calls
+`TurnStore.wakeFromRecord` to re-enqueue the session's current state handler.
 
 ## Configuration
 
@@ -133,7 +129,7 @@ From the top-level `turn-orchestrator` section of
 
 From
 [src/turn-orchestrator/iii.worker.yaml](harness/src/turn-orchestrator/iii.worker.yaml):
-`session ^0.2.0`, `hook-fanout ^0.2.0`, `provider-anthropic ^0.2.0`,
+`session ^0.2.0`, `provider-anthropic ^0.2.0`,
 `provider-openai ^0.2.0`.
 
 ## Source layout
@@ -141,26 +137,23 @@ From
 | File | Purpose |
 |---|---|
 | [src/turn-orchestrator/main.ts](harness/src/turn-orchestrator/main.ts) | Binary entry point. |
-| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes all registered functions: `run::start`, per-state `turn::{state}` handlers, approval-resume recovery, `turn::get_state`. |
+| [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes all registered functions: `run::start`, per-state `turn::{state}` handlers, `turn::on_approval`, `turn::get_state`. |
 | [src/turn-orchestrator/run-start.ts](harness/src/turn-orchestrator/run-start.ts) | `run::start` handler — persists run config and messages, seeds `turn_state` to `provisioning` via `saveRecord` (which wakes the FSM). |
 | [src/turn-orchestrator/run-transition.ts](harness/src/turn-orchestrator/run-transition.ts) | Shared FSM transition runner: load → null-check → stale-skip → handle → save. Routes to `failed` on unexpected throw; re-throws `TransientError` for queue retry. |
-| [src/turn-orchestrator/wake.ts](harness/src/turn-orchestrator/wake.ts) | `wakeState` / `wakeFromRecord` — enqueue `turn::{state}` onto the `turn-step` FIFO queue; `shouldWakeStep` gates non-stepable states. |
-| [src/turn-orchestrator/schemas.ts](harness/src/turn-orchestrator/schemas.ts) | All registered-function I/O schemas and types: `RunStartPayloadSchema`, `TurnStepPayloadSchema`, `TurnStateView`, `toView`, `ApprovalDecisionEventSchema`. |
-| [src/turn-orchestrator/run-request.ts](harness/src/turn-orchestrator/run-request.ts) | `RunRequest` type and `parseRunRequest` — the typed, parsed form of `session/<sid>/run_request` (includes `function_schemas`). |
+| [src/turn-orchestrator/state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) | `TurnStore` / `createTurnStore` — agent-scope load/save, `shouldWakeStep`, `wakeStep`, `wakeFromRecord`. |
+| [src/turn-orchestrator/run-request.ts](harness/src/turn-orchestrator/run-request.ts) | `RunRequest` type and `parseRunRequest` — the typed, parsed form of scope `run_request` (includes `function_schemas`). |
 | [src/turn-orchestrator/get-state.ts](harness/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader returning `TurnStateView \| null`. |
 | [src/turn-orchestrator/agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) | Dispatcher chokepoint: `dispatchWithHook` (consult + trigger), `triggerFunctionCall` (trigger/decode/error), `agentTriggerTool` (schema), `unwrapAgentTrigger`. |
-| [src/turn-orchestrator/hook.ts](harness/src/turn-orchestrator/hook.ts) | `consultBefore` — `policy::check_permissions` (5 s, fail-closed) → `allow` / `pending` / `deny`. `publishAfter` — `hook-fanout::publish_collect` for after-hook fanout. |
-| [src/turn-orchestrator/approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts) | Per-call `turn::approval_resume` registration and handler (persist decision + `wakeFromRecord`); `recoverPendingApprovals` re-registers at startup. |
-| [src/turn-orchestrator/turn-state-write.ts](harness/src/turn-orchestrator/turn-state-write.ts) | `emitTurnStateChanged` — inline UI notification emitting `turn_state_changed` with lean `TurnStateView`. Called from `persistRecord`. |
-| [src/turn-orchestrator/states/provisioning.ts](harness/src/turn-orchestrator/states/provisioning.ts) | `turn::provisioning` handler. |
-| [src/turn-orchestrator/states/assistant-streaming.ts](harness/src/turn-orchestrator/states/assistant-streaming.ts) | `turn::assistant_streaming` handler. |
-| [src/turn-orchestrator/states/function-execute.ts](harness/src/turn-orchestrator/states/function-execute.ts) | `turn::function_execute` handler. |
-| [src/turn-orchestrator/states/function-awaiting-approval.ts](harness/src/turn-orchestrator/states/function-awaiting-approval.ts) | `turn::function_awaiting_approval` handler. |
-| [src/turn-orchestrator/states/steering-check.ts](harness/src/turn-orchestrator/states/steering-check.ts) | `turn::steering_check` handler. |
-| [src/turn-orchestrator/states/tearing-down.ts](harness/src/turn-orchestrator/states/tearing-down.ts) | `turn::tearing_down` handler. |
-| [src/turn-orchestrator/states/index.ts](harness/src/turn-orchestrator/states/index.ts) | Re-exports per-state `register` functions. |
-| [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts) | `TurnState`, `TurnStateRecord`, `TurnWork`, `PreparedEntry`, `ExecutedEntry`, `AwaitingApprovalEntry`, state-key helpers, `newRecord`, `transitionTo`. |
-| [src/turn-orchestrator/persistence.ts](harness/src/turn-orchestrator/persistence.ts) | Load/save helpers: `loadRecord`, `saveRecord` (persist + wake), `persistRecord` (persist + UI event, no wake), `writeRecord` (silent checkpoint), `saveMessages` (+ session-tree mirror). |
+| [src/turn-orchestrator/hook.ts](harness/src/turn-orchestrator/hook.ts) | `consultBefore` — `policy::check_permissions` (5 s, fail-closed) → `allow` / `pending` / `deny`. |
+| [src/turn-orchestrator/on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) | Reactive `turn::on_approval` state trigger on scope `approvals`; `recoverParkedApprovals` re-wakes parked sessions at startup. |
+| [src/turn-orchestrator/schemas.ts](harness/src/turn-orchestrator/schemas.ts) | All registered-function I/O schemas and types: `RunStartPayloadSchema`, `TurnStepPayloadSchema`, `TurnStateView`, `toView`, `ApprovalDecisionEventSchema`. |
+| [src/turn-orchestrator/state-runtime/ports.ts](harness/src/turn-orchestrator/state-runtime/ports.ts) | `TurnStatePorts` / `createTurnStatePorts` — shared dependency ports for per-state handlers (incl. `finishSession`). |
+| [src/turn-orchestrator/provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | `turn::provisioning` handler and provisioning pipeline. |
+| [src/turn-orchestrator/assistant-streaming/process.ts](harness/src/turn-orchestrator/assistant-streaming/process.ts) | `turn::assistant_streaming` handler and stream orchestration. |
+| [src/turn-orchestrator/function-execute/process.ts](harness/src/turn-orchestrator/function-execute/process.ts) | `turn::function_execute` handler. |
+| [src/turn-orchestrator/function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) | `turn::function_awaiting_approval` handler. |
+| [src/turn-orchestrator/steering-check/process.ts](harness/src/turn-orchestrator/steering-check/process.ts) | `turn::steering_check` handler. |
+| [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts) | `TurnState`, `TurnStateRecord`, `TurnWork`, `AwaitingApprovalEntry`, state-key helpers, `newRecord`, `transitionTo`. |
 | [src/turn-orchestrator/errors.ts](harness/src/turn-orchestrator/errors.ts) | `TransientError` (opt into queue retry), `ContextOverflowError`, `CompactionBusyError`. |
 | [src/turn-orchestrator/events.ts](harness/src/turn-orchestrator/events.ts) | `emit(iii, sid, event)` — appends a sequenced `AgentEvent` to the `agent::events` stream. |
 | [src/turn-orchestrator/preflight.ts](harness/src/turn-orchestrator/preflight.ts) | `runPreflight` — context-compaction check before each provider call. |

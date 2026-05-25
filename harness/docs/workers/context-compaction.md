@@ -222,15 +222,17 @@ The summariser provider and model are always inherited from the session's
 own selection. Routing goes through `turn-orchestrator/provider-router`,
 so adding a provider there automatically covers `/compact`.
 
-## State keys
+## State scopes
 
-All keys live under iii state scope `agent`:
+Compaction-related keys use dedicated scopes (key = `session_id`):
 
-| Key shape | Purpose |
+| Scope | Purpose |
 |---|---|
-| `session/<sid>/compaction_lease` | `{ nonce, ts }` — held for up to `LEASE_TTL_SECS = 300 s`. Acquired by writing a unique nonce and reading it back; the first writer whose nonce survives wins. |
-| `session/<sid>/prune_lease` | Same nonce-and-readback pattern, separate key so the prune path does not block async compaction. |
-| `session/<sid>/last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
+| `compaction_lease` | `{ nonce, ts }` — held for up to `LEASE_TTL_SECS = 300 s`. |
+| `prune_lease` | Same nonce-and-readback pattern, separate scope so the prune path does not block async compaction. |
+| `last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
+
+Flat transcript rewrites use scope `messages`, key `session_id` (see [flat-state.ts](harness/src/context-compaction/flat-state.ts)).
 
 ## Observability
 

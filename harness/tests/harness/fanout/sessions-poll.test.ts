@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { spawnSessionsPoll } from '../../../src/harness/fanout/sessions-poll.js';
 import { FanoutState } from '../../../src/harness/ui-subscribe.js';
+import { TURN_STATE_SCOPE } from '../../../src/turn-orchestrator/state.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
 
 type Handler = (event: unknown) => Promise<unknown>;
 
-// Session-create fanout now rides a dedicated `session_index` scope (marker
-// written once at creation). The state trigger has NO condition_function_id, so
-// the engine hands every write on that scope to the handler — the handler is
-// the sole gate. These tests hammer that gate and the registration shape.
+// Session-create fanout watches scope `turn_state`. The state trigger has NO
+// condition_function_id, so the engine hands every write on that scope to the
+// handler — the handler is the sole gate. These tests hammer that gate and
+// the registration shape.
 function setup(subscribers: string[] = []) {
   const handlers = new Map<string, Handler>();
   const triggers: Array<{ type?: string; function_id?: string; config?: Record<string, unknown> }> =
@@ -37,10 +38,10 @@ function setup(subscribers: string[] = []) {
 
 const createEvent = (over: Record<string, unknown> = {}) => ({
   event_type: 'state:created' as const,
-  scope: 'session_index' as const,
+  scope: TURN_STATE_SCOPE,
   key: 'sess-1',
   old_value: null,
-  new_value: { created_at_ms: 1 },
+  new_value: { session_id: 'sess-1', state: 'provisioning' },
   message_type: 'state',
   ...over,
 });
@@ -50,7 +51,7 @@ function changedCalls(sent: Array<{ function_id: string; payload: unknown }>) {
 }
 
 describe('spawnSessionsPoll registration (eliminates the per-write predicate RPC)', () => {
-  it('registers a scope-only session_index trigger with NO condition_function_id and no predicate fn', () => {
+  it('registers a scope-only turn_state trigger with NO condition_function_id and no predicate fn', () => {
     const { handlers, triggers } = setup();
 
     expect([...handlers.keys()]).not.toContain('harness::session::is_create_event');
@@ -58,7 +59,7 @@ describe('spawnSessionsPoll registration (eliminates the per-write predicate RPC
 
     const t = triggers.find((x) => x.function_id === 'harness::fanout::session_created');
     expect(t?.type).toBe('state');
-    expect(t?.config?.scope).toBe('session_index');
+    expect(t?.config?.scope).toBe(TURN_STATE_SCOPE);
     expect(t?.config?.condition_function_id).toBeUndefined();
   });
 });

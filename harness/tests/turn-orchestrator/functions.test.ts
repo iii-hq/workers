@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
-import { parseApprovalDecision } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
-import { handleExecute } from '../../src/turn-orchestrator/states/function-execute.js';
+import { parseApprovalDecision } from '../../src/turn-orchestrator/function-awaiting-approval/ports.js';
+import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 afterEach(() => {
@@ -15,9 +15,10 @@ afterEach(() => {
 });
 
 function mockFinalizePersistence(): void {
-  vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-  vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-  vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
+  installMockTurnStore({
+    loadMessages: vi.fn(async () => []),
+    appendMessages: vi.fn(async () => {}),
+  });
 }
 
 /** Build a minimal AssistantMessage with the given function_call content blocks. */
@@ -75,8 +76,17 @@ describe('parseApprovalDecision', () => {
   });
 });
 
+/** Wrap a target function id in the agent_trigger envelope (production shape). */
+function agentTriggerCall(
+  id: string,
+  functionId: string,
+  payload: unknown = {},
+): { id: string; function_id: string; arguments: unknown } {
+  return { id, function_id: 'agent_trigger', arguments: { function: functionId, payload } };
+}
+
 describe('handleExecute new flow', () => {
-  it('builds work.batch from last_assistant when work is absent', async () => {
+  it('builds work.prepared from last_assistant when work is absent', async () => {
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
@@ -89,13 +99,12 @@ describe('handleExecute new flow', () => {
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
     rec.last_assistant = makeAssistant([
-      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
+      agentTriggerCall('fc-1', 'shell::run', { command: 'ls' }),
     ]);
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
-    // work should be cleared after finalize
     expect(rec.work).toBeUndefined();
     expect(rec.state).toBe('steering_check');
     expect(rec.function_results).toHaveLength(1);
@@ -106,13 +115,12 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     rec.work = {
-      batch: [
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
-      ],
-      results: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
           result: {
             content: [{ type: 'text' as const, text: 'bye' }],
             details: {},
@@ -121,7 +129,7 @@ describe('handleExecute new flow', () => {
           is_error: false,
           duration_ms: 1,
         },
-      ],
+      },
     };
     mockFinalizePersistence();
 
@@ -142,15 +150,16 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-    // Re-entry: fc-1 already in results (executed before park), fc-2 still pending.
+    const fc1 = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };
     rec.work = {
-      batch: [
-        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
-        { function_call: { id: 'fc-2', function_id: 'shell::run', arguments: {} }, blocked: null },
+      prepared: [
+        { route: 'dispatch', call: fc1 },
+        { route: 'dispatch', call: fc2 },
       ],
-      results: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      executed: {
+        'fc-1': {
+          call: fc1,
           result: {
             content: [{ type: 'text' as const, text: 'done' }],
             details: {},
@@ -159,7 +168,7 @@ describe('handleExecute new flow', () => {
           is_error: false,
           duration_ms: 5,
         },
-      ],
+      },
     };
     mockFinalizePersistence();
 
@@ -168,22 +177,21 @@ describe('handleExecute new flow', () => {
     const starts = emitted
       .filter((e) => e.type === 'function_execution_start')
       .map((e) => e.function_call_id);
-    expect(starts).toEqual(['fc-2']); // fc-1 NOT restarted on re-entry
+    expect(starts).toEqual(['fc-2']);
     const fc1Ends = emitted.filter(
       (e) => e.type === 'function_execution_end' && e.function_call_id === 'fc-1',
     );
-    expect(fc1Ends).toHaveLength(1); // fc-1 end replayed exactly once
+    expect(fc1Ends).toHaveLength(1);
   });
 
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
-    const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
-    dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
 
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
     rec.last_assistant = makeAssistant([
-      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
+      agentTriggerCall('fc-1', 'shell::run', { command: 'ls' }),
     ]);
 
     await handleExecute(iii, rec);
@@ -191,8 +199,7 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
     expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
-    // work.batch should still be populated (re-entry will continue from it)
-    expect(rec.work?.batch).toHaveLength(1);
+    expect(rec.work?.prepared).toHaveLength(1);
   });
 
   it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
@@ -200,20 +207,14 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
-    // Supply via rec.work (simulates re-entry after approval was granted)
     rec.work = {
-      batch: [
+      prepared: [
         {
-          function_call: {
-            id: 'fc-1',
-            function_id: 'shell::run',
-            arguments: { command: 'ls' },
-          },
-          blocked: null,
-          pre_approved: true,
+          route: 'pre_approved',
+          call: { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
         },
       ],
-      results: [],
+      executed: {},
     };
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
     mockFinalizePersistence();
@@ -238,25 +239,23 @@ describe('handleExecute new flow', () => {
     const rec: TurnStateRecord = newRecord('s1');
     rec.state = 'function_execute';
     rec.work = {
-      batch: [
+      prepared: [
         {
-          function_call: {
+          route: 'pre_approved',
+          call: {
             id: 'fc-1',
             function_id: 'shell::fs::write',
             arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
           },
-          blocked: null,
-          pre_approved: true,
         },
       ],
-      results: [],
+      executed: {},
     };
     mockFinalizePersistence();
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
     expect(rec.state).toBe('steering_check');
-    // The result should be an error with denied details
     expect(rec.function_results).toHaveLength(1);
     expect(rec.function_results[0]?.is_error).toBe(true);
     const details = rec.function_results[0]?.details as Record<string, unknown>;
@@ -266,7 +265,7 @@ describe('handleExecute new flow', () => {
     expect(String(details?.reason)).toContain('S210');
   });
 
-  it('emits denial result without dispatching when blocked is set', async () => {
+  it('emits denial result without dispatching when route is synthetic', async () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -278,14 +277,14 @@ describe('handleExecute new flow', () => {
       terminate: false,
     };
     rec.work = {
-      batch: [
+      prepared: [
         {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-          blocked: denial,
-          pre_approved: false,
+          route: 'synthetic',
+          call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: denial,
         },
       ],
-      results: [],
+      executed: {},
     };
     mockFinalizePersistence();
     await handleExecute(iii, rec);
@@ -297,7 +296,7 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('steering_check');
   });
 
-  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.results)', async () => {
+  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
@@ -309,22 +308,17 @@ describe('handleExecute new flow', () => {
       details: {},
       terminate: false,
     };
-    // Pre-populate rec.work with batch + already-executed result
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     rec.work = {
-      batch: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-          blocked: null,
-        },
-      ],
-      results: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
           result: existingResult,
           is_error: false,
           duration_ms: 42,
         },
-      ],
+      },
     };
     mockFinalizePersistence();
 
@@ -346,7 +340,7 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([{ id: 'fc-1', function_id: 'shell::run', arguments: {} }]);
+    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run')]);
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
@@ -360,17 +354,12 @@ describe('handleExecute new flow', () => {
     rec.state = 'function_execute';
     rec.last_assistant = null;
 
-    // Supply pre-populated work so ensureWork doesn't throw on null last_assistant
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     rec.work = {
-      batch: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-          blocked: null,
-        },
-      ],
-      results: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
           result: {
             content: [{ type: 'text' as const, text: 'ok' }],
             details: {},
@@ -379,18 +368,18 @@ describe('handleExecute new flow', () => {
           is_error: false,
           duration_ms: 1,
         },
-      ],
+      },
     };
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    installMockTurnStore({
+      loadMessages: vi.fn(async () => []),
+      appendMessages: vi.fn(async () => {}),
+    });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleExecute(iii, rec);
 
     expect(rec.state).toBe('steering_check');
     expect(rec.function_results).toHaveLength(1);
-    // No turn_end emitted when last_assistant is null
     expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(false);
   });
 
@@ -410,12 +399,12 @@ describe('handleExecute new flow', () => {
       timestamp: 1,
     };
 
-    // Supply pre-populated work (last_assistant has no function_call blocks here)
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     rec.work = {
-      batch: [],
-      results: [
-        {
-          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
           result: {
             content: [{ type: 'text' as const, text: 'ok' }],
             details: {},
@@ -424,11 +413,12 @@ describe('handleExecute new flow', () => {
           is_error: false,
           duration_ms: 1,
         },
-      ],
+      },
     };
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+    installMockTurnStore({
+      loadMessages: vi.fn(async () => []),
+      appendMessages: vi.fn(async () => {}),
+    });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleExecute(iii, rec);
@@ -439,10 +429,6 @@ describe('handleExecute new flow', () => {
   });
 
   it('does NOT duplicate function_results in flat-state when handleExecute re-enters', async () => {
-    // Idempotency guard: a durable retry / step-fanout race can replay the
-    // finalize path with the same work. Re-pushing the same function_result
-    // blocks makes Anthropic reject with "each tool_use must have a single
-    // result. Found multiple tool_result blocks with id".
     const existingResult = {
       content: [{ type: 'text' as const, text: 'ok' }],
       details: {},
@@ -454,15 +440,16 @@ describe('handleExecute new flow', () => {
     const rec = newRecord('s1');
     rec.state = 'function_execute';
     rec.last_assistant = makeAssistant([
-      { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } },
+      agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' }),
     ]);
 
     let storedMessages: unknown[] = [];
-    vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
-    vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
-      storedMessages = msgs as never;
+    installMockTurnStore({
+      loadMessages: vi.fn(async () => storedMessages as never),
+      appendMessages: vi.fn(async (_sid, msgs) => {
+        storedMessages = [...storedMessages, ...msgs];
+      }),
     });
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
       kind: 'result',
@@ -471,14 +458,18 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    // Re-entry: simulate state was reset before durable confirmation
     rec.state = 'function_execute';
     rec.turn_end_emitted = false;
-    // work.results already has the executed call after first run cleared rec.work,
-    // so we need to re-populate work for re-entry simulation
     rec.work = {
-      batch: [{ function_call: fc, blocked: null }],
-      results: [{ function_call: fc, result: existingResult, is_error: false, duration_ms: 5 }],
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        toolu_01: {
+          call: fc,
+          result: existingResult,
+          is_error: false,
+          duration_ms: 5,
+        },
+      },
     };
 
     await handleExecute(iii, rec);

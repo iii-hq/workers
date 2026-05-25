@@ -85,7 +85,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     expect(out.kind).toBe('pending');
   });
 
-  it('returns kind:deny on hard deny', async () => {
+  it('returns kind:result with denied details on hard deny', async () => {
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({
       kind: 'deny',
       denial: {
@@ -102,8 +102,8 @@ describe('dispatchWithHook returns DispatchResult', () => {
       function_id: 'shell::run',
       arguments: {},
     });
-    expect(out.kind).toBe('deny');
-    if (out.kind === 'deny') {
+    expect(out.kind).toBe('result');
+    if (out.kind === 'result') {
       expect(out.result.details).toMatchObject({ status: 'denied' });
     }
   });

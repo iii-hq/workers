@@ -102,10 +102,13 @@ export function pendingKey(session_id: string, function_call_id: string): string
 
 const approvalDecisionSchema = z.enum(['allow', 'deny', 'aborted']);
 
-export const ApprovalResumePayloadSchema = z.object({
+export const ApprovalDecisionSchema = z.object({
   decision: approvalDecisionSchema,
   reason: z.string().nullable(),
 });
+
+/** @deprecated Use ApprovalDecisionSchema */
+export const ApprovalResumePayloadSchema = ApprovalDecisionSchema;
 
 export const resolveFunctionOptions = {
   description:

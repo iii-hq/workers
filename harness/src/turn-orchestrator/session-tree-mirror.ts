@@ -7,7 +7,8 @@ import { stateGet, stateSet } from '../runtime/state.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
-import { AGENT_SCOPE, lastSessionTreeLenKey } from './state.js';
+
+const SESSION_TREE_MIRROR_LEN_SCOPE = 'session_tree_mirror_len';
 
 const MirrorLenSchema = z.coerce.number().int().nonnegative().catch(0);
 
@@ -20,8 +21,9 @@ export async function mirrorMessagesToSessionTree(
   session_id: string,
   messages: AgentMessage[],
 ): Promise<void> {
-  const lastKey = lastSessionTreeLenKey(session_id);
-  const alreadyMirrored = parseMirrorLen(await stateGet(iii, AGENT_SCOPE, lastKey));
+  const alreadyMirrored = parseMirrorLen(
+    await stateGet(iii, SESSION_TREE_MIRROR_LEN_SCOPE, session_id),
+  );
   if (messages.length <= alreadyMirrored) return;
 
   if (alreadyMirrored === 0) {
@@ -51,7 +53,7 @@ export async function mirrorMessagesToSessionTree(
     lastAppended = resp.entry_id ?? lastAppended;
   }
 
-  await stateSet(iii, AGENT_SCOPE, lastKey, messages.length);
+  await stateSet(iii, SESSION_TREE_MIRROR_LEN_SCOPE, session_id, messages.length);
 }
 
 async function triggerSessionTree<T>(

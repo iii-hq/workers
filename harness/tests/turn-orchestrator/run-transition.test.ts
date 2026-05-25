@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import { TransientError } from '../../src/turn-orchestrator/errors.js';
+import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
 import {
   type TurnStateRecord,
   newRecord,
   transitionTo,
 } from '../../src/turn-orchestrator/state.js';
+import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -15,7 +16,7 @@ afterEach(() => {
 
 describe('runTransition', () => {
   it('throws when the session record is missing, without running the handler', async () => {
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(null);
+    installMockTurnStore({ loadRecord: vi.fn(async () => null) });
     const handle = vi.fn();
 
     await expect(
@@ -26,22 +27,20 @@ describe('runTransition', () => {
 
   it('returns a stale skip without running the handler or saving', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
+    const store = installMockTurnStore({ loadRecord: vi.fn(async () => rec) });
     const handle = vi.fn();
 
     const result = await runTransition({} as ISdk, 'provisioning', handle, { session_id: 's1' });
 
     expect(result).toEqual({ ok: true, skipped: true, reason: 'stale' });
     expect(handle).not.toHaveBeenCalled();
-    expect(saveRecord).not.toHaveBeenCalled();
+    expect(store.saveRecord).not.toHaveBeenCalled();
   });
 
   it('runs the handler and threads the pre-mutation snapshot into saveRecord', async () => {
     const iii = {} as ISdk;
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
+    const store = installMockTurnStore({ loadRecord: vi.fn(async () => rec) });
     const handle = vi.fn(async (_iii: ISdk, r: TurnStateRecord) => {
       transitionTo(r, 'assistant_streaming');
     });
@@ -49,8 +48,7 @@ describe('runTransition', () => {
     const result = await runTransition(iii, 'provisioning', handle, { session_id: 's1' });
 
     expect(handle).toHaveBeenCalledWith(iii, rec);
-    expect(saveRecord).toHaveBeenCalledWith(
-      iii,
+    expect(store.saveRecord).toHaveBeenCalledWith(
       rec,
       expect.objectContaining({ state: 'provisioning' }),
     );
@@ -65,10 +63,12 @@ describe('runTransition', () => {
     const iii = {} as ISdk;
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'function_execute' };
     rec.awaiting_approval = [];
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
     let captured: TurnStateRecord | null | undefined;
-    vi.spyOn(persistence, 'saveRecord').mockImplementation(async (_i, _r, previous) => {
-      captured = previous;
+    installMockTurnStore({
+      loadRecord: vi.fn(async () => rec),
+      saveRecord: vi.fn(async (_r, previous) => {
+        captured = previous;
+      }),
     });
     const handle = vi.fn(async (_iii: ISdk, r: TurnStateRecord) => {
       r.awaiting_approval?.push({ function_call_id: 'fc-1', function_id: 'f', args: {} });
@@ -77,25 +77,23 @@ describe('runTransition', () => {
 
     await runTransition(iii, 'function_execute', handle, { session_id: 's1' });
 
-    // The snapshot reflects state BEFORE the handler ran, even though the
-    // handler mutated rec.awaiting_approval in place.
     expect(captured?.state).toBe('function_execute');
     expect(captured?.awaiting_approval).toEqual([]);
   });
 
   it('routes an unexpected handler throw to failed without re-throwing', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'steering_check' };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
+    const store = installMockTurnStore({
+      loadRecord: vi.fn(async () => rec),
+      loadMessages: vi.fn(async () => []),
+    });
     const handle = vi.fn(async () => {
       throw new Error('boom');
     });
 
-    // Should NOT re-throw — returns { ok: true, to_state: 'failed' }
     const result = await runTransition({} as ISdk, 'steering_check', handle, { session_id: 's1' });
     expect(result).toMatchObject({ ok: true, to_state: 'failed' });
-    expect(saveRecord).toHaveBeenCalled();
+    expect(store.saveRecord).toHaveBeenCalled();
   });
 });
 
@@ -104,7 +102,13 @@ function fakeIii(record: unknown) {
   const iii = {
     trigger: vi.fn(async ({ function_id, payload }: any) => {
       writes.push({ function_id, payload });
-      if (function_id === 'state::get' && payload.key.endsWith('/turn_state')) return record;
+      if (
+        function_id === 'state::get' &&
+        payload.scope === TURN_STATE_SCOPE &&
+        payload.key === 's1'
+      ) {
+        return record;
+      }
       return null;
     }),
   } as any;
@@ -124,7 +128,12 @@ describe('runTransition error model', () => {
       throw new Error('boom');
     }, { session_id: 's1' });
     expect(res).toMatchObject({ ok: true, to_state: 'failed' });
-    const saved = writes.find((w) => w.function_id === 'state::set' && w.payload.key.endsWith('/turn_state'));
+    const saved = writes.find(
+      (w) =>
+        w.function_id === 'state::set' &&
+        w.payload.scope === TURN_STATE_SCOPE &&
+        w.payload.key === 's1',
+    );
     expect(saved?.payload.value.state).toBe('failed');
     expect(saved?.payload.value.error.message).toContain('boom');
     const surfaced = writes.some((w) =>
