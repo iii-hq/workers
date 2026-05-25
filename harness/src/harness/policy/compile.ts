@@ -9,6 +9,8 @@ export type CompiledRule = {
   rule_id: string;
   function_id: string;
   action: Action;
+  /** Set when `function_id` contains `*`; otherwise match is exact. */
+  glob: RegExp | null;
   constraints: Array<readonly [string, CompiledConstraint]>;
 };
 
@@ -23,14 +25,51 @@ function argsRecord(args: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Turn a glob pattern (`*` = any substring) into an anchored regex. */
+function compileFunctionGlob(pattern: string): RegExp {
+  let re = '^';
+  for (const ch of pattern) {
+    if (ch === '*') re += '.*';
+    else re += ch.replace(/[\\^$.|?+()[\]{}]/g, '\\$&');
+  }
+  re += '$';
+  return new RegExp(re);
+}
+
+function compileFunctionMatcher(pattern: string): Pick<CompiledRule, 'function_id' | 'glob'> {
+  if (!pattern.includes('*')) {
+    return { function_id: pattern, glob: null };
+  }
+  return { function_id: pattern, glob: compileFunctionGlob(pattern) };
+}
+
+/** Match a compiled rule pattern against a concrete iii function id. */
+export function matchFunctionId(
+  rule: Pick<CompiledRule, 'function_id' | 'glob'>,
+  function_id: string,
+): boolean {
+  if (rule.glob) return rule.glob.test(function_id);
+  return rule.function_id === function_id;
+}
+
 export function compileRule(spec: RuleSpec, idx: number): CompiledRule {
   if (typeof spec === 'string') {
     if (spec.startsWith('!')) {
       const function_id = spec.slice(1);
       if (!function_id) throw new Error(`rule ${idx}: deny shorthand must be !<function_id>`);
-      return { rule_id: function_id, function_id, action: 'deny', constraints: [] };
+      return {
+        rule_id: function_id,
+        ...compileFunctionMatcher(function_id),
+        action: 'deny',
+        constraints: [],
+      };
     }
-    return { rule_id: spec, function_id: spec, action: 'allow', constraints: [] };
+    return {
+      rule_id: spec,
+      ...compileFunctionMatcher(spec),
+      action: 'allow',
+      constraints: [],
+    };
   }
 
   if (typeof spec !== 'object' || spec === null) {
@@ -49,7 +88,12 @@ export function compileRule(spec: RuleSpec, idx: number): CompiledRule {
   );
   constraints.sort(([a], [b]) => a.localeCompare(b));
 
-  return { rule_id, function_id, action: spec.action, constraints };
+  return {
+    rule_id,
+    ...compileFunctionMatcher(function_id),
+    action: spec.action,
+    constraints,
+  };
 }
 
 function compileConstraint(rule_id: string, field: string, c: ConstraintSpec): CompiledConstraint {

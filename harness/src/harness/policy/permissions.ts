@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
 import { logger } from '../../runtime/otel.js';
-import { compileRule, matchConstraints, type CompiledRule } from './compile.js';
+import { compileRule, matchConstraints, matchFunctionId, type CompiledRule } from './compile.js';
 import type { Decision, RuleSpec } from './types.js';
 
 export class Permissions {
@@ -40,7 +40,7 @@ export class Permissions {
 
   check(function_id: string, args: unknown): Decision {
     for (const rule of this.rules) {
-      if (rule.function_id !== function_id) continue;
+      if (!matchFunctionId(rule, function_id)) continue;
       const matched = matchConstraints(args, rule.constraints);
       if (matched.kind === 'mismatch') continue;
       if (rule.action === 'allow') {
