@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import {
   ApprovalResumePayloadSchema,
   ResolvePayloadSchema,
-  approvalResumeFnId,
   parsePolicyReply,
   pendingKey,
   resolveFunctionOptions,
@@ -86,8 +85,8 @@ describe('parsePolicyReply — fail closed', () => {
 });
 
 describe('state-key derivation — separator integrity', () => {
-  it('derives turn::approval_resume::<session>/<fcall>', () => {
-    expect(approvalResumeFnId('sess-1', 'fc-1')).toBe('turn::approval_resume::sess-1/fc-1');
+  it('derives <session>/<fcall>', () => {
+    expect(pendingKey('sess-1', 'fc-1')).toBe('sess-1/fc-1');
   });
 
   it.each([
@@ -95,7 +94,6 @@ describe('state-key derivation — separator integrity', () => {
     ['function_call', 'a', 'b/c'],
   ])('throws if the %s id smuggles a slash', (_which, session, fcall) => {
     expect(() => pendingKey(session, fcall)).toThrow();
-    expect(() => approvalResumeFnId(session, fcall)).toThrow();
   });
 });
 
