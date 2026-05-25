@@ -1,15 +1,14 @@
 /**
- * Emit AgentEvent frames on `agent::events`. Mirrors
- * `turn-orchestrator/src/events.rs`.
+ * Emit AgentEvent frames on `agent::events`, one per call with a per-session
+ * monotonic sequence number.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
-import { eventCounterKey } from './state.js';
+import { AGENT_SCOPE, eventCounterKey } from './state.js';
 
 export const EVENTS_STREAM = 'agent::events';
-const STATE_SCOPE = 'agent';
 
 export function formatItemId(session_id: string, seq: number): string {
   return `${session_id}-${seq.toString().padStart(8, '0')}`;
@@ -20,7 +19,7 @@ async function nextSeq(iii: ISdk, session_id: string): Promise<number> {
     const resp = await iii.trigger<unknown, { old_value?: number }>({
       function_id: 'state::update',
       payload: {
-        scope: STATE_SCOPE,
+        scope: AGENT_SCOPE,
         key: eventCounterKey(session_id),
         ops: [{ type: 'increment', path: '', by: 1 }],
       },

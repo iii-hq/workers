@@ -1,8 +1,8 @@
 /**
- * Agent tool-call dispatcher + approval chokepoint.
+ * Agent function-call dispatcher + approval chokepoint.
  *
  * `dispatchWithHook` is the single chokepoint for FSM-issued calls: every
- * agent tool call goes through `consultBefore` before reaching the inner
+ * agent function call goes through `consultBefore` before reaching the inner
  * trigger. `triggerFunctionCall` is the shared trigger/decode/error path
  * used by both the hook gate and pre-approved resume execution.
  */

@@ -209,7 +209,7 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
 
     // Re-entry (approval resume / crash mid-batch): a call already in
     // work.results replays its end event only. Emitting the start first
-    // would make the UI show a phantom restart of a completed tool.
+    // would make the UI show a phantom restart of a completed function.
     const existing = work.results.find((e) => e.function_call.id === fc.id);
     if (existing) {
       await emit(
