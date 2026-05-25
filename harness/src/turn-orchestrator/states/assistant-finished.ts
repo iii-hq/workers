@@ -28,10 +28,7 @@ function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
   return out;
 }
 
-function assistantMessageComplete(
-  asst: AssistantMessage,
-  body_streamed: boolean,
-): AgentEvent {
+function assistantMessageComplete(asst: AssistantMessage, body_streamed: boolean): AgentEvent {
   return { type: 'message_complete', message: asst, body_streamed };
 }
 

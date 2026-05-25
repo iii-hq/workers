@@ -123,7 +123,6 @@ export function functionNotFoundHint(badFunctionId: string): string {
   return suggestion ? `Did you mean \`${suggestion}\`? ${generic}` : generic;
 }
 
-
 /** Trigger a function call and normalize success/error into a FunctionResult. */
 export async function triggerFunctionCall(
   iii: ISdk,

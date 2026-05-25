@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
-import { type TurnStateRecord, newRecord, transitionTo } from '../../src/turn-orchestrator/state.js';
+import {
+  type TurnStateRecord,
+  newRecord,
+  transitionTo,
+} from '../../src/turn-orchestrator/state.js';
 
 afterEach(() => {
   vi.restoreAllMocks();

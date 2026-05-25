@@ -7,11 +7,7 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import * as persistence from './persistence.js';
-import {
-  GetStatePayloadSchema,
-  type GetStatePayload,
-  type GetStateResult,
-} from './schemas.js';
+import { GetStatePayloadSchema, type GetStatePayload, type GetStateResult } from './schemas.js';
 
 export async function execute(iii: ISdk, payload: GetStatePayload): Promise<GetStateResult> {
   return persistence.loadRecord(iii, payload.session_id);

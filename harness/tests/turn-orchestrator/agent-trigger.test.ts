@@ -101,10 +101,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
   it('returns kind:pending when consultBefore returns pending', async () => {
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'pending' });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'shell::run',
+      arguments: { command: 'ls' },
+    });
     expect(out.kind).toBe('pending');
   });
 
@@ -120,10 +121,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
       },
     });
     const iii = { trigger: vi.fn() } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'shell::run',
+      arguments: {},
+    });
     expect(out.kind).toBe('deny');
     if (out.kind === 'deny') {
       expect(out.result.details).toMatchObject({ status: 'denied' });
@@ -135,10 +137,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
     const iii = {
       trigger: vi.fn().mockResolvedValue({ ok: true }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'shell::run',
+      arguments: {},
+    });
     expect(out.kind).toBe('result');
   });
 
@@ -152,14 +155,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      {
-        id: 'fc-1',
-        function_id: 'sandbox/skills/sandbox/create',
-        arguments: { image: 'node' },
-      }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'sandbox/skills/sandbox/create',
+      arguments: { image: 'node' },
+    });
     expect(out.kind).toBe('result');
     if (out.kind !== 'result') return;
     const details = out.result.details as Record<string, unknown>;
@@ -174,10 +174,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'some/odd/three-segment/id', arguments: {} }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'some/odd/three-segment/id',
+      arguments: {},
+    });
     if (out.kind !== 'result') throw new Error('expected result kind');
     const details = out.result.details as Record<string, unknown>;
     // No "Did you mean" — three-segment ids don't match the
@@ -192,10 +193,11 @@ describe('dispatchWithHook returns DispatchResult', () => {
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
     } as unknown as ISdk;
-    const out = await dispatchWithHook(
-      iii,
-      { id: 'fc-1', function_id: 'misspelled', arguments: {} }
-    );
+    const out = await dispatchWithHook(iii, {
+      id: 'fc-1',
+      function_id: 'misspelled',
+      arguments: {},
+    });
     if (out.kind !== 'result') throw new Error('expected result kind');
     const details = out.result.details as Record<string, unknown>;
     expect(details.hint).toBe(

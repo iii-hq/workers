@@ -11,11 +11,7 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import * as persistence from './persistence.js';
-import {
-  RunStartPayloadSchema,
-  type RunStartPayload,
-  type RunStartResult,
-} from './schemas.js';
+import { RunStartPayloadSchema, type RunStartPayload, type RunStartResult } from './schemas.js';
 import { newRecord } from './state.js';
 
 export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunStartResult> {

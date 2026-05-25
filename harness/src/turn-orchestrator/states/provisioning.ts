@@ -95,7 +95,12 @@ export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
     'turn::provisioning',
     async (payload: TurnStepPayload) => {
       const parsed = TurnStepPayloadSchema.parse(payload);
-      return runTransition(iii, 'provisioning', (i, rec) => handleProvisioning(i, cfg, rec), parsed);
+      return runTransition(
+        iii,
+        'provisioning',
+        (i, rec) => handleProvisioning(i, cfg, rec),
+        parsed,
+      );
     },
     {
       description:
