@@ -11,12 +11,12 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import type { AssistantMessage } from '../types/agent-message.js';
 import { TransientError } from './errors.js';
 import { emit } from './events.js';
 import * as persistence from './persistence.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
 import { type TurnState, type TurnStateRecord, transitionTo } from './state.js';
+import { syntheticAssistant } from './synthetic-assistant.js';
 
 export type TransitionHandler = (iii: ISdk, rec: TurnStateRecord) => Promise<void>;
 
@@ -46,19 +46,8 @@ async function failTransition(
   // Surface the failure to the live UI (mirrors the graceful error path):
   // message_complete{stop_reason:'error'} → the translator emits a `stop-reason`
   // event so the user sees WHY; a bare agent_end renders as a silent end.
-  // error_kind:'transient' matches syntheticErrorAssistant's union usage;
-  // the UI translator only reads stop_reason, not error_kind.
-  const failed: AssistantMessage = {
-    role: 'assistant',
-    content: [{ type: 'text', text: rec.error.message }],
-    stop_reason: 'error',
-    error_message: rec.error.message,
-    error_kind: 'transient',
-    usage: null,
-    model: '',
-    provider: '',
-    timestamp: Date.now(),
-  };
+  // (The UI translator reads stop_reason, not error_kind.)
+  const failed = syntheticAssistant({ stop_reason: 'error', text: rec.error.message });
   await emit(iii, rec.session_id, { type: 'message_complete', message: failed, body_streamed: false });
 
   const messages = await persistence.loadMessages(iii, rec.session_id);
