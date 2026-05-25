@@ -96,9 +96,9 @@ describe('provider_config::set', () => {
 
   it('rejects invalid URL: not a URL', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_api_url: 'not-a-url' }),
-    ).rejects.toThrow(/not a valid URL/);
+    await expect(set({ provider: 'anthropic', default_api_url: 'not-a-url' })).rejects.toThrow(
+      /not a valid URL/,
+    );
   });
 
   it('rejects invalid URL: wrong scheme', async () => {
@@ -110,37 +110,37 @@ describe('provider_config::set', () => {
 
   it('rejects empty URL string', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_api_url: '' }),
-    ).rejects.toThrow(/non-empty string/);
+    await expect(set({ provider: 'anthropic', default_api_url: '' })).rejects.toThrow(
+      /non-empty string/,
+    );
   });
 
   it('rejects non-integer max_tokens', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_max_tokens: 1.5 }),
-    ).rejects.toThrow(/integer/);
+    await expect(set({ provider: 'anthropic', default_max_tokens: 1.5 })).rejects.toThrow(
+      /integer/,
+    );
   });
 
   it('rejects negative max_tokens', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_max_tokens: -1 }),
-    ).rejects.toThrow(/positive integer/);
+    await expect(set({ provider: 'anthropic', default_max_tokens: -1 })).rejects.toThrow(
+      /positive integer/,
+    );
   });
 
   it('rejects zero max_tokens', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_max_tokens: 0 }),
-    ).rejects.toThrow(/positive integer/);
+    await expect(set({ provider: 'anthropic', default_max_tokens: 0 })).rejects.toThrow(
+      /positive integer/,
+    );
   });
 
   it('rejects max_tokens exceeding the limit', async () => {
     const { set } = setupAll();
-    await expect(
-      set({ provider: 'anthropic', default_max_tokens: 1_048_577 }),
-    ).rejects.toThrow(/<=/);
+    await expect(set({ provider: 'anthropic', default_max_tokens: 1_048_577 })).rejects.toThrow(
+      /<=/,
+    );
   });
 
   it('accepts max_tokens exactly at the limit', async () => {

@@ -50,7 +50,10 @@ describe('DbOverridesStore', () => {
   });
 
   it('persists set across new wrapper instances on the same fake', async () => {
-    await store.set('openai', { default_api_url: 'https://example.com/v1', default_max_tokens: 4096 });
+    await store.set('openai', {
+      default_api_url: 'https://example.com/v1',
+      default_max_tokens: 4096,
+    });
     const store2 = new DbOverridesStore(fake.asSdk(), { databaseName: 'harness' });
     await store2.init();
     expect(await store2.get('openai')).toEqual({
