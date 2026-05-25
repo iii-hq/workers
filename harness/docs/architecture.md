@@ -76,7 +76,7 @@ flowchart LR
   client -- "approval::resolve" --> approval
   approval -- "trigger turn::approval_resume::<sid>/<cid>" --> turnOrch
   turnOrch -- "state::set approvals/<sid>/<cid>" --> state
-  turnOrch -- "iii.trigger turn::step" --> turnOrch
+  turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
@@ -94,32 +94,34 @@ flowchart LR
 ## Turn FSM
 
 [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts)
-defines an 11-state durable FSM. Every transition is driven by the
-`turn::step` durable subscriber, which is woken by a publish to the
-`turn::step_requested` topic — either by the orchestrator itself
-(re-publish at the end of a step), by a per-call
-`turn::approval_resume` handler (when a human decision or abort lands), or by
-the orchestrator's own `abort_signal` state trigger.
+defines an 8-state durable FSM. Each state is a registered `turn::{state}`
+function executed via `runTransition` and enqueued onto the `turn-step` FIFO
+queue by `wakeState` ([wake.ts](harness/src/turn-orchestrator/wake.ts)).
+`saveRecord` calls `shouldWakeStep` then `wakeState` when the persisted state
+transitions to a stepable state. Paused or terminal sessions are also woken by
+per-call `turn::approval_resume` handlers (approval/abort) or
+`turn::on_abort_signal` (abort signal state trigger), both via `wakeFromRecord`.
 
 ```mermaid
 stateDiagram-v2
   [*] --> provisioning
-  provisioning --> awaiting_assistant
-  awaiting_assistant --> assistant_streaming
-  assistant_streaming --> assistant_finished
-  assistant_finished --> function_prepare: has function calls
-  assistant_finished --> steering_check: no function calls
-  function_prepare --> function_execute
-  function_execute --> function_finalize: all calls resolved (allow/deny)
-  function_execute --> function_awaiting_approval: any call needs_approval
-  function_awaiting_approval --> function_awaiting_approval: decision(s) still missing
+  provisioning --> assistant_streaming
+  assistant_streaming --> function_execute: has function calls
+  assistant_streaming --> steering_check: no function calls
+  assistant_streaming --> tearing_down: error or aborted
+  function_execute --> function_awaiting_approval: any call needs approval
+  function_execute --> steering_check: batch complete
+  function_execute --> tearing_down: all calls terminate session
   function_awaiting_approval --> function_execute: all decisions written
-  function_finalize --> steering_check
-  steering_check --> awaiting_assistant: continue
+  steering_check --> assistant_streaming: continue turn
   steering_check --> tearing_down: stop or max turns
   tearing_down --> stopped
   stopped --> [*]
+  failed --> [*]
 ```
+
+`failed` is a terminal state set by `runTransition` when a handler throws
+unexpectedly (unless it opts into queue retry via `TransientError`).
 
 ## Approval flow
 
@@ -128,7 +130,7 @@ The orchestrator consults `policy::check_permissions` directly inside
 the before path. The orchestrator parks the turn in `function_awaiting_approval`,
 registers a `turn::approval_resume` function per pending call, and waits until
 `approval::resolve` (or abort) triggers that function, which persists the
-decision and invokes `turn::step`.
+decision and invokes `wakeFromRecord` to re-enqueue the current state handler.
 
 ```mermaid
 sequenceDiagram
@@ -145,12 +147,12 @@ sequenceDiagram
     Harness-->>Turn: deny + DenialEnvelope → DenialResult
   else no rule (needs_approval)
     Harness-->>Turn: needs_approval → park in function_awaiting_approval
-    Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
+    Note over Turn,Bus: saveRecord does not wake stepable handlers for<br/>function_awaiting_approval. awaiting_approval pins open calls.
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Turn: trigger turn::approval_resume::<sid>/<cid>
     Turn->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Turn->>Turn: turn::step → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
-    Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute
+    Turn->>Turn: wakeFromRecord → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
+    Turn->>Turn: fold decisions into work batch,<br/>transition back to function_execute
   end
 ```
 

@@ -5,26 +5,23 @@
  * instead of re-guarding `unknown` fields.
  */
 
+import { z } from 'zod';
 import type { Mode } from './system-prompt.js';
 
-export type RunRequest = {
-  provider: string;
-  model: string;
-  mode: Mode | null;
-  system_prompt: string;
-  function_schemas: unknown[];
-};
+export const RunRequestSchema = z.object({
+  provider: z.string().catch(''),
+  model: z.string().catch(''),
+  mode: z
+    .unknown()
+    .transform((v): Mode | null =>
+      v === 'plan' || v === 'ask' || v === 'agent' ? v : null,
+    ),
+  system_prompt: z.string().catch(''),
+  function_schemas: z.array(z.unknown()).catch([]),
+});
 
-function parseMode(value: unknown): Mode | null {
-  return value === 'plan' || value === 'ask' || value === 'agent' ? value : null;
-}
+export type RunRequest = z.infer<typeof RunRequestSchema>;
 
-export function parseRunRequest(raw: Record<string, unknown>): RunRequest {
-  return {
-    provider: typeof raw.provider === 'string' ? raw.provider : '',
-    model: typeof raw.model === 'string' ? raw.model : '',
-    mode: parseMode(raw.mode),
-    system_prompt: typeof raw.system_prompt === 'string' ? raw.system_prompt : '',
-    function_schemas: Array.isArray(raw.function_schemas) ? raw.function_schemas : [],
-  };
+export function parseRunRequest(raw: unknown): RunRequest {
+  return RunRequestSchema.parse(raw ?? {});
 }

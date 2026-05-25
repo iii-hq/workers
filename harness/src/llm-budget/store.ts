@@ -3,6 +3,7 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
+import { createState } from '../runtime/state.js';
 import {
   type Budget,
   SCOPE,
@@ -12,71 +13,45 @@ import {
   spendLogKey,
 } from './types.js';
 
-async function stateSet(iii: ISdk, key: string, value: unknown): Promise<void> {
-  await iii.trigger<unknown, unknown>({
-    function_id: 'state::set',
-    payload: { scope: SCOPE, key, value },
-  });
+function strictState(iii: ISdk) {
+  return createState(iii, { tolerant: false });
 }
 
-async function stateGetValue(iii: ISdk, key: string): Promise<unknown | null> {
-  const resp = await iii.trigger<unknown, unknown>({
-    function_id: 'state::get',
-    payload: { scope: SCOPE, key },
-  });
-  if (resp === null || resp === undefined) return null;
-  if (resp && typeof resp === 'object' && 'value' in (resp as Record<string, unknown>)) {
-    const v = (resp as Record<string, unknown>).value;
-    return v === null || v === undefined ? null : v;
-  }
-  return resp;
+function isBudget(v: unknown): v is Budget {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    typeof (v as Budget).id === 'string' &&
+    typeof (v as Budget).ceiling_usd === 'number'
+  );
 }
 
-async function stateList(iii: ISdk, prefix: string): Promise<unknown[]> {
-  const resp = await iii.trigger<unknown, unknown>({
-    function_id: 'state::list',
-    payload: { scope: SCOPE, prefix },
-  });
-  if (Array.isArray(resp)) return resp;
-  if (resp && typeof resp === 'object') {
-    const items = (resp as Record<string, unknown>).items;
-    if (Array.isArray(items)) return items;
-  }
-  return [];
-}
-
-async function stateDelete(iii: ISdk, key: string): Promise<void> {
-  await iii.trigger<unknown, unknown>({
-    function_id: 'state::delete',
-    payload: { scope: SCOPE, key },
-  });
+function isSpendLogEntry(v: unknown, budget_id: string): v is SpendLogEntry {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    (v as SpendLogEntry).budget_id === budget_id &&
+    !('ceiling_usd' in (v as Record<string, unknown>))
+  );
 }
 
 export async function loadBudget(iii: ISdk, id: string): Promise<Budget | null> {
-  const v = await stateGetValue(iii, budgetKey(id));
+  const v = await strictState(iii).get<Budget>({ scope: SCOPE, key: budgetKey(id) });
   if (v === null) return null;
-  return v as Budget;
+  return isBudget(v) ? v : null;
 }
 
 export async function saveBudget(iii: ISdk, b: Budget): Promise<void> {
-  await stateSet(iii, budgetKey(b.id), b);
+  await strictState(iii).set({ scope: SCOPE, key: budgetKey(b.id), value: b });
 }
 
 export async function deleteBudgetRecord(iii: ISdk, id: string): Promise<void> {
-  await stateDelete(iii, budgetKey(id));
+  await strictState(iii).delete({ scope: SCOPE, key: budgetKey(id) });
 }
 
 export async function listAllBudgets(iii: ISdk): Promise<Budget[]> {
-  const items = await stateList(iii, 'budget:');
-  const out: Budget[] = [];
-  for (const v of items) {
-    const inner =
-      v && typeof v === 'object' && 'value' in (v as Record<string, unknown>)
-        ? (v as Record<string, unknown>).value
-        : v;
-    if (inner && typeof inner === 'object' && (inner as Budget).id) out.push(inner as Budget);
-  }
-  return out;
+  const items = await strictState(iii).list<unknown>({ scope: SCOPE });
+  return items.filter(isBudget);
 }
 
 export async function saveSpendLog(
@@ -85,7 +60,7 @@ export async function saveSpendLog(
   period_start: number,
   e: SpendLogEntry,
 ): Promise<void> {
-  await stateSet(iii, spendLogKey(id, period_start), e);
+  await strictState(iii).set({ scope: SCOPE, key: spendLogKey(id, period_start), value: e });
 }
 
 export async function saveResetLog(
@@ -96,20 +71,14 @@ export async function saveResetLog(
   suffix: string,
   e: SpendLogEntry,
 ): Promise<void> {
-  await stateSet(iii, resetLogKey(id, period_start, ts, suffix), e);
+  await strictState(iii).set({
+    scope: SCOPE,
+    key: resetLogKey(id, period_start, ts, suffix),
+    value: e,
+  });
 }
 
 export async function listSpendLogs(iii: ISdk, budget_id: string): Promise<SpendLogEntry[]> {
-  const items = await stateList(iii, `spend_log:${budget_id}:`);
-  const out: SpendLogEntry[] = [];
-  for (const v of items) {
-    const inner =
-      v && typeof v === 'object' && 'value' in (v as Record<string, unknown>)
-        ? (v as Record<string, unknown>).value
-        : v;
-    if (inner && typeof inner === 'object' && (inner as SpendLogEntry).budget_id === budget_id) {
-      out.push(inner as SpendLogEntry);
-    }
-  }
-  return out;
+  const items = await strictState(iii).list<unknown>({ scope: SCOPE });
+  return items.filter((v): v is SpendLogEntry => isSpendLogEntry(v, budget_id));
 }

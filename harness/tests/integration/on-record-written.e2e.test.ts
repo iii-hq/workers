@@ -30,8 +30,13 @@ function fakeIii(): {
 
         if (function_id === 'state::set') {
           const p = payload as { scope: string; key: string; value: unknown };
-          stateStore.set(`${p.scope}/${p.key}`, structuredClone(p.value));
-          return null;
+          const storeKey = `${p.scope}/${p.key}`;
+          const old_value = stateStore.has(storeKey)
+            ? structuredClone(stateStore.get(storeKey))
+            : null;
+          const new_value = structuredClone(p.value);
+          stateStore.set(storeKey, new_value);
+          return { old_value, new_value };
         }
 
         if (function_id === 'state::update') {
@@ -135,14 +140,14 @@ function turnStateGets(iii: ISdk, session_id: string): number {
 }
 
 describe('saveRecord read elimination (#5)', () => {
-  it('2-arg saveRecord reads turn_state exactly once (no double load)', async () => {
+  it('2-arg saveRecord does not pre-read turn_state (uses state::set old_value)', async () => {
     const { iii } = fakeIii();
     const rec = newRecord('sess-r1');
     rec.state = 'provisioning';
 
     await persistence.saveRecord(iii, rec);
 
-    expect(turnStateGets(iii, 'sess-r1')).toBe(1);
+    expect(turnStateGets(iii, 'sess-r1')).toBe(0);
   });
 
   it('saveRecord with a threaded previous reads turn_state zero times', async () => {

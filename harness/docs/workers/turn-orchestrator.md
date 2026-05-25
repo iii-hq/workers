@@ -166,8 +166,8 @@ From
 | [src/turn-orchestrator/states/steering-check.ts](harness/src/turn-orchestrator/states/steering-check.ts) | `turn::steering_check` handler. |
 | [src/turn-orchestrator/states/tearing-down.ts](harness/src/turn-orchestrator/states/tearing-down.ts) | `turn::tearing_down` handler. |
 | [src/turn-orchestrator/states/index.ts](harness/src/turn-orchestrator/states/index.ts) | Re-exports per-state `register` functions. |
-| [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts) | `TurnState`, `TurnStateRecord`, `TurnWork`, `PreparedEntry`, `ExecutedEntry`, `AwaitingApprovalEntry`, state-key helpers, `newRecord`, `transitionTo`, `isTerminal`. |
-| [src/turn-orchestrator/persistence.ts](harness/src/turn-orchestrator/persistence.ts) | Load/save helpers: `loadRecord` (with legacy `assistant_finished` migration), `saveRecord` (persist + wake), `persistRecord` (persist + UI event, no wake), `writeRecord` (silent checkpoint), `saveMessages` (+ session-tree mirror). |
+| [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts) | `TurnState`, `TurnStateRecord`, `TurnWork`, `PreparedEntry`, `ExecutedEntry`, `AwaitingApprovalEntry`, state-key helpers, `newRecord`, `transitionTo`. |
+| [src/turn-orchestrator/persistence.ts](harness/src/turn-orchestrator/persistence.ts) | Load/save helpers: `loadRecord`, `saveRecord` (persist + wake), `persistRecord` (persist + UI event, no wake), `writeRecord` (silent checkpoint), `saveMessages` (+ session-tree mirror). |
 | [src/turn-orchestrator/errors.ts](harness/src/turn-orchestrator/errors.ts) | `TransientError` (opt into queue retry), `ContextOverflowError`, `CompactionBusyError`. |
 | [src/turn-orchestrator/events.ts](harness/src/turn-orchestrator/events.ts) | `emit(iii, sid, event)` — appends a sequenced `AgentEvent` to the `agent::events` stream. |
 | [src/turn-orchestrator/preflight.ts](harness/src/turn-orchestrator/preflight.ts) | `runPreflight` — context-compaction check before each provider call. |

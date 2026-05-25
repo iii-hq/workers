@@ -1,7 +1,6 @@
 import {
   MAX_PRESERVE_RECENT_TOKENS,
   MIN_PRESERVE_RECENT_TOKENS,
-  deprecatedTriggerTokensCap,
   preserveRecentTokensOverride,
   reservedTokens,
 } from './config.js';
@@ -33,8 +32,7 @@ export function usable(input: { model: ModelLike; reserved?: number }): number {
     model.limit.input > 0
       ? Math.max(0, model.limit.input - reserved)
       : Math.max(0, model.limit.context - model.limit.output);
-  const cap = deprecatedTriggerTokensCap();
-  return cap !== undefined ? Math.min(base, cap) : base;
+  return base;
 }
 
 export function isOverflow(input: {

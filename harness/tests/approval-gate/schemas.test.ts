@@ -16,39 +16,23 @@ import {
 } from '../../src/approval-gate/schemas.js';
 
 describe('ResolvePayloadSchema — id normalization & validation', () => {
-  it('prefers function_call_id over a conflicting tool_call_id', () => {
-    expect(
-      ResolvePayloadSchema.parse({
-        session_id: 's',
-        function_call_id: 'canonical',
-        tool_call_id: 'legacy',
-        decision: 'allow',
-      }),
-    ).toEqual({
-      session_id: 's',
-      function_call_id: 'canonical',
-      decision: 'allow',
-      reason: null,
-    });
-  });
-
   it('coerces an omitted reason to null', () => {
     const parsed = ResolvePayloadSchema.parse({
       session_id: 's',
-      tool_call_id: 'legacy',
+      function_call_id: 'fc-1',
       decision: 'deny',
     });
     expect(parsed.reason).toBeNull();
-    expect(parsed.function_call_id).toBe('legacy');
+    expect(parsed.function_call_id).toBe('fc-1');
   });
 
   it.each([
-    ['both ids missing', { session_id: 's', decision: 'allow' }],
+    ['function_call_id missing', { session_id: 's', decision: 'allow' }],
+    ['tool_call_id only (legacy)', { session_id: 's', tool_call_id: 'legacy', decision: 'allow' }],
     ['empty function_call_id', { session_id: 's', function_call_id: '', decision: 'allow' }],
     ['empty session_id', { session_id: '', function_call_id: 'fc', decision: 'allow' }],
     ['slash in session_id', { session_id: 'a/b', function_call_id: 'fc', decision: 'allow' }],
     ['slash in function_call_id', { session_id: 's', function_call_id: 'a/b', decision: 'allow' }],
-    ['slash via tool_call_id', { session_id: 's', tool_call_id: 'a/b', decision: 'allow' }],
     ['non-enum decision', { session_id: 's', function_call_id: 'fc', decision: 'maybe' }],
     ['numeric reason', { session_id: 's', function_call_id: 'fc', decision: 'allow', reason: 7 }],
   ])('rejects %s', (_label, payload) => {

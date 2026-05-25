@@ -38,6 +38,18 @@ describe('parseRunRequest', () => {
       function_schemas: [],
     });
   });
+
+  it('treats null and undefined as empty run request', () => {
+    const empty = {
+      provider: '',
+      model: '',
+      mode: null,
+      system_prompt: '',
+      function_schemas: [],
+    };
+    expect(parseRunRequest(null)).toEqual(empty);
+    expect(parseRunRequest(undefined)).toEqual(empty);
+  });
 });
 
 describe('parseRunRequest function_schemas', () => {

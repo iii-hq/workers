@@ -27,17 +27,6 @@ describe('handleResolveRequest — routing the decision', () => {
     ]);
   });
 
-  it('prefers function_call_id over a conflicting legacy tool_call_id', async () => {
-    const { iii, resumeCalls } = fakeIii();
-    await handleResolveRequest(iii, {
-      session_id: 's1',
-      function_call_id: 'canonical',
-      tool_call_id: 'legacy',
-      decision: 'allow',
-    });
-    expect(resumeCalls[0]?.function_id).toBe('turn::approval_resume::s1/canonical');
-  });
-
   it('never emits to the agent::events stream (denial flows via execution_end)', async () => {
     const { iii, streamSets } = fakeIii();
     await handleResolveRequest(iii, {
@@ -66,23 +55,23 @@ describe('handleResolveRequest — hostile / malformed input is rejected, not cr
     expect(calls).toHaveLength(0);
   });
 
-  it('returns invalid_payload when the resolved id (via tool_call_id) contains a slash', async () => {
-    const { iii, calls } = fakeIii();
-    const out = await handleResolveRequest(iii, {
-      session_id: 's1',
-      tool_call_id: 'fc/evil',
-      decision: 'allow',
-    });
-    expect(out).toEqual({ ok: false, error: 'invalid_payload' });
-    expect(calls).toHaveLength(0);
-  });
-
-  it('returns invalid_payload and fires nothing when both ids are missing', async () => {
+  it('returns invalid_payload and fires nothing when function_call_id is missing', async () => {
     const { iii, calls } = fakeIii();
     const out = await handleResolveRequest(iii, {
       session_id: 's1',
       decision: 'allow',
     } as never);
+    expect(out).toEqual({ ok: false, error: 'invalid_payload' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns invalid_payload when function_call_id contains a slash', async () => {
+    const { iii, calls } = fakeIii();
+    const out = await handleResolveRequest(iii, {
+      session_id: 's1',
+      function_call_id: 'fc/evil',
+      decision: 'allow',
+    });
     expect(out).toEqual({ ok: false, error: 'invalid_payload' });
     expect(calls).toHaveLength(0);
   });

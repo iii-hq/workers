@@ -12,23 +12,12 @@ import {
 } from '../approval-gate/schemas.js';
 import type { FunctionRef, ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import {
-  parseStateListKeyedEntries,
-  parseStateListValues,
-  stateGet,
-  stateSet,
-} from '../runtime/state.js';
+import { stateGet, stateSet } from '../runtime/state.js';
+import { listAgentTurnStateRecords } from './persistence.js';
 import type { TurnStateRecord } from './state.js';
 import { wakeFromRecord } from './wake.js';
 
 const resumeRefs = new Map<string, FunctionRef>();
-const TURN_STATE_KEY_RE = /^session\/[^/]+\/turn_state$/;
-
-function isTurnStateRecord(value: unknown): value is TurnStateRecord {
-  if (!value || typeof value !== 'object') return false;
-  const rec = value as Record<string, unknown>;
-  return typeof rec.session_id === 'string' && typeof rec.state === 'string';
-}
 
 /** Agent-scope turn_state still parked on human approval. */
 function pausedApprovalCalls(
@@ -124,30 +113,9 @@ export function clearApprovalResumeRegistry(): void {
   resumeRefs.clear();
 }
 
-/** Turn_state rows from `state::list` on scope agent (not every value in the scope). */
-async function listTurnStateRecords(iii: ISdk): Promise<TurnStateRecord[]> {
-  try {
-    const resp = await iii.trigger<unknown, unknown>({
-      function_id: 'state::list',
-      payload: { scope: 'agent' },
-    });
-    const keyed = parseStateListKeyedEntries(resp);
-    if (keyed.some((entry) => typeof entry.key === 'string')) {
-      return keyed
-        .filter((entry) => entry.key && TURN_STATE_KEY_RE.test(entry.key))
-        .map((entry) => entry.value)
-        .filter(isTurnStateRecord);
-    }
-    return parseStateListValues<unknown>(resp).filter(isTurnStateRecord);
-  } catch (err) {
-    logger.warn('approval resume: state::list failed during recovery', { err: String(err) });
-    return [];
-  }
-}
-
 /** Re-register resume fns for sessions still paused on approval after worker restart. */
 export async function recoverPendingApprovals(iii: ISdk): Promise<void> {
-  const records = await listTurnStateRecords(iii);
+  const records = await listAgentTurnStateRecords(iii);
 
   for (const rec of records) {
     const paused = pausedApprovalCalls(rec);

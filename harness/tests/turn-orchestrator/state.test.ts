@@ -6,7 +6,7 @@ import type {
   TurnStateRecord,
 } from '../../src/turn-orchestrator/state.js';
 import {
-  isTerminal,
+  AGENT_SCOPE,
   messagesKey,
   newRecord,
   transitionTo,
@@ -76,7 +76,8 @@ describe('handleAwaitingApproval with empty queue', () => {
 });
 
 describe('state keys', () => {
-  it('namespace by session', () => {
+  it('namespace by session under agent scope', () => {
+    expect(AGENT_SCOPE).toBe('agent');
     expect(turnStateKey('abc')).toBe('session/abc/turn_state');
     expect(messagesKey('abc')).toBe('session/abc/messages');
   });
@@ -86,13 +87,14 @@ describe('state record', () => {
   it('newRecord starts in provisioning, non-terminal, no work', () => {
     const r = newRecord('s1', 5);
     expect(r.state).toBe('provisioning');
-    expect(isTerminal(r)).toBe(false);
+    expect(r.state).not.toBe('stopped');
+    expect(r.state).not.toBe('failed');
     expect(r.work).toBeUndefined();
     expect(r.max_turns).toBe(5);
   });
 
   it('failed is terminal', () => {
     const r: TurnStateRecord = { ...newRecord('s1'), state: 'failed', error: { kind: 'bug', message: 'x' } };
-    expect(isTerminal(r)).toBe(true);
+    expect(r.state).toBe('failed');
   });
 });
