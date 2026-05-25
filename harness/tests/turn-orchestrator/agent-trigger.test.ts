@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { DispatchResult } from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   TOOL_NAME,
   agentTriggerTool,
@@ -26,29 +25,6 @@ describe('agent_trigger tool schema', () => {
 
   it('TOOL_NAME is stable', () => {
     expect(TOOL_NAME).toBe('agent_trigger');
-  });
-});
-
-describe('DispatchResult shape', () => {
-  it('result variant carries a FunctionResult', () => {
-    const r: DispatchResult = {
-      kind: 'result',
-      result: { content: [], details: {}, terminate: false },
-    };
-    expect(r.kind).toBe('result');
-  });
-
-  it('deny variant carries a denial FunctionResult', () => {
-    const r: DispatchResult = {
-      kind: 'deny',
-      result: { content: [], details: { status: 'denied' }, terminate: false },
-    };
-    expect(r.kind).toBe('deny');
-  });
-
-  it('pending variant carries no result', () => {
-    const r: DispatchResult = { kind: 'pending' };
-    expect(r.kind).toBe('pending');
   });
 });
 
