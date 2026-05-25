@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 
-const OPEN_KEY = 'iii-chat-dock-open'
 const WIDTH_KEY = 'iii-chat-dock-width'
+const COLLAPSED_KEY = 'iii-chat-dock-collapsed'
+// Legacy: when the dock was first made toggleable we persisted an open/closed
+// flag under a different key. The collapse state now lives under
+// COLLAPSED_KEY; sweep the old key on first run so it doesn't linger in
+// users' localStorage forever.
+const LEGACY_OPEN_KEY = 'iii-chat-dock-open'
 
 export const DOCK_DEFAULT_WIDTH = 440
 export const DOCK_MIN_WIDTH = 320
@@ -28,15 +33,6 @@ function clampWidth(w: number, viewportWidth?: number): number {
   return Math.max(DOCK_MIN_WIDTH, Math.min(max, w))
 }
 
-function loadOpen(): boolean {
-  if (typeof window === 'undefined') return false
-  try {
-    return window.localStorage.getItem(OPEN_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
 function loadWidth(): number {
   if (typeof window === 'undefined') return DOCK_DEFAULT_WIDTH
   try {
@@ -53,15 +49,6 @@ function loadWidth(): number {
   }
 }
 
-function persistOpen(value: boolean) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(OPEN_KEY, value ? '1' : '0')
-  } catch {
-    // best-effort persistence
-  }
-}
-
 function persistWidth(value: number) {
   if (typeof window === 'undefined') return
   try {
@@ -71,37 +58,71 @@ function persistWidth(value: number) {
   }
 }
 
+function sweepLegacyOpenKey(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(LEGACY_OPEN_KEY)
+  } catch {
+    // best-effort
+  }
+}
+
+function loadCollapsed(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistCollapsed(value: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(COLLAPSED_KEY, value ? '1' : '0')
+  } catch {
+    // best-effort persistence
+  }
+}
+
 export interface UseChatDockReturn {
-  open: boolean
-  setOpen: (value: boolean) => void
-  toggle: () => void
   width: number
   setWidth: (value: number) => void
+  collapsed: boolean
+  setCollapsed: (value: boolean) => void
+  toggleCollapsed: () => void
 }
 
 /**
- * Open/closed flag and resizable width for the side-by-side chat dock that
- * sits next to the traces / playground / examples routes. Both bits are
- * persisted to `localStorage` so the dock survives reloads, matching how
- * the conversation list collapse state behaves.
+ * Resizable, collapsible chat dock that sits next to the active route pane.
+ * Width and collapsed state are both persisted to `localStorage` so the dock
+ * survives reloads at whatever size and visibility the user left it in.
  *
  * The dock has no fixed upper width cap: it can be dragged as wide as the
  * user wants, with the only constraint being that the adjacent route
  * content keeps at least `DOCK_NEIGHBOR_MIN_WIDTH` pixels. If the viewport
  * shrinks below that envelope, the persisted width is re-clamped so the
- * dock doesn't overflow the screen.
+ * dock doesn't overflow the screen. When collapsed, the dock renders as a
+ * thin strip with a re-expand affordance — the previous width is preserved
+ * and restored on re-expand.
  */
 export function useChatDock(): UseChatDockReturn {
-  const [open, setOpenState] = useState<boolean>(loadOpen)
   const [width, setWidthState] = useState<number>(loadWidth)
-
-  useEffect(() => {
-    persistOpen(open)
-  }, [open])
+  const [collapsed, setCollapsedState] = useState<boolean>(loadCollapsed)
 
   useEffect(() => {
     persistWidth(width)
   }, [width])
+
+  useEffect(() => {
+    persistCollapsed(collapsed)
+  }, [collapsed])
+
+  /* One-shot cleanup of the legacy open/closed flag from a prior iteration
+     of the dock. Idempotent: removeItem on a missing key is a no-op. */
+  useEffect(() => {
+    sweepLegacyOpenKey()
+  }, [])
 
   /* Re-clamp on mount and on every viewport resize so a previously stored
      wide value (from a larger screen) shrinks to fit the current window,
@@ -116,17 +137,37 @@ export function useChatDock(): UseChatDockReturn {
     return () => window.removeEventListener('resize', reclamp)
   }, [])
 
-  const setOpen = useCallback((value: boolean) => {
-    setOpenState(value)
-  }, [])
-
-  const toggle = useCallback(() => {
-    setOpenState((v) => !v)
-  }, [])
-
   const setWidth = useCallback((value: number) => {
     setWidthState(clampWidth(value))
   }, [])
 
-  return { open, setOpen, toggle, width, setWidth }
+  const setCollapsed = useCallback((value: boolean) => {
+    setCollapsedState(value)
+  }, [])
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsedState((v) => !v)
+  }, [])
+
+  /* ⌘\ / Ctrl+\ toggles the dock. Listener lives in the hook so the
+     shortcut keeps working when the dock is collapsed and the panel
+     itself isn't mounted. Ignored when the user is typing into an
+     editable element so we don't fight composer input. */
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== '\\') return
+      if (!(e.metaKey || e.ctrlKey)) return
+      const target = e.target as HTMLElement | null
+      if (target?.isContentEditable) return
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      e.preventDefault()
+      toggleCollapsed()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleCollapsed])
+
+  return { width, setWidth, collapsed, setCollapsed, toggleCollapsed }
 }

@@ -19,7 +19,11 @@
   --color-rule: #d8d5d0;
   --color-rule-2: #e6e3df;
 
-  --color-accent: #ff5a1f;
+  /* Darker burnt orange so accent text on cream passes WCAG AA at 11px
+     (≈4.83:1 vs. previous ≈2.74:1 for #ff5a1f). Visually still firmly in
+     the iii Schematic warm-fiery family; the dark-mode cyan accent below
+     is unchanged. */
+  --color-accent: #b8420f;
   --color-accent-fg: #f2f0ed;
 
   --color-alert: #c43e1c;
@@ -113,6 +117,34 @@
   animation: pulse-dot 1.6s ease-out infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot {
+    animation: none;
+  }
+}
+
+/* Square sibling of pulse-dot — same accent, same 1.6s ease-out cadence,
+   tuned 6px spread for 28×28 chrome buttons so the expanding ring keeps
+   square geometry instead of co-opting the dot vocabulary. */
+@keyframes pulse-square {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@utility pulse-square {
+  animation: pulse-square 1.6s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-square {
+    animation: none;
+  }
+}
+
 @keyframes blink {
   0%,
   49% {
@@ -126,6 +158,12 @@
 
 @utility blink {
   animation: blink 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
 }
 
 @keyframes wiggle {

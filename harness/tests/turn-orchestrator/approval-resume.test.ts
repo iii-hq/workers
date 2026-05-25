@@ -111,8 +111,8 @@ describe('approval resume handler', () => {
     stateStore.set(`agent/${turnStateKey('s1')}`, rec);
     registerApprovalResume(iii, 's1', 'fc-1');
     const entry = registered.get('turn::approval_resume::s1/fc-1');
-    expect(entry).toBeDefined();
-    await entry!.handler({ decision: 'allow', reason: null });
+    if (!entry) throw new Error('handler not registered');
+    await entry.handler({ decision: 'allow', reason: null });
 
     expect(stateStore.get('approvals/s1/fc-1')).toEqual({ decision: 'allow', reason: null });
     expect(wakeCalls).toEqual([
@@ -129,7 +129,9 @@ describe('approval resume handler', () => {
     const { iii, registered, stateStore } = makeIiiWithRegistry();
     stateStore.set('approvals/s1/fc-1', { decision: 'aborted', reason: 'session_aborted' });
     registerApprovalResume(iii, 's1', 'fc-1');
-    await registered.get('turn::approval_resume::s1/fc-1')!.handler({
+    const entry = registered.get('turn::approval_resume::s1/fc-1');
+    if (!entry) throw new Error('handler not registered');
+    await entry.handler({
       decision: 'allow',
       reason: null,
     });
@@ -142,7 +144,8 @@ describe('approval resume handler', () => {
   it('does not enqueue turn::{state} again after unregister on second invoke', async () => {
     const { iii, registered, wakeCalls } = makeIiiWithRegistry();
     registerApprovalResume(iii, 's1', 'fc-1');
-    const entry = registered.get('turn::approval_resume::s1/fc-1')!;
+    const entry = registered.get('turn::approval_resume::s1/fc-1');
+    if (!entry) throw new Error('handler not registered');
     await entry.handler({ decision: 'deny', reason: 'nope' });
     wakeCalls.length = 0;
 

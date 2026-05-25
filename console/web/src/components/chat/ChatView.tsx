@@ -1,4 +1,4 @@
-import { Copy, X } from 'lucide-react'
+import { Copy } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -72,8 +72,6 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
-  /** When provided, renders a close affordance in the header (dock mode). */
-  onClose?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
   onUpdateAutoAccept: (id: string, autoAccept: boolean) => void
@@ -88,7 +86,6 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
-  onClose,
   onUpdateModel,
   onUpdateMode,
   onUpdateAutoAccept,
@@ -552,16 +549,6 @@ export function ChatView({
               {isStreaming ? 'streaming' : 'ready'}
             </span>
           </div>
-          {onClose ? (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="close chat dock"
-              className="flex items-center justify-center size-6 -mr-1 text-ink-faint hover:text-ink transition-colors"
-            >
-              <X className="size-3.5" />
-            </button>
-          ) : null}
         </div>
       </header>
 

@@ -26,7 +26,7 @@ describe('estimateMessages', () => {
       { role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }], timestamp: 1 },
       { role: 'user' as const, content: [{ type: 'text' as const, text: 'world' }], timestamp: 2 },
     ];
-    const single = estimateMessages([msgs[0]!]);
+    const single = estimateMessages(msgs.slice(0, 1));
     const both = estimateMessages(msgs);
     expect(both).toBeGreaterThan(single);
   });
