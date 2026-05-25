@@ -1,4 +1,5 @@
 import type { Credential } from '../auth-credentials/types.js';
+import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
@@ -20,12 +21,11 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const cred = await fetchCredential(iii);
-  return configFromCredential(
-    worker.default_api_url,
-    'openai',
-    model,
-    cred,
-    worker.default_max_tokens,
-  );
+  const [cred, overrides] = await Promise.all([
+    fetchCredential(iii),
+    fetchOverrides(iii, 'openai'),
+  ]);
+  const apiUrl = overrides.default_api_url ?? worker.default_api_url;
+  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
+  return configFromCredential(apiUrl, 'openai', model, cred, maxTokens);
 }

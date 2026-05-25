@@ -8,8 +8,6 @@ export type ChatPanelDensity = 'route' | 'dock'
 
 interface ChatPanelProps {
   density?: ChatPanelDensity
-  /** When provided, the dock header renders a close affordance. */
-  onClose?: () => void
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'iii-chat-sidebar-collapsed'
@@ -32,7 +30,7 @@ function persistSidebarCollapsed(value: boolean): void {
   }
 }
 
-export function ChatPanel({ density = 'route', onClose }: ChatPanelProps) {
+export function ChatPanel({ density = 'route' }: ChatPanelProps) {
   const {
     conversations,
     activeId,
@@ -85,7 +83,6 @@ export function ChatPanel({ density = 'route', onClose }: ChatPanelProps) {
           modelOptions={modelOptions}
           catalogLoading={catalogLoading}
           density={density}
-          onClose={onClose}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
           onUpdateAutoAccept={setAutoAccept}

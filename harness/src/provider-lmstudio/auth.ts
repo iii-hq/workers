@@ -1,6 +1,8 @@
 import { logger } from '../runtime/otel.js';
 import type { Credential } from '../auth-credentials/types.js';
+import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
+import { normalizeChatCompletionsUrl } from '../runtime/openai-compat-url.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
 
@@ -103,8 +105,19 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const cred = await fetchCredential(iii);
-  const key = selectAuthKey(cred, worker.default_api_url);
+  const [cred, overrides] = await Promise.all([
+    fetchCredential(iii),
+    fetchOverrides(iii, 'lmstudio'),
+  ]);
+  // Normalise the override URL so a base-URL save from the Providers UI
+  // (e.g. `http://host:1234`) gets `/v1/chat/completions` appended.
+  // worker.default_api_url is already normalised in resolveApiUrl.
+  const overrideUrl = overrides.default_api_url
+    ? normalizeChatCompletionsUrl(overrides.default_api_url)
+    : null;
+  const apiUrl = overrideUrl ?? worker.default_api_url;
+  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
+  const key = selectAuthKey(cred, apiUrl);
   // configFromCredential expects a Credential. When no key is
   // available we still pass a synthetic api_key with the LM Studio
   // fallback string so the downstream interface stays uniform; the
@@ -117,13 +130,7 @@ export async function buildConfig(
         ? (cred as Credential)
         : { type: 'api_key', key }
       : { type: 'api_key', key: FALLBACK_API_KEY };
-  return configFromCredential(
-    worker.default_api_url,
-    'lmstudio',
-    model,
-    effective,
-    worker.default_max_tokens,
-  );
+  return configFromCredential(apiUrl, 'lmstudio', model, effective, maxTokens);
 }
 
 /**

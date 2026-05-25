@@ -1,13 +1,13 @@
 import { getSection } from '../runtime/config.js';
 import { loadStorageConfig, resolveDatabaseName } from '../runtime/storage-config.js';
 
-export type AuthCredentialsConfig = {
+export type ProviderConfigConfig = {
   /** Logical database pool name to use (must match a key in iii-database's `databases:` map). */
   database_name: string;
 };
 
-export function loadAuthCredentialsConfig(cfg: Record<string, unknown>): AuthCredentialsConfig {
-  const section = getSection(cfg, 'auth_credentials');
+export function loadProviderConfigConfig(cfg: Record<string, unknown>): ProviderConfigConfig {
+  const section = getSection(cfg, 'provider_config');
   const storage = loadStorageConfig(cfg);
   return {
     database_name: resolveDatabaseName(section, storage),

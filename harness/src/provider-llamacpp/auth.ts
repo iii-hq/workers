@@ -1,6 +1,8 @@
 import { logger } from '../runtime/otel.js';
 import type { Credential } from '../auth-credentials/types.js';
+import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
+import { normalizeChatCompletionsUrl } from '../runtime/openai-compat-url.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
 
@@ -94,16 +96,27 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const cred = await fetchCredential(iii);
+  const [cred, overrides] = await Promise.all([
+    fetchCredential(iii),
+    fetchOverrides(iii, 'llamacpp'),
+  ]);
+  // Normalise the override URL so a base-URL save from the Providers UI
+  // (e.g. `http://host:8080`) gets `/v1/chat/completions` appended.
+  // worker.default_api_url is already normalised in resolveApiUrl.
+  const overrideUrl = overrides.default_api_url
+    ? normalizeChatCompletionsUrl(overrides.default_api_url)
+    : null;
+  const apiUrl = overrideUrl ?? worker.default_api_url;
+  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
   // Pass the credential through verbatim so configFromCredential can
   // populate api_key (empty string when no credential). Header emission
   // is gated separately in buildAuthHeaders/the stream layer.
   return configFromCredential(
-    worker.default_api_url,
+    apiUrl,
     'llamacpp',
     model,
     extractKey(cred).length > 0 ? cred : null,
-    worker.default_max_tokens,
+    maxTokens,
   );
 }
 
