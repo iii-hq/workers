@@ -6,12 +6,13 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
-import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
+import { type AgentMessage, emptyAssistant } from '../../types/agent-message.js';
 import { emit } from '../events.js';
 import * as persistence from '../persistence.js';
 import { runTransition } from '../run-transition.js';
 import { AGENT_SCOPE, type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
+import { syntheticAssistant } from '../synthetic-assistant.js';
 
 export type SteeringRoute =
   | 'abort'
@@ -59,40 +60,15 @@ async function drainQueue(iii: ISdk, name: string, session_id: string): Promise<
   return [];
 }
 
-function abortedMessage(): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: [],
-    stop_reason: 'aborted',
-    error_message: 'aborted',
-    error_kind: 'transient',
-    usage: null,
-    model: 'harness',
-    provider: 'harness',
-    timestamp: Date.now(),
-  };
-}
-
 function maxTurnsReached(rec: TurnStateRecord): boolean {
   return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
 }
 
-function maxTurnsAssistant(cap: number): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: [{ type: 'text', text: `loop stopped: max_turns (${cap}) reached` }],
-    stop_reason: 'end',
-    error_message: null,
-    error_kind: null,
-    usage: null,
-    model: '',
-    provider: '',
-    timestamp: Date.now(),
-  };
-}
-
 async function endForMaxTurns(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const msg = maxTurnsAssistant(rec.max_turns ?? 0);
+  const msg = syntheticAssistant({
+    stop_reason: 'end',
+    text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,
+  });
   rec.last_assistant = msg;
   const messages = await persistence.loadMessages(iii, rec.session_id);
   messages.push(msg);
@@ -105,19 +81,7 @@ async function endForMaxTurns(iii: ISdk, rec: TurnStateRecord): Promise<void> {
 
 async function emitTurnEndOnce(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   if (rec.turn_end_emitted) return;
-  const last =
-    rec.last_assistant ??
-    ({
-      role: 'assistant',
-      content: [],
-      stop_reason: 'end',
-      error_message: null,
-      error_kind: null,
-      usage: null,
-      model: '',
-      provider: '',
-      timestamp: Date.now(),
-    } as AssistantMessage);
+  const last = rec.last_assistant ?? emptyAssistant();
   await emit(iii, rec.session_id, {
     type: 'turn_end',
     message: last,
@@ -140,7 +104,11 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
   );
   switch (decision) {
     case 'abort': {
-      const aborted = abortedMessage();
+      const aborted = syntheticAssistant({
+        stop_reason: 'aborted',
+        provider: 'harness',
+        model: 'harness',
+      });
       const messages = await persistence.loadMessages(iii, rec.session_id);
       messages.push(aborted);
       await persistence.saveMessages(iii, rec.session_id, messages);

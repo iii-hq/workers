@@ -18,24 +18,7 @@ import { streamProviderTurn } from '../provider-stream.js';
 import { runTransition } from '../run-transition.js';
 import { type TurnStateRecord, transitionTo } from '../state.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
-
-function syntheticErrorAssistant(
-  provider: string,
-  model: string,
-  reason: string,
-): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: [{ type: 'text', text: reason }],
-    stop_reason: 'error',
-    error_message: reason,
-    error_kind: 'transient',
-    usage: null,
-    model,
-    provider,
-    timestamp: Date.now(),
-  };
-}
+import { syntheticAssistant } from '../synthetic-assistant.js';
 
 function isErrorOrAborted(asst: AssistantMessage): boolean {
   return asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
@@ -128,7 +111,12 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     rec.last_assistant = final;
   } else {
     const reason = error ?? 'provider channel closed without final';
-    const synthetic = syntheticErrorAssistant(decision.provider, decision.model, reason);
+    const synthetic = syntheticAssistant({
+      stop_reason: 'error',
+      text: reason,
+      provider: decision.provider,
+      model: decision.model,
+    });
     await emit(iii, rec.session_id, {
       type: 'message_update',
       message: synthetic,
