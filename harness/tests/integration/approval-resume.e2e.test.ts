@@ -1,13 +1,13 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
-import {
-  clearApprovalResumeRegistry,
-  registerApprovalResume,
-} from '../../src/turn-orchestrator/approval-resume.js';
 import {
   handleAbortSignalWrite,
   isAbortSignalWrite,
 } from '../../src/turn-orchestrator/on-abort-signal.js';
+import {
+  handleApprovalDecisionWrite,
+  isApprovalDecisionWrite,
+} from '../../src/turn-orchestrator/on-approval.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import { newRecord, turnStateKey } from '../../src/turn-orchestrator/state.js';
 
@@ -16,6 +16,11 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+/**
+ * Fake iii where `state::set` re-emits a state event and feeds it to the
+ * matching reactive trigger (abort on the agent scope, approval decisions on
+ * the approvals scope) — exercising the producer → trigger → wake path.
+ */
 function fakeIii(): {
   iii: ISdk;
   wakeTriggers: Array<{ session_id: string; function_id: string }>;
@@ -23,13 +28,8 @@ function fakeIii(): {
 } {
   const stateStore = new Map<string, unknown>();
   const wakeTriggers: Array<{ session_id: string; function_id: string }> = [];
-  const handlers = new Map<string, (payload: unknown) => Promise<unknown>>();
 
   const iii = {
-    registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
-      handlers.set(fnId, handler);
-      return { unregister: vi.fn() };
-    }),
     trigger: vi.fn(
       async ({
         function_id,
@@ -45,18 +45,18 @@ function fakeIii(): {
           const fullKey = `${p.scope}/${p.key}`;
           const old_value = stateStore.get(fullKey) ?? null;
           stateStore.set(fullKey, p.value);
-          if (p.scope === 'agent') {
-            const event = {
-              event_type: old_value == null ? 'state:created' : 'state:updated',
-              scope: p.scope,
-              key: p.key,
-              old_value,
-              new_value: p.value,
-              message_type: 'state',
-            };
-            if (isAbortSignalWrite(event)) {
-              await handleAbortSignalWrite(iii as unknown as ISdk, event);
-            }
+          const event = {
+            event_type: old_value == null ? 'state:created' : 'state:updated',
+            scope: p.scope,
+            key: p.key,
+            old_value,
+            new_value: p.value,
+            message_type: 'state',
+          };
+          if (p.scope === 'agent' && isAbortSignalWrite(event)) {
+            await handleAbortSignalWrite(iii as unknown as ISdk, event);
+          } else if (p.scope === 'approvals' && isApprovalDecisionWrite(event)) {
+            await handleApprovalDecisionWrite(iii as unknown as ISdk, event);
           }
           return null;
         }
@@ -72,11 +72,6 @@ function fakeIii(): {
           return null;
         }
 
-        const handler = handlers.get(function_id);
-        if (handler) {
-          return handler(payload);
-        }
-
         return null;
       },
     ),
@@ -85,17 +80,12 @@ function fakeIii(): {
   return { iii: iii as unknown as ISdk, wakeTriggers, stateStore };
 }
 
-describe('approval resume reactive trigger', () => {
-  afterEach(() => {
-    clearApprovalResumeRegistry();
-  });
-
-  it('approval::resolve via resume fn automatically enqueues turn::{state}', async () => {
+describe('approval reactive trigger', () => {
+  it('approval::resolve persists the decision and the trigger enqueues turn::{state}', async () => {
     const { iii, wakeTriggers, stateStore } = fakeIii();
     const rec = newRecord('sess-x');
     rec.state = 'function_awaiting_approval';
     stateStore.set(`agent/${turnStateKey('sess-x')}`, rec);
-    registerApprovalResume(iii, 'sess-x', 'fc-1');
 
     const out = await handleResolveRequest(iii, {
       session_id: 'sess-x',
@@ -106,6 +96,7 @@ describe('approval resume reactive trigger', () => {
 
     await flushMicrotasks();
 
+    expect(stateStore.get('approvals/sess-x/fc-1')).toEqual({ decision: 'allow', reason: null });
     expect(wakeTriggers).toHaveLength(1);
     expect(wakeTriggers[0]).toMatchObject({
       session_id: 'sess-x',

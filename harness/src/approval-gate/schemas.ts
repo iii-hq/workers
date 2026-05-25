@@ -107,12 +107,8 @@ export const ApprovalResumePayloadSchema = z.object({
   reason: z.string().nullable(),
 });
 
-export function approvalResumeFnId(session_id: string, function_call_id: string): string {
-  return `turn::approval_resume::${pendingKey(session_id, function_call_id)}`;
-}
-
 export const resolveFunctionOptions = {
   description:
-    'Flip an approval to allow or deny. Invokes the per-call resume function to persist and wake the turn.',
+    'Flip an approval to allow or deny. Persists the decision to the approvals scope to wake the parked turn.',
   request_format: zodToJsonSchema(ResolvePayloadSchema, { name: 'ResolvePayload' }),
 } as RegisterFunctionOptions;
