@@ -6,7 +6,7 @@
 import { TriggerAction, type ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import * as persistence from './persistence.js';
-import { isTerminal, type TurnState, type TurnStateRecord } from './state.js';
+import { type TurnState } from './state.js';
 
 export const TURN_STEP_QUEUE = 'turn-step';
 
@@ -19,15 +19,6 @@ export function shouldWakeStep(previousState: TurnState | null, newState: TurnSt
   return true;
 }
 
-/** Guard before enqueueing from approval/abort — skip terminal sessions.
- *  Must exclude BOTH `stopped` and `failed`: there is no `turn::failed`
- *  handler, so waking a failed session would enqueue an unregistered
- *  function (function_not_found → retries → DLQ, blocking the session's
- *  FIFO group). `isTerminal` covers both. */
-export function shouldRunStep(rec: TurnStateRecord | null): boolean {
-  if (!rec) return false;
-  return !isTerminal(rec);
-}
 
 export async function wakeState(iii: ISdk, session_id: string, state: TurnState): Promise<void> {
   try {
@@ -44,6 +35,6 @@ export async function wakeState(iii: ISdk, session_id: string, state: TurnState)
 /** Enqueue the handler for the session's current persisted state (approval/abort). */
 export async function wakeFromRecord(iii: ISdk, session_id: string): Promise<void> {
   const rec = await persistence.loadRecord(iii, session_id);
-  if (!rec || !shouldRunStep(rec)) return;
+  if (!rec || rec.state === 'stopped' || rec.state === 'failed') return;
   await wakeState(iii, session_id, rec.state);
 }

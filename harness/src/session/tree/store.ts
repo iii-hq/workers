@@ -14,7 +14,7 @@
 
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
-import { parseStateListValues, stateListResponseRows } from '../../runtime/state.js';
+import { createState } from '../../runtime/state.js';
 import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } from './types.js';
 
 export interface SessionStore {
@@ -76,14 +76,15 @@ function entriesScope(session_id: string): string {
 }
 
 export class IiiStateSessionStore implements SessionStore {
-  constructor(private readonly iii: ISdk) {}
+  private readonly state;
+
+  constructor(iii: ISdk) {
+    this.state = createState(iii, { tolerant: false });
+  }
 
   async create(meta: SessionMeta): Promise<void> {
     try {
-      await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::set',
-        payload: { scope: META_SCOPE, key: meta.session_id, value: meta },
-      });
+      await this.state.set({ scope: META_SCOPE, key: meta.session_id, value: meta });
     } catch (e) {
       throw new SessionError('storage', `state::set meta: ${String(e)}`);
     }
@@ -91,13 +92,10 @@ export class IiiStateSessionStore implements SessionStore {
 
   async append(session_id: string, entry: SessionEntry): Promise<void> {
     try {
-      await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::set',
-        payload: {
-          scope: entriesScope(session_id),
-          key: entry.id,
-          value: entry,
-        },
+      await this.state.set({
+        scope: entriesScope(session_id),
+        key: entry.id,
+        value: entry,
       });
     } catch (e) {
       throw new SessionError('storage', `state::set entry: ${String(e)}`);
@@ -114,19 +112,12 @@ export class IiiStateSessionStore implements SessionStore {
   }
 
   async loadEntries(session_id: string): Promise<SessionEntry[]> {
-    let resp: unknown;
+    let entries: SessionEntry[];
     try {
-      resp = await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::list',
-        payload: { scope: entriesScope(session_id) },
-      });
+      entries = await this.state.list<SessionEntry>({ scope: entriesScope(session_id) });
     } catch (e) {
       throw new SessionError('storage', `state::list entries: ${String(e)}`);
     }
-    if (!stateListResponseRows(resp)) {
-      throw new SessionError('storage', 'state::list returned non-array');
-    }
-    const entries = parseStateListValues<SessionEntry>(resp);
     // PR #150: sort by (timestamp, id) so resumed approval replies that
     // arrive after the session paused appear in correct transcript order
     // even when their entry ids are non-monotonic.
@@ -139,46 +130,32 @@ export class IiiStateSessionStore implements SessionStore {
   }
 
   async loadMeta(session_id: string): Promise<SessionMeta> {
-    let resp: unknown;
+    let resp: SessionMeta | null;
     try {
-      resp = await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::get',
-        payload: { scope: META_SCOPE, key: session_id },
-      });
+      resp = await this.state.get<SessionMeta>({ scope: META_SCOPE, key: session_id });
     } catch (e) {
       throw new SessionError('storage', `state::get meta: ${String(e)}`);
     }
-    if (resp === null || resp === undefined) {
+    if (resp === null) {
       throw new SessionError('not_found', session_id);
     }
-    return resp as SessionMeta;
+    return resp;
   }
 
   async list(): Promise<SessionMeta[]> {
-    let resp: unknown;
     try {
-      resp = await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::list',
-        payload: { scope: META_SCOPE },
-      });
+      return await this.state.list<SessionMeta>({ scope: META_SCOPE });
     } catch (e) {
       throw new SessionError('storage', `state::list meta: ${String(e)}`);
     }
-    if (!stateListResponseRows(resp)) {
-      throw new SessionError('storage', 'state::list returned non-array');
-    }
-    return parseStateListValues<SessionMeta>(resp);
   }
 
   async updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void> {
     try {
-      await this.iii.trigger<unknown, unknown>({
-        function_id: 'state::set',
-        payload: {
-          scope: entriesScope(session_id),
-          key: entry_id,
-          value: updated,
-        },
+      await this.state.set({
+        scope: entriesScope(session_id),
+        key: entry_id,
+        value: updated,
       });
     } catch (e) {
       throw new SessionError('storage', `state::set updateEntry: ${String(e)}`);
@@ -195,16 +172,9 @@ export class IiiStateSessionStore implements SessionStore {
   }
 
   private async refreshMetaUpdatedAt(session_id: string): Promise<void> {
-    const value = await this.iii.trigger<unknown, unknown>({
-      function_id: 'state::get',
-      payload: { scope: META_SCOPE, key: session_id },
-    });
-    if (value === null || value === undefined) return;
-    const meta = value as SessionMeta;
-    meta.updated_at = Date.now();
-    await this.iii.trigger<unknown, unknown>({
-      function_id: 'state::set',
-      payload: { scope: META_SCOPE, key: session_id, value: meta },
-    });
+    const value = await this.state.get<SessionMeta>({ scope: META_SCOPE, key: session_id });
+    if (value === null) return;
+    const meta = { ...value, updated_at: Date.now() };
+    await this.state.set({ scope: META_SCOPE, key: session_id, value: meta });
   }
 }

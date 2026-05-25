@@ -36,52 +36,38 @@ const denialEnvelopeSchema = z.object({
 export type DenialEnvelope = z.infer<typeof denialEnvelopeSchema>;
 
 /**
- * Wire payload for `approval::resolve`. Accepts `function_call_id` or the
- * legacy `tool_call_id` alias; output always has `function_call_id` set.
- * Rejects "/" in either id at the boundary — it is the reserved separator in
- * the state key, so a slashed id is refused here rather than thrown on later.
+ * Wire payload for `approval::resolve`. Rejects "/" in ids at the boundary —
+ * it is the reserved separator in the state key.
  */
 export const ResolvePayloadSchema = z
   .object({
     session_id: z.string().min(1),
-    function_call_id: z.string().min(1).optional(),
-    tool_call_id: z.string().min(1).optional(),
+    function_call_id: z.string().min(1),
     decision: wireDecisionSchema,
     reason: z.string().nullable().optional(),
   })
-  .transform((v, ctx) => {
-    const fnId = v.function_call_id ?? v.tool_call_id;
-    if (!fnId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['function_call_id'],
-        message: 'function_call_id or tool_call_id is required',
-      });
-      return z.NEVER;
-    }
+  .superRefine((v, ctx) => {
     if (v.session_id.includes('/')) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['session_id'],
         message: 'session_id must not contain "/"',
       });
-      return z.NEVER;
     }
-    if (fnId.includes('/')) {
+    if (v.function_call_id.includes('/')) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['function_call_id'],
         message: 'function_call_id must not contain "/"',
       });
-      return z.NEVER;
     }
-    return {
-      session_id: v.session_id,
-      function_call_id: fnId,
-      decision: v.decision,
-      reason: v.reason ?? null,
-    };
-  });
+  })
+  .transform((v) => ({
+    session_id: v.session_id,
+    function_call_id: v.function_call_id,
+    decision: v.decision,
+    reason: v.reason ?? null,
+  }));
 export type ResolvePayloadInput = z.input<typeof ResolvePayloadSchema>;
 
 const policyReplySchema = z.discriminatedUnion('decision', [

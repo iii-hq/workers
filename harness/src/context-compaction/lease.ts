@@ -25,12 +25,9 @@ export function mintLeaseNonce(): string {
 }
 
 export function readLeaseTimestampSecs(v: unknown): number {
-  if (!v) return 0;
-  if (typeof v === 'number') return Math.floor(v);
-  if (typeof v === 'object') {
-    const ts = (v as Record<string, unknown>).ts;
-    if (typeof ts === 'number') return Math.floor(ts / 1000);
-  }
+  if (!v || typeof v !== 'object') return 0;
+  const ts = (v as Record<string, unknown>).ts;
+  if (typeof ts === 'number') return Math.floor(ts / 1000);
   return 0;
 }
 

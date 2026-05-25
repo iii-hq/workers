@@ -58,20 +58,3 @@ export function pruneProtectedTools(): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
-
-// Deprecated. Hard upper bound on usable() to keep existing deployments
-// from regressing. One-shot warning on first read.
-let deprecatedTriggerTokensWarned = false;
-export function deprecatedTriggerTokensCap(): number | undefined {
-  const v = process.env.COMPACT_TRIGGER_TOKENS;
-  if (!v) return undefined;
-  if (!deprecatedTriggerTokensWarned) {
-    deprecatedTriggerTokensWarned = true;
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[context-compaction] COMPACT_TRIGGER_TOKENS is deprecated; use COMPACT_RESERVED_TOKENS. Treating as hard cap on usable().',
-    );
-  }
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}

@@ -55,9 +55,7 @@ function fakeIii(): {
               message_type: 'state',
             };
             if (isAbortSignalWrite(event)) {
-              queueMicrotask(() => {
-                void handleAbortSignalWrite(iii as unknown as ISdk, event);
-              });
+              await handleAbortSignalWrite(iii as unknown as ISdk, event);
             }
           }
           return null;
@@ -76,8 +74,7 @@ function fakeIii(): {
 
         const handler = handlers.get(function_id);
         if (handler) {
-          await handler(payload);
-          return null;
+          return handler(payload);
         }
 
         return null;

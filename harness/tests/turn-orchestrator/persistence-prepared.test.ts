@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PreparedEntry } from '../../src/turn-orchestrator/persistence.js';
+import type { PreparedEntry } from '../../src/turn-orchestrator/state.js';
 
 describe('PreparedEntry with pre_approved', () => {
   it('accepts a pre_approved: true entry', () => {

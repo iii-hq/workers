@@ -25,8 +25,8 @@ describe('lease helpers', () => {
     expect(readLeaseTimestampSecs({ nonce: 'a', ts: 1_700_000_000_000 })).toBe(1_700_000_000);
   });
 
-  it('readLeaseTimestampSecs accepts legacy bare-int (seconds)', () => {
-    expect(readLeaseTimestampSecs(1_700_000_000)).toBe(1_700_000_000);
+  it('readLeaseTimestampSecs treats bare-int values as inactive', () => {
+    expect(readLeaseTimestampSecs(1_700_000_000)).toBe(0);
   });
 
   it('readLeaseTimestampSecs returns 0 for garbage', () => {

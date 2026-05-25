@@ -6,7 +6,7 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { stateGet, stateList, stateSet } from '../runtime/state.js';
+import { stateGet, stateListValues, stateSet } from '../runtime/state.js';
 import { type ListFilter, loadEmbeddedCatalog } from './catalog.js';
 import { MODELS_KEY_PREFIX, MODELS_SCOPE, type Model, supportsModel } from './types.js';
 
@@ -22,7 +22,7 @@ export function modelKey(provider: string, id: string): string {
 
 export async function seedStateIfEmpty(iii: ISdk, _cfg: StateConfig): Promise<void> {
   try {
-    const items = await stateList(iii, MODELS_SCOPE, MODELS_KEY_PREFIX);
+    const items = await stateListValues<Model>(iii, { scope: MODELS_SCOPE });
     if (items.length > 0) return;
     const catalog = await loadEmbeddedCatalog();
     for (const m of catalog) {
@@ -37,10 +37,9 @@ export async function seedStateIfEmpty(iii: ISdk, _cfg: StateConfig): Promise<vo
 }
 
 export async function listFromStateOrSeed(iii: ISdk, filter: ListFilter): Promise<Model[]> {
-  const items = await stateList(iii, MODELS_SCOPE, MODELS_KEY_PREFIX);
-  const fromState = items
-    .map((v) => v as Model | null)
-    .filter((m): m is Model => Boolean(m && typeof m === 'object' && m.id));
+  const fromState = (await stateListValues<Model>(iii, { scope: MODELS_SCOPE })).filter(
+    (m): m is Model => Boolean(m && typeof m === 'object' && m.id),
+  );
   const source = fromState.length > 0 ? fromState : await loadEmbeddedCatalog();
   return source
     .filter((m) => filter.provider === undefined || m.provider === filter.provider)
