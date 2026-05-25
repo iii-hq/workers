@@ -9,9 +9,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
 import { fakeIii } from './_helpers/fakeIii.js';
 
-describe('handleResolveRequest — routing the decision', () => {
-  it('routes to the exact per-call resume fn with a normalized payload', async () => {
-    const { iii, resumeCalls } = fakeIii();
+describe('handleResolveRequest — writing the decision', () => {
+  it('writes the decision to approvals/<sid>/<cid> with a normalized payload', async () => {
+    const { iii, calls, resumeCalls } = fakeIii();
     const out = await handleResolveRequest(iii, {
       session_id: 's1',
       function_call_id: 'fc-1',
@@ -19,12 +19,17 @@ describe('handleResolveRequest — routing the decision', () => {
       reason: 'user cancelled',
     });
     expect(out).toEqual({ ok: true });
-    expect(resumeCalls).toEqual([
+    expect(calls).toEqual([
       {
-        function_id: 'turn::approval_resume::s1/fc-1',
-        payload: { decision: 'deny', reason: 'user cancelled' },
+        function_id: 'state::set',
+        payload: {
+          scope: 'approvals',
+          key: 's1/fc-1',
+          value: { decision: 'deny', reason: 'user cancelled' },
+        },
       },
     ]);
+    expect(resumeCalls).toHaveLength(0);
   });
 
   it('never emits to the agent::events stream (denial flows via execution_end)', async () => {
