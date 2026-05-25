@@ -96,8 +96,6 @@ describe('handleStreaming turn start', () => {
     // stream::set is called by emit(message_complete) and emit(turn_end) in the error path
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
   });
-
-
 });
 
 describe('handleStreaming', () => {
@@ -120,7 +118,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.last_assistant?.stop_reason).toBe('error');
     expect(rec.last_assistant?.error_message).toContain('create_channel failed');
   });
@@ -246,7 +244,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
     expect(saveSpy).not.toHaveBeenCalled();
   });

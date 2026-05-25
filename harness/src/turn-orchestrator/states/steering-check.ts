@@ -8,6 +8,7 @@
 import type { ISdk } from '../../runtime/iii.js';
 import { type AgentMessage, emptyAssistant } from '../../types/agent-message.js';
 import { emit } from '../events.js';
+import { finishSession } from '../finish.js';
 import * as persistence from '../persistence.js';
 import { runTransition } from '../run-transition.js';
 import { AGENT_SCOPE, type TurnStateRecord, abortSignalKey, transitionTo } from '../state.js';
@@ -76,7 +77,7 @@ async function endForMaxTurns(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   await emit(iii, rec.session_id, { type: 'message_complete', message: msg, body_streamed: false });
   await emit(iii, rec.session_id, { type: 'turn_end', message: msg, function_results: [] });
   rec.turn_end_emitted = true;
-  transitionTo(rec, 'tearing_down');
+  await finishSession(iii, rec);
 }
 
 async function emitTurnEndOnce(iii: ISdk, rec: TurnStateRecord): Promise<void> {
@@ -121,7 +122,7 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
         });
         rec.turn_end_emitted = true;
       }
-      transitionTo(rec, 'tearing_down');
+      await finishSession(iii, rec);
       break;
     }
     case 'steering':
@@ -150,7 +151,7 @@ export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<v
     }
     case 'end_turn': {
       await emitTurnEndOnce(iii, rec);
-      transitionTo(rec, 'tearing_down');
+      await finishSession(iii, rec);
       break;
     }
   }

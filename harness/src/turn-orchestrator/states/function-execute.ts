@@ -22,6 +22,7 @@ import {
   unwrapAgentTrigger,
 } from '../agent-trigger.js';
 import { emit } from '../events.js';
+import { finishSession } from '../finish.js';
 import { publishAfter } from '../hook.js';
 import * as persistence from '../persistence.js';
 import { runTransition } from '../run-transition.js';
@@ -204,7 +205,11 @@ async function finalizeExecutedCalls(iii: ISdk, rec: TurnStateRecord): Promise<v
     await emit(iii, rec.session_id, { type: 'turn_end', message: asst, function_results });
     rec.turn_end_emitted = true;
   }
-  transitionTo(rec, allTerminate ? 'tearing_down' : 'steering_check');
+  if (allTerminate) {
+    await finishSession(iii, rec);
+  } else {
+    transitionTo(rec, 'steering_check');
+  }
 }
 
 export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<void> {

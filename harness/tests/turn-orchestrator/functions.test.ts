@@ -102,6 +102,34 @@ describe('handleExecute new flow', () => {
     expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
   });
 
+  it('finishes the session when every function result terminates', async () => {
+    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    rec.state = 'function_execute';
+    rec.work = {
+      batch: [
+        { function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} }, blocked: null },
+      ],
+      results: [
+        {
+          function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: {
+            content: [{ type: 'text' as const, text: 'bye' }],
+            details: {},
+            terminate: true,
+          },
+          is_error: false,
+          duration_ms: 1,
+        },
+      ],
+    };
+    mockFinalizePersistence();
+
+    await handleExecute(iii, rec);
+
+    expect(rec.state).toBe('stopped');
+  });
+
   it('does not re-emit function_execution_start for already-executed calls on re-entry', async () => {
     const emitted: Array<{ type: string; function_call_id?: string }> = [];
     vi.spyOn(events, 'emit').mockImplementation(async (_iii, _sid, ev: never) => {

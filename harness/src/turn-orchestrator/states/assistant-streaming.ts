@@ -11,6 +11,7 @@ import { logger } from '../../runtime/otel.js';
 import type { AssistantMessage } from '../../types/agent-message.js';
 import type { AgentFunction } from '../../types/function.js';
 import { emit } from '../events.js';
+import { finishSession } from '../finish.js';
 import * as persistence from '../persistence.js';
 import { runPreflight } from '../preflight.js';
 import { buildInput, decide, targetFunctionId } from '../provider-router.js';
@@ -62,7 +63,7 @@ async function finalizeAssistant(iii: ISdk, rec: TurnStateRecord): Promise<void>
   if (isErrorOrAborted(asst)) {
     await emit(iii, rec.session_id, { type: 'turn_end', message: asst, function_results: [] });
     rec.turn_end_emitted = true;
-    transitionTo(rec, 'tearing_down');
+    await finishSession(iii, rec);
     return;
   }
 
@@ -86,12 +87,14 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
   const request = await persistence.loadRunRequest(iii, rec.session_id);
   let messages = await persistence.loadMessages(iii, rec.session_id);
   const { provider, model, system_prompt } = request;
-  const tools = (Array.isArray(request.function_schemas)
-    ? request.function_schemas
-    : []) as AgentFunction[];
+  const tools = (
+    Array.isArray(request.function_schemas) ? request.function_schemas : []
+  ) as AgentFunction[];
   const decision = decide({ provider, model });
 
-  if ((await runPreflight(iii, rec.session_id, messages, decision.provider, model)) === 'compacted') {
+  if (
+    (await runPreflight(iii, rec.session_id, messages, decision.provider, model)) === 'compacted'
+  ) {
     messages = await persistence.loadMessages(iii, rec.session_id);
   }
 
@@ -100,7 +103,11 @@ export async function handleStreaming(iii: ISdk, rec: TurnStateRecord): Promise<
     targetFn: targetFunctionId(decision),
     buildInput: (writerRef) => buildInput(decision, writerRef, system_prompt, messages, tools),
     onDelta: async (partial, event) => {
-      await emit(iii, rec.session_id, { type: 'message_update', message: partial, llm_event: event });
+      await emit(iii, rec.session_id, {
+        type: 'message_update',
+        message: partial,
+        llm_event: event,
+      });
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         rec.assistant_body_streamed = true;
       }

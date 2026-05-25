@@ -81,7 +81,7 @@ describe('handleSteering', () => {
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant?.stop_reason).toBe('aborted');
     expect(loadSpy).toHaveBeenCalledWith(iii, 's1');
@@ -183,18 +183,17 @@ describe('handleSteering', () => {
     expect(emitSpy).not.toHaveBeenCalled();
   });
 
-  it('end_turn: emits turn_end once and transitions to tearing_down', async () => {
+  it('end_turn: emits turn_end then finishes the session (agent_end + stopped)', async () => {
     const { iii } = makeIii();
     const rec = steeringRec('s1');
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-    const loadSpy = vi.spyOn(persistence, 'loadMessages');
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
-    expect(loadSpy).not.toHaveBeenCalled();
+    expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'agent_end' }));
   });
 
   it('reads abort via state::get on abort_signal key', async () => {
@@ -227,7 +226,7 @@ describe('handleSteering', () => {
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant?.content[0]).toEqual(
       expect.objectContaining({ type: 'text', text: expect.stringContaining('max_turns') }),
@@ -237,11 +236,7 @@ describe('handleSteering', () => {
       's1',
       expect.objectContaining({ type: 'message_complete' }),
     );
-    expect(emitSpy).toHaveBeenCalledWith(
-      iii,
-      's1',
-      expect.objectContaining({ type: 'turn_end' }),
-    );
+    expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
     expect(loadSpy).toHaveBeenCalledWith(iii, 's1');
     expect(saveSpy).toHaveBeenCalledWith(
       iii,
@@ -268,7 +263,7 @@ describe('handleSteering', () => {
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('tearing_down');
+    expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant?.content[0]).toEqual(
       expect.objectContaining({ text: expect.stringContaining('max_turns') }),
