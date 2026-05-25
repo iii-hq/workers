@@ -56,3 +56,6 @@ harness/config.yaml
 CLAUDE.md
 data/
 docs/superpowers/
+
+# Local scratch (untracked, not part of any branch)
+harness-node/
