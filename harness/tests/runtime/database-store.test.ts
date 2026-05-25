@@ -18,7 +18,9 @@ describe('DbStore', () => {
     await s.init();
     await s.init();
     const createCalls = fake.calls.filter(
-      (c) => c.function_id === 'database::execute' && /CREATE TABLE/i.test(String((c.payload as { sql: string }).sql)),
+      (c) =>
+        c.function_id === 'database::execute' &&
+        /CREATE TABLE/i.test(String((c.payload as { sql: string }).sql)),
     );
     // First init runs CREATE; second init short-circuits without a bus call.
     expect(createCalls.length).toBe(1);

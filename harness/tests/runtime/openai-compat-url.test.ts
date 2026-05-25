@@ -29,9 +29,9 @@ describe('normalizeChatCompletionsUrl', () => {
   });
 
   it('leaves a fully-qualified URL unchanged', () => {
-    expect(
-      normalizeChatCompletionsUrl('http://localhost:8080/v1/chat/completions'),
-    ).toBe('http://localhost:8080/v1/chat/completions');
+    expect(normalizeChatCompletionsUrl('http://localhost:8080/v1/chat/completions')).toBe(
+      'http://localhost:8080/v1/chat/completions',
+    );
   });
 
   it('treats any path containing /chat/completions as already qualified', () => {

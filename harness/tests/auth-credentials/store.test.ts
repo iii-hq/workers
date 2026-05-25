@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { loadAuthCredentialsConfig } from '../../src/auth-credentials/config.js';
-import { CREDENTIALS_TABLE, DbCredentialStore, InMemoryStore } from '../../src/auth-credentials/store.js';
+import {
+  CREDENTIALS_TABLE,
+  DbCredentialStore,
+  InMemoryStore,
+} from '../../src/auth-credentials/store.js';
 import { createDbStore } from '../../src/runtime/database-store.js';
 import { FakeDatabaseSdk } from '../runtime/fake-database-sdk.js';
 

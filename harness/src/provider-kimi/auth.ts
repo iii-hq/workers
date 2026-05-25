@@ -30,10 +30,7 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const [cred, overrides] = await Promise.all([
-    fetchCredential(iii),
-    fetchOverrides(iii, 'kimi'),
-  ]);
+  const [cred, overrides] = await Promise.all([fetchCredential(iii), fetchOverrides(iii, 'kimi')]);
   const apiUrl = overrides.default_api_url ?? worker.default_api_url;
   const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
   return configFromCredential(apiUrl, 'kimi', model, cred, maxTokens);
