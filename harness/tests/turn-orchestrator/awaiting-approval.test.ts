@@ -26,7 +26,6 @@ function recordWith(
     turn_count: 0,
     max_turns: undefined,
     last_assistant: null,
-    pending_function_calls: [],
     function_results: [],
     turn_end_emitted: false,
     started_at_ms: 0,

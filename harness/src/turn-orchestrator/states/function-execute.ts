@@ -192,7 +192,6 @@ async function finalizeExecutedCalls(iii: ISdk, rec: TurnStateRecord): Promise<v
 
   const asst = rec.last_assistant;
   rec.function_results = function_results;
-  rec.pending_function_calls = [];
   rec.work = undefined;
 
   if (asst) {

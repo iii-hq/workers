@@ -1,8 +1,16 @@
 /**
- * TurnState + TurnStateRecord + state-key helpers. Mirrors
- * `turn-orchestrator/src/state.rs`.
+ * TurnState + TurnStateRecord + agent-scope key helpers.
+ *
+ * All turn-orchestrator persistence uses iii scope {@link AGENT_SCOPE} with
+ * keys from the helpers below (`session/<sid>/turn_state`, etc.). Because
+ * `state::list` returns values without keys, recovery paths filter listed
+ * values with {@link parseTurnStateRecord} rather than key-prefix matching.
  */
 
+/** iii-state scope for turn FSM records, flat messages, run_request, etc. */
+export const AGENT_SCOPE = 'agent' as const;
+
+import { z } from 'zod';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
 
@@ -46,7 +54,6 @@ export type TurnStateRecord = {
   turn_count: number;
   max_turns?: number;
   last_assistant?: AssistantMessage | null;
-  pending_function_calls: FunctionCall[];
   function_results: FunctionResultMessage[];
   turn_end_emitted: boolean;
   started_at_ms: number;
@@ -58,6 +65,35 @@ export type TurnStateRecord = {
   error?: { kind: string; message: string };
 };
 
+const TURN_STATES = [
+  'provisioning',
+  'assistant_streaming',
+  'function_execute',
+  'function_awaiting_approval',
+  'steering_check',
+  'tearing_down',
+  'stopped',
+  'failed',
+] as const satisfies readonly TurnState[];
+
+/** Minimal structural guard for persisted turn_state — nested fields pass through. */
+export const TurnStateRecordSchema = z
+  .object({
+    session_id: z.string(),
+    state: z.enum(TURN_STATES),
+    turn_count: z.number().catch(0),
+    function_results: z.array(z.unknown()).catch([]),
+    turn_end_emitted: z.boolean().catch(false),
+    started_at_ms: z.number().catch(0),
+    updated_at_ms: z.number().catch(0),
+  })
+  .passthrough();
+
+export function parseTurnStateRecord(raw: unknown): TurnStateRecord | null {
+  const result = TurnStateRecordSchema.safeParse(raw);
+  return result.success ? (result.data as TurnStateRecord) : null;
+}
+
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
   const now = Date.now();
   return {
@@ -66,7 +102,6 @@ export function newRecord(session_id: string, max_turns?: number): TurnStateReco
     turn_count: 0,
     max_turns,
     last_assistant: null,
-    pending_function_calls: [],
     function_results: [],
     turn_end_emitted: false,
     started_at_ms: now,
@@ -77,10 +112,6 @@ export function newRecord(session_id: string, max_turns?: number): TurnStateReco
 export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.state = next;
   rec.updated_at_ms = Date.now();
-}
-
-export function isTerminal(rec: TurnStateRecord): boolean {
-  return rec.state === 'stopped' || rec.state === 'failed';
 }
 
 export const messagesKey = (sid: string) => `session/${sid}/messages`;
