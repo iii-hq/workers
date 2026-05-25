@@ -167,6 +167,155 @@ describe('allow fires only on the intended match', () => {
     expect(p('version: 1\nrules:\n  - f').check('f', ['anything', { x: 1 }]).kind).toBe('allow');
   });
 
+  it('catch-all * allows any function_id when no earlier rule matches', () => {
+    expect(p('version: 1\nrules:\n  - "*"').check('shell::exec', { command: 'rm -rf /' })).toEqual({
+      kind: 'allow',
+      rule_id: '*',
+    });
+  });
+
+  it('catch-all * after a deny still denies the blocked function', () => {
+    const yaml = `
+version: 1
+rules:
+  - "!state::set"
+  - "*"
+`;
+    expect(kind(yaml, 'state::set', {})).toBe('deny');
+    expect(kind(yaml, 'shell::exec', { command: 'anything' })).toBe('allow');
+  });
+
+  it('catch-all * before denies allows everything (dev foot-gun)', () => {
+    const yaml = `
+version: 1
+rules:
+  - "*"
+  - "!state::set"
+`;
+    expect(kind(yaml, 'state::set', {})).toBe('allow');
+  });
+
+  it('catch-all ::* matches only ids starting with ::', () => {
+    const perms = p('version: 1\nrules:\n  - "::*"');
+    expect(perms.check('::internal', {})).toEqual({ kind: 'allow', rule_id: '::*' });
+    expect(perms.check('shell::exec', {})).toEqual({ kind: 'needs_approval' });
+  });
+
+  it('a namespace glob is anchored — prefix/suffix lookalikes do not slip into allow', () => {
+    const yaml = `
+version: 1
+rules:
+  - shell::*
+`;
+    // Intended matches: the namespace itself and anything nested under it.
+    expect(kind(yaml, 'shell::exec', {})).toBe('allow');
+    expect(kind(yaml, 'shell::fs::read', {})).toBe('allow');
+    // Anchoring holds: a leading lookalike, a missing separator, or a bare
+    // prefix must NOT satisfy `^shell::.*$`.
+    for (const fid of ['Xshell::exec', 'shellexec', 'shell', 'not-shell::exec']) {
+      expect(kind(yaml, fid, {})).toBe('needs_approval');
+    }
+  });
+
+  it('a deny glob blocks every id under the namespace and cannot be dodged by appending levels', () => {
+    const yaml = `
+version: 1
+rules:
+  - "!shell::*"
+  - "*"
+`;
+    // No suffix — deeper nesting, hostile args, anything — escapes the deny.
+    for (const fid of ['shell::exec', 'shell::fs::read', 'shell::fs::sub::rm']) {
+      expect(kind(yaml, fid, { command: 'rm -rf /' })).toBe('deny');
+    }
+    // A different namespace is governed by the catch-all, not the deny.
+    expect(kind(yaml, 'state::get', {})).toBe('allow');
+    // FOOTGUN: the deny is anchored, so a prefixed lookalike (`Xshell::exec`)
+    // is NOT caught and falls through to the catch-all allow. A namespace deny
+    // protects the exact prefix only.
+    expect(kind(yaml, 'Xshell::exec', {})).toBe('allow');
+  });
+
+  it('a deny glob ignores args — it covers the namespace unconditionally', () => {
+    const yaml = 'version: 1\nrules:\n  - "!shell::*"';
+    for (const args of [{}, { command: 'ls' }, null, ['x'], JSON.parse('{"__proto__":{"x":1}}')]) {
+      expect(p(yaml).check('shell::exec', args).kind).toBe('deny');
+    }
+  });
+
+  it('mid- and suffix-position globs span separators but stay end-anchored', () => {
+    const yaml = `
+version: 1
+rules:
+  - shell::fs::*
+  - '*::list'
+`;
+    // `*` spans `::`, so deep nesting under the prefix matches.
+    expect(kind(yaml, 'shell::fs::read', {})).toBe('allow');
+    expect(kind(yaml, 'shell::fs::sub::deep', {})).toBe('allow');
+    // But the literal prefix is required verbatim — no separator, no match.
+    expect(kind(yaml, 'shell::fsread', {})).toBe('needs_approval');
+    expect(kind(yaml, 'shell::exec', {})).toBe('needs_approval');
+    // `*::list` is broad on the left but anchored on the right: only ids that
+    // END in `::list` match — any trailing suffix defeats it.
+    expect(kind(yaml, 'models::list', {})).toBe('allow');
+    expect(kind(yaml, 'evil::list', {})).toBe('allow');
+    expect(kind(yaml, 'models::listing', {})).toBe('needs_approval');
+    expect(kind(yaml, 'models::list::sub', {})).toBe('needs_approval');
+    expect(kind(yaml, 'models::get', {})).toBe('needs_approval');
+  });
+
+  it('only * is a wildcard — regex metacharacters in a pattern match literally', () => {
+    // If `.` leaked through as regex "any char", this allow would over-match
+    // (aXc::ping) and a symmetric deny could be evaded. Escaping must hold.
+    const yaml = "version: 1\nrules:\n  - 'a.c::*'";
+    expect(kind(yaml, 'a.c::ping', {})).toBe('allow');
+    expect(kind(yaml, 'aXc::ping', {})).toBe('needs_approval');
+  });
+
+  it('a newline in the function_id cannot tunnel a deny glob into a later allow', () => {
+    // The compiled regex is line-unaware (`.` does not cross `\n`), so an
+    // embedded newline makes BOTH the deny glob and the catch-all fail to
+    // match — the call fails closed to needs_approval instead of slipping
+    // through to the broad allow.
+    const yaml = `
+version: 1
+rules:
+  - "!shell::*"
+  - "*"
+`;
+    expect(kind(yaml, 'shell::exec\nrm -rf /', {})).toBe('needs_approval');
+  });
+
+  it('a constrained allow on an exact function still works — and composes with a glob', () => {
+    // Glob support is additive: an exact function id compiles to glob=null and
+    // matches by ===, with arg constraints AND-checked exactly as before.
+    const exact = `
+version: 1
+rules:
+  - function: shell::fs::write
+    action: allow
+    args:
+      path:
+        matches: '^/tmp/'
+`;
+    expect(kind(exact, 'shell::fs::write', { path: '/tmp/cache' })).toBe('allow');
+    expect(kind(exact, 'shell::fs::write', { path: '/etc/passwd' })).toBe('needs_approval');
+    // The SAME arg constraints compose with a globbed function id.
+    const globbed = `
+version: 1
+rules:
+  - function: shell::fs::*
+    action: allow
+    args:
+      path:
+        matches: '^/tmp/'
+`;
+    expect(kind(globbed, 'shell::fs::write', { path: '/tmp/x' })).toBe('allow');
+    expect(kind(globbed, 'shell::fs::read', { path: '/tmp/x' })).toBe('allow');
+    expect(kind(globbed, 'shell::fs::write', { path: '/root/.ssh' })).toBe('needs_approval');
+  });
+
   it('AND-combines multiple constraints — one miss is a full mismatch', () => {
     const yaml = `
 version: 1

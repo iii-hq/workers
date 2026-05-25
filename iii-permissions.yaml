@@ -1,5 +1,8 @@
 # Default agent permissions (first match wins).
-#   bare string        → allow
+#   bare string        → allow (exact id, or glob when pattern contains *)
+#   '*'                → allow any function_id (catch-all; order matters)
+#   'worker::*'        → allow any id matching that glob (e.g. shell::fs::read)
+#   '*::list'          → allow any worker's ::list leaf
 #   '!function_id'     → deny (quote required — bare ! is YAML tag syntax)
 #   no match           → needs_approval
 # Harness loads via config `permissions_path` and hot-reloads on save.

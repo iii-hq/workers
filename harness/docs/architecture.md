@@ -184,6 +184,25 @@ Bare-string allow rules: `state::get`, `state::list`,
 surface, and the `directory::skills::*` and `directory::prompts::*`
 lookups.
 
+A function pattern may use `*` to match any substring
+(`compileFunctionMatcher` in
+[policy/compile.ts](harness/src/harness/policy/compile.ts)). A pattern with
+no `*` matches by exact id; a pattern containing `*` compiles to an anchored
+regex (`^…$`) where `*` becomes `.*` and every other regex metacharacter is
+escaped — so `*` is the only wildcard. This unlocks namespace-scoped rules
+(in both the bare-string and `!`-deny forms):
+
+- `shell::*` — any function under the `shell` namespace.
+- `*::list` — any worker's `::list` leaf (end-anchored: `models::listing`
+  does not match).
+- `"*"` — catch-all; first match still wins, so place it last.
+- `"!state::*"` — deny the whole `state` namespace.
+
+Globs compose with arg constraints: a globbed `function` and its
+`matches:` / `equals:` constraints AND together. Globs are anchored, so a
+namespace deny protects the exact prefix only — `!shell::*` does not cover
+`Xshell::exec`.
+
 ## Shared modules
 
 | Folder | Purpose |
