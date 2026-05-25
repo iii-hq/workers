@@ -78,3 +78,19 @@ export const AbortSignalWriteEventSchema = AgentAbortSignalWriteEventSchema.tran
   return { session_id };
 });
 export type ParsedAbortSignalWrite = z.infer<typeof AbortSignalWriteEventSchema>;
+
+// --- turn::is_approval_decision / turn::on_approval (approvals-scope state event) ---
+const ApprovalDecisionWriteEventSchema = z.object({
+  type: z.literal('state').optional(),
+  scope: z.literal('approvals').optional(),
+  event_type: z.enum(['state:created', 'state:updated']),
+  key: z.string().regex(/^[^/]+\/[^/]+$/),
+  new_value: z.object({ decision: z.enum(['allow', 'deny', 'aborted']) }).passthrough(),
+  old_value: z.unknown().optional(),
+});
+
+export const ApprovalDecisionEventSchema = ApprovalDecisionWriteEventSchema.transform((data) => {
+  const session_id = data.key.slice(0, data.key.indexOf('/'));
+  return { session_id };
+});
+export type ParsedApprovalDecisionWrite = z.infer<typeof ApprovalDecisionEventSchema>;
