@@ -3,11 +3,7 @@ import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import * as persistence from '../../src/turn-orchestrator/persistence.js';
-import {
-  abortSignalKey,
-  newRecord,
-  type TurnStateRecord,
-} from '../../src/turn-orchestrator/state.js';
+import { newRecord, type TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { handleSteering, route } from '../../src/turn-orchestrator/states/steering-check.js';
 
 afterEach(() => {
@@ -16,16 +12,14 @@ afterEach(() => {
 
 describe('steering route()', () => {
   it.each([
-    [true, true, true, true, 'abort'],
-    [true, false, false, false, 'abort'],
-    [false, true, true, true, 'steering'],
-    [false, true, false, false, 'steering'],
-    [false, false, true, true, 'followup'],
-    [false, false, true, false, 'followup'],
-    [false, false, false, true, 'continue_after_function'],
-    [false, false, false, false, 'end_turn'],
-  ] as const)('route(%s, %s, %s, %s) -> %s', (abort, has_steering, has_followup, has_function_results, expected) => {
-    expect(route(abort, has_steering, has_followup, has_function_results)).toBe(expected);
+    [true, true, true, 'steering'],
+    [true, false, false, 'steering'],
+    [false, true, true, 'followup'],
+    [false, true, false, 'followup'],
+    [false, false, true, 'continue_after_function'],
+    [false, false, false, 'end_turn'],
+  ] as const)('route(%s, %s, %s) -> %s', (has_steering, has_followup, has_function_results, expected) => {
+    expect(route(has_steering, has_followup, has_function_results)).toBe(expected);
   });
 });
 
@@ -34,18 +28,14 @@ function userMessage(text: string): AgentMessage {
 }
 
 function makeIii(
-  opts: { abort?: boolean; steeringItems?: AgentMessage[]; followupItems?: AgentMessage[] } = {},
+  opts: { steeringItems?: AgentMessage[]; followupItems?: AgentMessage[] } = {},
 ) {
-  const { abort = false, steeringItems = [], followupItems = [] } = opts;
+  const { steeringItems = [], followupItems = [] } = opts;
   const drainCalls: Array<{ name: string; session_id: string }> = [];
 
   const iii = {
     trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-      if (req.function_id === 'state::get') {
-        const p = req.payload as { key: string };
-        if (p.key.endsWith('/abort_signal')) return abort ? true : null;
-        return null;
-      }
+      if (req.function_id === 'state::get') return null;
       if (req.function_id === 'session-inbox::drain') {
         const p = req.payload as { name: string; session_id: string };
         drainCalls.push(p);
@@ -72,50 +62,6 @@ function steeringRec(
 }
 
 describe('handleSteering', () => {
-  it('abort: persists aborted assistant, emits turn_end, stops the session', async () => {
-    const { iii } = makeIii({ abort: true });
-    const rec = steeringRec('s1');
-    const loadSpy = vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    const saveSpy = vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleSteering(iii, rec);
-
-    expect(rec.state).toBe('stopped');
-    expect(rec.turn_end_emitted).toBe(true);
-    expect(rec.last_assistant?.stop_reason).toBe('aborted');
-    expect(loadSpy).toHaveBeenCalledWith(iii, 's1');
-    expect(saveSpy).toHaveBeenCalledWith(
-      iii,
-      's1',
-      expect.arrayContaining([expect.objectContaining({ stop_reason: 'aborted' })]),
-    );
-    expect(emitSpy).toHaveBeenCalledWith(
-      iii,
-      's1',
-      expect.objectContaining({
-        type: 'turn_end',
-        message: expect.objectContaining({ stop_reason: 'aborted' }),
-      }),
-    );
-  });
-
-  it('abort: skips inbox drains', async () => {
-    const { iii, drainCalls } = makeIii({
-      abort: true,
-      steeringItems: [userMessage('steer')],
-      followupItems: [userMessage('follow')],
-    });
-    const rec = steeringRec('s1');
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleSteering(iii, rec);
-
-    expect(drainCalls).toHaveLength(0);
-  });
-
   it('steering: appends drained messages and transitions to assistant_streaming', async () => {
     const steeringItems = [userMessage('steer-me')];
     const { iii } = makeIii({ steeringItems });
@@ -194,23 +140,6 @@ describe('handleSteering', () => {
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'agent_end' }));
-  });
-
-  it('reads abort via state::get on abort_signal key', async () => {
-    const { iii } = makeIii({ abort: true });
-    const rec = steeringRec('s1');
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleSteering(iii, rec);
-
-    expect(iii.trigger).toHaveBeenCalledWith(
-      expect.objectContaining({
-        function_id: 'state::get',
-        payload: { scope: 'agent', key: abortSignalKey('s1') },
-      }),
-    );
   });
 
   it('caps at max_turns: emits a max_turns assistant + message_complete + turn_end and tears down instead of continuing', async () => {

@@ -24,13 +24,12 @@ that drive transitions; its fan-out trigger is a passive stream subscriber.
 - `harness::fs::read_inline` — Read a host file via shell::fs::read, drain its channel, and return a `{content:[{text}], details:{size, truncated, bytes_read}}` envelope (max 256 KiB inline by default).
 - `policy::check_permissions` — Evaluate a function call against the current `iii-permissions.yaml`. Returns `{ decision: "allow" | "deny" | "needs_approval", rule_id?, matched_constraint? }`.
 - `harness::fanout::agent_event_handler` — Internal: `agent::events` fanout handler.
-- `harness::session::is_create_event` — Internal condition function bound to the sessions state trigger; matches `state:created` writes to `session/<id>/turn_state`.
-- `harness::fanout::session_created` — Internal handler invoked by the sessions state trigger; fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`.
+- `harness::fanout::session_created` — Internal handler invoked by the sessions state trigger; fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. Gates in-handler on the `state:created` marker.
 
 ## Triggers
 
 - **Stream subscriber** on `agent::events` → `harness::fanout::agent_event_handler`. Registered by [src/harness/fanout/agent-events.ts](harness/src/harness/fanout/agent-events.ts).
-- **State trigger** on `scope: agent` gated by `condition_function_id: harness::session::is_create_event` → `harness::fanout::session_created`. Lives in [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts). This replaced the previous 1 Hz `state::list` diff loop: new sessions now reach all-sessions subscribers reactively, on the same `turn_state` write that creates them.
+- **State trigger** on `scope: session_index` (no `condition_function_id`) → `harness::fanout::session_created`. Lives in [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts). The turn-orchestrator writes a one-time `session_index/<sid>` marker when a session's `turn_state` is first persisted, so the trigger matches in-engine by scope alone — no per-write condition predicate. (This itself replaced an earlier 1 Hz `state::list` diff loop.)
 
 The fanout handler forwards every `agent::events` frame to the per-browser
 endpoint `ui::session::event::<browser_id>` for each browser whose

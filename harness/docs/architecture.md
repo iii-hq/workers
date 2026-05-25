@@ -85,8 +85,8 @@ flowchart LR
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
-  state -- "state trigger (scope=agent, abort_signal)" --> turnOrch
-  state -- "state trigger (scope=agent, turn_state created)" --> harness
+  state -- "state trigger (scope=approvals)" --> turnOrch
+  state -- "state trigger (scope=session_index)" --> harness
   harness -- "ui::session::event::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
 ```
@@ -99,8 +99,8 @@ function executed via `runTransition` and enqueued onto the `turn-step` FIFO
 queue by `wakeState` ([wake.ts](harness/src/turn-orchestrator/wake.ts)).
 `saveRecord` calls `shouldWakeStep` then `wakeState` when the persisted state
 transitions to a stepable state. Paused or terminal sessions are also woken by
-per-call `turn::approval_resume` handlers (approval/abort) or
-`turn::on_abort_signal` (abort signal state trigger), both via `wakeFromRecord`.
+the approval-decision state trigger (`turn::on_approval` on scope `approvals`)
+via `wakeFromRecord`.
 
 ```mermaid
 stateDiagram-v2
@@ -159,11 +159,6 @@ sequenceDiagram
 Fail-closed: policy unreachable (transport error or 5 s timeout) →
 `consultBefore` denies the call with a `gate_unavailable` envelope.
 
-Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
-the orchestrator through its own `agent`-scope state trigger) and, if the
-turn is paused on approvals, triggers each registered
-`turn::approval_resume` function with `{decision: 'aborted'}`.
-
 ## Kernel deny list
 
 [iii-permissions.yaml](iii-permissions.yaml) at the workspace root is the
@@ -177,7 +172,7 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
 `auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
 `oauth::openai-codex::login`, `run::start`,
-`router::stream_assistant`, `router::abort`.
+`router::stream_assistant`.
 
 Bare-string allow rules: `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,

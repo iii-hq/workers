@@ -10,6 +10,14 @@
 /** iii-state scope for turn FSM records, flat messages, run_request, etc. */
 export const AGENT_SCOPE = 'agent' as const;
 
+/**
+ * Dedicated iii-state scope indexing created sessions, keyed by `session_id`.
+ * A one-time marker is written here when a session's `turn_state` is first
+ * persisted, so the session-create fanout trigger matches in-engine by `scope`
+ * alone — no `condition_function_id` RPC per agent-scope `turn_state` write.
+ */
+export const SESSION_INDEX_SCOPE = 'session_index' as const;
+
 import { z } from 'zod';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
@@ -117,4 +125,3 @@ export const turnStateKey = (sid: string) => `session/${sid}/turn_state`;
 export const runRequestKey = (sid: string) => `session/${sid}/run_request`;
 export const lastSessionTreeLenKey = (sid: string) => `session/${sid}/session_tree_mirror_len`;
 export const eventCounterKey = (sid: string) => `session/${sid}/event_counter`;
-export const abortSignalKey = (sid: string) => `session/${sid}/abort_signal`;
