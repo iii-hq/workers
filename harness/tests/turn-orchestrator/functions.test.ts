@@ -6,7 +6,6 @@ import * as persistence from '../../src/turn-orchestrator/persistence.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
-import * as approvalResumeModule from '../../src/turn-orchestrator/approval-resume.js';
 import { parseApprovalDecision } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
 import { handleExecute } from '../../src/turn-orchestrator/states/function-execute.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
@@ -151,9 +150,6 @@ describe('handleExecute new flow', () => {
   it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
-    const registerResumeSpy = vi
-      .spyOn(approvalResumeModule, 'registerApprovalResume')
-      .mockReturnValue({ unregister: vi.fn() } as never);
 
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
@@ -167,7 +163,6 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('function_awaiting_approval');
     expect(rec.awaiting_approval).toHaveLength(1);
     expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
-    expect(registerResumeSpy).toHaveBeenCalledWith(iii, 's1', 'fc-1');
     // work.batch should still be populated (re-entry will continue from it)
     expect(rec.work?.batch).toHaveLength(1);
   });
@@ -323,9 +318,7 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([
-      { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-    ]);
+    rec.last_assistant = makeAssistant([{ id: 'fc-1', function_id: 'shell::run', arguments: {} }]);
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
@@ -432,7 +425,9 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([{ id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } }]);
+    rec.last_assistant = makeAssistant([
+      { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } },
+    ]);
 
     let storedMessages: unknown[] = [];
     vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);

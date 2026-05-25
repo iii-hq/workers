@@ -8,7 +8,11 @@
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentEvent } from '../../types/agent-event.js';
-import type { AgentMessage, AssistantMessage, FunctionResultMessage } from '../../types/agent-message.js';
+import type {
+  AgentMessage,
+  AssistantMessage,
+  FunctionResultMessage,
+} from '../../types/agent-message.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import {
   dispatchWithHook,
@@ -17,7 +21,6 @@ import {
   triggerFunctionCall,
   unwrapAgentTrigger,
 } from '../agent-trigger.js';
-import { registerApprovalResume } from '../approval-resume.js';
 import { emit } from '../events.js';
 import { publishAfter } from '../hook.js';
 import * as persistence from '../persistence.js';
@@ -135,7 +138,10 @@ async function applyAfterHook(iii: ISdk, entry: ExecutedEntry): Promise<Function
   return entry.result;
 }
 
-function toFunctionResultMessage(entry: ExecutedEntry, result: FunctionResult): FunctionResultMessage {
+function toFunctionResultMessage(
+  entry: ExecutedEntry,
+  result: FunctionResult,
+): FunctionResultMessage {
   return {
     role: 'function_result',
     function_call_id: entry.function_call.id,
@@ -246,7 +252,6 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
         function_id: fc.function_id,
         args: fc.arguments,
       });
-      registerApprovalResume(iii, rec.session_id, fc.id);
       transitionTo(rec, 'function_awaiting_approval');
       return;
     }
