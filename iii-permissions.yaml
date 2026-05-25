@@ -25,7 +25,6 @@ rules:
   - '!oauth::openai-codex::login'
   - '!run::start'
   - '!router::stream_assistant'
-  - '!router::abort'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

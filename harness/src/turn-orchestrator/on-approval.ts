@@ -2,10 +2,10 @@
  * Reactive approval wake. A `state` trigger on `scope: 'approvals'` filtered by
  * the `<sid>/<cid>` decision key fires this adapter, which enqueues
  * `turn::{state}` on the durable FIFO queue so the parked session re-reads its
- * decisions in `function_awaiting_approval`. Mirrors `on-abort-signal.ts`.
+ * decisions in `function_awaiting_approval`.
  *
- * The decision write is produced by `approval::resolve` (approval-gate) or by
- * `abort` — both `state::set` `approvals/<sid>/<cid> = { decision, reason }`.
+ * The decision write is produced by `approval::resolve` (approval-gate) —
+ * `state::set` `approvals/<sid>/<cid> = { decision, reason }`.
  */
 
 import type { ISdk } from '../runtime/iii.js';

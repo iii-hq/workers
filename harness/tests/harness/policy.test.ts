@@ -562,7 +562,6 @@ describe('shipped iii-permissions.yaml', () => {
     'auth::delete_token',
     'run::start',
     'router::stream_assistant',
-    'router::abort',
   ];
 
   it('kernel surfaces are denied unconditionally — hostile args cannot dodge them', async () => {

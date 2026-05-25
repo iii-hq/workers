@@ -63,22 +63,6 @@ export function toView(rec: TurnStateRecord): TurnStateView {
 
 export type GetStateResult = TurnStateView | null;
 
-// --- turn::is_abort_signal_set / turn::on_abort_signal (agent-scope state event) ---
-const AgentAbortSignalWriteEventSchema = z.object({
-  type: z.literal('state').optional(),
-  scope: z.literal('agent').optional(),
-  event_type: z.enum(['state:created', 'state:updated']),
-  key: z.string().regex(/^session\/[^/]+\/abort_signal$/),
-  new_value: z.literal(true),
-  old_value: z.union([z.literal(true), z.literal(false), z.null()]).optional(),
-});
-
-export const AbortSignalWriteEventSchema = AgentAbortSignalWriteEventSchema.transform((data) => {
-  const session_id = data.key.slice('session/'.length, -'/abort_signal'.length);
-  return { session_id };
-});
-export type ParsedAbortSignalWrite = z.infer<typeof AbortSignalWriteEventSchema>;
-
 // --- turn::is_approval_decision / turn::on_approval (approvals-scope state event) ---
 const ApprovalDecisionWriteEventSchema = z.object({
   type: z.literal('state').optional(),

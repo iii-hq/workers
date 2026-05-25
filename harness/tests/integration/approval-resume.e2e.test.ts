@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
 import {
-  handleAbortSignalWrite,
-  isAbortSignalWrite,
-} from '../../src/turn-orchestrator/on-abort-signal.js';
-import {
   handleApprovalDecisionWrite,
   isApprovalDecisionWrite,
 } from '../../src/turn-orchestrator/on-approval.js';
@@ -18,8 +14,8 @@ async function flushMicrotasks(): Promise<void> {
 
 /**
  * Fake iii where `state::set` re-emits a state event and feeds it to the
- * matching reactive trigger (abort on the agent scope, approval decisions on
- * the approvals scope) — exercising the producer → trigger → wake path.
+ * approval reactive trigger on the `approvals` scope — exercising the
+ * producer → trigger → wake path.
  */
 function fakeIii(): {
   iii: ISdk;
@@ -53,9 +49,7 @@ function fakeIii(): {
             new_value: p.value,
             message_type: 'state',
           };
-          if (p.scope === 'agent' && isAbortSignalWrite(event)) {
-            await handleAbortSignalWrite(iii as unknown as ISdk, event);
-          } else if (p.scope === 'approvals' && isApprovalDecisionWrite(event)) {
+          if (p.scope === 'approvals' && isApprovalDecisionWrite(event)) {
             await handleApprovalDecisionWrite(iii as unknown as ISdk, event);
           }
           return null;
@@ -104,65 +98,4 @@ describe('approval reactive trigger', () => {
     });
   });
 
-  it('writing session/<sid>/abort_signal=true enqueues turn::{state}', async () => {
-    const { iii, wakeTriggers, stateStore } = fakeIii();
-    const rec = newRecord('sess-abort');
-    rec.state = 'assistant_streaming';
-    stateStore.set(`agent/${turnStateKey('sess-abort')}`, rec);
-
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-abort/abort_signal',
-        value: true,
-      },
-    });
-
-    await flushMicrotasks();
-
-    expect(wakeTriggers).toHaveLength(1);
-    expect(wakeTriggers[0]).toMatchObject({
-      session_id: 'sess-abort',
-      function_id: 'turn::assistant_streaming',
-    });
-  });
-
-  it('writing session/<sid>/abort_signal=false does NOT trigger (condition rejects clears)', async () => {
-    const { iii, wakeTriggers, stateStore } = fakeIii();
-    const rec = newRecord('sess-clear');
-    rec.state = 'function_execute';
-    stateStore.set(`agent/${turnStateKey('sess-clear')}`, rec);
-
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: true },
-    });
-    await flushMicrotasks();
-    wakeTriggers.length = 0;
-
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: { scope: 'agent', key: 'session/sess-clear/abort_signal', value: false },
-    });
-    await flushMicrotasks();
-
-    expect(wakeTriggers).toHaveLength(0);
-  });
-
-  it('writing an unrelated agent-scope key does NOT trigger', async () => {
-    const { iii, wakeTriggers } = fakeIii();
-
-    await iii.trigger({
-      function_id: 'state::set',
-      payload: {
-        scope: 'agent',
-        key: 'session/sess-x/turn_state',
-        value: { state: 'function_execute' },
-      },
-    });
-    await Promise.resolve();
-
-    expect(wakeTriggers).toHaveLength(0);
-  });
 });

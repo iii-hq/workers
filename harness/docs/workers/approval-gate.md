@@ -27,10 +27,6 @@ and route it to the correct per-call resume function.
 4. The resume handler writes `approvals/<sid>/<cid>` (if not already set), invokes `turn::step`, and unregisters the resume fn.
 5. `handleAwaitingApproval` reads all decisions, folds them into the prepared snapshot, and returns to `function_execute`.
 
-Abort uses the same resume path: `performAbortSideEffects` triggers each
-registered resume fn with `{ decision: 'aborted', reason: 'session_aborted' }`
-instead of calling `approval::resolve`.
-
 ## Registered functions
 
 - `approval::resolve` — Validates the payload and triggers the per-call resume function. Returns `{ ok: true }` or `{ ok: false, error: 'invalid_payload' | 'resume_failed' }`.
@@ -46,7 +42,7 @@ All decision records use scope `approvals` (constant `STATE_SCOPE` in
 
 | Key shape | Value | Purpose |
 |---|---|---|
-| `<session_id>/<function_call_id>` | `{ decision: 'allow' \| 'deny' \| 'aborted', reason: string \| null }` | Written by the resume handler when an operator resolves or abort fires. `handleAwaitingApproval` reads these keys while the turn is in `function_awaiting_approval`. |
+| `<session_id>/<function_call_id>` | `{ decision: 'allow' \| 'deny' \| 'aborted', reason: string \| null }` | Written by the resume handler when an operator resolves. `handleAwaitingApproval` reads these keys while the turn is in `function_awaiting_approval`. |
 
 Pending calls are tracked on the turn record (`awaiting_approval[]`), not as
 separate rows under `approvals` until a decision lands.

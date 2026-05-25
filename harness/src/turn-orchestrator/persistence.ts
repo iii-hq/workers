@@ -10,6 +10,7 @@ import { parseFlatMessages } from './flat-messages.js';
 import { type RunRequest, parseRunRequest } from './run-request.js';
 import {
   AGENT_SCOPE,
+  SESSION_INDEX_SCOPE,
   type TurnStateRecord,
   messagesKey,
   parseTurnStateRecord,
@@ -52,6 +53,13 @@ async function persistRecord(
   const result = await agentSet(iii, turnStateKey(rec.session_id), rec);
   const prev =
     previous !== undefined ? previous : parseTurnStateRecord(result?.old_value ?? null);
+
+  if (prev == null) {
+    // First persist for this session → mark it in the session index. The
+    // create-fanout trigger watches that dedicated scope, so it matches in
+    // engine by scope alone — no per-write condition predicate.
+    await stateSet(iii, SESSION_INDEX_SCOPE, rec.session_id, { created_at_ms: Date.now() });
+  }
 
   await emitTurnStateChanged(
     iii,

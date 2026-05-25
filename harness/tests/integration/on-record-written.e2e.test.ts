@@ -139,6 +139,42 @@ function turnStateGets(iii: ISdk, session_id: string): number {
   ).length;
 }
 
+describe('session index marker (create-fanout source)', () => {
+  it('a newly-created session writes a session_index marker keyed by session id', async () => {
+    const { iii, stateStore } = fakeIii();
+    const rec = newRecord('sess-new');
+    rec.state = 'provisioning';
+
+    await persistence.saveRecord(iii, rec);
+
+    expect(stateStore.has('session_index/sess-new')).toBe(true);
+  });
+
+  it('a transition on an existing session writes NO new session_index marker', async () => {
+    const { iii, stateStore } = fakeIii();
+    const rec = newRecord('sess-x');
+    rec.state = 'provisioning';
+    await persistence.saveRecord(iii, rec); // create → marker written
+    stateStore.delete('session_index/sess-x'); // clear so a re-write would be detectable
+
+    rec.state = 'assistant_streaming';
+    await persistence.saveRecord(iii, rec); // transition → must NOT re-mark
+
+    expect(stateStore.has('session_index/sess-x')).toBe(false);
+  });
+
+  it('a threaded previous record (transition) writes no marker', async () => {
+    const { iii, stateStore } = fakeIii();
+    const previous = newRecord('sess-y');
+    previous.state = 'provisioning';
+    const next = { ...previous, state: 'assistant_streaming' as const };
+
+    await persistence.saveRecord(iii, next, previous);
+
+    expect(stateStore.has('session_index/sess-y')).toBe(false);
+  });
+});
+
 describe('saveRecord read elimination (#5)', () => {
   it('2-arg saveRecord does not pre-read turn_state (uses state::set old_value)', async () => {
     const { iii } = fakeIii();

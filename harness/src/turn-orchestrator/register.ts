@@ -3,7 +3,6 @@ import type { ISdk } from '../runtime/iii.js';
 import * as bootstrap from './bootstrap.js';
 import { loadOrchestratorConfig } from './config.js';
 import { register as registerGetState } from './get-state.js';
-import { register as registerOnAbortSignal } from './on-abort-signal.js';
 import { register as registerRunStart } from './run-start.js';
 import { recoverParkedApprovals, register as registerOnApproval } from './on-approval.js';
 import {
@@ -24,7 +23,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
   registerGetState(iii);
-  registerOnAbortSignal(iii);
   registerOnApproval(iii);
   await recoverParkedApprovals(iii);
 
