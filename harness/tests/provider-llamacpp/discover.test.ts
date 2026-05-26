@@ -111,7 +111,7 @@ describe('discoverLoadedModel', () => {
     expect(out.map((m) => m.id)).toEqual(['valid']);
   });
 
-  it("populates context_window from /props.n_ctx when available", async () => {
+  it('populates context_window from /props.n_ctx when available', async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/props')) {
@@ -150,10 +150,10 @@ describe('discoverLoadedModel', () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/props')) {
-        return new Response(
-          JSON.stringify({ default_generation_settings: { n_ctx: 131_072 } }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ default_generation_settings: { n_ctx: 131_072 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
         status: 200,
