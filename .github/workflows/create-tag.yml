@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - acp
+          - coder
           - console
           - database
           - harness

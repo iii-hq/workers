@@ -1,0 +1,341 @@
+//! `coder::create-file` — write one or more new files. Each entry is
+//! treated independently so a single bad input never aborts the rest.
+//! Non-accessible paths and oversized payloads are rejected.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::config::CoderConfig;
+use crate::error::{err_to_string, CoderError};
+use crate::path::PathResolver;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateFileInput {
+    pub files: Vec<CreateFileSpec>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateFileSpec {
+    pub path: String,
+    pub content: String,
+    /// Octal permission bits as a string, e.g. "0644". Defaults to "0644".
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// Create missing parent directories. Defaults to true so a single
+    /// `coder::create-file` call can scaffold a fresh subtree.
+    #[serde(default = "default_true")]
+    pub parents: bool,
+    /// When false (the default), refuse to write if `path` already exists.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+fn default_mode() -> String {
+    "0644".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CreateFileOutput {
+    pub results: Vec<CreateFileResult>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CreateFileResult {
+    pub path: String,
+    pub success: bool,
+    pub bytes_written: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub async fn handle(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    req: CreateFileInput,
+) -> Result<CreateFileOutput, String> {
+    if req.files.is_empty() {
+        return Err(err_to_string(CoderError::BadInput(
+            "`files` must not be empty".into(),
+        )));
+    }
+    let mut results = Vec::with_capacity(req.files.len());
+    for spec in req.files {
+        results.push(create_one(&resolver, &cfg, spec));
+    }
+    Ok(CreateFileOutput { results })
+}
+
+fn create_one(
+    resolver: &PathResolver,
+    cfg: &CoderConfig,
+    spec: CreateFileSpec,
+) -> CreateFileResult {
+    let path = spec.path.clone();
+    match try_create_one(resolver, cfg, spec) {
+        Ok(bytes) => CreateFileResult {
+            path,
+            success: true,
+            bytes_written: bytes,
+            error: None,
+        },
+        Err(e) => CreateFileResult {
+            path,
+            success: false,
+            bytes_written: 0,
+            error: Some(e.to_wire_string()),
+        },
+    }
+}
+
+fn try_create_one(
+    resolver: &PathResolver,
+    cfg: &CoderConfig,
+    spec: CreateFileSpec,
+) -> Result<u64, CoderError> {
+    let abs = resolver.require_writable(&spec.path)?;
+    let bytes = spec.content.as_bytes();
+    if (bytes.len() as u64) > cfg.max_write_bytes {
+        return Err(CoderError::TooLarge(format!(
+            "{} bytes exceeds max_write_bytes {}",
+            bytes.len(),
+            cfg.max_write_bytes
+        )));
+    }
+    if abs.exists() && !spec.overwrite {
+        return Err(CoderError::AlreadyExists(format!(
+            "{} already exists; pass overwrite=true to replace",
+            spec.path
+        )));
+    }
+    if spec.parents {
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).map_err(CoderError::from)?;
+        }
+    }
+    std::fs::write(&abs, bytes).map_err(CoderError::from)?;
+    apply_mode(&abs, &spec.mode)?;
+    Ok(bytes.len() as u64)
+}
+
+#[cfg(unix)]
+fn apply_mode(path: &Path, mode_str: &str) -> Result<(), CoderError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = u32::from_str_radix(mode_str.trim_start_matches('0'), 8)
+        .map_err(|e| CoderError::BadInput(format!("bad mode {mode_str:?}: {e}")))?;
+    let perms = std::fs::Permissions::from_mode(mode & 0o777);
+    std::fs::set_permissions(path, perms).map_err(CoderError::from)
+}
+
+#[cfg(not(unix))]
+fn apply_mode(_path: &Path, _mode_str: &str) -> Result<(), CoderError> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
+        let tmp = tempdir().unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_path: tmp.path().to_path_buf(),
+            non_accessible_globs: vec!["**/.env".to_string()],
+            max_read_bytes: 1024 * 1024,
+            max_write_bytes: 1024 * 1024,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        (tmp, resolver, cfg)
+    }
+
+    #[tokio::test]
+    async fn creates_simple_file() {
+        let (tmp, r, c) = setup();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "hello".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: false,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success);
+        assert_eq!(out.results[0].bytes_written, 5);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn creates_with_parents() {
+        let (tmp, r, c) = setup();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a/b/c.txt".into(),
+                    content: "hi".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: false,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert!(tmp.path().join("a/b/c.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_existing_without_overwrite() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "new".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: false,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert!(out.results[0].error.as_deref().unwrap().contains("C217"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "old"
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_replaces_existing() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old").unwrap();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "a.txt".into(),
+                    content: "new".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_non_accessible() {
+        let (_tmp, r, c) = setup();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: ".env".into(),
+                    content: "secret".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: true,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert!(out.results[0].error.as_deref().unwrap().contains("C211"));
+    }
+
+    #[tokio::test]
+    async fn refuses_oversize() {
+        let (_tmp, r, _c) = setup();
+        let small_cfg = Arc::new(CoderConfig {
+            base_path: _tmp.path().to_path_buf(),
+            non_accessible_globs: vec![],
+            max_write_bytes: 4,
+            ..CoderConfig::default()
+        });
+        let out = handle(
+            r,
+            small_cfg,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: "big.txt".into(),
+                    content: "abcdefg".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: false,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert!(out.results[0].error.as_deref().unwrap().contains("C213"));
+    }
+
+    #[tokio::test]
+    async fn multi_file_partial_success() {
+        let (tmp, r, c) = setup();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![
+                    CreateFileSpec {
+                        path: ".env".into(),
+                        content: "x".into(),
+                        mode: "0644".into(),
+                        parents: true,
+                        overwrite: false,
+                    },
+                    CreateFileSpec {
+                        path: "ok.txt".into(),
+                        content: "y".into(),
+                        mode: "0644".into(),
+                        parents: true,
+                        overwrite: false,
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.results.len(), 2);
+        assert!(!out.results[0].success);
+        assert!(out.results[1].success);
+        assert!(tmp.path().join("ok.txt").exists());
+    }
+}
