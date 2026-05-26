@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { TriggerAction, type ISdk } from '../../runtime/iii.js';
-import { stateGet, stateListValues, stateSet } from '../../runtime/state.js';
+import { stateGet, stateSet } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import { MESSAGES_SCOPE, RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
@@ -47,9 +47,6 @@ export type TurnStore = {
   appendMessages(session_id: string, msgs: AgentMessage[]): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
-  listTurnStateRecords(): Promise<TurnStateRecord[]>;
-  wakeStep(session_id: string, state: TurnState): Promise<void>;
-  wakeFromRecord(session_id: string): Promise<void>;
 };
 
 const FlatMessagesSchema = z
@@ -113,13 +110,6 @@ export function createTurnStore(iii: ISdk): TurnStore {
       return parseTurnStateRecord(await scopedGet(iii, TURN_STATE_SCOPE, session_id));
     },
 
-    async listTurnStateRecords() {
-      const values = await stateListValues<unknown>(iii, { scope: TURN_STATE_SCOPE });
-      return values
-        .map((value) => parseTurnStateRecord(value))
-        .filter((rec): rec is TurnStateRecord => rec !== null);
-    },
-
     async writeRecord(rec) {
       await scopedSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
     },
@@ -129,16 +119,6 @@ export function createTurnStore(iii: ISdk): TurnStore {
       if (shouldWakeStep(prev?.state ?? null, rec.state)) {
         await enqueueTurnStep(iii, rec.session_id, rec.state);
       }
-    },
-
-    wakeStep(session_id, state) {
-      return enqueueTurnStep(iii, session_id, state);
-    },
-
-    async wakeFromRecord(session_id) {
-      const rec = parseTurnStateRecord(await scopedGet(iii, TURN_STATE_SCOPE, session_id));
-      if (!rec || rec.state === 'stopped' || rec.state === 'failed') return;
-      await enqueueTurnStep(iii, session_id, rec.state);
     },
 
     async loadMessages(session_id) {

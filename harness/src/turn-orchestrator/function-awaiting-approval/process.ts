@@ -6,7 +6,7 @@ import type { ISdk } from '../../runtime/iii.js';
 import { text } from '../../types/content.js';
 import type { FunctionResult } from '../../types/function.js';
 import { createPorts } from '../function-execute/ports.js';
-import { finalizeBatch, runOneCall } from '../function-execute/run.js';
+import { finalizeBatch, FunctionExecuteInvariantError, runOneCall } from '../function-execute/run.js';
 import type { PreparedCall } from '../function-execute/types.js';
 import { isBatchComplete } from '../function-execute/types.js';
 import { runTransition } from '../run-transition.js';
@@ -110,13 +110,15 @@ export async function routeAfterApprovalProcessing(
     return;
   }
 
-  if (!rec.work) {
-    transitionTo(rec, 'function_execute');
-    return;
+  const work = rec.work;
+  if (!work) {
+    throw new FunctionExecuteInvariantError(
+      'function_awaiting_approval with empty awaiting_approval requires work',
+    );
   }
 
-  if (isBatchComplete(rec.work)) {
-    await finalizeBatch(executePorts, rec, rec.work);
+  if (isBatchComplete(work)) {
+    await finalizeBatch(executePorts, rec, work);
   } else {
     transitionTo(rec, 'function_execute');
   }

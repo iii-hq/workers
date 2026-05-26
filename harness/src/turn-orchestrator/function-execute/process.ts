@@ -34,10 +34,8 @@ export async function handleExecute(iii: ISdk, rec: TurnStateRecord): Promise<vo
 
   if (outcome.kind === 'incomplete') {
     rec.awaiting_approval = mergeAwaitingApproval(rec.awaiting_approval, outcome.newPending);
-    if ((rec.awaiting_approval?.length ?? 0) > 0) {
-      transitionTo(rec, 'function_awaiting_approval');
-      return;
-    }
+    transitionTo(rec, 'function_awaiting_approval');
+    return;
   }
 
   if (isBatchComplete(outcome.work)) {

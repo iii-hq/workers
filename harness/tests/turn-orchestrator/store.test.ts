@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TriggerAction } from '../../src/runtime/iii.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   createTurnStore,
@@ -110,89 +109,5 @@ describe('shouldWakeStep', () => {
 
   it('rejects same-state writes', () => {
     expect(shouldWakeStep('function_execute', 'function_execute')).toBe(false);
-  });
-});
-
-describe('TurnStore.wakeStep', () => {
-  it('enqueues turn::{state} on the turn-step FIFO queue', async () => {
-    const triggers: Array<{ function_id: string; payload: unknown; action?: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown; action?: unknown }) => {
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
-
-    await createTurnStore(iii).wakeStep('sess-abc', 'assistant_streaming');
-
-    expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('turn::assistant_streaming');
-    expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
-    expect(triggers[0]?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
-  });
-
-  it('swallows enqueue failures (logs only, never rethrows)', async () => {
-    const iii = {
-      trigger: vi.fn(async () => {
-        throw new Error('queue down');
-      }),
-    } as unknown as ISdk;
-
-    await expect(
-      createTurnStore(iii).wakeStep('sess-abc', 'provisioning'),
-    ).resolves.toBeUndefined();
-  });
-});
-
-describe('TurnStore.wakeFromRecord', () => {
-  it('enqueues turn::{currentState} from persisted record', async () => {
-    const rec = newRecord('sess-x');
-    rec.state = 'function_awaiting_approval';
-    const triggers: Array<{ function_id: string; payload: unknown; action?: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown; action?: unknown }) => {
-        if (req.function_id === 'state::get') return rec;
-        triggers.push(req);
-        return null;
-      }),
-    } as unknown as ISdk;
-
-    await createTurnStore(iii).wakeFromRecord('sess-x');
-
-    expect(triggers).toHaveLength(1);
-    expect(triggers[0]?.function_id).toBe('turn::function_awaiting_approval');
-    expect(triggers[0]?.payload).toEqual({ session_id: 'sess-x' });
-  });
-
-  it('no-ops when session is stopped', async () => {
-    const rec = newRecord('sess-y');
-    rec.state = 'stopped';
-    const turnTriggers: string[] = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string }) => {
-        if (req.function_id === 'state::get') return rec;
-        if (req.function_id.startsWith('turn::')) turnTriggers.push(req.function_id);
-        return null;
-      }),
-    } as unknown as ISdk;
-
-    await createTurnStore(iii).wakeFromRecord('sess-y');
-    expect(turnTriggers).toHaveLength(0);
-  });
-
-  it('no-ops when session is failed (no turn::failed handler exists)', async () => {
-    const rec = newRecord('sess-z');
-    rec.state = 'failed';
-    const turnTriggers: string[] = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string }) => {
-        if (req.function_id === 'state::get') return rec;
-        if (req.function_id.startsWith('turn::')) turnTriggers.push(req.function_id);
-        return null;
-      }),
-    } as unknown as ISdk;
-
-    await createTurnStore(iii).wakeFromRecord('sess-z');
-    expect(turnTriggers).toHaveLength(0);
   });
 });

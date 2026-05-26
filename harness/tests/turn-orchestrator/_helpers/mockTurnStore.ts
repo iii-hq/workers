@@ -27,9 +27,6 @@ export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore
     appendMessages: vi.fn(async () => {}),
     loadRunRequest: vi.fn(async () => defaultRunRequest),
     saveRunRequest: vi.fn(async () => {}),
-    listTurnStateRecords: vi.fn(async () => []),
-    wakeStep: vi.fn(async () => {}),
-    wakeFromRecord: vi.fn(async () => {}),
     ...overrides,
   } as MockTurnStore;
 }

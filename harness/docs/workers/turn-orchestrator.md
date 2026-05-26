@@ -8,10 +8,10 @@ provisioning, assistant, function-execute, steering, and session finish.
 This is the heart of the bundle. `run::start` opens a session and returns
 immediately; the rest of the work happens inside per-state durable functions
 (`turn::provisioning`, `turn::assistant_streaming`, …), each enqueued onto
-the `turn-step` FIFO queue via `TurnStore.wakeStep`.
+the `turn-step` FIFO queue inline from `saveRecord`.
 Saving the record with a new non-terminal, non-parking state automatically
 enqueues the next handler (`saveRecord` in
-[state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) calls `shouldWakeStep` then `wakeStep`).
+[state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) calls `shouldWakeStep` then enqueues on the `turn-step` FIFO).
 
 Every per-state handler is wrapped by `runTransition`
 ([run-transition.ts](harness/src/turn-orchestrator/run-transition.ts)):
@@ -44,14 +44,14 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 
 ## Triggers
 
-The record-written wake is now inline in `saveRecord` (no separate `on-record-written` adapter): every `saveRecord` call that transitions to a non-terminal, non-parking state calls `wakeStep` directly. Similarly, `turn_state_changed` events are emitted inline from `persistRecord` inside `TurnStore` — there is no separate `on-turn-state-changed` state trigger.
+The record-written wake is inline in `saveRecord` (no separate `on-record-written` adapter): every `saveRecord` call that transitions to a non-terminal, non-parking state enqueues `turn::{newState}` on the `turn-step` FIFO. Similarly, `turn_state_changed` events are emitted inline from `persistRecord` inside `TurnStore` — there is no separate `on-turn-state-changed` state trigger.
 
-Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` writes a decision to scope `approvals`, which fires the reactive `turn::on_approval` state trigger (see [on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) and [workers/approval-gate.md](workers/approval-gate.md)). `recoverParkedApprovals` re-wakes parked sessions at worker startup.
+Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` writes a decision to scope `approvals`, which fires the reactive `turn::on_approval` state trigger (see [on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) and [workers/approval-gate.md](workers/approval-gate.md)).
 
 ## Turn FSM
 
 Each state is a registered `turn::{state}` function executed via
-`runTransition` and enqueued onto the `turn-step` FIFO queue by `TurnStore.wakeStep`.
+`runTransition` and enqueued onto the `turn-step` FIFO queue from `saveRecord` when `shouldWakeStep` allows.
 The 7 states from [state.ts](harness/src/turn-orchestrator/state.ts):
 
 | State | Handler file | Role |
@@ -116,7 +116,7 @@ Unchanged from prior design: `dispatchWithHook` → `consultBefore` →
 reply returns `{ kind: 'pending' }` from `dispatchWithHook`, which parks the
 session to `function_awaiting_approval`. `approval::resolve` writes the
 decision to scope `approvals`, which fires `turn::on_approval` and calls
-`TurnStore.wakeFromRecord` to re-enqueue the session's current state handler.
+`turn::on_approval` enqueues `turn::function_awaiting_approval` on the `turn-step` queue.
 
 ## Configuration
 
@@ -142,12 +142,12 @@ From
 | [src/turn-orchestrator/register.ts](harness/src/turn-orchestrator/register.ts) | Composes all registered functions: `run::start`, per-state `turn::{state}` handlers, `turn::on_approval`, `turn::get_state`. |
 | [src/turn-orchestrator/run-start.ts](harness/src/turn-orchestrator/run-start.ts) | `run::start` handler — persists run config and messages, seeds `turn_state` to `provisioning` via `saveRecord` (which wakes the FSM). |
 | [src/turn-orchestrator/run-transition.ts](harness/src/turn-orchestrator/run-transition.ts) | Shared FSM transition runner: load → null-check → stale-skip → handle → save. Routes to `failed` on unexpected throw; re-throws `TransientError` for queue retry. |
-| [src/turn-orchestrator/state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) | `TurnStore` / `createTurnStore` — agent-scope load/save, `shouldWakeStep`, `wakeStep`, `wakeFromRecord`. |
+| [src/turn-orchestrator/state-runtime/store.ts](harness/src/turn-orchestrator/state-runtime/store.ts) | `TurnStore` / `createTurnStore` — agent-scope load/save, `shouldWakeStep`, inline FIFO enqueue from `saveRecord`. |
 | [src/turn-orchestrator/run-request.ts](harness/src/turn-orchestrator/run-request.ts) | `RunRequest` type and `parseRunRequest` — the typed, parsed form of scope `run_request` (includes `function_schemas`). |
 | [src/turn-orchestrator/get-state.ts](harness/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader returning `TurnStateView \| null`. |
 | [src/turn-orchestrator/agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) | Dispatcher chokepoint: `dispatchWithHook` (consult + trigger), `triggerFunctionCall` (trigger/decode/error), `agentTriggerTool` (schema), `unwrapAgentTrigger`. |
 | [src/turn-orchestrator/hook.ts](harness/src/turn-orchestrator/hook.ts) | `consultBefore` — `policy::check_permissions` (5 s, fail-closed) → `allow` / `pending` / `deny`. |
-| [src/turn-orchestrator/on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) | Reactive `turn::on_approval` state trigger on scope `approvals`; `recoverParkedApprovals` re-wakes parked sessions at startup. |
+| [src/turn-orchestrator/on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) | Reactive `turn::on_approval` state trigger on scope `approvals`. |
 | [src/turn-orchestrator/schemas.ts](harness/src/turn-orchestrator/schemas.ts) | All registered-function I/O schemas and types: `RunStartPayloadSchema`, `TurnStepPayloadSchema`, `TurnStateView`, `toView`, `ApprovalDecisionEventSchema`. |
 | [src/turn-orchestrator/state-runtime/ports.ts](harness/src/turn-orchestrator/state-runtime/ports.ts) | `TurnStatePorts` / `createTurnStatePorts` — shared dependency ports for per-state handlers (incl. `finishSession`). |
 | [src/turn-orchestrator/provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | `turn::provisioning` handler and provisioning pipeline. |

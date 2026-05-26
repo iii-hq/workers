@@ -84,7 +84,6 @@ flowchart LR
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
-  state -- "state trigger (scope=approvals)" --> turnOrch
   state -- "state trigger (scope=turn_state)" --> harness
   harness -- "ui::session::event::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
@@ -95,11 +94,11 @@ flowchart LR
 [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts)
 defines a 7-state durable FSM. Each state is a registered `turn::{state}`
 function executed via `runTransition` and enqueued onto the `turn-step` FIFO
-queue by `TurnStore.wakeStep` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
-`saveRecord` calls `shouldWakeStep` then `wakeStep` when the persisted state
+queue from `saveRecord` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
+`saveRecord` calls `shouldWakeStep` then enqueues `turn::{newState}` when the persisted state
 transitions to a stepable state. Paused sessions are also woken by
 the approval-decision state trigger (`turn::on_approval` on scope `approvals`)
-via `TurnStore.wakeFromRecord`.
+by enqueuing `turn::function_awaiting_approval`.
 
 ```mermaid
 stateDiagram-v2
@@ -127,9 +126,51 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 The orchestrator consults `policy::check_permissions` directly inside
 `consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
 the before path. The orchestrator parks the turn in `function_awaiting_approval`
-and waits until each parked call receives `approval::resolve` (decisions may
-arrive independently). Each write to scope `approvals` fires `turn::on_approval`
-and calls `wakeFromRecord` to re-enqueue the current state handler.
+when any call in the batch needs approval, then resumes as each parked call
+receives `approval::resolve` (decisions may arrive independently and out of
+batch order). Each write to scope `approvals` fires `turn::on_approval` and
+enqueues `turn::function_awaiting_approval`.
+
+### Parallel batch during `function_execute`
+
+When the assistant message contains multiple tool calls, `runBatch` does not
+stop at the first `pending`. For each call in assistant tool order:
+
+- already in `work.executed` or listed in `awaiting_approval[]` → skip
+- policy `allow` (or immediate policy `deny`) → dispatch, checkpoint, emit
+  `function_execution_end`
+- policy `needs_approval` → emit `function_execution_start`, append the call
+  to `awaiting_approval[]`, **continue** remaining siblings
+
+After the loop: if any call is still awaiting approval, transition to
+`function_awaiting_approval`; otherwise finalize the batch or re-enter
+`function_execute` when the batch is incomplete but nothing is parked.
+
+Example batch A, B, C: A → pending, B → allow (executes immediately), C →
+pending → `awaiting_approval = [A, C]`, B recorded in `work.executed`, turn
+parked until A and C are resolved.
+
+### Durability and reload
+
+| Surface | Location | Role |
+|---|---|---|
+| Open approvals | `turn_state/<session_id>` → `awaiting_approval[]` | Which calls are parked and their args |
+| Decisions | `approvals/<session_id>/<function_call_id>` | Written by `approval::resolve`; read on each wake |
+| UI mirror | `turn_state_changed` on `agent::events` | Console shows pending modals from `TurnStateView.awaiting_approval` |
+| Reload | `turn::get_state` | One-shot lean view after refresh (no direct iii state reads) |
+
+A page refresh does not lose pending approvals as long as iii state persists.
+Operators can still approve from the console after reload; each `approval::resolve`
+write fires `turn::on_approval` while the worker is running.
+
+### Resume semantics
+
+- Decisions may arrive in any order (e.g. resolve call C before call A).
+- On `allow`, the parked call executes with `skipStart: true` — the
+  `function_execution_start` event was already emitted when the call first
+  returned `pending`.
+- A duplicate `approval::resolve` for the same call re-wakes the handler;
+  resolved entries are pruned idempotently so execution is not doubled.
 
 ```mermaid
 sequenceDiagram
@@ -139,18 +180,20 @@ sequenceDiagram
   participant Gate as approval-gate
   participant User
 
+  Note over Turn: function_execute: runBatch walks all tool calls.<br/>pending calls append to awaiting_approval[];<br/>allowed siblings execute in the same pass.
+
   Turn->>Harness: policy::check_permissions(function_id, args) [5s timeout]
   alt rule.action == allow
     Harness-->>Turn: allow → dispatch the call
   else rule.action == deny
     Harness-->>Turn: deny + DenialEnvelope → error FunctionResult
   else no rule (needs_approval)
-    Harness-->>Turn: needs_approval → park in function_awaiting_approval
-    Note over Turn,Bus: saveRecord does not wake stepable handlers for<br/>function_awaiting_approval. awaiting_approval pins open calls.
+    Harness-->>Turn: needs_approval → append to awaiting_approval[], continue batch
+    Note over Turn,Bus: When the batch pass finishes with any awaiting calls,<br/>saveRecord parks in function_awaiting_approval (no wake on park).
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
     Bus-->>Turn: turn::on_approval state trigger
-    Turn->>Turn: wakeFromRecord → function_awaiting_approval executes<br/>that call immediately, removes it from awaiting_approval[]
+    Turn->>Turn: turn::function_awaiting_approval executes<br/>that call immediately (skipStart), removes it from awaiting_approval[]
     alt more calls still awaiting
       Turn->>Turn: stay in function_awaiting_approval
     else awaiting empty and batch incomplete
@@ -232,7 +275,6 @@ flowchart TD
   provOAI --> turnOrch
   provKimi --> turnOrch
   provLms --> turnOrch
-  hook[hook-fanout] --> approval
   session --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact
