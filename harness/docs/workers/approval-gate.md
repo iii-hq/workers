@@ -23,7 +23,7 @@ and persist the decision where the orchestrator can read it.
 2. The console calls `approval::resolve` with `{ session_id, function_call_id, decision, reason? }`.
 3. `approval::resolve` writes `approvals/<sid>/<cid>` via `state::set`.
 4. The `turn::on_approval` state trigger (scope `approvals`) fires and calls `wakeFromRecord`.
-5. `function_awaiting_approval` reads all decisions, folds them into the prepared snapshot, and returns to `function_execute`.
+5. `function_awaiting_approval` executes each resolved call immediately, removes it from `awaiting_approval[]`, and stays parked until none remain; then finalizes the batch or returns to `function_execute`.
 
 ## Registered functions
 

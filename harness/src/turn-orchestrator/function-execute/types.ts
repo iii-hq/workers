@@ -32,7 +32,7 @@ export type PendingApproval = {
 /** Batch loop outcome — explicit control flow instead of early return + void. */
 export type BatchOutcome =
   | { kind: 'completed'; work: FunctionBatchWork }
-  | { kind: 'parked'; work: FunctionBatchWork; pending: PendingApproval };
+  | { kind: 'incomplete'; work: FunctionBatchWork; newPending: PendingApproval[] };
 
 export type RunOneCallResult =
   | { kind: 'skipped' }
@@ -51,4 +51,9 @@ export function preparedCallId(prepared: PreparedCall): string {
 /** Empty durable work for a fresh batch. */
 export function emptyBatchWork(prepared: readonly PreparedCall[]): FunctionBatchWork {
   return { prepared, executed: {} };
+}
+
+/** True when every prepared call has a committed entry in `executed`. */
+export function isBatchComplete(work: FunctionBatchWork): boolean {
+  return work.prepared.every((prepared) => work.executed[preparedCallId(prepared)] !== undefined);
 }

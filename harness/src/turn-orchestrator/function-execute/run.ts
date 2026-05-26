@@ -18,14 +18,18 @@ import { transitionTo, type TurnStateRecord } from '../state.js';
 import type { FunctionExecutePorts } from './ports.js';
 import {
   emptyBatchWork,
+  isBatchComplete,
   preparedCallId,
   type BatchOutcome,
   type ExecutedCall,
   type FunctionBatchWork,
+  type PendingApproval,
   type PreparedCall,
   type ResolveCallResult,
   type RunOneCallResult,
 } from './types.js';
+
+export { isBatchComplete };
 
 export class FunctionExecuteInvariantError extends Error {
   constructor(message: string) {
@@ -98,11 +102,17 @@ async function resolvePreparedCall(
   }
 }
 
+export type RunOneCallOptions = {
+  /** Skip `function_execution_start` — used when resuming after approval (start already emitted). */
+  skipStart?: boolean;
+};
+
 export async function runOneCall(
   ports: FunctionExecutePorts,
   session_id: string,
   prepared: PreparedCall,
   executed: Record<string, ExecutedCall>,
+  opts?: RunOneCallOptions,
 ): Promise<RunOneCallResult> {
   const call: FunctionCall = prepared.call;
 
@@ -112,7 +122,9 @@ export async function runOneCall(
     return { kind: 'skipped' };
   }
 
-  await ports.emitStart(session_id, call);
+  if (!opts?.skipStart) {
+    await ports.emitStart(session_id, call);
+  }
   const startedAt = Date.now();
 
   const resolved = await resolvePreparedCall(ports, prepared, session_id);
@@ -137,20 +149,25 @@ export async function runBatch(
   work: FunctionBatchWork,
 ): Promise<BatchOutcome> {
   const executed = { ...work.executed };
+  const awaitingIds = new Set(
+    (rec.awaiting_approval ?? []).map((entry) => entry.function_call_id),
+  );
+  const newPending: PendingApproval[] = [];
 
   for (const prepared of work.prepared) {
+    const callId = preparedCallId(prepared);
+    if (executed[callId]) continue;
+    if (awaitingIds.has(callId)) continue;
+
     const outcome = await runOneCall(ports, rec.session_id, prepared, executed);
 
     if (outcome.kind === 'pending') {
-      return {
-        kind: 'parked',
-        work: { prepared: work.prepared, executed },
-        pending: {
-          function_call_id: outcome.call.id,
-          function_id: outcome.call.function_id,
-          args: outcome.call.arguments,
-        },
-      };
+      newPending.push({
+        function_call_id: outcome.call.id,
+        function_id: outcome.call.function_id,
+        args: outcome.call.arguments,
+      });
+      continue;
     }
 
     if (outcome.kind === 'executed') {
@@ -159,7 +176,11 @@ export async function runBatch(
     }
   }
 
-  return { kind: 'completed', work: { prepared: work.prepared, executed } };
+  const batchWork = { prepared: work.prepared, executed };
+  if (newPending.length > 0 || awaitingIds.size > 0) {
+    return { kind: 'incomplete', work: batchWork, newPending };
+  }
+  return { kind: 'completed', work: batchWork };
 }
 
 function toFunctionResultMessage(

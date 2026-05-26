@@ -5,15 +5,7 @@
 import { ApprovalDecisionSchema, STATE_SCOPE } from '../../approval-gate/schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { z } from 'zod';
-import type { PreparedCall } from '../function-execute/types.js';
-
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
-
-/** Explicit control flow — replaces void + early return. */
-export type AwaitingApprovalOutcome =
-  | { kind: 'resume_empty' }
-  | { kind: 'parked' }
-  | { kind: 'resume'; prepared: PreparedCall[] };
 
 /** Decode stored approval decision from `state::get` (scope `approvals`). */
 export function parseApprovalDecision(value: unknown): ApprovalDecision | null {

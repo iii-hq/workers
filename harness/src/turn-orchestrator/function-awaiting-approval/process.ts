@@ -1,18 +1,20 @@
 /**
- * Read approval decisions, compute resume or park outcome, and register the FSM step.
+ * Read approval decisions, execute resolved calls individually, and register the FSM step.
  */
 
 import type { ISdk } from '../../runtime/iii.js';
 import { text } from '../../types/content.js';
 import type { FunctionResult } from '../../types/function.js';
+import { createPorts } from '../function-execute/ports.js';
+import { finalizeBatch, runOneCall } from '../function-execute/run.js';
 import type { PreparedCall } from '../function-execute/types.js';
+import { isBatchComplete } from '../function-execute/types.js';
 import { runTransition } from '../run-transition.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 import { transitionTo, type AwaitingApprovalEntry, type TurnStateRecord } from '../state.js';
 import {
   createAwaitingApprovalPorts,
   type ApprovalDecision,
-  type AwaitingApprovalOutcome,
   type AwaitingApprovalPorts,
 } from './ports.js';
 
@@ -48,78 +50,83 @@ export function applyDecisionToPrepared(
   };
 }
 
-export function foldDecisionsIntoPrepared(
+function findPreparedCall(
   prepared: readonly PreparedCall[],
+  function_call_id: string,
+): PreparedCall | undefined {
+  return prepared.find((entry) => entry.call.id === function_call_id);
+}
+
+function withoutAwaitingEntry(
   awaiting: AwaitingApprovalEntry[],
-  decisions: ApprovalDecision[],
-): PreparedCall[] {
-  const next = [...prepared];
-  for (let i = 0; i < awaiting.length; i++) {
-    const entry = awaiting[i];
-    const decision = decisions[i];
-    if (!entry || !decision) continue;
-    const idx = next.findIndex((pe) => pe.call.id === entry.function_call_id);
-    if (idx < 0) continue;
-    const current = next[idx];
-    if (!current) continue;
-    next[idx] = applyDecisionToPrepared(current, decision);
-  }
-  return next;
+  function_call_id: string,
+): AwaitingApprovalEntry[] {
+  return awaiting.filter((entry) => entry.function_call_id !== function_call_id);
 }
 
-export async function processAwaitingApproval(
-  ports: AwaitingApprovalPorts,
+export async function processResolvedApprovals(
+  readPorts: AwaitingApprovalPorts,
+  executePorts: ReturnType<typeof createPorts>,
   rec: TurnStateRecord,
-): Promise<AwaitingApprovalOutcome> {
-  const awaiting = rec.awaiting_approval ?? [];
-  if (awaiting.length === 0) {
-    return { kind: 'resume_empty' };
+): Promise<void> {
+  if (!rec.work) return;
+
+  let awaiting = [...(rec.awaiting_approval ?? [])];
+  const executed = { ...rec.work.executed };
+
+  for (const entry of [...awaiting]) {
+    const callId = entry.function_call_id;
+
+    if (executed[callId]) {
+      awaiting = withoutAwaitingEntry(awaiting, callId);
+      continue;
+    }
+
+    const decision = await readPorts.readDecision(rec.session_id, callId);
+    if (!decision) continue;
+
+    const current = findPreparedCall(rec.work.prepared, callId);
+    if (!current) {
+      awaiting = withoutAwaitingEntry(awaiting, callId);
+      continue;
+    }
+
+    const resolved = applyDecisionToPrepared(current, decision);
+    await runOneCall(executePorts, rec.session_id, resolved, executed, { skipStart: true });
+
+    awaiting = withoutAwaitingEntry(awaiting, callId);
+    rec.work = { prepared: rec.work.prepared, executed };
+    await executePorts.checkpoint(rec);
   }
 
-  const decisions = await Promise.all(
-    awaiting.map((entry) => ports.readDecision(rec.session_id, entry.function_call_id)),
-  );
-
-  if (decisions.some((decision) => decision === null)) {
-    return { kind: 'parked' };
-  }
-
-  const prepared = foldDecisionsIntoPrepared(
-    rec.work?.prepared ?? [],
-    awaiting,
-    decisions as NonNullable<(typeof decisions)[number]>[],
-  );
-
-  return { kind: 'resume', prepared };
+  rec.awaiting_approval = awaiting;
 }
 
-export function applyAwaitingApprovalOutcome(
+export async function routeAfterApprovalProcessing(
+  executePorts: ReturnType<typeof createPorts>,
   rec: TurnStateRecord,
-  outcome: AwaitingApprovalOutcome,
-): void {
-  if (outcome.kind === 'parked') {
+): Promise<void> {
+  if ((rec.awaiting_approval?.length ?? 0) > 0) {
     return;
   }
 
-  if (outcome.kind === 'resume' && rec.work) {
-    rec.work = { ...rec.work, prepared: outcome.prepared };
+  if (!rec.work) {
+    transitionTo(rec, 'function_execute');
+    return;
   }
 
-  rec.awaiting_approval = [];
-  transitionTo(rec, 'function_execute');
-}
-
-export async function runAwaitingApproval(
-  ports: AwaitingApprovalPorts,
-  rec: TurnStateRecord,
-): Promise<void> {
-  const outcome = await processAwaitingApproval(ports, rec);
-  applyAwaitingApprovalOutcome(rec, outcome);
+  if (isBatchComplete(rec.work)) {
+    await finalizeBatch(executePorts, rec, rec.work);
+  } else {
+    transitionTo(rec, 'function_execute');
+  }
 }
 
 export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): Promise<void> {
-  const ports = createAwaitingApprovalPorts(iii);
-  await runAwaitingApproval(ports, rec);
+  const executePorts = createPorts(iii);
+  const readPorts = createAwaitingApprovalPorts(iii);
+  await processResolvedApprovals(readPorts, executePorts, rec);
+  await routeAfterApprovalProcessing(executePorts, rec);
 }
 
 export function register(iii: ISdk): void {
@@ -131,7 +138,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state function_awaiting_approval: read approval decisions and resume.',
+        'Run one durable FSM transition for session in state function_awaiting_approval: execute each call as its approval decision arrives.',
     },
   );
 }

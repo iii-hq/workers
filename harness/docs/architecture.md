@@ -111,7 +111,8 @@ stateDiagram-v2
   function_execute --> function_awaiting_approval: any call needs approval
   function_execute --> steering_check: batch complete
   function_execute --> stopped: all calls terminate session via finishSession
-  function_awaiting_approval --> function_execute: all decisions written
+  function_awaiting_approval --> function_execute: awaiting empty, batch incomplete
+  function_awaiting_approval --> steering_check: awaiting empty, batch complete
   steering_check --> assistant_streaming: continue turn
   steering_check --> stopped: stop or max turns via finishSession
   stopped --> [*]
@@ -126,9 +127,9 @@ unexpectedly (unless it opts into queue retry via `TransientError`).
 The orchestrator consults `policy::check_permissions` directly inside
 `consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
 the before path. The orchestrator parks the turn in `function_awaiting_approval`
-and waits until `approval::resolve` writes the decision to scope `approvals`,
-which fires `turn::on_approval` and calls `wakeFromRecord` to re-enqueue the
-current state handler.
+and waits until each parked call receives `approval::resolve` (decisions may
+arrive independently). Each write to scope `approvals` fires `turn::on_approval`
+and calls `wakeFromRecord` to re-enqueue the current state handler.
 
 ```mermaid
 sequenceDiagram
@@ -149,8 +150,14 @@ sequenceDiagram
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
     Bus-->>Turn: turn::on_approval state trigger
-    Turn->>Turn: wakeFromRecord → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
-    Turn->>Turn: fold decisions into work.prepared,<br/>transition back to function_execute
+    Turn->>Turn: wakeFromRecord → function_awaiting_approval executes<br/>that call immediately, removes it from awaiting_approval[]
+    alt more calls still awaiting
+      Turn->>Turn: stay in function_awaiting_approval
+    else awaiting empty and batch incomplete
+      Turn->>Turn: transition to function_execute
+    else awaiting empty and batch complete
+      Turn->>Turn: finalizeBatch → steering_check / stopped
+    end
   end
 ```
 

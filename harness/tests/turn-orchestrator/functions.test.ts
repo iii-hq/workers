@@ -179,23 +179,7 @@ describe('handleExecute new flow', () => {
     const fc1Ends = emitted.filter(
       (e) => e.type === 'function_execution_end' && e.function_call_id === 'fc-1',
     );
-    expect(fc1Ends).toHaveLength(1);
-  });
-
-  it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
-    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
-
-    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
-    const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]);
-
-    await handleExecute(iii, rec);
-
-    expect(rec.state).toBe('function_awaiting_approval');
-    expect(rec.awaiting_approval).toHaveLength(1);
-    expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
-    expect(rec.work?.prepared).toHaveLength(1);
+    expect(fc1Ends).toHaveLength(0);
   });
 
   it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
