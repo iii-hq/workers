@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
+use iii_observability::OtelConfig;
+use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 use tokio::sync::oneshot;
 
 use console::{config, functions, manifest, server};

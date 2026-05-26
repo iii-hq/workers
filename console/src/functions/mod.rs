@@ -25,7 +25,8 @@ fn register_status(iii: &Arc<III>, config: &Arc<ConsoleConfig>, engine_url: &str
     let cfg = config.clone();
     let engine_url = engine_url.to_string();
     iii.register_function(
-        RegisterFunction::new_async("console::status", move |_: StatusInput| {
+        "console::status",
+        RegisterFunction::new_async(move |_: StatusInput| {
             let cfg = cfg.clone();
             let engine_url = engine_url.clone();
             async move {
