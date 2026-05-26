@@ -5,7 +5,7 @@ search, edit, create, and delete files inside a single configured
 `base_path` — without ever escaping it via `..`, absolute paths, or
 symlinks. A glob-based `non_accessible` list keeps sensitive files
 (`.env`, `*.pem`, anything under `secrets/`) visible to directory
-listings but unreadable and unwritable.
+listings but unreadable and unwritable
 
 ## Install
 
