@@ -1,0 +1,36 @@
+# Root directory the worker operates inside. Every path argument in the
+# coder::* API is resolved relative to this directory; absolute paths and
+# `..` segments that would escape are rejected with C215. Required; the
+# worker refuses to start if this can't be canonicalized.
+base_path: ./
+
+# Glob patterns (matched against the path relative to base_path) for files
+# the worker will refuse to read, modify, or delete. Matching entries are
+# still visible to coder::list-folder and coder::tree with a
+# `non_accessible: true` flag so callers can see they exist.
+non_accessible_globs:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/secrets/**"
+
+# Per-file caps. read returns C213 when a file exceeds max_read_bytes;
+# create/update reject payloads larger than max_write_bytes.
+max_read_bytes: 10485760
+max_write_bytes: 10485760
+
+# coder::tree defaults. Depth counts the base folder as depth 0. Per-folder
+# limit truncates very large folders and surfaces a hint pointing to
+# coder::list-folder for pagination.
+tree_default_depth: 4
+tree_per_folder_limit: 50
+
+# coder::list-folder pagination. page_size is capped at list_max_page_size
+# regardless of what the caller requests.
+list_default_page_size: 100
+list_max_page_size: 1000
+
+# coder::search caps. truncated:true is set whenever either cap is hit.
+search_default_max_matches: 1000
+search_default_max_line_bytes: 4096
