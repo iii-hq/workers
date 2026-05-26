@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'acp/v*'
+      - 'coder/v*'
       - 'console/v*'
       - 'database/v*'
       - 'harness/v*'
