@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
+import { IIIInvocationError, type ISdk } from '../../src/runtime/iii.js';
 import type { DispatchResult } from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   TOOL_NAME,
@@ -94,6 +94,78 @@ describe('triggerFunctionCall', () => {
       denied_by: 'gate_unavailable',
       function_id: 'shell::fs::write',
     });
+  });
+
+  it('surfaces structured S-code handler errors verbatim, not gate_unavailable', async () => {
+    // Mimic what `iii-worker`'s sandbox daemon emits: its `Display` impl
+    // serialises the error envelope as JSON, which the engine then forwards
+    // through `IIIInvocationError`. The harness must hand that envelope to
+    // the agent untouched so it sees `code`, `docs_url`, `fix`, etc.
+    const envelope = {
+      code: 'S210',
+      type: 'filesystem',
+      message: 'path is required',
+      docs_url: 'https://example.invalid/README.md#S210',
+      retryable: false,
+      fix: 'pass an absolute `path` argument',
+    };
+    const triggerError = new IIIInvocationError({
+      code: 'HANDLER',
+      message: JSON.stringify(envelope),
+      function_id: 'sandbox::fs::write',
+    });
+    const iii = {
+      trigger: vi.fn().mockRejectedValue(triggerError),
+    } as unknown as ISdk;
+    const result = await triggerFunctionCall(iii, {
+      id: 'fc-1',
+      function_id: 'sandbox::fs::write',
+      arguments: {},
+    });
+    expect(isErrorResult(result)).toBe(true);
+    // Envelope passes through verbatim alongside a `handler_error`
+    // discriminator that lets isErrorResult and any retry gate
+    // classify the result correctly.
+    expect(result.details).toMatchObject({ error: 'handler_error', ...envelope });
+    expect(result.details).not.toMatchObject({ denied_by: 'gate_unavailable' });
+  });
+
+  it('falls back to gate_unavailable when message is not structured JSON', async () => {
+    const triggerError = new IIIInvocationError({
+      code: 'HANDLER',
+      message: 'opaque handler text',
+      function_id: 'sandbox::fs::write',
+    });
+    const iii = {
+      trigger: vi.fn().mockRejectedValue(triggerError),
+    } as unknown as ISdk;
+    const result = await triggerFunctionCall(iii, {
+      id: 'fc-1',
+      function_id: 'sandbox::fs::write',
+      arguments: {},
+    });
+    expect(result.details).toMatchObject({ denied_by: 'gate_unavailable' });
+  });
+
+  it('falls back to gate_unavailable when JSON message lacks code/message fields', async () => {
+    // A partial JSON payload (e.g. `{"hint": "..."}`) does NOT count as a
+    // structured envelope — only `{code, message, ...}` shapes get the
+    // verbatim treatment. Anything else stays in the gate path so we don't
+    // silently misroute unrelated wire shapes.
+    const triggerError = new IIIInvocationError({
+      code: 'HANDLER',
+      message: JSON.stringify({ hint: 'try again' }),
+      function_id: 'sandbox::fs::write',
+    });
+    const iii = {
+      trigger: vi.fn().mockRejectedValue(triggerError),
+    } as unknown as ISdk;
+    const result = await triggerFunctionCall(iii, {
+      id: 'fc-1',
+      function_id: 'sandbox::fs::write',
+      arguments: {},
+    });
+    expect(result.details).toMatchObject({ denied_by: 'gate_unavailable' });
   });
 });
 

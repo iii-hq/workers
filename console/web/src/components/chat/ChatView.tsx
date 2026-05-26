@@ -403,7 +403,10 @@ export function ChatView({
               // instead of leaving the response looking like it just
               // ran out of words. Pre-fix this event didn't exist and
               // the same condition produced a silently truncated reply.
-              const noticeContent = formatStopReason(event.reason, event.message)
+              const noticeContent = formatStopReason(
+                event.reason,
+                event.message,
+              )
               const notice: SystemMessage = {
                 id: uid(),
                 role: 'system',

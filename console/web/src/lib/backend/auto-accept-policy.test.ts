@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type AutoAcceptPolicy,
   DEFAULT_POLICY,
   isAutoAcceptable,
-  type AutoAcceptPolicy,
 } from './auto-accept-policy'
 
 describe('isAutoAcceptable (default policy)', () => {
@@ -56,12 +56,19 @@ describe('isAutoAcceptable (default policy)', () => {
   })
 
   it('rejects process-spawn / system-level function ids', () => {
-    expect(isAutoAcceptable('sandbox::exec')).toBe(false)
     expect(isAutoAcceptable('proc::run')).toBe(false)
     expect(isAutoAcceptable('vm::eval')).toBe(false)
     expect(isAutoAcceptable('runtime::spawn')).toBe(false)
     expect(isAutoAcceptable('proc::kill')).toBe(false)
     expect(isAutoAcceptable('container::run_command')).toBe(false)
+  })
+
+  it('allows all sandbox:: commands via allowPatterns', () => {
+    expect(isAutoAcceptable('sandbox::create')).toBe(true)
+    expect(isAutoAcceptable('sandbox::exec')).toBe(true)
+    expect(isAutoAcceptable('sandbox::delete')).toBe(true)
+    expect(isAutoAcceptable('sandbox::run')).toBe(true)
+    expect(isAutoAcceptable('sandbox::write')).toBe(true)
   })
 
   it('rejects external egress function ids', () => {
@@ -111,6 +118,8 @@ describe('isAutoAcceptable (custom policy)', () => {
     const strict: AutoAcceptPolicy = {
       denyPatterns: [/.*/], // deny everything
       denyExact: new Set(),
+      allowPatterns: [],
+      allowExact: new Set(),
     }
     expect(isAutoAcceptable('fs::ls', strict)).toBe(false)
   })
@@ -119,9 +128,34 @@ describe('isAutoAcceptable (custom policy)', () => {
     const permissive: AutoAcceptPolicy = {
       denyPatterns: [],
       denyExact: new Set(['agent::trigger']),
+      allowPatterns: [],
+      allowExact: new Set(),
     }
     expect(isAutoAcceptable('fs::write', permissive)).toBe(true)
     expect(isAutoAcceptable('agent::trigger', permissive)).toBe(false)
+  })
+
+  it('allowExact overrides denyPatterns and denyExact', () => {
+    const policy: AutoAcceptPolicy = {
+      denyPatterns: [/^sandbox::/],
+      denyExact: new Set(['sandbox::create']),
+      allowPatterns: [],
+      allowExact: new Set(['sandbox::create']),
+    }
+    expect(isAutoAcceptable('sandbox::create', policy)).toBe(true)
+    expect(isAutoAcceptable('sandbox::delete', policy)).toBe(false)
+  })
+
+  it('allowPatterns overrides denyPatterns and denyExact', () => {
+    const policy: AutoAcceptPolicy = {
+      denyPatterns: [/.*/],
+      denyExact: new Set(['agent::trigger']),
+      allowPatterns: [/^agent::/],
+      allowExact: new Set(),
+    }
+    expect(isAutoAcceptable('agent::trigger', policy)).toBe(true)
+    expect(isAutoAcceptable('agent::dispatch', policy)).toBe(true)
+    expect(isAutoAcceptable('fs::ls', policy)).toBe(false)
   })
 })
 
@@ -129,5 +163,9 @@ describe('DEFAULT_POLICY shape', () => {
   it('exposes a non-empty deny surface', () => {
     expect(DEFAULT_POLICY.denyPatterns.length).toBeGreaterThan(0)
     expect(DEFAULT_POLICY.denyExact.size).toBeGreaterThan(0)
+  })
+
+  it('exposes a non-empty allow surface', () => {
+    expect(DEFAULT_POLICY.allowPatterns.length).toBeGreaterThan(0)
   })
 })

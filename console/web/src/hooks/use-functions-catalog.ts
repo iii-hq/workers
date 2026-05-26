@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
+import { type FunctionEntry, STATIC_FUNCTIONS } from '@/lib/functions'
 import { fetchFunctionsCatalog } from '@/lib/functions-catalog'
-import { STATIC_FUNCTIONS, type FunctionEntry } from '@/lib/functions'
 
 /**
  * Populate `@` mention autocomplete from `directory::engine::functions::list`

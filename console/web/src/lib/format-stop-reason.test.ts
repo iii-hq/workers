@@ -10,7 +10,9 @@ describe('formatStopReason', () => {
   })
 
   it('error with message: surfaces the provider message', () => {
-    expect(formatStopReason('error', 'rate-limited')).toBe('response failed: rate-limited')
+    expect(formatStopReason('error', 'rate-limited')).toBe(
+      'response failed: rate-limited',
+    )
   })
 
   it('error without message: returns a fallback', () => {
@@ -18,10 +20,14 @@ describe('formatStopReason', () => {
   })
 
   it('aborted: returns the abort notice', () => {
-    expect(formatStopReason('aborted')).toBe('response aborted before completion.')
+    expect(formatStopReason('aborted')).toBe(
+      'response aborted before completion.',
+    )
   })
 
   it('function_call: returns the tool-call paused notice', () => {
-    expect(formatStopReason('function_call')).toBe('response paused for tool call.')
+    expect(formatStopReason('function_call')).toBe(
+      'response paused for tool call.',
+    )
   })
 })

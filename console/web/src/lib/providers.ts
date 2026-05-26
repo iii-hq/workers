@@ -142,7 +142,8 @@ export function validateApiUrl(raw: string): ValidationResult<string> {
   } catch {
     return {
       ok: false,
-      error: 'not a valid url — include http:// or https:// and the full path (e.g. http://localhost:1234/v1/chat/completions)',
+      error:
+        'not a valid url — include http:// or https:// and the full path (e.g. http://localhost:1234/v1/chat/completions)',
     }
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {

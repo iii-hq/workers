@@ -1,11 +1,4 @@
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { ChatDock } from '@/components/chat/ChatDock'
 import {
   Dialog,
@@ -20,7 +13,10 @@ import { useChatDock } from '@/hooks/use-chat-dock'
 import { useHashRoute, type View } from '@/hooks/use-hash-route'
 import { useTheme } from '@/hooks/use-theme'
 import { type DockSignal, getDockSignal } from '@/lib/chat-activity'
-import { ConversationsProvider, useConversationsCtx } from '@/lib/conversations-context'
+import {
+  ConversationsProvider,
+  useConversationsCtx,
+} from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
@@ -126,10 +122,7 @@ export function App() {
             </Suspense>
           </div>
         </div>
-        <ShortcutsDialog
-          open={shortcutsOpen}
-          onOpenChange={setShortcutsOpen}
-        />
+        <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </Sheet>
     </ConversationsProvider>
   )

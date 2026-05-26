@@ -6,7 +6,11 @@
 
 import { describe, expect, it } from 'vitest'
 import type { SpanTreeNode } from '../api/traces'
-import { calculateDurationMs, toMs, treeToWaterfallData } from './traceTransform'
+import {
+  calculateDurationMs,
+  toMs,
+  treeToWaterfallData,
+} from './traceTransform'
 
 const NS_PER_MS = 1_000_000
 // NANO_THRESHOLD in the module is Jan 1 2100 in ms (4102444800000).

@@ -18,7 +18,8 @@ function routeFromHash(hash: string): View | null {
   // the page absorbed the theme toggle and any other future settings.
   if (hash === '#/providers') return 'configuration'
   if (hash === '#/examples') return PLAYGROUND_ENABLED ? 'examples' : 'traces'
-  if (hash === '#/playground') return PLAYGROUND_ENABLED ? 'playground' : 'traces'
+  if (hash === '#/playground')
+    return PLAYGROUND_ENABLED ? 'playground' : 'traces'
   return null
 }
 

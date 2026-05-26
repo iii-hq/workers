@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
+import {
+  SandboxFunctionIdLabel,
+  SandboxToolView,
+} from '@/components/chat/sandbox'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -84,8 +89,17 @@ export function FunctionCallMessage({
   const pending = !!message.pendingApproval
   const running = !!message.running
   const [open, setOpen] = useState(!!defaultOpen || pending)
+  const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<'approve' | 'deny' | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const sandboxPreview = SandboxToolView.tryRenderPreview(message)
+  const sandboxTerminal = !pending ? SandboxToolView.tryRender(message) : null
+  const hasSandboxTerminal = sandboxTerminal != null
+  const showRequestPaneAbove =
+    !(pending && sandboxPreview) &&
+    !(running && hasSandboxTerminal) &&
+    !(!pending && !running && hasSandboxTerminal)
 
   const runResolve = async (kind: 'approve' | 'deny') => {
     const handler = kind === 'approve' ? onApprove : onDeny
@@ -140,7 +154,7 @@ export function FunctionCallMessage({
               <>ran </>
             )}
             <span className="text-accent italic font-semibold">ƒ</span>{' '}
-            <span className="text-ink">{message.functionId}</span>
+            <SandboxFunctionIdLabel functionId={message.functionId} />
             {!pending && !running && typeof message.durationMs === 'number' ? (
               <span className="text-ink-faint">
                 {' '}
@@ -163,9 +177,41 @@ export function FunctionCallMessage({
 
       {open ? (
         <div className="border-t border-rule-2">
-          <ValuePane label="request" value={message.input} />
+          {pending && sandboxPreview ? (
+            <div className="border-b border-rule-2">{sandboxPreview}</div>
+          ) : showRequestPaneAbove ? (
+            <ValuePane label="request" value={message.input} />
+          ) : null}
+          {running && !pending ? (
+            hasSandboxTerminal ? (
+              <div className="border-t border-rule-2">{sandboxTerminal}</div>
+            ) : (
+              <ValuePane label="response" value={message.output} bordered />
+            )
+          ) : null}
           {!pending && !running ? (
-            <ValuePane label="response" value={message.output} bordered />
+            hasSandboxTerminal ? (
+              <Tabs
+                value={tab}
+                onValueChange={(v) => setTab(v as 'terminal' | 'json')}
+                className="border-t border-rule-2"
+              >
+                <TabsList className="px-3">
+                  <TabsTrigger value="terminal">terminal</TabsTrigger>
+                  <TabsTrigger value="json">raw json</TabsTrigger>
+                </TabsList>
+                <TabsContent value="terminal">{sandboxTerminal}</TabsContent>
+                <TabsContent value="json">
+                  <ValuePane label="request" value={message.input} />
+                  <ValuePane label="response" value={message.output} bordered />
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <>
+                <ValuePane label="request" value={message.input} />
+                <ValuePane label="response" value={message.output} bordered />
+              </>
+            )
           ) : null}
         </div>
       ) : null}

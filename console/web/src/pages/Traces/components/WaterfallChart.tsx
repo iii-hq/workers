@@ -65,7 +65,6 @@ import {
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
-import { IconToggleButton } from './IconToggleButton'
 import {
   formatSpanLabel,
   getSpanKindIndicator,
@@ -74,6 +73,7 @@ import {
 import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
+import { IconToggleButton } from './IconToggleButton'
 
 interface WaterfallChartProps {
   data: WaterfallData

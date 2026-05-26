@@ -149,7 +149,9 @@ export function SessionDetailPanel({
           // guess.
           const expectedSpans = traceCount === 1 ? totalSpans : undefined
           const autoOpen =
-            idx === 0 && (expectedSpans === undefined || expectedSpans < AUTO_OPEN_SPAN_LIMIT)
+            idx === 0 &&
+            (expectedSpans === undefined ||
+              expectedSpans < AUTO_OPEN_SPAN_LIMIT)
           return (
             <TraceCard
               key={traceId}
@@ -228,7 +230,11 @@ function TraceCard({
       } catch (err) {
         const elapsedMs = Math.round(performance.now() - startedAt)
         if (import.meta.env.DEV) {
-          console.warn('[traces] fetchTraceTree failed', { traceId, elapsedMs, err })
+          console.warn('[traces] fetchTraceTree failed', {
+            traceId,
+            elapsedMs,
+            err,
+          })
         }
         throw err
       }
@@ -254,7 +260,9 @@ function TraceCard({
     setElapsedSec(0)
     const interval = setInterval(() => {
       if (queryStartRef.current === null) return
-      setElapsedSec(Math.floor((performance.now() - queryStartRef.current) / 1000))
+      setElapsedSec(
+        Math.floor((performance.now() - queryStartRef.current) / 1000),
+      )
     }, 1000)
     return () => clearInterval(interval)
   }, [isLoading])

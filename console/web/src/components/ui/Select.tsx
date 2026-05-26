@@ -109,7 +109,15 @@ export function Select<T extends string>({
           )}
         >
           <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-            <svg width="8" height="6" viewBox="0 0 8 6" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden>
+            <svg
+              width="8"
+              height="6"
+              viewBox="0 0 8 6"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+              aria-hidden
+            >
               <path d="M1 5L4 1L7 5" />
             </svg>
           </SelectPrimitive.ScrollUpButton>
@@ -125,16 +133,32 @@ export function Select<T extends string>({
                       </SelectPrimitive.Label>
                     )}
                     {g.options.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value} label={opt.label} />
+                      <SelectItem
+                        key={opt.value}
+                        value={opt.value}
+                        label={opt.label}
+                      />
                     ))}
                   </SelectPrimitive.Group>
                 ))
               : (options ?? []).map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value} label={opt.label} />
+                  <SelectItem
+                    key={opt.value}
+                    value={opt.value}
+                    label={opt.label}
+                  />
                 ))}
           </SelectPrimitive.Viewport>
           <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-            <svg width="8" height="6" viewBox="0 0 8 6" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden>
+            <svg
+              width="8"
+              height="6"
+              viewBox="0 0 8 6"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+              aria-hidden
+            >
               <path d="M1 1L4 5L7 1" />
             </svg>
           </SelectPrimitive.ScrollDownButton>

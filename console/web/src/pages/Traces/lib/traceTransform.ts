@@ -60,7 +60,11 @@ function calculateDepths(spans: StoredSpan[]): Map<string, number> {
     const chain: StoredSpan[] = []
     const visiting = new Set<string>()
     let cursor: StoredSpan | undefined = seed
-    while (cursor !== undefined && !depths.has(cursor.span_id) && !visiting.has(cursor.span_id)) {
+    while (
+      cursor !== undefined &&
+      !depths.has(cursor.span_id) &&
+      !visiting.has(cursor.span_id)
+    ) {
       visiting.add(cursor.span_id)
       chain.push(cursor)
       const parentId: string | undefined = cursor.parent_span_id
@@ -68,7 +72,9 @@ function calculateDepths(spans: StoredSpan[]): Map<string, number> {
     }
     // Base depth: 0 if we hit a root (no parent in the set or a cycle).
     let base =
-      cursor !== undefined && depths.has(cursor.span_id) ? (depths.get(cursor.span_id) ?? 0) : -1
+      cursor !== undefined && depths.has(cursor.span_id)
+        ? (depths.get(cursor.span_id) ?? 0)
+        : -1
     for (let i = chain.length - 1; i >= 0; i--) {
       base += 1
       depths.set(chain[i].span_id, base)

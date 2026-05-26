@@ -27,7 +27,12 @@ interface FunctionCallGroupProps {
  * `unknown`, so this guard stays narrow on purpose.
  */
 function isErrorOutput(v: unknown): boolean {
-  return !!v && typeof v === 'object' && !Array.isArray(v) && 'error' in (v as Record<string, unknown>)
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    'error' in (v as Record<string, unknown>)
+  )
 }
 
 type Tone = 'warn' | 'accent' | 'alert' | 'ink'
@@ -54,7 +59,8 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
       pulse: false,
       label: (
         <>
-          permission to run <span className="text-accent italic font-semibold">ƒ</span>{' '}
+          permission to run{' '}
+          <span className="text-accent italic font-semibold">ƒ</span>{' '}
           <span className="text-ink">{pending.functionId}</span>
         </>
       ),
@@ -69,8 +75,10 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
       pulse: true,
       label: (
         <>
-          running function <span className="tabular-nums">{runningIdx + 1}</span> of{' '}
-          <span className="tabular-nums">{total}</span>: <span className="text-accent italic font-semibold">ƒ</span>{' '}
+          running function{' '}
+          <span className="tabular-nums">{runningIdx + 1}</span> of{' '}
+          <span className="tabular-nums">{total}</span>:{' '}
+          <span className="text-accent italic font-semibold">ƒ</span>{' '}
           <span className="text-ink">{running.functionId}</span>
         </>
       ),
@@ -84,7 +92,8 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
       pulse: false,
       label: (
         <>
-          <span className="tabular-nums">{failed}</span> {failed === 1 ? 'function' : 'functions'} failed
+          <span className="tabular-nums">{failed}</span>{' '}
+          {failed === 1 ? 'function' : 'functions'} failed
           {failed < total ? (
             <span className="text-ink-faint">
               {' '}
@@ -102,7 +111,8 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
     pulse: false,
     label: (
       <>
-        ran <span className="tabular-nums">{total}</span> functions for <span className="tabular-nums">{sum}</span>ms
+        ran <span className="tabular-nums">{total}</span> functions for{' '}
+        <span className="tabular-nums">{sum}</span>ms
       </>
     ),
   }
@@ -113,7 +123,9 @@ function deriveStatus(messages: FunctionCallMessageType[]): GroupStatus {
  * where the user can't infer what's happening from the one-line header.
  */
 function hasConcerningChild(messages: FunctionCallMessageType[]): boolean {
-  return messages.some((m) => m.pendingApproval || m.running || isErrorOutput(m.output))
+  return messages.some(
+    (m) => m.pendingApproval || m.running || isErrorOutput(m.output),
+  )
 }
 
 export function FunctionCallGroup({
@@ -151,12 +163,21 @@ export function FunctionCallGroup({
         )}
       >
         <span className="flex items-center gap-2 min-w-0">
-          <StatusDot tone={status.tone} pulse={status.pulse} className="shrink-0" />
-          <span className="font-mono text-[13px] text-ink truncate">{status.label}</span>
+          <StatusDot
+            tone={status.tone}
+            pulse={status.pulse}
+            className="shrink-0"
+          />
+          <span className="font-mono text-[13px] text-ink truncate">
+            {status.label}
+          </span>
         </span>
         <span
           aria-hidden
-          className={cn('text-ink-ghost shrink-0 transition-transform duration-150 inline-block', open && 'rotate-90')}
+          className={cn(
+            'text-ink-ghost shrink-0 transition-transform duration-150 inline-block',
+            open && 'rotate-90',
+          )}
         >
           ▸
         </span>

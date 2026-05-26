@@ -18,6 +18,9 @@ short answer: it depends on whether you're optimizing for **read** speed or
 pick the one whose worst case matches your hottest path. you can always swap
 later — the interface is the thing that matters.`
 
-export const happyAsk = makeBackend('happy-ask', async function* (_prompt, _mode, _model, opts) {
-  yield* streamAssistant(BODY, { signal: opts?.signal })
-})
+export const happyAsk = makeBackend(
+  'happy-ask',
+  async function* (_prompt, _mode, _model, opts) {
+    yield* streamAssistant(BODY, { signal: opts?.signal })
+  },
+)

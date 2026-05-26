@@ -451,9 +451,7 @@ export function ProviderSettingsDialog({
       // receipt appears below the destructive zone with the key field
       // potentially off-screen — operator reads "type a new key above"
       // with nothing above to type into.
-      const scrollContainer = dialogBodyRef.current?.closest(
-        '[role="dialog"]',
-      )
+      const scrollContainer = dialogBodyRef.current?.closest('[role="dialog"]')
       if (scrollContainer) scrollContainer.scrollTop = 0
     } catch {
       // Error surfaces via the remove error memo; keep armed for retry.
@@ -565,10 +563,9 @@ export function ProviderSettingsDialog({
             {status?.source === 'environment' ? (
               keyDirty ? (
                 <p className="mt-1.5 font-mono text-[11px] text-ink-faint">
-                  note: {envVar} is set in the environment and takes
-                  precedence at runtime. saving stores this key as a
-                  fallback — it will take effect once the env var is
-                  unset.
+                  note: {envVar} is set in the environment and takes precedence
+                  at runtime. saving stores this key as a fallback — it will
+                  take effect once the env var is unset.
                 </p>
               ) : (
                 <p className="mt-1.5 font-mono text-[11px] text-ink-faint">
@@ -618,11 +615,7 @@ export function ProviderSettingsDialog({
               configQuery.isLoading ? 'loading stored overrides...' : undefined
             }
           >
-            {showAdvanced ? (
-              <ChevronUp size={12} />
-            ) : (
-              <ChevronDown size={12} />
-            )}
+            {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             {configQuery.isLoading
               ? 'loading overrides...'
               : showAdvanced
@@ -670,8 +663,8 @@ export function ProviderSettingsDialog({
               >
                 <p className="mb-1 font-mono text-[11px] text-ink-faint">
                   ceiling enforced by the harness on tokens the model may
-                  generate per request. if the model's own max is lower,
-                  the model wins.
+                  generate per request. if the model's own max is lower, the
+                  model wins.
                 </p>
                 <Input
                   id={tokensInputId}
@@ -688,8 +681,8 @@ export function ProviderSettingsDialog({
               </Field>
               {isLocalProvider(provider) ? (
                 <p className="font-mono text-[11px] text-ink-faint -mt-1">
-                  local provider · the {localBaseUrlEnv(provider)} env var, if set,
-                  overrides this on startup.
+                  local provider · the {localBaseUrlEnv(provider)} env var, if
+                  set, overrides this on startup.
                 </p>
               ) : null}
               {overridesError ? (
@@ -794,7 +787,6 @@ export function ProviderSettingsDialog({
               ) : null}
             </div>
           ) : null}
-
         </div>
 
         {/* Pinned region: undo receipts and surface errors live directly
@@ -836,11 +828,9 @@ export function ProviderSettingsDialog({
                     onClick={undoReset}
                     className="font-mono text-[11px] text-accent hover:text-ink transition-colors"
                   >
-                    undo · {Math.max(
-                      0,
-                      Math.ceil((undo.expiresAt - nowTick) / 1000),
-                    )}
-                    s left
+                    undo ·{' '}
+                    {Math.max(0, Math.ceil((undo.expiresAt - nowTick) / 1000))}s
+                    left
                   </button>
                 ) : null}
                 <button

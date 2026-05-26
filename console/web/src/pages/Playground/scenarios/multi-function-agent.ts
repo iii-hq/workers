@@ -1,4 +1,9 @@
-import { makeBackend, streamAssistant, streamFcall, streamThought } from './helpers'
+import {
+  makeBackend,
+  streamAssistant,
+  streamFcall,
+  streamThought,
+} from './helpers'
 
 const THOUGHT = `multi-step agent: i'll list workers, then inspect the
 healthiest one, then echo a probe through it. each function call is sequential
@@ -21,36 +26,39 @@ ready for the next instruction.`
  * bug in ChatView (the consumer must clear its fcallId after each fcall-end
  * so the next fcall-start gets a fresh slot).
  */
-export const multiFunctionAgent = makeBackend('multi-function-agent', async function* (_prompt, _mode, _model, opts) {
-  const signal = opts?.signal
-  yield* streamThought(THOUGHT, { signal })
-  yield* streamFcall({
-    functionId: 'engine::list',
-    input: {},
-    output: {
-      workers: ['worker-1', 'worker-3', 'worker-7'],
-    },
-    waitMs: 450,
-    signal,
-  })
-  yield* streamFcall({
-    functionId: 'engine::info',
-    input: { id: 'worker-7' },
-    output: {
-      id: 'worker-7',
-      load: 0.12,
-      version: '0.4.1',
-      skills: ['echo', 'tokenize', 'embed'],
-    },
-    waitMs: 500,
-    signal,
-  })
-  yield* streamFcall({
-    functionId: 'engine::echo',
-    input: { workerId: 'worker-7', text: 'ping' },
-    output: { text: 'ping' },
-    waitMs: 350,
-    signal,
-  })
-  yield* streamAssistant(BODY, { signal })
-})
+export const multiFunctionAgent = makeBackend(
+  'multi-function-agent',
+  async function* (_prompt, _mode, _model, opts) {
+    const signal = opts?.signal
+    yield* streamThought(THOUGHT, { signal })
+    yield* streamFcall({
+      functionId: 'engine::list',
+      input: {},
+      output: {
+        workers: ['worker-1', 'worker-3', 'worker-7'],
+      },
+      waitMs: 450,
+      signal,
+    })
+    yield* streamFcall({
+      functionId: 'engine::info',
+      input: { id: 'worker-7' },
+      output: {
+        id: 'worker-7',
+        load: 0.12,
+        version: '0.4.1',
+        skills: ['echo', 'tokenize', 'embed'],
+      },
+      waitMs: 500,
+      signal,
+    })
+    yield* streamFcall({
+      functionId: 'engine::echo',
+      input: { workerId: 'worker-7', text: 'ping' },
+      output: { text: 'ping' },
+      waitMs: 350,
+      signal,
+    })
+    yield* streamAssistant(BODY, { signal })
+  },
+)

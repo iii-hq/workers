@@ -24,6 +24,10 @@ export interface AutoAcceptPolicy {
   readonly denyPatterns: ReadonlyArray<RegExp>
   /** Explicit function ids that ALWAYS require a human click. */
   readonly denyExact: ReadonlySet<string>
+  /** Regex patterns that are ALWAYS safe to auto-accept, overriding deny rules. */
+  readonly allowPatterns: ReadonlyArray<RegExp>
+  /** Explicit function ids that are ALWAYS safe to auto-accept, overriding deny rules. */
+  readonly allowExact: ReadonlySet<string>
 }
 
 /**
@@ -89,29 +93,44 @@ function boundaryDenyRegex(keyword: string): RegExp {
   return new RegExp(`(?:^|::)${keyword}(?:$|_|::)`, 'i')
 }
 
-export const DEFAULT_DENY_PATTERNS: ReadonlyArray<RegExp> = DENY_KEYWORDS.map(
-  boundaryDenyRegex,
-)
+export const DEFAULT_DENY_PATTERNS: ReadonlyArray<RegExp> =
+  DENY_KEYWORDS.map(boundaryDenyRegex)
 
 export const DEFAULT_DENY_EXACT: ReadonlySet<string> = new Set([
   'agent::trigger',
   'iii::durable::publish',
 ])
 
+/** Regex patterns that whitelist entire namespaces (checked before deny rules). */
+export const DEFAULT_ALLOW_PATTERNS: ReadonlyArray<RegExp> = [/^sandbox::/]
+
+/** Explicit function ids that are safe to auto-accept even if their name contains a deny keyword. */
+export const DEFAULT_ALLOW_EXACT: ReadonlySet<string> = new Set([
+  'sandbox::create',
+])
+
 export const DEFAULT_POLICY: AutoAcceptPolicy = {
   denyPatterns: DEFAULT_DENY_PATTERNS,
   denyExact: DEFAULT_DENY_EXACT,
+  allowPatterns: DEFAULT_ALLOW_PATTERNS,
+  allowExact: DEFAULT_ALLOW_EXACT,
 }
 
 /**
  * Returns `true` if `functionId` is safe to auto-accept under `policy`.
  * Treats undefined/empty function ids as unsafe (fail-closed).
+ *
+ * Precedence: allowPatterns > allowExact > denyExact > denyPatterns.
  */
 export function isAutoAcceptable(
   functionId: string | undefined,
   policy: AutoAcceptPolicy = DEFAULT_POLICY,
 ): boolean {
   if (typeof functionId !== 'string' || functionId.length === 0) return false
+  for (const re of policy.allowPatterns) {
+    if (re.test(functionId)) return true
+  }
+  if (policy.allowExact.has(functionId)) return true
   if (policy.denyExact.has(functionId)) return false
   for (const re of policy.denyPatterns) {
     if (re.test(functionId)) return false

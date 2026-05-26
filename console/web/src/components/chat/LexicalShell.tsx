@@ -174,7 +174,10 @@ export function LexicalShell({
       <ChangePlugin onChange={onChange} />
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <EditablePlugin disabled={disabled} />
-      <MentionsPlugin menuOpenRef={menuOpenRef} functionEntries={functionEntries} />
+      <MentionsPlugin
+        menuOpenRef={menuOpenRef}
+        functionEntries={functionEntries}
+      />
       <SlashCommandsPlugin menuOpenRef={menuOpenRef} />
       <FunctionMentionTransformPlugin />
     </LexicalComposer>

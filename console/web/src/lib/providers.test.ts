@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_TOKENS_LIMIT,
-  normalizeErrorMessage,
-  validateApiUrl,
-  validateMaxTokens,
-} from '@/lib/providers'
-import {
   ACTIVE_PROVIDERS,
   type ActiveProvider,
   PROVIDER_DEFAULTS,
   PROVIDERS,
 } from '@/components/providers/provider-registry'
+import {
+  MAX_TOKENS_LIMIT,
+  normalizeErrorMessage,
+  validateApiUrl,
+  validateMaxTokens,
+} from '@/lib/providers'
 
 describe('provider-registry', () => {
   it('partitions into 5 active and 19 env-var-only providers', () => {
@@ -70,9 +70,9 @@ describe('normalizeErrorMessage', () => {
   })
 
   it('strips the @fn(<id>) prefix that workers prepend to bus errors', () => {
-    expect(normalizeErrorMessage(new Error('@fn(auth::set_token) bad payload'))).toBe(
-      'bad payload',
-    )
+    expect(
+      normalizeErrorMessage(new Error('@fn(auth::set_token) bad payload')),
+    ).toBe('bad payload')
   })
 
   it('renders plain-object bus rejections (the iii-browser-sdk shape) as "<code>: <message>"', () => {
@@ -87,7 +87,9 @@ describe('normalizeErrorMessage', () => {
   })
 
   it('renders bus rejections with only a message field', () => {
-    expect(normalizeErrorMessage({ message: 'invalid url' })).toBe('invalid url')
+    expect(normalizeErrorMessage({ message: 'invalid url' })).toBe(
+      'invalid url',
+    )
   })
 
   it('renders bus rejections with only a code field', () => {
@@ -106,10 +108,12 @@ describe('normalizeErrorMessage', () => {
 
 describe('validateApiUrl', () => {
   it('accepts http URLs', () => {
-    expect(validateApiUrl('http://localhost:1234/v1/chat/completions')).toEqual({
-      ok: true,
-      value: 'http://localhost:1234/v1/chat/completions',
-    })
+    expect(validateApiUrl('http://localhost:1234/v1/chat/completions')).toEqual(
+      {
+        ok: true,
+        value: 'http://localhost:1234/v1/chat/completions',
+      },
+    )
   })
 
   it('accepts https URLs', () => {

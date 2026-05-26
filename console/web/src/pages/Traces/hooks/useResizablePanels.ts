@@ -201,10 +201,7 @@ export function useResizablePanels({
           PANEL_MIN_WIDTH,
           cw - PANEL_NEIGHBOR_MIN_WIDTH - handles - otherForTrace,
         )
-        const nextTrace = Math.max(
-          PANEL_MIN_WIDTH,
-          Math.min(maxTrace, p.trace),
-        )
+        const nextTrace = Math.max(PANEL_MIN_WIDTH, Math.min(maxTrace, p.trace))
         let nextSpan = p.span
         if (hasSpan) {
           const maxSpan = Math.max(

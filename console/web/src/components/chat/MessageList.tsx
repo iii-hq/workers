@@ -138,10 +138,7 @@ export function MessageList({
   const listPad = density === 'dock' ? 'px-4 py-6' : 'px-9 py-8'
 
   return (
-    <div
-      ref={containerRef}
-      className={cn('flex-1 overflow-y-auto', listPad)}
-    >
+    <div ref={containerRef} className={cn('flex-1 overflow-y-auto', listPad)}>
       <div className="mx-auto max-w-[760px] flex flex-col gap-y-8">
         {items.map((item) =>
           item.kind === 'message' ? (
@@ -172,9 +169,7 @@ export function MessageList({
 function EmptyState({ density }: { density: 'route' | 'dock' }) {
   const emptyPad = density === 'dock' ? 'px-4' : 'px-9'
   return (
-    <div
-      className={cn('flex-1 flex items-center justify-center', emptyPad)}
-    >
+    <div className={cn('flex-1 flex items-center justify-center', emptyPad)}>
       <div className="max-w-[520px] w-full flex flex-col gap-6">
         <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           <Prompt symbol="$">new session</Prompt>

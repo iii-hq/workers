@@ -3,6 +3,7 @@ import {
   discoverAndRegister,
   discoverLoadedModel,
   modelsUrl,
+  propsUrl,
   registerDiscovered,
 } from '../../src/provider-llamacpp/discover.js';
 import type { ISdk } from '../../src/runtime/iii.js';
@@ -30,6 +31,30 @@ describe('modelsUrl', () => {
   it('falls through for non-canonical paths (appends `/models`)', () => {
     expect(modelsUrl('http://localhost:8080/custom/path')).toBe(
       'http://localhost:8080/custom/path/models',
+    );
+  });
+});
+
+describe('propsUrl', () => {
+  it('derives /props at the server root from the default chat URL', () => {
+    expect(propsUrl('http://localhost:8080/v1/chat/completions')).toBe(
+      'http://localhost:8080/props',
+    );
+  });
+
+  it('strips a trailing slash on the chat URL before deriving /props', () => {
+    expect(propsUrl('http://localhost:8080/v1/chat/completions/')).toBe(
+      'http://localhost:8080/props',
+    );
+  });
+
+  it('strips a bare /v1 suffix', () => {
+    expect(propsUrl('http://localhost:8080/v1')).toBe('http://localhost:8080/props');
+  });
+
+  it('appends /props to a custom-path proxy without /v1 (mirrors modelsUrl)', () => {
+    expect(propsUrl('http://localhost:8080/custom/path')).toBe(
+      'http://localhost:8080/custom/path/props',
     );
   });
 });
@@ -84,6 +109,98 @@ describe('discoverLoadedModel', () => {
     ) as typeof globalThis.fetch;
     const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
     expect(out.map((m) => m.id)).toEqual(['valid']);
+  });
+
+  it("populates context_window from /props.n_ctx when available", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/props')) {
+        return new Response(JSON.stringify({ n_ctx: 262_144 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
+    expect(out).toHaveLength(1);
+    expect(out[0]?.context_window).toBe(262_144);
+  });
+
+  it('falls back to the default context_window when /props is unavailable', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/props')) {
+        return new Response('boom', { status: 502 });
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
+    expect(out).toHaveLength(1);
+    expect(out[0]?.context_window).toBe(32_768);
+  });
+
+  it('reads context_window from /props.default_generation_settings.n_ctx (older llama-server)', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/props')) {
+        return new Response(
+          JSON.stringify({ default_generation_settings: { n_ctx: 131_072 } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
+    expect(out[0]?.context_window).toBe(131_072);
+  });
+
+  it('prefers top-level /props.n_ctx over the nested default_generation_settings value', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/props')) {
+        return new Response(
+          JSON.stringify({
+            n_ctx: 262_144,
+            default_generation_settings: { n_ctx: 4096 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
+    expect(out[0]?.context_window).toBe(262_144);
+  });
+
+  it('falls back to the default context_window when /props omits or invalidates n_ctx', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/props')) {
+        return new Response(JSON.stringify({ n_ctx: -1 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'Qwen3-35B-A3B' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    const out = await discoverLoadedModel('http://localhost:8080/v1/chat/completions', {});
+    expect(out[0]?.context_window).toBe(32_768);
   });
 });
 

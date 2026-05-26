@@ -3,7 +3,10 @@ import {
   nextApprovalsToAutoResolve,
   selectAutoAcceptCandidates,
 } from '@/lib/backend/auto-accept'
-import { DEFAULT_POLICY, type AutoAcceptPolicy } from '@/lib/backend/auto-accept-policy'
+import {
+  type AutoAcceptPolicy,
+  DEFAULT_POLICY,
+} from '@/lib/backend/auto-accept-policy'
 import type { Message } from '@/types/chat'
 
 export type ResolveApproval = (
@@ -59,6 +62,12 @@ export function useAutoAcceptApprovals({
   onDenied,
 }: UseAutoAcceptApprovalsArgs): void {
   const autoResolvedRef = useRef<Set<string>>(new Set())
+  const onAcceptedRef = useRef(onAccepted)
+  const onDeniedRef = useRef(onDenied)
+
+  // Sync refs so the effect below never needs them in its deps.
+  onAcceptedRef.current = onAccepted
+  onDeniedRef.current = onDenied
 
   useEffect(() => {
     autoResolvedRef.current = new Set()
@@ -69,18 +78,21 @@ export function useAutoAcceptApprovals({
     if (!resolveApproval) return
     const selection = selectAutoAcceptCandidates(messages, policy)
     if (selection === null) return // hot-path early exit
-    if (onDenied) {
+    if (onDeniedRef.current) {
       for (const d of selection.deniedByPolicy) {
-        onDenied(d.functionId, d.functionCallId)
+        onDeniedRef.current(d.functionId, d.functionCallId)
       }
     }
-    const todo = nextApprovalsToAutoResolve(selection.candidates, autoResolvedRef.current)
+    const todo = nextApprovalsToAutoResolve(
+      selection.candidates,
+      autoResolvedRef.current,
+    )
     if (todo.length === 0) return
 
     for (const p of todo) {
       autoResolvedRef.current.add(p.functionCallId)
       void resolveApproval(p.sessionId, p.functionCallId, 'allow')
-        .then(() => onAccepted?.(p.functionId, p.functionCallId))
+        .then(() => onAcceptedRef.current?.(p.functionId, p.functionCallId))
         .catch((err) => {
           /* Warn-and-continue posture matches the per-card resolve
            * handler — a transient failure shouldn't break the loop
@@ -94,5 +106,5 @@ export function useAutoAcceptApprovals({
           autoResolvedRef.current.delete(p.functionCallId)
         })
     }
-  }, [enabled, messages, resolveApproval, policy, onAccepted, onDenied])
+  }, [enabled, messages, resolveApproval, policy])
 }
