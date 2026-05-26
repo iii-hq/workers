@@ -28,7 +28,9 @@ export interface LiveAnnouncerApi {
  * announcement.
  */
 export function useLiveAnnouncer(): LiveAnnouncerApi {
-  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(
+    null,
+  )
 
   const announce = useCallback((text: string) => {
     if (!text) return

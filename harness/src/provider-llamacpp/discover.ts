@@ -8,9 +8,12 @@
  *   - llama-server runs exactly ONE model at process startup (set via
  *     `-m model.gguf`), so the endpoint returns at most one entry. There
  *     is no concept of "downloaded but not loaded".
- *   - There is no native v0 endpoint exposing context length / arch.
- *     Discovery only learns the model id; everything else falls back to
- *     the embedded catalog placeholder (`llamacpp-local`).
+ *   - There is no v0-style endpoint that surfaces per-model context
+ *     length in `/v1/models`, but the server-wide `GET /props` endpoint
+ *     does expose `n_ctx` (the value passed via `-c` / `--ctx-size` at
+ *     startup), shared across all slots. We fetch it alongside the
+ *     models list and use it to populate `context_window`; otherwise we
+ *     fall back to the embedded catalog placeholder (`llamacpp-local`).
  *
  * Best-effort: failures (server offline, malformed JSON, register RPC
  * errors) are logged and swallowed — the worker still boots, and the
@@ -63,6 +66,25 @@ export function modelsUrl(chatUrl: string): string {
 }
 
 /**
+ * Derive the server-wide `/props` endpoint from a chat-completions URL.
+ *
+ * `/props` lives at the server root (not under `/v1`), so we strip both
+ * a `…/chat/completions` suffix and a trailing `/v1` (or any other path
+ * segment), then append `/props`.
+ *
+ * Examples:
+ *   http://host:8080/v1/chat/completions → http://host:8080/props
+ *   http://host:8080/v1/                 → http://host:8080/props
+ *   http://host:8080/custom/path         → http://host:8080/custom/path/props
+ */
+export function propsUrl(chatUrl: string): string {
+  const withoutChat = chatUrl.replace(/\/chat\/completions\/?$/, '');
+  const withoutV1 = withoutChat.replace(/\/v1\/?$/, '');
+  const trimmed = withoutV1.endsWith('/') ? withoutV1.slice(0, -1) : withoutV1;
+  return `${trimmed}/props`;
+}
+
+/**
  * Fetch and parse the loaded model list. Returns an empty array on any
  * failure (caller decides whether to surface it).
  */
@@ -110,18 +132,90 @@ async function fetchModelIds(
 }
 
 /**
+ * `GET /props` response shape (only the fields we read). `n_ctx` is the
+ * server-wide context size from `-c` / `--ctx-size` at startup and is
+ * shared across slots — applies to whichever single model llama-server
+ * has loaded. Older llama-server builds only expose `n_ctx` nested in
+ * `default_generation_settings`; newer builds also expose it at the top
+ * level. We read both and prefer the top-level field when present.
+ */
+type LlamaProps = {
+  n_ctx?: unknown;
+  default_generation_settings?: unknown;
+};
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function readNestedNCtx(value: unknown): number | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = (value as Record<string, unknown>).n_ctx;
+  return isPositiveInteger(v) ? v : null;
+}
+
+/**
+ * Fetch the server-wide context window from `GET /props`. Returns the
+ * positive integer `n_ctx`, or `null` on any failure (server offline,
+ * non-2xx, malformed JSON, missing/non-positive field). Best-effort —
+ * a `null` return causes the caller to fall back to DEFAULT_CONTEXT_WINDOW.
+ */
+async function fetchPropsContextWindow(
+  endpoint: string,
+  headers: Record<string, string>,
+): Promise<number | null> {
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(endpoint, { method: 'GET', headers }, DISCOVERY_TIMEOUT_MS);
+  } catch (err) {
+    logger.warn('llamacpp discovery: /props fetch failed', {
+      url: endpoint,
+      err: String(err),
+    });
+    return null;
+  }
+  if (!resp.ok) {
+    logger.warn('llamacpp discovery: /props non-2xx response', {
+      url: endpoint,
+      status: resp.status,
+    });
+    return null;
+  }
+  let parsed: LlamaProps;
+  try {
+    parsed = (await resp.json()) as LlamaProps;
+  } catch (err) {
+    logger.warn('llamacpp discovery: /props malformed JSON response', {
+      url: endpoint,
+      err: String(err),
+    });
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (isPositiveInteger(parsed.n_ctx)) return parsed.n_ctx;
+  const nested = readNestedNCtx(parsed.default_generation_settings);
+  if (nested !== null) return nested;
+  logger.warn('llamacpp discovery: /props response missing usable n_ctx', {
+    url: endpoint,
+  });
+  return null;
+}
+
+/**
  * Build a placeholder-shaped Model row for each id returned by
  * /v1/models. Field defaults match the `llamacpp-local` catalog
  * placeholder so capability gating (supports_tools etc.) works for
- * arbitrary user-loaded models.
+ * arbitrary user-loaded models. `contextWindow` is the value from
+ * `/props.n_ctx` when available; callers pass DEFAULT_CONTEXT_WINDOW
+ * as a fallback.
  */
-function toCatalogModel(id: string): Model {
+function toCatalogModel(id: string, contextWindow: number): Model {
   return {
     id,
     provider: 'llamacpp',
     api: 'openai-completions',
     display_name: id,
-    context_window: DEFAULT_CONTEXT_WINDOW,
+    context_window: contextWindow,
     max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
     supports_thinking: false,
     supports_xhigh: false,
@@ -136,8 +230,20 @@ export async function discoverLoadedModel(
   chatUrl: string,
   headers: Record<string, string>,
 ): Promise<Model[]> {
-  const ids = await fetchModelIds(modelsUrl(chatUrl), headers);
-  return ids.map(toCatalogModel);
+  const [ids, ctx] = await Promise.all([
+    fetchModelIds(modelsUrl(chatUrl), headers),
+    fetchPropsContextWindow(propsUrl(chatUrl), headers),
+  ]);
+  const contextWindow = ctx ?? DEFAULT_CONTEXT_WINDOW;
+  // Visible at INFO so operators can tell from the harness log whether
+  // /props reported the real n_ctx or we fell through to the default —
+  // distinguishes "served context too small" from "discovery couldn't
+  // see n_ctx" without needing to attach a debugger.
+  logger.info('llamacpp discovery: resolved context window', {
+    context_window: contextWindow,
+    source: ctx === null ? 'default_fallback' : 'props_n_ctx',
+  });
+  return ids.map((id) => toCatalogModel(id, contextWindow));
 }
 
 /**

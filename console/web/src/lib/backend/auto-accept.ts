@@ -10,7 +10,11 @@
  */
 
 import type { Message } from '@/types/chat'
-import { DEFAULT_POLICY, isAutoAcceptable, type AutoAcceptPolicy } from './auto-accept-policy'
+import {
+  type AutoAcceptPolicy,
+  DEFAULT_POLICY,
+  isAutoAcceptable,
+} from './auto-accept-policy'
 
 export interface PendingApprovalCandidate {
   /** iii `function_call_id` — the dedup key. */
@@ -38,7 +42,10 @@ export interface PendingApprovalCandidate {
 export function selectAutoAcceptCandidates(
   messages: ReadonlyArray<Message>,
   policy: AutoAcceptPolicy = DEFAULT_POLICY,
-): { candidates: PendingApprovalCandidate[]; deniedByPolicy: PendingApprovalCandidate[] } | null {
+): {
+  candidates: PendingApprovalCandidate[]
+  deniedByPolicy: PendingApprovalCandidate[]
+} | null {
   const last = messages.length > 0 ? messages[messages.length - 1] : null
   if (!last || last.role !== 'function-call') return null
 

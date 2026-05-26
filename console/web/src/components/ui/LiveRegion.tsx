@@ -34,7 +34,9 @@ export function LiveRegion({ announcement }: LiveRegionProps) {
   const politeText =
     announcement && announcement.urgency === 'polite' ? announcement.text : ''
   const assertiveText =
-    announcement && announcement.urgency === 'assertive' ? announcement.text : ''
+    announcement && announcement.urgency === 'assertive'
+      ? announcement.text
+      : ''
   const seq = announcement?.seq ?? 0
   return (
     <>

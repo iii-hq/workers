@@ -7,7 +7,7 @@
  * used by both the hook gate and pre-approved resume execution.
  */
 
-import type { ISdk } from '../runtime/iii.js';
+import { IIIInvocationError, type ISdk } from '../runtime/iii.js';
 import { z } from 'zod';
 import type { ContentBlock } from '../types/content.js';
 import type { FunctionCall, FunctionResult } from '../types/function.js';
@@ -104,6 +104,41 @@ function isFunctionNotFound(err: unknown): boolean {
   return false;
 }
 
+/**
+ * If `err` is an {@link IIIInvocationError} whose `.message` carries a
+ * structured wire payload like
+ * `{"code":"S210","type":"...","message":"...","docs_url":"...","retryable":bool,...}`,
+ * return that payload. Otherwise return `null`.
+ *
+ * Several workers (notably `iii-worker`'s `sandbox::*`) serialize their
+ * domain errors as JSON via `Display` so the engine forwards them with the
+ * structured envelope intact. Without this extractor, those payloads get
+ * buried inside `gate_unavailable.reason` as `String(err)`, hiding the
+ * S-code, the docs URL, the `fix` hint, and any structured retry info from
+ * the calling agent.
+ *
+ * Only payloads with both a `code` string and a `message` string are
+ * accepted, so generic JSON values (numbers, plain strings, partial
+ * envelopes) still fall through to the `gate_unavailable` path.
+ */
+function extractStructuredHandlerError(err: unknown): Record<string, unknown> | null {
+  if (!(err instanceof IIIInvocationError)) return null;
+  // `IIIInvocationError`'s Error.message is `"${code}: ${rawMessage}"`. The
+  // raw handler-emitted message lives after that prefix.
+  const prefix = `${err.code}: `;
+  const raw = err.message.startsWith(prefix) ? err.message.slice(prefix.length) : err.message;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return null;
+  return obj;
+}
+
 export function functionNotFoundHint(badFunctionId: string): string {
   if (!badFunctionId.includes('/')) {
     return 'load the relevant skill via directory::skills::get, or check the function id';
@@ -141,6 +176,15 @@ export async function triggerFunctionCall(
         function: function_call.function_id,
         hint: functionNotFoundHint(function_call.function_id),
       });
+    }
+    // Structured worker error (e.g. `sandbox::*` S-codes): forward the
+    // envelope verbatim so the agent gets code + docs_url + fix hint
+    // instead of a generic gate_unavailable wrapper. We tag it with
+    // `error: 'handler_error'` so `isErrorResult` (and any downstream
+    // "did this tool call fail?" gate) still classifies it correctly.
+    const structured = extractStructuredHandlerError(err);
+    if (structured) {
+      return errorResult({ error: 'handler_error', ...structured });
     }
     return denialResult(
       gateUnavailableEnvelope(function_call.function_id, `trigger_failed: ${String(err)}`),

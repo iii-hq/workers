@@ -34,11 +34,7 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
       const target = e.target as HTMLElement | null
       if (target) {
         const tag = target.tagName
-        if (
-          tag === 'INPUT' ||
-          tag === 'TEXTAREA' ||
-          target.isContentEditable
-        ) {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
           return
         }
       }
@@ -122,8 +118,8 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
                 no api keys configured yet
               </p>
               <p className="font-mono text-[11px] text-ink-faint mt-1">
-                open any provider below to add a key. local providers
-                (lmstudio, llamacpp) don't need one.
+                open any provider below to add a key. local providers (lmstudio,
+                llamacpp) don't need one.
               </p>
             </div>
           ) : null}
@@ -144,10 +140,9 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
               <span className="text-accent">[stored]</span> set here ·{' '}
               <span className="text-ink">[env-var]</span> from environment
               variable (takes precedence) ·{' '}
-              <span className="text-ink-ghost">[local]</span> no key needed
-              ·{' '}
-              <span className="text-ink">[overridden]</span> routes via
-              custom endpoint or max-tokens cap
+              <span className="text-ink-ghost">[local]</span> no key needed ·{' '}
+              <span className="text-ink">[overridden]</span> routes via custom
+              endpoint or max-tokens cap
             </p>
             <p className="text-ink-faint">
               keyboard shortcuts: ↑↓ navigate rows · press 1–

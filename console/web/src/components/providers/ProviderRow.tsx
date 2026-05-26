@@ -1,11 +1,11 @@
 import { Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { ProviderSettingsDialog } from '@/components/providers/ProviderSettingsDialog'
 import {
   type ActiveProvider,
   isLocalProvider,
   PROVIDER_DISPLAY,
 } from '@/components/providers/provider-registry'
-import { ProviderSettingsDialog } from '@/components/providers/ProviderSettingsDialog'
 import { StatusBadge } from '@/components/providers/StatusBadge'
 import { useAuthStatus, useProviderConfig } from '@/hooks/use-providers'
 import { cn } from '@/lib/utils'

@@ -51,9 +51,8 @@ export function ModelPicker({
   loading,
   className,
 }: ModelPickerProps) {
-  const [settingsProvider, setSettingsProvider] = useState<ActiveProvider | null>(
-    null,
-  )
+  const [settingsProvider, setSettingsProvider] =
+    useState<ActiveProvider | null>(null)
 
   const pickerOptions =
     options.length > 0 ? options : [{ id: value, label: value }]

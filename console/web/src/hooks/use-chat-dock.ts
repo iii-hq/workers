@@ -24,7 +24,9 @@ function getViewportWidth(): number {
   return window.innerWidth || FALLBACK_VIEWPORT_WIDTH
 }
 
-export function computeDockMaxWidth(viewportWidth: number = getViewportWidth()): number {
+export function computeDockMaxWidth(
+  viewportWidth: number = getViewportWidth(),
+): number {
   return Math.max(DOCK_MIN_WIDTH, viewportWidth - DOCK_NEIGHBOR_MIN_WIDTH)
 }
 

@@ -1,11 +1,11 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, type ReactNode, useContext } from 'react'
 import {
-  useConversations,
   type ConversationsApi,
+  useConversations,
 } from '@/hooks/use-conversations'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
-import { getDefaultBackend } from '@/lib/backend'
 import type { ChatBackend } from '@/lib/backend'
+import { getDefaultBackend } from '@/lib/backend'
 import type { ModelOption } from '@/types/chat'
 
 const backend = getDefaultBackend()
@@ -30,7 +30,9 @@ interface ConversationsProviderProps {
  * conversations without re-instantiating storage state or duplicating
  * streaming controllers.
  */
-export function ConversationsProvider({ children }: ConversationsProviderProps) {
+export function ConversationsProvider({
+  children,
+}: ConversationsProviderProps) {
   const { modelOptions, catalogKeys, catalogLoading } = useModelPickerSource(
     backend.id,
   )

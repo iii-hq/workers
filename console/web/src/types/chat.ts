@@ -114,7 +114,12 @@ export interface SystemMessage extends BaseMessage {
   tokensBefore?: number
 }
 
-export type Message = UserMessage | AssistantMessage | ThoughtMessage | FunctionCallMessage | SystemMessage
+export type Message =
+  | UserMessage
+  | AssistantMessage
+  | ThoughtMessage
+  | FunctionCallMessage
+  | SystemMessage
 
 /**
  * Loose patch shape passed to updateMessage(). Lists every patchable field
@@ -164,7 +169,12 @@ export interface Conversation {
   updatedAt: number
 }
 
-const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>(['user', 'assistant', 'thought', 'function-call'])
+const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>([
+  'user',
+  'assistant',
+  'thought',
+  'function-call',
+])
 
 export function isKnownRole(role: unknown): role is Role {
   return typeof role === 'string' && KNOWN_ROLES.has(role as Role)

@@ -21,8 +21,7 @@ function parseFunctionsCatalogResponse(res: unknown): FunctionEntry[] {
     if (!raw || typeof raw !== 'object') continue
     const o = raw as Record<string, unknown>
     const id = typeof o.function_id === 'string' ? o.function_id : ''
-    const description =
-      typeof o.description === 'string' ? o.description : ''
+    const description = typeof o.description === 'string' ? o.description : ''
     if (!id) continue
     out.push({ id, description })
   }

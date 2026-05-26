@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type {
-  FunctionCallMessage,
-  Message,
-  UserMessage,
-} from '@/types/chat'
+import type { FunctionCallMessage, Message, UserMessage } from '@/types/chat'
 import {
   nextApprovalsToAutoResolve,
-  selectAutoAcceptCandidates,
   type PendingApprovalCandidate,
+  selectAutoAcceptCandidates,
 } from './auto-accept'
 
 function pending(
@@ -47,10 +43,9 @@ describe('nextApprovalsToAutoResolve', () => {
   it('returns the pending entries minus the ones already resolved', () => {
     const input = pending(['fc-1', 's-1'], ['fc-2', 's-1'], ['fc-3', 's-1'])
     const seen = new Set(['fc-2'])
-    expect(nextApprovalsToAutoResolve(input, seen).map((p) => p.functionCallId)).toEqual([
-      'fc-1',
-      'fc-3',
-    ])
+    expect(
+      nextApprovalsToAutoResolve(input, seen).map((p) => p.functionCallId),
+    ).toEqual(['fc-1', 'fc-3'])
   })
 
   it('returns an empty array when every pending entry is already resolved', () => {
@@ -67,10 +62,9 @@ describe('nextApprovalsToAutoResolve', () => {
   it('preserves input order when filtering', () => {
     const input = pending(['fc-a', 's'], ['fc-b', 's'], ['fc-c', 's'])
     const seen = new Set(['fc-b'])
-    expect(nextApprovalsToAutoResolve(input, seen).map((p) => p.functionCallId)).toEqual([
-      'fc-a',
-      'fc-c',
-    ])
+    expect(
+      nextApprovalsToAutoResolve(input, seen).map((p) => p.functionCallId),
+    ).toEqual(['fc-a', 'fc-c'])
   })
 
   it('does not mutate the input arrays or set', () => {
@@ -114,8 +108,14 @@ describe('selectAutoAcceptCandidates', () => {
       pendingFcall('m-4', 'fc-4', 'fs::ls'),
     ]
     const out = selectAutoAcceptCandidates(messages)!
-    expect(out.candidates.map((c) => c.functionCallId)).toEqual(['fc-1', 'fc-4'])
-    expect(out.deniedByPolicy.map((c) => c.functionCallId)).toEqual(['fc-2', 'fc-3'])
+    expect(out.candidates.map((c) => c.functionCallId)).toEqual([
+      'fc-1',
+      'fc-4',
+    ])
+    expect(out.deniedByPolicy.map((c) => c.functionCallId)).toEqual([
+      'fc-2',
+      'fc-3',
+    ])
   })
 
   it('skips function-call messages that lack functionCallId or sessionId', () => {

@@ -10,6 +10,7 @@ import type {
   UserMessage,
 } from '@/types/chat'
 import { Section, VariantCard } from '../Section'
+import { sandboxFixtures } from './sandbox-fixtures'
 
 const sampleAttachments: Attachment[] = [
   {
@@ -67,7 +68,8 @@ const assistantStreaming: AssistantMessage = {
   role: 'assistant',
   model: 'openai::gpt-5',
   mode: 'ask',
-  content: 'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
+  content:
+    'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
   streaming: true,
   createdAt: Date.now(),
 }
@@ -85,7 +87,8 @@ const assistantThinking: AssistantMessage = {
 const thoughtBrief: ThoughtType = {
   id: 't1',
   role: 'thought',
-  content: 'this is a one-line clarification. trivial to resolve, no branching to consider.',
+  content:
+    'this is a one-line clarification. trivial to resolve, no branching to consider.',
   durationMs: 800,
   createdAt: Date.now(),
 }
@@ -306,9 +309,21 @@ export function MessageVariantsSection() {
           <FunctionCallGroup messages={fcallGroupDone} />
         </VariantCard>
 
-        <VariantCard label="function-call group, done (3 functions, expanded)" className="@3xl:col-span-2">
+        <VariantCard
+          label="function-call group, done (3 functions, expanded)"
+          className="@3xl:col-span-2"
+        >
           <FunctionCallGroup messages={fcallGroupDone} defaultOpen />
         </VariantCard>
+
+        {sandboxFixtures.map((fixture) => (
+          <VariantCard
+            key={fixture.id}
+            label={`sandbox · ${fixture.functionId}`}
+          >
+            <FunctionCallMessage message={fixture} defaultOpen />
+          </VariantCard>
+        ))}
       </div>
     </Section>
   )

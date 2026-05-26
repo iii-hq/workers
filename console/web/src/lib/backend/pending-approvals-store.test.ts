@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import {
-  diffPending,
-  type PendingApproval,
-} from './pending-approvals-store'
+import { diffPending, type PendingApproval } from './pending-approvals-store'
 
 describe('diffPending', () => {
   it('returns all entries as added when previous list is empty', () => {
     const next: PendingApproval[] = [
-      { function_call_id: 'fc-1', function_id: 'shell::fs::write', args: { path: '/tmp/x' } },
+      {
+        function_call_id: 'fc-1',
+        function_id: 'shell::fs::write',
+        args: { path: '/tmp/x' },
+      },
     ]
     expect(diffPending([], next)).toEqual({
       added: next,
@@ -17,7 +18,11 @@ describe('diffPending', () => {
 
   it('returns all entries as removed when next list is empty', () => {
     const prev: PendingApproval[] = [
-      { function_call_id: 'fc-1', function_id: 'shell::fs::write', args: { path: '/tmp/x' } },
+      {
+        function_call_id: 'fc-1',
+        function_id: 'shell::fs::write',
+        args: { path: '/tmp/x' },
+      },
     ]
     expect(diffPending(prev, [])).toEqual({
       added: [],
@@ -53,10 +58,18 @@ describe('diffPending', () => {
 
   it('is keyed by function_call_id (treats objects with same id as same entry)', () => {
     const prev: PendingApproval[] = [
-      { function_call_id: 'fc-1', function_id: 'shell::shell', args: { command: 'ls' } },
+      {
+        function_call_id: 'fc-1',
+        function_id: 'shell::shell',
+        args: { command: 'ls' },
+      },
     ]
     const next: PendingApproval[] = [
-      { function_call_id: 'fc-1', function_id: 'shell::shell', args: { command: 'rm' } },
+      {
+        function_call_id: 'fc-1',
+        function_id: 'shell::shell',
+        args: { command: 'rm' },
+      },
     ]
     expect(diffPending(prev, next)).toEqual({ added: [], removed: [] })
   })

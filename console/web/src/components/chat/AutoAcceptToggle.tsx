@@ -76,10 +76,7 @@ export function AutoAcceptToggle({
       >
         auto-accept: <span className="font-mono">{value ? 'on' : 'off'}</span>
       </button>
-      <span
-        id={descId}
-        className="sr-only"
-      >
+      <span id={descId} className="sr-only">
         {value
           ? 'Auto-accept is on. Approval prompts for safe calls (reads, lookups, listings) are resolved automatically. Destructive or state-mutating calls still require a click.'
           : 'Auto-accept is off. Every approval prompt waits for an explicit click.'}

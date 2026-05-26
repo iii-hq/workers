@@ -87,9 +87,7 @@ export function ModeToggle<T extends string>({
             }}
             tabIndex={isRadio ? (active ? 0 : -1) : undefined}
             onClick={() => onChange(opt.value)}
-            onKeyDown={
-              isRadio ? (e) => handleRadioKeyDown(e, idx) : undefined
-            }
+            onKeyDown={isRadio ? (e) => handleRadioKeyDown(e, idx) : undefined}
             className={cn(
               'font-mono text-[13px] px-3 py-1 transition-colors lowercase',
               active
