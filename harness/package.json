@@ -1,6 +1,6 @@
 {
   "name": "harness",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "private": true,
   "description": "Node port of the iii harness stack: harness, approval-gate, turn-orchestrator, session, llm-budget, providers, and side-cars.",
   "license": "Apache-2.0",
