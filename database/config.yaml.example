@@ -1,10 +1,18 @@
-workers:
-  - name: database
-    config:
-      databases:
-        primary:
-          url: sqlite:./data/iii.db
-          pool:
-            max: 10
-            idle_timeout_ms: 30000
-            acquire_timeout_ms: 5000
+# Optional seed file for first-time registration (--config ./config.yaml.example).
+# When omitted, the worker seeds the built-in default:
+#
+#   databases:
+#     primary:
+#       url: sqlite:./data/iii.db
+#       pool: { max: 10, idle_timeout_ms: 30000, acquire_timeout_ms: 5000 }
+#
+# After the first boot, the runtime source of truth is the `configuration`
+# worker entry `database`, persisted at ./data/configuration/database.yaml.
+
+databases:
+  primary:
+    url: sqlite:./data/iii.db
+    pool:
+      max: 10
+      idle_timeout_ms: 30000
+      acquire_timeout_ms: 5000

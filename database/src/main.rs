@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use database::config::WorkerConfig;
+use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{
     begin_transaction::{self, BeginTxReq},
@@ -15,13 +16,14 @@ use database::handlers::{
     transaction_query::{self, TxQueryReq},
     AppState,
 };
-use database::pool;
 use database::transaction::TxRegistry;
 use database::triggers::handler::RowChangeTrigger;
-use iii_observability::Logger;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
-use std::collections::HashMap;
+use iii_observability::{Logger, OtelConfig};
+use iii_sdk::{
+    register_worker, InitOptions, RegisterFunction, RegisterTriggerType,
+};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -29,9 +31,9 @@ use std::sync::Arc;
     about = "database worker (PostgreSQL, MySQL, SQLite)"
 )]
 struct Cli {
-    /// Path to config.yaml file
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional seed config.yaml used to populate `initial_value` on first register
+    #[arg(long)]
+    config: Option<String>,
 
     /// WebSocket URL of the iii engine
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
@@ -50,30 +52,57 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     tracing::info!(
         name = database::worker_name(),
-        config = %cli.config,
+        seed_config = cli.config.as_deref().unwrap_or("(none)"),
         url = %redact_url(&cli.url),
         "starting"
     );
 
-    let cfg = WorkerConfig::from_file(&cli.config)
-        .map_err(|e| anyhow::anyhow!(e))
-        .with_context(|| format!("loading config from {}", cli.config))?;
+    let iii = register_worker(
+        &cli.url,
+        InitOptions {
+            otel: Some(OtelConfig::default()),
+            ..Default::default()
+        },
+    );
 
-    let mut pools = HashMap::new();
-    for (name, db) in &cfg.databases {
-        let p = pool::build(name, db)
-            .await
-            .map_err(|e| anyhow::anyhow!(serde_json::to_string(&e).unwrap_or_default()))
-            .with_context(|| format!("building pool for db `{name}`"))?;
-        tracing::info!(db = %name, driver = ?p.driver(), "pool ready");
-        pools.insert(name.clone(), p);
-    }
+    let seed = match &cli.config {
+        Some(path) => match WorkerConfig::from_file(path) {
+            Ok(cfg) => {
+                tracing::info!(path = %path, "loaded seed config for initial registration");
+                Some(cfg)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to load seed config; relying on existing configuration entry"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering database configuration schema")?;
+
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading database configuration")?;
+
+    let pools = configuration::build_pools(&cfg)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("building initial connection pools")?;
 
     let handles = Arc::new(HandleRegistry::new());
     let transactions = TxRegistry::new();
     let log = Logger::new();
     let state = AppState {
-        pools: Arc::new(pools),
+        pools: Arc::new(RwLock::new(pools)),
         handles: handles.clone(),
         transactions: transactions.clone(),
         log: log.clone(),
@@ -81,8 +110,6 @@ async fn main() -> Result<()> {
 
     let _evictor = handles.spawn_evictor();
     let _tx_watcher = transactions.spawn_timeout_watcher(log.clone());
-
-    let iii = register_worker(&cli.url, InitOptions::default());
 
     {
         let st = state.clone();
@@ -247,8 +274,11 @@ async fn main() -> Result<()> {
         RowChangeTrigger,
     ));
 
+    configuration::register_config_trigger(&iii, state.clone())
+        .context("registering configuration change trigger")?;
+
     tracing::info!(
-        "database worker registered 10 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 11 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

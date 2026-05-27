@@ -27,7 +27,7 @@ pub struct ExecuteResp {
 }
 
 pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
-    let pool = state.pool(&req.db).map_err(err_to_str)?;
+    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
     // Reject empty SQL uniformly. See the matching guard in query.rs for why
     // this is at the handler boundary rather than per-driver: postgres' driver
     // accepts empty SQL as a no-op success, sqlite/mysql reject — guarding
@@ -42,7 +42,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
     }
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
-    let result = match pool {
+    let result = match &pool {
         Pool::Sqlite(p) => driver::sqlite::execute(p, &req.sql, &params, &req.returning).await,
         Pool::Postgres(p) => driver::postgres::execute(p, &req.sql, &params, &req.returning).await,
         Pool::Mysql(p) => driver::mysql::execute(p, &req.sql, &params, &req.returning).await,
@@ -68,13 +68,14 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

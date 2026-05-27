@@ -54,7 +54,7 @@ fn failed_index_of(e: &crate::error::DbError) -> Option<usize> {
 }
 
 pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
-    let pool = state.pool(&req.db).map_err(err_to_str)?;
+    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
 
     let isolation = match req.isolation.as_deref() {
         Some("read_committed") => Some(Isolation::ReadCommitted),
@@ -75,7 +75,7 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
         stmts.push(TxStatement { sql: s.sql, params });
     }
 
-    let result = match pool {
+    let result = match &pool {
         Pool::Sqlite(p) => driver::sqlite::transaction(p, stmts, isolation).await,
         Pool::Postgres(p) => driver::postgres::transaction(p, stmts, isolation).await,
         Pool::Mysql(p) => driver::mysql::transaction(p, stmts, isolation).await,
@@ -127,13 +127,14 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

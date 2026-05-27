@@ -9,6 +9,7 @@ use crate::transaction::TxRegistry;
 use iii_observability::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub mod begin_transaction;
 pub mod commit_transaction;
@@ -26,16 +27,19 @@ pub(crate) use query::rows_to_objects as query_rows_to_objects;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pools: Arc<HashMap<String, Pool>>,
+    pub pools: Arc<RwLock<HashMap<String, Pool>>>,
     pub handles: Arc<HandleRegistry>,
     pub transactions: TxRegistry,
     pub log: Logger,
 }
 
 impl AppState {
-    pub fn pool(&self, db: &str) -> Result<&Pool, DbError> {
+    pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
         self.pools
+            .read()
+            .await
             .get(db)
+            .cloned()
             .ok_or_else(|| DbError::UnknownDb { db: db.to_string() })
     }
 }

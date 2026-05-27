@@ -17,25 +17,63 @@ iii worker add database@1.0.0
 
 ## Configure
 
-Add a single `databases` block to your `config.yaml`. SQLite is the recommended starting point — no server, just a file:
+Runtime settings live in the **`configuration` worker** under id **`database`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get`, and hot-reloads connection pools when the value changes.
+
+Persisted values default to `./data/configuration/database.yaml` (fs adapter). Edit that file directly or call `configuration::set` — both propagate without a worker restart.
+
+### Zero-config default
+
+With no seed file and no stored configuration value, the worker uses a built-in default:
 
 ```yaml
-workers:
-  - name: database
-    config:
-      databases:
-        primary:
-          url: sqlite:./data/iii.db
-          pool:
-            max: 10
-            idle_timeout_ms: 30000
-            acquire_timeout_ms: 5000
-        analytics:
-          url: ${ANALYTICS_URL}    # postgres:// or mysql://
-          pool: { max: 5 }
+databases:
+  primary:
+    url: sqlite:./data/iii.db
+    pool:
+      max: 10
+      idle_timeout_ms: 30000
+      acquire_timeout_ms: 5000
 ```
 
+This is seeded into the `configuration` worker on first register and used as a runtime fallback when the stored value is `null`.
+
+### Optional seed file
+
+Pass `--config <path>` to supply a YAML seed file. When present, its `databases` block is passed as `initial_value` on `configuration::register` (overriding the built-in default for first-time registration). See [`config.yaml.example`](config.yaml.example).
+
+Engine-managed deployments can inline config under the worker entry; the engine delivers it via `--config` as before.
+
+### Value shape
+
+SQLite is the recommended starting point — no server, just a file:
+
+```yaml
+databases:
+  primary:
+    url: sqlite:./data/iii.db
+    pool:
+      max: 10
+      idle_timeout_ms: 30000
+      acquire_timeout_ms: 5000
+  analytics:
+    url: ${ANALYTICS_URL:postgres://localhost/analytics}
+    pool: { max: 5 }
+```
+
+Set or replace the whole value:
+
+```bash
+iii trigger configuration::get id=database
+iii trigger configuration::set id=database value='{"databases":{"primary":{"url":"sqlite:./data/iii.db"}}}'
+```
+
+Env placeholders use **`${VAR:default}`** syntax. The configuration worker expands them on every `configuration::get` call, so env changes propagate without a restart.
+
 URL scheme picks the driver: `sqlite:`, `postgres://`, `postgresql://`, `mysql://`.
+
+### Hot reload
+
+When configuration changes (`configuration::set`, or an external edit to `./data/configuration/database.yaml`), the worker rebuilds connection pools in place. Invalid configs are rejected and the previous pools are kept. In-flight prepared-statement handles and open transactions continue on their original pool until they expire.
 
 ### TLS (postgres + mysql)
 

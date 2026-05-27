@@ -1,33 +1,78 @@
 //! Configuration parsing for the database worker.
 //!
-//! The worker accepts a YAML file with a `databases:` map keyed by name.
-//! Each entry has a `url` (whose scheme picks the driver) and an optional
-//! `pool` block. Environment variables in the form `${NAME}` are expanded
-//! against the process environment.
+//! Runtime config is stored in the `configuration` worker under id `database`.
+//! When no stored value and no `--config` seed exist, [`WorkerConfig::default`]
+//! supplies a local SQLite pool. An optional YAML seed file (`--config`) may
+//! override `initial_value` on first register. Each database entry has a `url`
+//! (whose scheme picks the driver) and an optional `pool` block. The seed path
+//! expands `${NAME}` against the process environment; values read from
+//! `configuration::get` are already expanded by the configuration worker
+//! (`${VAR:default}` syntax).
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use schemars::schema::Schema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// Top-level worker config (the contents of `config.yaml`, or the `config`
-/// block of `iii-config.yaml` when running embedded).
-#[derive(Debug, Clone, Deserialize)]
+pub const DEFAULT_DB_NAME: &str = "primary";
+pub const DEFAULT_SQLITE_URL: &str = "sqlite:./data/iii.db";
+
+/// Top-level worker config registered with the `configuration` worker.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(example = "worker_config_example")]
 pub struct WorkerConfig {
     #[serde(default)]
+    #[schemars(schema_with = "databases_schema")]
     pub databases: HashMap<String, DatabaseConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+fn worker_config_example() -> WorkerConfig {
+    WorkerConfig::default()
+}
+
+fn databases_schema(gen: &mut schemars::gen::SchemaGenerator) -> Schema {
+    let mut schema = gen.subschema_for::<HashMap<String, DatabaseConfig>>();
+    if let Schema::Object(obj) = &mut schema {
+        obj.metadata().description = Some(
+            "Named connection pools. Keys are logical database names referenced \
+             by RPC handlers (for example `primary`). At least one entry is required."
+                .into(),
+        );
+        obj.metadata().examples = vec![json!({
+            "primary": {
+                "url": DEFAULT_SQLITE_URL,
+                "pool": {
+                    "max": 10,
+                    "idle_timeout_ms": 30000,
+                    "acquire_timeout_ms": 5000
+                }
+            }
+        })];
+        if let Some(validation) = obj.object.as_mut() {
+            validation.min_properties = Some(1);
+        }
+    }
+    schema
+}
+
+/// Per-database connection settings. The URL scheme selects the driver;
+/// `pool` and `tls` are optional and default when omitted.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DatabaseConfig {
+    /// Connection URL. Driver is inferred from the scheme: `sqlite:`,
+    /// `postgres://` or `postgresql://`, or `mysql://`.
     pub url: String,
     #[serde(default)]
     pub pool: PoolConfig,
     #[serde(default)]
     pub tls: TlsConfig,
-    /// Populated by [`WorkerConfig::from_yaml`] from the URL scheme.
+    /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
     /// Do not construct `DatabaseConfig` directly without calling
-    /// `detect_driver` — the default `Sqlite` value will silently mismatch
+    /// `finalize` — the default `Sqlite` value will silently mismatch
     /// the URL.
     #[serde(skip)]
+    #[schemars(skip)]
     pub driver: DriverKind,
 }
 
@@ -39,8 +84,9 @@ pub struct DatabaseConfig {
 /// (matching libpq's `sslmode=require` semantics). Use `mode: verify-full`
 /// to additionally verify the certificate hostname matches the URL host,
 /// and `mode: disable` to opt out of TLS entirely (local-dev only).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TlsConfig {
+    /// TLS mode: `disable` (plaintext), `require` (default), or `verify-full`.
     #[serde(default)]
     pub mode: TlsMode,
     /// Optional path to a PEM file containing one or more CA certificates.
@@ -80,7 +126,7 @@ fn default_trust_native() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum TlsMode {
     /// No TLS. Plaintext connection. Local-dev only.
@@ -103,12 +149,15 @@ pub enum DriverKind {
     Sqlite,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PoolConfig {
+    /// Maximum number of open connections in the pool.
     #[serde(default = "default_pool_max")]
     pub max: u32,
+    /// Close idle connections after this many milliseconds.
     #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
+    /// Fail pool acquisition when no connection is available within this many milliseconds.
     #[serde(default = "default_acquire_timeout_ms")]
     pub acquire_timeout_ms: u64,
 }
@@ -133,11 +182,80 @@ fn default_acquire_timeout_ms() -> u64 {
     5_000
 }
 
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self::default_unchecked()
+    }
+}
+
 impl WorkerConfig {
+    fn default_unchecked() -> Self {
+        Self::finalize(WorkerConfig {
+            databases: HashMap::from([(
+                DEFAULT_DB_NAME.to_string(),
+                DatabaseConfig {
+                    url: DEFAULT_SQLITE_URL.to_string(),
+                    pool: PoolConfig::default(),
+                    tls: TlsConfig::default(),
+                    driver: DriverKind::default(),
+                },
+            )]),
+        })
+        .expect("built-in default config is valid")
+    }
+
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        let mut cfg: WorkerConfig =
+        let cfg: WorkerConfig =
             serde_yml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+        Self::finalize(cfg)
+    }
+
+    pub fn from_json(value: &Value) -> Result<Self, String> {
+        let cfg: WorkerConfig =
+            serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))?;
+        Self::finalize(cfg)
+    }
+
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+        Self::from_yaml(&raw)
+    }
+
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).expect("WorkerConfig serializes")
+    }
+
+    pub fn json_schema() -> Value {
+        let root = schemars::schema_for!(WorkerConfig);
+        let mut schema = serde_json::to_value(&root.schema).expect("WorkerConfig JSON Schema serializes");
+        if let Some(obj) = schema.as_object_mut() {
+            if !root.definitions.is_empty() {
+                obj.insert(
+                    "definitions".into(),
+                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
+                );
+            }
+            obj.insert(
+                "example".into(),
+                json!({
+                    "databases": {
+                        DEFAULT_DB_NAME: {
+                            "url": DEFAULT_SQLITE_URL,
+                            "pool": {
+                                "max": default_pool_max(),
+                                "idle_timeout_ms": default_idle_timeout_ms(),
+                                "acquire_timeout_ms": default_acquire_timeout_ms(),
+                            }
+                        }
+                    }
+                }),
+            );
+        }
+        schema
+    }
+
+    fn finalize(mut cfg: WorkerConfig) -> Result<Self, String> {
         if cfg.databases.is_empty() {
             return Err("config must declare at least one database".into());
         }
@@ -150,11 +268,6 @@ impl WorkerConfig {
             })?;
         }
         Ok(cfg)
-    }
-
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
-        Self::from_yaml(&raw)
     }
 }
 
@@ -264,6 +377,104 @@ mod tests {
 
     fn cfg(yaml: &str) -> WorkerConfig {
         WorkerConfig::from_yaml(yaml).unwrap()
+    }
+
+    #[test]
+    fn from_json_parses_sqlite_database() {
+        let json = serde_json::json!({
+            "databases": {
+                "primary": { "url": "sqlite:./data/iii.db" }
+            }
+        });
+        let c = WorkerConfig::from_json(&json).unwrap();
+        assert!(matches!(c.databases["primary"].driver, DriverKind::Sqlite));
+        assert_eq!(c.databases["primary"].url, "sqlite:./data/iii.db");
+    }
+
+    #[test]
+    fn from_json_empty_databases_errors() {
+        let err = WorkerConfig::from_json(&serde_json::json!({ "databases": {} })).unwrap_err();
+        assert!(err.contains("at least one database"), "got: {err}");
+    }
+
+    #[test]
+    fn to_json_roundtrip_omits_driver() {
+        let yaml = "databases:\n  p:\n    url: \"sqlite::memory:\"\n";
+        let cfg = cfg(yaml);
+        let json = cfg.to_json();
+        assert!(json["databases"]["p"].get("driver").is_none());
+        let back = WorkerConfig::from_json(&json).unwrap();
+        assert!(matches!(back.databases["p"].driver, DriverKind::Sqlite));
+    }
+
+    #[test]
+    fn json_schema_is_object_with_databases_property() {
+        let schema = WorkerConfig::json_schema();
+        assert!(schema.get("properties").and_then(|p| p.get("databases")).is_some());
+    }
+
+    #[test]
+    fn default_matches_expected_primary_sqlite() {
+        let cfg = WorkerConfig::default();
+        assert_eq!(cfg.databases.len(), 1);
+        let db = &cfg.databases[DEFAULT_DB_NAME];
+        assert_eq!(db.url, DEFAULT_SQLITE_URL);
+        assert!(matches!(db.driver, DriverKind::Sqlite));
+        assert_eq!(db.pool.max, 10);
+        assert_eq!(db.pool.idle_timeout_ms, 30_000);
+        assert_eq!(db.pool.acquire_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn default_json_roundtrips_and_omits_driver() {
+        let cfg = WorkerConfig::default();
+        let json = cfg.to_json();
+        assert!(json["databases"][DEFAULT_DB_NAME].get("driver").is_none());
+        let back = WorkerConfig::from_json(&json).unwrap();
+        assert_eq!(back.databases[DEFAULT_DB_NAME].url, DEFAULT_SQLITE_URL);
+        assert!(matches!(
+            back.databases[DEFAULT_DB_NAME].driver,
+            DriverKind::Sqlite
+        ));
+    }
+
+    #[test]
+    fn json_schema_describes_url_and_requires_databases() {
+        let schema = WorkerConfig::json_schema();
+        let databases = schema["properties"]["databases"].as_object().unwrap();
+        assert!(databases.get("description").is_some());
+        assert_eq!(databases["minProperties"], 1);
+
+        let db_schema = schema["definitions"]["DatabaseConfig"].as_object().unwrap();
+        let url = db_schema["properties"]["url"].as_object().unwrap();
+        assert!(url.get("description").is_some());
+
+        let pool_schema = schema["definitions"]["PoolConfig"].as_object().unwrap();
+        for field in ["max", "idle_timeout_ms", "acquire_timeout_ms"] {
+            assert!(
+                pool_schema["properties"][field].get("description").is_some(),
+                "missing description for pool.{field}"
+            );
+        }
+
+        assert!(schema.get("example").is_some());
+    }
+
+    /// Regenerate the e2e harness schema fixture when `WorkerConfig` changes:
+    /// `EXPORT_E2E_SCHEMA=1 cargo test -p database export_e2e_schema_fixture -- --ignored`
+    #[test]
+    #[ignore]
+    fn export_e2e_schema_fixture() {
+        if std::env::var("EXPORT_E2E_SCHEMA").is_err() {
+            return;
+        }
+        let schema = WorkerConfig::json_schema();
+        let pretty = serde_json::to_string_pretty(&schema).expect("schema serializes");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/e2e/workers/harness/fixtures/database.schema.json"
+        );
+        std::fs::write(path, pretty + "\n").expect("write schema fixture");
     }
 
     #[test]

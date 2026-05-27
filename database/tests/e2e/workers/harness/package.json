@@ -6,6 +6,7 @@
   "description": "Self-asserting smoke harness for the iii database worker (SQLite, Postgres, MySQL).",
   "scripts": {
     "dev": "tsx src/worker.ts",
+    "seed-config": "tsx src/seed-configuration.ts",
     "build": "tsc"
   },
   "dependencies": {
