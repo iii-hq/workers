@@ -3465,7 +3465,6 @@ dependencies = [
  "gcloud-pubsub",
  "gcloud-storage",
  "hex",
- "iii-observability",
  "iii-sdk",
  "libc",
  "percent-encoding",
