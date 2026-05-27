@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 iii-sdk = "=0.16.0-next.2"
-iii-observability = "=0.16.0-next.2"
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }

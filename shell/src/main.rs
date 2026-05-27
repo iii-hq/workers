@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_observability::OtelConfig;
 use iii_sdk::{register_worker, IIIError, InitOptions, RegisterFunction};
 use serde_json::Value;
 use std::sync::Arc;
@@ -73,13 +72,7 @@ async fn main() -> Result<()> {
     let shared = Arc::new(shell_config);
 
     tracing::info!(url = %cli.url, "connecting to III engine");
-    let iii = register_worker(
-        &cli.url,
-        InitOptions {
-            otel: Some(OtelConfig::default()),
-            ..Default::default()
-        },
-    );
+    let iii = register_worker(&cli.url, InitOptions::default());
 
     // shell::exec, shell::exec_bg, and the 10 shell::fs::* handlers take
     // Value at the registration boundary so they can preserve legacy wire
