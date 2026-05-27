@@ -1,25 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { execute, register } from '../../src/turn-orchestrator/run-start.js';
 import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
-
-type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
-
-function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
-  const calls: TriggerCall[] = [];
-  const iii = {
-    trigger: async <T, R>(req: {
-      function_id: string;
-      payload: T;
-      action?: unknown;
-    }): Promise<R> => {
-      calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
-      return null as R;
-    },
-    registerFunction: vi.fn(),
-  } as unknown as ISdk;
-  return { iii, calls };
-}
 
 /** Shape console/web sends inside harness::trigger payload (real.ts). */
 const consoleRunStartPayload = {

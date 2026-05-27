@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
+import { agentTriggerCall, makeAssistant } from './_helpers/builders.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
@@ -21,28 +22,6 @@ function mockFinalizePersistence(): void {
     loadMessages: vi.fn(async () => []),
     appendMessages: vi.fn(async () => {}),
   });
-}
-
-/** Build a minimal AssistantMessage with the given function_call content blocks. */
-function makeAssistant(
-  calls: Array<{ id: string; function_id: string; arguments?: unknown }>,
-): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: calls.map((c) => ({
-      type: 'function_call' as const,
-      id: c.id,
-      function_id: c.function_id,
-      arguments: c.arguments ?? {},
-    })),
-    stop_reason: 'function_call',
-    error_message: null,
-    error_kind: null,
-    usage: null,
-    model: 'm',
-    provider: 'p',
-    timestamp: 1,
-  };
 }
 
 describe('parseApprovalDecision', () => {
@@ -87,15 +66,6 @@ function seedFunctionExecute(
   enterFunctionExecute(rec, asst ?? makeAssistant([]));
   rec.work = work;
   rec.state = 'function_execute';
-}
-
-/** Wrap a target function id in the agent_trigger envelope (production shape). */
-function agentTriggerCall(
-  id: string,
-  functionId: string,
-  payload: unknown = {},
-): { id: string; function_id: string; arguments: unknown } {
-  return { id, function_id: 'agent_trigger', arguments: { function: functionId, payload } };
 }
 
 describe('handleExecute new flow', () => {

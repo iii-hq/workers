@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
+import { makeAssistant } from './_helpers/builders.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import {
   applyDecisionToPrepared,
@@ -15,27 +16,6 @@ import type { AssistantMessage } from '../../src/types/agent-message.js';
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
-function makeAssistant(
-  calls: Array<{ id: string; function_id: string; arguments?: unknown }> = [],
-): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: calls.map((c) => ({
-      type: 'function_call' as const,
-      id: c.id,
-      function_id: c.function_id,
-      arguments: c.arguments ?? {},
-    })),
-    stop_reason: 'function_call',
-    error_message: null,
-    error_kind: null,
-    usage: null,
-    model: 'm',
-    provider: 'p',
-    timestamp: 1,
-  };
-}
 
 function seedFunctionAwaitingApproval(
   rec: TurnStateRecord,

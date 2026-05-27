@@ -4,26 +4,25 @@ import type {
   PolicyCheckReply,
 } from '../../src/harness/policy/check-permissions.js';
 import type { ISdk } from '../../src/runtime/iii.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { consultBefore } from '../../src/turn-orchestrator/hook.js';
 
-function fakeIii(
-  triggerImpl: (req: {
+function policyIii(
+  reply: (req: {
     function_id: string;
     payload: CheckPermissionsPayload;
   }) => PolicyCheckReply | Promise<PolicyCheckReply>,
-) {
-  return {
-    trigger: vi.fn(async (req: { function_id: string; payload: CheckPermissionsPayload }) =>
-      triggerImpl(req),
-    ),
-  } as unknown as ISdk;
+): ISdk {
+  return fakeIii({
+    responder: (req) => reply(req as { function_id: string; payload: CheckPermissionsPayload }),
+  }).iii;
 }
 
 describe('consultBefore (direct policy call)', () => {
   const fc = { id: 'fc-1', function_id: 'shell::fs::write', arguments: { path: '/tmp/x' } };
 
   it('returns allow when policy decides allow', async () => {
-    const iii = fakeIii(({ function_id }) => {
+    const iii = policyIii(({ function_id }) => {
       expect(function_id).toBe('policy::check_permissions');
       return { decision: 'allow', rule_id: 'allow-tmp' };
     });
@@ -32,7 +31,7 @@ describe('consultBefore (direct policy call)', () => {
   });
 
   it('returns deny with a permissions envelope when policy decides deny', async () => {
-    const iii = fakeIii(() => ({
+    const iii = policyIii(() => ({
       decision: 'deny',
       rule_id: 'deny-rm-rf',
       rule_action: 'deny',
@@ -46,13 +45,13 @@ describe('consultBefore (direct policy call)', () => {
   });
 
   it('returns pending when policy says needs_approval', async () => {
-    const iii = fakeIii(() => ({ decision: 'needs_approval' }));
+    const iii = policyIii(() => ({ decision: 'needs_approval' }));
     const outcome = await consultBefore(iii, fc);
     expect(outcome.kind).toBe('pending');
   });
 
   it('fails closed (deny gate_unavailable) when policy is unreachable', async () => {
-    const iii = fakeIii(() => {
+    const iii = policyIii(() => {
       throw new Error('policy worker down');
     });
     const outcome = await consultBefore(iii, fc);

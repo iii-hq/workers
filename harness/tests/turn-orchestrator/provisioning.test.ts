@@ -1,32 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
 import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { defaultRunRequest, installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import { parseDirectoryBody } from '../../src/turn-orchestrator/provisioning/ports.js';
 import { handleProvisioning, register } from '../../src/turn-orchestrator/provisioning/process.js';
-
-type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
-
-function fakeIii(responses: Record<string, unknown> = {}): { iii: ISdk; calls: TriggerCall[] } {
-  const calls: TriggerCall[] = [];
-  const iii = {
-    trigger: async <T, R>(req: {
-      function_id: string;
-      payload: T;
-      timeoutMs?: number;
-    }): Promise<R> => {
-      calls.push({
-        function_id: req.function_id,
-        payload: req.payload,
-        timeoutMs: req.timeoutMs,
-      });
-      return (responses[req.function_id] ?? null) as R;
-    },
-  } as unknown as ISdk;
-  return { iii, calls };
-}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -49,8 +28,10 @@ describe('handleProvisioning', () => {
   it('materializes schemas, persists built prompt, and advances to assistant_streaming', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
     const { iii, calls } = fakeIii({
-      'directory::skills::index': { body: 'INDEX' },
-      'directory::skills::get': { body: 'SKILL' },
+      responder: {
+        'directory::skills::index': { body: 'INDEX' },
+        'directory::skills::get': { body: 'SKILL' },
+      },
     });
     const cfg = { system_default_skills: ['iii://iii-directory/index'] };
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { makeAssistant } from './_helpers/builders.js';
 import {
   missingFunctionResult,
   unwrapAgentTrigger,
@@ -13,27 +14,6 @@ import type { FunctionExecutePorts } from '../../src/turn-orchestrator/function-
 import type { ExecutedCall } from '../../src/turn-orchestrator/function-execute/types.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
-
-function makeAssistant(
-  calls: Array<{ id: string; function_id: string; arguments?: unknown }>,
-): AssistantMessage {
-  return {
-    role: 'assistant',
-    content: calls.map((c) => ({
-      type: 'function_call' as const,
-      id: c.id,
-      function_id: c.function_id,
-      arguments: c.arguments ?? {},
-    })),
-    stop_reason: 'function_call',
-    error_message: null,
-    error_kind: null,
-    usage: null,
-    model: 'm',
-    provider: 'p',
-    timestamp: 1,
-  };
-}
 
 function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecutePorts {
   return {

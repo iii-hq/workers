@@ -1,32 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
+import { fakeIii, type FakeIiiOptions, type TriggerCall } from './_helpers/fakeIii.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import * as preflightModule from '../../src/turn-orchestrator/preflight.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { handleStreaming } from '../../src/turn-orchestrator/assistant-streaming/process.js';
-
-type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
-
-function fakeIii(overrides?: Partial<ISdk>): { iii: ISdk; calls: TriggerCall[] } {
-  const calls: TriggerCall[] = [];
-  const iii = {
-    trigger: async <T, R>(req: {
-      function_id: string;
-      payload: T;
-      timeoutMs?: number;
-    }): Promise<R> => {
-      calls.push({
-        function_id: req.function_id,
-        payload: req.payload,
-        timeoutMs: req.timeoutMs,
-      });
-      return null as R;
-    },
-    ...overrides,
-  } as unknown as ISdk;
-  return { iii, calls };
-}
 
 function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
   return {
@@ -62,7 +41,7 @@ function fakeIiiWithDone(finalMsg: AssistantMessage): { iii: ISdk; calls: Trigge
         },
       };
     },
-  });
+  } as FakeIiiOptions);
 }
 
 afterEach(() => {
@@ -90,7 +69,7 @@ describe('handleStreaming turn start', () => {
       createChannel: async () => {
         throw new Error('channel unavailable');
       },
-    });
+    } as FakeIiiOptions);
     mockStreamingStore();
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
@@ -112,7 +91,7 @@ describe('handleStreaming', () => {
       createChannel: async () => {
         throw new Error('channel unavailable');
       },
-    });
+    } as FakeIiiOptions);
     mockStreamingStore();
     vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue('ok');
 
