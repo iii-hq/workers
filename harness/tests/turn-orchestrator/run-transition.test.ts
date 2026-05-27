@@ -8,6 +8,7 @@ import {
   newRecord,
   transitionTo,
 } from '../../src/turn-orchestrator/state.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 
 afterEach(() => {
@@ -97,21 +98,16 @@ describe('runTransition', () => {
   });
 });
 
-function fakeIii(record: unknown) {
-  const writes: Array<{ function_id: string; payload: any }> = [];
-  const iii = {
-    trigger: vi.fn(async ({ function_id, payload }: any) => {
-      writes.push({ function_id, payload });
-      if (
-        function_id === 'state::get' &&
-        payload.scope === TURN_STATE_SCOPE &&
-        payload.key === 's1'
-      ) {
+function fakeIiiForRecord(record: unknown) {
+  const { iii, calls: writes } = fakeIii({
+    responder: (req) => {
+      const p = req.payload as { scope?: string; key?: string };
+      if (req.function_id === 'state::get' && p?.scope === TURN_STATE_SCOPE && p?.key === 's1') {
         return record;
       }
       return null;
-    }),
-  } as any;
+    },
+  });
   return { iii, writes };
 }
 
@@ -127,7 +123,7 @@ describe('runTransition error model', () => {
   };
 
   it('routes an unexpected throw to failed and does not re-throw', async () => {
-    const { iii, writes } = fakeIii({ ...base });
+    const { iii, writes } = fakeIiiForRecord({ ...base });
     const res = await runTransition(
       iii,
       'function_execute',
@@ -159,7 +155,7 @@ describe('runTransition error model', () => {
   });
 
   it('re-throws TransientError so the queue retries', async () => {
-    const { iii } = fakeIii({ ...base });
+    const { iii } = fakeIiiForRecord({ ...base });
     await expect(
       runTransition(
         iii,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
 import * as events from '../../src/turn-orchestrator/events.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { newRecord, type TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { handleSteering } from '../../src/turn-orchestrator/steering-check/process.js';
@@ -32,9 +32,8 @@ function makeIii(opts: { steeringItems?: AgentMessage[]; followupItems?: AgentMe
   const { steeringItems = [], followupItems = [] } = opts;
   const drainCalls: Array<{ name: string; session_id: string }> = [];
 
-  const iii = {
-    trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-      if (req.function_id === 'state::get') return null;
+  const { iii } = fakeIii({
+    responder: (req) => {
       if (req.function_id === 'session-inbox::drain') {
         const p = req.payload as { name: string; session_id: string };
         drainCalls.push(p);
@@ -43,10 +42,9 @@ function makeIii(opts: { steeringItems?: AgentMessage[]; followupItems?: AgentMe
         return { items: [] };
       }
       if (req.function_id === 'state::update') return { old_value: 0 };
-      if (req.function_id === 'stream::set') return null;
       return null;
-    }),
-  } as unknown as ISdk;
+    },
+  });
 
   return { iii, drainCalls };
 }

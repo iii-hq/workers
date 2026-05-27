@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import { makeAssistant } from './_helpers/builders.js';
+import { fakeIii } from './_helpers/fakeIii.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import {
   applyDecisionToPrepared,
@@ -33,15 +33,14 @@ function seedFunctionAwaitingApproval(
   rec.state = 'function_awaiting_approval';
 }
 
-function makeIii(approvalStore: Map<string, unknown>): ISdk {
-  return {
-    trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+function approvalsIii(approvalStore: Map<string, unknown>) {
+  return fakeIii({
+    responder: (req) => {
       if (req.function_id === 'state::get') {
         const p = req.payload as { scope: string; key: string };
         return approvalStore.get(`${p.scope}/${p.key}`) ?? null;
       }
       if (req.function_id === 'state::update') return { old_value: 0 };
-      if (req.function_id === 'stream::set') return null;
       if (req.function_id === 'shell::run') {
         return {
           content: [{ type: 'text' as const, text: 'ok' }],
@@ -50,8 +49,8 @@ function makeIii(approvalStore: Map<string, unknown>): ISdk {
         };
       }
       return null;
-    }),
-  } as unknown as ISdk;
+    },
+  }).iii;
 }
 
 describe('applyDecisionToPrepared', () => {
@@ -76,54 +75,15 @@ describe('applyDecisionToPrepared', () => {
   });
 });
 
+// The allow→steering_check and undecided-parking cases are exercised end-to-end by
+// `tests/integration/parallel-approval.e2e.test.ts` (with the dedicated harness). This file
+// keeps only the case that the e2e does not cover: returning to `function_execute` when a
+// resolved batch still has unprepared siblings to dispatch.
 describe('handleAwaitingApproval', () => {
-  it('executes allow decision and finalizes when batch completes', async () => {
-    const approvalStore = new Map<string, unknown>();
-    approvalStore.set('approvals/s1/fc-1', { decision: 'allow', reason: null });
-    const iii = makeIii(approvalStore);
-    const rec = newRecord('s1');
-    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } };
-    seedFunctionAwaitingApproval(
-      rec,
-      { prepared: [{ route: 'dispatch', call: fc }], executed: {} },
-      [{ function_call_id: 'fc-1', function_id: 'shell::run' }],
-    );
-
-    installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
-      appendMessages: vi.fn(async () => {}),
-    });
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleAwaitingApproval(iii, rec);
-
-    expect(rec.awaiting_approval).toEqual([]);
-    expect(rec.state).toBe('steering_check');
-    expect(rec.work).toBeUndefined();
-    expect(rec.function_results).toHaveLength(1);
-  });
-
-  it('leaves state parked when awaiting entries remain undecided', async () => {
-    const iii = makeIii(new Map());
-    const rec = newRecord('s1');
-    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
-    seedFunctionAwaitingApproval(
-      rec,
-      { prepared: [{ route: 'dispatch', call: fc }], executed: {} },
-      [{ function_call_id: 'fc-1', function_id: 'shell::run' }],
-    );
-    installMockTurnStore();
-
-    await handleAwaitingApproval(iii, rec);
-
-    expect(rec.state).toBe('function_awaiting_approval');
-    expect(rec.awaiting_approval).toHaveLength(1);
-  });
-
   it('returns to function_execute when approvals done but batch incomplete', async () => {
     const approvalStore = new Map<string, unknown>();
     approvalStore.set('approvals/s1/fc-2', { decision: 'deny', reason: null });
-    const iii = makeIii(approvalStore);
+    const iii = approvalsIii(approvalStore);
     const rec = newRecord('s1');
     const fc1 = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };

@@ -7,37 +7,27 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
 import { CompactionBusyError, ContextOverflowError } from '../../src/turn-orchestrator/errors.js';
 import { runPreflight } from '../../src/turn-orchestrator/preflight.js';
-
-type TriggerCall = { function_id: string; payload: unknown };
+import { fakeIii, type TriggerCall } from './_helpers/fakeIii.js';
 
 function makeIii(overrides?: {
   modelsGetResult?: unknown;
   sessionTreeResult?: unknown;
   compactNowResult?: unknown;
-}): { iii: ISdk; calls: TriggerCall[] } {
-  const calls: TriggerCall[] = [];
-
-  const iii = {
-    trigger: async <_T, R>(req: { function_id: string; payload: unknown }): Promise<R> => {
-      calls.push({ function_id: req.function_id, payload: req.payload });
-
-      if (req.function_id === 'models::get') {
-        return (overrides?.modelsGetResult ?? null) as R;
-      }
+}): { iii: ReturnType<typeof fakeIii>['iii']; calls: TriggerCall[] } {
+  return fakeIii({
+    responder: (req) => {
+      if (req.function_id === 'models::get') return overrides?.modelsGetResult ?? null;
       if (req.function_id === 'session-tree::messages') {
-        return (overrides?.sessionTreeResult ?? { messages: [] }) as R;
+        return overrides?.sessionTreeResult ?? { messages: [] };
       }
       if (req.function_id === 'context-compaction::compact_now') {
-        return (overrides?.compactNowResult ?? { status: 'ok' }) as R;
+        return overrides?.compactNowResult ?? { status: 'ok' };
       }
-      return null as R;
+      return null;
     },
-  } as unknown as ISdk;
-
-  return { iii, calls };
+  });
 }
 
 const smallMessage = { role: 'user' as const, content: [] as never[], timestamp: 0 };

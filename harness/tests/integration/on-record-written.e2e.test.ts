@@ -1,62 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { TriggerAction } from '../../src/runtime/iii.js';
-import type { ISdk } from '../../src/runtime/iii.js';
 import { createTurnStore } from '../../src/turn-orchestrator/state-runtime/store.js';
 import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
-
-function fakeIii(): {
-  iii: ISdk;
-  wakeInvocations: Array<{ session_id: string; function_id: string; action?: unknown }>;
-  stateStore: Map<string, unknown>;
-} {
-  const stateStore = new Map<string, unknown>();
-  const wakeInvocations: Array<{ session_id: string; function_id: string; action?: unknown }> = [];
-  const iii = {
-    trigger: vi.fn(
-      async ({
-        function_id,
-        payload,
-        action,
-      }: {
-        function_id: string;
-        payload: unknown;
-        action?: unknown;
-      }) => {
-        if (function_id === 'state::get') {
-          const p = payload as { scope: string; key: string };
-          const v = stateStore.get(`${p.scope}/${p.key}`);
-          return v === undefined ? null : structuredClone(v);
-        }
-
-        if (function_id === 'state::set') {
-          const p = payload as { scope: string; key: string; value: unknown };
-          const storeKey = `${p.scope}/${p.key}`;
-          const old_value = stateStore.has(storeKey)
-            ? structuredClone(stateStore.get(storeKey))
-            : null;
-          const new_value = structuredClone(p.value);
-          stateStore.set(storeKey, new_value);
-          return { old_value, new_value };
-        }
-
-        if (function_id === 'state::update') {
-          return { old_value: 0 };
-        }
-
-        if (function_id.startsWith('turn::')) {
-          const p = payload as { session_id: string };
-          wakeInvocations.push({ session_id: p.session_id, function_id, action });
-          return null;
-        }
-
-        return null;
-      },
-    ),
-  };
-
-  return { iii: iii as unknown as ISdk, wakeInvocations, stateStore };
-}
+import { fakeIiiWithStateStore as fakeIii } from '../turn-orchestrator/_helpers/stateStoreIii.js';
 
 describe('saveRecord wake integration', () => {
   it('writing a new stepable turn_state enqueues turn::provisioning', async () => {
