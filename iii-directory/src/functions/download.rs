@@ -83,7 +83,8 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, subscribers: &super::Su
     let skills_subs = subscribers.skills.clone();
     let prompts_subs = subscribers.prompts.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::skills::download", move |req: DownloadInput| {
+        "directory::skills::download",
+        RegisterFunction::new_async(move |req: DownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.clone();
             let skills_subs = skills_subs.clone();

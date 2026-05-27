@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::{DashMap, DashSet};
-use iii_sdk::{FunctionRef, III, RegisterFunctionMessage, RegisterTriggerInput};
+use iii_sdk::{FunctionRef, III, RegisterFunction, RegisterTriggerInput};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -681,10 +681,9 @@ fn register_event_subscriber(
     let iii_inner = iii.clone();
     let owned_inner = owned_sessions.clone();
     let locks_inner = history_locks.clone();
-    let function = iii.register_function((
-        RegisterFunctionMessage::with_id(fn_id.clone())
-            .with_description("ACP agent::events → stdout fan-in".into()),
-        move |payload: Value| {
+    let function = iii.register_function(
+        fn_id.clone(),
+        RegisterFunction::new_async(move |payload: Value| {
             let outbound = outbound_inner.clone();
             let seq = seq_inner.clone();
             let iii = iii_inner.clone();
@@ -694,8 +693,9 @@ fn register_event_subscriber(
                 forward_agent_event(&iii, &outbound, &seq, &owned, &locks, payload).await;
                 Ok(json!({ "ok": true }))
             }
-        },
-    ));
+        })
+        .description("ACP agent::events → stdout fan-in"),
+    );
 
     let trigger = match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "stream".into(),

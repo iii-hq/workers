@@ -204,7 +204,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "coder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -973,24 +973,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-sdk"
-version = "0.13.0-next.1"
+name = "iii-observability"
+version = "0.16.0-next.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17cf728e12b30b11c37295304e0a5807cf677cca430b66609b7ae3c6044c358d"
+checksum = "00ee84dacaf7e14750ebdc229523e52029441c4ae1f72d25972bf1f2e1edeb99"
 dependencies = [
  "async-trait",
  "futures-util",
- "hostname",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
  "reqwest",
- "schemars",
  "serde",
  "serde_json",
  "sysinfo",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.16.0-next.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c18b68b2aa09e18c68fb023c78316fe7ccf42181874eab584d66f40119b47e"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "hostname",
+ "iii-observability",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

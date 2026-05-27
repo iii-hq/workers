@@ -122,7 +122,7 @@ pub(crate) mod tests {
     use crate::handlers::AppState;
     use crate::pool::{Pool, SqlitePool};
     use crate::transaction::TxRegistry;
-    use iii_sdk::Logger;
+    use iii_observability::Logger;
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;

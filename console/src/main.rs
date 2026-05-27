@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
+use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 use tokio::sync::oneshot;
 
 use console::{config, functions, manifest, server};
@@ -88,7 +88,6 @@ async fn main() -> Result<()> {
     let iii = register_worker(
         &engine_url,
         InitOptions {
-            otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),

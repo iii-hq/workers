@@ -18,9 +18,8 @@ use database::handlers::{
 use database::pool;
 use database::transaction::TxRegistry;
 use database::triggers::handler::RowChangeTrigger;
-use iii_sdk::{
-    register_worker, InitOptions, Logger, OtelConfig, RegisterFunction, RegisterTriggerType,
-};
+use iii_observability::Logger;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -83,20 +82,19 @@ async fn main() -> Result<()> {
     let _evictor = handles.spawn_evictor();
     let _tx_watcher = transactions.spawn_timeout_watcher(log.clone());
 
-    let iii = register_worker(
-        &cli.url,
-        InitOptions {
-            otel: Some(OtelConfig::default()),
-            ..Default::default()
-        },
-    );
+    let iii = register_worker(&cli.url, InitOptions::default());
 
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::query", move |req: QueryReq| {
+            "database::query",
+            RegisterFunction::new_async(move |req: QueryReq| {
                 let st = st.clone();
-                async move { query::handle(&st, req).await }
+                async move {
+                    query::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Run a read-only SQL query and return the result rows."),
         );
@@ -104,9 +102,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::execute", move |req: ExecuteReq| {
+            "database::execute",
+            RegisterFunction::new_async(move |req: ExecuteReq| {
                 let st = st.clone();
-                async move { execute::handle(&st, req).await }
+                async move {
+                    execute::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
         );
@@ -114,9 +117,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::prepareStatement", move |req: PrepareReq| {
+            "database::prepareStatement",
+            RegisterFunction::new_async(move |req: PrepareReq| {
                 let st = st.clone();
-                async move { prepare::handle(&st, req).await }
+                async move {
+                    prepare::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Prepare a parameterized statement once."),
         );
@@ -124,9 +132,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::runStatement", move |req: RunReq| {
+            "database::runStatement",
+            RegisterFunction::new_async(move |req: RunReq| {
                 let st = st.clone();
-                async move { run_statement::handle(&st, req).await }
+                async move {
+                    run_statement::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Run a previously-prepared handle."),
         );
@@ -134,9 +147,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::transaction", move |req: TxReq| {
+            "database::transaction",
+            RegisterFunction::new_async(move |req: TxReq| {
                 let st = st.clone();
-                async move { transaction::handle(&st, req).await }
+                async move {
+                    transaction::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Run a sequence of statements atomically."),
         );
@@ -144,9 +162,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::beginTransaction", move |req: BeginTxReq| {
+            "database::beginTransaction",
+            RegisterFunction::new_async(move |req: BeginTxReq| {
                 let st = st.clone();
-                async move { begin_transaction::handle(&st, req).await }
+                async move {
+                    begin_transaction::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description(
                 "Open an interactive transaction; returns a handle to use with \
@@ -157,9 +180,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::transactionQuery", move |req: TxQueryReq| {
+            "database::transactionQuery",
+            RegisterFunction::new_async(move |req: TxQueryReq| {
                 let st = st.clone();
-                async move { transaction_query::handle(&st, req).await }
+                async move {
+                    transaction_query::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Run a read-only SQL query inside an interactive transaction."),
         );
@@ -167,13 +195,15 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async(
-                "database::transactionExecute",
-                move |req: TxExecuteReq| {
-                    let st = st.clone();
-                    async move { transaction_execute::handle(&st, req).await }
-                },
-            )
+            "database::transactionExecute",
+            RegisterFunction::new_async(move |req: TxExecuteReq| {
+                let st = st.clone();
+                async move {
+                    transaction_execute::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
+            })
             .description(
                 "Run a write statement inside an interactive transaction. \
                  BEGIN/COMMIT/ROLLBACK are rejected; use commit/rollbackTransaction.",
@@ -183,9 +213,14 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async("database::commitTransaction", move |req: CommitTxReq| {
+            "database::commitTransaction",
+            RegisterFunction::new_async(move |req: CommitTxReq| {
                 let st = st.clone();
-                async move { commit_transaction::handle(&st, req).await }
+                async move {
+                    commit_transaction::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
             })
             .description("Commit and finalize an interactive transaction."),
         );
@@ -193,13 +228,15 @@ async fn main() -> Result<()> {
     {
         let st = state.clone();
         iii.register_function(
-            RegisterFunction::new_async(
-                "database::rollbackTransaction",
-                move |req: RollbackTxReq| {
-                    let st = st.clone();
-                    async move { rollback_transaction::handle(&st, req).await }
-                },
-            )
+            "database::rollbackTransaction",
+            RegisterFunction::new_async(move |req: RollbackTxReq| {
+                let st = st.clone();
+                async move {
+                    rollback_transaction::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
+            })
             .description("Rollback and finalize an interactive transaction."),
         );
     }

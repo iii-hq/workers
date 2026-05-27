@@ -2,7 +2,7 @@
 
 use crate::backend::Backend;
 use crate::error::StorageError;
-use iii_sdk::{RegisterFunction, III};
+use iii_sdk::{IIIError, RegisterFunction, III};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,9 +51,10 @@ pub fn register_all(iii: &III, state: &AppState) {
 fn register_put_object(iii: &III, state: &AppState) {
     let st = state.clone();
     iii.register_function(
-        RegisterFunction::new_async("storage::putObject", move |req: put_object::PutReq| {
+        "storage::putObject",
+        RegisterFunction::new_async(move |req: put_object::PutReq| {
             let st = st.clone();
-            async move { put_object::handle(&st, req).await }
+            async move { put_object::handle(&st, req).await.map_err(IIIError::from) }
         })
         .description("Write an object to a configured bucket. Body is base64; max 10MB inline."),
     );
@@ -62,9 +63,10 @@ fn register_put_object(iii: &III, state: &AppState) {
 fn register_get_object(iii: &III, state: &AppState) {
     let st = state.clone();
     iii.register_function(
-        RegisterFunction::new_async("storage::getObject", move |req: get_object::GetReq| {
+        "storage::getObject",
+        RegisterFunction::new_async(move |req: get_object::GetReq| {
             let st = st.clone();
-            async move { get_object::handle(&st, req).await }
+            async move { get_object::handle(&st, req).await.map_err(IIIError::from) }
         })
         .description("Read an object. Body is base64; for large objects use presignUrl."),
     );
@@ -73,13 +75,15 @@ fn register_get_object(iii: &III, state: &AppState) {
 fn register_delete_object(iii: &III, state: &AppState) {
     let st = state.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "storage::deleteObject",
-            move |req: delete_object::DeleteReq| {
-                let st = st.clone();
-                async move { delete_object::handle(&st, req).await }
-            },
-        )
+        "storage::deleteObject",
+        RegisterFunction::new_async(move |req: delete_object::DeleteReq| {
+            let st = st.clone();
+            async move {
+                delete_object::handle(&st, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
+        })
         .description("Delete an object. No-op when the object does not exist."),
     );
 }
@@ -87,13 +91,11 @@ fn register_delete_object(iii: &III, state: &AppState) {
 fn register_presign_url(iii: &III, state: &AppState) {
     let st = state.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "storage::presignUrl",
-            move |req: presign_url::PresignReq| {
-                let st = st.clone();
-                async move { presign_url::handle(&st, req).await }
-            },
-        )
+        "storage::presignUrl",
+        RegisterFunction::new_async(move |req: presign_url::PresignReq| {
+            let st = st.clone();
+            async move { presign_url::handle(&st, req).await.map_err(IIIError::from) }
+        })
         .description(
             "Issue a short-lived URL the browser can hit directly to PUT or GET an object.",
         ),

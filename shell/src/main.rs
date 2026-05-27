@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunction};
+use iii_sdk::{register_worker, IIIError, InitOptions, RegisterFunction};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -72,13 +72,7 @@ async fn main() -> Result<()> {
     let shared = Arc::new(shell_config);
 
     tracing::info!(url = %cli.url, "connecting to III engine");
-    let iii = register_worker(
-        &cli.url,
-        InitOptions {
-            otel: Some(OtelConfig::default()),
-            ..Default::default()
-        },
-    );
+    let iii = register_worker(&cli.url, InitOptions::default());
 
     // shell::exec, shell::exec_bg, and the 10 shell::fs::* handlers take
     // Value at the registration boundary so they can preserve legacy wire
@@ -90,14 +84,16 @@ async fn main() -> Result<()> {
         let cfg = shared.clone();
         let iii_for_exec = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async(
-                "shell::exec",
-                move |req: functions::types::ExecRequest| {
-                    let cfg = cfg.clone();
-                    let iii_clone = iii_for_exec.clone();
-                    async move { functions::exec::handle(cfg, iii_clone, req).await }
-                },
-            )
+            "shell::exec",
+            RegisterFunction::new_async(move |req: functions::types::ExecRequest| {
+                let cfg = cfg.clone();
+                let iii_clone = iii_for_exec.clone();
+                async move {
+                    functions::exec::handle(cfg, iii_clone, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
+            })
             .description(
                 "Run an allowlisted command in the foreground and return its \
                  full output. Payload: { command: string (program name), \
@@ -114,14 +110,16 @@ async fn main() -> Result<()> {
         let cfg = shared.clone();
         let iii_for_bg = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async(
-                "shell::exec_bg",
-                move |req: functions::types::ExecBgRequest| {
-                    let cfg = cfg.clone();
-                    let iii_clone = iii_for_bg.clone();
-                    async move { functions::exec_bg::handle(cfg, iii_clone, req).await }
-                },
-            )
+            "shell::exec_bg",
+            RegisterFunction::new_async(move |req: functions::types::ExecBgRequest| {
+                let cfg = cfg.clone();
+                let iii_clone = iii_for_bg.clone();
+                async move {
+                    functions::exec_bg::handle(cfg, iii_clone, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
+            })
             .description(
                 "Spawn an allowlisted command as a background job. Same \
                  payload shape as shell::exec; returns { job_id, argv } \
@@ -134,15 +132,17 @@ async fn main() -> Result<()> {
     }
 
     iii.register_function(
-        RegisterFunction::new_async("shell::kill", |req: KillRequest| async move {
-            functions::kill::handle(req).await
+        "shell::kill",
+        RegisterFunction::new_async(|req: KillRequest| async move {
+            functions::kill::handle(req).await.map_err(IIIError::from)
         })
         .description("Kill a running background job"),
     );
 
     iii.register_function(
-        RegisterFunction::new_async("shell::status", |req: StatusRequest| async move {
-            functions::status::handle(req).await
+        "shell::status",
+        RegisterFunction::new_async(|req: StatusRequest| async move {
+            functions::status::handle(req).await.map_err(IIIError::from)
         })
         .description("Get status of a background job"),
     );
@@ -150,9 +150,10 @@ async fn main() -> Result<()> {
     {
         let cfg = shared.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::list", move |_req: Value| {
+            "shell::list",
+            RegisterFunction::new_async(move |_req: Value| {
                 let cfg = cfg.clone();
-                async move { functions::list::handle(cfg).await }
+                async move { functions::list::handle(cfg).await.map_err(IIIError::from) }
             })
             .description("List all background jobs"),
         );
@@ -181,10 +182,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::ls", move |req: Value| {
+            "shell::fs::ls",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_ls::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_ls::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("List directory contents on host or sandbox"),
         );
@@ -194,10 +200,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::stat", move |req: Value| {
+            "shell::fs::stat",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_stat::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_stat::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Stat a path on host or sandbox"),
         );
@@ -207,10 +218,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::mkdir", move |req: Value| {
+            "shell::fs::mkdir",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_mkdir::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_mkdir::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Create a directory on host or sandbox"),
         );
@@ -220,10 +236,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::rm", move |req: Value| {
+            "shell::fs::rm",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_rm::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_rm::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Remove a path on host or sandbox"),
         );
@@ -233,10 +254,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::chmod", move |req: Value| {
+            "shell::fs::chmod",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_chmod::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_chmod::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Change permissions on host or sandbox"),
         );
@@ -246,10 +272,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::mv", move |req: Value| {
+            "shell::fs::mv",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_mv::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_mv::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Move/rename a path on host or sandbox"),
         );
@@ -259,10 +290,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::grep", move |req: Value| {
+            "shell::fs::grep",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_grep::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_grep::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Recursive regex search on host or sandbox"),
         );
@@ -272,10 +308,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::sed", move |req: Value| {
+            "shell::fs::sed",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_sed::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_sed::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Find-and-replace on host or sandbox"),
         );
@@ -285,10 +326,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::write", move |req: Value| {
+            "shell::fs::write",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_write::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_write::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Stream a file to a host path or sandbox via StreamChannelRef"),
         );
@@ -298,10 +344,15 @@ async fn main() -> Result<()> {
         let h = host_backend.clone();
         let i = iii.clone();
         iii.register_function(
-            RegisterFunction::new_async("shell::fs::read", move |req: Value| {
+            "shell::fs::read",
+            RegisterFunction::new_async(move |req: Value| {
                 let h = h.clone();
                 let i = i.clone();
-                async move { functions::fs_read::handle(h, i, sb_enabled, req).await }
+                async move {
+                    functions::fs_read::handle(h, i, sb_enabled, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
             })
             .description("Stream a file from a host path or sandbox via StreamChannelRef"),
         );

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterTriggerType, WorkerMetadata};
+use iii_sdk::{register_worker, InitOptions, RegisterTriggerType, WorkerMetadata};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -162,7 +162,6 @@ async fn main() -> Result<()> {
     let iii = register_worker(
         &cli.url,
         InitOptions {
-            otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),

@@ -278,18 +278,16 @@ fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::registry::workers::list",
-            move |req: WorkerListInput| {
-                let cfg = cfg_inner.clone();
-                let cache = cache_inner.clone();
-                async move {
-                    worker_list(&cfg, &cache, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        "directory::registry::workers::list",
+        RegisterFunction::new_async(move |req: WorkerListInput| {
+            let cfg = cfg_inner.clone();
+            let cache = cache_inner.clone();
+            async move {
+                worker_list(&cfg, &cache, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "List workers from the public registry (api.workers.iii.dev). \
              Optional free-text `search` is matched fuzzily by the registry; \
@@ -307,18 +305,16 @@ fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
     let cfg_inner = cfg.clone();
     let cache_inner = cache;
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::registry::workers::info",
-            move |req: WorkerInfoInput| {
-                let cfg = cfg_inner.clone();
-                let cache = cache_inner.clone();
-                async move {
-                    worker_info(&cfg, &cache, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        "directory::registry::workers::info",
+        RegisterFunction::new_async(move |req: WorkerInfoInput| {
+            let cfg = cfg_inner.clone();
+            let cache = cache_inner.clone();
+            async move {
+                worker_info(&cfg, &cache, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "Fetch full registry metadata for one worker: worker envelope \
              (same core fields as directory::engine::workers::info plus \

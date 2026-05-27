@@ -60,7 +60,7 @@ mod tests {
             pools: Arc::new(pools),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
-            log: iii_sdk::Logger::new(),
+            log: iii_observability::Logger::new(),
         }
     }
 
@@ -76,7 +76,7 @@ mod tests {
             pools: Arc::new(pools),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
-            log: iii_sdk::Logger::new(),
+            log: iii_observability::Logger::new(),
         };
         (st, tmp)
     }

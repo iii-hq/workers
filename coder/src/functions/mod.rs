@@ -14,7 +14,7 @@ pub mod update_file;
 
 use std::sync::Arc;
 
-use iii_sdk::{RegisterFunction, III};
+use iii_sdk::{IIIError, RegisterFunction, III};
 
 use crate::config::CoderConfig;
 use crate::path::PathResolver;
@@ -32,10 +32,15 @@ pub fn register_all(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig
 
 fn register_read_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async("coder::read-file", move |req: read_file::ReadFileInput| {
+        "coder::read-file",
+        RegisterFunction::new_async(move |req: read_file::ReadFileInput| {
             let resolver = resolver.clone();
             let cfg = cfg.clone();
-            async move { read_file::handle(resolver, cfg, req).await }
+            async move {
+                read_file::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
         })
         .description(
             "Read a file relative to base_path. Returns content plus \
@@ -47,10 +52,15 @@ fn register_read_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConf
 
 fn register_search(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async("coder::search", move |req: search::SearchInput| {
+        "coder::search",
+        RegisterFunction::new_async(move |req: search::SearchInput| {
             let resolver = resolver.clone();
             let cfg = cfg.clone();
-            async move { search::handle(resolver, cfg, req).await }
+            async move {
+                search::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
         })
         .description(
             "Search file contents and/or paths under base_path. Supports \
@@ -63,14 +73,16 @@ fn register_search(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>
 
 fn register_update_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async(
-            "coder::update-file",
-            move |req: update_file::UpdateFileInput| {
-                let resolver = resolver.clone();
-                let cfg = cfg.clone();
-                async move { update_file::handle(resolver, cfg, req).await }
-            },
-        )
+        "coder::update-file",
+        RegisterFunction::new_async(move |req: update_file::UpdateFileInput| {
+            let resolver = resolver.clone();
+            let cfg = cfg.clone();
+            async move {
+                update_file::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
+        })
         .description(
             "Apply batched line-oriented and regex edits across one or more \
              files. Line ops: { op: 'insert', at_line, content } | \
@@ -85,14 +97,16 @@ fn register_update_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderCo
 
 fn register_create_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async(
-            "coder::create-file",
-            move |req: create_file::CreateFileInput| {
-                let resolver = resolver.clone();
-                let cfg = cfg.clone();
-                async move { create_file::handle(resolver, cfg, req).await }
-            },
-        )
+        "coder::create-file",
+        RegisterFunction::new_async(move |req: create_file::CreateFileInput| {
+            let resolver = resolver.clone();
+            let cfg = cfg.clone();
+            async move {
+                create_file::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
+        })
         .description(
             "Create one or more files. Per-file `overwrite` and `parents` \
              flags; non-accessible paths return C211.",
@@ -102,13 +116,15 @@ fn register_create_file(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderCo
 
 fn register_delete_file(iii: &III, resolver: Arc<PathResolver>) {
     iii.register_function(
-        RegisterFunction::new_async(
-            "coder::delete-file",
-            move |req: delete_file::DeleteFileInput| {
-                let resolver = resolver.clone();
-                async move { delete_file::handle(resolver, req).await }
-            },
-        )
+        "coder::delete-file",
+        RegisterFunction::new_async(move |req: delete_file::DeleteFileInput| {
+            let resolver = resolver.clone();
+            async move {
+                delete_file::handle(resolver, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
+        })
         .description(
             "Remove one or more paths. Directories need `recursive: true`; \
              missing paths are idempotent successes; recursive removal \
@@ -119,14 +135,16 @@ fn register_delete_file(iii: &III, resolver: Arc<PathResolver>) {
 
 fn register_list_folder(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async(
-            "coder::list-folder",
-            move |req: list_folder::ListFolderInput| {
-                let resolver = resolver.clone();
-                let cfg = cfg.clone();
-                async move { list_folder::handle(resolver, cfg, req).await }
-            },
-        )
+        "coder::list-folder",
+        RegisterFunction::new_async(move |req: list_folder::ListFolderInput| {
+            let resolver = resolver.clone();
+            let cfg = cfg.clone();
+            async move {
+                list_folder::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
+        })
         .description(
             "Paginated single-folder listing, sorted by name. \
              Non-accessible entries are still listed with a \
@@ -137,10 +155,15 @@ fn register_list_folder(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderCo
 
 fn register_tree(iii: &III, resolver: Arc<PathResolver>, cfg: Arc<CoderConfig>) {
     iii.register_function(
-        RegisterFunction::new_async("coder::tree", move |req: tree::TreeInput| {
+        "coder::tree",
+        RegisterFunction::new_async(move |req: tree::TreeInput| {
             let resolver = resolver.clone();
             let cfg = cfg.clone();
-            async move { tree::handle(resolver, cfg, req).await }
+            async move {
+                tree::handle(resolver, cfg, req)
+                    .await
+                    .map_err(IIIError::from)
+            }
         })
         .description(
             "Recursive directory snapshot bounded by `max_depth` and a \

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use iii_observability::Logger;
 use iii_sdk::{
     channels::{ChannelWriter, StreamChannelRef},
-    IIIError, Logger, RegisterFunction, III,
+    IIIError, RegisterFunction, III,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -51,7 +52,8 @@ fn register_handler(iii: &Arc<III>, cfg: &Arc<McpConfig>) {
         log: Logger::new(),
     };
     iii.register_function(
-        RegisterFunction::new_async(FUNCTION_ID, move |req: Value| {
+        FUNCTION_ID,
+        RegisterFunction::new_async(move |req: Value| {
             let ctx = ctx.clone();
             async move {
                 let envelope: McpRequest = match serde_json::from_value(req) {

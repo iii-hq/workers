@@ -19,7 +19,7 @@ use crate::driver;
 use crate::error::DbError;
 use crate::handle::PinnedConn;
 use chrono::{DateTime, Duration as CDuration, Utc};
-use iii_sdk::Logger;
+use iii_observability::Logger;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::json;
