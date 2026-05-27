@@ -264,7 +264,6 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
- "iii-observability",
  "iii-sdk",
  "mime_guess",
  "reqwest",
