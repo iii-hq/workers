@@ -159,7 +159,7 @@ mod tests {
             pools: std::sync::Arc::new(pools),
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
-            log: iii_sdk::Logger::new(),
+            log: iii_observability::Logger::new(),
         };
 
         crate::handlers::execute::handle(
