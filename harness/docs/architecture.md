@@ -1,7 +1,7 @@
 # harness architecture
 
 `harness` is the Node/TypeScript port of the iii harness stack. It ships
-as one pnpm package containing 11 workers (one folder per worker, one feature
+as one pnpm package containing 15 workers (one folder per worker, one feature
 per file) plus a shared `runtime/` SDK helper layer and a `types/` wire-type
 mirror of `harness/crates/harness-types`. Each worker is independently runnable
 as `pnpm dev:<worker>` (development) or `iii-<worker>` (production binary);
@@ -26,11 +26,13 @@ workers.
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | auth-credentials | [src/auth-credentials/](harness/src/auth-credentials/) | File-backed multi-provider credential store. | [workers/auth-credentials.md](harness/docs/workers/auth-credentials.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Static model-capability catalogue (state-first, embedded fallback). | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
+| provider-config | [src/provider-config/](harness/src/provider-config/) | Runtime provider settings store on the iii bus (`provider_config::*` — base URL / max tokens overrides). | [workers/provider-config.md](harness/docs/workers/provider-config.md) |
 | provider-anthropic | [src/provider-anthropic/](harness/src/provider-anthropic/) | Anthropic Messages API SSE → channel writer. | [workers/provider-anthropic.md](harness/docs/workers/provider-anthropic.md) |
 | provider-openai | [src/provider-openai/](harness/src/provider-openai/) | OpenAI Chat Completions SSE → channel writer. | [workers/provider-openai.md](harness/docs/workers/provider-openai.md) |
 | provider-kimi | [src/provider-kimi/](harness/src/provider-kimi/) | Kimi Chat Completions SSE → channel writer. | [workers/provider-kimi.md](harness/docs/workers/provider-kimi.md) |
 | provider-lmstudio | [src/provider-lmstudio/](harness/src/provider-lmstudio/) | LM Studio (localhost) Chat Completions SSE → channel writer. | [workers/provider-lmstudio.md](harness/docs/workers/provider-lmstudio.md) |
-| context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::events` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
+| provider-llamacpp | [src/provider-llamacpp/](harness/src/provider-llamacpp/) | llama.cpp `llama-server` (localhost) Chat Completions SSE → channel writer. | [workers/provider-llamacpp.md](harness/docs/workers/provider-llamacpp.md) |
+| context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::turn_end` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
 
 ## System diagram
 

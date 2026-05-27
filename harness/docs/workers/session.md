@@ -36,6 +36,10 @@ backend.
 - `session-tree::messages` — Load every AgentMessage on the active path of a session, paired with its entry_id, oldest first.
 - `session-tree::reconcile` — Mirror missing messages from a state-snapshot into session-tree.
 - `session-tree::list` — List sessions with optional pagination and ordering.
+- `session-tree::compactions` — Return all Compaction entries for a session, sorted by timestamp ascending.
+- `session-tree::append_synthetic` — Append a synthetic user-role message entry to a session (used by the context-compaction replay path).
+- `session-tree::update_part` — Replace the content of a `function_result` message entry with compacted output.
+- `session-tree::update_parts` — Batch variant of `update_part`; loads target entries once and rewrites all of them.
 
 ### `session-inbox::*`
 
@@ -91,7 +95,7 @@ From [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml):
 | [src/session/main.ts](harness/src/session/main.ts) | Binary entry point (`iii-session`). |
 | [src/session/register.ts](harness/src/session/register.ts) | Picks the backend and wires both sub-surfaces. |
 | [src/session/config.ts](harness/src/session/config.ts) | Loads the `session` config section. |
-| [src/session/tree/register.ts](harness/src/session/tree/register.ts) | Registers all 11 `session-tree::*` functions; exports `FUNCTION_IDS`. |
+| [src/session/tree/register.ts](harness/src/session/tree/register.ts) | Registers all 15 `session-tree::*` functions; exports `FUNCTION_IDS`. |
 | [src/session/tree/operations.ts](harness/src/session/tree/operations.ts) | Pure tree algorithms: create, fork, clone, compact, active path, messages, reconcile, tree, export_html, list. |
 | [src/session/tree/store.ts](harness/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
 | [src/session/tree/types.ts](harness/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |

@@ -177,7 +177,7 @@ scratch, so the summary converges rather than growing without bound.
    `COMPACT_PRUNE_PROTECT` goes into the prune queue.
 4. If the queue would free fewer than `COMPACT_PRUNE_MIN_FREE` tokens, it
    skips entirely (no-op).
-5. Calls `session-tree::update_part` to null out each pruned output.
+5. Calls `session-tree::update_parts` to null out each pruned output (batched, one load).
 
 Tools listed in `COMPACT_PRUNE_PROTECTED_TOOLS` are never pruned.
 
@@ -262,7 +262,7 @@ outer `instrumentHandler` wrapper.
 | `session-tree::compact` | Append a Compaction entry (summary + `tail_start_id` + `tokens_before`). |
 | `session-tree::compactions` | Load existing Compaction entries for prior-summary anchor. |
 | `session-tree::append_synthetic` | Append the "Continue…" prompt after sync compaction. |
-| `session-tree::update_part` | Null out pruned tool outputs in-place. |
+| `session-tree::update_parts` | Null out pruned tool outputs in-place (batched). |
 | `models::get` | Resolve `context_window` / `max_output_tokens` for model-adaptive threshold. |
 
 Worker manifest deps (`iii.worker.yaml`):
@@ -277,6 +277,8 @@ Worker manifest deps (`iii.worker.yaml`):
 | `src/context-compaction/config.ts` | Reads all `COMPACT_*` env vars. |
 | `src/context-compaction/handler-async.ts` | Async TurnEnd path: envelope decode, overflow check, lease, prune, summarise. |
 | `src/context-compaction/handler-sync.ts` | Sync pre-turn path: lease-with-wait, extract replay, prune, summarise, reinject. |
+| `src/context-compaction/handler-pipeline.ts` | Shared prune → summarise → flat-state rewrite pipeline used by both handlers. |
+| `src/context-compaction/flat-state.ts` | Rewrites scope `messages` after compaction so the next turn reads the new flat transcript. |
 | `src/context-compaction/model-resolver.ts` | Shared model-resolution helpers: `fetchModelLimit` (catalog lookup) and `resolveModelFromSession` (session-scan + catalog lookup). |
 | `src/context-compaction/prune.ts` | Tool-output pruning (`prune`). |
 | `src/context-compaction/summarize.ts` | `summarizeAndAppend`: load → select tail → summarise → append Compaction entry. |

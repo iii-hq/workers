@@ -87,5 +87,5 @@ no explicit dependency block.
 | [src/approval-gate/iii.worker.yaml](harness/src/approval-gate/iii.worker.yaml) | Worker manifest. |
 
 Related orchestrator code:
-[on-approval.ts](harness/src/turn-orchestrator/on-approval.ts),
+[function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) (registers `turn::on_approval`),
 [hook.ts](harness/src/turn-orchestrator/hook.ts).
