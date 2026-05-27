@@ -43,10 +43,10 @@ jobs:
       # GHA `services:` blocks can't pass `-c wal_level=logical` to postgres,
       # which the row-change tests require. Reuse the same docker-compose
       # stack the harness uses locally for dev/CI parity.
-      - name: Install iii engine (latest from main)
+      - name: Install iii engine (next)
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
-            https://install.iii.dev/iii/main/install.sh | sh
+            https://install.iii.dev/iii/main/install.sh | sh -s -- --next
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Verify engine
