@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterFunctionMessage};
+use iii_observability::OtelConfig;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use std::sync::Arc;
 
 mod config;
@@ -61,11 +62,11 @@ async fn main() -> Result<()> {
 
     let resize_handler = handler::build_handler(cli.url.clone(), config);
 
-    let _fn_ref = iii.register_function_with(
-        RegisterFunctionMessage {
-            id: "image_resize::resize".to_string(),
-            description: Some("Resize an image via channel I/O".to_string()),
-            request_format: Some(serde_json::json!({
+    let _fn_ref = iii.register_function(
+        "image_resize::resize",
+        RegisterFunction::new_async(resize_handler)
+            .description("Resize an image via channel I/O")
+            .request_format(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "input_channel": {
@@ -92,8 +93,8 @@ async fn main() -> Result<()> {
                     }
                 },
                 "required": ["input_channel", "output_channel"]
-            })),
-            response_format: Some(serde_json::json!({
+            }))
+            .response_format(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "format": { "type": "string" },
@@ -102,10 +103,6 @@ async fn main() -> Result<()> {
                     "strategy": { "type": "string" }
                 }
             })),
-            metadata: None,
-            invocation: None,
-        },
-        resize_handler,
     );
 
     tracing::info!("image_resize::resize function registered, waiting for invocations");
