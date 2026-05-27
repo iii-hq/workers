@@ -819,7 +819,6 @@ version = "0.1.9"
 dependencies = [
  "anyhow",
  "clap",
- "iii-observability",
  "iii-sdk",
  "image",
  "kamadak-exif",
