@@ -1,9 +1,11 @@
 # context-compaction
 
-Out-of-band session-history compactor (v2). Watches `agent::events` for
-`TurnEnd` frames and summarises older turns when the session approaches the
-model's usable context limit. Also exposes a sync pre-turn path that the
-turn-orchestrator calls to compact before a turn that would overflow.
+Out-of-band session-history compactor (v2). Subscribes to the dedicated
+`agent::turn_end` stream (mirrored by the event producer) and summarises older
+turns when the session approaches the model's usable context limit — one wake
+per turn instead of one per `agent::events` frame. Also exposes a sync
+pre-turn path that the turn-orchestrator calls to compact before a turn that
+would overflow.
 
 ## Purpose
 
@@ -27,7 +29,8 @@ This worker is optional. Without it, sessions keep their full transcript.
 
 ### `context-compaction::on_agent_event`
 
-Internal stream subscriber. Fires on every `agent::events` message.
+Internal stream subscriber on `agent::turn_end` — fires once per turn (kept
+under the historical `on_agent_event` name).
 
 **Payload** (camelCase or snake_case envelope):
 ```
