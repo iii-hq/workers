@@ -343,13 +343,11 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_function_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::functions::list",
-            move |req: FunctionListInput| {
-                let iii = iii_inner.clone();
-                async move { function_list(&iii, req).await.map_err(IIIError::Handler) }
-            },
-        )
+        "directory::engine::functions::list",
+        RegisterFunction::new_async(move |req: FunctionListInput| {
+            let iii = iii_inner.clone();
+            async move { function_list(&iii, req).await.map_err(IIIError::Handler) }
+        })
         .description(
             "List every function registered with the engine. Filter by free-text \
              search, namespace prefix, and/or worker name.",
@@ -361,18 +359,16 @@ fn register_function_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::functions::info",
-            move |req: FunctionInfoInput| {
-                let iii = iii_inner.clone();
-                let cfg = cfg_inner.clone();
-                async move {
-                    function_info(&iii, &cfg, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        "directory::engine::functions::info",
+        RegisterFunction::new_async(move |req: FunctionInfoInput| {
+            let iii = iii_inner.clone();
+            let cfg = cfg_inner.clone();
+            async move {
+                function_info(&iii, &cfg, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "Full detail for one function: schemas, owning worker, registered \
              triggers that target it, and any matching how-to skill from skills_folder.",
@@ -383,13 +379,11 @@ fn register_function_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_trigger_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::triggers::list",
-            move |req: TriggerListInput| {
-                let iii = iii_inner.clone();
-                async move { trigger_list(&iii, req).await.map_err(IIIError::Handler) }
-            },
-        )
+        "directory::engine::triggers::list",
+        RegisterFunction::new_async(move |req: TriggerListInput| {
+            let iii = iii_inner.clone();
+            async move { trigger_list(&iii, req).await.map_err(IIIError::Handler) }
+        })
         .description(
             "List every trigger TYPE registered with the engine. Filter by \
              search, prefix, worker. (For registered trigger instances, use \
@@ -401,13 +395,11 @@ fn register_trigger_list(iii: &Arc<III>) {
 fn register_trigger_info(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::triggers::info",
-            move |req: TriggerInfoInput| {
-                let iii = iii_inner.clone();
-                async move { trigger_info(&iii, req).await.map_err(IIIError::Handler) }
-            },
-        )
+        "directory::engine::triggers::info",
+        RegisterFunction::new_async(move |req: TriggerInfoInput| {
+            let iii = iii_inner.clone();
+            async move { trigger_info(&iii, req).await.map_err(IIIError::Handler) }
+        })
         .description(
             "Full detail for one trigger type: configuration schema, return \
              schema, owning worker, and current instance count.",
@@ -418,17 +410,15 @@ fn register_trigger_info(iii: &Arc<III>) {
 fn register_registered_trigger_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::registered-triggers::list",
-            move |req: RegisteredTriggerListInput| {
-                let iii = iii_inner.clone();
-                async move {
-                    registered_trigger_list(&iii, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        "directory::engine::registered-triggers::list",
+        RegisterFunction::new_async(move |req: RegisteredTriggerListInput| {
+            let iii = iii_inner.clone();
+            async move {
+                registered_trigger_list(&iii, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "List registered trigger instances (the link rows between \
              trigger types and target functions). Filter by trigger_type, \
@@ -441,18 +431,16 @@ fn register_registered_trigger_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::registered-triggers::info",
-            move |req: RegisteredTriggerInfoInput| {
-                let iii = iii_inner.clone();
-                let cfg = cfg_inner.clone();
-                async move {
-                    registered_trigger_info(&iii, &cfg, req)
-                        .await
-                        .map_err(IIIError::Handler)
-                }
-            },
-        )
+        "directory::engine::registered-triggers::info",
+        RegisterFunction::new_async(move |req: RegisteredTriggerInfoInput| {
+            let iii = iii_inner.clone();
+            let cfg = cfg_inner.clone();
+            async move {
+                registered_trigger_info(&iii, &cfg, req)
+                    .await
+                    .map_err(IIIError::Handler)
+            }
+        })
         .description(
             "Full denormalized detail for one registered trigger: \
              instance config + trigger-type detail + function detail.",
@@ -463,13 +451,11 @@ fn register_registered_trigger_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_worker_list(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::workers::list",
-            move |req: WorkerListInput| {
-                let iii = iii_inner.clone();
-                async move { worker_list(&iii, req).await.map_err(IIIError::Handler) }
-            },
-        )
+        "directory::engine::workers::list",
+        RegisterFunction::new_async(move |req: WorkerListInput| {
+            let iii = iii_inner.clone();
+            async move { worker_list(&iii, req).await.map_err(IIIError::Handler) }
+        })
         .description(
             "List every worker currently connected to the engine. Filter by \
              name substring, runtime, or status. Same row shape as \
@@ -481,13 +467,11 @@ fn register_worker_list(iii: &Arc<III>) {
 fn register_worker_info(iii: &Arc<III>) {
     let iii_inner = iii.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::engine::workers::info",
-            move |req: WorkerInfoInput| {
-                let iii = iii_inner.clone();
-                async move { worker_info(&iii, req).await.map_err(IIIError::Handler) }
-            },
-        )
+        "directory::engine::workers::info",
+        RegisterFunction::new_async(move |req: WorkerInfoInput| {
+            let iii = iii_inner.clone();
+            async move { worker_info(&iii, req).await.map_err(IIIError::Handler) }
+        })
         .description(
             "Worker envelope plus the lists of functions, trigger types, and \
              registered triggers it owns. The `worker` field has the same \

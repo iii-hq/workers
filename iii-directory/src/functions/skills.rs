@@ -156,7 +156,8 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_list_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::skills::list", move |_input: ListSkillsInput| {
+        "directory::skills::list",
+        RegisterFunction::new_async(move |_input: ListSkillsInput| {
             let cfg = cfg_inner.clone();
             async move {
                 let (entries, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
@@ -177,7 +178,8 @@ fn register_list_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_get_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async("directory::skills::get", move |req: SkillGetInput| {
+        "directory::skills::get",
+        RegisterFunction::new_async(move |req: SkillGetInput| {
             let cfg = cfg_inner.clone();
             async move { get_skill(&cfg, req).await.map_err(IIIError::Handler) }
         })
@@ -189,26 +191,23 @@ fn register_get_skill(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
 fn register_index_skills(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        RegisterFunction::new_async(
-            "directory::skills::index",
-            move |_input: IndexSkillsInput| {
-                let cfg = cfg_inner.clone();
-                async move {
-                    let (entries, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
-                    let rows: Vec<SkillEntry> =
-                        entries.into_iter().map(skill_entry_from_fs).collect();
-                    let body = render_index_markdown(&rows);
-                    let workers_count = rows
-                        .iter()
-                        .filter(|e| e.kind.as_deref() == Some("index"))
-                        .count();
-                    Ok::<_, IIIError>(IndexSkillsOutput {
-                        body,
-                        workers_count,
-                    })
-                }
-            },
-        )
+        "directory::skills::index",
+        RegisterFunction::new_async(move |_input: IndexSkillsInput| {
+            let cfg = cfg_inner.clone();
+            async move {
+                let (entries, _skipped) = fs_source::scan_skills(&cfg.resolved_skills_folder());
+                let rows: Vec<SkillEntry> = entries.into_iter().map(skill_entry_from_fs).collect();
+                let body = render_index_markdown(&rows);
+                let workers_count = rows
+                    .iter()
+                    .filter(|e| e.kind.as_deref() == Some("index"))
+                    .count();
+                Ok::<_, IIIError>(IndexSkillsOutput {
+                    body,
+                    workers_count,
+                })
+            }
+        })
         .description(
             "Render one short markdown entry per installed worker (skills with frontmatter \
              `type: index`). Each entry is a `## <worker title>` heading, the first paragraph \

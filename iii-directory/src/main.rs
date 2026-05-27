@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, WorkerMetadata};
+use iii_observability::OtelConfig;
+use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 
 use iii_directory::{config, functions, manifest, trigger_types};
 
