@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, OtelConfig, RegisterTriggerType, WorkerMetadata};
+use iii_observability::OtelConfig;
+use iii_sdk::{register_worker, InitOptions, RegisterTriggerType, WorkerMetadata};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
