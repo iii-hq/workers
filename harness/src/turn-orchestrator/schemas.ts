@@ -91,7 +91,9 @@ function formatZodIssues(error: z.ZodError): string {
 export function parseFunctionBatchRecord(rec: TurnStateRecord): FunctionBatchTurnRecord {
   const result = FunctionBatchTurnRecordSchema.safeParse(rec);
   if (!result.success) {
-    throw new TurnStateInvariantError(`invalid function batch turn record: ${formatZodIssues(result.error)}`);
+    throw new TurnStateInvariantError(
+      `invalid function batch turn record: ${formatZodIssues(result.error)}`,
+    );
   }
   // Return the same object — handlers mutate turn_state in place before saveRecord.
   return rec as FunctionBatchTurnRecord;
@@ -138,7 +140,9 @@ export const SteeringCheckTurnRecordSchema = z
 export function parseSteeringCheckRecord(rec: TurnStateRecord): SteeringCheckTurnRecord {
   const result = SteeringCheckTurnRecordSchema.safeParse(rec);
   if (!result.success) {
-    throw new TurnStateInvariantError(`invalid steering_check turn record: ${formatZodIssues(result.error)}`);
+    throw new TurnStateInvariantError(
+      `invalid steering_check turn record: ${formatZodIssues(result.error)}`,
+    );
   }
   return rec as SteeringCheckTurnRecord;
 }

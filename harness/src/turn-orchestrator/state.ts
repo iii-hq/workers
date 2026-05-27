@@ -74,7 +74,10 @@ export type SteeringCheckTurnRecord = TurnStateRecordCore & {
   awaiting_approval?: AwaitingApprovalEntry[];
 };
 
-type OtherTurnState = Exclude<TurnState, FunctionBatchState | 'assistant_streaming' | 'steering_check'>;
+type OtherTurnState = Exclude<
+  TurnState,
+  FunctionBatchState | 'assistant_streaming' | 'steering_check'
+>;
 
 export type TurnStateRecord =
   | FunctionBatchTurnRecord

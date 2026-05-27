@@ -139,10 +139,7 @@ describe('parallel approval e2e', () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
 
-    h.seedExecute(
-      'sess-dup',
-      makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]),
-    );
+    h.seedExecute('sess-dup', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
     await h.runExecute('sess-dup');
 
     await h.resolveApproval('sess-dup', 'fc-1', 'allow');
@@ -152,7 +149,9 @@ describe('parallel approval e2e', () => {
     const rec = h.loadTurnRecord('sess-dup');
 
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(endsAfterFirst);
+    expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(
+      endsAfterFirst,
+    );
   });
 
   it('persists the decision and wakes function_awaiting_approval via approval::resolve', async () => {

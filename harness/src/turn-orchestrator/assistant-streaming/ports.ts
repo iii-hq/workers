@@ -48,7 +48,6 @@ export function isErrorOrAborted(asst: AssistantMessage): boolean {
   return asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
 }
 
-
 export type DeltaHandler = (
   partial: AssistantMessage,
   event: AssistantMessageEvent,

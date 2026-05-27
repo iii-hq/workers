@@ -30,12 +30,13 @@ export function fakeIii(): FakeIii {
         payload: unknown;
         action?: unknown;
       }) => {
-      calls.push({ function_id, payload, action });
-      if (function_id === 'stream::set') {
-        streamSets.push(payload);
-      }
-      return null;
-    }),
+        calls.push({ function_id, payload, action });
+        if (function_id === 'stream::set') {
+          streamSets.push(payload);
+        }
+        return null;
+      },
+    ),
   } as unknown as ISdk;
 
   return { iii, calls, streamSets };

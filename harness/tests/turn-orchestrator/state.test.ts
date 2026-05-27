@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { TurnStateInvariantError } from '../../src/turn-orchestrator/errors.js';
-import { parseAssistantStreamingRecord, parseFunctionBatchRecord, parseSteeringCheckRecord } from '../../src/turn-orchestrator/schemas.js';
-import { type TurnStateRecord, newRecord, transitionTo } from '../../src/turn-orchestrator/state.js';
+import {
+  parseAssistantStreamingRecord,
+  parseFunctionBatchRecord,
+  parseSteeringCheckRecord,
+} from '../../src/turn-orchestrator/schemas.js';
+import {
+  type TurnStateRecord,
+  newRecord,
+  transitionTo,
+} from '../../src/turn-orchestrator/state.js';
 import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 

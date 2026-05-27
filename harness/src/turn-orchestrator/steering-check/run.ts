@@ -31,7 +31,10 @@ function maxTurnsReached(rec: SteeringCheckTurnRecord): boolean {
   return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
 }
 
-async function endForMaxTurns(ports: SteeringCheckPorts, rec: SteeringCheckTurnRecord): Promise<void> {
+async function endForMaxTurns(
+  ports: SteeringCheckPorts,
+  rec: SteeringCheckTurnRecord,
+): Promise<void> {
   const msg = syntheticAssistant({
     stop_reason: 'end',
     text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,

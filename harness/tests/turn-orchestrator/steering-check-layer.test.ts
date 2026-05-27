@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '../../src/types/agent-message.js';
-import { applySteeringCheckOutcome, processSteeringCheck } from '../../src/turn-orchestrator/steering-check/run.js';
+import {
+  applySteeringCheckOutcome,
+  processSteeringCheck,
+} from '../../src/turn-orchestrator/steering-check/run.js';
 import { parseDrainItems } from '../../src/turn-orchestrator/steering-check/ports.js';
 import type { SteeringCheckPorts } from '../../src/turn-orchestrator/steering-check/ports.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';

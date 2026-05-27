@@ -79,7 +79,11 @@ describe('parseApprovalDecision', () => {
 });
 
 /** Seed required function-batch invariants before handleExecute. */
-function seedFunctionExecute(rec: TurnStateRecord, work: FunctionBatchWork, asst?: AssistantMessage): void {
+function seedFunctionExecute(
+  rec: TurnStateRecord,
+  work: FunctionBatchWork,
+  asst?: AssistantMessage,
+): void {
   enterFunctionExecute(rec, asst ?? makeAssistant([]));
   rec.work = work;
   rec.state = 'function_execute';
@@ -106,7 +110,10 @@ describe('handleExecute new flow', () => {
     });
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    enterFunctionExecute(rec, makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]));
+    enterFunctionExecute(
+      rec,
+      makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]),
+    );
     rec.state = 'function_execute';
 
     mockFinalizePersistence();
