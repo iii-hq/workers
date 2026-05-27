@@ -18,7 +18,7 @@ use database::handlers::{
 use database::pool;
 use database::transaction::TxRegistry;
 use database::triggers::handler::RowChangeTrigger;
-use iii_observability::{Logger, OtelConfig};
+use iii_observability::Logger;
 use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,13 +82,7 @@ async fn main() -> Result<()> {
     let _evictor = handles.spawn_evictor();
     let _tx_watcher = transactions.spawn_timeout_watcher(log.clone());
 
-    let iii = register_worker(
-        &cli.url,
-        InitOptions {
-            otel: Some(OtelConfig::default()),
-            ..Default::default()
-        },
-    );
+    let iii = register_worker(&cli.url, InitOptions::default());
 
     {
         let st = state.clone();
