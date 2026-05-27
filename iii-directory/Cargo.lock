@@ -1053,7 +1053,6 @@ dependencies = [
  "cucumber",
  "futures",
  "glob",
- "iii-observability",
  "iii-sdk",
  "reqwest",
  "schemars",
