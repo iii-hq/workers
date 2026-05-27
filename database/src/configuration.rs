@@ -4,9 +4,7 @@
 use crate::config::WorkerConfig;
 use crate::handlers::AppState;
 use crate::pool::{self, Pool};
-use iii_sdk::{
-    III, IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest,
-};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, TriggerRequest, III};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -101,9 +99,7 @@ pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIErro
                 Ok::<Value, IIIError>(json!({ "ok": true }))
             }
         })
-        .description(
-            "Internal: reload connection pools when the database configuration changes.",
-        ),
+        .description("Internal: reload connection pools when the database configuration changes."),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -141,11 +137,7 @@ async fn on_config_change(state: &AppState, payload: Value) {
     }
 }
 
-async fn trigger_with_retry(
-    iii: &III,
-    function_id: &str,
-    payload: Value,
-) -> Result<Value, String> {
+async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Result<Value, String> {
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
@@ -172,5 +164,7 @@ async fn trigger_with_retry(
             }
         }
     }
-    Err(format!("{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"))
+    Err(format!(
+        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
+    ))
 }

@@ -38,7 +38,10 @@ fn from_json_parity_with_yaml_seed_shape() {
     let yaml = "databases:\n  primary:\n    url: \"sqlite::memory:\"\n";
     let from_yaml = WorkerConfig::from_yaml(yaml).unwrap();
     let from_json = WorkerConfig::from_json(&from_yaml.to_json()).unwrap();
-    assert_eq!(from_yaml.databases["primary"].url, from_json.databases["primary"].url);
+    assert_eq!(
+        from_yaml.databases["primary"].url,
+        from_json.databases["primary"].url
+    );
     assert_eq!(
         from_yaml.databases["primary"].driver,
         from_json.databases["primary"].driver

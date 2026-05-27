@@ -19,9 +19,7 @@ use database::handlers::{
 use database::transaction::TxRegistry;
 use database::triggers::handler::RowChangeTrigger;
 use iii_observability::{Logger, OtelConfig};
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, RegisterTriggerType,
-};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

@@ -9,8 +9,8 @@
 //! `configuration::get` are already expanded by the configuration worker
 //! (`${VAR:default}` syntax).
 
-use schemars::JsonSchema;
 use schemars::schema::Schema;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -228,7 +228,8 @@ impl WorkerConfig {
 
     pub fn json_schema() -> Value {
         let root = schemars::schema_for!(WorkerConfig);
-        let mut schema = serde_json::to_value(&root.schema).expect("WorkerConfig JSON Schema serializes");
+        let mut schema =
+            serde_json::to_value(&root.schema).expect("WorkerConfig JSON Schema serializes");
         if let Some(obj) = schema.as_object_mut() {
             if !root.definitions.is_empty() {
                 obj.insert(
@@ -410,7 +411,10 @@ mod tests {
     #[test]
     fn json_schema_is_object_with_databases_property() {
         let schema = WorkerConfig::json_schema();
-        assert!(schema.get("properties").and_then(|p| p.get("databases")).is_some());
+        assert!(schema
+            .get("properties")
+            .and_then(|p| p.get("databases"))
+            .is_some());
     }
 
     #[test]
@@ -452,7 +456,9 @@ mod tests {
         let pool_schema = schema["definitions"]["PoolConfig"].as_object().unwrap();
         for field in ["max", "idle_timeout_ms", "acquire_timeout_ms"] {
             assert!(
-                pool_schema["properties"][field].get("description").is_some(),
+                pool_schema["properties"][field]
+                    .get("description")
+                    .is_some(),
                 "missing description for pool.{field}"
             );
         }
