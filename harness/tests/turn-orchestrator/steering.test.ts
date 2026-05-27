@@ -4,7 +4,8 @@ import type { AgentMessage } from '../../src/types/agent-message.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { newRecord, type TurnStateRecord } from '../../src/turn-orchestrator/state.js';
-import { handleSteering, route } from '../../src/turn-orchestrator/steering-check/process.js';
+import { handleSteering } from '../../src/turn-orchestrator/steering-check/process.js';
+import { route } from '../../src/turn-orchestrator/steering-check/run.js';
 
 afterEach(() => {
   vi.restoreAllMocks();

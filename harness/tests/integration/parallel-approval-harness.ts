@@ -5,13 +5,13 @@
 
 import { vi } from 'vitest';
 import { handleResolveRequest } from '../../src/approval-gate/resolve.js';
-import { handleAwaitingApproval } from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
-import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
-import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
 import {
-  handleApprovalDecisionWrite,
-  isApprovalDecisionWrite,
-} from '../../src/turn-orchestrator/on-approval.js';
+  handleApprovalStateWrite,
+  handleAwaitingApproval,
+} from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
+import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
+import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
+import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
 import { TURN_STATE_SCOPE, newRecord, type TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentEvent } from '../../src/types/agent-event.js';
@@ -107,16 +107,16 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
             : null;
           const new_value = structuredClone(p.value);
           stateStore.set(storeKey, new_value);
-          const event = {
-            event_type: old_value == null ? 'state:created' : 'state:updated',
-            scope: p.scope,
-            key: p.key,
-            old_value,
-            new_value,
-            message_type: 'state',
-          };
-          if (p.scope === 'approvals' && isApprovalDecisionWrite(event)) {
-            await handleApprovalDecisionWrite(iii as unknown as ISdk, event);
+          if (p.scope === 'approvals') {
+            const event = {
+              event_type: old_value == null ? 'state:created' : 'state:updated',
+              scope: p.scope,
+              key: p.key,
+              old_value,
+              new_value,
+              message_type: 'state',
+            };
+            await handleApprovalStateWrite(iii as unknown as ISdk, event);
           }
           return { old_value, new_value };
         }
@@ -163,8 +163,8 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
 
     seedExecute(session_id: string, assistant: AssistantMessage): TurnStateRecord {
       const rec = newRecord(session_id);
+      enterFunctionExecute(rec, assistant);
       rec.state = 'function_execute';
-      rec.last_assistant = assistant;
       stateStore.set(`${TURN_STATE_SCOPE}/${session_id}`, structuredClone(rec));
       return rec;
     },

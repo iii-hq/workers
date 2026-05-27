@@ -151,7 +151,7 @@ describe('handleStreaming', () => {
     expect(rec.state).toBe('function_execute');
     expect(rec.last_assistant).toEqual(finalMsg);
     expect(rec.function_results).toEqual([]);
-    expect(rec.work).toBeUndefined();
+    expect(rec.work?.prepared).toHaveLength(1);
   });
 
   it('routes to steering_check when the assistant made no calls', async () => {

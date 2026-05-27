@@ -20,7 +20,7 @@ workers.
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; persists decisions to scope `approvals` (turn-orchestrator reacts via `turn::on_approval`). | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
@@ -96,9 +96,8 @@ defines a 7-state durable FSM. Each state is a registered `turn::{state}`
 function executed via `runTransition` and enqueued onto the `turn-step` FIFO
 queue from `saveRecord` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
 `saveRecord` calls `shouldWakeStep` then enqueues `turn::{newState}` when the persisted state
-transitions to a stepable state. Paused sessions are also woken by
-the approval-decision state trigger (`turn::on_approval` on scope `approvals`)
-by enqueuing `turn::function_awaiting_approval`.
+transitions to a stepable state. Paused sessions are woken when `approval::resolve` writes
+scope `approvals`, which fires `turn::on_approval` to enqueue `turn::function_awaiting_approval`.
 
 ```mermaid
 stateDiagram-v2
@@ -128,8 +127,8 @@ The orchestrator consults `policy::check_permissions` directly inside
 the before path. The orchestrator parks the turn in `function_awaiting_approval`
 when any call in the batch needs approval, then resumes as each parked call
 receives `approval::resolve` (decisions may arrive independently and out of
-batch order). Each write to scope `approvals` fires `turn::on_approval` and
-enqueues `turn::function_awaiting_approval`.
+batch order). Each `approval::resolve` persists the decision; the `turn::on_approval`
+state trigger enqueues `turn::function_awaiting_approval`.
 
 ### Parallel batch during `function_execute`
 
@@ -160,8 +159,8 @@ parked until A and C are resolved.
 | Reload | `turn::get_state` | One-shot lean view after refresh (no direct iii state reads) |
 
 A page refresh does not lose pending approvals as long as iii state persists.
-Operators can still approve from the console after reload; each `approval::resolve`
-write fires `turn::on_approval` while the worker is running.
+Operators can still approve from the console after reload; each decision write
+fires `turn::on_approval` to enqueue the parked turn step while the worker is running.
 
 ### Resume semantics
 
@@ -192,8 +191,8 @@ sequenceDiagram
     Note over Turn,Bus: When the batch pass finishes with any awaiting calls,<br/>saveRecord parks in function_awaiting_approval (no wake on park).
     User->>Gate: approval::resolve(decision, reason)
     Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Bus-->>Turn: turn::on_approval state trigger
-    Turn->>Turn: turn::function_awaiting_approval executes<br/>that call immediately (skipStart), removes it from awaiting_approval[]
+    Gate->>Turn: enqueue turn::function_awaiting_approval
+    Turn->>Turn: function_awaiting_approval executes<br/>that call immediately (skipStart), removes it from awaiting_approval[]
     alt more calls still awaiting
       Turn->>Turn: stay in function_awaiting_approval
     else awaiting empty and batch incomplete

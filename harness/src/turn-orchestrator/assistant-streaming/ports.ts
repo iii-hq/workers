@@ -48,12 +48,6 @@ export function isErrorOrAborted(asst: AssistantMessage): boolean {
   return asst.stop_reason === 'error' || asst.stop_reason === 'aborted';
 }
 
-export class AssistantStreamingInvariantError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AssistantStreamingInvariantError';
-  }
-}
 
 export type DeltaHandler = (
   partial: AssistantMessage,

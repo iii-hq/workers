@@ -26,3 +26,11 @@ export class TransientError extends Error {
     this.name = 'TransientError';
   }
 }
+
+/** Persisted turn_state is missing fields required for the current FSM step. */
+export class TurnStateInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TurnStateInvariantError';
+  }
+}

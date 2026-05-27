@@ -155,7 +155,7 @@ describe('parallel approval e2e', () => {
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(endsAfterFirst);
   });
 
-  it('persists the decision and wakes function_awaiting_approval via the reactive trigger', async () => {
+  it('persists the decision and wakes function_awaiting_approval via approval::resolve', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({ kind: 'pending' });
 

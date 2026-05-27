@@ -4,10 +4,8 @@ import {
   unwrapAgentTrigger,
 } from '../../src/turn-orchestrator/agent-trigger.js';
 import {
+  enterFunctionExecute,
   finalizeBatch,
-  FunctionExecuteInvariantError,
-  loadOrPlanWork,
-  planBatchFromAssistant,
   runOneCall,
 } from '../../src/turn-orchestrator/function-execute/run.js';
 import { withRoutingEnvelope } from '../../src/turn-orchestrator/function-execute/ports.js';
@@ -60,9 +58,15 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
   };
 }
 
-describe('planBatchFromAssistant', () => {
+function preparedFromAssistant(asst: AssistantMessage) {
+  const rec = newRecord('s1');
+  enterFunctionExecute(rec, asst);
+  return rec.work!.prepared;
+}
+
+describe('batch planning from assistant', () => {
   it('unwraps agent_trigger and maps empty function_id to synthetic', () => {
-    const batch = planBatchFromAssistant(
+    const batch = preparedFromAssistant(
       makeAssistant([
         {
           id: 'fc-1',
@@ -88,7 +92,7 @@ describe('planBatchFromAssistant', () => {
   });
 
   it('maps non-agent_trigger function_id to synthetic error', () => {
-    const batch = planBatchFromAssistant(
+    const batch = preparedFromAssistant(
       makeAssistant([{ id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } }]),
     );
     expect(batch[0]).toMatchObject({
@@ -109,14 +113,6 @@ describe('withRoutingEnvelope', () => {
       function_id: 'shell::run',
     });
     expect(call.arguments).toEqual({ command: 'ls' });
-  });
-});
-
-describe('loadOrPlanWork', () => {
-  it('throws when work and last_assistant are both missing', () => {
-    const rec = newRecord('s1');
-    rec.state = 'function_execute';
-    expect(() => loadOrPlanWork(rec)).toThrow(FunctionExecuteInvariantError);
   });
 });
 
@@ -159,10 +155,11 @@ describe('finalizeBatch', () => {
   it('routes to stopped when every result terminates', async () => {
     const ports = stubPorts();
     const rec = newRecord('s1');
-    rec.state = 'function_execute';
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    enterFunctionExecute(rec, makeAssistant([fc]));
+    rec.state = 'function_execute';
 
-    await finalizeBatch(ports, rec, {
+    rec.work = {
       prepared: [{ route: 'dispatch', call: fc }],
       executed: {
         'fc-1': {
@@ -176,7 +173,8 @@ describe('finalizeBatch', () => {
           duration_ms: 1,
         },
       },
-    });
+    };
+    await finalizeBatch(ports, rec);
 
     expect(rec.state).toBe('stopped');
     expect(ports.finishSession).toHaveBeenCalledOnce();
@@ -200,9 +198,10 @@ describe('finalizeBatch', () => {
       appendMessages,
     });
     const rec = newRecord('s1');
+    enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
 
-    await finalizeBatch(ports, rec, {
+    rec.work = {
       prepared: [{ route: 'dispatch', call: fc }],
       executed: {
         'fc-1': {
@@ -212,7 +211,8 @@ describe('finalizeBatch', () => {
           duration_ms: 1,
         },
       },
-    });
+    };
+    await finalizeBatch(ports, rec);
 
     expect(appendMessages).not.toHaveBeenCalled();
     expect(rec.state).toBe('steering_check');

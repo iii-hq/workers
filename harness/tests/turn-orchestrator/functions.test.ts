@@ -8,6 +8,8 @@ import { newRecord } from '../../src/turn-orchestrator/state.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
 import { parseApprovalDecision } from '../../src/turn-orchestrator/function-awaiting-approval/ports.js';
 import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
+import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
+import type { FunctionBatchWork } from '../../src/turn-orchestrator/function-execute/types.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 afterEach(() => {
@@ -76,6 +78,13 @@ describe('parseApprovalDecision', () => {
   });
 });
 
+/** Seed required function-batch invariants before handleExecute. */
+function seedFunctionExecute(rec: TurnStateRecord, work: FunctionBatchWork, asst?: AssistantMessage): void {
+  enterFunctionExecute(rec, asst ?? makeAssistant([]));
+  rec.work = work;
+  rec.state = 'function_execute';
+}
+
 /** Wrap a target function id in the agent_trigger envelope (production shape). */
 function agentTriggerCall(
   id: string,
@@ -86,7 +95,7 @@ function agentTriggerCall(
 }
 
 describe('handleExecute new flow', () => {
-  it('builds work.prepared from last_assistant when work is absent', async () => {
+  it('runs the prepared batch from work', async () => {
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
@@ -97,13 +106,11 @@ describe('handleExecute new flow', () => {
     });
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
+    enterFunctionExecute(rec, makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]));
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]);
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
-
-    expect(rec.work).toBeUndefined();
     expect(rec.state).toBe('steering_check');
     expect(rec.function_results).toHaveLength(1);
     expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
@@ -112,9 +119,8 @@ describe('handleExecute new flow', () => {
   it('finishes the session when every function result terminates', async () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [{ route: 'dispatch', call: fc }],
       executed: {
         'fc-1': {
@@ -128,7 +134,7 @@ describe('handleExecute new flow', () => {
           duration_ms: 1,
         },
       },
-    };
+    });
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -147,10 +153,9 @@ describe('handleExecute new flow', () => {
     });
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
     const fc1 = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [
         { route: 'dispatch', call: fc1 },
         { route: 'dispatch', call: fc2 },
@@ -167,7 +172,7 @@ describe('handleExecute new flow', () => {
           duration_ms: 5,
         },
       },
-    };
+    });
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -186,8 +191,7 @@ describe('handleExecute new flow', () => {
     const triggerSpy = vi.fn().mockResolvedValue({ ok: true });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [
         {
           route: 'pre_approved',
@@ -195,7 +199,7 @@ describe('handleExecute new flow', () => {
         },
       ],
       executed: {},
-    };
+    });
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
     mockFinalizePersistence();
 
@@ -217,8 +221,7 @@ describe('handleExecute new flow', () => {
     });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [
         {
           route: 'pre_approved',
@@ -230,7 +233,7 @@ describe('handleExecute new flow', () => {
         },
       ],
       executed: {},
-    };
+    });
     mockFinalizePersistence();
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
@@ -249,14 +252,12 @@ describe('handleExecute new flow', () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-
     const denial = {
       content: [{ type: 'text' as const, text: 'denied' }],
       details: { approval_denied: true, decision: 'deny' as const },
       terminate: false,
     };
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [
         {
           route: 'synthetic',
@@ -265,7 +266,7 @@ describe('handleExecute new flow', () => {
         },
       ],
       executed: {},
-    };
+    });
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
@@ -281,15 +282,13 @@ describe('handleExecute new flow', () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec = newRecord('s1');
-    rec.state = 'function_execute';
-
     const existingResult = {
       content: [{ type: 'text' as const, text: 'cached' }],
       details: {},
       terminate: false,
     };
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
-    rec.work = {
+    seedFunctionExecute(rec, {
       prepared: [{ route: 'dispatch', call: fc }],
       executed: {
         'fc-1': {
@@ -299,7 +298,7 @@ describe('handleExecute new flow', () => {
           duration_ms: 42,
         },
       },
-    };
+    });
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -320,7 +319,7 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([agentTriggerCall('fc-1', 'shell::run')]);
+    enterFunctionExecute(rec, makeAssistant([agentTriggerCall('fc-1', 'shell::run')]));
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
@@ -328,46 +327,10 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('steering_check');
   });
 
-  it('transitions to steering_check when last_assistant is missing after execute (with pre-populated work)', async () => {
-    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
-    const rec = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.last_assistant = null;
-
-    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
-    rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
-      executed: {
-        'fc-1': {
-          call: fc,
-          result: {
-            content: [{ type: 'text' as const, text: 'ok' }],
-            details: {},
-            terminate: false,
-          },
-          is_error: false,
-          duration_ms: 1,
-        },
-      },
-    };
-    installMockTurnStore({
-      loadMessages: vi.fn(async () => []),
-      appendMessages: vi.fn(async () => {}),
-    });
-    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleExecute(iii, rec);
-
-    expect(rec.state).toBe('steering_check');
-    expect(rec.function_results).toHaveLength(1);
-    expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(false);
-  });
-
   it('emits turn lifecycle and sets turn_end_emitted when last_assistant is present', async () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.last_assistant = {
+    const asst: AssistantMessage = {
       role: 'assistant',
       content: [{ type: 'text', text: 'done' }],
       stop_reason: 'end',
@@ -378,23 +341,26 @@ describe('handleExecute new flow', () => {
       provider: 'p',
       timestamp: 1,
     };
-
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
-    rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
-      executed: {
-        'fc-1': {
-          call: fc,
-          result: {
-            content: [{ type: 'text' as const, text: 'ok' }],
-            details: {},
-            terminate: false,
+    seedFunctionExecute(
+      rec,
+      {
+        prepared: [{ route: 'dispatch', call: fc }],
+        executed: {
+          'fc-1': {
+            call: fc,
+            result: {
+              content: [{ type: 'text' as const, text: 'ok' }],
+              details: {},
+              terminate: false,
+            },
+            is_error: false,
+            duration_ms: 1,
           },
-          is_error: false,
-          duration_ms: 1,
         },
       },
-    };
+      asst,
+    );
     installMockTurnStore({
       loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
@@ -419,9 +385,10 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
-    rec.last_assistant = makeAssistant([
-      agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' }),
-    ]);
+    enterFunctionExecute(
+      rec,
+      makeAssistant([agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' })]),
+    );
 
     let storedMessages: unknown[] = [];
     installMockTurnStore({
@@ -438,19 +405,23 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    rec.state = 'function_execute';
-    rec.turn_end_emitted = false;
-    rec.work = {
-      prepared: [{ route: 'dispatch', call: fc }],
-      executed: {
-        toolu_01: {
-          call: fc,
-          result: existingResult,
-          is_error: false,
-          duration_ms: 5,
+    const asst = makeAssistant([agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' })]);
+    seedFunctionExecute(
+      rec,
+      {
+        prepared: [{ route: 'dispatch', call: fc }],
+        executed: {
+          toolu_01: {
+            call: fc,
+            result: existingResult,
+            is_error: false,
+            duration_ms: 5,
+          },
         },
       },
-    };
+      asst,
+    );
+    rec.turn_end_emitted = false;
 
     await handleExecute(iii, rec);
 

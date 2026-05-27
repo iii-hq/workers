@@ -49,7 +49,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'approval-gate',
     description:
-      'Registers approval::resolve; persists human decisions to the approvals scope (turn-orchestrator reacts via turn::on_approval).',
+      'Registers approval::resolve; persists human decisions to the approvals scope and enqueues turn::function_awaiting_approval.',
     register: (iii) => registerApprovalGate(iii),
   },
   {

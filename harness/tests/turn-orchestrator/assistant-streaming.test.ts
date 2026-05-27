@@ -5,7 +5,7 @@ import {
   resolveAssistantMessage,
   routeAssistantTurn,
   syntheticStreamReason,
-} from '../../src/turn-orchestrator/assistant-streaming/process.js';
+} from '../../src/turn-orchestrator/assistant-streaming/run.js';
 import {
   parseFunctionSchemas,
   type AssistantStreamingPorts,
@@ -77,6 +77,7 @@ describe('prepareStreamContext', () => {
       runPreflight: vi.fn(async () => 'compacted'),
     });
     const rec = newRecord('s1');
+    rec.state = 'assistant_streaming';
 
     const ctx = await prepareStreamContext(ports, rec);
 
@@ -133,9 +134,10 @@ describe('finalizeAssistantTurn', () => {
   it('stops without persisting on error assistant', async () => {
     const ports = stubStreamingPorts();
     const rec = newRecord('s1');
-    rec.last_assistant = assistant({ stop_reason: 'error', error_message: 'auth failed' });
+    rec.state = 'assistant_streaming';
+    const asst = assistant({ stop_reason: 'error', error_message: 'auth failed' });
 
-    await finalizeAssistantTurn(ports, rec);
+    await finalizeAssistantTurn(ports, rec, asst);
 
     expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
@@ -145,15 +147,16 @@ describe('finalizeAssistantTurn', () => {
   it('persists and routes to function_execute when calls exist', async () => {
     const ports = stubStreamingPorts();
     const rec = newRecord('s1');
-    rec.last_assistant = assistant({
+    rec.state = 'assistant_streaming';
+    const asst = assistant({
       content: [{ type: 'function_call', id: 'fc-1', function_id: 'shell::run', arguments: {} }],
     });
 
-    await finalizeAssistantTurn(ports, rec);
+    await finalizeAssistantTurn(ports, rec, asst);
 
     expect(ports.persistAssistantIfNew).toHaveBeenCalledOnce();
     expect(rec.state).toBe('function_execute');
-    expect(rec.work).toBeUndefined();
+    expect(rec.work?.prepared).toHaveLength(1);
     expect(rec.function_results).toEqual([]);
   });
 });

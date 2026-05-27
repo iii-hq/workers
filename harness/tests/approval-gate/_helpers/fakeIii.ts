@@ -7,7 +7,7 @@
 import type { ISdk } from 'iii-sdk';
 import { vi } from 'vitest';
 
-export type TriggerCall = { function_id: string; payload: unknown };
+export type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
 export type FakeIii = {
   iii: ISdk;
@@ -20,8 +20,17 @@ export function fakeIii(): FakeIii {
   const streamSets: unknown[] = [];
 
   const iii = {
-    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      calls.push({ function_id, payload });
+    trigger: vi.fn(
+      async ({
+        function_id,
+        payload,
+        action,
+      }: {
+        function_id: string;
+        payload: unknown;
+        action?: unknown;
+      }) => {
+      calls.push({ function_id, payload, action });
       if (function_id === 'stream::set') {
         streamSets.push(payload);
       }

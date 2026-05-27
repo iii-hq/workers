@@ -7,7 +7,6 @@ import { register as registerFunctionAwaitingApproval } from './function-awaitin
 import { register as registerFunctionExecute } from './function-execute/process.js';
 import { register as registerGetState } from './get-state.js';
 import { register as registerRunStart } from './run-start.js';
-import { register as registerOnApproval } from './on-approval.js';
 import { register as registerProvisioning } from './provisioning/process.js';
 import { register as registerSteeringCheck } from './steering-check/process.js';
 
@@ -21,7 +20,6 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
   registerGetState(iii);
-  registerOnApproval(iii);
 
   void bootstrap.run(iii, orchestratorCfg);
 }

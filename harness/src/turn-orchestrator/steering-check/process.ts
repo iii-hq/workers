@@ -3,119 +3,16 @@
  */
 
 import type { ISdk } from '../../runtime/iii.js';
-import type { AgentMessage } from '../../types/agent-message.js';
 import { runTransition } from '../run-transition.js';
-import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
-import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce, resumeToAssistantStreaming } from '../state-runtime/turn-end.js';
-import { type TurnStateRecord } from '../state.js';
-import { createSteeringCheckPorts, type SteeringCheckPorts } from './ports.js';
-
-export type SteeringRoute = 'steering' | 'followup' | 'continue_after_function' | 'end_turn';
-
-export type SteeringCheckOutcome =
-  | { kind: 'max_turns_reached' }
-  | { kind: 'resume_with_inbox'; inbox: AgentMessage[] }
-  | { kind: 'continue_after_function' }
-  | { kind: 'end_turn' };
-
-export function route(
-  has_steering: boolean,
-  has_followup: boolean,
-  has_function_results: boolean,
-): SteeringRoute {
-  if (has_steering) return 'steering';
-  if (has_followup) return 'followup';
-  if (has_function_results) return 'continue_after_function';
-  return 'end_turn';
-}
-
-function maxTurnsReached(rec: TurnStateRecord): boolean {
-  return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
-}
-
-async function endForMaxTurns(ports: SteeringCheckPorts, rec: TurnStateRecord): Promise<void> {
-  const msg = syntheticAssistant({
-    stop_reason: 'end',
-    text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,
-  });
-  rec.last_assistant = msg;
-  await ports.appendMessages(rec.session_id, [msg]);
-  await ports.emit(rec.session_id, {
-    type: 'message_complete',
-    message: msg,
-    body_streamed: false,
-  });
-  await emitTurnEndOnce(ports, rec, msg);
-  await ports.finishSession(rec);
-}
-
-export async function processSteeringCheck(
-  ports: SteeringCheckPorts,
-  rec: TurnStateRecord,
-): Promise<SteeringCheckOutcome> {
-  const steering = await ports.drainInbox('steering', rec.session_id);
-  const followup = steering.length > 0 ? [] : await ports.drainInbox('followup', rec.session_id);
-
-  const decision = route(steering.length > 0, followup.length > 0, rec.function_results.length > 0);
-
-  if (
-    (decision === 'steering' ||
-      decision === 'followup' ||
-      decision === 'continue_after_function') &&
-    maxTurnsReached(rec)
-  ) {
-    return { kind: 'max_turns_reached' };
-  }
-
-  switch (decision) {
-    case 'steering':
-      return { kind: 'resume_with_inbox', inbox: steering };
-    case 'followup':
-      return { kind: 'resume_with_inbox', inbox: followup };
-    case 'continue_after_function':
-      return { kind: 'continue_after_function' };
-    case 'end_turn':
-      return { kind: 'end_turn' };
-  }
-}
-
-export async function applySteeringCheckOutcome(
-  ports: SteeringCheckPorts,
-  rec: TurnStateRecord,
-  outcome: SteeringCheckOutcome,
-): Promise<void> {
-  switch (outcome.kind) {
-    case 'max_turns_reached':
-      await endForMaxTurns(ports, rec);
-      return;
-    case 'resume_with_inbox': {
-      await emitTurnEndOnce(ports, rec);
-      await ports.appendMessages(rec.session_id, outcome.inbox);
-      resumeToAssistantStreaming(rec);
-      return;
-    }
-    case 'continue_after_function':
-      resumeToAssistantStreaming(rec);
-      return;
-    case 'end_turn':
-      await emitTurnEndOnce(ports, rec);
-      await ports.finishSession(rec);
-      return;
-  }
-}
-
-export async function runSteeringCheck(
-  ports: SteeringCheckPorts,
-  rec: TurnStateRecord,
-): Promise<void> {
-  const outcome = await processSteeringCheck(ports, rec);
-  await applySteeringCheckOutcome(ports, rec, outcome);
-}
+import { TurnStepPayloadSchema, parseSteeringCheckRecord, type TurnStepPayload } from '../schemas.js';
+import type { TurnStateRecord } from '../state.js';
+import { createSteeringCheckPorts } from './ports.js';
+import { runSteeringCheck } from './run.js';
 
 export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const steering = parseSteeringCheckRecord(rec);
   const ports = createSteeringCheckPorts(iii);
-  await runSteeringCheck(ports, rec);
+  await runSteeringCheck(ports, steering);
 }
 
 export function register(iii: ISdk): void {

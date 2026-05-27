@@ -14,11 +14,14 @@ import {
 } from '../agent-trigger.js';
 import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
 import { persistedTrailingResultIds } from '../state-runtime/transcript.js';
-import { transitionTo, type TurnStateRecord } from '../state.js';
+import {
+  transitionTo,
+  type AwaitingApprovalEntry,
+  type FunctionBatchTurnRecord,
+  type TurnStateRecord,
+} from '../state.js';
 import type { FunctionExecutePorts } from './ports.js';
 import {
-  emptyBatchWork,
-  isBatchComplete,
   preparedCallId,
   type BatchOutcome,
   type ExecutedCall,
@@ -29,55 +32,41 @@ import {
   type RunOneCallResult,
 } from './types.js';
 
-export { isBatchComplete };
-
-export class FunctionExecuteInvariantError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FunctionExecuteInvariantError';
-  }
-}
-
 function isFunctionCallBlock(
   block: AssistantMessage['content'][number],
 ): block is FunctionCallContent {
   return block.type === 'function_call';
 }
 
-function extractFunctionCalls(msg: AssistantMessage): FunctionCall[] {
-  return msg.content.filter(isFunctionCallBlock).map((b) => ({
-    id: b.id,
-    function_id: b.function_id,
-    arguments: b.arguments,
-  }));
-}
-
-function toPreparedCall(raw: FunctionCall): PreparedCall {
-  if (raw.function_id !== TOOL_NAME) {
-    return { route: 'synthetic', call: raw, result: missingFunctionResult() };
-  }
-  const call = unwrapAgentTrigger(raw);
-  if (!call.function_id) {
+function toPreparedCall(block: FunctionCallContent): PreparedCall {
+  const call: FunctionCall = {
+    id: block.id,
+    function_id: block.function_id,
+    arguments: block.arguments,
+  };
+  if (block.function_id !== TOOL_NAME) {
     return { route: 'synthetic', call, result: missingFunctionResult() };
   }
-  return { route: 'dispatch', call };
+  const unwrapped = unwrapAgentTrigger(call);
+  if (!unwrapped.function_id) {
+    return { route: 'synthetic', call: unwrapped, result: missingFunctionResult() };
+  }
+  return { route: 'dispatch', call: unwrapped };
 }
 
-/** Build prepared calls from the assistant message that requested them. */
-export function planBatchFromAssistant(asst: AssistantMessage): PreparedCall[] {
-  return extractFunctionCalls(asst).map(toPreparedCall);
-}
-
-/** Use existing work or plan a new batch from last_assistant. */
-export function loadOrPlanWork(rec: TurnStateRecord): FunctionBatchWork {
-  if (rec.work) {
-    return rec.work;
-  }
-  const asst = rec.last_assistant;
-  if (!asst) {
-    throw new FunctionExecuteInvariantError('function_execute without last_assistant or work');
-  }
-  return emptyBatchWork(planBatchFromAssistant(asst));
+/** Set fields expected when entering `function_execute` (mirrors assistant_streaming finalize). */
+export function enterFunctionExecute(rec: TurnStateRecord, asst: AssistantMessage): void {
+  const batch = rec as TurnStateRecord & {
+    awaiting_approval: AwaitingApprovalEntry[];
+    last_assistant: AssistantMessage;
+    work: FunctionBatchWork;
+  };
+  batch.awaiting_approval = [];
+  batch.last_assistant = asst;
+  batch.work = {
+    prepared: asst.content.filter(isFunctionCallBlock).map(toPreparedCall),
+    executed: {},
+  };
 }
 
 async function resolvePreparedCall(
@@ -145,21 +134,19 @@ export async function runOneCall(
 
 export async function runBatch(
   ports: FunctionExecutePorts,
-  rec: TurnStateRecord,
-  work: FunctionBatchWork,
+  rec: FunctionBatchTurnRecord,
 ): Promise<BatchOutcome> {
-  const executed = { ...work.executed };
-  const awaitingIds = new Set(
-    (rec.awaiting_approval ?? []).map((entry) => entry.function_call_id),
-  );
+  const { prepared } = rec.work;
+  const executed = { ...rec.work.executed };
+  const awaitingIds = new Set(rec.awaiting_approval.map((entry) => entry.function_call_id));
   const newPending: PendingApproval[] = [];
 
-  for (const prepared of work.prepared) {
-    const callId = preparedCallId(prepared);
+  for (const item of prepared) {
+    const callId = preparedCallId(item);
     if (executed[callId]) continue;
     if (awaitingIds.has(callId)) continue;
 
-    const outcome = await runOneCall(ports, rec.session_id, prepared, executed);
+    const outcome = await runOneCall(ports, rec.session_id, item, executed);
 
     if (outcome.kind === 'pending') {
       newPending.push({
@@ -171,12 +158,12 @@ export async function runBatch(
     }
 
     if (outcome.kind === 'executed') {
-      rec.work = { prepared: work.prepared, executed };
+      rec.work = { prepared, executed };
       await ports.checkpoint(rec);
     }
   }
 
-  const batchWork = { prepared: work.prepared, executed };
+  const batchWork = { prepared, executed };
   if (newPending.length > 0 || awaitingIds.size > 0) {
     return { kind: 'incomplete', work: batchWork, newPending };
   }
@@ -198,24 +185,19 @@ function toFunctionResultMessage(
   };
 }
 
-/** Collect executed entries in batch order (assistant tool order). */
+/** Collect executed entries in batch order (caller must only invoke when batch is complete). */
 function executedInBatchOrder(work: FunctionBatchWork): ExecutedCall[] {
-  const ordered: ExecutedCall[] = [];
-  for (const prepared of work.prepared) {
-    const entry = work.executed[preparedCallId(prepared)];
-    if (entry) ordered.push(entry);
-  }
-  return ordered;
+  return work.prepared.map((item) => work.executed[preparedCallId(item)]!);
 }
 
 export async function finalizeBatch(
   ports: FunctionExecutePorts,
-  rec: TurnStateRecord,
-  work: FunctionBatchWork,
+  rec: FunctionBatchTurnRecord,
 ): Promise<void> {
-  const executed = executedInBatchOrder(work);
+  const executed = executedInBatchOrder(rec.work);
   const function_results: FunctionResultMessage[] = [];
-  let allTerminate = executed.length > 0;
+  let allTerminate = true;
+  const lastAssistant = rec.last_assistant;
 
   for (const entry of executed) {
     const result = entry.result;
@@ -237,17 +219,15 @@ export async function finalizeBatch(
     await ports.appendMessages(rec.session_id, fresh);
   }
 
-  const asst = rec.last_assistant;
   rec.function_results = function_results;
-  rec.work = undefined;
 
-  if (asst) {
-    await emitTurnEndOnce(ports, rec, asst, function_results);
-  }
+  await emitTurnEndOnce(ports, rec, lastAssistant, function_results);
 
   if (allTerminate) {
     await ports.finishSession(rec);
   } else {
     transitionTo(rec, 'steering_check');
   }
+
+  (rec as TurnStateRecord).work = undefined;
 }

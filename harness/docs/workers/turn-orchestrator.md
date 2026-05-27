@@ -46,7 +46,7 @@ unreachable → deny with a `gate_unavailable` `DenialEnvelope`.
 
 The record-written wake is inline in `saveRecord` (no separate `on-record-written` adapter): every `saveRecord` call that transitions to a non-terminal, non-parking state enqueues `turn::{newState}` on the `turn-step` FIFO. Similarly, `turn_state_changed` events are emitted inline from `persistRecord` inside `TurnStore` — there is no separate `on-turn-state-changed` state trigger.
 
-Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` writes a decision to scope `approvals`, which fires the reactive `turn::on_approval` state trigger (see [on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) and [workers/approval-gate.md](workers/approval-gate.md)).
+Paused turns (`function_awaiting_approval`) are woken when `approval::resolve` writes scope `approvals`, which fires `turn::on_approval` (registered in [function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts); see [workers/approval-gate.md](workers/approval-gate.md)).
 
 ## Turn FSM
 
@@ -115,8 +115,7 @@ Unchanged from prior design: `dispatchWithHook` → `consultBefore` →
 `policy::check_permissions` (5 s timeout, fail-closed). A `needs_approval`
 reply returns `{ kind: 'pending' }` from `dispatchWithHook`, which parks the
 session to `function_awaiting_approval`. `approval::resolve` writes the
-decision to scope `approvals`, which fires `turn::on_approval` and calls
-`turn::on_approval` enqueues `turn::function_awaiting_approval` on the `turn-step` queue.
+decision to scope `approvals`, which fires `turn::on_approval` to enqueue `turn::function_awaiting_approval` on the `turn-step` queue.
 
 ## Configuration
 
@@ -147,7 +146,7 @@ From
 | [src/turn-orchestrator/get-state.ts](harness/src/turn-orchestrator/get-state.ts) | `turn::get_state` — one-shot reader returning `TurnStateView \| null`. |
 | [src/turn-orchestrator/agent-trigger.ts](harness/src/turn-orchestrator/agent-trigger.ts) | Dispatcher chokepoint: `dispatchWithHook` (consult + trigger), `triggerFunctionCall` (trigger/decode/error), `agentTriggerTool` (schema), `unwrapAgentTrigger`. |
 | [src/turn-orchestrator/hook.ts](harness/src/turn-orchestrator/hook.ts) | `consultBefore` — `policy::check_permissions` (5 s, fail-closed) → `allow` / `pending` / `deny`. |
-| [src/turn-orchestrator/on-approval.ts](harness/src/turn-orchestrator/on-approval.ts) | Reactive `turn::on_approval` state trigger on scope `approvals`. |
+| [src/turn-orchestrator/function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) | `turn::function_awaiting_approval` FSM step + `turn::on_approval` state trigger on scope `approvals`. |
 | [src/turn-orchestrator/schemas.ts](harness/src/turn-orchestrator/schemas.ts) | All registered-function I/O schemas and types: `RunStartPayloadSchema`, `TurnStepPayloadSchema`, `TurnStateView`, `toView`, `ApprovalDecisionEventSchema`. |
 | [src/turn-orchestrator/state-runtime/ports.ts](harness/src/turn-orchestrator/state-runtime/ports.ts) | `TurnStatePorts` / `createTurnStatePorts` — shared dependency ports for per-state handlers (incl. `finishSession`). |
 | [src/turn-orchestrator/provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | `turn::provisioning` handler and provisioning pipeline. |
