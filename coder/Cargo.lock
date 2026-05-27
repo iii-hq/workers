@@ -211,7 +211,6 @@ dependencies = [
  "cucumber",
  "futures",
  "globset",
- "iii-observability",
  "iii-sdk",
  "regex",
  "schemars",

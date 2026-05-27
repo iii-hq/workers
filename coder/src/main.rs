@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use iii_observability::OtelConfig;
 use iii_sdk::{register_worker, InitOptions, WorkerMetadata};
 
 use coder::config;
@@ -84,7 +83,6 @@ async fn main() -> Result<()> {
     let iii = register_worker(
         &cli.url,
         InitOptions {
-            otel: Some(OtelConfig::default()),
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
