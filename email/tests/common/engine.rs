@@ -24,7 +24,7 @@ pub async fn get_or_init() -> Option<Arc<III>> {
             // we cap the attempt with a timeout and treat the failure
             // as a skip.
             let connect = tokio::time::timeout(
-                Duration::from_millis(500),
+                Duration::from_secs(3),
                 tokio::task::spawn_blocking(move || {
                     let iii = register_worker(&url, InitOptions::default());
                     Arc::new(iii)

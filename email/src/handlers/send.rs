@@ -133,11 +133,12 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
              cc?: string[], bcc?: string[], subject: string, html?: string, \
              text?: string, reply_to?: string, in_reply_to?: string (Message-ID), \
              references?: string[], attachments?: [{ filename, content_type, \
-             source: { kind: 'base64', data } | { kind: 'stream', stream: StreamChannelRef } }] }. \
-             Returns { message_id }. Credentials are fetched from auth-credentials under \
-             provider key `email::<account>` ({ username, password }). Provide html OR text \
-             (or both); at least one body is required. Use the 'stream' attachment source \
-             for large files to avoid base64 bloat.",
+             source: { kind: 'base64', data } }] }. Returns { message_id }. \
+             Credentials are fetched from auth-credentials under provider key \
+             `email::<account>` ({ username, password }). Provide html OR text \
+             (or both); at least one body is required. \
+             Note: only kind=base64 is supported in 0.1.0 — stream-source \
+             attachments return E699 pending the symmetric upload primitive.",
         ),
     );
 }

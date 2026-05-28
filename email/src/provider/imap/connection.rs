@@ -67,20 +67,21 @@ pub async fn open_and_select_with_cred(
     let tls = build_tls_connector()?;
     let server_name = rustls::pki_types::ServerName::try_from(cfg.host.clone())
         .map_err(|e| handler_err("E614", &format!("invalid imap host `{}`: {e}", cfg.host)))?;
-    let stream: TlsStream<TcpStream> = tls
-        .connect(server_name, tcp)
+    let timeout = Duration::from_millis(connect_timeout_ms);
+    let stream: TlsStream<TcpStream> = tokio::time::timeout(timeout, tls.connect(server_name, tcp))
         .await
+        .map_err(|_| handler_err("E614", "imap TLS handshake timed out"))?
         .map_err(|e| handler_err("E614", &format!("imap TLS handshake failed: {e}")))?;
 
     let client = async_imap::Client::new(stream);
-    let mut session = client
-        .login(user, pass)
+    let mut session = tokio::time::timeout(timeout, client.login(user, pass))
         .await
+        .map_err(|_| handler_err("E616", &format!("imap login timed out for {account}")))?
         .map_err(|(e, _)| handler_err("E616", &format!("imap login failed for {account}: {e}")))?;
 
-    let caps = session
-        .capabilities()
+    let caps = tokio::time::timeout(timeout, session.capabilities())
         .await
+        .map_err(|_| handler_err("E614", "imap CAPABILITY timed out"))?
         .map_err(|e| handler_err("E614", &format!("imap CAPABILITY failed: {e}")))?;
     let has_idle = caps.iter().any(|c| {
         matches!(
@@ -99,9 +100,9 @@ pub async fn open_and_select_with_cred(
         ));
     }
 
-    session
-        .select(folder)
+    tokio::time::timeout(timeout, session.select(folder))
         .await
+        .map_err(|_| handler_err("E617", &format!("imap SELECT `{folder}` timed out")))?
         .map_err(|e| handler_err("E617", &format!("imap SELECT `{folder}` failed: {e}")))?;
 
     tracing::info!(account = %account, folder = %folder, host = %cfg.host, "imap session ready (IDLE supported)");

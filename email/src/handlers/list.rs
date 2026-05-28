@@ -19,6 +19,7 @@ fn default_folder() -> String {
 fn default_limit() -> u32 {
     50
 }
+const MAX_LIMIT: u32 = 1000;
 
 pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
@@ -54,7 +55,8 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 let session = guard.session();
                 let mut uids: Vec<u32> = uids.into_iter().collect();
                 uids.sort_unstable_by(|a, b| b.cmp(a)); // newest first
-                uids.truncate(req.limit as usize);
+                let effective_limit = req.limit.min(MAX_LIMIT);
+                uids.truncate(effective_limit as usize);
 
                 let mut items = Vec::with_capacity(uids.len());
                 for uid in &uids {

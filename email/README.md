@@ -232,4 +232,6 @@ cargo test --all-features
 | `E623` | IMAP `STORE` failed |
 | `E624` | IMAP `COPY` / `STORE \Deleted` fallback failed |
 | `E625` | IMAP attachment-part fetch failed |
+| `E626` | Attachment payload malformed (e.g. invalid base64) |
+| `E627` | `email::move` partial: copy succeeded but `STORE \Deleted` failed — message in BOTH folders, reconcile |
 | `E699` | Not yet implemented in 0.1.0 |

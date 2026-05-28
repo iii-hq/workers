@@ -31,6 +31,21 @@ impl TriggerRegistry {
         function_id: String,
         handler_timeout_ms: u64,
     ) {
+        // Defend against re-registration with the same instance_id: drop any
+        // prior Subscriber row under the old key before pushing the new one,
+        // otherwise a single trigger would fire twice (or N times after N
+        // re-registers).
+        if let Some((_, old_key)) = self.by_id.remove(&instance_id) {
+            let mut purge_old_slot = false;
+            if let Some(mut entry) = self.subs.get_mut(&old_key) {
+                entry.retain(|s| s.instance_id != instance_id);
+                purge_old_slot = entry.is_empty();
+            }
+            if purge_old_slot {
+                self.subs.remove(&old_key);
+            }
+        }
+
         let key = (account, folder);
         self.subs.entry(key.clone()).or_default().push(Subscriber {
             instance_id: instance_id.clone(),

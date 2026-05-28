@@ -17,6 +17,15 @@ enum MoveOutcome {
     CopyStore,
 }
 
+enum MoveError {
+    /// uid_mv failed AND the copy fallback failed before any side effect.
+    BothFailed(async_imap::error::Error),
+    /// uid_copy succeeded but the subsequent uid_store +FLAGS \Deleted failed.
+    /// The message now exists in BOTH source and destination folders — caller
+    /// must reconcile (delete the duplicate, or retry the STORE).
+    PartialCopyStore(async_imap::error::Error),
+}
+
 pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
@@ -31,18 +40,31 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                 })?;
                 let mut guard = pool.acquire(&req.account, &req.folder).await?;
 
-                let outcome: Result<MoveOutcome, async_imap::error::Error> = async {
+                let outcome: Result<MoveOutcome, MoveError> = async {
                     let session = guard.session();
                     match session.uid_mv(req.uid.to_string(), &req.dst_folder).await {
                         Ok(()) => Ok(MoveOutcome::Move),
-                        Err(e) => {
-                            tracing::info!(error = %e, "UID MOVE failed; falling back to COPY+STORE");
-                            session.uid_copy(req.uid.to_string(), &req.dst_folder).await?;
-                            let mut stream = session
+                        Err(mv_err) => {
+                            tracing::info!(error = %mv_err, "UID MOVE failed; falling back to COPY+STORE");
+                            if let Err(copy_err) =
+                                session.uid_copy(req.uid.to_string(), &req.dst_folder).await
+                            {
+                                return Err(MoveError::BothFailed(copy_err));
+                            }
+                            // uid_copy succeeded — message now exists at dst.
+                            // If the STORE fails from here, the source still
+                            // has the original AND dst has a copy. Surface
+                            // that distinct state to the caller.
+                            let store = session
                                 .uid_store(req.uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
-                                .await?;
-                            while stream.next().await.is_some() {}
-                            Ok(MoveOutcome::CopyStore)
+                                .await;
+                            match store {
+                                Ok(mut stream) => {
+                                    while stream.next().await.is_some() {}
+                                    Ok(MoveOutcome::CopyStore)
+                                }
+                                Err(store_err) => Err(MoveError::PartialCopyStore(store_err)),
+                            }
                         }
                     }
                 }
@@ -53,11 +75,31 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     Ok(MoveOutcome::CopyStore) => {
                         Ok(json!({ "ok": true, "method": "COPY+STORE" }))
                     }
-                    Err(e) => {
+                    Err(MoveError::BothFailed(e)) => {
                         guard.poison();
                         Err(IIIError::Handler(
                             json!({"code":"E624","message":format!("imap move failed: {e}")})
                                 .to_string(),
+                        ))
+                    }
+                    Err(MoveError::PartialCopyStore(e)) => {
+                        guard.poison();
+                        // E627 — copy succeeded, delete failed. Message
+                        // exists in BOTH `folder` and `dst_folder`.
+                        Err(IIIError::Handler(
+                            json!({
+                                "code": "E627",
+                                "message": format!(
+                                    "copy succeeded but STORE \\Deleted failed; \
+                                     message now exists in BOTH `{}` and `{}` — \
+                                     reconcile manually: {e}",
+                                    req.folder, req.dst_folder,
+                                ),
+                                "partial": true,
+                                "source_folder": req.folder,
+                                "dst_folder": req.dst_folder,
+                            })
+                            .to_string(),
                         ))
                     }
                 }

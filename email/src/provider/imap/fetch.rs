@@ -116,11 +116,17 @@ pub async fn stream_part_bytes(
     part_id: &str,
     writer: &ChannelWriter,
 ) -> Result<()> {
+    // Reject empty / whitespace-only part_id: BODY[] would fetch the
+    // whole message, which silently bypasses the attachment contract.
+    if part_id.trim().is_empty() {
+        return Err(anyhow!("part_id must not be empty"));
+    }
     let query = format!("BODY[{part_id}]");
     let mut stream = session
         .uid_fetch(uid.to_string(), query.as_str())
         .await
         .map_err(|e| anyhow!("uid_fetch part {part_id} for {uid} failed: {e}"))?;
+    let mut written: usize = 0;
     while let Some(msg) = stream.next().await {
         let msg = msg.map_err(|e| anyhow!("fetch stream: {e}"))?;
         if let Some(body) = msg.body() {
@@ -128,7 +134,16 @@ pub async fn stream_part_bytes(
                 .write(body)
                 .await
                 .map_err(|e| anyhow!("channel write: {e}"))?;
+            written += body.len();
         }
+    }
+    // A successful FETCH for a non-existent part returns no body bytes.
+    // Treat zero-byte responses as not-found so the caller sees a real
+    // error instead of an empty success.
+    if written == 0 {
+        return Err(anyhow!(
+            "imap returned no bytes for BODY[{part_id}] on uid {uid} (part not found?)"
+        ));
     }
     Ok(())
 }

@@ -194,9 +194,12 @@ fn build_attachment_part(a: Attachment) -> Result<SinglePart, IIIError> {
         )
     })?;
     let bytes = match a.source {
+        // E626 distinguishes "malformed base64 payload" from E605 which is
+        // reserved for size-limit violations. Callers can `match` on the
+        // code to decide whether to fix encoding or shrink the attachment.
         AttachmentSource::Base64(s) => B64.decode(s.as_bytes()).map_err(|e| {
             IIIError::Handler(
-                json!({"code":"E605","message":format!("attachment `{}` base64 decode failed: {e}", a.filename)}).to_string(),
+                json!({"code":"E626","message":format!("attachment `{}` base64 decode failed: {e}", a.filename)}).to_string(),
             )
         })?,
         AttachmentSource::Stream(_chan) => {

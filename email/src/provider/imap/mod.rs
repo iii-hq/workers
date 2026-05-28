@@ -36,13 +36,9 @@ impl ImapPool {
     /// an owned guard that holds the lock for the duration of the IMAP
     /// exchange. Reconnects transparently on first acquire after a drop.
     pub async fn acquire(&self, account: &str, folder: &str) -> Result<SessionGuard, IIIError> {
-        let key = (account.to_string(), folder.to_string());
-        let slot = self
-            .sessions
-            .entry(key)
-            .or_insert_with(|| Arc::new(Mutex::new(None)))
-            .clone();
-
+        // Validate FIRST — invalid (account, folder) tuples must never reach
+        // the DashMap, otherwise a malformed-payload flood from a hostile
+        // caller can balloon `self.sessions` without bound.
         let acct = self.cfg.accounts.get(account).ok_or_else(|| {
             IIIError::Handler(
                 json!({"code":"E600","message":format!("unknown account `{account}`")}).to_string(),
@@ -63,6 +59,13 @@ impl ImapPool {
                 .to_string(),
             ));
         }
+
+        let key = (account.to_string(), folder.to_string());
+        let slot = self
+            .sessions
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
 
         let mut guard = slot.lock_owned().await;
         if guard.is_none() {
