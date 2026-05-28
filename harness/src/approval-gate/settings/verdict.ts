@@ -16,17 +16,11 @@
 
 import type { ApprovalSettings } from './types.js';
 
-function listed(
-  entries: ApprovalSettings['always_allow'],
-  function_id: string,
-): boolean {
+function listed(entries: ApprovalSettings['always_allow'], function_id: string): boolean {
   return entries.some((entry) => entry.function_id === function_id);
 }
 
-export function settingsVerdict(
-  settings: ApprovalSettings,
-  function_id: string,
-): 'allow' | null {
+export function settingsVerdict(settings: ApprovalSettings, function_id: string): 'allow' | null {
   if (settings.mode === 'full') return 'allow';
   if (listed(settings.approved_always, function_id)) return 'allow';
   if (settings.mode === 'auto' && listed(settings.always_allow, function_id)) {

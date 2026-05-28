@@ -28,11 +28,7 @@ function entry(function_id: string) {
 }
 
 /** Persist approval_settings into the harness store before runExecute. */
-function seedSettings(
-  h: ParallelApprovalHarness,
-  session_id: string,
-  s: SeedSettings,
-): void {
+function seedSettings(h: ParallelApprovalHarness, session_id: string, s: SeedSettings): void {
   h.stateStore.set(`${SETTINGS_STATE_SCOPE}/${session_id}`, {
     mode: s.mode ?? 'manual',
     always_allow: (s.always_allow ?? []).map(entry),
@@ -42,19 +38,14 @@ function seedSettings(
 }
 
 function awaitingIds(h: ParallelApprovalHarness, session_id: string): string[] {
-  return (
-    h.loadTurnRecord(session_id)?.awaiting_approval?.map((e) => e.function_call_id) ?? []
-  );
+  return h.loadTurnRecord(session_id)?.awaiting_approval?.map((e) => e.function_call_id) ?? [];
 }
 
 describe('mode-driven approval e2e (real consultBefore)', () => {
   it('full mode executes the call immediately without parking or writing an approval', async () => {
     const h = createParallelApprovalHarness();
     seedSettings(h, 'sess-full', { mode: 'full' });
-    h.seedExecute(
-      'sess-full',
-      makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]),
-    );
+    h.seedExecute('sess-full', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
 
     await h.runExecute('sess-full');
 
@@ -72,10 +63,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
       mode: 'manual',
       approved_always: ['shell::run'],
     });
-    h.seedExecute(
-      'sess-grant',
-      makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]),
-    );
+    h.seedExecute('sess-grant', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
 
     await h.runExecute('sess-grant');
 
@@ -91,10 +79,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
       mode: 'auto',
       always_allow: ['shell::run'],
     });
-    h.seedExecute(
-      'sess-auto',
-      makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]),
-    );
+    h.seedExecute('sess-auto', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
 
     await h.runExecute('sess-auto');
 
@@ -139,10 +124,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
       mode: 'auto',
       always_allow: ['other::fn'],
     });
-    h.seedExecute(
-      'sess-miss',
-      makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]),
-    );
+    h.seedExecute('sess-miss', makeAssistantWithCalls([{ id: 'fc-1', functionId: 'shell::run' }]));
 
     await h.runExecute('sess-miss');
 

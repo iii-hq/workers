@@ -69,9 +69,7 @@ describe('approval-gate settings', () => {
   it('approveAlways appends to approved_always (idempotent), separate from always_allow', async () => {
     const { iii } = makeIii();
     const once = await approveAlways(iii, 'sess-1', 'shell::exec');
-    expect(once.approved_always.map((e) => e.function_id)).toEqual([
-      'shell::exec',
-    ]);
+    expect(once.approved_always.map((e) => e.function_id)).toEqual(['shell::exec']);
     expect(once.always_allow).toEqual([]);
     const twice = await approveAlways(iii, 'sess-1', 'shell::exec');
     expect(twice.approved_always).toHaveLength(1);
@@ -82,12 +80,8 @@ describe('approval-gate settings', () => {
     const { iii } = makeIii();
     await addAlwaysAllow(iii, 'sess-1', 'shell::fs::ls');
     const after = await approveAlways(iii, 'sess-1', 'shell::exec');
-    expect(after.always_allow.map((e) => e.function_id)).toEqual([
-      'shell::fs::ls',
-    ]);
-    expect(after.approved_always.map((e) => e.function_id)).toEqual([
-      'shell::exec',
-    ]);
+    expect(after.always_allow.map((e) => e.function_id)).toEqual(['shell::fs::ls']);
+    expect(after.approved_always.map((e) => e.function_id)).toEqual(['shell::exec']);
   });
 
   it('writes go to the SETTINGS_STATE_SCOPE keyed by session_id', async () => {
@@ -101,9 +95,7 @@ describe('approval-gate settings', () => {
   it('isHumanOnlyApprovalFunction catches every settings handler id', () => {
     expect(isHumanOnlyApprovalFunction('approval::set_mode')).toBe(true);
     expect(isHumanOnlyApprovalFunction('approval::add_always_allow')).toBe(true);
-    expect(isHumanOnlyApprovalFunction('approval::remove_always_allow')).toBe(
-      true,
-    );
+    expect(isHumanOnlyApprovalFunction('approval::remove_always_allow')).toBe(true);
     expect(isHumanOnlyApprovalFunction('approval::approve_always')).toBe(true);
     expect(isHumanOnlyApprovalFunction('approval::get_settings')).toBe(true);
     expect(isHumanOnlyApprovalFunction('approval::clear_settings')).toBe(true);

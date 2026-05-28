@@ -170,9 +170,9 @@ describe('parallel approval e2e', () => {
     );
     await h.runExecute('sess-grant');
 
-    expect(h.loadTurnRecord('sess-grant')?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(
-      ['fc-1', 'fc-2'],
-    );
+    expect(
+      h.loadTurnRecord('sess-grant')?.awaiting_approval?.map((e) => e.function_call_id),
+    ).toEqual(['fc-1', 'fc-2']);
 
     // "Approve always" on fc-1: persist the per-session grant for the
     // function id, then resolve only the clicked call (mirrors the UI's

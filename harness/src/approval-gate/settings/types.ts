@@ -6,7 +6,6 @@ export type { ApprovalSettings, PermissionMode } from '../schemas.js';
 export type GetSettingsReply = ApprovalSettings;
 export type MutationReply = { ok: true } | { ok: false; error: string };
 
-
 export const sessionIdField = z
   .string()
   .min(1)

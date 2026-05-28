@@ -123,9 +123,7 @@ describe('consultBefore (mode + always_allow)', () => {
     const outcome = await consultBefore(iii, fcWithSession);
     expect(outcome.kind).toBe('allow');
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls.map((c) => c[0].function_id)).not.toContain(
-      'policy::check_permissions',
-    );
+    expect(calls.map((c) => c[0].function_id)).not.toContain('policy::check_permissions');
   });
 
   it('auto mode + allowlist hit short-circuits to allow even when policy would deny', async () => {
@@ -143,9 +141,7 @@ describe('consultBefore (mode + always_allow)', () => {
     const outcome = await consultBefore(iii, fcWithSession);
     expect(outcome.kind).toBe('allow');
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls.map((c) => c[0].function_id)).not.toContain(
-      'policy::check_permissions',
-    );
+    expect(calls.map((c) => c[0].function_id)).not.toContain('policy::check_permissions');
   });
 
   it('manual mode treats the allowlist as dormant (does NOT short-circuit)', async () => {
@@ -159,9 +155,7 @@ describe('consultBefore (mode + always_allow)', () => {
     const outcome = await consultBefore(iii, fcWithSession);
     expect(outcome.kind).toBe('pending');
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls.map((c) => c[0].function_id)).toContain(
-      'policy::check_permissions',
-    );
+    expect(calls.map((c) => c[0].function_id)).toContain('policy::check_permissions');
   });
 
   it('auto mode falls through to policy when function id is not on the allowlist', async () => {
@@ -183,9 +177,7 @@ describe('consultBefore (mode + always_allow)', () => {
     const outcome = await consultBefore(iii, fcWithSession);
     expect(outcome.kind).toBe('allow');
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls.map((c) => c[0].function_id)).not.toContain(
-      'policy::check_permissions',
-    );
+    expect(calls.map((c) => c[0].function_id)).not.toContain('policy::check_permissions');
   });
 
   it('approved_always short-circuits in AUTO mode too', async () => {
