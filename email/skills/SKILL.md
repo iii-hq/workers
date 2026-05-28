@@ -149,6 +149,25 @@ Event payload per inbound message:
 The dispatch is event-driven off the IMAP server's `EXISTS` push —
 within milliseconds of a new message landing in the watched folder.
 
+### Delivery semantics
+
+Best-effort, at-most-once. The dispatcher fires `iii.trigger` per
+subscriber and waits up to `handler_timeout_ms`. There is no upstream
+durable queue: IMAP `IDLE` is a wakeup mechanism, not a delivery
+guarantee.
+
+- A subscriber handler that panics, times out, or returns an error is
+  logged and skipped — the event is NOT redelivered.
+- If the worker is down when a message lands, no `email::new-mail` event
+  fires for it. On reconnect the supervisor sets the high-water mark to
+  the current `UIDNEXT - 1`; UIDs that arrived during downtime are
+  reachable via `email::list` but do NOT replay as events.
+- For at-least-once / replay, write each `email::new-mail` event to a
+  durable store from your handler (`database::execute`,
+  `storage::putObject`, …) before doing meaningful work, and use
+  `email::list` with a persisted `since_uid` cursor to catch up on
+  downtime gaps.
+
 ## Errors
 
 Stable across the trigger boundary. Match on the `code` field of the
