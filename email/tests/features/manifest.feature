@@ -37,4 +37,4 @@ Feature: --manifest emits the registry payload
   Scenario: --help describes the worker
     When I run `email --help`
     Then the exit status is success
-    And  stdout mentions "SMTP + IMAP IDLE"
+    And  stdout mentions "SMTP send and real-time IMAP read"

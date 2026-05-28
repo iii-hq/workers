@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[derive(Parser, Debug)]
 #[command(
     name = "email",
-    about = "Email worker for iii agents (SMTP + IMAP IDLE)"
+    about = "Email worker — SMTP send and real-time IMAP read with IDLE push"
 )]
 struct Cli {
     #[arg(long, default_value = "./config.yaml")]

@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
-description = "Email worker for the iii engine (email::*). SMTP send + IMAP read with real-time IDLE push."
+description = "Email worker — SMTP send and real-time IMAP read with IDLE push (email::*)."
 
 [[bin]]
 name = "email"
