@@ -168,9 +168,9 @@ describe('parallel approval e2e', () => {
       ]),
     );
     await h.runExecute('sess-par');
-    expect(
-      h.loadTurnRecord('sess-par')?.awaiting_approval?.map((e) => e.function_call_id),
-    ).toEqual(['fc-1', 'fc-2']);
+    expect(h.loadTurnRecord('sess-par')?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(
+      ['fc-1', 'fc-2'],
+    );
 
     // Both prompts approved concurrently: two approval::resolve writes whose
     // wakes interleave on the shared turn_state record. The sequential tests
