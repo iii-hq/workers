@@ -1,0 +1,61 @@
+[workspace]
+
+[package]
+name = "email"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Email worker for the iii engine (email::*). SMTP send + IMAP read with real-time IDLE push."
+
+[[bin]]
+name = "email"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.16.0-next.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "io-util", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+futures = "0.3"
+futures-util = "0.3"
+
+# SMTP send
+lettre = { version = "0.11", default-features = false, features = [
+  "smtp-transport",
+  "tokio1-rustls-tls",
+  "builder",
+] }
+
+# IMAP read + IDLE push
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+webpki-roots = "0.26"
+
+# MIME parse for inbound message_id/from/subject/snippet extraction
+mail-parser = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+cucumber = "0.21"
+uuid = { version = "1", features = ["v4"] }
+
+[[test]]
+name = "bdd"
+harness = false
