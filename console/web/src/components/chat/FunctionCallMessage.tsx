@@ -3,6 +3,7 @@ import {
   SandboxFunctionIdLabel,
   SandboxToolView,
 } from '@/components/chat/sandbox'
+import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -20,6 +21,12 @@ interface FunctionCallMessageProps {
    */
   onApprove?: () => void | Promise<void>
   onDeny?: () => void | Promise<void>
+  /**
+   * Approve + add to per-conversation always-allow list. When provided,
+   * an "always allow" button renders next to approve/deny. Destructive
+   * function ids gate on a confirmation modal inside the button.
+   */
+  onAlwaysAllow?: () => void | Promise<void>
   /**
    * When true, render without the outer `border border-rule bg-bg` chrome
    * so the parent (typically a `FunctionCallGroup`) can frame the stack.
@@ -84,13 +91,16 @@ export function FunctionCallMessage({
   defaultOpen,
   onApprove,
   onDeny,
+  onAlwaysAllow,
   embedded,
 }: FunctionCallMessageProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
   const [open, setOpen] = useState(!!defaultOpen || pending)
   const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
-  const [submitting, setSubmitting] = useState<'approve' | 'deny' | null>(null)
+  const [submitting, setSubmitting] = useState<
+    'approve' | 'deny' | 'always_allow' | null
+  >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const sandboxPreview = SandboxToolView.tryRenderPreview(message)
@@ -101,8 +111,9 @@ export function FunctionCallMessage({
     !(running && hasSandboxTerminal) &&
     !(!pending && !running && hasSandboxTerminal)
 
-  const runResolve = async (kind: 'approve' | 'deny') => {
-    const handler = kind === 'approve' ? onApprove : onDeny
+  const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
+    const handler =
+      kind === 'approve' ? onApprove : kind === 'deny' ? onDeny : onAlwaysAllow
     if (!handler || submitting) return
     setSubmitError(null)
     setSubmitting(kind)
@@ -235,6 +246,14 @@ export function FunctionCallMessage({
             >
               {submitting === 'deny' ? 'denying…' : 'deny'}
             </Button>
+            {onAlwaysAllow ? (
+              <AlwaysAllowButton
+                functionId={message.functionId}
+                onConfirm={() => void runResolve('always_allow')}
+                disabled={!!submitting}
+                submitting={submitting === 'always_allow'}
+              />
+            ) : null}
             {submitting ? (
               <span className="font-mono text-[12px] text-ink-faint">
                 waiting for the agent to resume…

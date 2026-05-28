@@ -144,6 +144,14 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
           };
         }
 
+        // Realistic default for the real `consultBefore` fall-through: no
+        // yaml rule matches → needs_approval. Mode/allowlist short-circuits
+        // happen before this in consultBefore, so tests that seed
+        // approval_settings exercise those paths without reaching here.
+        if (function_id === 'policy::check_permissions') {
+          return { decision: 'needs_approval' };
+        }
+
         if (function_id.startsWith('turn::') && action != null) {
           const p = payload as { session_id: string };
           await runTurnStep(iii as unknown as ISdk, function_id, p.session_id);

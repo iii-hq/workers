@@ -20,6 +20,11 @@ interface MessageListProps {
     functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
+  onAlwaysAllow?: (
+    sessionId: string,
+    functionCallId: string,
+    functionId: string,
+  ) => Promise<void>
 }
 
 type RenderItem =
@@ -72,6 +77,7 @@ export function MessageList({
   isThinking,
   density = 'route',
   onResolveApproval,
+  onAlwaysAllow,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -146,12 +152,14 @@ export function MessageList({
               key={item.key}
               message={item.message}
               onResolveApproval={onResolveApproval}
+              onAlwaysAllow={onAlwaysAllow}
             />
           ) : (
             <FunctionCallGroup
               key={item.key}
               messages={item.messages}
               onResolveApproval={onResolveApproval}
+              onAlwaysAllow={onAlwaysAllow}
             />
           ),
         )}

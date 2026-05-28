@@ -2,6 +2,7 @@
  * Resolve approval decisions and route the batch after each decision.
  */
 
+import { settingsVerdict } from '../../approval-gate/settings/verdict.js';
 import { text } from '../../types/content.js';
 import type { FunctionResult } from '../../types/function.js';
 import { finalizeBatch, runOneCall } from '../function-execute/run.js';
@@ -51,6 +52,11 @@ export async function processResolvedApprovals(
   const work = rec.work;
   let awaiting = [...rec.awaiting_approval];
   const executed = { ...work.executed };
+  // Lazily snapshotted once per wake: a grant made AFTER a call parked
+  // (e.g. "approve always" on a sibling of the same function id, or a
+  // switch to auto/full mode) must release the still-parked calls it now
+  // covers — otherwise the batch never finalizes and the turn hangs.
+  let settings: Awaited<ReturnType<AwaitingApprovalPorts['readSettings']>> | null = null;
 
   for (const entry of [...awaiting]) {
     const callId = entry.function_call_id;
@@ -60,7 +66,13 @@ export async function processResolvedApprovals(
       continue;
     }
 
-    const decision = await readPorts.readDecision(rec.session_id, callId);
+    let decision = await readPorts.readDecision(rec.session_id, callId);
+    if (!decision) {
+      if (settings === null) settings = await readPorts.readSettings(rec.session_id);
+      if (settingsVerdict(settings, entry.function_id) === 'allow') {
+        decision = { decision: 'allow', reason: null };
+      }
+    }
     if (!decision) continue;
 
     const current = work.prepared.find((p) => p.call.id === callId)!;

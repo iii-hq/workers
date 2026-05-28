@@ -41,7 +41,6 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
     remove,
     setModel,
     setMode,
-    setAutoAccept,
     appendMessage,
     updateMessage,
     compactConversation,
@@ -85,7 +84,6 @@ export function ChatPanel({ density = 'route' }: ChatPanelProps) {
           density={density}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
-          onUpdateAutoAccept={setAutoAccept}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}
           onCompactConversation={compactConversation}

@@ -3,6 +3,64 @@ import { type Conversation, isKnownRole, type Message } from '@/types/chat'
 const CONVERSATIONS_KEY = 'iii-chat-conversations'
 const ACTIVE_KEY = 'iii-chat-active'
 const LAST_MODEL_KEY = 'iii-chat-last-model'
+const DEFAULT_PERMISSION_MODE_KEY = 'iii-default-permission-mode'
+
+export type PermissionMode = 'manual' | 'auto' | 'full'
+const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set([
+  'manual',
+  'auto',
+  'full',
+])
+
+function isPermissionMode(v: unknown): v is PermissionMode {
+  return typeof v === 'string' && PERMISSION_MODES.has(v as PermissionMode)
+}
+
+/** User-level default mode applied to NEW conversations only. */
+export function loadDefaultPermissionMode(): PermissionMode {
+  try {
+    const raw = localStorage.getItem(DEFAULT_PERMISSION_MODE_KEY)
+    return isPermissionMode(raw) ? raw : 'manual'
+  } catch {
+    return 'manual'
+  }
+}
+
+export function saveDefaultPermissionMode(mode: PermissionMode): void {
+  try {
+    localStorage.setItem(DEFAULT_PERMISSION_MODE_KEY, mode)
+  } catch {
+    /* best-effort */
+  }
+}
+
+const DEFAULT_ALLOWLIST_KEY = 'iii-default-allowlist'
+
+/** User-level allowlist used to seed new conversations' backend state. */
+export function loadDefaultAllowlist(): string[] {
+  try {
+    const raw = localStorage.getItem(DEFAULT_ALLOWLIST_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    )
+  } catch {
+    return []
+  }
+}
+
+export function saveDefaultAllowlist(list: string[]): void {
+  try {
+    /* Stable insertion order matters for human review; sort once on write
+     * so the list reads consistently across sessions. */
+    const unique = Array.from(new Set(list)).sort()
+    localStorage.setItem(DEFAULT_ALLOWLIST_KEY, JSON.stringify(unique))
+  } catch {
+    /* best-effort */
+  }
+}
 
 export function loadConversations(): Conversation[] {
   try {
@@ -12,10 +70,6 @@ export function loadConversations(): Conversation[] {
     if (!Array.isArray(parsed)) return []
     return parsed.filter(isConversation).map((c) => ({
       ...c,
-      /* `autoAccept` was added later; legacy localStorage payloads
-       * don't carry it. Default to false so old conversations don't
-       * silently inherit auto-approve. */
-      autoAccept: typeof c.autoAccept === 'boolean' ? c.autoAccept : false,
       messages: c.messages.filter(isValidMessage),
     }))
   } catch {

@@ -9,6 +9,7 @@
 
 import { Command } from 'commander';
 import { register as registerApprovalGate } from './approval-gate/resolve.js';
+import { registerSettingsHandlers as registerApprovalSettings } from './approval-gate/settings/register.js';
 import { register as registerAuthCredentials } from './auth-credentials/register.js';
 import { register as registerContextCompaction } from './context-compaction/register.js';
 import { register as registerHarness } from './harness/register.js';
@@ -49,8 +50,11 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'approval-gate',
     description:
-      'Registers approval::resolve; persists human decisions to the approvals scope and enqueues turn::function_awaiting_approval.',
-    register: (iii) => registerApprovalGate(iii),
+      'Registers approval::resolve and the per-session mode/allow-list settings handlers; persists human decisions to the approvals and approval_settings scopes.',
+    register: async (iii) => {
+      await registerApprovalGate(iii);
+      registerApprovalSettings(iii);
+    },
   },
   {
     name: 'session',

@@ -19,9 +19,18 @@ interface MessageProps {
     functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
+  onAlwaysAllow?: (
+    sessionId: string,
+    functionCallId: string,
+    functionId: string,
+  ) => Promise<void>
 }
 
-export function Message({ message, onResolveApproval }: MessageProps) {
+export function Message({
+  message,
+  onResolveApproval,
+  onAlwaysAllow,
+}: MessageProps) {
   switch (message.role) {
     case 'user':
       return <UserMessage message={message} />
@@ -34,15 +43,21 @@ export function Message({ message, onResolveApproval }: MessageProps) {
       const functionCallId = message.functionCallId
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
+      let onAlwaysAllowHandler: (() => Promise<void>) | undefined
       if (onResolveApproval && sessionId && functionCallId) {
         onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
         onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
+      }
+      if (onAlwaysAllow && sessionId && functionCallId) {
+        onAlwaysAllowHandler = () =>
+          onAlwaysAllow(sessionId, functionCallId, message.functionId)
       }
       return (
         <FunctionCallMessage
           message={message}
           onApprove={onApprove}
           onDeny={onDeny}
+          onAlwaysAllow={onAlwaysAllowHandler}
         />
       )
     }

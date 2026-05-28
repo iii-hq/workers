@@ -1,11 +1,12 @@
 import type { LexicalEditor } from 'lexical'
 import { useCallback, useRef, useState } from 'react'
+import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Button } from '@/components/ui/Button'
+import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
 import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
-import { AutoAcceptToggle } from './AutoAcceptToggle'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
@@ -21,15 +22,15 @@ interface ComposerProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   /**
-   * Per-conversation auto-accept-all-approvals flag. When true, the
-   * chat client auto-resolves every pending approval that surfaces
-   * for this conversation. Rendered as a sibling pill of the mode
-   * picker.
+   * Per-conversation permission mode (manual / auto / full). Owned by
+   * the backend `approval_settings` scope; ChatView passes the loaded
+   * value here. While loading, the picker disables.
    */
-  autoAccept: boolean
+  permissionMode: PermissionMode
+  permissionModeLoading?: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
-  onAutoAcceptChange: (next: boolean) => void
+  onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
   isStreaming?: boolean
@@ -45,10 +46,11 @@ export function Composer({
   model,
   modelOptions,
   catalogLoading,
-  autoAccept,
+  permissionMode,
+  permissionModeLoading,
   onModeChange,
   onModelChange,
-  onAutoAcceptChange,
+  onPermissionModeChange,
   onSubmit,
   onStop,
   isStreaming,
@@ -111,10 +113,10 @@ export function Composer({
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
         <AttachmentButton onAttach={handleAttach} disabled={isStreaming} />
         <ModePicker value={mode} onChange={onModeChange} />
-        <AutoAcceptToggle
-          value={autoAccept}
-          onChange={onAutoAcceptChange}
-          disabled={isStreaming}
+        <PermissionModePicker
+          value={permissionMode}
+          onChange={onPermissionModeChange}
+          disabled={isStreaming || !!permissionModeLoading}
         />
         <div className="flex-1 min-w-0" />
         <ModelPicker

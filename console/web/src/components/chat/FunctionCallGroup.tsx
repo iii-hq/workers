@@ -19,6 +19,11 @@ interface FunctionCallGroupProps {
     functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
+  onAlwaysAllow?: (
+    sessionId: string,
+    functionCallId: string,
+    functionId: string,
+  ) => Promise<void>
 }
 
 /**
@@ -132,6 +137,7 @@ export function FunctionCallGroup({
   messages,
   defaultOpen,
   onResolveApproval,
+  onAlwaysAllow,
 }: FunctionCallGroupProps) {
   const status = deriveStatus(messages)
   const concerning = hasConcerningChild(messages)
@@ -190,11 +196,16 @@ export function FunctionCallGroup({
             const functionCallId = m.functionCallId
             let onApprove: (() => Promise<void>) | undefined
             let onDeny: (() => Promise<void>) | undefined
+            let onAlwaysAllowHandler: (() => Promise<void>) | undefined
             if (onResolveApproval && sessionId && functionCallId) {
               onApprove = () =>
                 onResolveApproval(sessionId, functionCallId, 'allow')
               onDeny = () =>
                 onResolveApproval(sessionId, functionCallId, 'deny')
+            }
+            if (onAlwaysAllow && sessionId && functionCallId) {
+              onAlwaysAllowHandler = () =>
+                onAlwaysAllow(sessionId, functionCallId, m.functionId)
             }
             return (
               <FunctionCallMessage
@@ -202,6 +213,7 @@ export function FunctionCallGroup({
                 message={m}
                 onApprove={onApprove}
                 onDeny={onDeny}
+                onAlwaysAllow={onAlwaysAllowHandler}
                 embedded
               />
             )
