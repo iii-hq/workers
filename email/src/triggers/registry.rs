@@ -31,20 +31,9 @@ impl TriggerRegistry {
         function_id: String,
         handler_timeout_ms: u64,
     ) {
-        // Defend against re-registration with the same instance_id: drop any
-        // prior Subscriber row under the old key before pushing the new one,
-        // otherwise a single trigger would fire twice (or N times after N
-        // re-registers).
-        if let Some((_, old_key)) = self.by_id.remove(&instance_id) {
-            let mut purge_old_slot = false;
-            if let Some(mut entry) = self.subs.get_mut(&old_key) {
-                entry.retain(|s| s.instance_id != instance_id);
-                purge_old_slot = entry.is_empty();
-            }
-            if purge_old_slot {
-                self.subs.remove(&old_key);
-            }
-        }
+        // Drop any prior row with this instance_id so a re-register replaces
+        // rather than duplicates the subscriber.
+        self.unregister(&instance_id);
 
         let key = (account, folder);
         self.subs.entry(key.clone()).or_default().push(Subscriber {
@@ -56,10 +45,17 @@ impl TriggerRegistry {
     }
 
     pub fn unregister(&self, instance_id: &str) {
-        if let Some((_, key)) = self.by_id.remove(instance_id) {
-            if let Some(mut entry) = self.subs.get_mut(&key) {
-                entry.retain(|s| s.instance_id != instance_id);
-            }
+        let Some((_, key)) = self.by_id.remove(instance_id) else {
+            return;
+        };
+        let purge = if let Some(mut entry) = self.subs.get_mut(&key) {
+            entry.retain(|s| s.instance_id != instance_id);
+            entry.is_empty()
+        } else {
+            false
+        };
+        if purge {
+            self.subs.remove(&key);
         }
     }
 

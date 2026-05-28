@@ -39,26 +39,24 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     )
                 })?;
                 let mut guard = pool.acquire(&req.account, &req.folder).await?;
+                let uid_str = req.uid.to_string();
 
                 let outcome: Result<MoveOutcome, MoveError> = async {
                     let session = guard.session();
-                    match session.uid_mv(req.uid.to_string(), &req.dst_folder).await {
+                    match session.uid_mv(&uid_str, &req.dst_folder).await {
                         Ok(()) => Ok(MoveOutcome::Move),
                         Err(mv_err) => {
                             tracing::info!(error = %mv_err, "UID MOVE failed; falling back to COPY+STORE");
-                            if let Err(copy_err) =
-                                session.uid_copy(req.uid.to_string(), &req.dst_folder).await
+                            session
+                                .uid_copy(&uid_str, &req.dst_folder)
+                                .await
+                                .map_err(MoveError::BothFailed)?;
+                            // uid_copy succeeded — if the STORE fails from here,
+                            // the message exists in BOTH source and dst.
+                            match session
+                                .uid_store(&uid_str, "+FLAGS.SILENT (\\Deleted)")
+                                .await
                             {
-                                return Err(MoveError::BothFailed(copy_err));
-                            }
-                            // uid_copy succeeded — message now exists at dst.
-                            // If the STORE fails from here, the source still
-                            // has the original AND dst has a copy. Surface
-                            // that distinct state to the caller.
-                            let store = session
-                                .uid_store(req.uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
-                                .await;
-                            match store {
                                 Ok(mut stream) => {
                                     while stream.next().await.is_some() {}
                                     Ok(MoveOutcome::CopyStore)
@@ -84,8 +82,6 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
                     }
                     Err(MoveError::PartialCopyStore(e)) => {
                         guard.poison();
-                        // E627 — copy succeeded, delete failed. Message
-                        // exists in BOTH `folder` and `dst_folder`.
                         Err(IIIError::Handler(
                             json!({
                                 "code": "E627",
