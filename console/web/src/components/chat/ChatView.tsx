@@ -1,8 +1,9 @@
 import { Copy } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { useAutoAcceptApprovals } from '@/hooks/use-auto-accept-approvals'
+import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
@@ -74,7 +75,6 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateMode: (id: string, mode: Mode) => void
-  onUpdateAutoAccept: (id: string, autoAccept: boolean) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -88,7 +88,6 @@ export function ChatView({
   density = 'route',
   onUpdateModel,
   onUpdateMode,
-  onUpdateAutoAccept,
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
@@ -130,22 +129,21 @@ export function ChatView({
     ) => fn(sessionId, functionCallId, decision)
   }, [backend])
 
-  useAutoAcceptApprovals({
-    conversationId: conversation.id,
-    enabled: !!conversation.autoAccept,
-    messages: conversation.messages,
-    resolveApproval,
-    onAccepted: (functionId) => {
-      announcer.announce(`auto-accepted: ${functionId}`)
-    },
-    onDenied: (functionId) => {
-      /* The policy refused — leave the card for manual click. Tell
-       * SR users so they know to navigate to it. */
-      announcer.announce(
-        `auto-accept refused for ${functionId}: high-risk call requires manual approval`,
-      )
-    },
-  })
+  const approvalSettings = useApprovalSettings(sessionId)
+
+  const handleAlwaysAllow = useMemo(() => {
+    const resolveFn = backend.resolveApproval
+    if (!resolveFn) return undefined
+    // "Approve always" is a per-session grant honored in every mode, so the
+    // button shows on every prompt (full mode never produces prompts, so
+    // it's moot there). Approves this call and stops asking for the same
+    // function for the rest of the conversation.
+    return async (sId: string, functionCallId: string, functionId: string) => {
+      await approvalSettings.approveAlways(functionId)
+      await resolveFn(sId, functionCallId, 'allow')
+      announcer.announce(`approved always this session: ${functionId}`)
+    }
+  }, [backend, approvalSettings, announcer])
 
   const handleCopySessionId = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -555,11 +553,18 @@ export function ChatView({
         </div>
       </header>
 
+      {approvalSettings.settings.mode === 'full' ? (
+        <FullPermissionsBanner
+          onDisable={() => void approvalSettings.setMode('manual')}
+        />
+      ) : null}
+
       <MessageList
         messages={conversation.messages}
         isThinking={isThinking}
         density={density}
         onResolveApproval={resolveApproval}
+        onAlwaysAllow={handleAlwaysAllow}
       />
       <LiveRegion announcement={announcer.announcement} />
 
@@ -571,11 +576,12 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             functionEntries={functionEntries}
-            autoAccept={conversation.autoAccept}
+            permissionMode={approvalSettings.settings.mode}
+            permissionModeLoading={!approvalSettings.loaded}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
-            onAutoAcceptChange={(next) =>
-              onUpdateAutoAccept(conversation.id, next)
+            onPermissionModeChange={(next) =>
+              void approvalSettings.setMode(next)
             }
             onSubmit={handleSubmit}
             onStop={handleStop}

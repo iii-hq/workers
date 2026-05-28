@@ -8,7 +8,6 @@ function conv(messages: Message[]): Conversation {
     title: 't',
     model: 'openai::gpt-5',
     mode: 'agent',
-    autoAccept: false,
     messages,
     createdAt: 0,
     updatedAt: 0,

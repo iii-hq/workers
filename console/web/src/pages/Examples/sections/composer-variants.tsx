@@ -52,10 +52,10 @@ export function ComposerVariantsSection() {
             model={model}
             modelOptions={STATIC_MODEL_OPTIONS}
             functionEntries={STATIC_FUNCTIONS}
-            autoAccept={false}
+            permissionMode="manual"
             onModeChange={setMode}
             onModelChange={setModel}
-            onAutoAcceptChange={noop}
+            onPermissionModeChange={noop}
             onSubmit={noop}
           />
         </VariantCard>
@@ -66,10 +66,10 @@ export function ComposerVariantsSection() {
             model="anthropic::claude-opus-4-7"
             modelOptions={STATIC_MODEL_OPTIONS}
             functionEntries={STATIC_FUNCTIONS}
-            autoAccept={false}
+            permissionMode="manual"
             onModeChange={noop}
             onModelChange={noop}
-            onAutoAcceptChange={noop}
+            onPermissionModeChange={noop}
             onSubmit={noop}
             initialContent={seedWithText}
           />
@@ -84,10 +84,10 @@ export function ComposerVariantsSection() {
             model="openai::gpt-5"
             modelOptions={STATIC_MODEL_OPTIONS}
             functionEntries={STATIC_FUNCTIONS}
-            autoAccept={false}
+            permissionMode="manual"
             onModeChange={noop}
             onModelChange={noop}
-            onAutoAcceptChange={noop}
+            onPermissionModeChange={noop}
             onSubmit={noop}
             initialContent={seedWithMention}
           />
@@ -99,10 +99,10 @@ export function ComposerVariantsSection() {
             model="openai::gpt-5"
             modelOptions={STATIC_MODEL_OPTIONS}
             functionEntries={STATIC_FUNCTIONS}
-            autoAccept={false}
+            permissionMode="manual"
             onModeChange={noop}
             onModelChange={noop}
-            onAutoAcceptChange={noop}
+            onPermissionModeChange={noop}
             onSubmit={noop}
             initialAttachments={sampleAttachments}
           />
@@ -114,10 +114,10 @@ export function ComposerVariantsSection() {
             model="openai::gpt-5-mini"
             modelOptions={STATIC_MODEL_OPTIONS}
             functionEntries={STATIC_FUNCTIONS}
-            autoAccept={false}
+            permissionMode="manual"
             onModeChange={noop}
             onModelChange={noop}
-            onAutoAcceptChange={noop}
+            onPermissionModeChange={noop}
             onSubmit={noop}
             onStop={noop}
             isStreaming

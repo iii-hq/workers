@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { approveAlways } from '../../src/approval-gate/settings/approve-always.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   createParallelApprovalHarness,
@@ -152,6 +153,42 @@ describe('parallel approval e2e', () => {
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(
       endsAfterFirst,
     );
+  });
+
+  it('releases a parked sibling of the same function when "approve always" is granted', async () => {
+    const h = createParallelApprovalHarness();
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook')
+      .mockResolvedValueOnce({ kind: 'pending' })
+      .mockResolvedValueOnce({ kind: 'pending' });
+
+    h.seedExecute(
+      'sess-grant',
+      makeAssistantWithCalls([
+        { id: 'fc-1', functionId: 'shell::run' },
+        { id: 'fc-2', functionId: 'shell::run' },
+      ]),
+    );
+    await h.runExecute('sess-grant');
+
+    expect(h.loadTurnRecord('sess-grant')?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(
+      ['fc-1', 'fc-2'],
+    );
+
+    // "Approve always" on fc-1: persist the per-session grant for the
+    // function id, then resolve only the clicked call (mirrors the UI's
+    // handleAlwaysAllow). The grant must release the still-parked sibling
+    // fc-2, which shares the function id, on the same wake.
+    await approveAlways(h.iii, 'sess-grant', 'shell::run');
+    await h.resolveApproval('sess-grant', 'fc-1', 'allow');
+
+    const rec = h.loadTurnRecord('sess-grant');
+    expect(rec?.awaiting_approval).toEqual([]);
+    expect(rec?.state).toBe('steering_check');
+    // Batch finalized: work cleared, both calls produced results, and the
+    // sibling fc-2 ran without its own explicit approval::resolve.
+    expect(rec?.work).toBeUndefined();
+    expect(rec?.function_results?.map((r) => r.function_call_id).sort()).toEqual(['fc-1', 'fc-2']);
+    expect(executionEvents(h.emitted, 'function_execution_end', 'fc-2')).toHaveLength(1);
   });
 
   it('persists the decision and wakes function_awaiting_approval via approval::resolve', async () => {

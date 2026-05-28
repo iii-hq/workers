@@ -9,7 +9,39 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 export const STATE_SCOPE = 'approvals';
+export const SETTINGS_STATE_SCOPE = 'approval_settings';
 export const DENIAL_SCHEMA_VERSION = 1;
+
+export const PermissionModeSchema = z.enum(['manual', 'auto', 'full']);
+export type PermissionMode = z.infer<typeof PermissionModeSchema>;
+
+const allowEntrySchema = z.object({
+  function_id: z.string().min(1),
+  granted_at: z.number().int().nonnegative(),
+  granted_by: z.literal('user_click'),
+});
+export type AlwaysAllowEntry = z.infer<typeof allowEntrySchema>;
+
+export const ApprovalSettingsSchema = z.object({
+  mode: PermissionModeSchema,
+  // Auto-mode allowlist: curated on the Configuration screen, consulted
+  // ONLY in auto mode.
+  always_allow: z.array(allowEntrySchema),
+  // Per-session "approve always" grants made from an approval prompt.
+  // Consulted in EVERY mode (it's a remembered human decision, not an
+  // auto-policy). `.default([])` keeps records written before this field
+  // existed parseable.
+  approved_always: z.array(allowEntrySchema).default([]),
+  mode_set_at: z.number().int().nonnegative(),
+});
+export type ApprovalSettings = z.infer<typeof ApprovalSettingsSchema>;
+
+export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
+  mode: 'manual',
+  always_allow: [],
+  approved_always: [],
+  mode_set_at: 0,
+};
 
 const wireDecisionSchema = z.enum(['allow', 'deny']);
 

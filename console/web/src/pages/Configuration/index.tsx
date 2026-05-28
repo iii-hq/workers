@@ -1,12 +1,29 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { DefaultPermissionModePicker } from '@/components/permissions/DefaultPermissionModePicker'
+import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
 import { ProviderRow } from '@/components/providers/ProviderRow'
 import {
   ACTIVE_PROVIDERS,
   ENV_VAR_MAP,
 } from '@/components/providers/provider-registry'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/components/ui/Dialog'
 import { ModeToggle } from '@/components/ui/ModeToggle'
+import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { useProviderStatuses } from '@/hooks/use-providers'
 import type { Theme } from '@/hooks/use-theme'
+import { getDefaultBackend } from '@/lib/backend'
+import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
+import {
+  loadDefaultAllowlist,
+  loadDefaultPermissionMode,
+  saveDefaultAllowlist,
+} from '@/lib/storage'
 
 const ENV_VAR_BY_ID = new Map(ENV_VAR_MAP)
 
@@ -23,6 +40,42 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
   const isStatusLoading = statuses.some((s) => s.isLoading)
   const configuredCount = statuses.filter((s) => s.data?.configured).length
   const showZeroConfig = !isStatusLoading && configuredCount === 0
+
+  // Controlled default-permission-mode + per-user allowlist. Both back to
+  // localStorage. The allowlist section only renders while mode === 'auto'
+  // (it has no effect under manual/full, so showing it would mislead).
+  const [defaultMode, setDefaultMode] = useState<PermissionMode>(() =>
+    loadDefaultPermissionMode(),
+  )
+  const [allowlist, setAllowlist] = useState<string[]>(() =>
+    loadDefaultAllowlist(),
+  )
+  const allowlistSet = useMemo(() => new Set(allowlist), [allowlist])
+
+  const addAllow = useCallback((functionId: string) => {
+    setAllowlist((prev) => {
+      if (prev.includes(functionId)) return prev
+      const next = [...prev, functionId]
+      saveDefaultAllowlist(next)
+      return next
+    })
+  }, [])
+
+  const removeAllow = useCallback((functionId: string) => {
+    setAllowlist((prev) => {
+      if (!prev.includes(functionId)) return prev
+      const next = prev.filter((id) => id !== functionId)
+      saveDefaultAllowlist(next)
+      return next
+    })
+  }, [])
+
+  const { functionEntries } = useFunctionsCatalog(getDefaultBackend().id)
+  const allowlistCandidates = useMemo(
+    () => filterAllowlistCandidates(functionEntries),
+    [functionEntries],
+  )
+  const [allowlistOpen, setAllowlistOpen] = useState(false)
 
   // H7 — keyboard navigation for the provider list:
   //   1–N           : open provider N's dialog directly
@@ -100,6 +153,68 @@ export function Configuration({ theme, onThemeChange }: ConfigurationProps) {
             }
           />
         </Section>
+
+        <Section
+          title="permissions"
+          description="default mode applied to NEW conversations only. existing ones keep their own mode."
+        >
+          <Row
+            label="default mode"
+            control={
+              <DefaultPermissionModePicker
+                value={defaultMode}
+                onChange={setDefaultMode}
+              />
+            }
+            meta="manual prompts for everything · auto skips functions on your allowlist · full skips everything"
+          />
+          {defaultMode === 'auto' ? (
+            <Row
+              label="allowlist"
+              control={
+                <button
+                  type="button"
+                  onClick={() => setAllowlistOpen(true)}
+                  className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
+                >
+                  manage
+                  {allowlist.length > 0 ? ` (${allowlist.length})` : ''}
+                </button>
+              }
+              meta="functions that auto-approve while a new conversation is in auto mode. edits apply to NEW conversations only."
+            />
+          ) : null}
+        </Section>
+
+        <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
+          <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col">
+            <DialogTitle className="text-[14px]">
+              auto-mode allowlist
+            </DialogTitle>
+            <DialogDescription className="mt-1">
+              checked functions auto-approve while a new conversation is in auto
+              mode. existing conversations keep their own snapshot.
+            </DialogDescription>
+            <div className="mt-4 flex-1 overflow-y-auto border border-rule-2 -mx-2 px-2 py-2 min-h-[280px]">
+              <FunctionAllowlistTree
+                functions={allowlistCandidates}
+                allowlist={allowlistSet}
+                onAdd={addAllow}
+                onRemove={removeAllow}
+                emptyHint="catalog hasn't loaded any functions yet."
+              />
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAllowlistOpen(false)}
+                className="font-mono text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
+              >
+                done
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <Section
           title="providers"

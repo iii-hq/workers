@@ -22,7 +22,6 @@ function makeConvo(mode: Mode): Conversation {
     title: 'playground',
     model: DEFAULT_MODEL,
     mode,
-    autoAccept: false,
     messages: [],
     createdAt: now,
     updatedAt: now,
@@ -77,10 +76,6 @@ export function Playground() {
 
   const setMode = useCallback((_id: string, mode: Mode) => {
     setConvo((c) => ({ ...c, mode, updatedAt: Date.now() }))
-  }, [])
-
-  const setAutoAccept = useCallback((_id: string, autoAccept: boolean) => {
-    setConvo((c) => ({ ...c, autoAccept, updatedAt: Date.now() }))
   }, [])
 
   const setModel = useCallback((_id: string, model: ModelId) => {
@@ -144,7 +139,6 @@ export function Playground() {
           modelOptions={STATIC_MODEL_OPTIONS}
           onUpdateModel={setModel}
           onUpdateMode={setMode}
-          onUpdateAutoAccept={setAutoAccept}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}
           onCompactConversation={compactConversation}
