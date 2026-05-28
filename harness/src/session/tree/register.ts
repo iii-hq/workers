@@ -8,7 +8,6 @@ import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import {
   type UpdatePartItem,
-  activePath as _activePath,
   appendMessage,
   appendSynthetic as appendSyntheticOp,
   cloneSession,
