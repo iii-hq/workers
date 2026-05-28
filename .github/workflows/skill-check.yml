@@ -14,12 +14,9 @@ jobs:
   skill-check:
     runs-on: ubuntu-latest
     steps:
-      # No explicit ref — defaults to refs/pull/N/merge on pull_request,
-      # which works for both same-repo and fork PRs. Setting
-      # `ref: github.head_ref` here previously broke fork PRs because
-      # the head branch only exists in the fork, not in this repo, so
-      # the checkout fetch failed before the action ran.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}    # check out the PR branch directly
       - uses: iii-hq/skills-and-validation@v0.4
         with:
           write: false
