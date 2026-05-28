@@ -32,7 +32,7 @@ fn default_timeout() -> u64 {
 
 /// Returns a JSON string body suitable to wrap in IIIError on failure.
 pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String> {
-    let pool = state.pool(&req.db).map_err(err_to_str)?;
+    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
     // Reject empty SQL uniformly. Postgres' tokio-postgres treats `client.query("")`
     // as a valid no-op and returns Ok([]), but sqlite (rusqlite) and mysql
     // (mysql_async) reject it at parse time — without this guard the worker's
@@ -47,7 +47,7 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     }
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
-    let result = match pool {
+    let result = match &pool {
         Pool::Sqlite(p) => driver::sqlite::query(p, &req.sql, &params, req.timeout_ms).await,
         Pool::Postgres(p) => driver::postgres::query(p, &req.sql, &params, req.timeout_ms).await,
         Pool::Mysql(p) => driver::mysql::query(p, &req.sql, &params, req.timeout_ms).await,
@@ -104,13 +104,14 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),
@@ -124,7 +125,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn query_returns_rows_envelope() {
         let st = state();
-        if let Pool::Sqlite(p) = st.pool("primary").unwrap() {
+        if let Pool::Sqlite(p) = st.pool("primary").await.unwrap() {
             let c = p.acquire().await.unwrap();
             tokio::task::spawn_blocking(move || {
                 c.with(|c| c.execute_batch("CREATE TABLE t (n INT); INSERT INTO t VALUES (1),(2);"))

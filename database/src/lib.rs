@@ -1,6 +1,7 @@
 //! database worker — public surface for the binary and tests.
 
 pub mod config;
+pub mod configuration;
 pub(crate) mod driver;
 pub mod error;
 pub mod handle;

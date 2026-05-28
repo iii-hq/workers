@@ -279,7 +279,7 @@ mod tests {
         let mut pools = std::collections::HashMap::new();
         pools.insert("primary".to_string(), crate::pool::Pool::Sqlite(pool));
         let st = crate::handlers::AppState {
-            pools: std::sync::Arc::new(pools),
+            pools: std::sync::Arc::new(tokio::sync::RwLock::new(pools)),
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

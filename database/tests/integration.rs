@@ -15,6 +15,7 @@ use iii_observability::Logger;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 async fn build_state() -> AppState {
     let yaml = "databases:\n  primary:\n    url: \"sqlite::memory:\"\n";
@@ -25,11 +26,26 @@ async fn build_state() -> AppState {
         pools.insert(name.clone(), p);
     }
     AppState {
-        pools: Arc::new(pools),
+        pools: Arc::new(RwLock::new(pools)),
         handles: Arc::new(HandleRegistry::new()),
         transactions: TxRegistry::new(),
         log: Logger::new(),
     }
+}
+
+#[test]
+fn from_json_parity_with_yaml_seed_shape() {
+    let yaml = "databases:\n  primary:\n    url: \"sqlite::memory:\"\n";
+    let from_yaml = WorkerConfig::from_yaml(yaml).unwrap();
+    let from_json = WorkerConfig::from_json(&from_yaml.to_json()).unwrap();
+    assert_eq!(
+        from_yaml.databases["primary"].url,
+        from_json.databases["primary"].url
+    );
+    assert_eq!(
+        from_yaml.databases["primary"].driver,
+        from_json.databases["primary"].driver
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -55,7 +55,7 @@ fn parse_isolation(s: Option<&str>) -> Result<Option<Isolation>, DbError> {
 }
 
 pub async fn handle(state: &AppState, req: BeginTxReq) -> Result<BeginTxResp, String> {
-    let pool = state.pool(&req.db).map_err(err_to_str)?;
+    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
     let driver = pool.driver();
     let isolation = parse_isolation(req.isolation.as_deref()).map_err(err_to_str)?;
     let timeout_ms = req
@@ -126,13 +126,14 @@ pub(crate) mod tests {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     pub fn state() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: TxRegistry::new(),
             log: Logger::new(),

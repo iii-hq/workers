@@ -1,0 +1,177 @@
+{
+  "definitions": {
+    "DatabaseConfig": {
+      "description": "Per-database connection settings. The URL scheme selects the driver; `pool` and `tls` are optional and default when omitted.",
+      "properties": {
+        "pool": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PoolConfig"
+            }
+          ],
+          "default": {
+            "acquire_timeout_ms": 5000,
+            "idle_timeout_ms": 30000,
+            "max": 10
+          }
+        },
+        "tls": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TlsConfig"
+            }
+          ],
+          "default": {
+            "ca_cert": null,
+            "mode": "require",
+            "trust_native": true
+          }
+        },
+        "url": {
+          "description": "Connection URL. Driver is inferred from the scheme: `sqlite:`, `postgres://` or `postgresql://`, or `mysql://`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "PoolConfig": {
+      "properties": {
+        "acquire_timeout_ms": {
+          "default": 5000,
+          "description": "Fail pool acquisition when no connection is available within this many milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "idle_timeout_ms": {
+          "default": 30000,
+          "description": "Close idle connections after this many milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max": {
+          "default": 10,
+          "description": "Maximum number of open connections in the pool.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "TlsConfig": {
+      "description": "TLS settings for a single database. Applies to postgres and mysql. Sqlite is local-file and ignores this block.\n\nDefault is `mode: require` — TLS handshake required, certificate chain validated against the system trust store, hostname verification skipped (matching libpq's `sslmode=require` semantics). Use `mode: verify-full` to additionally verify the certificate hostname matches the URL host, and `mode: disable` to opt out of TLS entirely (local-dev only).",
+      "properties": {
+        "ca_cert": {
+          "default": null,
+          "description": "Optional path to a PEM file containing one or more CA certificates. Additive by default — these certs **extend** the system trust store rather than replace it. Set `trust_native: false` for strict-isolation deployments that must only trust the operator-supplied bundle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TlsMode"
+            }
+          ],
+          "default": "require",
+          "description": "TLS mode: `disable` (plaintext), `require` (default), or `verify-full`."
+        },
+        "trust_native": {
+          "default": true,
+          "description": "When true (default), the system/native trust store is loaded in addition to any `ca_cert` bundle. Set to `false` to trust only the `ca_cert` certificates — useful when an operator wants to pin trust to a private CA and explicitly *not* accept the public web PKI.\n\nEffective for postgres. MySQL is forced-additive: `mysql_async`'s rustls path always loads the Mozilla `webpki_roots` bundle and extends it with `ca_cert` — there is no upstream knob to suppress the bundled roots, so `trust_native: false` only affects postgres.\n\nNote: with both `trust_native: false` *and* `ca_cert: None` on postgres, no trust roots are available; pool construction fails with `CONFIG_ERROR`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "TlsMode": {
+      "oneOf": [
+        {
+          "description": "No TLS. Plaintext connection. Local-dev only.",
+          "enum": [
+            "disable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "TLS handshake required; certificate chain validated; hostname NOT verified. Matches libpq's `sslmode=require`. The default.",
+          "enum": [
+            "require"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "TLS handshake required; certificate chain validated; certificate hostname must match the URL host. Matches libpq's `sslmode=verify-full`.",
+          "enum": [
+            "verify-full"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "Top-level worker config registered with the `configuration` worker.",
+  "example": {
+    "databases": {
+      "primary": {
+        "pool": {
+          "acquire_timeout_ms": 5000,
+          "idle_timeout_ms": 30000,
+          "max": 10
+        },
+        "url": "sqlite:./data/iii.db"
+      }
+    }
+  },
+  "examples": [
+    {
+      "databases": {
+        "primary": {
+          "pool": {
+            "acquire_timeout_ms": 5000,
+            "idle_timeout_ms": 30000,
+            "max": 10
+          },
+          "tls": {
+            "ca_cert": null,
+            "mode": "require",
+            "trust_native": true
+          },
+          "url": "sqlite:./data/iii.db"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "databases": {
+      "additionalProperties": {
+        "$ref": "#/definitions/DatabaseConfig"
+      },
+      "default": {},
+      "description": "Named connection pools. Keys are logical database names referenced by RPC handlers (for example `primary`). At least one entry is required.",
+      "examples": [
+        {
+          "primary": {
+            "pool": {
+              "acquire_timeout_ms": 5000,
+              "idle_timeout_ms": 30000,
+              "max": 10
+            },
+            "url": "sqlite:./data/iii.db"
+          }
+        }
+      ],
+      "minProperties": 1,
+      "type": "object"
+    }
+  },
+  "title": "WorkerConfig",
+  "type": "object"
+}

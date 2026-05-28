@@ -34,8 +34,20 @@ Runs locally and in CI (`.github/workflows/database-e2e.yml`).
 ```
 
 Builds the worker (`cargo build --release --bin database`), brings up
-the docker stack with `wal_level=logical`, starts the engine, and runs the
+the docker stack with `wal_level=logical`, starts the engine, seeds the
+`database` configuration entry, starts the database worker, and runs the
 selected case groups across all 3 drivers. Exits 0 on PASS, 1 on any FAIL.
+
+### Startup order
+
+1. Docker compose (postgres + mysql)
+2. iii engine (`config.yaml` — queue + observability only)
+3. `npm run seed-config` — registers `configuration::register` for id `database`
+4. Database worker binary (host process, reads config via `configuration::get`)
+5. Harness test suite (`npm run dev`)
+
+Neither the database worker nor the harness is engine-managed; both connect
+over WebSocket like external clients.
 
 ## Flags
 
@@ -93,11 +105,23 @@ accepted; outside-tx COUNT=1`).
 |---|---|
 | `run-tests.sh` | Orchestrator |
 | `docker-compose.yml` | Postgres (wal_level=logical) + MySQL with healthchecks |
-| `config.yaml` | Engine config (queue, observability, database, harness) |
+| `config.yaml` | Engine infra only (queue, observability) |
+| `workers/harness/src/seed-configuration.ts` | Bootstrap: `configuration::register` for id `database` |
+| `workers/harness/src/database-config.ts` | E2e `databases` value (sqlite + pg + mysql) |
+| `workers/harness/fixtures/database.schema.json` | JSON Schema fixture (sync with Rust via export test) |
 | `workers/harness/` | TypeScript smoke-test worker (runs as a host process) |
 | `workers/harness/src/cases-interactive-tx.ts` | Interactive-transaction lifecycle cases |
 | `workers/harness/src/cases-tx-control-bypass.ts` | Side-channel-finalization repros |
 | `reports/report.json` | Per-case results (latest run) |
+
+### Regenerating the schema fixture
+
+When `WorkerConfig` changes in Rust, refresh the harness schema:
+
+```sh
+cd ../..   # database/ crate root
+EXPORT_E2E_SCHEMA=1 cargo test -p database export_e2e_schema_fixture -- --ignored
+```
 
 ## CI
 
@@ -113,6 +137,8 @@ the same docker compose stack used locally, and shells out to
   test ports. Stop it, or edit `docker-compose.yml`.
 - **`worker binary missing`**: run without `--no-build` once.
 - **`iii engine binary missing`**: install with the script above.
+- **Database worker did not respond**: tail `reports/database-*.log`. Common
+  causes: configuration seed failed, or postgres/mysql not healthy.
 - **Sentinel timeout**: tail `reports/harness-*.log` for the harness output.
 - **Docker daemon not running**: start Docker Desktop (or `colima start`)
   and re-run. Or use rootless podman: `COMPOSE='podman-compose' ./run-tests.sh`.

@@ -51,13 +51,14 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state_in_memory() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),
@@ -73,7 +74,7 @@ mod tests {
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         let st = AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

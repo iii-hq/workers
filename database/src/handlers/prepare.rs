@@ -29,7 +29,7 @@ const MAX_TTL_SECONDS: u64 = 86_400;
 
 pub async fn handle(state: &AppState, req: PrepareReq) -> Result<PrepareResp, String> {
     let ttl = Duration::from_secs(req.ttl_seconds.min(MAX_TTL_SECONDS));
-    let pool = state.pool(&req.db).map_err(err_to_str)?;
+    let pool = state.pool(&req.db).await.map_err(err_to_str)?;
     // Reject empty SQL at the handler boundary, mirroring query.rs / execute.rs.
     // Without this, prepareStatement happily acquires a pool connection and
     // pins it under a UUID handle that can never run successfully — the
@@ -77,13 +77,14 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state() -> AppState {
         let pool = SqlitePool::new("sqlite::memory:", &PoolConfig::default()).unwrap();
         let mut pools = HashMap::new();
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
-            pools: Arc::new(pools),
+            pools: Arc::new(RwLock::new(pools)),
             handles: Arc::new(HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

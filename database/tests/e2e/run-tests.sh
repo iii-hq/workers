@@ -21,6 +21,7 @@ COMPOSE="${COMPOSE:-docker compose}"
 REPORT_PATH="$ROOT_DIR/reports/report.json"
 TS=$(date +%Y%m%d-%H%M%S)
 ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
+DATABASE_LOG="$ROOT_DIR/reports/database-$TS.log"
 HARNESS_LOG="$ROOT_DIR/reports/harness-$TS.log"
 SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-180}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
@@ -75,12 +76,17 @@ EOF
 done
 
 ENGINE_PID=""
+DATABASE_PID=""
 HARNESS_PID=""
 cleanup() {
   local code=$?
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$DATABASE_PID" ]] && kill -0 "$DATABASE_PID" 2>/dev/null; then
+    kill "$DATABASE_PID" 2>/dev/null || true
+    wait "$DATABASE_PID" 2>/dev/null || true
   fi
   if [[ -n "$ENGINE_PID" ]] && kill -0 "$ENGINE_PID" 2>/dev/null; then
     kill "$ENGINE_PID" 2>/dev/null || true
@@ -189,8 +195,9 @@ if [[ "$WITH_CARGO_TEST" -eq 1 ]]; then
   )
 fi
 
-# 6. Reset SQLite file
+# 6. Reset SQLite file and any prior configuration fs state
 rm -f "$ROOT_DIR/data/test.sqlite" "$ROOT_DIR/data/iii.db"
+rm -rf "$ROOT_DIR/data/configuration"
 
 # 7. Install harness deps if needed
 if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
@@ -230,7 +237,38 @@ while :; do
 done
 echo "[run-tests] engine listening"
 
-# 10. Launch the harness as a host node process
+# 10. Seed the `database` configuration entry via the harness bootstrap script.
+echo "[run-tests] seeding database configuration"
+( cd "$ROOT_DIR/workers/harness" && III_URL=ws://127.0.0.1:49134 npm run --silent seed-config )
+
+# 11. Start the database worker as a host process (not engine-managed).
+echo "[run-tests] starting database worker"
+: > "$DATABASE_LOG"
+( cd "$ROOT_DIR" && "$WORKER_BIN_TARGET" --url ws://127.0.0.1:49134 ) > "$DATABASE_LOG" 2>&1 &
+DATABASE_PID=$!
+echo "[run-tests] database worker pid=$DATABASE_PID"
+
+# 12. Wait for database::query to succeed (worker startup + pool build).
+deadline=$(( $(date +%s) + 30 ))
+while :; do
+  if "$III_BIN" trigger database::query db=sqlite_db sql='SELECT 1' >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$DATABASE_PID" 2>/dev/null; then
+    echo "[run-tests] FATAL: database worker exited before becoming ready; tail of database log:" >&2
+    tail -40 "$DATABASE_LOG" >&2
+    exit 1
+  fi
+  if (( $(date +%s) > deadline )); then
+    echo "[run-tests] FATAL: database worker did not respond within 30s; tail of database log:" >&2
+    tail -40 "$DATABASE_LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+echo "[run-tests] database worker ready"
+
+# 13. Launch the harness as a host node process
 echo "[run-tests] starting harness (mode=$MODE)"
 HARNESS_ENV=()
 if [[ -n "$FILTER" ]]; then
@@ -244,7 +282,7 @@ HARNESS_ENV+=("HARNESS_MODE=$MODE")
 HARNESS_PID=$!
 echo "[run-tests] harness pid=$HARNESS_PID"
 
-# 11. Wait for sentinel line
+# 14. Wait for sentinel line
 sentinel=""
 deadline=$(( $(date +%s) + SENTINEL_TIMEOUT ))
 while (( $(date +%s) < deadline )); do
@@ -271,7 +309,7 @@ if [[ -z "$sentinel" ]]; then
   exit 1
 fi
 
-# 12. Print summary
+# 15. Print summary
 echo
 echo "======================================================================="
 echo "$sentinel"
