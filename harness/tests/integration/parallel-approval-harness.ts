@@ -9,6 +9,7 @@ import {
   handleApprovalStateWrite,
   handleAwaitingApproval,
 } from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
+import { TransientError } from '../../src/turn-orchestrator/errors.js';
 import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
 import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
 import { runTransition } from '../../src/turn-orchestrator/run-transition.js';
@@ -77,14 +78,39 @@ async function runTurnStep(iii: ISdk, function_id: string, session_id: string): 
     return;
   }
   if (function_id === 'turn::function_awaiting_approval') {
-    await runTransition(iii, 'function_awaiting_approval', handleAwaitingApproval, payload);
+    await runTransition(iii, 'function_awaiting_approval', handleAwaitingApproval, payload, {
+      serialize: true,
+    });
+  }
+}
+
+/**
+ * Model the durable queue's TransientError retry: a wake that loses the
+ * per-session lease re-runs after the holder releases. Yields between attempts
+ * so the lease holder can make progress.
+ */
+async function runTurnStepWithRetry(
+  iii: ISdk,
+  function_id: string,
+  session_id: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await runTurnStep(iii, function_id, session_id);
+      return;
+    } catch (err) {
+      if (err instanceof TransientError) {
+        await flushMicrotasks();
+        continue;
+      }
+      throw err;
+    }
   }
 }
 
 export function createParallelApprovalHarness(): ParallelApprovalHarness {
   const stateStore = new Map<string, unknown>();
   const emitted: AgentEvent[] = [];
-  let eventSeq = 0;
 
   const iii = {
     trigger: vi.fn(
@@ -126,12 +152,35 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         }
 
         if (function_id === 'state::update') {
-          eventSeq += 1;
-          return { old_value: eventSeq - 1 };
+          // Faithful atomic read-modify-write per (scope, key): the engine's
+          // kv adapter holds the store write-lock for the whole op, so
+          // increment returns the prior value (null/absent → treated as 0).
+          // Both the event counter and the per-session lease depend on this.
+          const p = payload as {
+            scope: string;
+            key: string;
+            ops?: Array<{ type: string; path?: string; by?: number }>;
+          };
+          const storeKey = `${p.scope}/${p.key}`;
+          const old_value = stateStore.has(storeKey)
+            ? structuredClone(stateStore.get(storeKey))
+            : null;
+          let next: unknown = old_value;
+          for (const op of p.ops ?? []) {
+            if (op.type === 'increment' && (op.path ?? '') === '') {
+              next = (typeof next === 'number' ? next : 0) + (op.by ?? 1);
+            }
+          }
+          stateStore.set(storeKey, next);
+          return { old_value, new_value: structuredClone(next) };
         }
 
         if (function_id === 'stream::set') {
-          const p = payload as { data: AgentEvent };
+          const p = payload as { stream_name?: string; data: AgentEvent };
+          // events.ts mirrors every turn_end onto a second `agent::turn_end`
+          // stream for compaction. Record only the primary `agent::events`
+          // stream so `emitted` is a faithful one-entry-per-event log.
+          if (p.stream_name === 'agent::turn_end') return null;
           emitted.push(p.data);
           return null;
         }
@@ -154,7 +203,7 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
 
         if (function_id.startsWith('turn::') && action != null) {
           const p = payload as { session_id: string };
-          await runTurnStep(iii as unknown as ISdk, function_id, p.session_id);
+          await runTurnStepWithRetry(iii as unknown as ISdk, function_id, p.session_id);
           return null;
         }
 

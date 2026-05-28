@@ -14,11 +14,23 @@ import { logger } from '../runtime/otel.js';
 import { TransientError } from './errors.js';
 import { emit } from './events.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
+import { acquireSessionLease, releaseSessionLease } from './state-runtime/session-lease.js';
 import { createTurnStore } from './state-runtime/store.js';
 import { type TurnState, type TurnStateRecord, transitionTo } from './state.js';
 import { syntheticAssistant } from './synthetic-assistant.js';
 
 export type TransitionHandler = (iii: ISdk, rec: TurnStateRecord) => Promise<void>;
+
+export type RunTransitionOptions = {
+  /**
+   * Serialize this transition behind a per-session lease. Required for states
+   * woken by a fan-out trigger that can enqueue concurrent steps for one
+   * session (function_awaiting_approval — one wake per approval::resolve). A
+   * contender that cannot acquire throws {@link TransientError} so the durable
+   * queue retries it after the holder releases.
+   */
+  serialize?: boolean;
+};
 
 /** Returns a stale skip result when the queue message no longer matches persisted state. */
 function staleSkipResult(expectedState: TurnState, rec: TurnStateRecord): TurnStepResult | null {
@@ -66,6 +78,31 @@ async function failTransition(
 }
 
 export async function runTransition(
+  iii: ISdk,
+  state: TurnState,
+  handle: TransitionHandler,
+  payload: TurnStepPayload,
+  options?: RunTransitionOptions,
+): Promise<TurnStepResult> {
+  if (!options?.serialize) {
+    return runTransitionInner(iii, state, handle, payload);
+  }
+  const acquired = await acquireSessionLease(iii, payload.session_id);
+  if (!acquired) {
+    // Another wake holds the session. Retry via the queue once it releases;
+    // by then the persisted state has usually advanced and we stale-skip.
+    throw new TransientError(
+      `turn::${state}: session ${payload.session_id} held by a concurrent step`,
+    );
+  }
+  try {
+    return await runTransitionInner(iii, state, handle, payload);
+  } finally {
+    await releaseSessionLease(iii, payload.session_id);
+  }
+}
+
+async function runTransitionInner(
   iii: ISdk,
   state: TurnState,
   handle: TransitionHandler,
