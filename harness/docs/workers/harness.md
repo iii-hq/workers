@@ -24,13 +24,12 @@ that drive transitions; its fan-out trigger is a passive stream subscriber.
 - `harness::fs::read_inline` — Read a host file via shell::fs::read, drain its channel, and return a `{content:[{text}], details:{size, truncated, bytes_read}}` envelope (max 256 KiB inline by default).
 - `policy::check_permissions` — Evaluate a function call against the current `iii-permissions.yaml`. Returns `{ decision: "allow" | "deny" | "needs_approval", rule_id?, matched_constraint? }`.
 - `harness::fanout::agent_event_handler` — Internal: `agent::events` fanout handler.
-- `harness::session::is_create_event` — Internal condition function bound to the sessions state trigger; matches `state:created` writes to `session/<id>/turn_state`.
-- `harness::fanout::session_created` — Internal handler invoked by the sessions state trigger; fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`.
+- `harness::fanout::session_created` — Internal handler invoked by the sessions state trigger; fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. Gates in-handler on the `state:created` marker.
 
 ## Triggers
 
 - **Stream subscriber** on `agent::events` → `harness::fanout::agent_event_handler`. Registered by [src/harness/fanout/agent-events.ts](harness/src/harness/fanout/agent-events.ts).
-- **State trigger** on `scope: agent` gated by `condition_function_id: harness::session::is_create_event` → `harness::fanout::session_created`. Lives in [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts). This replaced the previous 1 Hz `state::list` diff loop: new sessions now reach all-sessions subscribers reactively, on the same `turn_state` write that creates them.
+- **State trigger** on `scope: turn_state` (no `condition_function_id`) → `harness::fanout::session_created`. Lives in [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts). The handler gates on `state:created` events where key = session id — the first persist of a turn record signals session creation. (This replaced the earlier `session_index` marker scope.)
 
 The fanout handler forwards every `agent::events` frame to the per-browser
 endpoint `ui::session::event::<browser_id>` for each browser whose
@@ -41,7 +40,7 @@ evicted from the in-process subscription set.
 ## State keys
 
 The harness reads state but doesn't own any keys. The sessions state
-trigger observes `session/<id>/turn_state` writes — those entries are
+trigger observes `turn_state` scope `state:created` events — those entries are
 owned by the orchestrator (see
 [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md)).
 
@@ -84,5 +83,5 @@ From [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml):
 | [src/harness/policy/types.ts](harness/src/harness/policy/types.ts) | `RuleSpec`, `ConstraintSpec`, `Decision`, `MatchedConstraint` types for `iii-permissions.yaml` rules and evaluation results. |
 | [src/harness/fanout/index.ts](harness/src/harness/fanout/index.ts) | Spawns the two fan-out pumps. |
 | [src/harness/fanout/agent-events.ts](harness/src/harness/fanout/agent-events.ts) | `agent::events` stream subscriber → per-browser fan-out. |
-| [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts) | State-trigger handler that detects `session/<id>/turn_state` creates and fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. (Filename kept for history; the implementation is no longer a poll loop.) |
+| [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts) | State-trigger handler on scope `turn_state` that fans new session ids to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. |
 | [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml) | iii worker manifest (dependencies, install/start scripts). |

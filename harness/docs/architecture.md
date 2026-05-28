@@ -1,7 +1,7 @@
 # harness architecture
 
 `harness` is the Node/TypeScript port of the iii harness stack. It ships
-as one pnpm package containing 11 workers (one folder per worker, one feature
+as one pnpm package containing 15 workers (one folder per worker, one feature
 per file) plus a shared `runtime/` SDK helper layer and a `types/` wire-type
 mirror of `harness/crates/harness-types`. Each worker is independently runnable
 as `pnpm dev:<worker>` (development) or `iii-<worker>` (production binary);
@@ -20,17 +20,19 @@ workers.
 |---|---|---|---|
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve` and shared approval wire schemas; routes decisions to per-call `turn::approval_resume` fns owned by the turn-orchestrator. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | auth-credentials | [src/auth-credentials/](harness/src/auth-credentials/) | File-backed multi-provider credential store. | [workers/auth-credentials.md](harness/docs/workers/auth-credentials.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Static model-capability catalogue (state-first, embedded fallback). | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
+| provider-config | [src/provider-config/](harness/src/provider-config/) | Runtime provider settings store on the iii bus (`provider_config::*` — base URL / max tokens overrides). | [workers/provider-config.md](harness/docs/workers/provider-config.md) |
 | provider-anthropic | [src/provider-anthropic/](harness/src/provider-anthropic/) | Anthropic Messages API SSE → channel writer. | [workers/provider-anthropic.md](harness/docs/workers/provider-anthropic.md) |
 | provider-openai | [src/provider-openai/](harness/src/provider-openai/) | OpenAI Chat Completions SSE → channel writer. | [workers/provider-openai.md](harness/docs/workers/provider-openai.md) |
 | provider-kimi | [src/provider-kimi/](harness/src/provider-kimi/) | Kimi Chat Completions SSE → channel writer. | [workers/provider-kimi.md](harness/docs/workers/provider-kimi.md) |
 | provider-lmstudio | [src/provider-lmstudio/](harness/src/provider-lmstudio/) | LM Studio (localhost) Chat Completions SSE → channel writer. | [workers/provider-lmstudio.md](harness/docs/workers/provider-lmstudio.md) |
-| context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::events` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
+| provider-llamacpp | [src/provider-llamacpp/](harness/src/provider-llamacpp/) | llama.cpp `llama-server` (localhost) Chat Completions SSE → channel writer. | [workers/provider-llamacpp.md](harness/docs/workers/provider-llamacpp.md) |
+| context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::turn_end` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
 
 ## System diagram
 
@@ -69,14 +71,13 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "publishAfter → hook-fanout::publish_collect (after-hook)" --> hook
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
-  approval -- "trigger turn::approval_resume::<sid>/<cid>" --> turnOrch
-  turnOrch -- "state::set approvals/<sid>/<cid>" --> state
-  turnOrch -- "iii.trigger turn::step" --> turnOrch
+  approval -- "state::set approvals/<sid>/<cid>" --> state
+  state -- "state trigger (scope=approvals)" --> turnOrch
+  turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
   provAnth -- "auth::get_token" --> auth
   provOAI -- "auth::get_token" --> auth
@@ -85,8 +86,7 @@ flowchart LR
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
-  state -- "state trigger (scope=agent, abort_signal)" --> turnOrch
-  state -- "state trigger (scope=agent, turn_state created)" --> harness
+  state -- "state trigger (scope=turn_state)" --> harness
   harness -- "ui::session::event::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
 ```
@@ -94,41 +94,84 @@ flowchart LR
 ## Turn FSM
 
 [src/turn-orchestrator/state.ts](harness/src/turn-orchestrator/state.ts)
-defines an 11-state durable FSM. Every transition is driven by the
-`turn::step` durable subscriber, which is woken by a publish to the
-`turn::step_requested` topic — either by the orchestrator itself
-(re-publish at the end of a step), by a per-call
-`turn::approval_resume` handler (when a human decision or abort lands), or by
-the orchestrator's own `abort_signal` state trigger.
+defines a 7-state durable FSM. Each state is a registered `turn::{state}`
+function executed via `runTransition` and enqueued onto the `turn-step` FIFO
+queue from `saveRecord` ([store.ts](harness/src/turn-orchestrator/state-runtime/store.ts)).
+`saveRecord` calls `shouldWakeStep` then enqueues `turn::{newState}` when the persisted state
+transitions to a stepable state. Paused sessions are woken when `approval::resolve` writes
+scope `approvals`, which fires `turn::on_approval` to enqueue `turn::function_awaiting_approval`.
 
 ```mermaid
 stateDiagram-v2
   [*] --> provisioning
-  provisioning --> awaiting_assistant
-  awaiting_assistant --> assistant_streaming
-  assistant_streaming --> assistant_finished
-  assistant_finished --> function_prepare: has function calls
-  assistant_finished --> steering_check: no function calls
-  function_prepare --> function_execute
-  function_execute --> function_finalize: all calls resolved (allow/deny)
-  function_execute --> function_awaiting_approval: any call needs_approval
-  function_awaiting_approval --> function_awaiting_approval: decision(s) still missing
-  function_awaiting_approval --> function_execute: all decisions written
-  function_finalize --> steering_check
-  steering_check --> awaiting_assistant: continue
-  steering_check --> tearing_down: stop or max turns
-  tearing_down --> stopped
+  provisioning --> assistant_streaming
+  assistant_streaming --> function_execute: has function calls
+  assistant_streaming --> steering_check: no function calls
+  assistant_streaming --> stopped: error or aborted via finishSession
+  function_execute --> function_awaiting_approval: any call needs approval
+  function_execute --> steering_check: batch complete
+  function_execute --> stopped: all calls terminate session via finishSession
+  function_awaiting_approval --> function_execute: awaiting empty, batch incomplete
+  function_awaiting_approval --> steering_check: awaiting empty, batch complete
+  steering_check --> assistant_streaming: continue turn
+  steering_check --> stopped: stop or max turns via finishSession
   stopped --> [*]
+  failed --> [*]
 ```
+
+`failed` is a terminal state set by `runTransition` when a handler throws
+unexpectedly (unless it opts into queue retry via `TransientError`).
 
 ## Approval flow
 
 The orchestrator consults `policy::check_permissions` directly inside
 `consultBefore` — `allow`, `deny`, or `pending`. There is no hook fanout on
-the before path. The orchestrator parks the turn in `function_awaiting_approval`,
-registers a `turn::approval_resume` function per pending call, and waits until
-`approval::resolve` (or abort) triggers that function, which persists the
-decision and invokes `turn::step`.
+the before path. The orchestrator parks the turn in `function_awaiting_approval`
+when any call in the batch needs approval, then resumes as each parked call
+receives `approval::resolve` (decisions may arrive independently and out of
+batch order). Each `approval::resolve` persists the decision; the `turn::on_approval`
+state trigger enqueues `turn::function_awaiting_approval`.
+
+### Parallel batch during `function_execute`
+
+When the assistant message contains multiple tool calls, `runBatch` does not
+stop at the first `pending`. For each call in assistant tool order:
+
+- already in `work.executed` or listed in `awaiting_approval[]` → skip
+- policy `allow` (or immediate policy `deny`) → dispatch, checkpoint, emit
+  `function_execution_end`
+- policy `needs_approval` → emit `function_execution_start`, append the call
+  to `awaiting_approval[]`, **continue** remaining siblings
+
+After the loop: if any call is still awaiting approval, transition to
+`function_awaiting_approval`; otherwise finalize the batch or re-enter
+`function_execute` when the batch is incomplete but nothing is parked.
+
+Example batch A, B, C: A → pending, B → allow (executes immediately), C →
+pending → `awaiting_approval = [A, C]`, B recorded in `work.executed`, turn
+parked until A and C are resolved.
+
+### Durability and reload
+
+| Surface | Location | Role |
+|---|---|---|
+| Open approvals | `turn_state/<session_id>` → `awaiting_approval[]` | Which calls are parked and their args |
+| Decisions | `approvals/<session_id>/<function_call_id>` | Written by `approval::resolve`; read on each wake |
+| UI mirror | `turn_state_changed` on `agent::events` | Console shows pending modals from `TurnStateView.awaiting_approval` |
+| Reload | `turn::get_state` | One-shot lean view after refresh (no direct iii state reads) |
+
+A page refresh does not lose pending approvals as long as iii state persists.
+Operators can still approve from the console after reload; each decision write
+fires `turn::on_approval` to enqueue the parked turn step while the worker is running.
+
+### Resume semantics
+
+- Decisions may arrive in any order (e.g. resolve call C before call A).
+- On `allow`, the parked call executes with `skipStart: true` — the
+  `function_execution_start` event was already emitted when the call first
+  returned `pending`.
+- A duplicate `approval::resolve` for the same call re-wakes the handler;
+  resolved entries are pruned idempotently so execution is not doubled.
 
 ```mermaid
 sequenceDiagram
@@ -138,29 +181,32 @@ sequenceDiagram
   participant Gate as approval-gate
   participant User
 
+  Note over Turn: function_execute: runBatch walks all tool calls.<br/>pending calls append to awaiting_approval[];<br/>allowed siblings execute in the same pass.
+
   Turn->>Harness: policy::check_permissions(function_id, args) [5s timeout]
   alt rule.action == allow
     Harness-->>Turn: allow → dispatch the call
   else rule.action == deny
-    Harness-->>Turn: deny + DenialEnvelope → DenialResult
+    Harness-->>Turn: deny + DenialEnvelope → error FunctionResult
   else no rule (needs_approval)
-    Harness-->>Turn: needs_approval → park in function_awaiting_approval
-    Note over Turn,Bus: Orchestrator stops re-publishing turn::step_requested.<br/>The TurnStateRecord.awaiting_approval list pins the open calls.
+    Harness-->>Turn: needs_approval → append to awaiting_approval[], continue batch
+    Note over Turn,Bus: When the batch pass finishes with any awaiting calls,<br/>saveRecord parks in function_awaiting_approval (no wake on park).
     User->>Gate: approval::resolve(decision, reason)
-    Gate->>Turn: trigger turn::approval_resume::<sid>/<cid>
-    Turn->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
-    Turn->>Turn: turn::step → function_awaiting_approval reads<br/>approvals/<sid>/<cid> for each pending entry
-    Turn->>Turn: fold decisions into prepared snapshot,<br/>transition back to function_execute
+    Gate->>Bus: state::set approvals/<sid>/<cid> = {decision, reason}
+    Gate->>Turn: enqueue turn::function_awaiting_approval
+    Turn->>Turn: function_awaiting_approval executes<br/>that call immediately (skipStart), removes it from awaiting_approval[]
+    alt more calls still awaiting
+      Turn->>Turn: stay in function_awaiting_approval
+    else awaiting empty and batch incomplete
+      Turn->>Turn: transition to function_execute
+    else awaiting empty and batch complete
+      Turn->>Turn: finalizeBatch → steering_check / stopped
+    end
   end
 ```
 
 Fail-closed: policy unreachable (transport error or 5 s timeout) →
 `consultBefore` denies the call with a `gate_unavailable` envelope.
-
-Abort: `router::abort` writes `session/<sid>/abort_signal = true` (waking
-the orchestrator through its own `agent`-scope state trigger) and, if the
-turn is paused on approvals, triggers each registered
-`turn::approval_resume` function with `{decision: 'aborted'}`.
 
 ## Kernel deny list
 
@@ -175,7 +221,7 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
 `auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
 `oauth::openai-codex::login`, `run::start`,
-`router::stream_assistant`, `router::abort`.
+`router::stream_assistant`.
 
 Bare-string allow rules: `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`, `auth::get_token`,
@@ -230,7 +276,6 @@ flowchart TD
   provOAI --> turnOrch
   provKimi --> turnOrch
   provLms --> turnOrch
-  hook[hook-fanout] --> approval
   session --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact

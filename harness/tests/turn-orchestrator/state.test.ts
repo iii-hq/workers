@@ -1,83 +1,102 @@
 import { describe, expect, it } from 'vitest';
-import type { ISdk } from '../../src/runtime/iii.js';
-import type {
-  AwaitingApprovalEntry,
-  TurnState,
-  TurnStateRecord,
-} from '../../src/turn-orchestrator/state.js';
+import { TurnStateInvariantError } from '../../src/turn-orchestrator/errors.js';
 import {
-  isTerminal,
-  messagesKey,
+  parseAssistantStreamingRecord,
+  parseFunctionBatchRecord,
+  parseSteeringCheckRecord,
+} from '../../src/turn-orchestrator/schemas.js';
+import {
+  type TurnStateRecord,
   newRecord,
   transitionTo,
-  turnStateKey,
 } from '../../src/turn-orchestrator/state.js';
-import { handleAwaitingApproval } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
+import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
+import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 describe('TurnStateRecord', () => {
-  it('starts in provisioning', () => {
+  it('starts in provisioning with no work and the given max_turns', () => {
     const r = newRecord('s1', 32);
     expect(r.state).toBe('provisioning');
     expect(r.session_id).toBe('s1');
     expect(r.max_turns).toBe(32);
-    expect(isTerminal(r)).toBe(false);
+    expect(r.work).toBeUndefined();
   });
 
   it('transitionTo stopped marks terminal', () => {
     const r = newRecord('s1');
     transitionTo(r, 'stopped');
-    expect(isTerminal(r)).toBe(true);
-  });
-});
-
-describe('function_awaiting_approval state', () => {
-  it('accepts function_awaiting_approval as a TurnState value', () => {
-    const rec = newRecord('s1');
-    transitionTo(rec, 'function_awaiting_approval' as TurnState);
-    expect(rec.state).toBe('function_awaiting_approval');
+    expect(r.state).toBe('stopped');
   });
 
-  it('is non-terminal', () => {
-    const rec = newRecord('s1');
-    transitionTo(rec, 'function_awaiting_approval' as TurnState);
-    expect(isTerminal(rec)).toBe(false);
-  });
-});
-
-describe('awaiting_approval field', () => {
-  it('defaults to undefined on fresh records', () => {
+  it('awaiting_approval defaults to undefined on fresh records', () => {
     const rec: TurnStateRecord = newRecord('s1');
     expect(rec.awaiting_approval).toBeUndefined();
   });
-
-  it('accepts AwaitingApprovalEntry items', () => {
-    const rec: TurnStateRecord = newRecord('s1');
-    const entry: AwaitingApprovalEntry = {
-      function_call_id: 'fc-1',
-      function_id: 'shell::run',
-      args: { command: 'ls' },
-    };
-    rec.awaiting_approval = [entry];
-    expect(rec.awaiting_approval).toHaveLength(1);
-    expect(rec.awaiting_approval[0].function_call_id).toBe('fc-1');
-  });
 });
 
-describe('handleAwaitingApproval with empty queue', () => {
-  it('advances to function_execute when awaiting_approval is empty', async () => {
+describe('parseFunctionBatchRecord', () => {
+  const asst: AssistantMessage = {
+    role: 'assistant',
+    content: [],
+    stop_reason: 'function_call',
+    error_message: null,
+    error_kind: null,
+    usage: null,
+    model: 'm',
+    provider: 'p',
+    timestamp: 1,
+  };
+
+  it('returns a validated record when function-batch fields are present', () => {
     const rec = newRecord('s1');
-    transitionTo(rec, 'function_awaiting_approval');
+    enterFunctionExecute(rec, asst);
+    rec.state = 'function_execute';
+    const batch = parseFunctionBatchRecord(rec);
+    expect(batch.work).toBeDefined();
+    expect(batch.awaiting_approval).toEqual([]);
+  });
+
+  it('throws TurnStateInvariantError when last_assistant is missing', () => {
+    const rec = newRecord('s1');
+    rec.state = 'function_execute';
+    rec.work = { prepared: [], executed: {} };
     rec.awaiting_approval = [];
-
-    await handleAwaitingApproval({} as ISdk, rec);
-
-    expect(rec.state).toBe('function_execute');
+    expect(() => parseFunctionBatchRecord(rec)).toThrow(TurnStateInvariantError);
   });
 });
 
-describe('state keys', () => {
-  it('namespace by session', () => {
-    expect(turnStateKey('abc')).toBe('session/abc/turn_state');
-    expect(messagesKey('abc')).toBe('session/abc/messages');
+describe('parseAssistantStreamingRecord', () => {
+  it('returns a validated record for assistant_streaming', () => {
+    const rec = newRecord('s1');
+    rec.state = 'assistant_streaming';
+    const streaming = parseAssistantStreamingRecord(rec);
+    expect(streaming.state).toBe('assistant_streaming');
+    expect(streaming.function_results).toEqual([]);
+  });
+
+  it('throws TurnStateInvariantError when session_id is missing', () => {
+    const rec = { state: 'assistant_streaming' } as TurnStateRecord;
+    expect(() => parseAssistantStreamingRecord(rec)).toThrow(TurnStateInvariantError);
+  });
+
+  it('throws TurnStateInvariantError when state is wrong', () => {
+    const rec = newRecord('s1');
+    rec.state = 'provisioning';
+    expect(() => parseAssistantStreamingRecord(rec)).toThrow(TurnStateInvariantError);
+  });
+});
+
+describe('parseSteeringCheckRecord', () => {
+  it('returns a validated record for steering_check', () => {
+    const rec = newRecord('s1');
+    rec.state = 'steering_check';
+    const steering = parseSteeringCheckRecord(rec);
+    expect(steering.state).toBe('steering_check');
+    expect(steering.function_results).toEqual([]);
+  });
+
+  it('throws TurnStateInvariantError when session_id is missing', () => {
+    const rec = { state: 'steering_check' } as TurnStateRecord;
+    expect(() => parseSteeringCheckRecord(rec)).toThrow(TurnStateInvariantError);
   });
 });

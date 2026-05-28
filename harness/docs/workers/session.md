@@ -36,6 +36,10 @@ backend.
 - `session-tree::messages` — Load every AgentMessage on the active path of a session, paired with its entry_id, oldest first.
 - `session-tree::reconcile` — Mirror missing messages from a state-snapshot into session-tree.
 - `session-tree::list` — List sessions with optional pagination and ordering.
+- `session-tree::compactions` — Return all Compaction entries for a session, sorted by timestamp ascending.
+- `session-tree::append_synthetic` — Append a synthetic user-role message entry to a session (used by the context-compaction replay path).
+- `session-tree::update_part` — Replace the content of a `function_result` message entry with compacted output.
+- `session-tree::update_parts` — Batch variant of `update_part`; loads target entries once and rewrites all of them.
 
 ### `session-inbox::*`
 
@@ -62,11 +66,11 @@ resumed approval replies in the correct transcript position when their
 ids are non-monotonic relative to wall-clock order.
 
 `session-inbox::*` (under the configured `session.state_scope`, default
-`agent`):
+`inbox`):
 
-| Key shape | Value |
-|---|---|
-| `session/<session_id>/<inbox_name>` | An append-only JSON array of opaque items. |
+| Scope | Key | Value |
+|---|---|---|
+| `inbox` | `<session_id>/<inbox_name>` | An append-only JSON array of opaque items. |
 
 ## Configuration
 
@@ -74,7 +78,7 @@ From the `session` section of [config.yaml](harness/config.yaml):
 
 - `store_backend` (default `iii_state`; alternative `memory`) — which
   `SessionStore` implementation `register()` instantiates.
-- `state_scope` (default `agent`) — iii state scope used by
+- `state_scope` (default `inbox`) — iii state scope used by
   `session-inbox::*`. Note: the tree backend uses its own hard-coded
   scopes (`session_tree:*`, `session_tree_meta`); only the inbox honours
   this setting.
@@ -91,10 +95,10 @@ From [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml):
 | [src/session/main.ts](harness/src/session/main.ts) | Binary entry point (`iii-session`). |
 | [src/session/register.ts](harness/src/session/register.ts) | Picks the backend and wires both sub-surfaces. |
 | [src/session/config.ts](harness/src/session/config.ts) | Loads the `session` config section. |
-| [src/session/tree/register.ts](harness/src/session/tree/register.ts) | Registers all 11 `session-tree::*` functions; exports `FUNCTION_IDS`. |
+| [src/session/tree/register.ts](harness/src/session/tree/register.ts) | Registers all 15 `session-tree::*` functions; exports `FUNCTION_IDS`. |
 | [src/session/tree/operations.ts](harness/src/session/tree/operations.ts) | Pure tree algorithms: create, fork, clone, compact, active path, messages, reconcile, tree, export_html, list. |
 | [src/session/tree/store.ts](harness/src/session/tree/store.ts) | `SessionStore` interface + `InMemoryStore` + `IiiStateSessionStore`. |
 | [src/session/tree/types.ts](harness/src/session/tree/types.ts) | `SessionEntry` (`message` / `custom_message` / `branch_summary` / `compaction`, each with an explicit `timestamp`), `SessionMeta`, `TreeNode`, `ReconcileResult`, `SessionError`, plus the `entryTimestamp` helper used by the `(timestamp, id)` sort. |
 | [src/session/inbox/handlers.ts](harness/src/session/inbox/handlers.ts) | Registers the three `session-inbox::*` functions. |
-| [src/session/inbox/key.ts](harness/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "session/<sid>/<name>"`. |
+| [src/session/inbox/key.ts](harness/src/session/inbox/key.ts) | `inboxKey(name, session_id) → "<sid>/<name>"` under scope `inbox`. |
 | [src/session/iii.worker.yaml](harness/src/session/iii.worker.yaml) | Worker manifest. |

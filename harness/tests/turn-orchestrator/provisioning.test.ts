@@ -1,14 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { defaultRunRequest, installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
-import {
-  handleProvisioning,
-  parseDirectoryBody,
-  register,
-} from '../../src/turn-orchestrator/states/provisioning.js';
+import { parseDirectoryBody } from '../../src/turn-orchestrator/provisioning/ports.js';
+import { handleProvisioning, register } from '../../src/turn-orchestrator/provisioning/process.js';
 
 type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
 
@@ -57,28 +54,24 @@ describe('handleProvisioning', () => {
     });
     const cfg = { system_default_skills: ['iii://iii-directory/index'] };
 
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
-      provider: 'openai',
-      model: 'gpt-4',
-      mode: 'agent',
-      system_prompt: '',
+    const store = installMockTurnStore({
+      loadRunRequest: vi.fn(async () => ({
+        ...defaultRunRequest,
+        mode: 'agent',
+      })),
     });
-    const saveSchemas = vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
-    const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
+    const saveRunRequest = store.saveRunRequest;
 
     await handleProvisioning(iii, cfg, rec);
 
     expect(rec.state).toBe('assistant_streaming');
-    expect(saveSchemas).toHaveBeenCalledWith(iii, 's1', [
-      expect.objectContaining({ name: 'agent_trigger' }),
-    ]);
     expect(saveRunRequest).toHaveBeenCalledWith(
-      iii,
       's1',
       expect.objectContaining({
         provider: 'openai',
         model: 'gpt-4',
         system_prompt: expect.stringContaining('operating in agent mode'),
+        function_schemas: [expect.objectContaining({ name: 'agent_trigger' })],
       }),
     );
     expect(calls.some((c) => c.function_id === 'directory::skills::index')).toBe(true);
@@ -90,19 +83,18 @@ describe('handleProvisioning', () => {
     const { iii } = fakeIii();
     const cfg = { system_default_skills: [] as string[] };
 
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
-      provider: 'openai',
-      model: 'gpt-4',
-      mode: null,
-      system_prompt: 'custom override',
+    const store = installMockTurnStore({
+      loadRunRequest: vi.fn(async () => ({
+        ...defaultRunRequest,
+        mode: null,
+        system_prompt: 'custom override',
+      })),
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
-    const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
+    const saveRunRequest = store.saveRunRequest;
 
     await handleProvisioning(iii, cfg, rec);
 
     expect(saveRunRequest).toHaveBeenCalledWith(
-      iii,
       's1',
       expect.objectContaining({ system_prompt: 'custom override' }),
     );
@@ -113,20 +105,20 @@ describe('handleProvisioning', () => {
     const { iii } = fakeIii();
     const cfg = { system_default_skills: ['iii://missing'] };
 
-    vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
-      provider: '',
-      model: '',
-      mode: null,
-      system_prompt: '',
+    const store = installMockTurnStore({
+      loadRunRequest: vi.fn(async () => ({
+        ...defaultRunRequest,
+        provider: '',
+        model: '',
+        mode: null,
+      })),
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
-    const saveRunRequest = vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
+    const saveRunRequest = store.saveRunRequest;
 
     await handleProvisioning(iii, cfg, rec);
 
     expect(rec.state).toBe('assistant_streaming');
     expect(saveRunRequest).toHaveBeenCalledWith(
-      iii,
       's1',
       expect.objectContaining({
         system_prompt: expect.stringContaining('You are an iii agent worker'),
@@ -169,16 +161,17 @@ describe('register', () => {
 
   it('registers turn::provisioning, threads cfg into the runner, and returns metadata', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    vi.spyOn(persistence, 'loadRecord').mockResolvedValue(rec);
-    const saveRecord = vi.spyOn(persistence, 'saveRecord').mockResolvedValue();
-    const loadRunRequest = vi.spyOn(persistence, 'loadRunRequest').mockResolvedValue({
-      provider: '',
-      model: '',
-      mode: null,
-      system_prompt: '',
+    const store = installMockTurnStore({
+      loadRecord: vi.fn(async () => rec),
+      loadRunRequest: vi.fn(async () => ({
+        ...defaultRunRequest,
+        provider: '',
+        model: '',
+        mode: null,
+      })),
     });
-    vi.spyOn(persistence, 'saveFunctionSchemas').mockResolvedValue();
-    vi.spyOn(persistence, 'saveRunRequest').mockResolvedValue();
+    const saveRecord = store.saveRecord;
+    const loadRunRequest = store.loadRunRequest;
 
     const { iii, getHandler, getId } = captureHandler();
     register(iii, cfg);
@@ -188,9 +181,8 @@ describe('register', () => {
 
     // cfg flows through to handleProvisioning (which reads the run request),
     // and the runner threads the pre-mutation snapshot into saveRecord.
-    expect(loadRunRequest).toHaveBeenCalledWith(iii, 's1');
+    expect(loadRunRequest).toHaveBeenCalledWith('s1');
     expect(saveRecord).toHaveBeenCalledWith(
-      iii,
       rec,
       expect.objectContaining({ state: 'provisioning' }),
     );

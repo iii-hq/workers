@@ -17,7 +17,7 @@ function fakeIii(entries: SessionEntry[]): ISdk {
   return {
     trigger: async <T, R>(req: { function_id: string }): Promise<R> => {
       if (req.function_id === 'state::list') {
-        return { items: entries.map((e) => ({ value: e })) } as unknown as R;
+        return entries as unknown as R;
       }
       return null as unknown as R;
     },

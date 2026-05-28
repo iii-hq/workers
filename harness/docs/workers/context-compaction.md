@@ -1,9 +1,11 @@
 # context-compaction
 
-Out-of-band session-history compactor (v2). Watches `agent::events` for
-`TurnEnd` frames and summarises older turns when the session approaches the
-model's usable context limit. Also exposes a sync pre-turn path that the
-turn-orchestrator calls to compact before a turn that would overflow.
+Out-of-band session-history compactor (v2). Subscribes to the dedicated
+`agent::turn_end` stream (mirrored by the event producer) and summarises older
+turns when the session approaches the model's usable context limit — one wake
+per turn instead of one per `agent::events` frame. Also exposes a sync
+pre-turn path that the turn-orchestrator calls to compact before a turn that
+would overflow.
 
 ## Purpose
 
@@ -27,7 +29,8 @@ This worker is optional. Without it, sessions keep their full transcript.
 
 ### `context-compaction::on_agent_event`
 
-Internal stream subscriber. Fires on every `agent::events` message.
+Internal stream subscriber on `agent::turn_end` — fires once per turn (kept
+under the historical `on_agent_event` name).
 
 **Payload** (camelCase or snake_case envelope):
 ```
@@ -138,8 +141,7 @@ usable = max(0, model.input_limit − COMPACT_RESERVED_TOKENS)
 ```
 
 If `model.input_limit` is zero, it falls back to
-`model.context_window − model.output_tokens`. `COMPACT_TRIGGER_TOKENS` (deprecated)
-acts as a hard cap on the result if set, preserving old behaviour.
+`model.context_window − model.output_tokens`.
 
 A session with a 200 k-token model reserves 20 k by default and triggers at
 180 k. A 32 k model triggers at 12 k with the same defaults.
@@ -175,7 +177,7 @@ scratch, so the summary converges rather than growing without bound.
    `COMPACT_PRUNE_PROTECT` goes into the prune queue.
 4. If the queue would free fewer than `COMPACT_PRUNE_MIN_FREE` tokens, it
    skips entirely (no-op).
-5. Calls `session-tree::update_part` to null out each pruned output.
+5. Calls `session-tree::update_parts` to null out each pruned output (batched, one load).
 
 Tools listed in `COMPACT_PRUNE_PROTECTED_TOOLS` are never pruned.
 
@@ -218,21 +220,22 @@ All knobs are env-driven; no `config.yaml` fields are read.
 | `COMPACT_TOOL_OUTPUT_MAX_CHARS` | `2000` | Per-output character cap applied before sending to the summariser. |
 | `COMPACT_BUSY_TIMEOUT_MS` | `30000` | Max ms `compact_now` / `compact_session` waits for the compaction lease before returning `{ status: 'busy' }`. Sized to cover a typical summariser stream (10–30s) so user-initiated `/compact` doesn't race the async TurnEnd path. |
 | `COMPACT_PRUNE_PROTECTED_TOOLS` | _(empty)_ | Comma-separated function IDs whose outputs are never pruned. |
-| `COMPACT_TRIGGER_TOKENS` | _(deprecated)_ | If set, caps `usable()` to this value. Preserves pre-v2 behaviour. Prefer `COMPACT_RESERVED_TOKENS` instead. |
 
 The summariser provider and model are always inherited from the session's
 own selection. Routing goes through `turn-orchestrator/provider-router`,
 so adding a provider there automatically covers `/compact`.
 
-## State keys
+## State scopes
 
-All keys live under iii state scope `agent`:
+Compaction-related keys use dedicated scopes (key = `session_id`):
 
-| Key shape | Purpose |
+| Scope | Purpose |
 |---|---|
-| `session/<sid>/compaction_lease` | `{ nonce, ts }` — held for up to `LEASE_TTL_SECS = 300 s`. Acquired by writing a unique nonce and reading it back; the first writer whose nonce survives wins. |
-| `session/<sid>/prune_lease` | Same nonce-and-readback pattern, separate key so the prune path does not block async compaction. |
-| `session/<sid>/last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
+| `compaction_lease` | `{ nonce, ts }` — held for up to `LEASE_TTL_SECS = 300 s`. |
+| `prune_lease` | Same nonce-and-readback pattern, separate scope so the prune path does not block async compaction. |
+| `last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
+
+Flat transcript rewrites use scope `messages`, key `session_id` (see [flat-state.ts](harness/src/context-compaction/flat-state.ts)).
 
 ## Observability
 
@@ -259,7 +262,7 @@ outer `instrumentHandler` wrapper.
 | `session-tree::compact` | Append a Compaction entry (summary + `tail_start_id` + `tokens_before`). |
 | `session-tree::compactions` | Load existing Compaction entries for prior-summary anchor. |
 | `session-tree::append_synthetic` | Append the "Continue…" prompt after sync compaction. |
-| `session-tree::update_part` | Null out pruned tool outputs in-place. |
+| `session-tree::update_parts` | Null out pruned tool outputs in-place (batched). |
 | `models::get` | Resolve `context_window` / `max_output_tokens` for model-adaptive threshold. |
 
 Worker manifest deps (`iii.worker.yaml`):
@@ -274,6 +277,8 @@ Worker manifest deps (`iii.worker.yaml`):
 | `src/context-compaction/config.ts` | Reads all `COMPACT_*` env vars. |
 | `src/context-compaction/handler-async.ts` | Async TurnEnd path: envelope decode, overflow check, lease, prune, summarise. |
 | `src/context-compaction/handler-sync.ts` | Sync pre-turn path: lease-with-wait, extract replay, prune, summarise, reinject. |
+| `src/context-compaction/handler-pipeline.ts` | Shared prune → summarise → flat-state rewrite pipeline used by both handlers. |
+| `src/context-compaction/flat-state.ts` | Rewrites scope `messages` after compaction so the next turn reads the new flat transcript. |
 | `src/context-compaction/model-resolver.ts` | Shared model-resolution helpers: `fetchModelLimit` (catalog lookup) and `resolveModelFromSession` (session-scan + catalog lookup). |
 | `src/context-compaction/prune.ts` | Tool-output pruning (`prune`). |
 | `src/context-compaction/summarize.ts` | `summarizeAndAppend`: load → select tail → summarise → append Compaction entry. |

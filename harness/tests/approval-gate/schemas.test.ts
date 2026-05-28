@@ -7,48 +7,32 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ApprovalDecisionSchema,
   ApprovalResumePayloadSchema,
   ResolvePayloadSchema,
-  approvalResumeFnId,
   parsePolicyReply,
   pendingKey,
   resolveFunctionOptions,
 } from '../../src/approval-gate/schemas.js';
 
 describe('ResolvePayloadSchema — id normalization & validation', () => {
-  it('prefers function_call_id over a conflicting tool_call_id', () => {
-    expect(
-      ResolvePayloadSchema.parse({
-        session_id: 's',
-        function_call_id: 'canonical',
-        tool_call_id: 'legacy',
-        decision: 'allow',
-      }),
-    ).toEqual({
-      session_id: 's',
-      function_call_id: 'canonical',
-      decision: 'allow',
-      reason: null,
-    });
-  });
-
   it('coerces an omitted reason to null', () => {
     const parsed = ResolvePayloadSchema.parse({
       session_id: 's',
-      tool_call_id: 'legacy',
+      function_call_id: 'fc-1',
       decision: 'deny',
     });
     expect(parsed.reason).toBeNull();
-    expect(parsed.function_call_id).toBe('legacy');
+    expect(parsed.function_call_id).toBe('fc-1');
   });
 
   it.each([
-    ['both ids missing', { session_id: 's', decision: 'allow' }],
+    ['function_call_id missing', { session_id: 's', decision: 'allow' }],
+    ['tool_call_id only (legacy)', { session_id: 's', tool_call_id: 'legacy', decision: 'allow' }],
     ['empty function_call_id', { session_id: 's', function_call_id: '', decision: 'allow' }],
     ['empty session_id', { session_id: '', function_call_id: 'fc', decision: 'allow' }],
     ['slash in session_id', { session_id: 'a/b', function_call_id: 'fc', decision: 'allow' }],
     ['slash in function_call_id', { session_id: 's', function_call_id: 'a/b', decision: 'allow' }],
-    ['slash via tool_call_id', { session_id: 's', tool_call_id: 'a/b', decision: 'allow' }],
     ['non-enum decision', { session_id: 's', function_call_id: 'fc', decision: 'maybe' }],
     ['numeric reason', { session_id: 's', function_call_id: 'fc', decision: 'allow', reason: 7 }],
   ])('rejects %s', (_label, payload) => {
@@ -102,8 +86,8 @@ describe('parsePolicyReply — fail closed', () => {
 });
 
 describe('state-key derivation — separator integrity', () => {
-  it('derives turn::approval_resume::<session>/<fcall>', () => {
-    expect(approvalResumeFnId('sess-1', 'fc-1')).toBe('turn::approval_resume::sess-1/fc-1');
+  it('derives <session>/<fcall>', () => {
+    expect(pendingKey('sess-1', 'fc-1')).toBe('sess-1/fc-1');
   });
 
   it.each([
@@ -111,14 +95,13 @@ describe('state-key derivation — separator integrity', () => {
     ['function_call', 'a', 'b/c'],
   ])('throws if the %s id smuggles a slash', (_which, session, fcall) => {
     expect(() => pendingKey(session, fcall)).toThrow();
-    expect(() => approvalResumeFnId(session, fcall)).toThrow();
   });
 });
 
-describe('ApprovalResumePayloadSchema', () => {
+describe('ApprovalDecisionSchema', () => {
   it('accepts the three terminal decisions with an explicit reason', () => {
     for (const decision of ['allow', 'deny', 'aborted'] as const) {
-      expect(ApprovalResumePayloadSchema.parse({ decision, reason: null })).toEqual({
+      expect(ApprovalDecisionSchema.parse({ decision, reason: null })).toEqual({
         decision,
         reason: null,
       });
@@ -126,10 +109,14 @@ describe('ApprovalResumePayloadSchema', () => {
   });
 
   it('rejects a missing reason and an unknown decision', () => {
-    expect(ApprovalResumePayloadSchema.safeParse({ decision: 'allow' }).success).toBe(false);
-    expect(
-      ApprovalResumePayloadSchema.safeParse({ decision: 'paused', reason: null }).success,
-    ).toBe(false);
+    expect(ApprovalDecisionSchema.safeParse({ decision: 'allow' }).success).toBe(false);
+    expect(ApprovalDecisionSchema.safeParse({ decision: 'paused', reason: null }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps ApprovalResumePayloadSchema as a deprecated alias', () => {
+    expect(ApprovalResumePayloadSchema).toBe(ApprovalDecisionSchema);
   });
 });
 

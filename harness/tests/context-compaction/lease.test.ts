@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { payloadStoreKey, stateStoreKey } from '../_helpers/stateStoreKey.js';
 import {
   LEASE_TTL_SECS,
-  leaseKey,
   mintLeaseNonce,
   readLeaseTimestampSecs,
   acquireLease,
@@ -9,10 +9,9 @@ import {
 } from '../../src/context-compaction/lease.js';
 
 describe('lease helpers', () => {
-  it('leaseKey namespaces by session', () => {
-    const k = leaseKey('s9');
-    expect(k).toContain('s9');
-    expect(k).toContain('compaction_lease');
+  it('stateStoreKey namespaces compaction lease by session', () => {
+    const k = stateStoreKey('compaction_lease', 's9');
+    expect(k).toBe('compaction_lease/s9');
   });
 
   it('mintLeaseNonce produces unique values across rapid calls', () => {
@@ -25,8 +24,8 @@ describe('lease helpers', () => {
     expect(readLeaseTimestampSecs({ nonce: 'a', ts: 1_700_000_000_000 })).toBe(1_700_000_000);
   });
 
-  it('readLeaseTimestampSecs accepts legacy bare-int (seconds)', () => {
-    expect(readLeaseTimestampSecs(1_700_000_000)).toBe(1_700_000_000);
+  it('readLeaseTimestampSecs treats bare-int values as inactive', () => {
+    expect(readLeaseTimestampSecs(1_700_000_000)).toBe(0);
   });
 
   it('readLeaseTimestampSecs returns 0 for garbage', () => {
@@ -49,20 +48,21 @@ function makeStateIii() {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       const p = payload as Record<string, unknown>;
       if (function_id === 'state::get') {
-        const v = store.get(p['key'] as string);
+        const v = store.get(payloadStoreKey(p as { scope?: string; key?: string }));
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
         const v = p['value'];
+        const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
-          store.delete(p['key'] as string);
+          store.delete(key);
         } else {
-          store.set(p['key'] as string, v);
+          store.set(key, v);
         }
         return { ok: true };
       }
       if (function_id === 'state::update') {
-        const key = p['key'] as string;
+        const key = payloadStoreKey(p as { scope?: string; key?: string });
         const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
         const oldValue = store.has(key) ? store.get(key) : null;
         let newValue: unknown = oldValue;
@@ -94,11 +94,11 @@ describe('lease kinds', () => {
     expect(nonce1).not.toBe(nonce2);
   });
 
-  it('leaseKey produces different keys for compaction vs prune', () => {
-    const k1 = leaseKey('sess1', 'compaction');
-    const k2 = leaseKey('sess1', 'prune');
-    expect(k1).toContain('compaction_lease');
-    expect(k2).toContain('prune_lease');
+  it('stateStoreKey produces different keys for compaction vs prune', () => {
+    const k1 = stateStoreKey('compaction_lease', 'sess1');
+    const k2 = stateStoreKey('prune_lease', 'sess1');
+    expect(k1).toBe('compaction_lease/sess1');
+    expect(k2).toBe('prune_lease/sess1');
     expect(k1).not.toBe(k2);
   });
 });
@@ -126,22 +126,23 @@ function makeRacyStateIii(writeLatencyMs: number) {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       const p = payload as Record<string, unknown>;
       if (function_id === 'state::get') {
-        const v = store.get(p['key'] as string);
+        const v = store.get(payloadStoreKey(p as { scope?: string; key?: string }));
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
         await new Promise((r) => setTimeout(r, writeLatencyMs));
         const v = p['value'];
+        const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
-          store.delete(p['key'] as string);
+          store.delete(key);
         } else {
-          store.set(p['key'] as string, v);
+          store.set(key, v);
         }
         return { ok: true };
       }
       if (function_id === 'state::update') {
         await new Promise((r) => setTimeout(r, writeLatencyMs));
-        const key = p['key'] as string;
+        const key = payloadStoreKey(p as { scope?: string; key?: string });
         const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
         const oldValue = store.has(key) ? store.get(key) : null;
         let newValue: unknown = oldValue;
@@ -171,15 +172,16 @@ function makeFailingUpdateIii() {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       const p = payload as Record<string, unknown>;
       if (function_id === 'state::get') {
-        const v = store.get(p['key'] as string);
+        const v = store.get(payloadStoreKey(p as { scope?: string; key?: string }));
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
         const v = p['value'];
+        const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
-          store.delete(p['key'] as string);
+          store.delete(key);
         } else {
-          store.set(p['key'] as string, v);
+          store.set(key, v);
         }
         return { ok: true };
       }

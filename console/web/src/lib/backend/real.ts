@@ -274,14 +274,10 @@ async function realCompactSession(
     }
     if (resp?.status === 'busy') return { status: 'busy' }
     if (resp?.status === 'overflow') {
-      // Accepts both `message` and (legacy) `reason` during rollout.
-      const wire = resp as { message?: unknown; reason?: unknown }
       const message =
-        typeof wire.message === 'string'
-          ? wire.message
-          : typeof wire.reason === 'string'
-            ? wire.reason
-            : 'unknown summariser error'
+        typeof resp.message === 'string'
+          ? resp.message
+          : 'unknown summariser error'
       return { status: 'overflow', message }
     }
     if (resp?.status === 'empty') return surfaceEmpty()

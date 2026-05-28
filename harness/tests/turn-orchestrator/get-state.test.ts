@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
@@ -42,14 +43,30 @@ describe('GetStatePayloadSchema', () => {
 });
 
 describe('turn::get_state execute', () => {
-  it('returns the turn_state record for a known session via persistence.loadRecord', async () => {
-    const rec = newRecord('sess-abc');
-    rec.state = 'function_awaiting_approval';
+  it('returns a lean view for a known session (excludes work/last_assistant)', async () => {
+    const rec = {
+      ...newRecord('sess-abc', 5),
+      state: 'function_awaiting_approval' as const,
+      awaiting_approval: [{ function_call_id: 'c1', function_id: 'x::y', args: {} }],
+      last_assistant: {
+        role: 'assistant',
+        content: [],
+        stop_reason: 'end',
+        error_message: null,
+        error_kind: null,
+        usage: null,
+        model: 'm',
+        provider: 'p',
+        timestamp: 1,
+      },
+      work: { batch: [], results: [] },
+    };
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
         if (
           req.function_id === 'state::get' &&
-          (req.payload as Record<string, unknown>).key === 'session/sess-abc/turn_state'
+          (req.payload as Record<string, unknown>).scope === TURN_STATE_SCOPE &&
+          (req.payload as Record<string, unknown>).key === 'sess-abc'
         ) {
           return rec;
         }
@@ -57,8 +74,14 @@ describe('turn::get_state execute', () => {
       }),
     } as unknown as ISdk;
 
-    const out = await execute(iii, { session_id: 'sess-abc' });
-    expect(out).toEqual(rec);
+    const view: any = await execute(iii, { session_id: 'sess-abc' });
+    expect(view.state).toBe('function_awaiting_approval');
+    expect(view.awaiting_approval).toHaveLength(1);
+    expect(view.session_id).toBe('sess-abc');
+    expect(view.turn_count).toBe(0);
+    expect(view.max_turns).toBe(5);
+    expect(view.work).toBeUndefined();
+    expect(view.last_assistant).toBeUndefined();
   });
 
   it('returns null when no record exists for the session', async () => {

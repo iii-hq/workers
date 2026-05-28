@@ -7,14 +7,16 @@
 import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { emitCompactionDone } from './emit.js';
-import { pruneMinFree, pruneProtect, pruneProtectedTools, reservedTokens } from './config.js';
-import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
+import { compactionConfig } from './config.js';
+import {
+  isSummarizeOk,
+  persistCompactionFlatState,
+  publishCompactionDone,
+  runSummarizeCompaction,
+} from './handler-pipeline.js';
 import { acquireLease, releaseLease } from './lease.js';
 import { fetchModelLimit } from './model-resolver.js';
-import { type ModelLimit, isOverflow } from './overflow.js';
-import { prune } from './prune.js';
-import { summarizeAndAppend } from './summarize.js';
+import { isOverflow } from './overflow.js';
 
 export function extractEventPayload(
   payload: unknown,
@@ -53,10 +55,9 @@ export function turnEndUsage(event: unknown): Record<string, unknown> | null {
 type ResolvedModel = {
   providerID: string;
   modelID: string;
-  modelLimit: ModelLimit;
+  modelLimit: { context: number; input: number; output: number };
 } | null;
 
-// Priority: event.message → last assistant in session-tree → models::get.
 async function resolveModelFromEvent(
   iii: ISdk,
   session_id: string,
@@ -144,7 +145,7 @@ export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
       !isOverflow({
         tokens: usageObj,
         model: { id: model.modelID, limit: model.modelLimit },
-        reserved: reservedTokens(),
+        reserved: compactionConfig().reservedTokens,
       })
     ) {
       return;
@@ -159,38 +160,22 @@ export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
     }
 
     try {
-      await prune(iii, payload.session_id, {
-        protectTokens: pruneProtect(),
-        minFree: pruneMinFree(),
-        protectedTools: pruneProtectedTools(),
-      });
-      const result = await summarizeAndAppend(
+      const result = await runSummarizeCompaction(
         iii,
         payload.session_id,
         { mode: 'async' },
-        {
-          providerID: model.providerID,
-          modelID: model.modelID,
-          modelLimit: model.modelLimit,
-        },
+        model,
       );
 
-      const succeeded = result !== 'empty' && result.kind === 'ok';
-      setCurrentSpanAttribute('used_prior_summary', succeeded);
-      if (succeeded) {
-        await rewriteFlatMessages(iii, payload.session_id, [
-          buildSummaryMessage(result.summary_text),
-          ...result.tail_messages,
-        ]);
-        // Tell the UI we just compacted so it can insert a marker and
-        // re-estimate context usage. Best-effort: a publish failure must
-        // not leak out of the background handler.
-        await emitCompactionDone(iii, payload.session_id, 'async', {
-          summary_text: result.summary_text,
-          tokens_before: result.tokens_before,
-          compaction_entry_id: result.compaction_entry_id,
-          tail_start_id: result.tail_start_id,
-        });
+      setCurrentSpanAttribute('used_prior_summary', isSummarizeOk(result));
+      if (isSummarizeOk(result)) {
+        await persistCompactionFlatState(
+          iii,
+          payload.session_id,
+          result.summary_text,
+          result.tail_messages,
+        );
+        await publishCompactionDone(iii, payload.session_id, 'async', result);
       }
     } catch (err) {
       logger.warn('handler-async: compaction failed', {

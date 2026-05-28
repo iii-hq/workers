@@ -1,3 +1,4 @@
+import { RUN_REQUEST_SCOPE } from '../turn-orchestrator/state.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { ModelLimit } from './overflow.js';
@@ -88,7 +89,7 @@ export async function resolveModelFromSession(
 
 // Fallback when no assistant message carries provider/model yet (first-turn
 // sessions, error-only sessions). The orchestrator writes run_request at
-// agent::session/<sid>/run_request during run::start.
+// `run_request` scope during run::start.
 export async function resolveModelFromRunRequest(
   iii: ISdk,
   session_id: string,
@@ -96,7 +97,7 @@ export async function resolveModelFromRunRequest(
   try {
     const req = await iii.trigger<unknown, { provider?: string; model?: string } | null>({
       function_id: 'state::get',
-      payload: { scope: 'agent', key: `session/${session_id}/run_request` },
+      payload: { scope: RUN_REQUEST_SCOPE, key: session_id },
       timeoutMs: 5_000,
     });
     const providerID = typeof req?.provider === 'string' && req.provider ? req.provider : null;

@@ -151,8 +151,8 @@ describe('execute', () => {
     const turnStateSet = calls.find(
       (c) =>
         c.function_id === 'state::set' &&
-        (c.payload as { scope?: string; key?: string }).scope === 'agent' &&
-        (c.payload as { scope?: string; key?: string }).key === 'session/sess-1/turn_state',
+        (c.payload as { scope?: string; key?: string }).scope === 'turn_state' &&
+        (c.payload as { scope?: string; key?: string }).key === 'sess-1',
     );
     expect(turnStateSet).toBeDefined();
     expect((turnStateSet?.payload as { value: { state: string } }).value.state).toBe(

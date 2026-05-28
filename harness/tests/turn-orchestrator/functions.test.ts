@@ -2,22 +2,47 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import * as events from '../../src/turn-orchestrator/events.js';
 import * as hookModule from '../../src/turn-orchestrator/hook.js';
-import * as persistence from '../../src/turn-orchestrator/persistence.js';
+import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 import type { TurnStateRecord } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
-import * as approvalResumeModule from '../../src/turn-orchestrator/approval-resume.js';
-import { parseApprovalDecision } from '../../src/turn-orchestrator/states/function-awaiting-approval.js';
-import { handleExecute } from '../../src/turn-orchestrator/states/function-execute.js';
+import { parseApprovalDecision } from '../../src/turn-orchestrator/function-awaiting-approval/ports.js';
+import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
+import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
+import type { FunctionBatchWork } from '../../src/turn-orchestrator/function-execute/types.js';
+import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 function mockFinalizePersistence(): void {
-  vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-  vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-  vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
+  installMockTurnStore({
+    loadMessages: vi.fn(async () => []),
+    appendMessages: vi.fn(async () => {}),
+  });
+}
+
+/** Build a minimal AssistantMessage with the given function_call content blocks. */
+function makeAssistant(
+  calls: Array<{ id: string; function_id: string; arguments?: unknown }>,
+): AssistantMessage {
+  return {
+    role: 'assistant',
+    content: calls.map((c) => ({
+      type: 'function_call' as const,
+      id: c.id,
+      function_id: c.function_id,
+      arguments: c.arguments ?? {},
+    })),
+    stop_reason: 'function_call',
+    error_message: null,
+    error_kind: null,
+    usage: null,
+    model: 'm',
+    provider: 'p',
+    timestamp: 1,
+  };
 }
 
 describe('parseApprovalDecision', () => {
@@ -53,58 +78,137 @@ describe('parseApprovalDecision', () => {
   });
 });
 
-describe('handleExecute new flow', () => {
-  it('pushes the call onto awaiting_approval and transitions to function_awaiting_approval on pending', async () => {
-    const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
-    dispatchSpy.mockResolvedValueOnce({ kind: 'pending' });
-    const registerResumeSpy = vi
-      .spyOn(approvalResumeModule, 'registerApprovalResume')
-      .mockReturnValue({ unregister: vi.fn() } as never);
+/** Seed required function-batch invariants before handleExecute. */
+function seedFunctionExecute(
+  rec: TurnStateRecord,
+  work: FunctionBatchWork,
+  asst?: AssistantMessage,
+): void {
+  enterFunctionExecute(rec, asst ?? makeAssistant([]));
+  rec.work = work;
+  rec.state = 'function_execute';
+}
 
+/** Wrap a target function id in the agent_trigger envelope (production shape). */
+function agentTriggerCall(
+  id: string,
+  functionId: string,
+  payload: unknown = {},
+): { id: string; function_id: string; arguments: unknown } {
+  return { id, function_id: 'agent_trigger', arguments: { function: functionId, payload } };
+}
+
+describe('handleExecute new flow', () => {
+  it('runs the prepared batch from work', async () => {
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'result',
+      result: {
+        content: [{ type: 'text' as const, text: 'ok' }],
+        details: {},
+        terminate: false,
+      },
+    });
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
+    enterFunctionExecute(
+      rec,
+      makeAssistant([agentTriggerCall('fc-1', 'shell::run', { command: 'ls' })]),
+    );
     rec.state = 'function_execute';
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::run',
-          arguments: { command: 'ls' },
+    mockFinalizePersistence();
+    await handleExecute(iii, rec);
+    expect(rec.state).toBe('steering_check');
+    expect(rec.function_results).toHaveLength(1);
+    expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
+  });
+
+  it('finishes the session when every function result terminates', async () => {
+    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    seedFunctionExecute(rec, {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: {
+            content: [{ type: 'text' as const, text: 'bye' }],
+            details: {},
+            terminate: true,
+          },
+          is_error: false,
+          duration_ms: 1,
         },
-        blocked: null,
       },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    });
+    mockFinalizePersistence();
+
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('function_awaiting_approval');
-    expect(rec.awaiting_approval).toHaveLength(1);
-    expect(rec.awaiting_approval?.[0]?.function_call_id).toBe('fc-1');
-    expect(registerResumeSpy).toHaveBeenCalledWith(iii, 's1', 'fc-1');
+    expect(rec.state).toBe('stopped');
+  });
+
+  it('does not re-emit function_execution_start for already-executed calls on re-entry', async () => {
+    const emitted: Array<{ type: string; function_call_id?: string }> = [];
+    vi.spyOn(events, 'emit').mockImplementation(async (_iii, _sid, ev: never) => {
+      emitted.push(ev as { type: string; function_call_id?: string });
+    });
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
+      kind: 'result',
+      result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
+    });
+    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
+    const rec: TurnStateRecord = newRecord('s1');
+    const fc1 = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const fc2 = { id: 'fc-2', function_id: 'shell::run', arguments: {} };
+    seedFunctionExecute(rec, {
+      prepared: [
+        { route: 'dispatch', call: fc1 },
+        { route: 'dispatch', call: fc2 },
+      ],
+      executed: {
+        'fc-1': {
+          call: fc1,
+          result: {
+            content: [{ type: 'text' as const, text: 'done' }],
+            details: {},
+            terminate: false,
+          },
+          is_error: false,
+          duration_ms: 5,
+        },
+      },
+    });
+    mockFinalizePersistence();
+
+    await handleExecute(iii, rec);
+
+    const starts = emitted
+      .filter((e) => e.type === 'function_execution_start')
+      .map((e) => e.function_call_id);
+    expect(starts).toEqual(['fc-2']);
+    const fc1Ends = emitted.filter(
+      (e) => e.type === 'function_execution_end' && e.function_call_id === 'fc-1',
+    );
+    expect(fc1Ends).toHaveLength(0);
   });
 
   it('skips consultBefore on pre_approved entries and uses triggerFunctionCall', async () => {
     const triggerSpy = vi.fn().mockResolvedValue({ ok: true });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::run',
-          arguments: { command: 'ls' },
+    seedFunctionExecute(rec, {
+      prepared: [
+        {
+          route: 'pre_approved',
+          call: { id: 'fc-1', function_id: 'shell::run', arguments: { command: 'ls' } },
         },
-        blocked: null,
-        pre_approved: true,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+      ],
+      executed: {},
+    });
     const consultBeforeSpy = vi.spyOn(hookModule, 'consultBefore');
+    mockFinalizePersistence();
 
     await handleExecute(iii, rec);
 
@@ -124,62 +228,52 @@ describe('handleExecute new flow', () => {
     });
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: {
-          id: 'fc-1',
-          function_id: 'shell::fs::write',
-          arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
+    seedFunctionExecute(rec, {
+      prepared: [
+        {
+          route: 'pre_approved',
+          call: {
+            id: 'fc-1',
+            function_id: 'shell::fs::write',
+            arguments: { content: 'Tue May 19 08:17:10 -03 2026\n' },
+          },
         },
-        blocked: null,
-        pre_approved: true,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    const saveSpy = vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+      ],
+      executed: {},
+    });
     mockFinalizePersistence();
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
     expect(rec.state).toBe('steering_check');
-    expect(saveSpy).toHaveBeenCalled();
-    // saveExecutedCalls is invoked twice: once with the synthesized error
-    // result, then once with `[]` as the idempotency guard clears executed
-    // calls at the end of finalize. Inspect the persisted-results call, not
-    // the trailing clear.
-    const savedResults = saveSpy.mock.calls
-      .map((c) => c[2] as Array<{ is_error: boolean; result: { details: unknown } }>)
-      .find((arr) => Array.isArray(arr) && arr.length > 0);
-    expect(savedResults?.[0]?.is_error).toBe(true);
-    const details = savedResults?.[0]?.result.details as Record<string, unknown>;
+    expect(rec.function_results).toHaveLength(1);
+    expect(rec.function_results[0]?.is_error).toBe(true);
+    const details = rec.function_results[0]?.details as Record<string, unknown>;
     expect(details?.status).toBe('denied');
     expect(details?.denied_by).toBe('gate_unavailable');
     expect(details?.function_id).toBe('shell::fs::write');
     expect(String(details?.reason)).toContain('S210');
   });
 
-  it('emits denial result without dispatching when blocked is set', async () => {
+  it('emits denial result without dispatching when route is synthetic', async () => {
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
-    rec.state = 'function_execute';
-
     const denial = {
       content: [{ type: 'text' as const, text: 'denied' }],
       details: { approval_denied: true, decision: 'deny' as const },
       terminate: false,
     };
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: denial,
-        pre_approved: false,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    seedFunctionExecute(rec, {
+      prepared: [
+        {
+          route: 'synthetic',
+          call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
+          result: denial,
+        },
+      ],
+      executed: {},
+    });
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
@@ -190,33 +284,28 @@ describe('handleExecute new flow', () => {
     expect(rec.state).toBe('steering_check');
   });
 
-  it('replays persisted executed calls without re-dispatching', async () => {
+  it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
     const dispatchSpy = vi.spyOn(agentTriggerModule, 'dispatchWithHook');
     const triggerSpy = vi.fn().mockResolvedValue(null);
     const iii = { trigger: triggerSpy } as unknown as ISdk;
     const rec = newRecord('s1');
-    rec.state = 'function_execute';
-
     const existingResult = {
       content: [{ type: 'text' as const, text: 'cached' }],
       details: {},
       terminate: false,
     };
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: null,
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    seedFunctionExecute(rec, {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: existingResult,
+          is_error: false,
+          duration_ms: 42,
+        },
       },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: existingResult,
-        is_error: false,
-        duration_ms: 42,
-      },
-    ]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
+    });
     mockFinalizePersistence();
 
     await handleExecute(iii, rec);
@@ -237,59 +326,18 @@ describe('handleExecute new flow', () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
+    enterFunctionExecute(rec, makeAssistant([agentTriggerCall('fc-1', 'shell::run')]));
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        blocked: null,
-      },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     mockFinalizePersistence();
-
     await handleExecute(iii, rec);
 
     expect(rec.state).toBe('steering_check');
-  });
-
-  it('transitions to steering_check when last_assistant is missing after execute', async () => {
-    const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
-    const rec = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.last_assistant = null;
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
-      {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: {
-          content: [{ type: 'text' as const, text: 'ok' }],
-          details: {},
-          terminate: false,
-        },
-        is_error: false,
-        duration_ms: 1,
-      },
-    ]);
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
-    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
-
-    await handleExecute(iii, rec);
-
-    expect(rec.state).toBe('steering_check');
-    expect(rec.pending_function_calls).toEqual([]);
-    expect(rec.function_results).toHaveLength(1);
-    expect(emitSpy).not.toHaveBeenCalled();
   });
 
   it('emits turn lifecycle and sets turn_end_emitted when last_assistant is present', async () => {
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
-    rec.state = 'function_execute';
-    rec.last_assistant = {
+    const asst: AssistantMessage = {
       role: 'assistant',
       content: [{ type: 'text', text: 'done' }],
       stop_reason: 'end',
@@ -300,23 +348,30 @@ describe('handleExecute new flow', () => {
       provider: 'p',
       timestamp: 1,
     };
-
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue([
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    seedFunctionExecute(
+      rec,
       {
-        function_call: { id: 'fc-1', function_id: 'shell::run', arguments: {} },
-        result: {
-          content: [{ type: 'text' as const, text: 'ok' }],
-          details: {},
-          terminate: false,
+        prepared: [{ route: 'dispatch', call: fc }],
+        executed: {
+          'fc-1': {
+            call: fc,
+            result: {
+              content: [{ type: 'text' as const, text: 'ok' }],
+              details: {},
+              terminate: false,
+            },
+            is_error: false,
+            duration_ms: 1,
+          },
         },
-        is_error: false,
-        duration_ms: 1,
       },
-    ]);
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
-    vi.spyOn(persistence, 'loadMessages').mockResolvedValue([]);
-    vi.spyOn(persistence, 'saveMessages').mockResolvedValue(undefined);
+      asst,
+    );
+    installMockTurnStore({
+      loadMessages: vi.fn(async () => []),
+      appendMessages: vi.fn(async () => {}),
+    });
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleExecute(iii, rec);
@@ -327,40 +382,54 @@ describe('handleExecute new flow', () => {
   });
 
   it('does NOT duplicate function_results in flat-state when handleExecute re-enters', async () => {
-    // Idempotency guard: a durable retry / step-fanout race can replay the
-    // finalize path with the same persisted executedCalls. Re-pushing the
-    // same function_result blocks makes Anthropic reject with "each tool_use
-    // must have a single result. Found multiple tool_result blocks with id".
-    const executed = [
-      {
-        function_call: { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } },
-        result: { content: [{ type: 'text' as const, text: 'ok' }], details: {}, terminate: false },
-        is_error: false,
-        duration_ms: 5,
-      },
-    ];
+    const existingResult = {
+      content: [{ type: 'text' as const, text: 'ok' }],
+      details: {},
+      terminate: false,
+    };
+    const fc = { id: 'toolu_01', function_id: 'shell::run', arguments: { command: 'ls' } };
+
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec = newRecord('s1');
     rec.state = 'function_execute';
+    enterFunctionExecute(
+      rec,
+      makeAssistant([agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' })]),
+    );
 
-    vi.spyOn(persistence, 'loadPreparedCalls').mockResolvedValue([
-      { function_call: executed[0].function_call, blocked: null },
-    ]);
-    vi.spyOn(persistence, 'loadExecutedCalls').mockResolvedValue(executed);
-    vi.spyOn(persistence, 'saveExecutedCalls').mockResolvedValue(undefined);
     let storedMessages: unknown[] = [];
-    vi.spyOn(persistence, 'loadMessages').mockImplementation(async () => storedMessages as never);
-    vi.spyOn(persistence, 'saveMessages').mockImplementation(async (_iii, _sid, msgs) => {
-      storedMessages = msgs as never;
+    installMockTurnStore({
+      loadMessages: vi.fn(async () => storedMessages as never),
+      appendMessages: vi.fn(async (_sid, msgs) => {
+        storedMessages = [...storedMessages, ...msgs];
+      }),
     });
-    vi.spyOn(hookModule, 'publishAfter').mockResolvedValue(undefined);
     vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+    vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValue({
+      kind: 'result',
+      result: existingResult,
+    });
 
     await handleExecute(iii, rec);
-    // Re-entry: same persisted executedCalls, before the transition was
-    // durably observed.
-    rec.state = 'function_execute';
+
+    const asst = makeAssistant([agentTriggerCall('toolu_01', 'shell::run', { command: 'ls' })]);
+    seedFunctionExecute(
+      rec,
+      {
+        prepared: [{ route: 'dispatch', call: fc }],
+        executed: {
+          toolu_01: {
+            call: fc,
+            result: existingResult,
+            is_error: false,
+            duration_ms: 5,
+          },
+        },
+      },
+      asst,
+    );
     rec.turn_end_emitted = false;
+
     await handleExecute(iii, rec);
 
     const fnResults = (

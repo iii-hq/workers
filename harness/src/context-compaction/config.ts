@@ -9,6 +9,20 @@ const DEFAULT_TOOL_OUTPUT_MAX_CHARS = 2_000;
 // `busy` to users when async compaction is mid-flight.
 const DEFAULT_BUSY_TIMEOUT_MS = 30_000;
 
+export const MIN_PRESERVE_RECENT_TOKENS = DEFAULT_MIN_PRESERVE_RECENT_TOKENS;
+export const MAX_PRESERVE_RECENT_TOKENS = DEFAULT_MAX_PRESERVE_RECENT_TOKENS;
+
+export type CompactionConfig = Readonly<{
+  reservedTokens: number;
+  tailTurns: number;
+  preserveRecentTokensOverride: number | undefined;
+  pruneProtect: number;
+  pruneMinFree: number;
+  toolOutputMaxChars: number;
+  busyTimeoutMs: number;
+  pruneProtectedTools: string[];
+}>;
+
 function intEnv(name: string, def: number): number {
   const v = process.env[name];
   if (!v) return def;
@@ -16,41 +30,14 @@ function intEnv(name: string, def: number): number {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
-export function reservedTokens(): number {
-  return intEnv('COMPACT_RESERVED_TOKENS', DEFAULT_RESERVED_TOKENS);
-}
-
-export function tailTurns(): number {
-  return intEnv('COMPACT_TAIL_TURNS', DEFAULT_TAIL_TURNS);
-}
-
-export function preserveRecentTokensOverride(): number | undefined {
+function readPreserveRecentTokensOverride(): number | undefined {
   const v = process.env.COMPACT_PRESERVE_RECENT_TOKENS;
   if (!v) return undefined;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-export const MIN_PRESERVE_RECENT_TOKENS = DEFAULT_MIN_PRESERVE_RECENT_TOKENS;
-export const MAX_PRESERVE_RECENT_TOKENS = DEFAULT_MAX_PRESERVE_RECENT_TOKENS;
-
-export function pruneProtect(): number {
-  return intEnv('COMPACT_PRUNE_PROTECT', DEFAULT_PRUNE_PROTECT);
-}
-
-export function pruneMinFree(): number {
-  return intEnv('COMPACT_PRUNE_MIN_FREE', DEFAULT_PRUNE_MIN_FREE);
-}
-
-export function toolOutputMaxChars(): number {
-  return intEnv('COMPACT_TOOL_OUTPUT_MAX_CHARS', DEFAULT_TOOL_OUTPUT_MAX_CHARS);
-}
-
-export function busyTimeoutMs(): number {
-  return intEnv('COMPACT_BUSY_TIMEOUT_MS', DEFAULT_BUSY_TIMEOUT_MS);
-}
-
-export function pruneProtectedTools(): string[] {
+function readPruneProtectedTools(): string[] {
   const v = process.env.COMPACT_PRUNE_PROTECTED_TOOLS;
   if (!v) return [];
   return v
@@ -59,19 +46,15 @@ export function pruneProtectedTools(): string[] {
     .filter(Boolean);
 }
 
-// Deprecated. Hard upper bound on usable() to keep existing deployments
-// from regressing. One-shot warning on first read.
-let deprecatedTriggerTokensWarned = false;
-export function deprecatedTriggerTokensCap(): number | undefined {
-  const v = process.env.COMPACT_TRIGGER_TOKENS;
-  if (!v) return undefined;
-  if (!deprecatedTriggerTokensWarned) {
-    deprecatedTriggerTokensWarned = true;
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[context-compaction] COMPACT_TRIGGER_TOKENS is deprecated; use COMPACT_RESERVED_TOKENS. Treating as hard cap on usable().',
-    );
-  }
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+export function compactionConfig(): CompactionConfig {
+  return {
+    reservedTokens: intEnv('COMPACT_RESERVED_TOKENS', DEFAULT_RESERVED_TOKENS),
+    tailTurns: intEnv('COMPACT_TAIL_TURNS', DEFAULT_TAIL_TURNS),
+    preserveRecentTokensOverride: readPreserveRecentTokensOverride(),
+    pruneProtect: intEnv('COMPACT_PRUNE_PROTECT', DEFAULT_PRUNE_PROTECT),
+    pruneMinFree: intEnv('COMPACT_PRUNE_MIN_FREE', DEFAULT_PRUNE_MIN_FREE),
+    toolOutputMaxChars: intEnv('COMPACT_TOOL_OUTPUT_MAX_CHARS', DEFAULT_TOOL_OUTPUT_MAX_CHARS),
+    busyTimeoutMs: intEnv('COMPACT_BUSY_TIMEOUT_MS', DEFAULT_BUSY_TIMEOUT_MS),
+    pruneProtectedTools: readPruneProtectedTools(),
+  };
 }

@@ -45,15 +45,3 @@ export type FunctionResult = {
   details: unknown;
   terminate?: boolean;
 };
-
-/** Prepared call entry persisted in the FSM's `function_prepared` staging. */
-export type PreparedFunctionCall =
-  | { kind: 'prepared'; function_call: FunctionCall }
-  | { kind: 'immediate'; result: FunctionResult; is_error: boolean };
-
-/** Finalized call entry persisted in `function_executed`. */
-export type FinalizedFunctionCall = {
-  function_call: FunctionCall;
-  result: FunctionResult;
-  is_error: boolean;
-};

@@ -10,6 +10,6 @@ export function loadSessionConfig(cfg: Record<string, unknown>): SessionConfig {
   const backend = getString(section, 'store_backend', 'iii_state');
   return {
     store_backend: backend === 'memory' ? 'memory' : 'iii_state',
-    state_scope: getString(section, 'state_scope', 'agent'),
+    state_scope: getString(section, 'state_scope', 'inbox'),
   };
 }

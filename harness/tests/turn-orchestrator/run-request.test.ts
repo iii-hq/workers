@@ -8,6 +8,7 @@ describe('parseRunRequest', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
   });
 
@@ -17,6 +18,7 @@ describe('parseRunRequest', () => {
       model: 'gpt-4',
       mode: null,
       system_prompt: 'hi',
+      function_schemas: [],
     });
   });
 
@@ -33,6 +35,26 @@ describe('parseRunRequest', () => {
       model: '',
       mode: null,
       system_prompt: '',
+      function_schemas: [],
     });
+  });
+
+  it('treats null and undefined as empty run request', () => {
+    const empty = {
+      provider: '',
+      model: '',
+      mode: null,
+      system_prompt: '',
+      function_schemas: [],
+    };
+    expect(parseRunRequest(null)).toEqual(empty);
+    expect(parseRunRequest(undefined)).toEqual(empty);
+  });
+});
+
+describe('parseRunRequest function_schemas', () => {
+  it('defaults to [] and carries an array', () => {
+    expect(parseRunRequest({}).function_schemas).toEqual([]);
+    expect(parseRunRequest({ function_schemas: [{ name: 'x' }] }).function_schemas).toHaveLength(1);
   });
 });

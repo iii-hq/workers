@@ -1,8 +1,7 @@
 # approval-gate
 
 Registers `approval::resolve` and shared wire schemas for the approval path.
-Per-call resume functions (`turn::approval_resume::<session>/<call>`) live in
-the turn-orchestrator.
+The turn-orchestrator reacts via the reactive `turn::on_approval` state trigger.
 
 ## Purpose
 
@@ -10,34 +9,29 @@ The approval gate is the bus entry point for human decisions on parked tool
 calls. It does **not** intercept function calls on the bus — the
 turn-orchestrator consults `policy::check_permissions` directly inside
 `consultBefore`. The gate's job is to accept operator input from the console
-and route it to the correct per-call resume function.
+and persist the decision where the orchestrator can read it.
 
 | Policy outcome (in orchestrator) | Orchestrator effect |
 |---|---|
 | `allow` | dispatch proceeds immediately |
 | `deny` | dispatch short-circuits with a `DenialEnvelope` |
-| `needs_approval` | orchestrator parks the call in `function_awaiting_approval` and registers a resume fn |
+| `needs_approval` | orchestrator parks the call in `function_awaiting_approval` |
 
 ## Resolution flow
 
-1. While parked, the orchestrator calls `registerApprovalResume` for each
-   pending call (see [approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts)).
+1. While parked, the orchestrator keeps pending calls in `awaiting_approval[]` on the turn record.
 2. The console calls `approval::resolve` with `{ session_id, function_call_id, decision, reason? }`.
-3. `approval::resolve` triggers `turn::approval_resume::<sid>/<cid>` with the decision payload.
-4. The resume handler writes `approvals/<sid>/<cid>` (if not already set), invokes `turn::step`, and unregisters the resume fn.
-5. `handleAwaitingApproval` reads all decisions, folds them into the prepared snapshot, and returns to `function_execute`.
-
-Abort uses the same resume path: `performAbortSideEffects` triggers each
-registered resume fn with `{ decision: 'aborted', reason: 'session_aborted' }`
-instead of calling `approval::resolve`.
+3. `approval::resolve` writes `approvals/<sid>/<cid>` via `state::set`.
+4. The `turn::on_approval` state trigger (scope `approvals`) enqueues `turn::function_awaiting_approval`.
+5. `function_awaiting_approval` executes each resolved call immediately, removes it from `awaiting_approval[]`, and stays parked until none remain; then finalizes the batch or returns to `function_execute`.
 
 ## Registered functions
 
-- `approval::resolve` — Validates the payload and triggers the per-call resume function. Returns `{ ok: true }` or `{ ok: false, error: 'invalid_payload' | 'resume_failed' }`.
+- `approval::resolve` — Validates the payload and persists the decision to scope `approvals`. Returns `{ ok: true }` or `{ ok: false, error: 'invalid_payload' | 'resume_failed' }`.
 
-Per-call resume functions are registered by the turn-orchestrator, not this worker:
+Reactive wake is owned by the turn-orchestrator:
 
-- `turn::approval_resume::<session_id>/<function_call_id>` — Persists the decision to scope `approvals` and wakes `turn::step`.
+- `turn::on_approval` — State trigger on scope `approvals`; enqueues `turn::{state}` for the parked session.
 
 ## State keys
 
@@ -46,7 +40,7 @@ All decision records use scope `approvals` (constant `STATE_SCOPE` in
 
 | Key shape | Value | Purpose |
 |---|---|---|
-| `<session_id>/<function_call_id>` | `{ decision: 'allow' \| 'deny' \| 'aborted', reason: string \| null }` | Written by the resume handler when an operator resolves or abort fires. `handleAwaitingApproval` reads these keys while the turn is in `function_awaiting_approval`. |
+| `<session_id>/<function_call_id>` | `{ decision: 'allow' \| 'deny' \| 'aborted', reason: string \| null }` | Written by `approval::resolve`. `function_awaiting_approval` reads these keys while the turn is in `function_awaiting_approval`. |
 
 Pending calls are tracked on the turn record (`awaiting_approval[]`), not as
 separate rows under `approvals` until a decision lands.
@@ -86,12 +80,12 @@ no explicit dependency block.
 | File | Purpose |
 |---|---|
 | [src/approval-gate/main.ts](harness/src/approval-gate/main.ts) | Binary entry point (`iii-approval-gate`). |
-| [src/approval-gate/resolve.ts](harness/src/approval-gate/resolve.ts) | Registers `approval::resolve`; triggers per-call resume fns. |
-| [src/approval-gate/schemas.ts](harness/src/approval-gate/schemas.ts) | `STATE_SCOPE`, wire schemas, `parsePolicyReply`, `pendingKey`, `approvalResumeFnId`, `ResolvePayloadSchema`. |
+| [src/approval-gate/resolve.ts](harness/src/approval-gate/resolve.ts) | Registers `approval::resolve`; persists decisions to scope `approvals`. |
+| [src/approval-gate/schemas.ts](harness/src/approval-gate/schemas.ts) | `STATE_SCOPE`, wire schemas, `parsePolicyReply`, `pendingKey`, `ApprovalDecisionSchema`, `ResolvePayloadSchema`. |
 | [src/approval-gate/denial.ts](harness/src/approval-gate/denial.ts) | `permissionsDenyEnvelope` and related helpers. |
 | [src/approval-gate/redact.ts](harness/src/approval-gate/redact.ts) | `redact` / `clip` for safe `args_excerpt` on denials. |
 | [src/approval-gate/iii.worker.yaml](harness/src/approval-gate/iii.worker.yaml) | Worker manifest. |
 
 Related orchestrator code:
-[approval-resume.ts](harness/src/turn-orchestrator/approval-resume.ts),
+[function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) (registers `turn::on_approval`),
 [hook.ts](harness/src/turn-orchestrator/hook.ts).

@@ -6,12 +6,22 @@
  */
 
 import { z } from 'zod';
-import type { AgentMessage } from '../types/agent-message.js';
-import type { TurnState, TurnStateRecord } from './state.js';
+import type { AssistantMessage, AgentMessage } from '../types/agent-message.js';
+import { TurnStateInvariantError } from './errors.js';
+import type { FunctionBatchWork } from './function-execute/types.js';
+import {
+  FUNCTION_BATCH_STATES,
+  type AssistantStreamingTurnRecord,
+  type AwaitingApprovalEntry,
+  type FunctionBatchTurnRecord,
+  type SteeringCheckTurnRecord,
+  type TurnState,
+  type TurnStateRecord,
+} from './state.js';
 import type { Mode } from './system-prompt.js';
 
 /** Shared `{ session_id }` payload — `turn::{state}` steps and `turn::get_state`. */
-export const SessionIdPayloadSchema = z.object({
+const SessionIdPayloadSchema = z.object({
   session_id: z.string().min(1),
 });
 
@@ -35,23 +45,147 @@ export type TurnStepResult =
   | { ok: true; from_state: TurnState; to_state: TurnState }
   | { ok: true; skipped: true; reason: 'stale' };
 
+// --- function_execute / function_awaiting_approval persisted record ---
+const AwaitingApprovalEntrySchema = z.object({
+  function_call_id: z.string().min(1),
+  function_id: z.string().min(1),
+  args: z.unknown(),
+});
+
+const FunctionBatchWorkSchema = z.custom<FunctionBatchWork>(
+  (v) =>
+    v != null &&
+    typeof v === 'object' &&
+    Array.isArray((v as FunctionBatchWork).prepared) &&
+    typeof (v as FunctionBatchWork).executed === 'object' &&
+    (v as FunctionBatchWork).executed !== null,
+  { message: 'work must include prepared and executed' },
+);
+
+const AssistantMessageSchema = z.custom<AssistantMessage>(
+  (v) => v != null && typeof v === 'object' && (v as AssistantMessage).role === 'assistant',
+  { message: 'last_assistant is required' },
+);
+
+/** Fields required before function_execute / function_awaiting_approval handlers run. */
+export const FunctionBatchTurnRecordSchema = z
+  .object({
+    session_id: z.string().min(1),
+    state: z.enum(FUNCTION_BATCH_STATES),
+    turn_count: z.number(),
+    function_results: z.array(z.unknown()),
+    turn_end_emitted: z.boolean(),
+    started_at_ms: z.number(),
+    updated_at_ms: z.number(),
+    last_assistant: AssistantMessageSchema,
+    work: FunctionBatchWorkSchema,
+    awaiting_approval: z.array(AwaitingApprovalEntrySchema),
+  })
+  .passthrough();
+
+function formatZodIssues(error: z.ZodError): string {
+  return error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
+}
+
+/** Validate persisted turn_state for function-batch handlers; throws {@link TurnStateInvariantError}. */
+export function parseFunctionBatchRecord(rec: TurnStateRecord): FunctionBatchTurnRecord {
+  const result = FunctionBatchTurnRecordSchema.safeParse(rec);
+  if (!result.success) {
+    throw new TurnStateInvariantError(
+      `invalid function batch turn record: ${formatZodIssues(result.error)}`,
+    );
+  }
+  // Return the same object — handlers mutate turn_state in place before saveRecord.
+  return rec as FunctionBatchTurnRecord;
+}
+
+/** Fields required before assistant_streaming handlers run. */
+export const AssistantStreamingTurnRecordSchema = z
+  .object({
+    session_id: z.string().min(1),
+    state: z.literal('assistant_streaming'),
+    turn_count: z.number(),
+    function_results: z.array(z.unknown()),
+    turn_end_emitted: z.boolean(),
+    started_at_ms: z.number(),
+    updated_at_ms: z.number(),
+  })
+  .passthrough();
+
+/** Validate persisted turn_state for assistant_streaming; throws {@link TurnStateInvariantError}. */
+export function parseAssistantStreamingRecord(rec: TurnStateRecord): AssistantStreamingTurnRecord {
+  const result = AssistantStreamingTurnRecordSchema.safeParse(rec);
+  if (!result.success) {
+    throw new TurnStateInvariantError(
+      `invalid assistant_streaming turn record: ${formatZodIssues(result.error)}`,
+    );
+  }
+  return rec as AssistantStreamingTurnRecord;
+}
+
+/** Fields required before steering_check handlers run. */
+export const SteeringCheckTurnRecordSchema = z
+  .object({
+    session_id: z.string().min(1),
+    state: z.literal('steering_check'),
+    turn_count: z.number(),
+    function_results: z.array(z.unknown()),
+    turn_end_emitted: z.boolean(),
+    started_at_ms: z.number(),
+    updated_at_ms: z.number(),
+  })
+  .passthrough();
+
+/** Validate persisted turn_state for steering_check; throws {@link TurnStateInvariantError}. */
+export function parseSteeringCheckRecord(rec: TurnStateRecord): SteeringCheckTurnRecord {
+  const result = SteeringCheckTurnRecordSchema.safeParse(rec);
+  if (!result.success) {
+    throw new TurnStateInvariantError(
+      `invalid steering_check turn record: ${formatZodIssues(result.error)}`,
+    );
+  }
+  return rec as SteeringCheckTurnRecord;
+}
+
 // --- turn::get_state ---
 export const GetStatePayloadSchema = SessionIdPayloadSchema;
 export type GetStatePayload = z.infer<typeof GetStatePayloadSchema>;
-export type GetStateResult = TurnStateRecord | null;
 
-// --- turn::is_abort_signal_set / turn::on_abort_signal (agent-scope state event) ---
-const AgentAbortSignalWriteEventSchema = z.object({
+/** Lean projection of TurnStateRecord sent to the UI and returned by turn::get_state.
+ *  Excludes heavy internal fields (work, last_assistant) not needed by consumers. */
+export type TurnStateView = {
+  session_id: string;
+  state: TurnState;
+  turn_count: number;
+  max_turns?: number;
+  awaiting_approval?: AwaitingApprovalEntry[];
+  error?: { kind: string; message: string };
+};
+
+export function toView(rec: TurnStateRecord): TurnStateView {
+  return {
+    session_id: rec.session_id,
+    state: rec.state,
+    turn_count: rec.turn_count,
+    max_turns: rec.max_turns,
+    awaiting_approval: rec.awaiting_approval,
+    error: rec.error,
+  };
+}
+
+export type GetStateResult = TurnStateView | null;
+
+// --- turn::on_approval (approvals-scope state event) ---
+const ApprovalDecisionWriteEventSchema = z.object({
   type: z.literal('state').optional(),
-  scope: z.literal('agent').optional(),
+  scope: z.literal('approvals').optional(),
   event_type: z.enum(['state:created', 'state:updated']),
-  key: z.string().regex(/^session\/[^/]+\/abort_signal$/),
-  new_value: z.literal(true),
-  old_value: z.union([z.literal(true), z.literal(false), z.null()]).optional(),
+  key: z.string().regex(/^[^/]+\/[^/]+$/),
+  new_value: z.object({ decision: z.enum(['allow', 'deny', 'aborted']) }).passthrough(),
+  old_value: z.unknown().optional(),
 });
 
-export const AbortSignalWriteEventSchema = AgentAbortSignalWriteEventSchema.transform((data) => {
-  const session_id = data.key.slice('session/'.length, -'/abort_signal'.length);
+export const ApprovalDecisionEventSchema = ApprovalDecisionWriteEventSchema.transform((data) => {
+  const session_id = data.key.slice(0, data.key.indexOf('/'));
   return { session_id };
 });
-export type ParsedAbortSignalWrite = z.infer<typeof AbortSignalWriteEventSchema>;

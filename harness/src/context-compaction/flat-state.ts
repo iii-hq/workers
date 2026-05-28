@@ -1,19 +1,11 @@
 /**
- * Keep flatMessagesKey in sync with turn-orchestrator/state.ts::messagesKey.
- * Importing it directly would create a package-layer cycle (orchestrator
- * depends on context-compaction via preflight). A drift-guard test asserts
- * the two stay identical.
+ * Rewrite flat transcript messages in scope `messages`.
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { stateSet } from '../runtime/state.js';
+import { MESSAGES_SCOPE } from '../turn-orchestrator/state.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
-
-const FLAT_STATE_SCOPE = 'agent';
-
-export function flatMessagesKey(session_id: string): string {
-  return `session/${session_id}/messages`;
-}
 
 export function buildSummaryMessage(summary_text: string): AssistantMessage {
   return {
@@ -39,5 +31,5 @@ export async function rewriteFlatMessages(
   session_id: string,
   messages: AgentMessage[],
 ): Promise<void> {
-  await stateSet(iii, FLAT_STATE_SCOPE, flatMessagesKey(session_id), messages);
+  await stateSet(iii, MESSAGES_SCOPE, session_id, messages);
 }

@@ -41,7 +41,7 @@ export type AgentEvent =
       result: FunctionResult;
       is_error: boolean;
       /** Wall-clock ms between the matching function_execution_start and end.
-       *  Reused from persisted ExecutedEntry on resumed runs so replayed
+       *  Reused from persisted ExecutedCall on resumed runs so replayed
        *  calls keep their original timing. */
       duration_ms: number;
     }

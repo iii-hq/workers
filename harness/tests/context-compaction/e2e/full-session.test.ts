@@ -6,7 +6,7 @@
  * up to an InMemoryStore. Verifies the three structural guarantees that
  * the unit/integration tests cannot observe in isolation:
  *
- * 1. The flat state at scope `agent`, key `session/<sid>/messages` is
+ * 1. The flat state at scope `messages`, key `<sid>` is
  *    rewritten to a reduced array: [summary-as-asst-msg, ...tail, replay].
  * 2. The session tree's active path stays connected — the Compaction
  *    entry, replayed user message, and synthetic continue-prompt are
@@ -16,9 +16,10 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { flatMessagesKey } from '../../../src/context-compaction/flat-state.js';
+import { payloadStoreKey, stateStoreKey } from '../../_helpers/stateStoreKey.js';
 import { handleSync } from '../../../src/context-compaction/handler-sync.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
+import { MESSAGES_SCOPE } from '../../../src/turn-orchestrator/state.js';
 import { registerTree } from '../../../src/session/tree/register.js';
 import { InMemoryStore } from '../../../src/session/tree/store.js';
 import type { SessionEntry } from '../../../src/session/tree/types.js';
@@ -87,7 +88,7 @@ function buildTestSdk(opts: {
   const store = new InMemoryStore();
 
   // Pre-seed flat state with the overflowing transcript.
-  stateStore.set(flatMessagesKey(opts.session_id), opts.flatMessages);
+  stateStore.set(stateStoreKey(MESSAGES_SCOPE, opts.session_id), opts.flatMessages);
 
   // Stub channel writer so streamAndCollect can deliver a synthetic done event.
   let channelCb: ((raw: string) => void) | null = null;
@@ -107,25 +108,31 @@ function buildTestSdk(opts: {
 
     // 1) state::* — back the lease / flat-state rewrite with stateStore.
     if (fn === 'state::get') {
-      const p = (payload ?? {}) as { key: string };
-      const v = stateStore.get(p.key);
+      const p = (payload ?? {}) as { scope: string; key: string };
+      const v = stateStore.get(payloadStoreKey(p));
       return v !== undefined ? v : null;
     }
     if (fn === 'state::set') {
-      const p = (payload ?? {}) as { key: string; value: unknown };
-      if (p.value === null || p.value === undefined) stateStore.delete(p.key);
-      else stateStore.set(p.key, p.value);
+      const p = (payload ?? {}) as { scope: string; key: string; value: unknown };
+      const storeKey = payloadStoreKey(p);
+      if (p.value === null || p.value === undefined) stateStore.delete(storeKey);
+      else stateStore.set(storeKey, p.value);
       return { ok: true };
     }
     if (fn === 'state::update') {
-      const p = (payload ?? {}) as { key: string; ops: Array<{ type: string; value?: unknown }> };
-      const oldValue = stateStore.has(p.key) ? stateStore.get(p.key) : null;
+      const p = (payload ?? {}) as {
+        scope: string;
+        key: string;
+        ops: Array<{ type: string; value?: unknown }>;
+      };
+      const storeKey = payloadStoreKey(p);
+      const oldValue = stateStore.has(storeKey) ? stateStore.get(storeKey) : null;
       let newValue: unknown = oldValue;
       for (const op of p.ops ?? []) {
         if (op.type === 'set') newValue = op.value;
       }
-      if (newValue === null || newValue === undefined) stateStore.delete(p.key);
-      else stateStore.set(p.key, newValue);
+      if (newValue === null || newValue === undefined) stateStore.delete(storeKey);
+      else stateStore.set(storeKey, newValue);
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
 
@@ -264,7 +271,7 @@ describe('e2e full-session compaction', () => {
     const lastUserId = entryIds[entryIds.length - 1] ?? ''; // the final user msg
 
     // Sanity check: the pre-compaction flat state matches the seed.
-    const beforeFlat = stateStore.get(flatMessagesKey(SESSION_ID)) as AgentMessage[];
+    const beforeFlat = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SESSION_ID)) as AgentMessage[];
     expect(beforeFlat.length).toBe(overflowing.length);
 
     // Run preflight. The 30-turn fixture should overflow the 8k usable budget.
@@ -272,7 +279,7 @@ describe('e2e full-session compaction', () => {
     expect(result).toBe('compacted');
 
     // --- Assertion 1: flat state is reduced and shaped correctly. ---
-    const afterFlat = stateStore.get(flatMessagesKey(SESSION_ID)) as AgentMessage[];
+    const afterFlat = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SESSION_ID)) as AgentMessage[];
     expect(afterFlat.length).toBeLessThan(overflowing.length);
 
     // First message must be the summary-as-assistant-msg containing SUMMARY.
@@ -367,7 +374,7 @@ describe('e2e full-session compaction', () => {
     }
 
     // Flat state is untouched.
-    const after = stateStore.get(flatMessagesKey(SID)) as AgentMessage[];
+    const after = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SID)) as AgentMessage[];
     expect(after.length).toBe(tinyMessages.length);
 
     // Summariser was never invoked.

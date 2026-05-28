@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-approval-gate
-description: Registers approval::resolve; routes decisions to per-call turn::approval_resume functions owned by the turn-orchestrator.
+description: Registers approval::resolve; persists human decisions to the approvals scope (turn-orchestrator reacts via turn::on_approval).
 
 runtime:
   kind: node

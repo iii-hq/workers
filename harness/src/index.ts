@@ -43,13 +43,13 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'turn-orchestrator',
     description:
-      'Durable run::start state machine driving each agent turn through provisioning, assistant, function-execute, steering, tearing-down.',
+      'Durable run::start state machine driving each agent turn through provisioning, assistant, function-execute, and steering.',
     register: (iii, ctx) => registerTurnOrchestrator(iii, ctx),
   },
   {
     name: 'approval-gate',
     description:
-      'Registers approval::resolve; routes human decisions to per-call turn::approval_resume functions owned by the turn-orchestrator.',
+      'Registers approval::resolve; persists human decisions to the approvals scope and enqueues turn::function_awaiting_approval.',
     register: (iii) => registerApprovalGate(iii),
   },
   {
