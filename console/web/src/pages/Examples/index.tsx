@@ -1,6 +1,7 @@
 import { Prompt } from '@/components/ui/Prompt'
 import { ColorTokensSection } from './sections/color-tokens'
 import { ComposerVariantsSection } from './sections/composer-variants'
+import { CustomFunctionViewsSection } from './sections/custom-function-views'
 import { LoadingStatesSection } from './sections/loading-states'
 import { MessageVariantsSection } from './sections/message-variants'
 import { PrimitivesSection } from './sections/primitives'
@@ -9,6 +10,7 @@ import { TypographySection } from './sections/typography'
 const TOC: { id: string; label: string }[] = [
   { id: 'composer-variants', label: 'composer' },
   { id: 'message-variants', label: 'messages' },
+  { id: 'custom-function-views', label: 'function views' },
   { id: 'loading-states', label: 'loading' },
   { id: 'primitives', label: 'primitives' },
   { id: 'typography', label: 'typography' },
@@ -49,6 +51,7 @@ export function Examples() {
 
         <ComposerVariantsSection />
         <MessageVariantsSection />
+        <CustomFunctionViewsSection />
         <LoadingStatesSection />
         <PrimitivesSection />
         <TypographySection />

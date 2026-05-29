@@ -28,6 +28,7 @@ import type {
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
+import { ExportSessionButton } from './ExportSessionButton'
 import { MessageList } from './MessageList'
 
 function isAbortError(err: unknown): boolean {
@@ -540,6 +541,12 @@ export function ChatView({
           <ContextUsage
             messages={conversation.messages}
             contextWindow={contextWindow}
+          />
+          <ExportSessionButton
+            conversation={conversation}
+            onExported={(filename) =>
+              announcer.announce(`session exported as ${filename}`)
+            }
           />
           <div className="flex items-center gap-2">
             <StatusDot

@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
 import {
+  DirectoryFunctionIdLabel,
+  DirectoryToolView,
+} from '@/components/chat/directory'
+import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import {
   SandboxFunctionIdLabel,
   SandboxToolView,
 } from '@/components/chat/sandbox'
+import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
+import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
 import { Button } from '@/components/ui/Button'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -86,6 +93,30 @@ function formatPrimitive(v: Primitive): string {
   return String(v)
 }
 
+/**
+ * Branch the function-id label across registered renderer families. New
+ * families slot in here — no other change to FCM is needed. The default
+ * (unbranded) span keeps unknown ids readable.
+ */
+function FunctionIdLabel({ functionId }: { functionId: string }) {
+  if (DirectoryToolView.isDirectoryFunction(functionId)) {
+    return <DirectoryFunctionIdLabel functionId={functionId} />
+  }
+  if (EngineToolView.isEngineListFunction(functionId)) {
+    return <EngineFunctionIdLabel functionId={functionId} />
+  }
+  if (WorkerToolView.isWorkerFunction(functionId)) {
+    return <WorkerFunctionIdLabel functionId={functionId} />
+  }
+  if (WebToolView.isWebFunction(functionId)) {
+    return <WebFunctionIdLabel functionId={functionId} />
+  }
+  if (SandboxToolView.isSandboxFunction(functionId)) {
+    return <SandboxFunctionIdLabel functionId={functionId} />
+  }
+  return <span className="text-ink">{functionId}</span>
+}
+
 export function FunctionCallMessage({
   message,
   defaultOpen,
@@ -103,13 +134,24 @@ export function FunctionCallMessage({
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const sandboxPreview = SandboxToolView.tryRenderPreview(message)
-  const sandboxTerminal = !pending ? SandboxToolView.tryRender(message) : null
-  const hasSandboxTerminal = sandboxTerminal != null
+  const customPreview =
+    SandboxToolView.tryRenderPreview(message) ??
+    EngineToolView.tryRenderPreview(message) ??
+    DirectoryToolView.tryRenderPreview(message) ??
+    WorkerToolView.tryRenderPreview(message) ??
+    WebToolView.tryRenderPreview(message)
+  const customTerminal = !pending
+    ? (SandboxToolView.tryRender(message) ??
+      EngineToolView.tryRender(message) ??
+      DirectoryToolView.tryRender(message) ??
+      WorkerToolView.tryRender(message) ??
+      WebToolView.tryRender(message))
+    : null
+  const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =
-    !(pending && sandboxPreview) &&
-    !(running && hasSandboxTerminal) &&
-    !(!pending && !running && hasSandboxTerminal)
+    !(pending && customPreview) &&
+    !(running && hasCustomTerminal) &&
+    !(!pending && !running && hasCustomTerminal)
 
   const runResolve = async (kind: 'approve' | 'deny' | 'always_allow') => {
     const handler =
@@ -165,7 +207,7 @@ export function FunctionCallMessage({
               <>ran </>
             )}
             <span className="text-accent italic font-semibold">ƒ</span>{' '}
-            <SandboxFunctionIdLabel functionId={message.functionId} />
+            <FunctionIdLabel functionId={message.functionId} />
             {!pending && !running && typeof message.durationMs === 'number' ? (
               <span className="text-ink-faint">
                 {' '}
@@ -188,20 +230,20 @@ export function FunctionCallMessage({
 
       {open ? (
         <div className="border-t border-rule-2">
-          {pending && sandboxPreview ? (
-            <div className="border-b border-rule-2">{sandboxPreview}</div>
+          {pending && customPreview ? (
+            <div className="border-b border-rule-2">{customPreview}</div>
           ) : showRequestPaneAbove ? (
             <ValuePane label="request" value={message.input} />
           ) : null}
           {running && !pending ? (
-            hasSandboxTerminal ? (
-              <div className="border-t border-rule-2">{sandboxTerminal}</div>
+            hasCustomTerminal ? (
+              <div className="border-t border-rule-2">{customTerminal}</div>
             ) : (
               <ValuePane label="response" value={message.output} bordered />
             )
           ) : null}
           {!pending && !running ? (
-            hasSandboxTerminal ? (
+            hasCustomTerminal ? (
               <Tabs
                 value={tab}
                 onValueChange={(v) => setTab(v as 'terminal' | 'json')}
@@ -211,7 +253,7 @@ export function FunctionCallMessage({
                   <TabsTrigger value="terminal">terminal</TabsTrigger>
                   <TabsTrigger value="json">raw json</TabsTrigger>
                 </TabsList>
-                <TabsContent value="terminal">{sandboxTerminal}</TabsContent>
+                <TabsContent value="terminal">{customTerminal}</TabsContent>
                 <TabsContent value="json">
                   <ValuePane label="request" value={message.input} />
                   <ValuePane label="response" value={message.output} bordered />
