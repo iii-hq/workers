@@ -47,7 +47,9 @@ export function register(iii: ISdk): void {
     'turn::function_awaiting_approval',
     async (payload: TurnStepPayload) => {
       const parsed = TurnStepPayloadSchema.parse(payload);
-      return runTransition(iii, 'function_awaiting_approval', handleAwaitingApproval, parsed);
+      return runTransition(iii, 'function_awaiting_approval', handleAwaitingApproval, parsed, {
+        serialize: true,
+      });
     },
     {
       description:

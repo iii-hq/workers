@@ -15,7 +15,7 @@ function makeEntry(id: string, timestamp: number): SessionEntry {
 
 function fakeIii(entries: SessionEntry[]): ISdk {
   return {
-    trigger: async <T, R>(req: { function_id: string }): Promise<R> => {
+    trigger: async <R>(req: { function_id: string }): Promise<R> => {
       if (req.function_id === 'state::list') {
         return entries as unknown as R;
       }

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { approveAlways } from '../../src/approval-gate/settings/approve-always.js';
 import * as agentTriggerModule from '../../src/turn-orchestrator/agent-trigger.js';
 import {
   createParallelApprovalHarness,
@@ -155,40 +154,39 @@ describe('parallel approval e2e', () => {
     );
   });
 
-  it('releases a parked sibling of the same function when "approve always" is granted', async () => {
+  it('resolves two approvals fired in parallel without double-executing or double-finalizing', async () => {
     const h = createParallelApprovalHarness();
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
       .mockResolvedValueOnce({ kind: 'pending' })
       .mockResolvedValueOnce({ kind: 'pending' });
 
     h.seedExecute(
-      'sess-grant',
+      'sess-par',
       makeAssistantWithCalls([
         { id: 'fc-1', functionId: 'shell::run' },
         { id: 'fc-2', functionId: 'shell::run' },
       ]),
     );
-    await h.runExecute('sess-grant');
+    await h.runExecute('sess-par');
+    expect(h.loadTurnRecord('sess-par')?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(
+      ['fc-1', 'fc-2'],
+    );
 
-    expect(
-      h.loadTurnRecord('sess-grant')?.awaiting_approval?.map((e) => e.function_call_id),
-    ).toEqual(['fc-1', 'fc-2']);
+    // Both prompts approved concurrently: two approval::resolve writes whose
+    // wakes interleave on the shared turn_state record. The sequential tests
+    // never exercise this. runTransition has no optimistic-concurrency guard
+    // (saveRecord is an unconditional overwrite), so both wakes load the same
+    // parked record, each executes EVERY call, and each finalizes the batch —
+    // duplicating side effects and emitting turn_end multiple times.
+    await Promise.all([
+      h.resolveApproval('sess-par', 'fc-1', 'allow'),
+      h.resolveApproval('sess-par', 'fc-2', 'allow'),
+    ]);
 
-    // "Approve always" on fc-1: persist the per-session grant for the
-    // function id, then resolve only the clicked call (mirrors the UI's
-    // handleAlwaysAllow). The grant must release the still-parked sibling
-    // fc-2, which shares the function id, on the same wake.
-    await approveAlways(h.iii, 'sess-grant', 'shell::run');
-    await h.resolveApproval('sess-grant', 'fc-1', 'allow');
-
-    const rec = h.loadTurnRecord('sess-grant');
-    expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
-    // Batch finalized: work cleared, both calls produced results, and the
-    // sibling fc-2 ran without its own explicit approval::resolve.
-    expect(rec?.work).toBeUndefined();
-    expect(rec?.function_results?.map((r) => r.function_call_id).sort()).toEqual(['fc-1', 'fc-2']);
+    const turnEnds = h.emitted.filter((e) => e.type === 'turn_end');
+    expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(1);
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-2')).toHaveLength(1);
+    expect(turnEnds).toHaveLength(1);
   });
 
   it('persists the decision and wakes function_awaiting_approval via approval::resolve', async () => {

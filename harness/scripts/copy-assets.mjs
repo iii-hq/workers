@@ -5,7 +5,7 @@
  * `include_str!` for embedded data.
  */
 
-import { cp, mkdir, readdir, stat } from 'node:fs/promises';
+import { cp, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;

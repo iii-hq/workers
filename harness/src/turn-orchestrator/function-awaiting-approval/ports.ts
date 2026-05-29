@@ -3,8 +3,6 @@
  */
 
 import { ApprovalDecisionSchema, STATE_SCOPE } from '../../approval-gate/schemas.js';
-import { readSettings } from '../../approval-gate/settings/store.js';
-import type { ApprovalSettings } from '../../approval-gate/settings/types.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { z } from 'zod';
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
@@ -17,7 +15,6 @@ export function parseApprovalDecision(value: unknown): ApprovalDecision | null {
 
 export type AwaitingApprovalPorts = {
   readDecision(session_id: string, function_call_id: string): Promise<ApprovalDecision | null>;
-  readSettings(session_id: string): Promise<ApprovalSettings>;
 };
 
 export function createAwaitingApprovalPorts(iii: ISdk): AwaitingApprovalPorts {
@@ -29,9 +26,6 @@ export function createAwaitingApprovalPorts(iii: ISdk): AwaitingApprovalPorts {
         payload: { scope: STATE_SCOPE, key },
       });
       return parseApprovalDecision(raw);
-    },
-    readSettings(session_id) {
-      return readSettings(iii, session_id);
     },
   };
 }

@@ -23,7 +23,7 @@ import { permissionsDenyEnvelope } from '../approval-gate/denial.js';
 import { DENIAL_SCHEMA_VERSION, type DenialEnvelope } from '../approval-gate/schemas.js';
 import { isHumanOnlyApprovalFunction } from '../approval-gate/settings/human-only.js';
 import { readSettings } from '../approval-gate/settings/store.js';
-import { settingsVerdict } from '../approval-gate/settings/verdict.js';
+import type { ApprovalSettings } from '../approval-gate/settings/types.js';
 import type {
   CheckPermissionsPayload,
   PolicyCheckReply,
@@ -63,6 +63,18 @@ function extractSessionId(args: unknown): string | null {
   return null;
 }
 
+function isAlwaysAllowed(settings: ApprovalSettings, function_id: string): boolean {
+  return settings.always_allow.some(
+    (entry: ApprovalSettings['always_allow'][number]) => entry.function_id === function_id,
+  );
+}
+
+function isApprovedAlways(settings: ApprovalSettings, function_id: string): boolean {
+  return settings.approved_always.some(
+    (entry: ApprovalSettings['approved_always'][number]) => entry.function_id === function_id,
+  );
+}
+
 export async function consultBefore(iii: ISdk, function_call: FunctionCall): Promise<HookOutcome> {
   if (isHumanOnlyApprovalFunction(function_call.function_id)) {
     return {
@@ -74,8 +86,16 @@ export async function consultBefore(iii: ISdk, function_call: FunctionCall): Pro
   const session_id = extractSessionId(function_call.arguments);
   const settings = session_id ? await readSettings(iii, session_id) : null;
 
-  if (settings && settingsVerdict(settings, function_call.function_id) === 'allow') {
-    return { kind: 'allow' };
+  if (settings) {
+    if (settings.mode === 'full') return { kind: 'allow' };
+    // Per-session "approve always" grants apply in every mode — they are
+    // remembered human decisions, not an auto-policy.
+    if (isApprovedAlways(settings, function_call.function_id)) {
+      return { kind: 'allow' };
+    }
+    if (settings.mode === 'auto' && isAlwaysAllowed(settings, function_call.function_id)) {
+      return { kind: 'allow' };
+    }
   }
 
   try {
