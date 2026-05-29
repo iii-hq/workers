@@ -1,0 +1,361 @@
+import { describe, expect, it } from 'vitest'
+import {
+  ENGINE_FUNCTION_IDS,
+  functionDetailSchema,
+  functionInfoRequestSchema,
+  functionsListRequestSchema,
+  functionsListResponseSchema,
+  isEngineListFunction,
+  registeredTriggersListRequestSchema,
+  registeredTriggersListResponseSchema,
+  safeParseRequest,
+  safeParseResponse,
+  triggersListRequestSchema,
+  triggersListResponseSchema,
+  unwrapEnvelope,
+  workerInfoRequestSchema,
+  workerInfoResponseSchema,
+  workersListRequestSchema,
+  workersListResponseSchema,
+  workersRegisterRequestSchema,
+  workersRegisterResponseSchema,
+} from '../parsers'
+
+function wrap<T>(details: T) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(details) }],
+    details,
+    terminate: false,
+  }
+}
+
+describe('isEngineListFunction', () => {
+  it('matches every id in the explicit allowlist', () => {
+    for (const id of ENGINE_FUNCTION_IDS) {
+      expect(isEngineListFunction(id)).toBe(true)
+    }
+  })
+
+  it('rejects unrelated ids', () => {
+    expect(isEngineListFunction('engine::functions')).toBe(false)
+    expect(isEngineListFunction('sandbox::exec')).toBe(false)
+    expect(isEngineListFunction('engine::triggers::create')).toBe(false)
+  })
+})
+
+describe('engine::functions::list', () => {
+  it('parses an empty request payload', () => {
+    const req = safeParseRequest(functionsListRequestSchema, {})
+    expect(req).toEqual({})
+  })
+
+  it('parses a filter-applied request', () => {
+    const req = safeParseRequest(functionsListRequestSchema, {
+      prefix: 'todo::',
+      include_internal: true,
+    })
+    expect(req).toEqual({ prefix: 'todo::', include_internal: true })
+  })
+
+  it('parses a raw response payload', () => {
+    const resp = safeParseResponse(functionsListResponseSchema, {
+      functions: [
+        {
+          function_id: 'todo::list',
+          worker_name: 'todo-app',
+          description: 'List all todos',
+        },
+      ],
+    })
+    expect(resp?.functions).toHaveLength(1)
+    expect(resp?.functions[0].function_id).toBe('todo::list')
+  })
+
+  it('parses a harness-wrapped response payload', () => {
+    const payload = {
+      functions: [
+        { function_id: 'todo::create', worker_name: 'todo-app' },
+        {
+          function_id: 'todo::delete',
+          worker_name: 'todo-app',
+          description: null,
+        },
+      ],
+    }
+    const resp = safeParseResponse(functionsListResponseSchema, wrap(payload))
+    expect(resp?.functions).toHaveLength(2)
+  })
+
+  it('parses an empty list', () => {
+    expect(
+      safeParseResponse(functionsListResponseSchema, wrap({ functions: [] })),
+    ).toEqual({ functions: [] })
+  })
+})
+
+describe('engine::functions::info', () => {
+  it('parses the request payload', () => {
+    expect(
+      safeParseRequest(functionInfoRequestSchema, {
+        function_id: 'sandbox::fs::write',
+      }),
+    ).toEqual({ function_id: 'sandbox::fs::write' })
+  })
+
+  it('rejects a request missing function_id', () => {
+    expect(safeParseRequest(functionInfoRequestSchema, {})).toBeNull()
+  })
+
+  it('parses a wrapped AnyValue-schema detail (mirrors the screenshot)', () => {
+    const detail = {
+      description: 'Stream-upload a file into a sandbox',
+      function_id: 'sandbox::fs::write',
+      registered_triggers: [],
+      request_schema: {
+        $schema: 'http://json-schema.org/draft-07/schema#',
+        title: 'AnyValue',
+      },
+      response_schema: {
+        $schema: 'http://json-schema.org/draft-07/schema#',
+        title: 'AnyValue',
+      },
+      worker_name: 'iii-sandbox',
+    }
+    const parsed = safeParseResponse(functionDetailSchema, wrap(detail))
+    expect(parsed?.function_id).toBe('sandbox::fs::write')
+    expect(parsed?.registered_triggers).toEqual([])
+  })
+
+  it('parses a rich payload with registered triggers + schemas', () => {
+    const detail = {
+      function_id: 'todo::create',
+      worker_name: 'todo-app',
+      description: 'Create a new todo',
+      request_schema: { type: 'object' },
+      response_schema: { type: 'object' },
+      registered_triggers: [
+        {
+          id: '8c7e9d12-2a4f-4b5c-9d3e-1f2a3b4c5d6e',
+          trigger_type: 'http',
+          config: { api_path: '/todos', http_method: 'POST' },
+        },
+      ],
+    }
+    const parsed = safeParseResponse(functionDetailSchema, detail)
+    expect(parsed?.registered_triggers).toHaveLength(1)
+    expect(parsed?.registered_triggers[0].trigger_type).toBe('http')
+  })
+
+  it('rejects a payload missing registered_triggers', () => {
+    const parsed = safeParseResponse(functionDetailSchema, {
+      function_id: 'x',
+      worker_name: 'y',
+    })
+    expect(parsed).toBeNull()
+  })
+})
+
+describe('engine::triggers::list', () => {
+  it('parses a wrapped success payload', () => {
+    const payload = {
+      triggers: [
+        { id: 'http', worker_name: 'http', description: 'HTTP API trigger' },
+        {
+          id: 'log',
+          worker_name: 'log',
+          description: 'Log event trigger',
+        },
+      ],
+    }
+    const resp = safeParseResponse(triggersListResponseSchema, wrap(payload))
+    expect(resp?.triggers).toHaveLength(2)
+  })
+
+  it('parses a search-applied request', () => {
+    expect(
+      safeParseRequest(triggersListRequestSchema, { search: 'http' }),
+    ).toEqual({ search: 'http' })
+  })
+
+  it('rejects payloads missing the `triggers` array', () => {
+    const resp = safeParseResponse(triggersListResponseSchema, { foo: [] })
+    expect(resp).toBeNull()
+  })
+})
+
+describe('engine::registered-triggers::list', () => {
+  it('parses a wrapped registered-triggers payload', () => {
+    const payload = {
+      registered_triggers: [
+        {
+          id: '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
+          trigger_type: 'http',
+          function_id: 'todo::html',
+          worker_name: 'todo-app',
+          config_summary: '{"api_path":"/todos/html","http_method":"GET"}',
+        },
+      ],
+    }
+    const resp = safeParseResponse(
+      registeredTriggersListResponseSchema,
+      wrap(payload),
+    )
+    expect(resp?.registered_triggers).toHaveLength(1)
+  })
+
+  it('parses a function_id filter request', () => {
+    expect(
+      safeParseRequest(registeredTriggersListRequestSchema, {
+        function_id: 'todo::html',
+      }),
+    ).toEqual({ function_id: 'todo::html' })
+  })
+})
+
+describe('engine::workers::list', () => {
+  it('parses an empty request payload', () => {
+    expect(safeParseRequest(workersListRequestSchema, {})).toEqual({})
+  })
+
+  it('parses a runtime+status filter', () => {
+    expect(
+      safeParseRequest(workersListRequestSchema, {
+        runtime: 'rust',
+        status: 'connected',
+      }),
+    ).toEqual({ runtime: 'rust', status: 'connected' })
+  })
+
+  it('parses a wrapped success payload', () => {
+    const payload = {
+      workers: [
+        {
+          id: 'w-1',
+          name: 'todo-app',
+          description: null,
+          version: '0.4.7',
+          runtime: 'node',
+          os: 'darwin',
+          status: 'connected',
+          function_count: 6,
+          connected_at_ms: 1_700_000_000_000,
+          active_invocations: 0,
+          isolation: 'process',
+          ip_address: '127.0.0.1',
+        },
+      ],
+    }
+    const parsed = safeParseResponse(workersListResponseSchema, wrap(payload))
+    expect(parsed?.workers).toHaveLength(1)
+    expect(parsed?.workers[0].runtime).toBe('node')
+  })
+
+  it('parses an empty workers list', () => {
+    expect(
+      safeParseResponse(workersListResponseSchema, { workers: [] }),
+    ).toEqual({ workers: [] })
+  })
+})
+
+describe('engine::workers::info', () => {
+  it('parses the request payload', () => {
+    expect(
+      safeParseRequest(workerInfoRequestSchema, { name: 'todo-app' }),
+    ).toEqual({ name: 'todo-app' })
+  })
+
+  it('rejects a request missing name', () => {
+    expect(safeParseRequest(workerInfoRequestSchema, {})).toBeNull()
+  })
+
+  it('parses a wrapped full detail payload', () => {
+    const payload = {
+      worker: {
+        id: 'w-1',
+        name: 'todo-app',
+        description: 'demo',
+        version: '0.4.7',
+        runtime: 'node',
+        os: 'darwin',
+        status: 'connected',
+        function_count: 1,
+        connected_at_ms: 1_700_000_000_000,
+        active_invocations: 0,
+        isolation: 'process',
+        ip_address: null,
+        internal: false,
+        latest_metrics: {
+          memory_heap_used: 1024,
+          cpu_percent: 1.2,
+          timestamp_ms: 1_700_000_001_000,
+          runtime: 'node',
+        },
+      },
+      functions: [{ function_id: 'todo::list', worker_name: 'todo-app' }],
+      trigger_types: [],
+      registered_triggers: [],
+    }
+    const parsed = safeParseResponse(workerInfoResponseSchema, wrap(payload))
+    expect(parsed?.worker.internal).toBe(false)
+    expect(parsed?.functions).toHaveLength(1)
+    expect(parsed?.worker.latest_metrics?.cpu_percent).toBe(1.2)
+  })
+
+  it('parses an internal worker without optional fields', () => {
+    const parsed = safeParseResponse(workerInfoResponseSchema, {
+      worker: {
+        id: 'engine-fns',
+        name: 'iii-engine-functions',
+        description: null,
+        version: null,
+        runtime: 'rust',
+        os: 'darwin',
+        status: 'connected',
+        function_count: 7,
+        connected_at_ms: 0,
+        active_invocations: 0,
+        isolation: 'embedded',
+        ip_address: null,
+        internal: true,
+      },
+      functions: [],
+      trigger_types: [],
+      registered_triggers: [],
+    })
+    expect(parsed?.worker.internal).toBe(true)
+  })
+})
+
+describe('engine::workers::register', () => {
+  it('parses a full request with telemetry', () => {
+    const parsed = safeParseRequest(workersRegisterRequestSchema, {
+      _caller_worker_id: 'w-1',
+      name: 'todo-app',
+      runtime: 'node',
+      version: '0.4.7',
+      os: 'darwin',
+      telemetry: { device_id: 'dev-1', install_kind: 'npm' },
+    })
+    expect(parsed?._caller_worker_id).toBe('w-1')
+    expect(parsed?.telemetry?.install_kind).toBe('npm')
+  })
+
+  it('rejects a request missing the _caller_worker_id', () => {
+    expect(
+      safeParseRequest(workersRegisterRequestSchema, { name: 'no-id' }),
+    ).toBeNull()
+  })
+
+  it('parses the success envelope', () => {
+    expect(
+      safeParseResponse(workersRegisterResponseSchema, wrap({ success: true })),
+    ).toEqual({ success: true })
+  })
+})
+
+describe('unwrapEnvelope re-export', () => {
+  it('peels the harness envelope', () => {
+    const inner = { functions: [] }
+    expect(unwrapEnvelope(wrap(inner))).toEqual(inner)
+  })
+})
