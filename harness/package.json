@@ -33,8 +33,10 @@
     "dev:provider-openai": "tsx src/provider-openai/main.ts",
     "dev:provider-kimi": "tsx src/provider-kimi/main.ts",
     "dev:provider-lmstudio": "tsx src/provider-lmstudio/main.ts",
+    "dev:provider-llamacpp": "tsx src/provider-llamacpp/main.ts",
     "dev:context-compaction": "tsx src/context-compaction/main.ts",
-    "dev:provider-config": "tsx src/provider-config/main.ts"
+    "dev:provider-config": "tsx src/provider-config/main.ts",
+    "dev:web": "tsx src/web/main.ts"
   },
   "bin": {
     "harness": "./dist/index.js",
@@ -50,8 +52,10 @@
     "iii-provider-openai": "./dist/provider-openai/main.js",
     "iii-provider-kimi": "./dist/provider-kimi/main.js",
     "iii-provider-lmstudio": "./dist/provider-lmstudio/main.js",
+    "iii-provider-llamacpp": "./dist/provider-llamacpp/main.js",
     "iii-context-compaction": "./dist/context-compaction/main.js",
-    "iii-provider-config": "./dist/provider-config/main.js"
+    "iii-provider-config": "./dist/provider-config/main.js",
+    "iii-web": "./dist/web/main.js"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
