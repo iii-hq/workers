@@ -16,7 +16,6 @@ function baseConversation(messages: Message[] = []): Conversation {
     title: 'Test session',
     model: 'openai::gpt-5',
     mode: 'agent',
-    autoAccept: false,
     messages,
     createdAt: Date.UTC(2025, 0, 1, 12, 0, 0),
     updatedAt: Date.UTC(2025, 0, 1, 12, 30, 0),
@@ -30,7 +29,6 @@ describe('conversationToMarkdown', () => {
     expect(out).toContain('- ID: `conv-12345678-abcd`')
     expect(out).toContain('- Model: `openai::gpt-5`')
     expect(out).toContain('- Mode: `agent`')
-    expect(out).toContain('- Auto-accept: no')
     expect(out).toContain('- Message count: 0')
     expect(out).toContain('_(no messages)_')
   })

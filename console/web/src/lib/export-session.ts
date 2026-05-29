@@ -104,7 +104,6 @@ export function conversationToMarkdown(conversation: Conversation): string {
     `- Updated: ${formatTimestamp(conversation.updatedAt)}`,
     `- Model: \`${conversation.model}\``,
     `- Mode: \`${conversation.mode}\``,
-    `- Auto-accept: ${conversation.autoAccept ? 'yes' : 'no'}`,
     `- Message count: ${conversation.messages.length}`,
     '',
     '---',
