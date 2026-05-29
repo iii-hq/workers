@@ -5,12 +5,12 @@ Tailwind v4 and styled to the iii Schematic design system
 (see [`../DESIGN.md`](../DESIGN.md) for the full spec).
 
 It runs entirely client-side with mocked streaming, so there are no API keys
-to configure. The mock — and an interactive Playground that exercises every
-streaming edge case (errors, aborts, multi-function runs, long markdown, …) —
-ships behind the `VITE_PLAYGROUND` flag, on by default in dev and off in
-prod. Drop a real provider in by replacing one file
+to configure. The mock backend ships in dev (`pnpm dev`) and is tree-shaken
+out of production builds. Every component variant and every streaming edge
+case (errors, aborts, multi-function runs, long markdown, …) lives in
+Storybook (`pnpm storybook`). Drop a real provider in by replacing one file
 (see [Swapping in a real backend](#swapping-in-a-real-backend) below) and
-[`PLAYGROUND.md`](./PLAYGROUND.md) is the contract you have to honor.
+[`PLAYGROUND.md`](./PLAYGROUND.md) is the streaming contract you have to honor.
 
 ## Quickstart
 
@@ -30,6 +30,8 @@ Then open the printed `Local:` URL (Vite picks the first free port from
 | `npm run build`    | Type-check, then build a static bundle.   |
 | `npm run preview`  | Serve the built bundle locally.           |
 | `npm run typecheck`| Type-check without emitting.              |
+| `npm run storybook`| Component + scenario stories on `:6006`.  |
+| `npm run build-storybook` | Build the static Storybook site.   |
 
 ## What's in the box
 
@@ -46,10 +48,12 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   Three canned bodies — one per mode — exercise headings, lists, fenced
   code, blockquotes, and inline code on the first run.
   See [`PLAYGROUND.md`](./PLAYGROUND.md) for the full contract.
-- **Playground** at `#/playground` (dev only) — a chat surface driven by a
-  catalog of scenarios (errors, aborts, multi-function runs, slow/fast streams,
-  long markdown) that stress every corner of the streaming contract. Useful
-  before swapping in a real backend.
+- **Storybook** (`pnpm storybook`) — the component spec sheet (composer,
+  messages, function views, primitives, schema form, worker config, type,
+  color) plus the streaming **playground**: a chat surface driven by a catalog
+  of scenarios (errors, aborts, multi-function runs, slow/fast streams, long
+  markdown) that stress every corner of the streaming contract. Useful before
+  swapping in a real backend.
 - **Model picker** and **mode picker** (`plan` / `ask` / `agent`) wired into
   the canned response so you can see the values flow through.
 - **File attachments** via a hidden file input. Previewable text/image
@@ -66,7 +70,7 @@ Then open the printed `Local:` URL (Vite picks the first free port from
 ```
 src/
   main.tsx
-  App.tsx                # routing + flag-guarded lazy() for dev pages
+  App.tsx                # routing (traces + configuration) + always-on chat dock
   index.css              # Tailwind v4 + iii Schematic tokens + utilities
   lib/
     utils.ts             # cn = twMerge(clsx(...))
@@ -76,20 +80,24 @@ src/
       types.ts           #     StreamEvent, ChatBackend, ChatStreamOptions
       mock.ts            #     dev-only mock; tree-shaken in prod
       real.ts            #     ← swap this stub for your provider
-      index.ts           #     getDefaultBackend() picks one based on flag
+      index.ts           #     getDefaultBackend() = mock in dev, real in prod
   types/chat.ts          # Conversation, Message, Mode, ModelId, Attachment
   hooks/
     use-conversations.ts # state + persistence
-    use-hash-route.ts    # #/ #/playground #/examples
+    use-hash-route.ts    # #/traces #/configuration
     use-theme.ts         # theme + persistence
   components/
-    ui/                  # iii Schematic primitives
+    ui/                  # iii Schematic primitives (+ co-located *.stories.tsx)
     sidebar/             # ConversationSidebar + ConversationRow
-    chat/                # ChatView, Composer, LexicalShell, Message, etc.
+    chat/                # ChatView, Composer, Message, … (+ *.stories.tsx)
   pages/
-    Chat.tsx             # the production chat surface
-    Examples/            # spec sheet of component variants (dev only)
-    Playground/          # interactive scenario sandbox (dev only)
+    Configuration/       # console + workers config surfaces
+    Traces/              # trace explorer
+  stories/               # Storybook-only assets (never in the app bundle)
+    decorators.tsx       # shared decorators (.workers-tab scope, padding)
+    fixtures/            # mock data for the component stories
+    design/              # typography / color / loading token sheets
+    playground/          # ChatView harness + EventLog + scenario stories
       scenarios/         # one ChatBackend per file
 ```
 
@@ -132,9 +140,8 @@ export const realBackend: ChatBackend = {
 ```
 
 To verify your implementation against the same edge cases the mock survives,
-flip the flag on (`VITE_PLAYGROUND=1 npm run dev`), open `#/playground`, and
-walk every scenario in the picker. If they all render correctly, your
-backend is contract-clean.
+open Storybook (`pnpm storybook`) and walk every story under **Playground**.
+If they all render correctly, your backend is contract-clean.
 
 ## Design system
 

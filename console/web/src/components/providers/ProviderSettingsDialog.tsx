@@ -140,6 +140,7 @@ export function ProviderSettingsDialog({
 
   // Populate from server overrides + reset key field every time the dialog
   // re-opens or the provider changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional dependency list — see the note inside the effect about mutation-hook identity churn
   useEffect(() => {
     if (!open) return
     if (configQuery.isLoading) return
@@ -156,10 +157,9 @@ export function ProviderSettingsDialog({
     setConfigMut.reset()
     clearConfigMut.reset()
     deleteTokenMut.reset()
-    // We only re-run on (open, provider, configQuery.data) because the
-    // mutation hooks change identity on every render. Including them would
-    // wipe form state mid-save.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // We only re-run on (open, provider, configQuery.data, configQuery.isLoading)
+    // because the mutation hooks change identity on every render. Including them
+    // (or the configQuery.data-derived stored* values) would wipe form state mid-save.
   }, [open, provider, configQuery.data, configQuery.isLoading])
 
   // --- collapsible advanced + armed confirm states -----------------------
@@ -939,6 +939,7 @@ function ArmedConfirm({
   // on `no` still gives screen reader users the safe default after the
   // group becomes the focused context.
   return (
+    // biome-ignore lint/a11y/useSemanticElements: inline confirm row inside the dialog body — <fieldset> would force block layout and a <legend>; role="group" + aria-label is the correct grouping here (see note above)
     <span
       role="group"
       aria-label={label}

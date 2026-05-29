@@ -72,9 +72,7 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   const running = !!message.running
 
   const errorDisplay =
-    !running && rawOutput != null
-      ? parseSandboxErrorDisplay(rawOutput)
-      : null
+    !running && rawOutput != null ? parseSandboxErrorDisplay(rawOutput) : null
   if (errorDisplay) {
     return <SandboxErrorView display={errorDisplay} />
   }

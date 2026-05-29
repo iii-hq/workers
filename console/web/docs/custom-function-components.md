@@ -245,50 +245,51 @@ const terminal =
 
 Rename tab labels if "terminal" is wrong for your UX (`custom` / `preview` / keep generic **preview** + **raw json**).
 
-### 5. Console playground (required)
+### 5. Storybook stories (required)
 
-Ship **two** dev-only surfaces. Both are gated by `VITE_PLAYGROUND` (on in `.env.development`). Run `pnpm dev` in `console/web` and use the header toggle **chat / playground / examples**.
+Every component variant and streaming scenario lives in Storybook. Run
+`pnpm storybook` in `console/web`. A new function renderer needs two kinds of
+story:
 
-| Surface | Route | Purpose |
-|---------|-------|---------|
-| **Examples** | `#/examples` | Static spec sheet — every variant visible at once, no send button. Best for pixel-polishing a single card (pending, running, done, errors). |
-| **Playground** | `#/playground` | Live chat driven by a `ChatBackend` scenario — exercises the streaming contract (`fcall-start` → `fcall-end`) and the event log rail. Best for lifecycle and regression before a real backend. |
+| Kind | Where | Purpose |
+|------|-------|---------|
+| **Fixture story** | `src/components/chat/FunctionCallMessage.stories.tsx` | Static spec sheet — every variant visible at once, no send button. Best for pixel-polishing a single card (pending, running, done, errors). |
+| **Playground story** | `src/stories/playground/*.stories.tsx` | Live chat driven by a `ChatBackend` scenario — exercises the streaming contract (`fcall-start` → `fcall-end`) and the event-log rail. Best for lifecycle and regression before a real backend. |
 
 See [`PLAYGROUND.md`](../PLAYGROUND.md) for the `StreamEvent` contract.
 
-#### 5a. Examples — one card per tool (required)
+#### 5a. Fixtures — one card per tool (required)
 
-Create `src/pages/Examples/sections/myfeature-fixtures.ts` with a `base()` factory (copy `sandbox-fixtures.ts`). Export:
+Create `src/stories/fixtures/myfeature-fixtures.ts` with a `base()` factory (copy `sandbox-fixtures.ts`). Export:
 
 - One **done** fixture per `function_id` (mix envelope-wrapped and raw payloads).
 - Extra fixtures for states your renderer cares about: **pending** (with `pendingApproval: true`), **running**, **error** / gate denial, edge cases (empty output, truncated grep, etc.).
 
-Register in `src/pages/Examples/sections/message-variants.tsx`:
+Add a family gallery story in `src/components/chat/FunctionCallMessage.stories.tsx`:
 
 ```tsx
-import { myfeatureFixtures } from './myfeature-fixtures'
+import { myfeatureFixtures } from '@/stories/fixtures/myfeature-fixtures'
 
-{myfeatureFixtures.map((fixture) => (
-  <VariantCard key={fixture.id} label={`myfeature · ${fixture.functionId}`}>
-    <FunctionCallMessage message={fixture} defaultOpen />
-  </VariantCard>
-))}
+export const MyFeatureFamily: Story = {
+  name: 'myfeature family',
+  render: () => <FamilyGallery fixtures={myfeatureFixtures} />,
+}
 ```
 
-Open `#/examples` and confirm the **terminal** tab (default) and **raw json** tab for each card.
+Open Storybook → **Chat / FunctionCallMessage / myfeature family** and confirm the **terminal** tab (default) and **raw json** tab for each card.
 
-**Sandbox reference:** `sandbox-fixtures.ts` + the `sandboxFixtures.map(...)` block at the bottom of `message-variants.tsx`.
+**Sandbox reference:** `src/stories/fixtures/sandbox-fixtures.ts` + the `SandboxFamily` story in `FunctionCallMessage.stories.tsx`.
 
 #### 5b. Playground — at least one scenario (required)
 
-Add an interactive scenario under `src/pages/Playground/scenarios/`. Every new function family needs **at least one** scenario registered in `scenarios/index.ts` so `#/playground` can exercise it end-to-end.
+Add an interactive scenario under `src/stories/playground/scenarios/`. Every new function family needs **at least one** scenario registered in `scenarios/index.ts` so the **Playground** stories exercise it end-to-end.
 
 1. **Create** `myfeature-hero.ts` (name as you like) using `makeBackend` + `streamFcall` from `scenarios/helpers.ts`:
 
 ```ts
 import { makeBackend, streamAssistant, streamFcall, streamThought } from './helpers'
-// Reuse wire payloads from Examples when possible:
-import { sandboxExecDone } from '@/pages/Examples/sections/sandbox-fixtures'
+// Reuse wire payloads from the fixtures when possible:
+import { sandboxExecDone } from '@/stories/fixtures/sandbox-fixtures'
 
 export const myfeatureHero = makeBackend(
   'myfeature-hero',
@@ -307,7 +308,7 @@ export const myfeatureHero = makeBackend(
 )
 ```
 
-2. **Register** in `scenarios/index.ts`:
+2. **Register** in `scenarios/index.ts` (the `group` decides which `Playground/*.stories.tsx` file surfaces it; add an export there if you introduce a new group):
 
 ```ts
 import { myfeatureHero } from './myfeature-hero'
@@ -323,20 +324,20 @@ import { myfeatureHero } from './myfeature-hero'
 },
 ```
 
-3. **Verify:** `pnpm dev` → `#/playground` → pick your scenario → send any message → confirm the custom card renders (not JSON-only) and the right-hand event log shows `fcall-start` / `fcall-end`.
+3. **Verify:** `pnpm storybook` → open your scenario under **Playground** → send any message → confirm the custom card renders (not JSON-only) and the right-hand event log shows `fcall-start` / `fcall-end`.
 
 **Coverage guidance:**
 
-| Renderer feature | Examples fixture | Playground scenario |
-|------------------|------------------|---------------------|
+| Renderer feature | Fixture story | Playground scenario |
+|------------------|---------------|---------------------|
 | Success / done | per `function_id` | at least one `streamFcall` with success output |
 | Pending approval | `pendingApproval: true` | `streamFcall({ pendingApproval: true, approvalWaitMs: … })` — see `pending-approval.ts` |
 | Running shimmer | `running: true` | shorten `waitMs` and watch mid-flight (or dedicated scenario) |
-| Error / gate | error fixture on Examples | `output: { error: … }` — see `error-on-fcall.ts` or `sandboxFsWriteGateError` payloads |
+| Error / gate | error fixture | `output: { error: … }` — see `error-on-fcall.ts` or `sandboxFsWriteGateError` payloads |
 
-When you add a **new** `function_id` to an existing family, add an Examples `VariantCard` **and** extend a Playground scenario (or add a focused scenario) so the picker still covers it.
+When you add a **new** `function_id` to an existing family, add a fixture (and a gallery story if it's a new family) **and** extend a Playground scenario (or add a focused scenario) so the stories still cover it.
 
-**Sandbox gap:** Examples already list all 15 tools; Playground does not yet have a dedicated `sandbox::*` scenario — add `sandbox-exec.ts` (or similar) when touching sandbox as a template for others.
+**Sandbox gap:** the fixtures already list all 15 tools; the playground does not yet have a dedicated `sandbox::*` scenario — add `sandbox-exec.ts` (or similar) when touching sandbox as a template for others.
 
 ### 6. Tests
 
@@ -353,19 +354,20 @@ pnpm build
 pnpm exec biome check --write \
   src/components/chat/myfeature \
   src/components/chat/FunctionCallMessage.tsx \
-  src/pages/Examples/sections/myfeature-fixtures.ts \
-  src/pages/Playground/scenarios/myfeature-hero.ts \
-  src/pages/Playground/scenarios/index.ts
+  src/components/chat/FunctionCallMessage.stories.tsx \
+  src/stories/fixtures/myfeature-fixtures.ts \
+  src/stories/playground/scenarios/myfeature-hero.ts \
+  src/stories/playground/scenarios/index.ts
 ```
 
 ### 8. Pre-merge smoke (required)
 
 ```bash
-cd console/web && pnpm dev
+cd console/web && pnpm storybook
 ```
 
-- `#/examples` — scroll your new `VariantCard`s; toggle **terminal** / **raw json**.
-- `#/playground` — run your new scenario; approve a pending call if applicable.
+- **Chat / FunctionCallMessage** — scroll your new family gallery; toggle **terminal** / **raw json**.
+- **Playground** — run your new scenario; approve a pending call if applicable.
 
 ---
 
@@ -477,11 +479,11 @@ Consider extracting `unwrapEnvelope` and a generic `parseFunctionErrorDisplay` t
 | `sandbox/ErrorView.tsx` | `SandboxErrorView` / invocation errors |
 | `sandbox/*View.tsx` | Per-tool UI |
 | `sandbox/__tests__/parsers.test.ts` | Unit tests |
-| `pages/Examples/sections/sandbox-fixtures.ts` | Examples fixtures (required) |
-| `pages/Examples/sections/message-variants.tsx` | Registers Examples cards |
-| `pages/Playground/scenarios/*.ts` | Playground `ChatBackend` scenarios (required) |
-| `pages/Playground/scenarios/index.ts` | Scenario picker registry |
-| `pages/Playground/scenarios/helpers.ts` | `streamFcall`, `streamThought`, `makeBackend` |
+| `stories/fixtures/sandbox-fixtures.ts` | Fixture data (required) |
+| `components/chat/FunctionCallMessage.stories.tsx` | Registers fixture gallery stories |
+| `stories/playground/scenarios/*.ts` | Playground `ChatBackend` scenarios (required) |
+| `stories/playground/scenarios/index.ts` | Scenario registry |
+| `stories/playground/scenarios/helpers.ts` | `streamFcall`, `streamThought`, `makeBackend` |
 | `PLAYGROUND.md` | Streaming contract for scenarios |
 | `FunctionCallMessage.tsx` | Host integration |
 

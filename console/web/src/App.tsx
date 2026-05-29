@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChatDock } from '@/components/chat/ChatDock'
 import {
   Dialog,
@@ -21,30 +21,12 @@ import { cn } from '@/lib/utils'
 import { Configuration } from '@/pages/Configuration'
 import { Traces } from '@/pages/Traces'
 
-const PLAYGROUND_ENABLED = !!import.meta.env.VITE_PLAYGROUND
-
-/* Lazy + flag-guarded: when VITE_PLAYGROUND is empty at build time, both
-   constants fold to null and Rolldown drops the dynamic-import targets along
-   with every transitive module (mock backend, scenarios, examples sections). */
-const Examples = PLAYGROUND_ENABLED
-  ? lazy(() =>
-      import('@/pages/Examples').then((m) => ({ default: m.Examples })),
-    )
-  : null
-
-const Playground = PLAYGROUND_ENABLED
-  ? lazy(() =>
-      import('@/pages/Playground').then((m) => ({ default: m.Playground })),
-    )
-  : null
-
-const VIEW_OPTIONS: { value: View; label: string }[] = PLAYGROUND_ENABLED
-  ? [
-      { value: 'traces', label: 'traces' },
-      { value: 'playground', label: 'playground' },
-      { value: 'examples', label: 'examples' },
-    ]
-  : [{ value: 'traces', label: 'traces' }]
+/* The component spec sheet and the streaming-scenario playground now live in
+   Storybook (`pnpm storybook`), not as in-app routes. The header keeps a
+   single `traces` entry alongside the configuration gear. */
+const VIEW_OPTIONS: { value: View; label: string }[] = [
+  { value: 'traces', label: 'traces' },
+]
 
 export function App() {
   const [theme, setTheme] = useTheme()
@@ -109,17 +91,11 @@ export function App() {
             onCollapse={collapseDock}
           />
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
-            <Suspense fallback={<RouteFallback />}>
-              {view === 'configuration' ? (
-                <Configuration theme={theme} onThemeChange={setTheme} />
-              ) : view === 'examples' && Examples ? (
-                <Examples />
-              ) : view === 'playground' && Playground ? (
-                <Playground />
-              ) : (
-                <Traces />
-              )}
-            </Suspense>
+            {view === 'configuration' ? (
+              <Configuration theme={theme} onThemeChange={setTheme} />
+            ) : (
+              <Traces />
+            )}
           </div>
         </div>
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
@@ -329,15 +305,5 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
         </ul>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function RouteFallback() {
-  return (
-    <section className="flex-1 flex items-center justify-center">
-      <div className="font-mono text-[12px] uppercase tracking-[0.18em] text-ink-ghost">
-        loading…
-      </div>
-    </section>
   )
 }

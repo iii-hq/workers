@@ -102,7 +102,6 @@ export function ChatDock({
 
   return (
     <>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: focus-only Esc shortcut for keyboard users; chrome remains operable by mouse */}
       <aside
         id="chat-dock"
         style={{ width }}

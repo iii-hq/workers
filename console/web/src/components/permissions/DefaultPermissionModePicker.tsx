@@ -24,8 +24,8 @@ export function DefaultPermissionModePicker({
   value,
   onChange,
 }: DefaultPermissionModePickerProps) {
-  const [internal, setInternal] = useState<PermissionMode>(() =>
-    value ?? loadDefaultPermissionMode(),
+  const [internal, setInternal] = useState<PermissionMode>(
+    () => value ?? loadDefaultPermissionMode(),
   )
   const [pendingFull, setPendingFull] = useState(false)
   const current = value ?? internal

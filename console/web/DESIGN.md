@@ -21,8 +21,8 @@ colors:
   bg-dark: "#111110"
   panel-dark: "#1a1916"
   ink-dark: "#f2f0ed"
-  ink-faint-dark: "#9c9893"
-  ink-ghost-dark: "#5d5a55"
+  ink-faint-dark: "#a8a49e"
+  ink-ghost-dark: "#8a8782"
   rule-dark: "#2a2926"
   rule-2-dark: "#1f1e1c"
   alert: "#c43e1c"
@@ -344,8 +344,8 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --color-panel: #1a1916;
   --color-paper-2: #1f1e1c;
   --color-ink: #f2f0ed;
-  --color-ink-faint: #9c9893;
-  --color-ink-ghost: #5d5a55;
+  --color-ink-faint: #a8a49e;
+  --color-ink-ghost: #8a8782;
   --color-rule: #2a2926;
   --color-rule-2: #1f1e1c;
   --color-accent: #3ea8ff;
@@ -574,8 +574,8 @@ color + a small icon/stripe**, not full-color backgrounds.
 ### Dark theme
 
 Override the same tokens inside a `[data-theme="dark"]` block (see §0). The
-ramp inverts (`#111110 → #1a1916 → #1f1e1c` for paper; `#f2f0ed → #9c9893 →
-#5d5a55` for ink) and the accent swaps to electric blue (`#3ea8ff`). Same
+ramp inverts (`#111110 → #1a1916 → #1f1e1c` for paper; `#f2f0ed → #a8a49e →
+#8a8782` for ink) and the accent swaps to electric blue (`#3ea8ff`). Same
 structural logic — never collapses into pure black.
 
 To follow the OS, set the attribute on load:

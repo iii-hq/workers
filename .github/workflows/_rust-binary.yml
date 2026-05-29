@@ -167,10 +167,8 @@ jobs:
         working-directory: ${{ steps.dirs.outputs.worker }}/web
         run: pnpm install --frozen-lockfile
 
-      - name: pnpm build (VITE_PLAYGROUND='')
+      - name: pnpm build
         working-directory: ${{ steps.dirs.outputs.worker }}/web
-        env:
-          VITE_PLAYGROUND: ''
         run: pnpm build
 
       - name: Upload web bundle

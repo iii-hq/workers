@@ -125,6 +125,7 @@ const WaterfallRow = memo(function WaterfallRow({
       : 'hover:bg-panel'
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: this clickable row contains a nested expand/collapse <button>, so it can't be a native <button> (nested interactive content is invalid HTML); div + role="button" + key handlers is the accessible fallback
     <div
       role="button"
       tabIndex={0}
@@ -542,6 +543,7 @@ export function WaterfallChart({
   // re-render of the whole chart on every wheel tick. The
   // virtualizer already exposes contentHeight via getTotalSize(),
   // so we read it on each rAF frame from the same source.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: contentHeight/containerHeight are intentional re-measure triggers (re-run update() when rows expand or the viewport resizes), not values read directly in the effect body
   useEffect(() => {
     const el = containerRef.current
     const thumb = thumbRef.current

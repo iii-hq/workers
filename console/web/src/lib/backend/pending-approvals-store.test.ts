@@ -49,7 +49,7 @@ describe('diffPending', () => {
       { function_call_id: 'fc-1', function_id: 'shell::fs::write', args: {} },
       { function_call_id: 'fc-2', function_id: 'shell::shell', args: {} },
     ]
-    const next: PendingApproval[] = [prev[0]!]
+    const next: PendingApproval[] = prev.slice(0, 1)
     expect(diffPending(prev, next)).toEqual({
       added: [],
       removed: [prev[1]],

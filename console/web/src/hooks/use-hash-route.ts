@@ -1,10 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 // `chat` is no longer a routed view; it's always-rendered as the side dock
-// in App.tsx. Hash routes only pick which view fills the right pane.
-export type View = 'configuration' | 'examples' | 'playground' | 'traces'
+// in App.tsx. Hash routes only pick which view fills the right pane. The
+// component spec sheet + streaming playground moved to Storybook, so the
+// only routed views left are `traces` and `configuration`.
+export type View = 'configuration' | 'traces'
 
-const PLAYGROUND_ENABLED = !!import.meta.env.VITE_PLAYGROUND
+/**
+ * Sub-tab inside the Configuration page. URL-driven so deep links and the
+ * back button move between settings surfaces cleanly. `console` covers the
+ * existing console-level preferences (theme + provider api keys); `workers`
+ * is the worker-config registry surfaced through `configuration::list`.
+ */
+export type ConfigurationTab = 'console' | 'workers'
+
+export interface ConfigurationRoute {
+  tab: ConfigurationTab
+  /** Selected worker id when `tab === 'workers'`. */
+  workerId: string | null
+}
 
 function routeFromHash(hash: string): View | null {
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
@@ -13,13 +27,15 @@ function routeFromHash(hash: string): View | null {
   // Backwards compat: `#/chat` no longer exists as a view -- chat is the
   // always-visible side dock now. Land legacy bookmarks on the default view.
   if (hash === '#/chat') return 'traces'
-  if (hash === '#/configuration') return 'configuration'
+  if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
+    return 'configuration'
+  }
   // Backwards compat: `#/providers` was renamed to `#/configuration` when
   // the page absorbed the theme toggle and any other future settings.
   if (hash === '#/providers') return 'configuration'
-  if (hash === '#/examples') return PLAYGROUND_ENABLED ? 'examples' : 'traces'
-  if (hash === '#/playground')
-    return PLAYGROUND_ENABLED ? 'playground' : 'traces'
+  // Legacy dev-only routes: the spec sheet and streaming playground moved to
+  // Storybook, so old bookmarks land on the default view instead of 404ing.
+  if (hash === '#/examples' || hash === '#/playground') return 'traces'
   return null
 }
 
@@ -29,11 +45,39 @@ function hashFor(view: View): string {
       return '#/traces'
     case 'configuration':
       return '#/configuration'
-    case 'examples':
-      return '#/examples'
-    case 'playground':
-      return '#/playground'
   }
+}
+
+/**
+ * Parse the configuration sub-route out of a hash. Returns sensible defaults
+ * for legacy or unrecognized values so a typo in the URL bar never strands
+ * the operator on an empty page.
+ */
+function configRouteFromHash(hash: string): ConfigurationRoute {
+  // Treat bare `#/configuration` and any non-configuration hash as the
+  // default `console` tab. Legacy `#/providers` is funneled here too.
+  if (!hash.startsWith('#/configuration/')) {
+    return { tab: 'console', workerId: null }
+  }
+  const rest = hash.slice('#/configuration/'.length)
+  const segments = rest.split('/').filter(Boolean)
+  const [first, second] = segments
+  if (first === 'workers') {
+    return {
+      tab: 'workers',
+      workerId: second ? decodeURIComponent(second) : null,
+    }
+  }
+  return { tab: 'console', workerId: null }
+}
+
+function hashForConfigRoute(route: ConfigurationRoute): string {
+  if (route.tab === 'workers') {
+    return route.workerId
+      ? `#/configuration/workers/${encodeURIComponent(route.workerId)}`
+      : '#/configuration/workers'
+  }
+  return '#/configuration/console'
 }
 
 export function useHashRoute(): [View, (next: View) => void] {
@@ -63,4 +107,61 @@ export function useHashRoute(): [View, (next: View) => void] {
   }, [])
 
   return [view, navigate]
+}
+
+/**
+ * Sub-routing for the Configuration page. Mirrors `useHashRoute` so the
+ * two stay in lockstep when the operator navigates by hash, by tab click,
+ * or by selecting a worker from the list.
+ *
+ * Navigation goes through `window.location.hash` so the browser back/forward
+ * buttons traverse the configuration history; falling back to local state
+ * when the hash is already at the target lets sibling components react to
+ * navigation calls that are no-ops at the URL level (rare, but defensive).
+ */
+export function useConfigurationRoute(): [
+  ConfigurationRoute,
+  (next: Partial<ConfigurationRoute>) => void,
+] {
+  const [route, setRoute] = useState<ConfigurationRoute>(() => {
+    if (typeof window === 'undefined') return { tab: 'console', workerId: null }
+    return configRouteFromHash(window.location.hash)
+  })
+  const routeRef = useRef(route)
+  routeRef.current = route
+
+  useEffect(() => {
+    const handle = () => {
+      const next = configRouteFromHash(window.location.hash)
+      const cur = routeRef.current
+      if (next.tab !== cur.tab || next.workerId !== cur.workerId) {
+        setRoute(next)
+      }
+    }
+    window.addEventListener('hashchange', handle)
+    return () => window.removeEventListener('hashchange', handle)
+  }, [])
+
+  const navigate = useCallback((next: Partial<ConfigurationRoute>) => {
+    const cur = routeRef.current
+    const merged: ConfigurationRoute = {
+      tab: next.tab ?? cur.tab,
+      // Switching to console clears the worker selection so back-navigating
+      // doesn't reopen a previously-edited worker out of context.
+      workerId:
+        next.tab && next.tab !== 'workers'
+          ? null
+          : next.workerId !== undefined
+            ? next.workerId
+            : cur.workerId,
+    }
+    const targetHash = hashForConfigRoute(merged)
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash
+    } else {
+      setRoute(merged)
+    }
+  }, [])
+
+  return [route, navigate]
 }

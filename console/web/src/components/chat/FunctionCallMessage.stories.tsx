@@ -1,0 +1,145 @@
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
+import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
+import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
+import { webFixtures } from '@/stories/fixtures/web-fixtures'
+import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
+import type { FunctionCallMessage as FCallType } from '@/types/chat'
+import { FunctionCallMessage } from './FunctionCallMessage'
+
+const fcallPendingSingle: FCallType = {
+  id: 'f0a',
+  role: 'function-call',
+  functionId: 'engine::echo',
+  input: { text: 'hello, world.' },
+  pendingApproval: true,
+  createdAt: Date.now(),
+}
+
+const fcallPendingMulti: FCallType = {
+  id: 'f0b',
+  role: 'function-call',
+  functionId: 'fs::write',
+  input: {
+    path: '/tmp/scratch/notes.md',
+    contents: '# scratch\n\njust a draft.\n',
+    overwrite: true,
+  },
+  pendingApproval: true,
+  createdAt: Date.now(),
+}
+
+const fcallRunning: FCallType = {
+  id: 'f1',
+  role: 'function-call',
+  functionId: 'engine::echo',
+  input: { text: 'hello, world.' },
+  running: true,
+  createdAt: Date.now(),
+}
+
+const fcallDone: FCallType = {
+  id: 'f2',
+  role: 'function-call',
+  functionId: 'engine::echo',
+  input: { text: 'hello, world.' },
+  output: { text: 'hello, world.' },
+  durationMs: 132,
+  createdAt: Date.now(),
+}
+
+const fcallDoneMulti: FCallType = {
+  id: 'f3',
+  role: 'function-call',
+  functionId: 'directory::index',
+  input: { path: '/repo/src', recursive: true, glob: '*.ts' },
+  output: { files: 142, bytes: 318_204, elapsedMs: 410 },
+  durationMs: 410,
+  createdAt: Date.now(),
+}
+
+/** Bordered gallery of every fixture in a namespace family, all expanded so
+ *  the custom terminal/preview panes render (not just the collapsed header). */
+function FamilyGallery({ fixtures }: { fixtures: readonly FCallType[] }) {
+  return (
+    <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-6 @container">
+      {fixtures.map((fixture) => (
+        <div key={fixture.id} className="border border-rule bg-bg">
+          <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            {fixture.functionId}
+          </div>
+          <div className="p-4">
+            <FunctionCallMessage message={fixture} defaultOpen />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const meta = {
+  title: 'Chat/FunctionCallMessage',
+  component: FunctionCallMessage,
+  parameters: { layout: 'padded' },
+  // Default `message` so the render-only family galleries don't have to
+  // declare it; the per-state stories below override it via their own args.
+  args: { message: fcallDone },
+} satisfies Meta<typeof FunctionCallMessage>
+
+export default meta
+type Story = StoryObj<typeof meta>
+
+export const PendingSingleArg: Story = {
+  name: 'awaiting permission (single arg)',
+  args: { message: fcallPendingSingle },
+}
+
+export const PendingMultiArg: Story = {
+  name: 'awaiting permission (multi arg)',
+  args: { message: fcallPendingMulti },
+}
+
+export const Running: Story = {
+  name: 'running',
+  args: { message: fcallRunning },
+}
+
+export const DoneCollapsed: Story = {
+  name: 'done (collapsed)',
+  args: { message: fcallDone },
+}
+
+export const DoneExpanded: Story = {
+  name: 'done · single-field (expanded)',
+  args: { message: fcallDone, defaultOpen: true },
+}
+
+export const DoneMultiFieldExpanded: Story = {
+  name: 'done · multi-field (expanded)',
+  args: { message: fcallDoneMulti, defaultOpen: true },
+}
+
+export const SandboxFamily: Story = {
+  name: 'sandbox family',
+  render: () => <FamilyGallery fixtures={sandboxFixtures} />,
+}
+
+export const DirectoryFamily: Story = {
+  name: 'directory family',
+  render: () => <FamilyGallery fixtures={directoryFixtures} />,
+}
+
+export const EngineFamily: Story = {
+  name: 'engine family',
+  render: () => <FamilyGallery fixtures={engineFixtures} />,
+}
+
+export const WebFamily: Story = {
+  name: 'web family',
+  render: () => <FamilyGallery fixtures={webFixtures} />,
+}
+
+export const WorkerFamily: Story = {
+  name: 'worker family',
+  render: () => <FamilyGallery fixtures={workerFixtures} />,
+}

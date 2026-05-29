@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  addAlwaysAllow as rpcAddAlwaysAllow,
   type ApprovalSettings,
-  approveAlways as rpcApproveAlways,
   DEFAULT_APPROVAL_SETTINGS,
   getApprovalSettings,
   type PermissionMode,
+  addAlwaysAllow as rpcAddAlwaysAllow,
+  approveAlways as rpcApproveAlways,
   removeAlwaysAllow as rpcRemoveAlwaysAllow,
   setApprovalMode,
 } from '@/lib/backend/approval-settings'

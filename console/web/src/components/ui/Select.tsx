@@ -13,7 +13,11 @@ interface SelectGroup<T extends string> {
 }
 
 interface SelectProps<T extends string> {
-  value: T
+  /**
+   * Current value. `undefined` (or any value that matches no option) renders
+   * the `placeholder` rather than leaking the raw token into the trigger.
+   */
+  value: T | undefined
   options?: SelectOption<T>[]
   groups?: SelectGroup<T>[]
   onChange: (next: T) => void
@@ -26,6 +30,17 @@ interface SelectProps<T extends string> {
   /** Optional placeholder shown when no `value` matches an option. */
   placeholder?: string
   /**
+   * Render a leading option that clears the selection. Picking it calls
+   * `onClear` (not `onChange`), so the consumer decides what "empty" means
+   * (e.g. set the field back to `undefined`). Off by default so existing
+   * single-choice pickers like `ModelPicker` are unaffected.
+   */
+  allowEmpty?: boolean
+  /** Label for the `allowEmpty` option. Defaults to `none`. */
+  emptyLabel?: string
+  /** Called when the `allowEmpty` option is picked. Required to do anything useful when `allowEmpty` is set. */
+  onClear?: () => void
+  /**
    * Replace the default `<Label>` rendering for each group. The returned
    * node is mounted inside `<SelectPrimitive.Group>` so labelling
    * semantics are preserved as long as the renderer includes a
@@ -37,6 +52,14 @@ interface SelectProps<T extends string> {
 export type { SelectGroup, SelectOption }
 
 /**
+ * Sentinel value for the `allowEmpty` option. Radix forbids an `Item` with
+ * an empty-string value (it reserves `""` for the cleared/placeholder state),
+ * so the clear affordance rides on a non-colliding marker that we intercept
+ * in `onValueChange` before it reaches the consumer's `onChange`.
+ */
+const EMPTY_VALUE = '\u0000empty'
+
+/**
  * Radix-based dropdown. Replaces the native `<select>` so the panel can be
  * themed consistently with the rest of the console (font-mono, lowercase,
  * ink/bg/rule tokens) instead of inheriting the OS' dark-mode default look.
@@ -45,6 +68,10 @@ export type { SelectGroup, SelectOption }
  * (flat list) or `groups` (sectioned). `value`, `onChange`, `disabled` and
  * the two aria props flow through unchanged so existing consumers
  * (`ModelPicker`, the primitives gallery) don't need to be touched.
+ *
+ * A value that matches no option (including `undefined`) shows the
+ * `placeholder` instead of the raw token, the trigger truncates long labels,
+ * and `allowEmpty` adds a leading clear option.
  */
 export function Select<T extends string>({
   value,
@@ -54,6 +81,9 @@ export function Select<T extends string>({
   disabled,
   className,
   placeholder,
+  allowEmpty,
+  emptyLabel,
+  onClear,
   renderGroupHeader,
   ...aria
 }: SelectProps<T>) {
@@ -63,27 +93,39 @@ export function Select<T extends string>({
     ? groups.flatMap((g) => g.options)
     : (options ?? [])
   const selected = flatOptions.find((o) => o.value === value)
+  // Feed Radix `""` when nothing matches so it shows the placeholder instead
+  // of rendering the raw (possibly `undefined`) token.
+  const rootValue = selected ? (value as string) : ''
 
   return (
     <SelectPrimitive.Root
-      value={value}
-      onValueChange={(next) => onChange(next as T)}
+      value={rootValue}
+      onValueChange={(next) => {
+        if (allowEmpty && next === EMPTY_VALUE) {
+          onClear?.()
+          return
+        }
+        onChange(next as T)
+      }}
       disabled={disabled}
     >
       <SelectPrimitive.Trigger
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
         className={cn(
-          'inline-flex items-center justify-between gap-x-2 border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase focus:outline-none focus:border-ink data-[state=open]:border-ink transition-colors',
+          'inline-flex items-center justify-between gap-x-2 border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px] lowercase focus:outline-none focus:border-ink data-[state=open]:border-ink transition-colors max-w-full min-w-0 data-[placeholder]:text-ink-faint',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
       >
-        <SelectPrimitive.Value placeholder={placeholder}>
-          {selected?.label ?? value}
+        <SelectPrimitive.Value
+          className="min-w-0 flex-1 truncate text-left"
+          placeholder={placeholder}
+        >
+          {selected?.label}
         </SelectPrimitive.Value>
         <SelectPrimitive.Icon asChild>
-          <span aria-hidden className="text-ink-faint">
+          <span aria-hidden className="shrink-0 text-ink-faint">
             <svg
               width="8"
               height="6"
@@ -91,6 +133,7 @@ export function Select<T extends string>({
               fill="none"
               stroke="currentColor"
               strokeWidth="1"
+              aria-hidden="true"
             >
               <path d="M1 1L4 5L7 1" />
             </svg>
@@ -116,12 +159,15 @@ export function Select<T extends string>({
               fill="none"
               stroke="currentColor"
               strokeWidth="1"
-              aria-hidden
+              aria-hidden="true"
             >
               <path d="M1 5L4 1L7 5" />
             </svg>
           </SelectPrimitive.ScrollUpButton>
           <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
+            {allowEmpty ? (
+              <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'none'} />
+            ) : null}
             {groups
               ? groups.map((g) => (
                   <SelectPrimitive.Group key={g.label}>
@@ -157,7 +203,7 @@ export function Select<T extends string>({
               fill="none"
               stroke="currentColor"
               strokeWidth="1"
-              aria-hidden
+              aria-hidden="true"
             >
               <path d="M1 1L4 5L7 1" />
             </svg>

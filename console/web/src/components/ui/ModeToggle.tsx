@@ -64,6 +64,7 @@ export function ModeToggle<T extends string>({
   }
 
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: groupRole is always "tablist" or "radiogroup", both of which support aria-label; Biome can't resolve the dynamic role and falls back to the generic <div> role
     <div
       role={groupRole}
       aria-label={ariaLabel}
