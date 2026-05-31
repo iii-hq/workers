@@ -5,7 +5,7 @@
  * Sequence: lease → prune → summarise → reinject replay → auto-continue.
  */
 
-import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
+import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';

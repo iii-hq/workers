@@ -23,8 +23,10 @@ interface CapturedRecord {
 
 const captured: CapturedRecord[] = [];
 
-vi.mock('iii-sdk/telemetry', async () => {
-  const actual = await vi.importActual<typeof import('iii-sdk/telemetry')>('iii-sdk/telemetry');
+vi.mock('@iii-dev/observability', async () => {
+  const actual = await vi.importActual<typeof import('@iii-dev/observability')>(
+    '@iii-dev/observability',
+  );
   return {
     ...actual,
     getLogger: () => ({
@@ -37,10 +39,10 @@ vi.mock('iii-sdk/telemetry', async () => {
 
 // Imported AFTER the mock so the mock is in effect when the module
 // resolves `getLogger`. `SeverityNumber` is re-exported from
-// iii-sdk/telemetry so we don't need a direct dependency on
+// @iii-dev/observability so we don't need a direct dependency on
 // @opentelemetry/api-logs in this package.
 const { logger } = await import('../../src/runtime/otel.js');
-const { SeverityNumber } = await import('iii-sdk/telemetry');
+const { SeverityNumber } = await import('@iii-dev/observability');
 
 beforeEach(() => {
   captured.length = 0;
