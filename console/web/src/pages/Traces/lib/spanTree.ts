@@ -6,13 +6,55 @@
 // waterfall to a different render layer (canvas, native, SVG export)
 // can reuse these helpers directly.
 
-import { isEngineRoutingPair, isEngineRoutingSpan } from './spanLabel'
+import { isEngineRoutingPair } from './spanLabel'
 import type { VisualizationSpan } from './traceTransform'
+
+const HANDLE_INVOCATION_PREFIX = 'handle_invocation ' as const
+const CALL_PREFIX = 'call ' as const
+
+function functionIdFromCallName(name: string): string | null {
+  if (!name.startsWith(CALL_PREFIX)) return null
+  return name.slice(CALL_PREFIX.length)
+}
+
+function functionIdFromHandleInvocationName(name: string): string | null {
+  if (!name.startsWith(HANDLE_INVOCATION_PREFIX)) return null
+  return name.slice(HANDLE_INVOCATION_PREFIX.length)
+}
 
 export interface SpanNode extends VisualizationSpan {
   children: SpanNode[]
   isExpanded: boolean
   isCriticalPath: boolean
+}
+
+/**
+ * Whether a span should be hidden when `hideEngineRouting` is on.
+ *
+ * Hides engine dispatch wrappers but keeps the worker's `call X` SERVER
+ * span (the row that carries invocation events/logs). Uses tree structure
+ * and cross-service boundaries — not a hardcoded engine service name —
+ * so it survives `OTEL_SERVICE_NAME` overrides.
+ */
+export function isHideableRoutingNode(
+  node: Pick<SpanNode, 'name' | 'service_name' | 'children'>,
+  parent: Pick<SpanNode, 'name'> | undefined,
+): boolean {
+  if (node.name.startsWith(HANDLE_INVOCATION_PREFIX)) return true
+
+  const callFn = functionIdFromCallName(node.name)
+  if (callFn === null) return false
+
+  const parentFn = parent
+    ? functionIdFromHandleInvocationName(parent.name)
+    : null
+  if (parentFn !== null && parentFn === callFn) return true
+
+  return node.children.some((child) => {
+    const childFn = functionIdFromCallName(child.name)
+    if (childFn === null || childFn !== callFn) return false
+    return child.service_name !== node.service_name
+  })
 }
 
 export interface FlatSpanRow extends SpanNode {
@@ -33,9 +75,11 @@ export interface FlatSpanRow extends SpanNode {
 export interface FlattenOptions {
   /** Span IDs the user has expanded. Collapsed nodes hide their subtree. */
   expandedIds: Set<string>
-  /** When true, engine routing spans (`handle_invocation X`, `call X` on the
-   *  `iii` service) are skipped during render and their children render at
-   *  the parent's depth instead. */
+  /** When true, engine dispatch wrappers are skipped during render and their
+   *  children render at the parent's depth instead: every `handle_invocation X`,
+   *  the engine's own `call X` under that wrapper, and any `call X` that has a
+   *  same-named `call X` child on a different service (engine→worker RPC).
+   *  The worker's innermost `call X` row is kept. */
   hideEngineRouting: boolean
   /** When true, a `handle_invocation X` parent with a single `call X` child
    *  is rendered as ONE row, with the child's subtree promoted under the
@@ -143,10 +187,14 @@ export function flattenTree(
 ): FlatSpanRow[] {
   const result: FlatSpanRow[] = []
 
-  function traverse(node: SpanNode, depthOffset: number) {
+  function traverse(
+    node: SpanNode,
+    depthOffset: number,
+    parent: SpanNode | undefined,
+  ) {
     if (opts.onlyCriticalPath && !node.isCriticalPath) return
 
-    const hidden = opts.hideEngineRouting && isEngineRoutingSpan(node)
+    const hidden = opts.hideEngineRouting && isHideableRoutingNode(node, parent)
 
     let mergedRouting = false
     let descendants = node.children
@@ -172,13 +220,13 @@ export function flattenTree(
     const childrenVisible = hidden || opts.expandedIds.has(node.span_id)
     if (childrenVisible) {
       for (const child of descendants) {
-        traverse(child, nextOffset)
+        traverse(child, nextOffset, node)
       }
     }
   }
 
   for (const node of nodes) {
-    traverse(node, 0)
+    traverse(node, 0, undefined)
   }
   return result
 }

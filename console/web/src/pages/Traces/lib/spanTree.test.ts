@@ -295,6 +295,135 @@ describe('flattenTree — hideEngineRouting depth offset', () => {
     expect(flat.map((r) => r.span_id)).toEqual(['r', 'c'])
     expect(flat.map((r) => r.displayDepth)).toEqual([0, 1])
   })
+
+  it('keeps the worker call X row and hides engine dispatch wrappers', () => {
+    const tree = buildSpanTree([
+      makeSpan({
+        span_id: 'hi',
+        service_name: 'iii-test',
+        name: 'handle_invocation harness::trigger',
+        depth: 0,
+      }),
+      makeSpan({
+        span_id: 'ec',
+        parent_span_id: 'hi',
+        service_name: 'iii-test',
+        name: 'call harness::trigger',
+        depth: 1,
+      }),
+      makeSpan({
+        span_id: 'wc',
+        parent_span_id: 'ec',
+        service_name: 'harness',
+        name: 'call harness::trigger',
+        kind: 'server',
+        depth: 2,
+      }),
+      makeSpan({
+        span_id: 'user',
+        parent_span_id: 'wc',
+        service_name: 'harness',
+        name: 'fn_queue turn-step',
+        depth: 3,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: true,
+      collapseEngineRoutingPairs: false,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['wc', 'user'])
+    expect(flat.map((r) => r.displayDepth)).toEqual([0, 1])
+  })
+
+  it('nests one worker row per hop across a two-hop chain', () => {
+    const tree = buildSpanTree([
+      makeSpan({
+        span_id: 'hi-x',
+        service_name: 'iii-test',
+        name: 'handle_invocation fn-x',
+        depth: 0,
+      }),
+      makeSpan({
+        span_id: 'ec-x',
+        parent_span_id: 'hi-x',
+        service_name: 'iii-test',
+        name: 'call fn-x',
+        depth: 1,
+      }),
+      makeSpan({
+        span_id: 'wc-x',
+        parent_span_id: 'ec-x',
+        service_name: 'harness',
+        name: 'call fn-x',
+        kind: 'server',
+        depth: 2,
+      }),
+      makeSpan({
+        span_id: 'hi-y',
+        parent_span_id: 'wc-x',
+        service_name: 'iii-test',
+        name: 'handle_invocation fn-y',
+        depth: 3,
+      }),
+      makeSpan({
+        span_id: 'ec-y',
+        parent_span_id: 'hi-y',
+        service_name: 'iii-test',
+        name: 'call fn-y',
+        depth: 4,
+      }),
+      makeSpan({
+        span_id: 'wc-y',
+        parent_span_id: 'ec-y',
+        service_name: 'harness',
+        name: 'call fn-y',
+        kind: 'server',
+        depth: 5,
+      }),
+      makeSpan({
+        span_id: 'work',
+        parent_span_id: 'wc-y',
+        service_name: 'harness',
+        name: 'post /v1/messages',
+        depth: 6,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: true,
+      collapseEngineRoutingPairs: false,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['wc-x', 'wc-y', 'work'])
+    expect(flat.map((r) => r.displayDepth)).toEqual([0, 1, 2])
+  })
+
+  it('does not hide a worker call X when its child call X shares the same service', () => {
+    const tree = buildSpanTree([
+      makeSpan({
+        span_id: 'wc',
+        service_name: 'harness',
+        name: 'call fn-x',
+        kind: 'server',
+        depth: 0,
+      }),
+      makeSpan({
+        span_id: 'nested',
+        parent_span_id: 'wc',
+        service_name: 'harness',
+        name: 'call fn-x',
+        kind: 'server',
+        depth: 1,
+      }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: true,
+      collapseEngineRoutingPairs: false,
+    })
+    expect(flat.map((r) => r.span_id)).toEqual(['wc', 'nested'])
+    expect(flat.map((r) => r.displayDepth)).toEqual([0, 1])
+  })
 })
 
 describe('flattenTree — collapseEngineRoutingPairs', () => {
