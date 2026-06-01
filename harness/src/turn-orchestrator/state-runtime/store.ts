@@ -15,7 +15,7 @@ import { toView, type TurnStateView } from '../schemas.js';
 import { mirrorMessagesToSessionTree } from '../session-tree-mirror.js';
 import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
 
-export const TURN_STEP_QUEUE = 'turn-step';
+export const TURN_STEP_QUEUE = 'default';
 
 const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'failed', 'function_awaiting_approval']);
 
