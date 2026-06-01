@@ -7,6 +7,7 @@ use lettre::{
     transport::smtp::{authentication::Credentials, AsyncSmtpTransport},
     AsyncTransport, Tokio1Executor,
 };
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -14,22 +15,20 @@ use std::time::Duration;
 use crate::config::SmtpConfig;
 use crate::handlers::send::SendReq;
 
-#[derive(Deserialize, Clone)]
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct Attachment {
     pub filename: String,
     pub content_type: String,
     pub source: AttachmentSource,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AttachmentSource {
-    /// Inline base64 — best for LLM tool-use; bounces full bytes through the engine.
+    /// Inline base64 bytes. Best for LLM tool-use; bounces the full payload
+    /// through the engine. For large files prefer a sidecar upload via the
+    /// `storage` worker followed by a future stream-source variant.
     Base64(String),
-    /// Engine-issued StreamChannelRef — sender pipes bytes in. Symmetric with
-    /// `email::attachment::get`. Use for large files to avoid the ~33% base64
-    /// inflation and double-copy through the engine.
-    Stream(iii_sdk::channels::StreamChannelRef),
 }
 
 pub async fn send(
@@ -193,26 +192,14 @@ fn build_attachment_part(a: Attachment) -> Result<SinglePart, IIIError> {
             .to_string(),
         )
     })?;
+    // E626 distinguishes "malformed base64 payload" from E605 which is
+    // reserved for size-limit violations.
     let bytes = match a.source {
-        // E626 distinguishes "malformed base64 payload" from E605 which is
-        // reserved for size-limit violations. Callers can `match` on the
-        // code to decide whether to fix encoding or shrink the attachment.
         AttachmentSource::Base64(s) => B64.decode(s.as_bytes()).map_err(|e| {
             IIIError::Handler(
                 json!({"code":"E626","message":format!("attachment `{}` base64 decode failed: {e}", a.filename)}).to_string(),
             )
         })?,
-        AttachmentSource::Stream(_chan) => {
-            // PR 1: stream-source send is parsed but not yet drained from the
-            // engine channel. Implementation lands alongside the IMAP fetch
-            // path that exercises the same primitive on the read side.
-            return Err(IIIError::Handler(
-                json!({
-                    "code":"E699",
-                    "message":format!("attachment `{}` stream source not yet implemented; use kind=base64 for 0.1.0", a.filename)
-                }).to_string(),
-            ));
-        }
     };
 
     Ok(LAttach::new(a.filename).body(bytes, ct))

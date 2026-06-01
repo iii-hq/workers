@@ -1,10 +1,11 @@
 use iii_sdk::{IIIError, RegisterFunction, III};
 use mail_parser::{MessageParser, MimeHeaders};
+use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct GetReq {
     account: String,
     folder: String,
@@ -15,14 +16,9 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::get",
-        RegisterFunction::new_async(move |raw: Value| {
+        RegisterFunction::new_async(move |req: GetReq| {
             let pool = pool.clone();
             async move {
-                let req: GetReq = serde_json::from_value(raw).map_err(|e| {
-                    IIIError::Handler(
-                        json!({"code":"E611","message":format!("bad payload: {e}")}).to_string(),
-                    )
-                })?;
                 let mut guard = pool.acquire(&req.account, &req.folder).await?;
                 let body_result = {
                     let session = guard.session();

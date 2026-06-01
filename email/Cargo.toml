@@ -30,6 +30,7 @@ async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+schemars = { version = "0.8", features = ["chrono"] }
 dashmap = "6"
 futures = "0.3"
 futures-util = "0.3"

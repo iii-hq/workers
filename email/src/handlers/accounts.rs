@@ -1,12 +1,17 @@
 use iii_sdk::{IIIError, RegisterFunction, III};
-use serde_json::{json, Value};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::json;
 use std::sync::Arc;
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AccountsListReq {}
 
 pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
     let cfg = cfg.clone();
     iii.register_function(
         "email::accounts::list",
-        RegisterFunction::new_async(move |_: Value| {
+        RegisterFunction::new_async(move |_: AccountsListReq| {
             let cfg = cfg.clone();
             async move {
                 let accounts: Vec<_> = cfg

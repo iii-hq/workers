@@ -1,11 +1,12 @@
 use iii_sdk::{protocol::TriggerRequest, IIIError, RegisterFunction, III};
+use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 
 use crate::provider::smtp::{Attachment, AttachmentSource};
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendReq {
     pub account: String,
     pub to: Vec<String>,
@@ -33,16 +34,10 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
     let iii_inner = iii.clone();
     iii.register_function(
         "email::send",
-        RegisterFunction::new_async(move |raw: Value| {
+        RegisterFunction::new_async(move |req: SendReq| {
             let cfg = cfg.clone();
             let iii = iii_inner.clone();
             async move {
-                let req: SendReq = serde_json::from_value(raw).map_err(|e| {
-                    IIIError::Handler(
-                        json!({"code":"E611","message":format!("bad payload: {e}")}).to_string(),
-                    )
-                })?;
-
                 if req.to.is_empty() {
                     return Err(IIIError::Handler(
                         json!({"code":"E601","message":"at least one recipient required in `to`"})
@@ -81,17 +76,16 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
                 // Validate attachment sizes up-front before any network call.
                 let max_bytes = cfg.limits.max_attachment_bytes;
                 for a in &req.attachments {
-                    if let AttachmentSource::Base64(ref b) = a.source {
-                        // Base64 inflates by ~4/3 → conservative check on decoded size.
-                        let approx = b.len() * 3 / 4;
-                        if approx > max_bytes {
-                            return Err(IIIError::Handler(
-                                json!({
-                                    "code":"E605",
-                                    "message":format!("attachment `{}` exceeds max {} bytes", a.filename, max_bytes)
-                                }).to_string(),
-                            ));
-                        }
+                    let AttachmentSource::Base64(ref b) = a.source;
+                    // Base64 inflates by ~4/3 → conservative check on decoded size.
+                    let approx = b.len() * 3 / 4;
+                    if approx > max_bytes {
+                        return Err(IIIError::Handler(
+                            json!({
+                                "code":"E605",
+                                "message":format!("attachment `{}` exceeds max {} bytes", a.filename, max_bytes)
+                            }).to_string(),
+                        ));
                     }
                 }
 
@@ -136,9 +130,7 @@ pub fn register(iii: &Arc<III>, cfg: &Arc<crate::config::WorkerConfig>) {
              source: { kind: 'base64', data } }] }. Returns { message_id }. \
              Credentials are fetched from auth-credentials under provider key \
              `email::<account>` ({ username, password }). Provide html OR text \
-             (or both); at least one body is required. \
-             Note: only kind=base64 is supported in 0.1.0 — stream-source \
-             attachments return E699 pending the symmetric upload primitive.",
+             (or both); at least one body is required.",
         ),
     );
 }

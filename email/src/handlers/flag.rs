@@ -1,10 +1,11 @@
 use futures_util::StreamExt;
 use iii_sdk::{IIIError, RegisterFunction, III};
+use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct FlagReq {
     account: String,
     folder: String,
@@ -21,14 +22,9 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let pool = pool.clone();
     iii.register_function(
         "email::flag",
-        RegisterFunction::new_async(move |raw: Value| {
+        RegisterFunction::new_async(move |req: FlagReq| {
             let pool = pool.clone();
             async move {
-                let req: FlagReq = serde_json::from_value(raw).map_err(|e| {
-                    IIIError::Handler(
-                        json!({"code":"E611","message":format!("bad payload: {e}")}).to_string(),
-                    )
-                })?;
                 let allowed = ["seen", "flagged", "answered", "deleted", "draft"];
                 if !allowed.iter().any(|a| a.eq_ignore_ascii_case(&req.flag)) {
                     return Err(IIIError::Handler(

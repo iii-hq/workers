@@ -601,6 +601,7 @@ dependencies = [
  "lettre",
  "mail-parser",
  "rustls",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2190,6 +2191,7 @@ version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "schemars_derive",
  "serde",
