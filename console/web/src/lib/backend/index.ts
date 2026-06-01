@@ -3,15 +3,13 @@ import { realBackend } from './real'
 import type { ChatBackend } from './types'
 
 /**
- * Build-time flag: when truthy, ship the mock as the default backend (and
- * the playground page). When falsy, only the real backend is reachable, so
- * Rolldown tree-shakes `mockBackend` and every scenario module out of the
- * production chunk.
+ * Pick the chat backend by build mode: the mock streams canned bodies in dev
+ * (`pnpm dev`), and the real backend stub is used for production builds. Vite
+ * inlines `import.meta.env.DEV` as a literal, so Rolldown tree-shakes
+ * `mockBackend` out of the production chunk.
  */
-const PLAYGROUND_ENABLED = !!import.meta.env.VITE_PLAYGROUND
-
 export function getDefaultBackend(): ChatBackend {
-  return PLAYGROUND_ENABLED ? mockBackend : realBackend
+  return import.meta.env.DEV ? mockBackend : realBackend
 }
 
 export type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'

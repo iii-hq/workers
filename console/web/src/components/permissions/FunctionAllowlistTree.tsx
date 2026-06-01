@@ -199,6 +199,9 @@ function TreeBranch({
 }: TreeBranchProps) {
   const counts = collectCounts(node, allowlist)
   const hasChildren = node.children.length > 0
+  // Capture into a const so the narrowing survives into the onClick closure
+  // (a property access like node.entry would not narrow inside the callback).
+  const entry = node.entry
   const isOpen = expanded[node.path] !== false && hasChildren
   const branchState: 'unchecked' | 'mixed' | 'checked' =
     counts.allowed === 0
@@ -239,17 +242,17 @@ function TreeBranch({
             onClick={() => onToggleSubtree(node, branchState !== 'checked')}
             aria-label={`toggle all in ${node.path}`}
           />
-        ) : node.entry ? (
+        ) : entry ? (
           <Tristate
-            state={allowlist.has(node.entry.id) ? 'checked' : 'unchecked'}
-            onClick={() => onToggleLeaf(node.entry!.id)}
-            aria-label={`toggle ${node.entry.id}`}
+            state={allowlist.has(entry.id) ? 'checked' : 'unchecked'}
+            onClick={() => onToggleLeaf(entry.id)}
+            aria-label={`toggle ${entry.id}`}
           />
         ) : null}
 
         <span className="flex-1 min-w-0 truncate text-ink">
           {node.segment}
-          {node.entry && !isAutoAcceptable(node.entry.id) ? (
+          {entry && !isAutoAcceptable(entry.id) ? (
             <span className="ml-2 text-alert text-[11px]">
               · potentially destructive
             </span>
@@ -293,6 +296,7 @@ function Tristate({ state, onClick, 'aria-label': label }: TristateProps) {
   const ariaChecked =
     state === 'checked' ? true : state === 'mixed' ? 'mixed' : false
   return (
+    // biome-ignore lint/a11y/useSemanticElements: native <input type="checkbox"> can't render the tri-state "mixed" glyph with custom styling; button + role="checkbox" + aria-checked="mixed" is the WAI-ARIA tri-state pattern
     <button
       type="button"
       role="checkbox"

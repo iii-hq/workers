@@ -4,9 +4,8 @@
 //!    (used by `manifest.rs` for the registry `supported_targets` field).
 //! 2. Ensures the embedded SPA bundle exists. `rust-embed` reads
 //!    `web/dist/` at compile time; if it's missing or stale we run
-//!    `pnpm install --frozen-lockfile && pnpm build` (with
-//!    `VITE_PLAYGROUND=`) inside `web/` before the rest of the crate
-//!    compiles.
+//!    `pnpm install --frozen-lockfile && pnpm build` inside `web/`
+//!    before the rest of the crate compiles.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,7 +70,6 @@ fn main() {
 
     let status = Command::new(&pnpm)
         .args(["build"])
-        .env("VITE_PLAYGROUND", "")
         .current_dir(&web_dir)
         .status()
         .unwrap_or_else(|e| panic!("failed to spawn `pnpm build` in {}: {e}", web_dir.display()));

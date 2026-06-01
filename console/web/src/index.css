@@ -44,8 +44,8 @@
   --color-panel: #1a1916;
   --color-paper-2: #1f1e1c;
   --color-ink: #f2f0ed;
-  --color-ink-faint: #9c9893;
-  --color-ink-ghost: #5d5a55;
+  --color-ink-faint: #a8a49e;
+  --color-ink-ghost: #8a8782;
   --color-rule: #2a2926;
   --color-rule-2: #1f1e1c;
   --color-accent: #3ea8ff;
@@ -262,10 +262,12 @@
   --xy-controls-button-border-color: var(--color-rule);
 }
 
-.react-flow__controls,
-.react-flow__controls-button {
-  border-radius: 0 !important;
-  box-shadow: none !important;
+/* Scope under .react-flow so these win over xyflow's single-class defaults
+   (specificity 0-2-0 vs 0-1-0) without needing !important. */
+.react-flow .react-flow__controls,
+.react-flow .react-flow__controls-button {
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .react-flow__attribution {
@@ -290,6 +292,38 @@
   inset: 0;
   color: var(--color-ink-ghost);
   user-select: none;
+}
+
+/* single-line lexical input used by the worker configuration form for
+   strings that may contain ${VAR} / ${VAR:default} pills. Sized to match
+   the rest of the form's `h-9` controls so it doesn't visually stand out
+   among native inputs and selects. Scoped to `.workers-tab` so the larger
+   scale stays local to the workers configuration surface. */
+.workers-tab .env-lexical-editor {
+  outline: none;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.workers-tab .env-lexical-editor p {
+  margin: 0;
+}
+
+.workers-tab .env-lexical-placeholder {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding-inline: 12px;
+  color: var(--color-ink-ghost);
+  user-select: none;
+  font-family: var(--font-sans);
+  font-size: 15px;
 }
 
 /* iii-styled <details> rows: hide the native marker, rotate our own chevron */

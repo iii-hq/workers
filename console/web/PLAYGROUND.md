@@ -5,8 +5,9 @@ This document is the source of truth for two things:
 1. **The streaming contract** every `ChatBackend` honors. The chat surface
    only knows about this contract, never about a specific provider — so the
    internals can churn freely as long as the contract holds.
-2. **The Playground page** that exercises the contract through a catalog of
-   scenarios (slow streams, errors, multi-function runs, markdown stress, etc).
+2. **The Playground stories** in Storybook that exercise the contract through
+   a catalog of scenarios (slow streams, errors, multi-function runs, markdown
+   stress, etc).
 
 If you're swapping the mock for a real backend, this is the file to read
 first. If a scenario fails after your refactor, the contract has drifted —
@@ -14,17 +15,56 @@ either fix the backend or update both the scenario and this doc together.
 
 ## Quickstart
 
-The Playground (and the Examples spec sheet) ship behind a build-time flag.
+The Playground and the component spec sheet live in Storybook.
 
 ```bash
-# dev: flag is on by default (set in .env.development)
-npm run dev
-# open #/playground
+cd console/web
+pnpm storybook
+# open http://localhost:6006 → Playground
 ```
 
-In dev, the header has a `chat / playground / examples` toggle. Pick a
-scenario from the left rail, send any message, and watch the right-hand
-event log mirror every `StreamEvent` the backend yields.
+Pick a scenario story from the sidebar, send any message, and watch the
+right-hand event log mirror every `StreamEvent` the backend yields. The same
+mock contract powers the in-app chat dock in dev (`pnpm dev`).
+
+## Component stories
+
+Storybook is a static gallery of every UI primitive and surface, used to
+sanity-check visual changes in isolation. Stories are co-located next to their
+component (e.g. [`Select.stories.tsx`](src/components/ui/Select.stories.tsx));
+the sidebar groups them under `UI`, `Chat`, `Workers`, `Design`, and
+`Playground`.
+
+Alongside the chat primitives (composer, messages, loading, primitives,
+typography, color) it covers the worker-configuration surfaces:
+
+| group                | file                                                                                                    | what it shows                                                                                                          |
+|----------------------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| `UI/Select`          | [`Select.stories.tsx`](src/components/ui/Select.stories.tsx)                                            | the shared `Select`: flat / grouped / disabled, plus the empty-value and ellipsis fixes.                               |
+| `Workers/SchemaForm` | [`SchemaForm.stories.tsx`](src/pages/Configuration/tabs/WorkersTab/schema-form/SchemaForm.stories.tsx)  | one live `SchemaForm` per field variation (string/env, number, enum, oneOf, nullable, array, object, dictionary, $ref, errors). |
+| `Workers/WorkersTab` | [`WorkersTab.stories.tsx`](src/pages/Configuration/tabs/WorkersTab/WorkersTab.stories.tsx)              | the full master-detail editor over mock fixtures: select / edit / dirty / reset / save, including the inline error path. |
+
+The mock schemas and configs live in
+[`worker-fixtures.ts`](src/stories/fixtures/worker-fixtures.ts).
+Stories that render env-template string inputs are wrapped in a `.workers-tab`
+container (the `WorkersTabDecorator` in
+[`decorators.tsx`](src/stories/decorators.tsx)) so the Lexical pill styling
+(scoped to that class in `index.css`) applies. The worker-config harness
+simulates `configuration::set` with `mockValidate` — saving `telemetry` with
+`sample_rate > 1`, or clearing the `database` url, drives the inline
+validation-error path.
+
+### Select fixes documented here
+
+`UI/Select` is the regression surface for two
+[`Select`](src/components/ui/Select.tsx) fixes:
+
+- **Empty / unmatched values render the placeholder**, not the raw token. A
+  value of `undefined` (or any id absent from the options) no longer prints
+  "undefined". `allowEmpty` adds a leading clear option that fires `onClear`;
+  the schema-form `EnumField` uses it for optional enums (clearing to `null`).
+- **Long labels ellipsis** instead of stretching the trigger and pushing the
+  chevron off-screen.
 
 ## The streaming contract
 
@@ -101,7 +141,7 @@ graph TD
   Backend["ChatBackend interface"]
   Mock["mockBackend (lib/backend/mock.ts)"]
   Real["realBackend (lib/backend/real.ts) - stub today"]
-  Scenarios["scenarioBackend (pages/Playground/scenarios)"]
+  Scenarios["scenarioBackend (stories/playground/scenarios)"]
 
   ChatView -->|consumes| Backend
   Backend -.implements.- Mock
@@ -114,12 +154,12 @@ The seam is `chat-app/src/lib/backend/`:
 - [`types.ts`](src/lib/backend/types.ts) — the contract types: `StreamEvent`,
   `ChatStreamOptions`, `ChatBackend`.
 - [`mock.ts`](src/lib/backend/mock.ts) — three canned bodies, jittered token
-  delays, abort-aware sleeps. Imported only when `VITE_PLAYGROUND` is on.
+  delays, abort-aware sleeps. Used in dev; tree-shaken from prod builds.
 - [`real.ts`](src/lib/backend/real.ts) — stub that throws
   `'backend not configured'`. Replace its body with your provider; preserve
   the `ChatBackend` shape and you're done.
-- [`index.ts`](src/lib/backend/index.ts) — `getDefaultBackend()` picks one or
-  the other based on the build-time flag.
+- [`index.ts`](src/lib/backend/index.ts) — `getDefaultBackend()` returns the
+  mock when `import.meta.env.DEV`, otherwise the real backend.
 
 The chat page imports `getDefaultBackend()` once at module load and passes
 it to `ChatView` as a prop. Nothing else in the app depends on the choice.
@@ -127,9 +167,10 @@ it to `ChatView` as a prop. Nothing else in the app depends on the choice.
 ## Scenarios
 
 Each scenario is a `ChatBackend` exported from
-[`pages/Playground/scenarios/`](src/pages/Playground/scenarios/). The
-registry in [`scenarios/index.ts`](src/pages/Playground/scenarios/index.ts)
-groups them and exposes them to the picker.
+[`stories/playground/scenarios/`](src/stories/playground/scenarios/). The
+registry in [`scenarios/index.ts`](src/stories/playground/scenarios/index.ts)
+groups them; each group maps to a `Playground/*.stories.tsx` file, so every
+scenario shows up as its own story in the Storybook sidebar.
 
 | id                  | group         | what it asserts                                                              |
 |---------------------|---------------|------------------------------------------------------------------------------|
@@ -382,49 +423,43 @@ change, and leaves the bigger redesigns documented and unblocked.
 **Proposal B is the strongest match for the "side by side, both equally
 important" direction** and is the most likely follow-up.
 
-## Flag plumbing
+## Dev vs prod backend
 
-A single env var, `VITE_PLAYGROUND`, controls visibility:
+There's no build-time flag anymore. The Playground and the component spec
+sheet are Storybook-only — their stories, the scenarios, the `EventLog`, and
+the fixtures all live under [`src/stories/`](src/stories) and are never part
+of the app's module graph, so they can't leak into the production bundle.
 
-| file                | value     | effect                                              |
-|---------------------|-----------|-----------------------------------------------------|
-| `.env.development`  | `1`       | dev defaults: Playground + Examples + mock shipped. |
-| `.env.production`   | empty     | prod defaults: pages and mock tree-shaken.          |
+The one runtime choice left is which backend the **in-app chat dock** uses:
 
-The flag is consumed in three places:
+| build               | `getDefaultBackend()` | effect                                     |
+|---------------------|-----------------------|--------------------------------------------|
+| dev (`pnpm dev`)    | `mockBackend`         | canned streaming, no API keys.             |
+| prod (`pnpm build`) | `realBackend`         | the stub you replace with a real provider. |
 
-1. [`src/App.tsx`](src/App.tsx) — `lazy()`-wraps the Playground and Examples
-   pages and only registers the routes when the flag is truthy.
-2. [`src/hooks/use-hash-route.ts`](src/hooks/use-hash-route.ts) — `#/playground`
-   and `#/examples` resolve to `chat` when the flag is off, so old deep links
-   degrade gracefully.
-3. [`src/lib/backend/index.ts`](src/lib/backend/index.ts) — `getDefaultBackend()`
-   returns the mock when the flag is on, otherwise the real backend stub.
-
-Vite/Rolldown inlines `import.meta.env.VITE_PLAYGROUND` as a literal at
-build time. The dead branch (and every transitive import) is then dropped
-by tree-shaking.
+[`src/lib/backend/index.ts`](src/lib/backend/index.ts) keys off
+`import.meta.env.DEV`, which Vite/Rolldown inlines as a literal at build time,
+so `mockBackend` (and its transitive imports) is dropped by tree-shaking in
+production.
 
 ### Verifying a prod build is clean
 
 ```bash
-npm run build
-# expect: a single index-*.js, no Playground-*.js or Examples-*.js chunks
-
-# none of these strings should appear in dist/assets/*.js:
+pnpm build
+# the scenario ids live in Storybook only, so none should appear in the app
+# bundle:
 grep -E '"happy-(plan|ask|agent)"|"abort-mid-thought"|"long-markdown"' dist/assets/*.js && echo "LEAK" || echo "clean"
 ```
 
-A flag-on build (`VITE_PLAYGROUND=1 npm run build`) emits separate
-`Playground-*.js` and `Examples-*.js` chunks — that's the expected dev/staging
-layout, not the production layout.
+Storybook builds separately: `pnpm build-storybook` emits `storybook-static/`,
+which is git-ignored and never embedded into the `console` binary.
 
 ## Adding a new scenario
 
-Three steps. Average size is 30–60 lines.
+Four steps. Average size is 30–60 lines.
 
-1. Create `src/pages/Playground/scenarios/<id>.ts`. Use the helpers from
-   [`scenarios/helpers.ts`](src/pages/Playground/scenarios/helpers.ts):
+1. Create `src/stories/playground/scenarios/<id>.ts`. Use the helpers from
+   [`scenarios/helpers.ts`](src/stories/playground/scenarios/helpers.ts):
 
    ```ts
    import { makeBackend, streamAssistant, streamThought } from './helpers'
@@ -439,7 +474,7 @@ Three steps. Average size is 30–60 lines.
    ```
 
 2. Register it in
-   [`scenarios/index.ts`](src/pages/Playground/scenarios/index.ts):
+   [`scenarios/index.ts`](src/stories/playground/scenarios/index.ts):
 
    ```ts
    import { myScenario } from './my-scenario'
@@ -457,7 +492,15 @@ Three steps. Average size is 30–60 lines.
    ]
    ```
 
-3. Add a row to the table in [the Scenarios section](#scenarios) of this
+3. Surface it as a story. Add an export to the group's
+   `Playground/*.stories.tsx` file (e.g. `HappyPaths.stories.tsx`), or create a
+   new group file if you added a new `ScenarioGroup`:
+
+   ```ts
+   export const MyScenario: Story = scenarioStory('my-scenario')
+   ```
+
+4. Add a row to the table in [the Scenarios section](#scenarios) of this
    doc. The table is the regression contract — keep it in sync.
 
 ## Out of scope

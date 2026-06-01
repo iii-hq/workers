@@ -177,5 +177,5 @@ function RequestFilters({ req }: { req?: WorkersListRequest }) {
   if (req.search) {
     chips.push(<FilterChip key="search" label="search" value={req.search} />)
   }
-  return chips.length > 0 ? <>{chips}</> : null
+  return chips.length > 0 ? chips : null
 }

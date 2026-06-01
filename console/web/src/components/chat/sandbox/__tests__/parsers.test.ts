@@ -4,6 +4,7 @@ import {
   createResponseSchema,
   execRequestSchema,
   execResponseSchema,
+  extractFirstJsonObject,
   fsChmodRequestSchema,
   fsChmodResponseSchema,
   fsGrepRequestSchema,
@@ -23,7 +24,6 @@ import {
   fsStatResponseSchema,
   fsWriteRequestSchema,
   fsWriteResponseSchema,
-  extractFirstJsonObject,
   isSandboxErrorWire,
   listResponseSchema,
   parseSandboxErrorDisplay,
@@ -195,7 +195,12 @@ describe('parseSandboxErrorDisplay', () => {
           message: 'path is required',
           docs_url: 'https://example/S210',
         },
-        content: [{ type: 'text', text: '{"code":"S210","message":"path is required"}' }],
+        content: [
+          {
+            type: 'text',
+            text: '{"code":"S210","message":"path is required"}',
+          },
+        ],
       },
     })
     expect(out?.variant).toBe('wire')

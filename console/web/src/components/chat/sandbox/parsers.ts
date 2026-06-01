@@ -410,7 +410,11 @@ function contentBlocksText(content: unknown): string | undefined {
   for (const block of content) {
     if (!block || typeof block !== 'object') continue
     const obj = block as Record<string, unknown>
-    if (obj.type === 'text' && typeof obj.text === 'string' && obj.text.length > 0) {
+    if (
+      obj.type === 'text' &&
+      typeof obj.text === 'string' &&
+      obj.text.length > 0
+    ) {
       parts.push(obj.text)
     }
   }
@@ -445,7 +449,10 @@ function tryParseWire(value: unknown): SandboxErrorWire | null {
 
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const obj = value as Record<string, unknown>
-  if (obj.error === 'handler_error' || (typeof obj.code === 'string' && /^S\d{3}$/.test(obj.code))) {
+  if (
+    obj.error === 'handler_error' ||
+    (typeof obj.code === 'string' && /^S\d{3}$/.test(obj.code))
+  ) {
     const { error: _tag, ...rest } = obj
     const tagged = sandboxErrorWireSchema.safeParse(rest)
     if (tagged.success) return tagged.data
@@ -476,7 +483,8 @@ function denialToInvocation(
           : denial.status === 'denied'
             ? 'Denied'
             : 'Invocation failed'
-  const message = denial.reason ?? fallbackMessage ?? 'The sandbox call could not complete.'
+  const message =
+    denial.reason ?? fallbackMessage ?? 'The sandbox call could not complete.'
   return {
     title,
     message,
@@ -491,7 +499,8 @@ function invocationFromFunctionError(
   envelope: z.infer<typeof functionErrorEnvelopeSchema>,
 ): SandboxInvocationError | null {
   const detailText = contentBlocksText(envelope.content)
-  const denial = envelope.details != null ? tryParseDenial(envelope.details) : null
+  const denial =
+    envelope.details != null ? tryParseDenial(envelope.details) : null
   if (denial) {
     return denialToInvocation(denial, envelope.message, detailText)
   }

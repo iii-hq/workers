@@ -148,8 +148,6 @@ jobs:
       - name: Pre-build SPA bundle
         if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}/web
-        env:
-          VITE_PLAYGROUND: ''
         run: |
           pnpm install --frozen-lockfile
           pnpm build

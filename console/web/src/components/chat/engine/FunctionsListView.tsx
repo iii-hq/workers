@@ -94,5 +94,5 @@ function RequestFilters({ req }: { req?: FunctionsListRequest }) {
   if (req.include_internal) {
     chips.push(<InternalChip key="internal" />)
   }
-  return chips.length > 0 ? <>{chips}</> : null
+  return chips.length > 0 ? chips : null
 }

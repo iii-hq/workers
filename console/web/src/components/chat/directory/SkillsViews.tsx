@@ -252,5 +252,5 @@ function RequestFilters({ req }: { req?: SkillsListRequest }) {
       </KvChip>,
     )
   }
-  return chips.length > 0 ? <>{chips}</> : null
+  return chips.length > 0 ? chips : null
 }
