@@ -118,12 +118,18 @@ export function Select<T extends string>({
           className,
         )}
       >
-        <SelectPrimitive.Value
-          className="min-w-0 flex-1 truncate text-left"
-          placeholder={placeholder}
-        >
-          {selected?.label}
-        </SelectPrimitive.Value>
+        {/*
+         * Radix's `Select.Value` strips `className`/`style` from the span it
+         * renders, so truncation has to live on a wrapper we control. The
+         * wrapper is the flex item (`flex-1 min-w-0`) and owns the ellipsis;
+         * `white-space: nowrap` inherits into Radix's inline span, keeping the
+         * label on one line so the trigger stays at its fixed height.
+         */}
+        <span className="min-w-0 flex-1 truncate text-left">
+          <SelectPrimitive.Value placeholder={placeholder}>
+            {selected?.label}
+          </SelectPrimitive.Value>
+        </span>
         <SelectPrimitive.Icon asChild>
           <span aria-hidden className="shrink-0 text-ink-faint">
             <svg
