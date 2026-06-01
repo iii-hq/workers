@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import { handleApprovalStateWrite } from '../../src/turn-orchestrator/function-awaiting-approval/process.js';
 import { ApprovalDecisionEventSchema } from '../../src/turn-orchestrator/schemas.js';
+import { TURN_STEP_QUEUE } from '../../src/turn-orchestrator/state-runtime/store.js';
 
 const matchingEvent = {
   event_type: 'state:created' as const,
@@ -33,7 +34,7 @@ describe('handleApprovalStateWrite', () => {
     expect(triggers).toHaveLength(1);
     expect(triggers[0]?.function_id).toBe('turn::function_awaiting_approval');
     expect(triggers[0]?.payload).toEqual({ session_id: 'sess-abc' });
-    expect(triggers[0]?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
+    expect(triggers[0]?.action).toEqual(TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }));
   });
 
   it('no-ops on a non-matching event', async () => {

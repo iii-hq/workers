@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction } from '../../src/runtime/iii.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import { createTurnStore } from '../../src/turn-orchestrator/state-runtime/store.js';
+import {
+  createTurnStore,
+  TURN_STEP_QUEUE,
+} from '../../src/turn-orchestrator/state-runtime/store.js';
 import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 
@@ -71,7 +74,7 @@ describe('saveRecord wake integration', () => {
       {
         session_id: 'sess-a',
         function_id: 'turn::provisioning',
-        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
+        action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
       },
     ]);
   });
@@ -90,12 +93,12 @@ describe('saveRecord wake integration', () => {
       {
         session_id: 'sess-b',
         function_id: 'turn::provisioning',
-        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
+        action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
       },
       {
         session_id: 'sess-b',
         function_id: 'turn::assistant_streaming',
-        action: TriggerAction.Enqueue({ queue: 'turn-step' }),
+        action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
       },
     ]);
   });
