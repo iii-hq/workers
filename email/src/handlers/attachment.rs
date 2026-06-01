@@ -1,16 +1,19 @@
-use iii_sdk::channels::{ChannelWriter, StreamChannelRef};
+use iii_sdk::channels::ChannelWriter;
 use iii_sdk::{IIIError, RegisterFunction, III};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-#[derive(Deserialize)]
+use crate::provider::StreamRef;
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct AttachReq {
     account: String,
     folder: String,
     uid: u32,
     part_id: String,
-    response: StreamChannelRef,
+    response: StreamRef,
 }
 
 pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
@@ -18,16 +21,11 @@ pub fn register(iii: &Arc<III>, pool: &Arc<crate::provider::imap::ImapPool>) {
     let iii_inner = iii.clone();
     iii.register_function(
         "email::attachment::get",
-        RegisterFunction::new_async(move |raw: Value| {
+        RegisterFunction::new_async(move |req: AttachReq| {
             let pool = pool.clone();
             let iii = iii_inner.clone();
             async move {
-                let req: AttachReq = serde_json::from_value(raw).map_err(|e| {
-                    IIIError::Handler(
-                        json!({"code":"E611","message":format!("bad payload: {e}")}).to_string(),
-                    )
-                })?;
-                let writer = ChannelWriter::new(iii.address(), &req.response);
+                let writer = ChannelWriter::new(iii.address(), &req.response.into());
 
                 let mut guard = pool.acquire(&req.account, &req.folder).await?;
                 let fetch_result = {
