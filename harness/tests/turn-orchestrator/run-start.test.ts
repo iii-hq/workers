@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
 import { execute, register } from '../../src/turn-orchestrator/run-start.js';
 import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
+import { TURN_STEP_QUEUE } from '../../src/turn-orchestrator/state-runtime/store.js';
 
 type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
@@ -162,6 +163,6 @@ describe('execute', () => {
     const wake = calls.find((c) => c.function_id === 'turn::provisioning');
     expect(wake).toBeDefined();
     expect(wake?.payload).toEqual({ session_id: 'sess-1' });
-    expect(wake?.action).toEqual(TriggerAction.Enqueue({ queue: 'turn-step' }));
+    expect(wake?.action).toEqual(TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }));
   });
 });
