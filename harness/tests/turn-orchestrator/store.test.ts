@@ -89,6 +89,41 @@ describe('saveRecord turn_state_changed emission', () => {
   });
 });
 
+describe('saveRecord no-op suppression', () => {
+  it('does not emit turn_state_changed when the view is unchanged (timestamp-only delta)', async () => {
+    const { iii, emits } = fakeIii();
+    const store = createTurnStore(iii);
+    const rec = newRecord('sess-a');
+    // Same view; differs only in updated_at_ms (which toView drops).
+    const previous = { ...rec, updated_at_ms: rec.updated_at_ms + 1000 };
+
+    await store.saveRecord(rec, previous);
+
+    expect(emits).toHaveLength(0);
+  });
+
+  it('does not emit on an idempotent re-save (previous === current)', async () => {
+    const { iii, emits } = fakeIii();
+    const store = createTurnStore(iii);
+    const rec = newRecord('sess-a');
+
+    await store.saveRecord(rec, rec);
+
+    expect(emits).toHaveLength(0);
+  });
+
+  it('still emits when a view field other than state changes', async () => {
+    const { iii, emits } = fakeIii();
+    const store = createTurnStore(iii);
+    const rec = newRecord('sess-a');
+    const previous = { ...rec, turn_count: rec.turn_count + 1 };
+
+    await store.saveRecord(rec, previous);
+
+    expect(emits).toHaveLength(1);
+  });
+});
+
 describe('shouldWakeStep', () => {
   it('accepts first write to a stepable state', () => {
     expect(shouldWakeStep(null, 'provisioning')).toBe(true);

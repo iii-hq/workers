@@ -93,13 +93,20 @@ async function persistRecord(
   const result = await scopedSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
   const prev = previous !== undefined ? previous : parseTurnStateRecord(result?.old_value ?? null);
 
-  await emitTurnStateChanged(
-    iii,
-    rec.session_id,
-    prev == null ? 'state:created' : 'state:updated',
-    toView(rec),
-    prev != null ? toView(prev) : undefined,
-  );
+  const nextView = toView(rec);
+  const prevView = prev != null ? toView(prev) : undefined;
+  const viewChanged =
+    prevView === undefined || JSON.stringify(prevView) !== JSON.stringify(nextView);
+
+  if (viewChanged) {
+    await emitTurnStateChanged(
+      iii,
+      rec.session_id,
+      prev == null ? 'state:created' : 'state:updated',
+      nextView,
+      prevView,
+    );
+  }
 
   return prev;
 }
