@@ -1,4 +1,4 @@
-import type { Credential } from '../auth-credentials/types.js';
+import type { Credential } from '../runtime/provider-resolve.js';
 
 export type ChatCompletionsConfig = {
   url: string;

@@ -1,8 +1,11 @@
-import { logger } from '../runtime/otel.js';
-import type { Credential } from '../auth-credentials/types.js';
-import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
 import { normalizeChatCompletionsUrl } from '../runtime/openai-compat-url.js';
+import { logger } from '../runtime/otel.js';
+import {
+  type Credential,
+  type ProviderResolveResult,
+  resolveProvider,
+} from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
 
@@ -10,12 +13,20 @@ import { type ChatCompletionsConfig, configFromCredential } from './types.js';
 // no documented "default" bearer string — the server either enforces a
 // shared `--api-key` (in which case the caller must match it) or accepts
 // any/no token. We therefore:
-//   - use LLAMACPP_API_KEY if present (set when the user started
-//     llama-server with `--api-key …`)
+//   - use the configured api key / LLAMACPP_API_KEY if present (set when the
+//     user started llama-server with `--api-key …`)
 //   - on loopback without a key, omit Authorization entirely
 //   - on non-loopback without a key, omit AND warn (don't ship a
 //     synthetic bearer to an arbitrary host)
-const CREDENTIAL_PROVIDER_SLUG = 'llamacpp';
+export const PROVIDER_ID = 'llamacpp';
+
+const EMPTY_RESOLVE: ProviderResolveResult = {
+  configured: false,
+  source: null,
+  credential: null,
+  api_url: null,
+  max_tokens: null,
+};
 
 function extractKey(cred: Credential | null): string {
   if (!cred) return '';
@@ -41,22 +52,25 @@ export function isLoopbackUrl(url: string): boolean {
   return false;
 }
 
-export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
+/**
+ * Resolve this provider's credential + settings via the harness registry.
+ * Tolerant: llama-server commonly runs unauthenticated on loopback, so a
+ * missing harness/registry yields an empty result rather than throwing.
+ */
+async function resolveTolerant(iii: ISdk): Promise<ProviderResolveResult> {
   try {
-    const cred = await iii.trigger<unknown, Credential | null>({
-      function_id: 'auth::get_token',
-      payload: { provider: CREDENTIAL_PROVIDER_SLUG },
-      timeoutMs: 5_000,
-    });
-    if (!cred || typeof cred !== 'object' || !('type' in cred)) return null;
-    return cred;
+    return await resolveProvider(iii, PROVIDER_ID);
   } catch (err) {
-    logger.warn('llamacpp.auth: fetchCredential failed; falling back to no-credential', {
+    logger.warn('llamacpp.auth: resolve failed; falling back to no-credential', {
       code: 'llamacpp_auth_fetch_failed',
       err: String(err),
     });
-    return null;
+    return EMPTY_RESOLVE;
   }
+}
+
+export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
+  return (await resolveTolerant(iii)).credential;
 }
 
 /**
@@ -96,18 +110,14 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const [cred, overrides] = await Promise.all([
-    fetchCredential(iii),
-    fetchOverrides(iii, 'llamacpp'),
-  ]);
-  // Normalise the override URL so a base-URL save from the Providers UI
+  const resolved = await resolveTolerant(iii);
+  const cred = resolved.credential;
+  // Normalise the override URL so a base-URL save from the config UI
   // (e.g. `http://host:8080`) gets `/v1/chat/completions` appended.
   // worker.default_api_url is already normalised in resolveApiUrl.
-  const overrideUrl = overrides.default_api_url
-    ? normalizeChatCompletionsUrl(overrides.default_api_url)
-    : null;
+  const overrideUrl = resolved.api_url ? normalizeChatCompletionsUrl(resolved.api_url) : null;
   const apiUrl = overrideUrl ?? worker.default_api_url;
-  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
+  const maxTokens = resolved.max_tokens ?? worker.default_max_tokens;
   // Pass the credential through verbatim so configFromCredential can
   // populate api_key (empty string when no credential). Header emission
   // is gated separately in buildAuthHeaders/the stream layer.

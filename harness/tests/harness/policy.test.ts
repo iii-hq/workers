@@ -558,8 +558,11 @@ describe('shipped iii-permissions.yaml', () => {
     'state::delete',
     'stream::set',
     'iii::durable::publish',
-    'auth::set_token',
-    'auth::delete_token',
+    'harness::provider::resolve',
+    'harness::provider::register',
+    'configuration::get',
+    'configuration::set',
+    'configuration::register',
     'run::start',
     'router::stream_assistant',
   ];
@@ -583,7 +586,7 @@ describe('shipped iii-permissions.yaml', () => {
 
   it('allows the read-only conveniences', async () => {
     const perms = await load();
-    for (const fid of ['state::get', 'state::list', 'models::list', 'auth::status']) {
+    for (const fid of ['state::get', 'state::list', 'models::list', 'models::get']) {
       expect(perms.check(fid, {}).kind).toBe('allow');
     }
   });

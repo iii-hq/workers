@@ -1,7 +1,8 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { buildAuthHeaders } from './auth.js';
+import { declareProvider } from '../runtime/provider-resolve.js';
+import { buildAuthHeaders, PROVIDER_ID } from './auth.js';
 import { register as registerComplete } from './complete.js';
 import { loadWorkerConfig } from './config.js';
 import { discoverAndRegister } from './discover.js';
@@ -18,6 +19,17 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerRefresh(iii, worker);
   registerLoad(iii, worker);
   registerUnload(iii, worker);
+
+  // Self-declare into the harness configuration schema. The api_url is
+  // env-driven (LMSTUDIO_BASE_URL) so we don't pin it as a stored default;
+  // only max_tokens is seeded for the form.
+  void declareProvider(iii, {
+    id: PROVIDER_ID,
+    display_name: 'lm studio',
+    credential_env_var: 'LMSTUDIO_API_KEY',
+    defaults: { max_tokens: worker.default_max_tokens },
+    supports_model_listing: true,
+  });
 
   // Fire-and-forget startup discovery: probe LM Studio's /api/v0/models
   // and register each currently-loaded LLM so the picker shows real model

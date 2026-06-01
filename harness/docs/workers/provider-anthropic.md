@@ -6,9 +6,10 @@ iii bus.
 
 ## Purpose
 
-This worker is the iii-side bridge to Anthropic's Messages API. It pulls a
-credential from the auth worker (`auth::get_token`, provider `anthropic`),
-issues a streaming Messages API request, parses the SSE response into
+This worker is the iii-side bridge to Anthropic's Messages API. It resolves
+its credential + runtime settings from the harness provider registry
+(`harness::provider::resolve`, provider `anthropic`), issues a streaming
+Messages API request, parses the SSE response into
 `AssistantMessageEvent` frames, and forwards each frame to the
 caller-supplied channel. The terminal event is either `Done` or `Error`,
 followed by a `close` on the writer.
@@ -51,9 +52,9 @@ From the `provider_anthropic` section of
 
 ## Dependencies
 
-From
-[src/provider-anthropic/iii.worker.yaml](harness/src/provider-anthropic/iii.worker.yaml):
-`auth-credentials ^0.2.0`. The worker also calls the SDK-provided
+The worker self-declares to the harness provider registry at startup
+(`harness::provider::register`) and resolves credentials/settings per
+request (`harness::provider::resolve`). It also calls the SDK-provided
 `ChannelWriter` injected into the `writer_ref` field of the stream input.
 
 ## Source layout
@@ -64,7 +65,8 @@ From
 | [src/provider-anthropic/register.ts](harness/src/provider-anthropic/register.ts) | Registers both functions. |
 | [src/provider-anthropic/config.ts](harness/src/provider-anthropic/config.ts) | Loads the `provider_anthropic` section. |
 | [src/provider-anthropic/types.ts](harness/src/provider-anthropic/types.ts) | `AnthropicConfig` + `configWithCredential` builder. |
-| [src/provider-anthropic/auth.ts](harness/src/provider-anthropic/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`. |
+| [src/provider-anthropic/auth.ts](harness/src/provider-anthropic/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
+| [src/provider-anthropic/discover.ts](harness/src/provider-anthropic/discover.ts) + [refresh-fn.ts](harness/src/provider-anthropic/refresh-fn.ts) | `GET /v1/models` discovery → `models::register` (`provider::anthropic::refresh_models`). |
 | [src/provider-anthropic/cache.ts](harness/src/provider-anthropic/cache.ts) | In-process credential / config cache. |
 | [src/provider-anthropic/stream.ts](harness/src/provider-anthropic/stream.ts) | `streamAnthropic` async generator: builds request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-anthropic/sse.ts](harness/src/provider-anthropic/sse.ts) | SSE parser. |

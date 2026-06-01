@@ -5,9 +5,10 @@ Kimi (Moonshot) Chat Completions streaming provider; exposes
 
 ## Purpose
 
-The iii-side bridge to Moonshot's Chat Completions API. It pulls a
-credential from the auth worker (`auth::get_token`, provider `kimi`),
-issues a streaming `chat/completions` request, parses the SSE response
+The iii-side bridge to Moonshot's Chat Completions API. It resolves its
+credential + runtime settings from the harness provider registry
+(`harness::provider::resolve`, provider `kimi`), issues a streaming
+`chat/completions` request, parses the SSE response
 into `AssistantMessageEvent` frames, and forwards each frame to the
 caller-supplied channel. Mirrors the shape of
 [provider-openai](harness/docs/workers/provider-openai.md) so the
@@ -47,15 +48,16 @@ From the `provider_kimi` section of
   `https://api.moonshot.ai/v1/chat/completions`) — endpoint for outbound
   calls. Override to target Moonshot's China endpoint
   (`https://api.moonshot.cn/v1/chat/completions`) or any Chat-Completions
-  compatible gateway; `auth-credentials` looks up the credential by the
+  compatible gateway; the harness registry looks up the credential by the
   `provider` field, so adjust the gateway and the credential together.
 
 ## Dependencies
 
-From
-[src/provider-kimi/iii.worker.yaml](harness/src/provider-kimi/iii.worker.yaml):
-`auth-credentials ^0.2.0`. The worker also calls the SDK-provided
-`ChannelWriter` injected into the `writer_ref` field of the stream input.
+The worker self-declares to the harness provider registry at startup
+(`harness::provider::register`) and resolves credentials/settings per
+request (`harness::provider::resolve`). The credential falls back to
+`MOONSHOT_API_KEY`. It also calls the SDK-provided `ChannelWriter` injected
+into the `writer_ref` field of the stream input.
 
 ## Source layout
 
@@ -65,7 +67,8 @@ From
 | [src/provider-kimi/register.ts](harness/src/provider-kimi/register.ts) | Registers both functions. |
 | [src/provider-kimi/config.ts](harness/src/provider-kimi/config.ts) | Loads the `provider_kimi` section. |
 | [src/provider-kimi/types.ts](harness/src/provider-kimi/types.ts) | `ChatCompletionsConfig` + `configFromCredential` builder. |
-| [src/provider-kimi/auth.ts](harness/src/provider-kimi/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`. |
+| [src/provider-kimi/auth.ts](harness/src/provider-kimi/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
+| [src/provider-kimi/discover.ts](harness/src/provider-kimi/discover.ts) + [refresh-fn.ts](harness/src/provider-kimi/refresh-fn.ts) | `GET /v1/models` discovery → `models::register` (`provider::kimi::refresh_models`). |
 | [src/provider-kimi/stream.ts](harness/src/provider-kimi/stream.ts) | `streamKimi` async generator: builds the request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-kimi/sse.ts](harness/src/provider-kimi/sse.ts) | SSE parser. |
 | [src/provider-kimi/wire-messages.ts](harness/src/provider-kimi/wire-messages.ts) | `AgentMessage[]` → Kimi `messages` translation. |

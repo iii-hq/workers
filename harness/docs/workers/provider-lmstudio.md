@@ -52,11 +52,10 @@ override it for individual models if needed.
    });
    ```
 
-LM Studio model IDs are user-controlled (whatever you have loaded), so the
-catalog only ships a single `lmstudio-local` capability placeholder.
-[src/models-catalog/catalog.ts](harness-node/src/models-catalog/catalog.ts)'s
-`syncGet` falls back to that placeholder for any unknown `(lmstudio, *)`
-lookup so capability gating still works.
+LM Studio model IDs are user-controlled (whatever you have loaded). Startup
+discovery and `provider::lmstudio::refresh_models` register the loaded models
+into the catalog via `models::register`, so capability lookups resolve
+against the real ids the user is running.
 
 ### Optional API key
 
@@ -64,8 +63,9 @@ The default localhost setup runs without authentication; the worker
 detects a missing credential and falls back to the literal token
 `lm-studio` so the `Authorization` header is always present (some
 corporate proxies require it). If you run an authenticated LM Studio
-deployment, set `LMSTUDIO_API_KEY` so `auth::get_token` returns it and
-the worker will use the real key instead.
+deployment, set an api key in the `harness` configuration entry (or
+`LMSTUDIO_API_KEY`) so `harness::provider::resolve` returns it and the
+worker will use the real key instead.
 
 ## Registered functions
 
@@ -105,12 +105,12 @@ services, so any regex heuristic would cause false positives.
 
 ## Dependencies
 
-From
-[src/provider-lmstudio/iii.worker.yaml](harness-node/src/provider-lmstudio/iii.worker.yaml):
-`auth-credentials ^0.2.0` (used opportunistically — the worker proceeds
-with a synthetic key when no credential is present). The worker also
-calls the SDK-provided `ChannelWriter` injected into the `writer_ref`
-field of the stream input.
+The worker self-declares to the harness provider registry at startup
+(`harness::provider::register`) and resolves credentials/settings per
+request (`harness::provider::resolve`, used opportunistically — the worker
+proceeds with a synthetic `lm-studio` key on loopback when no credential is
+present). It also calls the SDK-provided `ChannelWriter` injected into the
+`writer_ref` field of the stream input.
 
 ## Source layout
 
@@ -120,7 +120,7 @@ field of the stream input.
 | [src/provider-lmstudio/register.ts](harness-node/src/provider-lmstudio/register.ts) | Registers both functions. |
 | [src/provider-lmstudio/config.ts](harness-node/src/provider-lmstudio/config.ts) | Loads the `provider_lmstudio` section. |
 | [src/provider-lmstudio/types.ts](harness-node/src/provider-lmstudio/types.ts) | `ChatCompletionsConfig` + `configFromCredential` builder. |
-| [src/provider-lmstudio/auth.ts](harness-node/src/provider-lmstudio/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`, with `lm-studio` fallback for no-auth localhost setups. |
+| [src/provider-lmstudio/auth.ts](harness-node/src/provider-lmstudio/auth.ts) | `buildConfig`/`buildAuthHeaders` (call `harness::provider::resolve`), with `lm-studio` fallback for no-auth localhost setups. |
 | [src/provider-lmstudio/stream.ts](harness-node/src/provider-lmstudio/stream.ts) | `streamLmstudio` async generator: builds the request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-lmstudio/sse.ts](harness-node/src/provider-lmstudio/sse.ts) | SSE parser, including LM Studio-specific "no model loaded" error classification. |
 | [src/provider-lmstudio/wire-messages.ts](harness-node/src/provider-lmstudio/wire-messages.ts) | `AgentMessage[]` → LM Studio (OpenAI) `messages` translation. |

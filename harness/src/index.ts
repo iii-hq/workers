@@ -9,8 +9,8 @@
 
 import { Command } from 'commander';
 import { register as registerApprovalGate } from './approval-gate/resolve.js';
+import { initDefaultMode } from './approval-gate/settings/default-mode.js';
 import { registerSettingsHandlers as registerApprovalSettings } from './approval-gate/settings/register.js';
-import { register as registerAuthCredentials } from './auth-credentials/register.js';
 import { register as registerContextCompaction } from './context-compaction/register.js';
 import { register as registerHarness } from './harness/register.js';
 import { register as registerHookFanout } from './hook-fanout/register.js';
@@ -19,7 +19,6 @@ import { register as registerModelsCatalog } from './models-catalog/register.js'
 import { register as registerProviderAnthropic } from './provider-anthropic/register.js';
 import { register as registerProviderKimi } from './provider-kimi/register.js';
 import { register as registerProviderLlamacpp } from './provider-llamacpp/register.js';
-import { register as registerProviderConfig } from './provider-config/register.js';
 import { register as registerProviderLmstudio } from './provider-lmstudio/register.js';
 import { register as registerProviderOpenai } from './provider-openai/register.js';
 import { logger } from './runtime/otel.js';
@@ -55,6 +54,7 @@ const WORKERS: readonly WorkerDefinition[] = [
     register: async (iii) => {
       await registerApprovalGate(iii);
       registerApprovalSettings(iii);
+      await initDefaultMode(iii);
     },
   },
   {
@@ -68,17 +68,6 @@ const WORKERS: readonly WorkerDefinition[] = [
     description:
       'Generic publish-collect primitive: publishes a topic via iii::durable::publish, collects subscriber replies on agent::hook_reply, applies a merge rule, returns the merged result.',
     register: (iii, ctx) => registerHookFanout(iii, ctx),
-  },
-  {
-    name: 'auth-credentials',
-    description: 'Credential store for provider API keys and OAuth tokens (auth::*).',
-    register: (iii, ctx) => registerAuthCredentials(iii, ctx),
-  },
-  {
-    name: 'provider-config',
-    description:
-      'Runtime non-secret provider overrides on the iii bus (provider_config::*). Sibling to auth-credentials.',
-    register: (iii, ctx) => registerProviderConfig(iii, ctx),
   },
   {
     name: 'models-catalog',

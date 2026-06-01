@@ -1,23 +1,35 @@
-import { logger } from '../runtime/otel.js';
-import type { Credential } from '../auth-credentials/types.js';
-import { fetchOverrides } from '../runtime/fetch-overrides.js';
 import type { ISdk } from '../runtime/iii.js';
 import { normalizeChatCompletionsUrl } from '../runtime/openai-compat-url.js';
+import { logger } from '../runtime/otel.js';
+import {
+  type Credential,
+  type ProviderResolveResult,
+  resolveProvider,
+} from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
 
 // LM Studio is local-first: by default the localhost REST server runs without
 // authentication and ignores the Authorization header. We still go through
-// `auth::get_token` so users who run an authenticated LM Studio deployment
-// can opt-in via `LMSTUDIO_API_KEY`, but when the credential is missing or
-// empty AND the URL points at loopback we fall back to the literal string
-// `"lm-studio"` (LM Studio's own convention — see
-// https://lmstudio.ai/docs/local-server). For non-loopback hosts we refuse
-// to send a fallback bearer: a misconfigured LMSTUDIO_BASE_URL (e.g. via a
-// stale EnvironmentFile, a tunnel host, an ssh-forward) would otherwise leak
-// a recognisable provider fingerprint to whoever is on the other end.
-const CREDENTIAL_PROVIDER_SLUG = 'lmstudio';
+// the harness provider registry so users who run an authenticated LM Studio
+// deployment can opt-in via the configured api key (or `LMSTUDIO_API_KEY`),
+// but when the credential is missing or empty AND the URL points at loopback
+// we fall back to the literal string `"lm-studio"` (LM Studio's own
+// convention — see https://lmstudio.ai/docs/local-server). For non-loopback
+// hosts we refuse to send a fallback bearer: a misconfigured LMSTUDIO_BASE_URL
+// (e.g. via a stale EnvironmentFile, a tunnel host, an ssh-forward) would
+// otherwise leak a recognisable provider fingerprint to whoever is on the
+// other end.
+export const PROVIDER_ID = 'lmstudio';
 const FALLBACK_API_KEY = 'lm-studio';
+
+const EMPTY_RESOLVE: ProviderResolveResult = {
+  configured: false,
+  source: null,
+  credential: null,
+  api_url: null,
+  max_tokens: null,
+};
 
 function extractKey(cred: Credential | null): string {
   if (!cred) return '';
@@ -44,27 +56,27 @@ export function isLoopbackUrl(url: string): boolean {
   return false;
 }
 
-export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
+/**
+ * Resolve this provider's credential + settings via the harness registry.
+ * Tolerant: LM Studio is a normal localhost-no-auth setup, so a missing
+ * harness/registry yields an empty result rather than throwing. Logs at
+ * WARN with a stable code so monitoring can alert on a sustained
+ * fallback-key rate.
+ */
+async function resolveTolerant(iii: ISdk): Promise<ProviderResolveResult> {
   try {
-    const cred = await iii.trigger<unknown, Credential | null>({
-      function_id: 'auth::get_token',
-      payload: { provider: CREDENTIAL_PROVIDER_SLUG },
-      timeoutMs: 5_000,
-    });
-    if (!cred || typeof cred !== 'object' || !('type' in cred)) return null;
-    return cred;
+    return await resolveProvider(iii, PROVIDER_ID);
   } catch (err) {
-    // auth-credentials worker not reachable, no credential entry, etc.
-    // For LM Studio this is a normal localhost-no-auth setup; don't throw.
-    // Log at WARN with a stable code so monitoring can alert on a
-    // sustained fallback-key rate (e.g. an attacker DoSing the auth
-    // worker to silently downgrade us to the fallback bearer).
-    logger.warn('lmstudio.auth: fetchCredential failed; falling back to no-credential', {
+    logger.warn('lmstudio.auth: resolve failed; falling back to no-credential', {
       code: 'lmstudio_auth_fetch_failed',
       err: String(err),
     });
-    return null;
+    return EMPTY_RESOLVE;
   }
+}
+
+export async function fetchCredential(iii: ISdk): Promise<Credential | null> {
+  return (await resolveTolerant(iii)).credential;
 }
 
 /**
@@ -105,18 +117,14 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
 ): Promise<ChatCompletionsConfig> {
-  const [cred, overrides] = await Promise.all([
-    fetchCredential(iii),
-    fetchOverrides(iii, 'lmstudio'),
-  ]);
-  // Normalise the override URL so a base-URL save from the Providers UI
+  const resolved = await resolveTolerant(iii);
+  const cred = resolved.credential;
+  // Normalise the override URL so a base-URL save from the config UI
   // (e.g. `http://host:1234`) gets `/v1/chat/completions` appended.
   // worker.default_api_url is already normalised in resolveApiUrl.
-  const overrideUrl = overrides.default_api_url
-    ? normalizeChatCompletionsUrl(overrides.default_api_url)
-    : null;
+  const overrideUrl = resolved.api_url ? normalizeChatCompletionsUrl(resolved.api_url) : null;
   const apiUrl = overrideUrl ?? worker.default_api_url;
-  const maxTokens = overrides.default_max_tokens ?? worker.default_max_tokens;
+  const maxTokens = resolved.max_tokens ?? worker.default_max_tokens;
   const key = selectAuthKey(cred, apiUrl);
   // configFromCredential expects a Credential. When no key is
   // available we still pass a synthetic api_key with the LM Studio

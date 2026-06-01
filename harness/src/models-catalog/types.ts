@@ -51,6 +51,12 @@ export type Capability =
   | { type: 'vision' }
   | { type: 'cache' };
 
+/** Filter for `models::list`, applied against the provider-registered catalog. */
+export type ListFilter = {
+  provider?: string;
+  capability?: Capability;
+};
+
 export function parseCapability(s: string): Capability | null {
   switch (s) {
     case 'thinking':

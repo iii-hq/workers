@@ -1,74 +1,62 @@
-# Harness storage
+# Harness storage: provider credentials, settings & permissions
 
-Shared configuration for harness workers that persist data through the
-engine [`database`](https://github.com/iii-ai/iii/tree/main/workers/database)
+Provider API keys, per-provider settings, and the default agent permission
+mode live in a single entry — id `harness` — in the engine's built-in
+[`configuration`](https://github.com/iii-ai/iii/tree/main/workers/configuration)
+worker. The harness meta-worker owns that entry through its **provider
+registry** ([src/harness/providers/](../src/harness/providers/)).
+
+This replaces the former `database`-backed `auth-credentials` and
+`provider-config` workers — the harness no longer depends on the `database`
 worker.
 
-## Purpose
+## The `harness` configuration entry
 
-Several harness workers (`auth-credentials`, `provider-config`, and any
-future SQL-backed store) talk to the same logical SQLite pool via
-`database::query` and `database::execute`. Instead of repeating
-`database_name` in every worker section, operators can set it once under
-a top-level `storage:` block in [config.yaml](harness/config.yaml).
-
-## Configuration
-
-```yaml
-storage:
-  database_name: harness   # shared default for every DbStore consumer
-
-# optional per-worker override (highest precedence)
-auth_credentials:
-  database_name: harness_secrets
+```jsonc
+{
+  "permissions": { "default_mode": "manual" },   // manual | auto | full
+  "providers": {
+    "anthropic": { "api_key": "sk-ant-…", "api_url": "https://…", "max_tokens": 8192 },
+    "openai":    { "api_key": "sk-…" },
+    "lmstudio":  { "max_tokens": 8192 }
+  }
+}
 ```
 
-### Precedence
+The JSON Schema for `providers` is **composed dynamically**: each provider
+worker self-declares its slice at startup via `harness::provider::register`,
+so the editable shape grows/shrinks with the set of running providers. The
+console renders this entry with its schema-driven configuration form.
 
-When a worker resolves its pool name, this order applies:
+> Secrets are stored as plaintext in the configuration value. Agents are
+> denied `configuration::get`/`set` and `harness::provider::resolve` in
+> [iii-permissions.yaml](../../iii-permissions.yaml); the console edits the
+> entry as a user-initiated SDK call, which bypasses the agent gate.
 
-1. Worker section `database_name` (e.g. `auth_credentials.database_name`)
-2. Shared `storage.database_name`
-3. `"harness"` (built-in default)
+## Bus surface
 
-Existing configs that only set `auth_credentials.database_name` or
-`provider_config.database_name` keep working unchanged.
+| Function | Caller | Purpose |
+|---|---|---|
+| `harness::provider::register` | provider workers (startup) | Declare id + config schema + defaults; recomposes and re-registers the `harness` entry. |
+| `harness::provider::resolve` | provider workers (per request) | Resolve `{ credential, api_url, max_tokens }`. Falls back to the provider's declared `credential_env_var` when no `api_key` is configured. |
+| `harness::provider::list` | console | Enumerate declared providers. |
 
-## Mapping to the engine database worker
+Provider workers never read keys from disk or env directly for cloud
+providers — they call `harness::provider::resolve`. The env-var fallback is
+applied centrally by the registry so existing `ANTHROPIC_API_KEY`-style
+setups keep working.
 
-The harness `database_name` is a **logical pool key**. It must match a
-key in the engine `database` worker's `databases:` map, which defines
-the actual connection URL (for example `sqlite:~/.iii/harness.db`).
+## Permissions
 
-```yaml
-# engine database worker config (not harness config.yaml)
-databases:
-  harness:
-    url: sqlite:~/.iii/harness.db
-```
+`permissions.default_mode` (`manual | auto | full`) seeds the default
+approval mode for **new** agent sessions. The approval-gate reads it at
+startup and re-reads it via a `configuration` trigger on the `harness`
+entry, so an operator edit takes effect without a restart. Sessions with
+their own stored approval settings keep them.
 
-Harness workers never open SQLite directly; they always route through
-the bus.
+## Adding a provider
 
-## Adding a new DbStore consumer
+1. In the provider's `register.ts`, call `declareProvider(iii, { id, credential_env_var, defaults, supports_model_listing })` (see [src/runtime/provider-resolve.ts](../src/runtime/provider-resolve.ts)).
+2. In `buildConfig`, call `resolveProvider(iii, id)` and use the returned credential + `api_url`/`max_tokens` (falling back to the worker's config.yaml defaults).
 
-1. Add a table-backed store (or wrap `DbStore<T>`) in your worker.
-2. In `register.ts`, load config once with `loadConfig`, then construct
-   the store with `createDbStore`:
-
-```ts
-import { createDbStore } from '../runtime/database-store.js';
-
-const cfg = await loadConfig(ctx.configPath);
-const store = createDbStore<MyPayload>(iii, cfg, {
-  workerSection: 'my_worker',   // optional; omit to use only storage.database_name
-  tableName: 'my_worker_table',
-});
-await store.init();
-```
-
-3. Document any worker-specific overrides in your worker's doc page and
-   link back here for the shared `storage:` block.
-
-See [src/runtime/storage-config.ts](harness/src/runtime/storage-config.ts)
-and [src/runtime/database-store.ts](harness/src/runtime/database-store.ts).
+No database pool, table, or `storage:` block is required.

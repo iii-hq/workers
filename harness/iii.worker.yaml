@@ -15,4 +15,4 @@ dependencies:
   iii-state: "^0.11.0"
   iii-stream: "^0.11.0"
   iii-directory: "^0.5.1"
-  database: "^0.2.2"
+  configuration: "^0.11.0"

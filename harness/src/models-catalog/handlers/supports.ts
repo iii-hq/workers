@@ -1,6 +1,6 @@
 import { requireString } from '../../runtime/handler.js';
 import type { ISdk } from '../../runtime/iii.js';
-import { getFromStateOrSeed } from '../state.js';
+import { getFromState } from '../state.js';
 import { parseCapability, supportsModel } from '../types.js';
 
 export function register(iii: ISdk): void {
@@ -14,9 +14,12 @@ export function register(iii: ISdk): void {
       if (!capability) {
         throw new Error('missing or unknown capability');
       }
-      const m = await getFromStateOrSeed(iii, provider, model_id);
+      const m = await getFromState(iii, provider, model_id);
       return { supported: m ? supportsModel(m, capability) : false };
     },
-    { description: 'Check whether a model supports a capability. State-first.' },
+    {
+      description:
+        'Check whether a provider-registered model supports a capability (false when unknown).',
+    },
   );
 }

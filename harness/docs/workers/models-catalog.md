@@ -1,7 +1,7 @@
 # models-catalog
 
-Model capabilities knowledge base on the iii bus (`models::*`). State-first;
-seeds from a baked-in baseline when state is empty.
+Model capabilities knowledge base on the iii bus (`models::*`). Populated
+exclusively by provider discovery — there is no baked-in seed.
 
 ## Purpose
 
@@ -9,26 +9,25 @@ A small catalogue answering "given a (provider, model_id), what does it
 support?" Each `Model` record carries display name, context window, max
 output tokens, plus boolean capability flags (`supports_thinking`,
 `supports_xhigh`, `supports_tools`, `supports_vision`, `supports_cache`)
-and optional `thinking_budgets` / `transports` / `pricing` fields. The
-catalogue is state-first: reads go to iii state under scope `models`,
-prefix `models:`; if state is empty the worker falls back to (and seeds
-state from) the JSON file embedded at
-[src/models-catalog/models.json](harness/src/models-catalog/models.json).
+and optional `thinking_budgets` / `transports` / `pricing` fields.
 
-The seed happens lazily at `register()` time and never blocks boot.
-Operators can layer their own entries on top with `models::register`.
+Entries live in iii state under scope `models`, prefix `models:`, and are
+written entirely by the provider workers: cloud providers (anthropic, openai,
+kimi) pull their upstream `/v1/models` list and local providers (lmstudio,
+llamacpp) discover their loaded models, all via `models::register` (typically
+through each provider's `provider::<name>::refresh_models`). Reads return only
+what providers have registered — there is no embedded fallback.
 
 ## Registered functions
 
-- `models::list` — List models, optionally filtered by provider or capability. Reads from iii state; falls back to the embedded seed when state is empty.
-- `models::get` — Look up a single model by (provider, model_id). State-first.
-- `models::supports` — Check whether a model supports a capability. State-first.
+- `models::list` — List models, optionally filtered by provider or capability. Returns only models registered by providers.
+- `models::get` — Look up a single model by (provider, model_id); null when no provider has registered it.
+- `models::supports` — Check whether a provider-registered model supports a capability (false when unknown).
 - `models::register` — Write a model to iii state under `models:<provider>:<id>`.
 
 ## Triggers
 
-None. The seed runs once on register and writes one `state::set` per
-embedded model.
+None.
 
 ## State keys
 
@@ -55,10 +54,7 @@ match no models from `models::list`.
 
 ## Configuration
 
-The worker reads no top-level config keys. The state-request timeout is
-hard-coded to 5 s in
-[src/models-catalog/state.ts](harness/src/models-catalog/state.ts)
-(`DEFAULT_STATE_CONFIG.state_request_timeout_ms`).
+The worker reads no top-level config keys.
 
 ## Dependencies
 
@@ -71,11 +67,9 @@ From
 | File | Purpose |
 |---|---|
 | [src/models-catalog/main.ts](harness/src/models-catalog/main.ts) | Binary entry point (`iii-models-catalog`). |
-| [src/models-catalog/register.ts](harness/src/models-catalog/register.ts) | Kicks off `seedStateIfEmpty` and registers the four handlers. |
-| [src/models-catalog/types.ts](harness/src/models-catalog/types.ts) | `Model`, `Pricing`, `ThinkingBudgets`, `Capability`, `parseCapability`, `supportsModel`. |
-| [src/models-catalog/catalog.ts](harness/src/models-catalog/catalog.ts) | `loadEmbeddedCatalog` reads `models.json` and caches the parsed list. |
-| [src/models-catalog/state.ts](harness/src/models-catalog/state.ts) | `seedStateIfEmpty` + state-first `listFromStateOrSeed` / `getFromStateOrSeed`. |
-| [src/models-catalog/models.json](harness/src/models-catalog/models.json) | Baked-in baseline catalogue. |
+| [src/models-catalog/register.ts](harness/src/models-catalog/register.ts) | Registers the four handlers. |
+| [src/models-catalog/types.ts](harness/src/models-catalog/types.ts) | `Model`, `Pricing`, `ThinkingBudgets`, `Capability`, `ListFilter`, `parseCapability`, `supportsModel`. |
+| [src/models-catalog/state.ts](harness/src/models-catalog/state.ts) | State-only `listFromState` / `getFromState` + `modelKey`. |
 | [src/models-catalog/handlers/list.ts](harness/src/models-catalog/handlers/list.ts) | `models::list` handler. |
 | [src/models-catalog/handlers/get.ts](harness/src/models-catalog/handlers/get.ts) | `models::get` handler. |
 | [src/models-catalog/handlers/supports.ts](harness/src/models-catalog/handlers/supports.ts) | `models::supports` handler. |
