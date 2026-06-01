@@ -60,11 +60,9 @@ export async function registerProviderRegistry(iii: ISdk): Promise<ProviderRegis
     },
   );
 
-  iii.registerFunction(
-    'harness::provider::list',
-    async () => ({ providers: registry.list() }),
-    { description: 'List providers declared to the harness.' },
-  );
+  iii.registerFunction('harness::provider::list', async () => ({ providers: registry.list() }), {
+    description: 'List providers declared to the harness.',
+  });
 
   logger.info('provider-registry: ready', {});
   return registry;

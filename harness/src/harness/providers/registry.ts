@@ -139,7 +139,8 @@ export class ProviderRegistry {
 
     let credential: Credential | null = null;
     let source: 'stored' | 'environment' | null = null;
-    const storedKey = typeof cfg.api_key === 'string' && cfg.api_key.length > 0 ? cfg.api_key : null;
+    const storedKey =
+      typeof cfg.api_key === 'string' && cfg.api_key.length > 0 ? cfg.api_key : null;
     if (storedKey) {
       credential = { type: 'api_key', key: storedKey };
       source = 'stored';
@@ -222,7 +223,9 @@ export class ProviderRegistry {
         name: ENTRY_NAME,
         description: ENTRY_DESCRIPTION,
         schema,
-        ...(existing === null && { initial_value: baseHarnessConfigValue() as unknown as JsonValue }),
+        ...(existing === null && {
+          initial_value: baseHarnessConfigValue() as unknown as JsonValue,
+        }),
       });
     } catch (err) {
       logger.warn('provider-registry: configuration::register failed', { err: String(err) });

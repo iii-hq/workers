@@ -32,6 +32,9 @@ workers.
 | provider-llamacpp | [src/provider-llamacpp/](harness/src/provider-llamacpp/) | llama.cpp `llama-server` (localhost) Chat Completions SSE → channel writer. | [workers/provider-llamacpp.md](harness/docs/workers/provider-llamacpp.md) |
 | context-compaction | [src/context-compaction/](harness/src/context-compaction/) | Optional `agent::turn_end` side-car that compacts session history when running token count crosses a threshold. | [workers/context-compaction.md](harness/docs/workers/context-compaction.md) |
 
+To add a new LLM provider worker, see the
+[authoring a provider](harness/docs/workers/authoring-a-provider.md) guide.
+
 ## System diagram
 
 ```mermaid

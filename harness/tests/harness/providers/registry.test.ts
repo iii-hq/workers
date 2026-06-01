@@ -12,26 +12,24 @@ function makeConfigSdk(initialValue: unknown) {
     value: initialValue,
     schema: null,
   };
-  const trigger = vi.fn(
-    async (req: { function_id: string; payload: Record<string, unknown> }) => {
-      switch (req.function_id) {
-        case 'configuration::register': {
-          state.schema = req.payload.schema as Record<string, unknown>;
-          if (state.value === null && req.payload.initial_value !== undefined) {
-            state.value = req.payload.initial_value;
-          }
-          return {};
+  const trigger = vi.fn(async (req: { function_id: string; payload: Record<string, unknown> }) => {
+    switch (req.function_id) {
+      case 'configuration::register': {
+        state.schema = req.payload.schema as Record<string, unknown>;
+        if (state.value === null && req.payload.initial_value !== undefined) {
+          state.value = req.payload.initial_value;
         }
-        case 'configuration::get':
-          return { id: req.payload.id, value: state.value };
-        case 'configuration::set':
-          state.value = req.payload.value;
-          return { new_value: state.value, old_value: null };
-        default:
-          return null;
+        return {};
       }
-    },
-  );
+      case 'configuration::get':
+        return { id: req.payload.id, value: state.value };
+      case 'configuration::set':
+        state.value = req.payload.value;
+        return { new_value: state.value, old_value: null };
+      default:
+        return null;
+    }
+  });
   const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
   return { sdk, state };
 }
