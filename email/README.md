@@ -218,7 +218,6 @@ cargo test --all-features
 | `E608` | Credential payload missing `username` / `password` |
 | `E609` | Address parse / MIME build failure |
 | `E610` | IMAP server lacks IDLE — refusing to fall back to polling |
-| `E611` | Bad request payload (serde deserialization failure) |
 | `E612` | IMAP `UID SEARCH` failed |
 | `E613` | Folder not in account's `imap.folders` config |
 | `E614` | IMAP connect / TLS handshake failed |
