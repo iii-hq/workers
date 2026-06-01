@@ -1,4 +1,3 @@
-import { mockBackend } from './mock'
 import { realBackend } from './real'
 import type { ChatBackend } from './types'
 
@@ -8,8 +7,6 @@ import type { ChatBackend } from './types'
  * inlines `import.meta.env.DEV` as a literal, so Rolldown tree-shakes
  * `mockBackend` out of the production chunk.
  */
-export function getDefaultBackend(): ChatBackend {
-  return import.meta.env.DEV ? mockBackend : realBackend
-}
+export const getDefaultBackend = (): ChatBackend => realBackend
 
 export type { ChatBackend, ChatStreamOptions, StreamEvent } from './types'
