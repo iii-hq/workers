@@ -12,10 +12,12 @@ const HANDLER_FN_ID = 'harness::fanout::traces_changed_handler';
 // every all-sessions subscriber, coalescing a burst of turn_end frames into a
 // single fan-out. These tests pin the registration shape, the coalescing, the
 // all-subscribers targeting, eviction on `function_not_found`, and teardown.
-function setup(opts: {
-  subscribers?: Array<[string, string | null]>;
-  triggerImpl?: (req: { function_id: string; payload: unknown }) => Promise<unknown>;
-} = {}) {
+function setup(
+  opts: {
+    subscribers?: Array<[string, string | null]>;
+    triggerImpl?: (req: { function_id: string; payload: unknown }) => Promise<unknown>;
+  } = {},
+) {
   const handlers = new Map<string, Handler>();
   const triggers: Array<{ type?: string; function_id?: string; config?: Record<string, unknown> }> =
     [];
@@ -75,7 +77,12 @@ describe('spawnTracesChangedPump registration', () => {
 
 describe('coalescing', () => {
   it('collapses a burst of turn_end frames into a single fan-out per subscriber', async () => {
-    const { handlers, sent } = setup({ subscribers: [['b1', null], ['b2', null]] });
+    const { handlers, sent } = setup({
+      subscribers: [
+        ['b1', null],
+        ['b2', null],
+      ],
+    });
     const handler = handlers.get(HANDLER_FN_ID);
 
     // Three frames inside the coalescing window.
