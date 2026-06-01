@@ -629,3 +629,57 @@ describe('flattenTree — onlyCriticalPath', () => {
     expect(flat[0].displayDepth).toBe(0)
   })
 })
+
+describe('buildSpanTree — malformed parent chains (cycle safety)', () => {
+  it('keeps a self-parented span as a root instead of dropping it', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a', parent_span_id: 'a' }),
+    ])
+    expect(tree.map((r) => r.span_id)).toEqual(['a'])
+    // The span must not be pushed into its own children.
+    expect(tree[0].children).toHaveLength(0)
+  })
+
+  it('renders every span in a mutual 2-cycle (a<->b) rather than losing both', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a', parent_span_id: 'b' }),
+      makeSpan({ span_id: 'b', parent_span_id: 'a' }),
+    ])
+    const ids = tree.map((r) => r.span_id).sort()
+    expect(ids).toEqual(['a', 'b'])
+  })
+
+  it('does not build a child cycle, so critical-path marking terminates', () => {
+    // buildSpanTree marks the critical path via DFS over children; if the
+    // cycle leaked into children this call would never return.
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a', parent_span_id: 'b' }),
+      makeSpan({ span_id: 'b', parent_span_id: 'a' }),
+    ])
+    expect(tree.every((n) => n.children.length === 0)).toBe(true)
+  })
+
+  it('flattenTree over a previously-cyclic trace terminates and emits every span', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a', parent_span_id: 'b' }),
+      makeSpan({ span_id: 'b', parent_span_id: 'a' }),
+    ])
+    const flat = flattenTree(tree, {
+      expandedIds: expandAll(tree),
+      hideEngineRouting: false,
+      collapseEngineRoutingPairs: false,
+    })
+    expect(flat.map((r) => r.span_id).sort()).toEqual(['a', 'b'])
+  })
+
+  it('leaves a well-formed deep chain unchanged (regression guard)', () => {
+    const tree = buildSpanTree([
+      makeSpan({ span_id: 'a' }),
+      makeSpan({ span_id: 'b', parent_span_id: 'a' }),
+      makeSpan({ span_id: 'c', parent_span_id: 'b' }),
+    ])
+    expect(tree.map((r) => r.span_id)).toEqual(['a'])
+    expect(tree[0].children.map((c) => c.span_id)).toEqual(['b'])
+    expect(tree[0].children[0].children.map((c) => c.span_id)).toEqual(['c'])
+  })
+})

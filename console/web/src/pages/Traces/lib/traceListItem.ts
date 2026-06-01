@@ -6,7 +6,7 @@
 
 import type { StoredSpan } from '../api/traces'
 import type { TraceListItem } from '../hooks/useTraceData'
-import { toMs } from './traceTransform'
+import { normalizeSpanStatus, toMs } from './traceTransform'
 
 /**
  * Normalize a span's attributes to a flat object.
@@ -71,7 +71,7 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
     rootOperation: span.name,
     functionId,
     topic,
-    status: span.status.toLowerCase() === 'error' ? 'error' : 'ok',
+    status: normalizeSpanStatus(span.status) === 'error' ? 'error' : 'ok',
     startTime,
     endTime,
     duration,

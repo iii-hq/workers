@@ -61,7 +61,12 @@ interface SessionDetailPanelProps {
    */
   groupAttribute?: 'iii.message.id' | 'iii.session.id' | 'iii.function.id'
   onClose: () => void
-  onSpanClick: (span: VisualizationSpan) => void
+  /**
+   * Fires with the clicked span AND its own trace's waterfall data. The
+   * waterfall is forwarded because the parent has no single trace loaded in
+   * group mode — the span-detail panel needs the right trace context.
+   */
+  onSpanClick: (span: VisualizationSpan, waterfall: WaterfallData) => void
   selectedSpanId?: string
 }
 
@@ -183,7 +188,7 @@ const AUTO_OPEN_SPAN_LIMIT = 500
 interface TraceCardProps {
   index: number
   traceId: string
-  onSpanClick: (span: VisualizationSpan) => void
+  onSpanClick: (span: VisualizationSpan, waterfall: WaterfallData) => void
   selectedSpanId?: string
   defaultOpen: boolean
   /** Optional hint sourced from the group's span_count for single-trace groups. */
@@ -349,7 +354,7 @@ function TraceCard({
           {waterfall && (
             <WaterfallChart
               data={waterfall}
-              onSpanClick={onSpanClick}
+              onSpanClick={(span) => onSpanClick(span, waterfall)}
               selectedSpanId={selectedSpanId}
             />
           )}

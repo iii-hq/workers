@@ -96,16 +96,29 @@ function tryParseJson(value: unknown): {
 
 function JsonValue({ value }: { value: unknown }) {
   const [expanded, setExpanded] = useState(false)
-  const { isJson, parsed, raw } = tryParseJson(value)
+  // Parse + pretty-print once per value. These attribute values can be
+  // multi-KB `iii.payload.json` blobs; without memoization the full
+  // stringify/parse/split ran on every re-render (tab switch, copied-state
+  // tick, parent re-render).
+  const { isJson, raw, pretty, lineCount } = useMemo(() => {
+    const result = tryParseJson(value)
+    if (!result.isJson) {
+      return { isJson: false, raw: result.raw, pretty: '', lineCount: 0 }
+    }
+    const prettyStr = JSON.stringify(result.parsed, null, 2)
+    return {
+      isJson: true,
+      raw: result.raw,
+      pretty: prettyStr,
+      lineCount: prettyStr.split('\n').length,
+    }
+  }, [value])
 
   if (!isJson) {
     return (
       <span className="font-mono text-[11px] text-ink break-all">{raw}</span>
     )
   }
-
-  const pretty = JSON.stringify(parsed, null, 2)
-  const lineCount = pretty.split('\n').length
 
   if (lineCount <= 2) {
     return (
@@ -175,20 +188,24 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
   const offsetMs = logMs - firstLogMs
   const severity = getSeverity(log.severity_text)
 
-  const dataAttrs: Array<[string, unknown]> = []
-  const metaAttrs: Array<[string, unknown]> = []
-
-  if (log.attributes) {
-    for (const [key, value] of Object.entries(log.attributes)) {
-      if (HIDDEN_ATTRS.has(key)) continue
-      const { isJson } = tryParseJson(value)
-      if (isJson || (typeof value === 'string' && value.length > 80)) {
-        dataAttrs.push([key, value])
-      } else {
-        metaAttrs.push([key, value])
+  // Classify attributes once per log: tryParseJson eagerly stringifies each
+  // value, so re-running it on every render is wasteful for large payloads.
+  const { dataAttrs, metaAttrs } = useMemo(() => {
+    const data: Array<[string, unknown]> = []
+    const meta: Array<[string, unknown]> = []
+    if (log.attributes) {
+      for (const [key, value] of Object.entries(log.attributes)) {
+        if (HIDDEN_ATTRS.has(key)) continue
+        const { isJson } = tryParseJson(value)
+        if (isJson || (typeof value === 'string' && value.length > 80)) {
+          data.push([key, value])
+        } else {
+          meta.push([key, value])
+        }
       }
     }
-  }
+    return { dataAttrs: data, metaAttrs: meta }
+  }, [log.attributes])
 
   return (
     <div

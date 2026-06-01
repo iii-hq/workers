@@ -1,6 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { fetchTraces, type TracesFilterParams } from '../api/traces'
+import {
+  fetchTraces,
+  type TracesFilterParams,
+  type TracesResponse,
+} from '../api/traces'
 import { fingerprintTraceList, mapSpanToListItem } from '../lib/traceListItem'
 
 const DEFAULT_TRACE_LIMIT = 500
@@ -22,7 +26,6 @@ export interface UseTraceDataOptions {
   filterParams: TracesFilterParams
   showSystem: boolean
   debouncedSearch: string
-  isPaused: boolean
 }
 
 export interface UseTraceDataReturn {
@@ -31,6 +34,10 @@ export interface UseTraceDataReturn {
   setNewTraceIds: React.Dispatch<React.SetStateAction<Set<string>>>
   hasOtelConfigured: boolean
   isQueryLoading: boolean
+  /** Set when the flat-list fetch threw a non-exporter error (network, RPC,
+   *  timeout). Lets the page show a real error state instead of silently
+   *  falling back to the misleading "no observability" empty state. */
+  queryError: Error | null
   refetch: () => void
   isHoveredRef: React.RefObject<boolean>
   flushPendingTraces: () => void
@@ -40,7 +47,6 @@ export function useTraceData({
   filterParams,
   showSystem,
   debouncedSearch,
-  isPaused,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
@@ -55,8 +61,9 @@ export function useTraceData({
   const {
     data: tracesData,
     isLoading: isQueryLoading,
+    error: queryError,
     refetch,
-  } = useQuery({
+  } = useQuery<TracesResponse, Error>({
     queryKey: ['traces', filterParams, showSystem, debouncedSearch],
     queryFn: () =>
       fetchTraces({
@@ -68,12 +75,22 @@ export function useTraceData({
         limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
       }),
-    refetchInterval: isPaused ? false : 3000,
+    // Live updates arrive via `useTracesLiveRefresh` (ui::traces::changed
+    // push) — no polling interval. Initial mount fetch + manual Refresh +
+    // signal-driven invalidation cover refresh.
+    refetchInterval: false,
     staleTime: 1000,
   })
 
   useEffect(() => {
     if (!tracesData) return
+
+    // Observability is configured unless the engine explicitly reports the
+    // exporter disabled. An empty span list is a normal "no matching traces"
+    // result and must NOT flip the page to the "no observability" state.
+    // Set this first, before the fingerprint early-return, so an unchanged
+    // payload still keeps the flag correct.
+    setHasOtelConfigured(!tracesData.exporterDisabled)
 
     if (tracesData.spans && tracesData.spans.length > 0) {
       const traces: TraceListItem[] = tracesData.spans.map(mapSpanToListItem)
@@ -100,10 +117,12 @@ export function useTraceData({
       }
 
       setTraceListItems(traces)
-      setHasOtelConfigured(true)
     } else {
       setTraceListItems([])
-      setHasOtelConfigured(false)
+      // Reset the dedup state so a later non-empty fetch is detected as
+      // fresh (otherwise the fingerprint/new-trace diff would be stale).
+      fingerprintRef.current = ''
+      prevTraceIdsRef.current = new Set()
     }
   }, [tracesData])
 
@@ -121,6 +140,7 @@ export function useTraceData({
     setNewTraceIds,
     hasOtelConfigured,
     isQueryLoading,
+    queryError: queryError ?? null,
     refetch,
     isHoveredRef,
     flushPendingTraces,

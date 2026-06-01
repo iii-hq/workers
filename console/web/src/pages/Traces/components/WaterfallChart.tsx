@@ -65,6 +65,7 @@ import {
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
+import { sampleMinimapMarkers } from '../lib/minimapMarkers'
 import {
   formatSpanLabel,
   getSpanKindIndicator,
@@ -505,6 +506,13 @@ export function WaterfallChart({
 
   const spanTree = useMemo(() => buildSpanTree(data.spans), [data.spans])
 
+  // Bounded set of minimap markers — never one DOM node per span. Memoized
+  // so it only recomputes when the span list changes.
+  const minimapMarkers = useMemo(
+    () => sampleMinimapMarkers(data.spans),
+    [data.spans],
+  )
+
   useEffect(() => {
     const allIds = new Set(data.spans.map((s) => s.span_id))
     dispatch({ type: 'SET_ALL_EXPANDED', ids: allIds })
@@ -688,24 +696,21 @@ export function WaterfallChart({
               className="relative bg-rule-2 overflow-hidden"
               style={{ height: MINIMAP_HEIGHT }}
             >
-              {data.spans.map((span, i) => {
-                const isError = span.status === 'error'
-                return (
-                  <div
-                    key={span.span_id}
-                    className={cn(
-                      'absolute h-[2px]',
-                      isError ? 'bg-alert' : 'bg-ink-ghost',
-                    )}
-                    style={{
-                      opacity: isError ? 0.7 : 0.5,
-                      top: `${(i / data.spans.length) * 100}%`,
-                      left: `${span.start_percent}%`,
-                      width: `${Math.max(2, span.width_percent)}%`,
-                    }}
-                  />
-                )
-              })}
+              {minimapMarkers.map((marker) => (
+                <div
+                  key={marker.key}
+                  className={cn(
+                    'absolute h-[2px]',
+                    marker.isError ? 'bg-alert' : 'bg-ink-ghost',
+                  )}
+                  style={{
+                    opacity: marker.isError ? 0.7 : 0.5,
+                    top: `${marker.topPercent}%`,
+                    left: `${marker.leftPercent}%`,
+                    width: `${Math.max(2, marker.widthPercent)}%`,
+                  }}
+                />
+              ))}
               <div
                 ref={thumbRef}
                 className="absolute left-0 right-0 bg-accent/20 border border-accent"

@@ -135,6 +135,31 @@ describe('mapSpanToListItem — status normalization', () => {
   })
 })
 
+describe('mapSpanToListItem — non-string status (unvalidated API boundary)', () => {
+  // The engine declares status as a string, but some OTel encoders emit it
+  // as a numeric code. A non-string value must not crash the whole list
+  // render (the mapper runs inside `spans.map` under the page ErrorBoundary).
+  it('maps the numeric OTel error code (2) to status="error"', () => {
+    const span = makeSpan({ status: 2 as unknown as string })
+    expect(mapSpanToListItem(span).status).toBe('error')
+  })
+
+  it.each([1, 0])('maps numeric non-error code %s to status="ok"', (code) => {
+    const span = makeSpan({ status: code as unknown as string })
+    expect(mapSpanToListItem(span).status).toBe('ok')
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['object', { code: 2 }],
+  ])('does not throw and defaults to "ok" for %s status', (_label, raw) => {
+    const span = makeSpan({ status: raw as unknown as string })
+    expect(() => mapSpanToListItem(span)).not.toThrow()
+    expect(mapSpanToListItem(span).status).toBe('ok')
+  })
+})
+
 describe('mapSpanToListItem — semantic attributes', () => {
   it('reads functionId from OTel faas.invoked_name', () => {
     const out = mapSpanToListItem(

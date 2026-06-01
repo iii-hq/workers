@@ -14,8 +14,6 @@ export interface UseTraceGroupsOptions {
   groupBy: GroupByOption
   /** Include engine-internal spans. */
   includeInternal: boolean
-  /** When true, suspend auto-refresh (matches the flat-list hook). */
-  isPaused: boolean
 }
 
 export interface UseTraceGroupsReturn {
@@ -43,7 +41,6 @@ export interface UseTraceGroupsReturn {
 export function useTraceGroups({
   groupBy,
   includeInternal,
-  isPaused,
 }: UseTraceGroupsOptions): UseTraceGroupsReturn {
   const enabled = groupBy !== 'none'
 
@@ -59,7 +56,9 @@ export function useTraceGroups({
         limit: DEFAULT_GROUP_LIMIT,
         include_internal: includeInternal,
       }),
-    refetchInterval: isPaused ? false : 3000,
+    // Live updates arrive via `useTracesLiveRefresh` (ui::traces::changed
+    // push), which invalidates the ['traceGroups'] key — no polling interval.
+    refetchInterval: false,
     staleTime: 1000,
     retry: (failureCount, err) => {
       // Don't retry when the endpoint is missing — the UI hides the

@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Copy } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { attributeText } from '../lib/attributeText'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
@@ -16,15 +17,22 @@ export function SpanErrorsTab({ span }: SpanErrorsTabProps) {
   const hasError = span.status === 'error' || !!exceptionEvent
   const eventAttrs = exceptionEvent?.attributes ?? {}
 
-  const errorMessage = span.attributes?.['error.message'] as string | undefined
-  const errorType = span.attributes?.['error.type'] as string | undefined
-  const errorStack = span.attributes?.['error.stack'] as string | undefined
-  const exceptionMessage = (span.attributes?.['exception.message'] ??
-    eventAttrs['exception.message']) as string | undefined
-  const exceptionType = (span.attributes?.['exception.type'] ??
-    eventAttrs['exception.type']) as string | undefined
-  const exceptionStacktrace = (span.attributes?.['exception.stacktrace'] ??
-    eventAttrs['exception.stacktrace']) as string | undefined
+  // Span attributes are producer-controlled `unknown` values; coerce to text
+  // defensively so a non-string (array/object) can't crash `.split('\n')` or
+  // React rendering and blank the whole Traces view via the ErrorBoundary.
+  const errorMessage = attributeText(span.attributes?.['error.message'])
+  const errorType = attributeText(span.attributes?.['error.type'])
+  const errorStack = attributeText(span.attributes?.['error.stack'])
+  const exceptionMessage = attributeText(
+    span.attributes?.['exception.message'] ?? eventAttrs['exception.message'],
+  )
+  const exceptionType = attributeText(
+    span.attributes?.['exception.type'] ?? eventAttrs['exception.type'],
+  )
+  const exceptionStacktrace = attributeText(
+    span.attributes?.['exception.stacktrace'] ??
+      eventAttrs['exception.stacktrace'],
+  )
 
   const displayMessage = errorMessage || exceptionMessage
   const displayType = errorType || exceptionType

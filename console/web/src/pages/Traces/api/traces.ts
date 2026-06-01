@@ -49,6 +49,13 @@ export interface TracesResponse {
   total: number
   offset: number
   limit: number
+  /**
+   * True only when the engine reports the memory exporter is not enabled
+   * (i.e. observability is genuinely unconfigured). Distinguishes that case
+   * from a legitimately-empty result (a filter matching nothing, a cleared
+   * store) so the UI shows "no observability" only when it's actually true.
+   */
+  exporterDisabled?: boolean
 }
 
 export interface TracesFilterParams {
@@ -149,7 +156,7 @@ export async function fetchTraces(
     return await client.call<TracesResponse>(TRACES_RPC_FUNCTIONS.list, payload)
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
-      return { spans: [], total: 0, offset, limit }
+      return { spans: [], total: 0, offset, limit, exporterDisabled: true }
     }
     throw asError(err, 'Failed to fetch traces')
   }

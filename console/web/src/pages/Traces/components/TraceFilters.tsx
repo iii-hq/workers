@@ -97,6 +97,12 @@ const SORT_ORDER_OPTIONS: Array<{ value: 'asc' | 'desc'; label: string }> = [
   { value: 'asc', label: 'asc' },
 ]
 
+// Stable empty reference for the attributes filter. `filters.attributes ?? []`
+// would allocate a fresh array on every render, which trips AttributesFilter's
+// reference-equality value-sync guard and wipes the user's in-progress draft
+// on each parent re-render (search keystrokes, streaming stats ticks).
+const EMPTY_ATTRIBUTES: [string, string][] = []
+
 // --- Temp Inputs Reducer ---
 interface TempInputsState {
   tempServiceName: string
@@ -800,7 +806,7 @@ export function TraceFilters({
               ) : null}
             </div>
             <AttributesFilter
-              value={filters.attributes || []}
+              value={filters.attributes ?? EMPTY_ATTRIBUTES}
               onChange={(attrs) =>
                 onFilterChange(
                   'attributes',

@@ -1,6 +1,7 @@
 import { ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { percentOfTotal } from '../lib/percent'
 import { getServiceColor } from '../lib/traceColors'
 import type { WaterfallData } from '../lib/traceTransform'
 import { formatDuration, getServiceName } from '../lib/traceUtils'
@@ -59,7 +60,9 @@ export function ServiceBreakdown({ data }: ServiceBreakdownProps) {
 
     const totalDuration = data.total_duration_ms
     for (const stats of statsMap.values()) {
-      stats.percentage = (stats.totalDuration / totalDuration) * 100
+      // Guarded: zero-duration traces (total_duration_ms === 0) would
+      // otherwise yield NaN/Infinity bar widths. Clamped to [0, 100].
+      stats.percentage = percentOfTotal(stats.totalDuration, totalDuration)
     }
 
     const serviceStats = Array.from(statsMap.values()).sort(

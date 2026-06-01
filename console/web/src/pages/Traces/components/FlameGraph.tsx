@@ -41,6 +41,7 @@ import { useShowEngineRouting } from '../hooks/useShowEngineRouting'
 import { buildSpanTree, flattenTree } from '../lib/spanTree'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration } from '../lib/traceUtils'
+import { flattenPreorder } from '../lib/treeFlatten'
 import { IconToggleButton } from './IconToggleButton'
 
 interface FlameGraphProps {
@@ -149,19 +150,10 @@ function buildFlameNodes(spans: VisualizationSpan[]): FlameNode[] {
 }
 
 function flattenFlameNodes(nodes: FlameNode[]): FlameNode[] {
-  const result: FlameNode[] = []
-
-  function traverse(node: FlameNode) {
-    result.push(node)
-    for (const child of node.children) {
-      traverse(child)
-    }
-  }
-
-  for (const node of nodes) {
-    traverse(node)
-  }
-  return result
+  // Iterative (not recursive): deep flame trees (thousands of nested spans)
+  // would overflow the call stack — the same hazard the span/waterfall
+  // transforms were rewritten to avoid.
+  return flattenPreorder(nodes)
 }
 
 /**
@@ -267,7 +259,9 @@ export function FlameGraph({
   }, [data.spans, allFlameNodes, showCriticalPath, showEngineRouting])
 
   const maxDepth = useMemo(
-    () => Math.max(0, ...flatNodes.map((n) => n.depth)) + 1,
+    // reduce, not `Math.max(0, ...spread)`: a wide trace with >~100k visible
+    // nodes would overflow the argument limit and throw during render.
+    () => flatNodes.reduce((m, n) => (n.depth > m ? n.depth : m), 0) + 1,
     [flatNodes],
   )
 
@@ -512,6 +506,15 @@ export function FlameGraph({
         break
       }
     }
+
+    // Only dispatch when the hover TARGET changes. A same-bar move (or
+    // empty→empty over whitespace) would otherwise re-render and, since
+    // `hoveredNode` drives the `draw` callback, force a full canvas redraw of
+    // every bar on each mouse pixel — the freeze WaterfallChart removed for
+    // the same reason. The tooltip therefore anchors at the bar's entry point.
+    const foundId = found?.span.span_id ?? null
+    const currentId = hoveredNode?.span.span_id ?? null
+    if (foundId === currentId) return
 
     dispatch({ type: 'SET_HOVERED', node: found, x: e.clientX, y: e.clientY })
   }

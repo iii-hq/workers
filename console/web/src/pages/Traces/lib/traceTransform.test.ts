@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import type { SpanTreeNode } from '../api/traces'
 import {
   calculateDurationMs,
+  normalizeSpanStatus,
   toMs,
   treeToWaterfallData,
 } from './traceTransform'
@@ -141,5 +142,51 @@ describe('treeToWaterfallData', () => {
 
   it('returns null for empty roots', () => {
     expect(treeToWaterfallData([])).toBeNull()
+  })
+})
+
+describe('normalizeSpanStatus', () => {
+  it.each([
+    'error',
+    'Error',
+    'ERROR',
+    '2',
+  ])('maps string error variant %s to "error"', (raw) => {
+    expect(normalizeSpanStatus(raw)).toBe('error')
+  })
+
+  it.each(['ok', 'OK', '1'])('maps string ok variant %s to "ok"', (raw) => {
+    expect(normalizeSpanStatus(raw)).toBe('ok')
+  })
+
+  it.each([
+    'unset',
+    'UNSET',
+    '0',
+  ])('maps string unset variant %s to "unset"', (raw) => {
+    expect(normalizeSpanStatus(raw)).toBe('unset')
+  })
+
+  it('maps the numeric OTel error code 2 to "error"', () => {
+    expect(normalizeSpanStatus(2)).toBe('error')
+  })
+
+  it('maps numeric ok/unset codes 1 and 0', () => {
+    expect(normalizeSpanStatus(1)).toBe('ok')
+    expect(normalizeSpanStatus(0)).toBe('unset')
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty string', ''],
+    ['object', { code: 2 }],
+  ])('does not throw and returns "unset" for %s', (_label, raw) => {
+    expect(() => normalizeSpanStatus(raw)).not.toThrow()
+    expect(normalizeSpanStatus(raw)).toBe('unset')
+  })
+
+  it('treats unrecognized strings as "unset"', () => {
+    expect(normalizeSpanStatus('weird')).toBe('unset')
   })
 })

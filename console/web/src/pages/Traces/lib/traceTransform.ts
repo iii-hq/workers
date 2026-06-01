@@ -113,15 +113,27 @@ export function calculateDurationMs(
 }
 
 /**
- * Get span status from status string
+ * Normalize a span status into the three UI states.
+ *
+ * The engine declares `status` as a string, but some OTel encoders emit
+ * it as a numeric code (0=unset, 1=ok, 2=error). Accepts `unknown` and
+ * coerces defensively so a non-string value (number, null, object)
+ * crossing the RPC boundary can never crash a `.toLowerCase()` call.
  */
-function getSpanStatus(status: StoredSpan['status']): 'ok' | 'error' | 'unset' {
-  if (!status) return 'unset'
-  const lower = status.toLowerCase()
+export function normalizeSpanStatus(status: unknown): 'ok' | 'error' | 'unset' {
+  if (status == null) return 'unset'
+  const lower = String(status).toLowerCase()
   if (lower === 'error' || lower === '2') return 'error'
   if (lower === 'ok' || lower === '1') return 'ok'
-  if (lower === 'unset' || lower === '0') return 'unset'
   return 'unset'
+}
+
+/**
+ * Get span status from status string. Thin wrapper around
+ * {@link normalizeSpanStatus} kept for call-site readability.
+ */
+function getSpanStatus(status: StoredSpan['status']): 'ok' | 'error' | 'unset' {
+  return normalizeSpanStatus(status)
 }
 
 /**

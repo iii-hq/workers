@@ -23,29 +23,31 @@ import { groupHeading, summarizeGroup } from '../lib/groupTraces'
 interface TraceGroupsViewProps {
   attribute: GroupByAttribute
   showSystem: boolean
-  isPaused: boolean
-  onSelectTrace: (traceId: string) => void
   /**
-   * Called with the full TraceGroup when a row is clicked. Routes that
-   * want a session-style multi-trace detail panel use this; older
-   * call-sites can ignore it and rely solely on `onSelectTrace`.
+   * Called with the full TraceGroup when a row is clicked. Preferred path —
+   * opens a session-style multi-trace detail panel that owns its own fetches.
    */
   onSelectGroup?: (group: TraceGroup) => void
-  selectedTraceId: string | null
+  /**
+   * Legacy fallback for call-sites without a session-detail container: drills
+   * into the group's first trace via single-trace selection. Only used when
+   * `onSelectGroup` is not provided.
+   */
+  onSelectTrace?: (traceId: string) => void
+  /** `group.value` of the currently-open group, for row highlight. */
+  selectedGroupValue: string | null
 }
 
 export function TraceGroupsView({
   attribute,
   showSystem,
-  isPaused,
-  onSelectTrace,
   onSelectGroup,
-  selectedTraceId,
+  onSelectTrace,
+  selectedGroupValue,
 }: TraceGroupsViewProps) {
   const { groups, isLoading, unavailable } = useTraceGroups({
     groupBy: attribute,
     includeInternal: showSystem,
-    isPaused,
   })
 
   if (unavailable) {
@@ -91,17 +93,17 @@ export function TraceGroupsView({
           attribute={attribute}
           group={group}
           isSelected={
-            selectedTraceId !== null &&
-            group.trace_ids.includes(selectedTraceId)
+            selectedGroupValue !== null && group.value === selectedGroupValue
           }
           onClick={() => {
-            // Surface the full group when a session-aware container is
-            // wired in. For row-highlight purposes we also push the
-            // first trace_id into the legacy single-trace selection so
-            // isSelected styling still works.
-            const firstTrace = group.trace_ids[0]
-            if (firstTrace) onSelectTrace(firstTrace)
-            if (onSelectGroup) onSelectGroup(group)
+            // Prefer the session-aware container; fall back to single-trace
+            // selection only for call-sites that don't handle groups.
+            if (onSelectGroup) {
+              onSelectGroup(group)
+            } else {
+              const firstTrace = group.trace_ids[0]
+              if (firstTrace) onSelectTrace?.(firstTrace)
+            }
           }}
         />
       ))}

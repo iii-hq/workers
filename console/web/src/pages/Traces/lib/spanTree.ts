@@ -120,11 +120,55 @@ export function buildSpanTree(spans: VisualizationSpan[]): SpanNode[] {
     })
   })
 
+  // Classify each span's parent chain as either acyclic-to-a-root or
+  // cyclic. A span is only linked under its parent when its whole ancestor
+  // chain terminates at a real root without revisiting a node; otherwise it
+  // is promoted to a root. This keeps a self-parent (`parent === self`) or a
+  // mutual cycle (a↔b) from (a) dropping the span out of `roots` entirely,
+  // and (b) building a child cycle that would infinite-loop the
+  // critical-path DFS below and `flattenTree` downstream. Mirrors the
+  // `visiting` guard already used by `calculateDepths`.
+  const SAFE = 1
+  const CYCLIC = 2
+  const chainMark = new Map<string, 1 | 2>()
+
+  function chainReachesRoot(startId: string): boolean {
+    const path: string[] = []
+    let cur: string | undefined = startId
+    let safe = true
+    while (cur !== undefined) {
+      const cached = chainMark.get(cur)
+      if (cached !== undefined) {
+        safe = cached === SAFE
+        break
+      }
+      if (path.includes(cur)) {
+        safe = false
+        break
+      }
+      path.push(cur)
+      const parentId: string | undefined = spanMap.get(cur)?.parent_span_id
+      if (!parentId || parentId === cur || !spanMap.has(parentId)) {
+        safe = true
+        break
+      }
+      cur = parentId
+    }
+    for (const id of path) chainMark.set(id, safe ? SAFE : CYCLIC)
+    return safe
+  }
+
   spans.forEach((span) => {
     const node = spanMap.get(span.span_id)
     if (!node) return
-    if (span.parent_span_id && spanMap.has(span.parent_span_id)) {
-      spanMap.get(span.parent_span_id)?.children.push(node)
+    const parentId = span.parent_span_id
+    if (
+      parentId &&
+      parentId !== span.span_id &&
+      spanMap.has(parentId) &&
+      chainReachesRoot(span.span_id)
+    ) {
+      spanMap.get(parentId)?.children.push(node)
     } else {
       roots.push(node)
     }

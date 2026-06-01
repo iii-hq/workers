@@ -16,6 +16,7 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useTracesLiveRefresh } from '@/lib/devtools-stream'
 import { cn } from '@/lib/utils'
 import { fetchTraceTree, type TraceGroup } from './api/traces'
 import { FlameGraph } from './components/FlameGraph'
@@ -83,6 +84,7 @@ export function Traces() {
     setNewTraceIds,
     hasOtelConfigured,
     isQueryLoading,
+    queryError,
     refetch,
     isHoveredRef,
     flushPendingTraces,
@@ -90,8 +92,11 @@ export function Traces() {
     filterParams,
     showSystem,
     debouncedSearch,
-    isPaused,
   })
+
+  // Replace polling with iii push: refetch the trace queries when the harness
+  // signals new spans (ui::traces::changed), suspended while paused.
+  useTracesLiveRefresh({ isPaused })
 
   const totalPages = Math.max(
     1,
@@ -157,19 +162,79 @@ export function Traces() {
     }
   }, [])
 
+  // Live updates are paused while a detail panel is open so the list doesn't
+  // reorder under the user. Track whether WE auto-paused (vs the user manually
+  // pausing) so closing the panel restores the prior intent instead of leaving
+  // the list frozen forever (the old behaviour: select → pause → close →
+  // permanently stuck, since polling is gone and pause is the only throttle).
+  const isPausedRef = useRef(isPaused)
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+  const autoPausedRef = useRef(false)
+
+  const autoPause = useCallback(() => {
+    if (!isPausedRef.current) {
+      autoPausedRef.current = true
+      setIsPaused(true)
+    }
+  }, [])
+
+  const autoResume = useCallback(() => {
+    if (autoPausedRef.current) {
+      autoPausedRef.current = false
+      setIsPaused(false)
+    }
+  }, [])
+
+  const togglePause = useCallback(() => {
+    // Manual toggle overrides the auto-pause bookkeeping.
+    autoPausedRef.current = false
+    setIsPaused((v) => !v)
+  }, [])
+
   const selectTrace = useCallback(
     (traceId: string | null) => {
+      setSelectedGroup(null)
       setSelectedTraceId(traceId)
       setSelectedSpan(null)
       setWaterfallData(null)
       setSpansError(null)
       if (traceId) {
-        setIsPaused(true)
+        autoPause()
         loadTraceSpans(traceId)
+      } else {
+        autoResume()
       }
     },
-    [loadTraceSpans],
+    [loadTraceSpans, autoPause, autoResume],
   )
+
+  // Group-row selection: open the session detail panel ONLY. The panel
+  // (SessionDetailPanel) owns its own per-trace tree fetches, so we must not
+  // route through `selectTrace` here — doing so fired a wasted
+  // `engine::traces::tree` RPC for the group's first trace and read trace
+  // detail from the flat-list query (a different data source).
+  const selectGroup = useCallback(
+    (group: TraceGroup) => {
+      setSelectedGroup(group)
+      setSelectedTraceId(null)
+      setSelectedSpan(null)
+      setWaterfallData(null)
+      setSpansError(null)
+      autoPause()
+    },
+    [autoPause],
+  )
+
+  const closeDetail = useCallback(() => {
+    setSelectedGroup(null)
+    setSelectedTraceId(null)
+    setSelectedSpan(null)
+    setWaterfallData(null)
+    setSpansError(null)
+    autoResume()
+  }, [autoResume])
 
   const groupAttribute =
     filterState.groupBy && filterState.groupBy !== 'none'
@@ -214,7 +279,7 @@ export function Traces() {
           <Button
             variant={isPaused ? 'pill' : 'ghost'}
             size="sm"
-            onClick={() => setIsPaused((v) => !v)}
+            onClick={togglePause}
           >
             {isPaused ? (
               <Play className="w-3.5 h-3.5" />
@@ -254,7 +319,29 @@ export function Traces() {
       </div>
 
       <ErrorBoundary>
-        {!hasOtelConfigured ? (
+        {queryError ? (
+          <div className="p-9 flex flex-col gap-3">
+            <StatusPanel
+              variant="alert"
+              icon={<AlertCircle className="w-full h-full" />}
+              headline="failed to load traces"
+              detail={queryError.message}
+            />
+            <div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => refetch()}
+                disabled={isQueryLoading}
+              >
+                <RefreshCw
+                  className={cn('w-3 h-3', isQueryLoading && 'animate-spin')}
+                />
+                retry
+              </Button>
+            </div>
+          </div>
+        ) : !hasOtelConfigured && !isQueryLoading ? (
           <div className="p-9">
             <Cell title="no observability">
               this engine does not have the trace exporter registered. configure
@@ -269,10 +356,8 @@ export function Traces() {
                 <TraceGroupsView
                   attribute={groupAttribute}
                   showSystem={showSystem}
-                  isPaused={isPaused}
-                  selectedTraceId={selectedTraceId}
-                  onSelectTrace={(id) => selectTrace(id)}
-                  onSelectGroup={(group) => setSelectedGroup(group)}
+                  selectedGroupValue={selectedGroup?.value ?? null}
+                  onSelectGroup={selectGroup}
                 />
               ) : isQueryLoading && traceGroups.length === 0 ? (
                 <div className="flex flex-col">
@@ -391,11 +476,14 @@ export function Traces() {
                           ? filterState.groupBy
                           : undefined
                       }
-                      onClose={() => {
-                        setSelectedGroup(null)
-                        selectTrace(null)
+                      onClose={closeDetail}
+                      onSpanClick={(span, wf) => {
+                        // Carry the clicked span's OWN trace data up so the
+                        // SpanPanel renders with the right neighbours — in
+                        // group mode there is no single waterfallData loaded.
+                        setSelectedSpan(span)
+                        setWaterfallData(wf)
                       }}
-                      onSpanClick={setSelectedSpan}
                       selectedSpanId={selectedSpan?.span_id}
                     />
                   ) : selectedTrace ? (
