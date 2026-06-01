@@ -45,3 +45,55 @@ export function catalogRowsToModelOptions(
     contextWindow: m.context_window,
   }))
 }
+
+/**
+ * Ask each provider to re-pull its upstream model list into the catalog via
+ * `provider::<id>::refresh_models`. Best-effort and parallel — a provider
+ * that's offline or has no credential simply registers nothing. Callers
+ * re-read `models::list` afterwards to pick up the refreshed catalog.
+ */
+export async function refreshProviderModels(
+  providers: readonly string[],
+): Promise<void> {
+  const client = await getIiiClient()
+  await Promise.allSettled(
+    providers.map((p) =>
+      client.call(`provider::${p}::refresh_models`, {}).catch(() => undefined),
+    ),
+  )
+}
+
+/** A provider declared to the harness, from `harness::provider::list`. */
+export interface ProviderListEntry {
+  id: string
+  display_name: string
+  supports_model_listing: boolean
+}
+
+/**
+ * List providers present as harness workers (regardless of whether they have
+ * a credential). Used so the picker can surface a present-but-unconfigured
+ * provider with a gear that opens its harness configuration.
+ */
+export async function fetchProviderList(): Promise<ProviderListEntry[]> {
+  const client = await getIiiClient()
+  const res = await client.call<{ providers?: unknown }>(
+    'harness::provider::list',
+    {},
+  )
+  const rows = res?.providers
+  if (!Array.isArray(rows)) return []
+  const out: ProviderListEntry[] = []
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue
+    const o = raw as Record<string, unknown>
+    const id = typeof o.id === 'string' ? o.id : ''
+    if (!id) continue
+    out.push({
+      id,
+      display_name: typeof o.display_name === 'string' ? o.display_name : id,
+      supports_model_listing: o.supports_model_listing === true,
+    })
+  }
+  return out
+}

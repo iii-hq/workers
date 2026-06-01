@@ -1,6 +1,6 @@
 /**
- * Worker entry: load config, register every `web::*` handler. Mirrors
- * `auth-credentials/register.ts`.
+ * Worker entry: load config, register every `web::*` handler. Follows the
+ * same per-feature register composition as the other workers.
  */
 
 import { loadConfig } from '../runtime/config.js';

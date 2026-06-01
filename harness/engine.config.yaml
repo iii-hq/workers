@@ -1,5 +1,10 @@
 # iii engine configuration for the harness local/dev.
 # Pass to the engine via `iii -c engine.config.yaml`.
+#
+# The `configuration` worker (configuration::register/set/get/list/schema) is
+# enabled by default in the engine — the harness registers its `harness` entry
+# (providers + permissions) there, replacing the former `database`-backed
+# auth-credentials / provider-config stores. No explicit entry is needed here.
 
 workers:
   - name: iii-queue

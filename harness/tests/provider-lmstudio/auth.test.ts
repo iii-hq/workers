@@ -7,6 +7,7 @@ import {
 } from '../../src/provider-lmstudio/auth.js';
 import type { WorkerConfig } from '../../src/provider-lmstudio/config.js';
 import type { ISdk } from '../../src/runtime/iii.js';
+import type { Credential } from '../../src/runtime/provider-resolve.js';
 
 const worker: WorkerConfig = {
   default_max_tokens: 8192,
@@ -14,11 +15,24 @@ const worker: WorkerConfig = {
 };
 
 /**
+ * Wrap a credential into the `harness::provider::resolve` result shape the
+ * provider now consumes (credential + non-secret settings in one call).
+ */
+function resolveResult(cred: Credential | null) {
+  return {
+    configured: cred !== null,
+    source: cred ? 'stored' : null,
+    credential: cred,
+    api_url: null,
+    max_tokens: null,
+  };
+}
+
+/**
  * Narrow ISdk stub used only by `buildConfig` tests. By design this only
  * implements `trigger`/`registerFunction` — `buildConfig` doesn't touch
- * any other SDK surface. If `auth.ts` ever calls a second SDK method
- * (e.g. emitting a metric), update this helper rather than letting the
- * `as unknown` cast silently mask the missing method.
+ * any other SDK surface. The trigger impl stands in for
+ * `harness::provider::resolve`.
  */
 function makeSdk(triggerImpl: (req: { function_id: string; payload: unknown }) => unknown): ISdk {
   return {
@@ -29,7 +43,7 @@ function makeSdk(triggerImpl: (req: { function_id: string; payload: unknown }) =
 
 describe('buildConfig (lmstudio)', () => {
   it('falls back to api_key="lm-studio" when no credential is stored', async () => {
-    const sdk = makeSdk(() => null);
+    const sdk = makeSdk(() => resolveResult(null));
     const cfg = await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(cfg.api_key).toBe('lm-studio');
     expect(cfg.url).toBe(worker.default_api_url);
@@ -38,33 +52,33 @@ describe('buildConfig (lmstudio)', () => {
     expect(cfg.max_tokens).toBe(worker.default_max_tokens);
   });
 
-  it('falls back to api_key="lm-studio" when auth::get_token throws', async () => {
+  it('falls back to api_key="lm-studio" when resolve throws', async () => {
     const sdk = makeSdk(() => {
-      throw new Error('auth-credentials worker unreachable');
+      throw new Error('harness unreachable');
     });
     const cfg = await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(cfg.api_key).toBe('lm-studio');
   });
 
   it('falls back to api_key="lm-studio" when credential has empty key', async () => {
-    const sdk = makeSdk(() => ({ type: 'api_key', key: '' }));
+    const sdk = makeSdk(() => resolveResult({ type: 'api_key', key: '' }));
     const cfg = await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(cfg.api_key).toBe('lm-studio');
   });
 
-  it('honours a real API key when LMSTUDIO_API_KEY is set on an authenticated deployment', async () => {
-    const sdk = makeSdk(() => ({ type: 'api_key', key: 'sk-real-key' }));
+  it('honours a real API key when one is configured on an authenticated deployment', async () => {
+    const sdk = makeSdk(() => resolveResult({ type: 'api_key', key: 'sk-real-key' }));
     const cfg = await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(cfg.api_key).toBe('sk-real-key');
   });
 
-  it('calls auth::get_token with provider="lmstudio"', async () => {
-    const trigger = vi.fn().mockResolvedValue(null);
+  it('resolves via harness::provider::resolve with provider="lmstudio"', async () => {
+    const trigger = vi.fn().mockResolvedValue(resolveResult(null));
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'auth::get_token',
+        function_id: 'harness::provider::resolve',
         payload: { provider: 'lmstudio' },
       }),
     );
@@ -114,9 +128,9 @@ describe('selectAuthKey', () => {
 });
 
 describe('buildAuthHeaders', () => {
-  function sdkWith(cred: unknown): ISdk {
+  function sdkWith(cred: Credential | null): ISdk {
     return {
-      trigger: vi.fn().mockResolvedValue(cred),
+      trigger: vi.fn().mockResolvedValue(resolveResult(cred)),
       registerFunction: vi.fn(),
     } as unknown as ISdk;
   }

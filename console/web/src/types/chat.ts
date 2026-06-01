@@ -12,8 +12,9 @@ export interface ModelOption {
 }
 
 /**
- * When the engine is down or mock backend runs, picker still needs options.
- * Ids mirror the seeded catalog (`harness/.../models.json`).
+ * Fallback options for when the engine is unreachable or the mock backend
+ * runs. On the real backend the picker lists only provider-registered models
+ * (via `models::list`); these static ids are just a non-empty default.
  */
 export const STATIC_MODEL_OPTIONS: ModelOption[] = [
   {

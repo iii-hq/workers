@@ -14,4 +14,4 @@ scripts:
   start: node ./dist/provider-llamacpp/main.js --config ./config.yaml
 
 dependencies:
-  auth-credentials: "^0.2.0"
+  configuration: "^0.11.0"

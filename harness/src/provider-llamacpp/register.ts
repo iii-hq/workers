@@ -1,7 +1,8 @@
 import { loadConfig } from '../runtime/config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import { buildAuthHeaders } from './auth.js';
+import { declareProvider } from '../runtime/provider-resolve.js';
+import { buildAuthHeaders, PROVIDER_ID } from './auth.js';
 import { register as registerComplete } from './complete.js';
 import { loadWorkerConfig } from './config.js';
 import { discoverAndRegister } from './discover.js';
@@ -14,6 +15,16 @@ export async function register(iii: ISdk, ctx: { configPath: string }): Promise<
   registerComplete(iii, worker);
   registerStream(iii, worker);
   registerRefresh(iii, worker);
+
+  // Self-declare into the harness configuration schema. api_url is
+  // env-driven (LLAMACPP_BASE_URL); only max_tokens is seeded.
+  void declareProvider(iii, {
+    id: PROVIDER_ID,
+    display_name: 'llama.cpp',
+    credential_env_var: 'LLAMACPP_API_KEY',
+    defaults: { max_tokens: worker.default_max_tokens },
+    supports_model_listing: true,
+  });
 
   // Fire-and-forget startup discovery: probe llama-server's /v1/models
   // and register the (single) loaded model so the picker shows its real

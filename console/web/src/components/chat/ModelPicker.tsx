@@ -1,25 +1,18 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
-import { Settings } from 'lucide-react'
-import { useState } from 'react'
-import { ProviderSettingsDialog } from '@/components/providers/ProviderSettingsDialog'
-import {
-  ACTIVE_PROVIDERS,
-  type ActiveProvider,
-  ENV_VAR_MAP,
-} from '@/components/providers/provider-registry'
+import { RefreshCw, Settings } from 'lucide-react'
 import { Select, type SelectGroup } from '@/components/ui/Select'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { cn } from '@/lib/utils'
 import {
   CATALOG_MODEL_KEY_SEP,
   type ModelId,
   type ModelOption,
 } from '@/types/chat'
 
-const ENV_VAR_BY_ID = new Map(ENV_VAR_MAP)
-const ACTIVE_PROVIDER_SET: ReadonlySet<string> = new Set(ACTIVE_PROVIDERS)
-
-function isActiveProvider(id: string): id is ActiveProvider {
-  return ACTIVE_PROVIDER_SET.has(id)
-}
+// Deep link to the harness configuration entry in the workers/config editor,
+// where api keys + per-provider settings are now edited (the bespoke
+// per-provider dialog was retired in favour of the schema-driven form).
+const HARNESS_CONFIG_HASH = '#/configuration/workers/harness'
 
 interface ModelPickerProps {
   value: ModelId
@@ -51,8 +44,14 @@ export function ModelPicker({
   loading,
   className,
 }: ModelPickerProps) {
-  const [settingsProvider, setSettingsProvider] =
-    useState<ActiveProvider | null>(null)
+  // Optional: present in the app, absent in isolated Storybook renders.
+  const ctx = useConversationsCtxOptional()
+
+  // Providers present as harness workers (from harness::provider::list).
+  // Absent in Storybook or before the list resolves, in which case no empty
+  // provider groups or gears appear until the dynamic list arrives.
+  const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []
+  const presentSet = new Set<string>(presentIds)
 
   const pickerOptions =
     options.length > 0 ? options : [{ id: value, label: value }]
@@ -60,55 +59,84 @@ export function ModelPicker({
     ? value
     : pickerOptions[0].id
 
+  // Groups from the registered models, plus an empty group for each present
+  // provider that has no models yet (present-but-unconfigured) so it still
+  // shows up with a gear to open its configuration.
+  const modelGroups = groupByProvider(pickerOptions)
+  const grouped = new Set(modelGroups.map((g) => g.label))
+  const emptyGroups: SelectGroup<ModelId>[] = presentIds
+    .filter((id) => !grouped.has(id))
+    .map((id) => ({ label: id, options: [] }))
+  const groups = [...modelGroups, ...emptyGroups].sort((a, b) =>
+    a.label.localeCompare(b.label),
+  )
+
   return (
-    <>
+    <span className="inline-flex items-center gap-1">
       <Select<ModelId>
         value={safeValue}
-        groups={groupByProvider(pickerOptions)}
+        groups={groups}
         onChange={onChange}
         disabled={disabled || loading}
         aria-label={loading ? 'model (loading catalog)' : 'model'}
         aria-busy={loading || undefined}
         className={className}
-        renderGroupHeader={(g) => (
-          <div className="flex items-center justify-between gap-2 pr-2 pt-2 pb-1">
-            <SelectPrimitive.Label className="px-3 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
-              {g.label}
-            </SelectPrimitive.Label>
-            {isActiveProvider(g.label) ? (
-              <button
-                type="button"
-                aria-label={`configure ${g.label}`}
-                title={`configure ${g.label}`}
-                // Stop Radix Select from interpreting the click as an
-                // option-pick / outside-click; the gear opens the provider
-                // settings dialog, which steals focus and closes the
-                // dropdown naturally.
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setSettingsProvider(g.label as ActiveProvider)
-                }}
-                className="text-ink-faint hover:text-ink transition-colors p-0.5 -mr-0.5"
-              >
-                <Settings size={12} />
-              </button>
-            ) : null}
-          </div>
-        )}
+        renderGroupHeader={(g) => {
+          const unconfigured = g.options.length === 0
+          return (
+            <div className="flex items-center justify-between gap-2 pr-2 pt-2 pb-1">
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <SelectPrimitive.Label className="px-3 text-[11px] uppercase tracking-[0.12em] text-ink-faint">
+                  {g.label}
+                </SelectPrimitive.Label>
+                {unconfigured ? (
+                  <span className="text-[10px] lowercase tracking-normal text-ink-ghost">
+                    not configured
+                  </span>
+                ) : null}
+              </span>
+              {presentSet.has(g.label) ? (
+                <button
+                  type="button"
+                  aria-label={`configure ${g.label}`}
+                  title={`configure ${g.label} in harness configuration`}
+                  // Stop Radix Select from interpreting the click as an
+                  // option-pick / outside-click; navigating to the config
+                  // editor closes the dropdown naturally.
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    window.location.hash = HARNESS_CONFIG_HASH
+                  }}
+                  className="text-ink-faint hover:text-ink transition-colors p-0.5 -mr-0.5"
+                >
+                  <Settings size={12} />
+                </button>
+              ) : null}
+            </div>
+          )
+        }}
       />
 
-      {settingsProvider ? (
-        <ProviderSettingsDialog
-          provider={settingsProvider}
-          envVar={ENV_VAR_BY_ID.get(settingsProvider) ?? ''}
-          open
-          onOpenChange={(open) => {
-            if (!open) setSettingsProvider(null)
+      {ctx ? (
+        <button
+          type="button"
+          aria-label="refresh model list"
+          title="refresh model list from providers"
+          disabled={ctx.refreshingModels || disabled}
+          onClick={() => {
+            void ctx.refreshModels()
           }}
-        />
+          className="text-ink-ghost hover:text-ink transition-colors p-1 disabled:opacity-50"
+        >
+          <RefreshCw
+            size={12}
+            className={cn(ctx.refreshingModels && 'animate-spin')}
+            aria-hidden
+          />
+        </button>
       ) : null}
-    </>
+    </span>
   )
 }

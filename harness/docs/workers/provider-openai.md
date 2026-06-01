@@ -6,9 +6,10 @@ bus.
 
 ## Purpose
 
-The iii-side bridge to OpenAI's Chat Completions API. It pulls a
-credential from the auth worker (`auth::get_token`, provider `openai`),
-issues a streaming `chat/completions` request, parses the SSE response
+The iii-side bridge to OpenAI's Chat Completions API. It resolves its
+credential + runtime settings from the harness provider registry
+(`harness::provider::resolve`, provider `openai`), issues a streaming
+`chat/completions` request, parses the SSE response
 into `AssistantMessageEvent` frames, and forwards each frame to the
 caller-supplied channel. Mirrors the shape of
 [provider-anthropic](harness/docs/workers/provider-anthropic.md) so
@@ -45,14 +46,14 @@ From the `provider_openai` section of
 - `default_api_url` (default `https://api.openai.com/v1/chat/completions`)
   — endpoint for outbound calls. Override this to target
   `azure-openai`, `groq`, `openrouter`, or any other Chat-Completions
-  compatible gateway; `auth-credentials` looks up the credential by the
+  compatible gateway; the harness registry looks up the credential by the
   `provider` field, so adjust the gateway and the credential together.
 
 ## Dependencies
 
-From
-[src/provider-openai/iii.worker.yaml](harness/src/provider-openai/iii.worker.yaml):
-`auth-credentials ^0.2.0`. The worker also calls the SDK-provided
+The worker self-declares to the harness provider registry at startup
+(`harness::provider::register`) and resolves credentials/settings per
+request (`harness::provider::resolve`). It also calls the SDK-provided
 `ChannelWriter` injected into the `writer_ref` field of the stream input.
 
 ## Source layout
@@ -63,7 +64,8 @@ From
 | [src/provider-openai/register.ts](harness/src/provider-openai/register.ts) | Registers both functions. |
 | [src/provider-openai/config.ts](harness/src/provider-openai/config.ts) | Loads the `provider_openai` section. |
 | [src/provider-openai/types.ts](harness/src/provider-openai/types.ts) | `ChatCompletionsConfig` + `configFromCredential` builder. |
-| [src/provider-openai/auth.ts](harness/src/provider-openai/auth.ts) | `fetchCredential` (calls `auth::get_token`) + `buildConfig`. |
+| [src/provider-openai/auth.ts](harness/src/provider-openai/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
+| [src/provider-openai/discover.ts](harness/src/provider-openai/discover.ts) + [refresh-fn.ts](harness/src/provider-openai/refresh-fn.ts) | `GET /v1/models` discovery (chat-capable subset) → `models::register` (`provider::openai::refresh_models`). |
 | [src/provider-openai/stream.ts](harness/src/provider-openai/stream.ts) | `streamOpenai` async generator: builds the request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-openai/sse.ts](harness/src/provider-openai/sse.ts) | SSE parser. |
 | [src/provider-openai/wire-messages.ts](harness/src/provider-openai/wire-messages.ts) | `AgentMessage[]` → OpenAI `messages` translation. |

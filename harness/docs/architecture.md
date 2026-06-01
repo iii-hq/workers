@@ -18,15 +18,13 @@ workers.
 
 | Worker | Folder | Role | Doc |
 |---|---|---|---|
-| harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*`, spins up `agent::events` fan-out. | [workers/harness.md](harness/docs/workers/harness.md) |
+| harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`, spins up `agent::events` fan-out. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
-| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
+| approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. Default mode from `harness` config `permissions.default_mode`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
 | session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
-| auth-credentials | [src/auth-credentials/](harness/src/auth-credentials/) | File-backed multi-provider credential store. | [workers/auth-credentials.md](harness/docs/workers/auth-credentials.md) |
-| models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Static model-capability catalogue (state-first, embedded fallback). | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
-| provider-config | [src/provider-config/](harness/src/provider-config/) | Runtime provider settings store on the iii bus (`provider_config::*` — base URL / max tokens overrides). | [workers/provider-config.md](harness/docs/workers/provider-config.md) |
+| models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Model-capability catalogue (state-first, embedded fallback), refreshed live by `provider::<name>::refresh_models`. | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
 | provider-anthropic | [src/provider-anthropic/](harness/src/provider-anthropic/) | Anthropic Messages API SSE → channel writer. | [workers/provider-anthropic.md](harness/docs/workers/provider-anthropic.md) |
 | provider-openai | [src/provider-openai/](harness/src/provider-openai/) | OpenAI Chat Completions SSE → channel writer. | [workers/provider-openai.md](harness/docs/workers/provider-openai.md) |
 | provider-kimi | [src/provider-kimi/](harness/src/provider-kimi/) | Kimi Chat Completions SSE → channel writer. | [workers/provider-kimi.md](harness/docs/workers/provider-kimi.md) |
@@ -47,13 +45,17 @@ flowchart LR
     session[session]
     budget[llm-budget]
     hook[hook-fanout]
-    auth[auth-credentials]
     models[models-catalog]
     provAnth[provider-anthropic]
     provOAI[provider-openai]
     provKimi[provider-kimi]
     provLms[provider-lmstudio]
+    provLlama[provider-llamacpp]
     compact[context-compaction]
+  end
+
+  subgraph builtins [iii engine built-ins]
+    config["configuration worker (harness entry)"]
   end
 
   subgraph external [External Rust workers + engine]
@@ -70,6 +72,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provOAI
   turnOrch -- "provider::*::stream" --> provKimi
   turnOrch -- "provider::*::stream" --> provLms
+  turnOrch -- "provider::*::stream" --> provLlama
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
   turnOrch -- "session-tree::* mirror" --> session
   turnOrch -- "state::* persistence" --> state
@@ -79,10 +82,12 @@ flowchart LR
   state -- "state trigger (scope=approvals)" --> turnOrch
   turnOrch -- "enqueue turn::{state} on turn-step queue" --> turnOrch
 
-  provAnth -- "auth::get_token" --> auth
-  provOAI -- "auth::get_token" --> auth
-  provKimi -- "auth::get_token" --> auth
-  provLms -- "auth::get_token (optional)" --> auth
+  provAnth -- "harness::provider::resolve" --> harness
+  provOAI -- "harness::provider::resolve" --> harness
+  provKimi -- "harness::provider::resolve" --> harness
+  provLms -- "harness::provider::resolve (optional)" --> harness
+  provLlama -- "harness::provider::resolve (optional)" --> harness
+  harness -- "configuration::get/set/register (harness entry)" --> config
 
   state -- "agent::events stream" --> harness
   state -- "agent::events stream" --> compact
@@ -219,16 +224,18 @@ and protect the gate / state surface.
 Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `policy::check_permissions`, `hook-fanout::publish_collect`, `state::set`,
 `state::update`, `state::delete`, `stream::set`, `iii::durable::publish`,
-`auth::set_token`, `auth::delete_token`, `oauth::anthropic::login`,
-`oauth::openai-codex::login`, `run::start`,
-`router::stream_assistant`.
+`harness::provider::resolve`, `harness::provider::register`,
+`configuration::get`, `configuration::set`, `configuration::register`,
+`oauth::anthropic::login`, `oauth::openai-codex::login`, `run::start`,
+`router::stream_assistant`. The `harness::provider::resolve` and
+`configuration::*` denials keep an in-run agent from reading the plaintext
+api keys stored in the `harness` configuration entry.
 
 Bare-string allow rules: `state::get`, `state::list`,
-`models::list`, `models::get`, `models::supports`, `auth::get_token`,
-`auth::list_providers`, `auth::status`, `oauth::anthropic::status`,
-`oauth::openai-codex::status`, the `directory::engine::*` introspection
-surface, and the `directory::skills::*` and `directory::prompts::*`
-lookups.
+`models::list`, `models::get`, `models::supports`,
+`oauth::anthropic::status`, `oauth::openai-codex::status`, the
+`directory::engine::*` introspection surface, and the
+`directory::skills::*` and `directory::prompts::*` lookups.
 
 A function pattern may use `*` to match any substring
 (`compileFunctionMatcher` in
@@ -268,19 +275,22 @@ flowchart TD
   harness --> approval
   models[models-catalog] --> turnOrch
   session --> turnOrch
-  auth[auth-credentials] --> provAnth[provider-anthropic]
-  auth --> provOAI[provider-openai]
-  auth --> provKimi[provider-kimi]
-  auth --> provLms[provider-lmstudio]
+  harness --> provAnth[provider-anthropic]
+  harness --> provOAI[provider-openai]
+  harness --> provKimi[provider-kimi]
+  harness --> provLms[provider-lmstudio]
+  harness --> provLlama[provider-llamacpp]
   provAnth --> turnOrch
   provOAI --> turnOrch
   provKimi --> turnOrch
   provLms --> turnOrch
+  provLlama --> turnOrch
   session --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact
   provKimi --> compact
   provLms --> compact
+  provLlama --> compact
   budget[llm-budget]
 ```
 

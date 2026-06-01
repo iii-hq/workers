@@ -7,11 +7,23 @@ import {
 } from '../../src/provider-llamacpp/auth.js';
 import type { WorkerConfig } from '../../src/provider-llamacpp/config.js';
 import type { ISdk } from '../../src/runtime/iii.js';
+import type { Credential } from '../../src/runtime/provider-resolve.js';
 
 const worker: WorkerConfig = {
   default_max_tokens: 8192,
   default_api_url: 'http://localhost:8080/v1/chat/completions',
 };
+
+/** Wrap a credential into the `harness::provider::resolve` result shape. */
+function resolveResult(cred: Credential | null) {
+  return {
+    configured: cred !== null,
+    source: cred ? 'stored' : null,
+    credential: cred,
+    api_url: null,
+    max_tokens: null,
+  };
+}
 
 function makeSdk(triggerImpl: (req: { function_id: string; payload: unknown }) => unknown): ISdk {
   return {
@@ -22,7 +34,7 @@ function makeSdk(triggerImpl: (req: { function_id: string; payload: unknown }) =
 
 describe('buildConfig (llamacpp)', () => {
   it('returns an empty api_key when no credential is stored (loopback)', async () => {
-    const sdk = makeSdk(() => null);
+    const sdk = makeSdk(() => resolveResult(null));
     const cfg = await buildConfig(sdk, worker, 'Meta-Llama-3-8B');
     // Unlike LM Studio there is no fallback bearer; the empty string
     // is propagated and stream.ts omits the Authorization header.
@@ -33,27 +45,27 @@ describe('buildConfig (llamacpp)', () => {
     expect(cfg.max_tokens).toBe(worker.default_max_tokens);
   });
 
-  it('returns an empty api_key when auth::get_token throws', async () => {
+  it('returns an empty api_key when resolve throws', async () => {
     const sdk = makeSdk(() => {
-      throw new Error('auth-credentials worker unreachable');
+      throw new Error('harness unreachable');
     });
     const cfg = await buildConfig(sdk, worker, 'Meta-Llama-3-8B');
     expect(cfg.api_key).toBe('');
   });
 
-  it('honours a real API key when LLAMACPP_API_KEY is set on an authenticated llama-server', async () => {
-    const sdk = makeSdk(() => ({ type: 'api_key', key: 'sk-real-key' }));
+  it('honours a real API key when one is configured on an authenticated llama-server', async () => {
+    const sdk = makeSdk(() => resolveResult({ type: 'api_key', key: 'sk-real-key' }));
     const cfg = await buildConfig(sdk, worker, 'Meta-Llama-3-8B');
     expect(cfg.api_key).toBe('sk-real-key');
   });
 
-  it('calls auth::get_token with provider="llamacpp"', async () => {
-    const trigger = vi.fn().mockResolvedValue(null);
+  it('resolves via harness::provider::resolve with provider="llamacpp"', async () => {
+    const trigger = vi.fn().mockResolvedValue(resolveResult(null));
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     await buildConfig(sdk, worker, 'Meta-Llama-3-8B');
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'auth::get_token',
+        function_id: 'harness::provider::resolve',
         payload: { provider: 'llamacpp' },
       }),
     );
@@ -104,9 +116,9 @@ describe('selectAuthKey', () => {
 });
 
 describe('buildAuthHeaders', () => {
-  function sdkWith(cred: unknown): ISdk {
+  function sdkWith(cred: Credential | null): ISdk {
     return {
-      trigger: vi.fn().mockResolvedValue(cred),
+      trigger: vi.fn().mockResolvedValue(resolveResult(cred)),
       registerFunction: vi.fn(),
     } as unknown as ISdk;
   }

@@ -3,7 +3,7 @@
  * `provider-anthropic/src/lib.rs::{AnthropicConfig, AuthMode}`.
  */
 
-import type { Credential } from '../auth-credentials/types.js';
+import type { Credential } from '../runtime/provider-resolve.js';
 import { DEFAULT_API_URL } from './config.js';
 
 export type AuthMode = 'api_key' | 'oauth_bearer';

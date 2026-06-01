@@ -1,63 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ACTIVE_PROVIDERS,
-  type ActiveProvider,
-  PROVIDER_DEFAULTS,
-  PROVIDERS,
-} from '@/components/providers/provider-registry'
-import {
   MAX_TOKENS_LIMIT,
   normalizeErrorMessage,
   validateApiUrl,
   validateMaxTokens,
 } from '@/lib/providers'
-
-describe('provider-registry', () => {
-  it('partitions into 5 active and 19 env-var-only providers', () => {
-    const active = PROVIDERS.filter((p) => p.isActive)
-    const envOnly = PROVIDERS.filter((p) => !p.isActive)
-    expect(active).toHaveLength(5)
-    expect(envOnly).toHaveLength(19)
-    expect(active.length + envOnly.length).toBe(PROVIDERS.length)
-  })
-
-  it('active providers match ACTIVE_PROVIDERS list', () => {
-    const activeIds = PROVIDERS.filter((p) => p.isActive).map((p) => p.id)
-    expect(activeIds).toEqual([...ACTIVE_PROVIDERS])
-  })
-
-  it('anthropic entry has correct env var', () => {
-    const entry = PROVIDERS.find((p) => p.id === 'anthropic')
-    expect(entry).toBeDefined()
-    expect(entry?.envVar).toBe('ANTHROPIC_API_KEY')
-    expect(entry?.isActive).toBe(true)
-  })
-
-  it('openrouter entry is env-var-only', () => {
-    const entry = PROVIDERS.find((p) => p.id === 'openrouter')
-    expect(entry).toBeDefined()
-    expect(entry?.envVar).toBe('OPENROUTER_API_KEY')
-    expect(entry?.isActive).toBe(false)
-  })
-
-  it('PROVIDER_DEFAULTS has entries for all active providers', () => {
-    for (const id of ACTIVE_PROVIDERS) {
-      const defaults = PROVIDER_DEFAULTS[id as ActiveProvider]
-      expect(defaults).toBeDefined()
-      expect(typeof defaults.default_api_url).toBe('string')
-      expect(defaults.default_api_url.length).toBeGreaterThan(0)
-      expect(typeof defaults.default_max_tokens).toBe('number')
-      expect(defaults.default_max_tokens).toBeGreaterThan(0)
-    }
-  })
-
-  it('default URLs are valid', () => {
-    for (const id of ACTIVE_PROVIDERS) {
-      const { default_api_url } = PROVIDER_DEFAULTS[id as ActiveProvider]
-      expect(() => new URL(default_api_url)).not.toThrow()
-    }
-  })
-})
 
 describe('normalizeErrorMessage', () => {
   it('returns "unknown error" for null/undefined', () => {

@@ -19,8 +19,15 @@ rules:
   - '!state::delete'
   - '!stream::set'
   - '!iii::durable::publish'
-  - '!auth::set_token'
-  - '!auth::delete_token'
+  # Provider credentials live in the `harness` configuration entry. Agents
+  # must never resolve a secret, self-register a provider, or read/rewrite
+  # the configuration value (which carries plaintext api keys). The console
+  # edits these as a user-initiated SDK call, which bypasses this gate.
+  - '!harness::provider::resolve'
+  - '!harness::provider::register'
+  - '!configuration::get'
+  - '!configuration::set'
+  - '!configuration::register'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
@@ -32,9 +39,6 @@ rules:
   - models::list
   - models::get
   - models::supports
-  - auth::get_token
-  - auth::list_providers
-  - auth::status
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - directory::engine::functions::list
