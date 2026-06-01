@@ -13,20 +13,15 @@
  * `engine/src/workers/observability/mod.rs:917-920`.
  */
 
-import { SpanKind, context as otelContext, propagation } from '@opentelemetry/api';
+import { context as otelContext, propagation } from '@opentelemetry/api';
 import {
   type OtelConfig,
   SeverityNumber,
   currentSpanIsRecording,
   getLogger as getOtelLogger,
   initOtel,
-  recordSpanEvent,
-  redactAndTruncate,
-  resolveMaxBytesFromEnv,
   setCurrentSpanAttribute,
-  setCurrentSpanError,
-  withSpan,
-} from 'iii-sdk/telemetry';
+} from '@iii-dev/observability';
 import pino from 'pino';
 
 const baseLogger = pino({
@@ -240,123 +235,58 @@ function getBaggage(key: string): string | undefined {
 export type Handler<TIn = unknown, TOut = unknown> = (input: TIn) => Promise<TOut>;
 
 /**
- * Wrap a function handler so every invocation runs inside an OTel span
- * tagged with `iii.session.id` / `iii.message.id` / `iii.function.id`,
- * and the same IDs are pushed as baggage so downstream `iii.trigger`
- * calls inherit them.
+ * Enrich the active OTel span for a handler invocation with harness
+ * correlation IDs, and seed those IDs as baggage for downstream calls.
  *
- * Also mirrors `iii-sdk-rust`'s auto-instrumentation (see
- * `motia/sdk/packages/rust/iii/src/iii.rs:1689-1773`) by recording
- * three lifecycle span events on the wrap span:
+ * This does NOT open its own span. The iii-sdk `registerFunction` wrapper
+ * already opens an INTERNAL `execute <fn>` span and records the
+ * `iii.invocation.input` / `iii.invocation.output` events, the `exception`
+ * event, and OK/ERROR status. Opening a second `harness.<fn>` span here only
+ * duplicated that work under the `harness` service. Instead we fold the
+ * harness-specific bits onto the SDK's span:
  *
- *   - `iii.invocation.input`  — redacted+truncated input JSON
- *   - `iii.invocation.output` — redacted+truncated result JSON (or
- *                                {error: ...} on failure)
- *   - `exception`             — only on throw, with type/message/stack
+ *   - stamp `iii.session.id` / `iii.message.id` / `iii.function.id` as
+ *     attributes on the active span (the SDK span is harness-agnostic and
+ *     does not know these IDs), so `engine::traces::group_by` can group by
+ *     Session / Message / Function; and
+ *   - push the same IDs as baggage so downstream `iii.trigger` calls inherit
+ *     them and the engine's BaggageSpanProcessor stamps them onto every child
+ *     span across the trace.
  *
- * This is what populates the "EVENTS" tab in the traces UI for
- * harness-emitted spans. Without it, harness spans look
- * "empty" compared to Rust harness spans, because the Rust harness
- * gets the same events for free via `iii-sdk-rust` (and via the
- * `tracing-opentelemetry::OpenTelemetryLayer` bridge, which doesn't
- * exist on the Node side because `pino` doesn't bridge to OTel).
- *
- * Gated on `III_DISABLE_TRACE_PAYLOADS` to match the Rust
- * `iii-sdk` semantics (set to `1` to suppress payload capture).
- *
- * The wrap is a no-op (just forwards to the handler) when OTel has not
- * been initialized — `currentSpanIsRecording()` returns false and the
- * `withSpan` itself is cheap.
+ * When OTel is not initialized the SDK opens no active span;
+ * `currentSpanIsRecording()` returns false and we skip attribute stamping
+ * (baggage seeding stays cheap and harmless).
  */
 export function instrumentHandler<TIn = unknown, TOut = unknown>(
   functionId: string,
   handler: Handler<TIn, TOut>,
 ): Handler<TIn, TOut> {
-  const spanName = `harness.${functionId}`;
   return async (input: TIn): Promise<TOut> => {
-    return withSpan(spanName, { kind: SpanKind.SERVER }, async () => {
-      const ids = extractHarnessIds(input);
+    const ids = extractHarnessIds(input);
 
-      if (currentSpanIsRecording()) {
-        if (ids.sessionId !== undefined) {
-          setCurrentSpanAttribute('iii.session.id', ids.sessionId);
-        }
-        if (ids.messageId !== undefined) {
-          setCurrentSpanAttribute('iii.message.id', ids.messageId);
-        }
-        setCurrentSpanAttribute('iii.function.id', functionId);
+    // Stamp the harness IDs onto the SDK's active `execute <fn>` span.
+    if (currentSpanIsRecording()) {
+      if (ids.sessionId !== undefined) {
+        setCurrentSpanAttribute('iii.session.id', ids.sessionId);
       }
-
-      // Match the iii-sdk-rust pattern: emit input/output events with
-      // the (redacted, truncated) payload JSON. The env-var override
-      // matches the Rust SDK's `III_DISABLE_TRACE_PAYLOADS` knob.
-      const tracePayloads = !isTracePayloadsDisabled();
-      const payloadMaxBytes = resolveMaxBytesFromEnv();
-
-      if (tracePayloads) {
-        const { json, truncated } = redactAndTruncate(input, payloadMaxBytes);
-        recordSpanEvent('iii.invocation.input', {
-          'iii.payload.json': json,
-          'iii.payload.truncated': truncated,
-        });
+      if (ids.messageId !== undefined) {
+        setCurrentSpanAttribute('iii.message.id', ids.messageId);
       }
+      setCurrentSpanAttribute('iii.function.id', functionId);
+    }
 
-      // Propagate the IDs as baggage so child spans created by downstream
-      // `iii.trigger` calls inherit them via BaggageSpanProcessor.
-      const entries: Record<string, { value: string }> = {
-        'iii.function.id': { value: functionId },
-      };
-      if (ids.sessionId !== undefined) entries['iii.session.id'] = { value: ids.sessionId };
-      if (ids.messageId !== undefined) entries['iii.message.id'] = { value: ids.messageId };
+    // Propagate the IDs as baggage so child spans created by downstream
+    // `iii.trigger` calls inherit them via BaggageSpanProcessor.
+    const entries: Record<string, { value: string }> = {
+      'iii.function.id': { value: functionId },
+    };
+    if (ids.sessionId !== undefined) entries['iii.session.id'] = { value: ids.sessionId };
+    if (ids.messageId !== undefined) entries['iii.message.id'] = { value: ids.messageId };
 
-      const baggage = propagation.createBaggage(entries);
-      const ctxWithBaggage = propagation.setBaggage(otelContext.active(), baggage);
-
-      try {
-        const result = await otelContext.with(ctxWithBaggage, () => handler(input));
-        if (tracePayloads) {
-          const { json, truncated } = redactAndTruncate(result, payloadMaxBytes);
-          recordSpanEvent('iii.invocation.output', {
-            'iii.payload.json': json,
-            'iii.payload.truncated': truncated,
-            'iii.payload.ok': true,
-          });
-        }
-        return result;
-      } catch (err) {
-        // Record both the iii-sdk-style output event (so the EVENTS
-        // tab shows the failure inline next to the success path) AND
-        // the standard OTel `exception` event (so the ERRORS tab can
-        // pick it up). Mirrors `iii.rs:1750-1773`.
-        const message = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error ? (err.stack ?? '') : '';
-        const exceptionType =
-          err instanceof Error && err.constructor?.name ? err.constructor.name : 'Error';
-        if (tracePayloads) {
-          const { json, truncated } = redactAndTruncate({ error: message }, payloadMaxBytes);
-          recordSpanEvent('iii.invocation.output', {
-            'iii.payload.json': json,
-            'iii.payload.truncated': truncated,
-            'iii.payload.ok': false,
-          });
-        }
-        recordSpanEvent('exception', {
-          'exception.type': exceptionType,
-          'exception.message': message,
-          'exception.stacktrace': stack,
-        });
-        setCurrentSpanError(message);
-        throw err;
-      }
-    });
+    const baggage = propagation.createBaggage(entries);
+    const ctxWithBaggage = propagation.setBaggage(otelContext.active(), baggage);
+    return otelContext.with(ctxWithBaggage, () => handler(input));
   };
-}
-
-function isTracePayloadsDisabled(): boolean {
-  const raw = process.env.III_DISABLE_TRACE_PAYLOADS;
-  if (!raw) return false;
-  const v = raw.toLowerCase();
-  return v === '1' || v === 'true';
 }
 
 // =============================================================================

@@ -4,7 +4,7 @@
  * ({group_id, data}) envelopes.
  */
 
-import { setCurrentSpanAttribute, withSpan } from 'iii-sdk/telemetry';
+import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { compactionConfig } from './config.js';

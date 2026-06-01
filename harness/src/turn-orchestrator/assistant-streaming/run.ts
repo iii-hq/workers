@@ -8,6 +8,7 @@ import { syntheticAssistant } from '../synthetic-assistant.js';
 import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
 import { enterFunctionExecute } from '../function-execute/run.js';
 import { transitionTo, type AssistantStreamingTurnRecord } from '../state.js';
+import { createDeltaCoalescer } from './coalesce-deltas.js';
 import {
   hasFunctionCalls,
   isErrorOrAborted,
@@ -56,12 +57,20 @@ export async function runStreamTurn(
 ): Promise<StreamTurnOutcome> {
   let body_streamed = false;
 
+  // Coalesce consecutive same-type provider deltas into one message_update to
+  // cut the per-token span/RPC explosion on the streaming path. Discrete
+  // events flush through 1:1; the final flush below guarantees the tail.
+  const coalescer = createDeltaCoalescer((partial, event) =>
+    ports.emitMessageUpdate(session_id, partial, event),
+  );
+
   const { final, error } = await ports.streamTurn(ctx, async (partial, event) => {
-    await ports.emitMessageUpdate(session_id, partial, event);
     if (event.type === 'text_delta' || event.type === 'thinking_delta') {
       body_streamed = true;
     }
+    await coalescer.onEvent(partial, event);
   });
+  await coalescer.flush();
 
   return { final, error, body_streamed };
 }

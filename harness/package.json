@@ -58,10 +58,11 @@
     "iii-web": "./dist/web/main.js"
   },
   "dependencies": {
+    "@iii-dev/observability": "^0.16.1",
     "@opentelemetry/api": "^1.9.0",
     "chokidar": "^3.6.0",
     "commander": "^12.1.0",
-    "iii-sdk": "^0.12.0",
+    "iii-sdk": "^0.16.1",
     "pino": "^9.5.0",
     "uuid": "^11.0.3",
     "yaml": "^2.6.1",
