@@ -156,11 +156,7 @@ describe('runStreamTurn wires the coalescer', () => {
         await drive(onDelta);
         return { final: emptyAssistant(), error: null };
       },
-      emitMessageUpdate: async (
-        _sid: string,
-        _msg: unknown,
-        event: AssistantMessageEvent,
-      ) => {
+      emitMessageUpdate: async (_sid: string, _msg: unknown, event: AssistantMessageEvent) => {
         emits.push(event);
       },
     } as unknown as AssistantStreamingPorts;

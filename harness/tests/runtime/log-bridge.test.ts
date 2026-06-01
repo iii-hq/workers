@@ -24,9 +24,8 @@ interface CapturedRecord {
 const captured: CapturedRecord[] = [];
 
 vi.mock('@iii-dev/observability', async () => {
-  const actual = await vi.importActual<typeof import('@iii-dev/observability')>(
-    '@iii-dev/observability',
-  );
+  const actual =
+    await vi.importActual<typeof import('@iii-dev/observability')>('@iii-dev/observability');
   return {
     ...actual,
     getLogger: () => ({

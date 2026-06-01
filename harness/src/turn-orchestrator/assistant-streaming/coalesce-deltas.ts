@@ -35,9 +35,12 @@ export function createDeltaCoalescer(
   const flushMs = opts?.flushMs ?? DEFAULT_FLUSH_MS;
   const maxChars = opts?.maxChars ?? DEFAULT_MAX_CHARS;
 
-  let buf:
-    | { type: string; delta: string; last: AssistantMessageEvent; partial: AssistantMessage }
-    | null = null;
+  let buf: {
+    type: string;
+    delta: string;
+    last: AssistantMessageEvent;
+    partial: AssistantMessage;
+  } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   function clearTimer(): void {
@@ -66,10 +69,7 @@ export function createDeltaCoalescer(
     }, flushMs);
   }
 
-  async function onEvent(
-    partial: AssistantMessage,
-    event: AssistantMessageEvent,
-  ): Promise<void> {
+  async function onEvent(partial: AssistantMessage, event: AssistantMessageEvent): Promise<void> {
     const d = event as { type: string; delta?: string };
     const coalescable = COALESCE_TYPES.has(d.type) && typeof d.delta === 'string';
 
