@@ -51,7 +51,7 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
 
 def collect_trigger_types() -> dict[str, object] | None:
     try:
-        return run_iii("engine::trigger-types::list", {"include_internal": False})
+        return run_iii("engine::triggers::list", {"include_internal": False})
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
