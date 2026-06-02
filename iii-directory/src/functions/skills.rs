@@ -111,6 +111,11 @@ struct ListSkillsInput {
 #[derive(Debug, Serialize, JsonSchema)]
 struct SkillEntry {
     id: String,
+    /// On-disk id before `display_id` stripping (e.g. `iii-sandbox/index`).
+    /// Internal only — used to classify worker-overview rows for
+    /// `directory::skills::index`; never serialized, never in the schema.
+    #[serde(skip)]
+    on_disk_id: String,
     /// Frontmatter `title:` when present and non-empty, otherwise the
     /// first `# H1` line in the body, otherwise the bare `id`.
     title: String,
@@ -145,13 +150,14 @@ struct IndexSkillsInput {}
 #[derive(Debug, Serialize, JsonSchema)]
 struct IndexSkillsOutput {
     /// Rendered markdown document — one short `## <title>` block per
-    /// installed worker (skills with frontmatter `type: index`),
-    /// carrying the worker's first-paragraph overview and a read-more
-    /// link pointing at the file path `<ns>/index.md`. Sorted lex by id.
+    /// installed worker (each worker's root overview doc, whether or not
+    /// it declares frontmatter `type: index`), carrying the worker's
+    /// first-paragraph overview and a `directory::skills::get` call to
+    /// read the full reference. Sorted lex by id.
     body: String,
-    /// Number of worker entries rendered (i.e. the count of
-    /// `type: index` skills that survived the filter). Cheap sanity
-    /// check that doesn't require re-parsing the body.
+    /// Number of worker entries rendered (i.e. the count of worker
+    /// overview rows that survived the filter). Cheap sanity check that
+    /// doesn't require re-parsing the body.
     workers_count: usize,
 }
 
@@ -558,10 +564,7 @@ fn register_index_skills(
                     .map(|fs| skill_entry_from_fs(fs, &siblings))
                     .collect();
                 let body = render_index_markdown(&rows);
-                let workers_count = rows
-                    .iter()
-                    .filter(|e| e.kind.as_deref() == Some("index"))
-                    .count();
+                let workers_count = rows.iter().filter(|e| is_index_overview(e)).count();
                 Ok::<_, IIIError>(IndexSkillsOutput {
                     body,
                     workers_count,
@@ -570,11 +573,12 @@ fn register_index_skills(
         })
         .description(
             "Render a per-WORKER overview: one short markdown block per installed worker \
-             (skills with frontmatter `type: index`). Each block is a `## <worker title>` \
-             heading, the first paragraph of that worker's overview, a `Read <id>.md` \
-             pointer, and a `Dive deeper:` URL — follow either with directory::skills::get \
-             for the full reference. Token-light by design and intended for system-prompt \
-             injection; for individual per-SKILL rows call directory::skills::list.",
+             (each worker's root overview doc `<ns>/index`, whether or not it declares \
+             frontmatter `type: index`). Each block is a `## <worker title>` heading, the \
+             first paragraph of that worker's overview, and a `directory::skills::get` call \
+             to read the full reference. Token-light by design and intended for \
+             system-prompt injection; for individual per-SKILL rows call \
+             directory::skills::list.",
         ),
     );
 }
@@ -1092,10 +1096,29 @@ pub fn extract_description(markdown: &str) -> Option<String> {
 /// `directory::skills::list` for the full catalog.
 const INDEX_CHAR_BUDGET: usize = 3000;
 
+/// True when `on_disk_id` is the root overview doc of a top-level worker
+/// namespace, i.e. exactly `<ns>/index` (one `/`, ends with `/index`).
+/// Nested indexes (`<ns>/sub/index`) and the bare root bundle doc (`index`)
+/// are NOT worker overviews.
+fn is_worker_overview(on_disk_id: &str) -> bool {
+    on_disk_id.ends_with("/index") && on_disk_id.matches('/').count() == 1
+}
+
+/// A row counts as a worker overview for `directory::skills::index` when it
+/// EITHER declares frontmatter `type: index` OR is the namespace-root
+/// overview doc (`<ns>/index`). The second clause surfaces legacy bundles
+/// that predate the `type: index` convention: their overview ships as a
+/// bare `<ns>/index.md` with `name:`/`description:` frontmatter and no
+/// `type:`, so without it those workers never appeared in the index at all.
+fn is_index_overview(entry: &SkillEntry) -> bool {
+    entry.kind.as_deref() == Some("index") || is_worker_overview(&entry.on_disk_id)
+}
+
 /// Render a `directory::skills::index` markdown document from already
-/// title/description-resolved rows. Filters down to entries with
-/// frontmatter `type: index` (one per installed worker) and emits a
-/// compact per-worker block:
+/// title/description-resolved rows. Keeps one block per installed worker
+/// — every worker's root overview doc (`<ns>/index`), whether or not it
+/// declares frontmatter `type: index` (see [`is_index_overview`]) — and
+/// emits a compact per-worker block:
 ///
 /// ```markdown
 /// # Skills index
@@ -1106,13 +1129,13 @@ const INDEX_CHAR_BUDGET: usize = 3000;
 ///
 /// <first paragraph from the worker's overview>
 ///
-/// Read [`<id>.md`](<id>.md) (legacy `iii://<id>`) for the full worker reference.
-/// Dive deeper: https://workers.iii.dev/workers/<worker>?tab=api#fn-directory::skills::index
+/// Full reference: call `directory::skills::get { "id": "<id>" }` (legacy `iii://<id>`).
 /// ```
 ///
-/// The legacy `iii://<id>` form is emitted alongside the file-path
-/// pointer so harnesses that grep for the old URI scheme keep working
-/// while new consumers prefer the markdown link target.
+/// The pointer names the directory's own `get` function — the in-engine
+/// way to read the full doc — rather than a file path or an external URL
+/// the agent can't open. The legacy `iii://<id>` token is retained so
+/// harnesses that grep for the old URI scheme keep working.
 ///
 /// The description block is omitted (no extra blank line) when the
 /// overview body has no paragraph. Entries must already be sorted lex
@@ -1123,10 +1146,7 @@ const INDEX_CHAR_BUDGET: usize = 3000;
 /// truncated after the last complete worker block that fits, and a
 /// continuation hint is appended.
 fn render_index_markdown(entries: &[SkillEntry]) -> String {
-    let workers: Vec<&SkillEntry> = entries
-        .iter()
-        .filter(|e| e.kind.as_deref() == Some("index"))
-        .collect();
+    let workers: Vec<&SkillEntry> = entries.iter().filter(|e| is_index_overview(e)).collect();
 
     let mut out = String::new();
     out.push_str("# Skills index\n\n");
@@ -1145,13 +1165,9 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
         }
         block.push('\n');
         block.push_str(&format!(
-            "Read [`{id}.md`]({id}.md) (legacy `iii://{id}`) for the full worker reference.\n",
+            "Full reference: call `directory::skills::get {{ \"id\": \"{id}\" }}` \
+             (legacy `iii://{id}`).\n",
             id = worker.id
-        ));
-        // Extract the top namespace segment for the dive-deeper URL.
-        let worker_slug = worker.id.split('/').next().unwrap_or(&worker.id);
-        block.push_str(&format!(
-            "Dive deeper: https://workers.iii.dev/workers/{worker_slug}?tab=api#fn-directory::skills::index\n"
         ));
 
         if out.len() + block.len() > INDEX_CHAR_BUDGET && out.len() > header_len {
@@ -1331,6 +1347,7 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
         };
     SkillEntry {
         id: display,
+        on_disk_id: fs.id,
         title,
         kind,
         function_id,
@@ -2268,13 +2285,14 @@ First paragraph.
 
     // ── render_index_markdown ───────────────────────────────────────────
 
-    /// Build a `SkillEntry` for renderer tests. The `kind` argument
-    /// drives the `type: index` filter — pass `Some("index")` for a
-    /// worker overview, anything else (or `None`) to exercise the
+    /// Build a `SkillEntry` for renderer tests. `on_disk_id` mirrors `id`,
+    /// so passing an `<ns>/index` id exercises the namespace-root overview
+    /// branch and any other id with a non-`index` `kind` exercises the
     /// "should be filtered out" path.
     fn entry(id: &str, title: &str, kind: Option<&str>, description: &str) -> SkillEntry {
         SkillEntry {
             id: id.into(),
+            on_disk_id: id.into(),
             title: title.into(),
             kind: kind.map(String::from),
             function_id: None,
@@ -2383,18 +2401,18 @@ First paragraph.
         // separated by blank lines on either side.
         assert!(
             body.contains(
-                "\n## iii-directory\n\nEngine introspection and filesystem-backed skill reader.\n\nRead "
+                "\n## iii-directory\n\nEngine introspection and filesystem-backed skill reader.\n\nFull reference: call `directory::skills::get "
             ),
             "description not framed correctly; got: {body}"
         );
         assert!(
-            body.contains("Dive deeper: https://workers.iii.dev/workers/iii-directory"),
-            "missing dive-deeper URL; got: {body}"
+            !body.contains("workers.iii.dev"),
+            "external dive-deeper URL should be gone; got: {body}"
         );
     }
 
     #[test]
-    fn render_index_emits_dive_deeper_link() {
+    fn render_index_emits_get_pointer() {
         let body = render_index_markdown(&[entry(
             "agent-memory",
             "agent-memory",
@@ -2403,15 +2421,13 @@ First paragraph.
         )]);
         assert!(
             body.contains(
-                "Read [`agent-memory.md`](agent-memory.md) (legacy `iii://agent-memory`) for the full worker reference.\n"
+                "Full reference: call `directory::skills::get { \"id\": \"agent-memory\" }` (legacy `iii://agent-memory`).\n"
             ),
-            "missing read-more pointer; got: {body}"
+            "missing directory::skills::get pointer; got: {body}"
         );
         assert!(
-            body.contains(
-                "Dive deeper: https://workers.iii.dev/workers/agent-memory?tab=api#fn-directory::skills::index\n"
-            ),
-            "missing dive-deeper URL; got: {body}"
+            !body.contains("workers.iii.dev"),
+            "external dive-deeper URL should be gone; got: {body}"
         );
     }
 
@@ -2426,10 +2442,15 @@ First paragraph.
         // Title comes immediately before the read-more line — no extra
         // blank paragraph in the middle.
         assert!(
-            body.contains("\n## bare\n\nRead [`bare.md`](bare.md)"),
+            body.contains(
+                "\n## bare\n\nFull reference: call `directory::skills::get { \"id\": \"bare\" }`"
+            ),
             "blank-description block should compress; got: {body}"
         );
-        assert!(body.contains("Dive deeper: https://workers.iii.dev/workers/bare"));
+        assert!(
+            !body.contains("workers.iii.dev"),
+            "no external URL; got: {body}"
+        );
         // And the rest of the document still has the header.
         assert!(body.contains("1 worker(s).\n"));
     }
@@ -2453,9 +2474,10 @@ First paragraph.
     }
 
     #[test]
-    fn render_index_emits_both_file_path_and_iii_pointer() {
+    fn render_index_emits_get_pointer_and_legacy_iii() {
         let entries = vec![SkillEntry {
             id: "agent-memory".into(),
+            on_disk_id: "agent-memory/index".into(),
             title: "agent-memory".into(),
             kind: Some("index".into()),
             function_id: None,
@@ -2465,16 +2487,16 @@ First paragraph.
         }];
         let body = render_index_markdown(&entries);
         assert!(
-            body.contains("[`agent-memory.md`](agent-memory.md)"),
-            "expected file-path pointer, got:\n{body}"
+            body.contains("`directory::skills::get { \"id\": \"agent-memory\" }`"),
+            "expected directory::skills::get pointer, got:\n{body}"
         );
         assert!(
             body.contains("legacy `iii://agent-memory`"),
-            "expected legacy iii:// pointer for back-compat, got:\n{body}"
+            "expected legacy iii:// token for back-compat, got:\n{body}"
         );
         assert!(
-            body.contains("Dive deeper: https://workers.iii.dev/workers/agent-memory"),
-            "expected dive-deeper URL, got:\n{body}"
+            !body.contains("workers.iii.dev"),
+            "external dive-deeper URL should be gone, got:\n{body}"
         );
     }
 
@@ -2520,6 +2542,36 @@ First paragraph.
         );
     }
 
+    #[test]
+    fn untyped_namespace_root_overview_classifies_as_index() {
+        // Reproduces the live bug: a legacy worker overview shipped as
+        // `<ns>/index.md` with `name:`/`description:` frontmatter and NO
+        // `type:` must still be treated as the worker's overview row so
+        // directory::skills::index lists it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("iii-sandbox");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.md");
+        std::fs::write(
+            &path,
+            "---\nname: sandbox\ndescription: Ephemeral microVMs.\n---\n# Sandbox\n\nOverview.\n",
+        )
+        .unwrap();
+        let entry = skill_entry_from_fs(
+            FsSkill {
+                id: "iii-sandbox/index".into(),
+                abs_path: path,
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(entry.kind, None, "legacy overview declares no `type:`");
+        assert_eq!(entry.on_disk_id, "iii-sandbox/index");
+        assert!(
+            is_index_overview(&entry),
+            "a namespace-root overview must classify as an index row even without `type: index`"
+        );
+    }
+
     // ── render_index character budget cap ──────────────────────────────
 
     #[test]
@@ -2551,7 +2603,7 @@ First paragraph.
     }
 
     #[test]
-    fn render_index_dive_deeper_url_uses_worker_slug() {
+    fn render_index_get_pointer_uses_row_id() {
         let body = render_index_markdown(&[entry(
             "my-worker/index",
             "My Worker",
@@ -2559,10 +2611,36 @@ First paragraph.
             "A worker.",
         )]);
         assert!(
-            body.contains(
-                "https://workers.iii.dev/workers/my-worker?tab=api#fn-directory::skills::index"
-            ),
-            "dive-deeper URL should use the top namespace segment; got: {body}"
+            body.contains("`directory::skills::get { \"id\": \"my-worker/index\" }`"),
+            "get pointer should carry the row id; got: {body}"
+        );
+        assert!(
+            !body.contains("workers.iii.dev"),
+            "no external URL; got: {body}"
+        );
+    }
+
+    #[test]
+    fn render_index_includes_untyped_namespace_root_overview() {
+        // Legacy bundles ship `<ns>/index.md` with `name:`/`description:`
+        // frontmatter and NO `type:`. The worker-root overview must still
+        // render as a worker block; a non-root sub-skill must not.
+        let body = render_index_markdown(&[
+            entry("iii-sandbox/index", "sandbox", None, "Ephemeral microVMs."),
+            entry("iii-sandbox/exec", "exec", None, "Run a command."),
+        ]);
+        assert!(
+            body.contains("## sandbox"),
+            "untyped namespace-root overview must render; got: {body}"
+        );
+        assert!(
+            !body.contains("## exec"),
+            "a non-root sub-skill must not render as a worker; got: {body}"
+        );
+        assert!(body.contains("1 worker(s).\n"), "wrong count; got: {body}");
+        assert!(
+            body.contains("`directory::skills::get { \"id\": \"iii-sandbox/index\" }`"),
+            "should instruct directory::skills::get; got: {body}"
         );
     }
 

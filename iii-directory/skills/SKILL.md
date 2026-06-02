@@ -139,7 +139,7 @@ A prompt file at `<skills_folder>/<ns>/prompts/*.md` must have YAML frontmatter 
 - `type`: exact frontmatter `type:` (`index`, `how-to`, `reference`, …).
 - `include_description`: set `false` for a token-light list of just `id` + `title` + `type`.
 
-`directory::skills::index` is the token-light cousin: it shows only `type: index` docs, one per worker, and truncates if the output gets large (it tells you to call `list` when it does).
+`directory::skills::index` is the token-light cousin: one block per installed worker — each worker's root overview doc (`<ns>/index`), whether or not it declares `type: index`. Each block ends with a `directory::skills::get { id }` call to read the full reference. It truncates if the output gets large (it tells you to call `list` when it does).
 
 ## Engine introspection
 
