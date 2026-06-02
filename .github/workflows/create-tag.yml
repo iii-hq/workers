@@ -12,6 +12,7 @@ on:
           - coder
           - console
           - database
+          - email
           - harness
           - iii-directory
           - iii-lsp
