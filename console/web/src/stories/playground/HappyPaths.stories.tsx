@@ -15,3 +15,5 @@ type Story = StoryObj
 export const HappyPlan: Story = scenarioStory('happy-plan')
 export const HappyAsk: Story = scenarioStory('happy-ask')
 export const HappyAgent: Story = scenarioStory('happy-agent')
+export const CoderMutate: Story = scenarioStory('coder-mutate')
+export const CoderUpdate: Story = scenarioStory('coder-update')

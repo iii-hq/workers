@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
   DirectoryFunctionIdLabel,
   DirectoryToolView,
@@ -111,6 +112,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (WebToolView.isWebFunction(functionId)) {
     return <WebFunctionIdLabel functionId={functionId} />
   }
+  if (CoderToolView.isCoderMutateFunction(functionId)) {
+    return <CoderFunctionIdLabel functionId={functionId} />
+  }
   if (SandboxToolView.isSandboxFunction(functionId)) {
     return <SandboxFunctionIdLabel functionId={functionId} />
   }
@@ -139,13 +143,15 @@ export function FunctionCallMessage({
     EngineToolView.tryRenderPreview(message) ??
     DirectoryToolView.tryRenderPreview(message) ??
     WorkerToolView.tryRenderPreview(message) ??
-    WebToolView.tryRenderPreview(message)
+    WebToolView.tryRenderPreview(message) ??
+    CoderToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
       DirectoryToolView.tryRender(message) ??
       WorkerToolView.tryRender(message) ??
-      WebToolView.tryRender(message))
+      WebToolView.tryRender(message) ??
+      CoderToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =
