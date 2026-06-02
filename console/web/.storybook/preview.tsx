@@ -47,7 +47,7 @@ const preview: Preview = {
     // token stamped on the body; the addon's color swatches would fight it.
     backgrounds: { disable: true },
   },
-  initialGlobals: { theme: 'light' },
+  initialGlobals: { theme: 'dark' },
   globalTypes: {
     theme: {
       description: 'iii Schematic theme',
