@@ -5,9 +5,9 @@ Walks ``<worker>/skills/SKILL.md`` (and legacy top-of-tree paths) plus
 ``<worker>/skills/**/*.md`` and produces the JSON body expected by the
 workers-registry endpoint.  Skill paths map to keys as:
 
-    <worker>/skills/SKILL.md      -> "index.md"
-    <worker>/skills/index.md      -> "index.md"   (legacy fallback)
-    <worker>/skill.md             -> "index.md"   (legacy fallback)
+    <worker>/skills/SKILL.md      -> "SKILL.md"
+    <worker>/skills/index.md      -> "SKILL.md"   (legacy fallback)
+    <worker>/skill.md             -> "SKILL.md"   (legacy fallback)
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md / index.md)
 
 If no non-empty markdown is found the script writes ``skip=true`` to
@@ -26,6 +26,8 @@ import sys
 
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._/\-]*\.md$", re.IGNORECASE)
 
+TOP_SKILL_KEY = "SKILL.md"
+
 
 def _read_nonempty(path: pathlib.Path) -> str | None:
     body = path.read_text(encoding="utf-8")
@@ -35,7 +37,7 @@ def _read_nonempty(path: pathlib.Path) -> str | None:
 def _resolve_top_skill(
     worker_root: pathlib.Path,
 ) -> tuple[str | None, pathlib.Path | None]:
-    """Return ``(index.md body, winning path)`` from the top-of-tree candidates.
+    """Return ``(overview body, winning path)`` from the top-of-tree candidates.
 
     Resolution order: ``skills/SKILL.md``, then legacy ``skills/index.md``, then
     legacy ``skill.md``.  When multiple candidates exist, a GitHub Actions
@@ -63,7 +65,7 @@ def _resolve_top_skill(
 def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     """Return a ``{payload-key: markdown-body}`` map for one worker directory.
 
-    The worker overview is always published as registry key ``index.md``,
+    The worker overview is always published as registry key ``SKILL.md``,
     sourced from ``skills/SKILL.md`` when present.  Empty bodies are skipped
     silently so blank placeholder files don't end up in the registry.
     """
@@ -75,7 +77,7 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
 
     top_body, _ = _resolve_top_skill(worker_root)
     if top_body is not None:
-        skills["index.md"] = top_body
+        skills[TOP_SKILL_KEY] = top_body
 
     if leaves_dir.is_dir():
         for path in sorted(leaves_dir.rglob("*.md")):
