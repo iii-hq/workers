@@ -115,6 +115,12 @@ jobs:
             > trigger-types-baseline.json
           cat trigger-types-baseline.json
 
+      - name: Snapshot engine workers baseline
+        run: |
+          set -euo pipefail
+          iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
+          cat workers-baseline.json
+
       - name: Start local worker for interface collection
         env:
           WORKER: ${{ inputs.worker }}
@@ -225,6 +231,7 @@ jobs:
             "--out" "worker-interface.json"
             "--wait-seconds" "120"
             "--trigger-types-baseline" "trigger-types-baseline.json"
+            "--workers-baseline" "workers-baseline.json"
           )
           python3 .github/scripts/collect_worker_interface.py "${args[@]}"
 
