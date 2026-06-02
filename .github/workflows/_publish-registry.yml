@@ -63,7 +63,7 @@ jobs:
 
       - name: Install iii CLI
         env:
-          VERSION: '0.12.0'
+          VERSION: '0.17.0'
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
