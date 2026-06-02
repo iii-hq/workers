@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
@@ -142,4 +143,9 @@ export const WebFamily: Story = {
 export const WorkerFamily: Story = {
   name: 'worker family',
   render: () => <FamilyGallery fixtures={workerFixtures} />,
+}
+
+export const CoderFamily: Story = {
+  name: 'coder family',
+  render: () => <FamilyGallery fixtures={coderFixtures} />,
 }

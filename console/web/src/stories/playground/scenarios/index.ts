@@ -1,6 +1,8 @@
 import type { ChatBackend } from '@/lib/backend'
 import type { Mode } from '@/types/chat'
 import { abortMidThought } from './abort-mid-thought'
+import { coderMutate } from './coder-mutate'
+import { coderUpdate } from './coder-update'
 import { errorOnFcall } from './error-on-fcall'
 import { fastTokens } from './fast-tokens'
 import { happyAgent } from './happy-agent'
@@ -53,6 +55,24 @@ export const SCENARIOS: PlaygroundScenario[] = [
     group: 'happy paths',
     preferredMode: 'agent',
     backend: happyAgent,
+  },
+  {
+    id: 'coder-mutate',
+    label: 'coder · mutate',
+    description:
+      'one coder::create-file call writing workers/iii/skills/SKILL.md with Pierre diff.',
+    group: 'happy paths',
+    preferredMode: 'agent',
+    backend: coderMutate,
+  },
+  {
+    id: 'coder-update',
+    label: 'coder · update',
+    description:
+      'coder::update-file on workers/iii/skills/SKILL.md with before/after Pierre diff.',
+    group: 'happy paths',
+    preferredMode: 'agent',
+    backend: coderUpdate,
   },
   {
     id: 'slow-tokens',

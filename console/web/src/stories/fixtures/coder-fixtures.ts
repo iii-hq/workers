@@ -1,0 +1,686 @@
+import type { FunctionCallMessage } from '@/types/chat'
+import { wrapHarness } from './sandbox-fixtures'
+
+const now = Date.now()
+
+function byteLen(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+/** Minimal demo worker — mirrors the quick-start in workers/iii/skills/SKILL.md. */
+const DEMO_WORKER_TS = `import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_ENGINE_URL!, { workerName: 'demo' })
+
+iii.registerFunction(
+  'demo::add',
+  async (payload: { a: number; b: number }) => {
+    return { c: payload.a + payload.b }
+  },
+  {
+    description: 'Add two numbers.',
+    request_format: {
+      type: 'object',
+      properties: {
+        a: { type: 'number' },
+        b: { type: 'number' },
+      },
+      required: ['a', 'b'],
+    },
+    response_format: {
+      type: 'object',
+      properties: { c: { type: 'number' } },
+      required: ['c'],
+    },
+  },
+)
+`
+
+/** Substantial skill excerpt — enough lines for Pierre to show markdown + TS fences. */
+const III_SKILL_MD = `---
+name: iii
+description: >-
+  WebSocket-routed worker mesh — the engine's Function/Trigger/Worker model and
+  the iii-sdk surface for authoring them.
+---
+
+# iii
+
+iii is a WebSocket-routed worker mesh. One engine process (default port \`49134\`)
+holds a live registry of every connected worker, every function those workers
+expose, and every trigger bound to them. Workers are independent OS processes
+that open a WebSocket to the engine and register **Functions** (\`service::name\`
+handlers) and **Triggers** (the events that invoke those Functions).
+
+\`\`\`ts
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_ENGINE_URL!, { workerName: 'demo' })
+
+iii.registerFunction('demo::add', async (payload: { a: number; b: number }) => {
+  return { c: payload.a + payload.b }
+})
+\`\`\`
+
+## The four primitives
+
+| Primitive | What it is | Owned by |
+|---|---|---|
+| Engine | One coordinator process. Routes every invocation. | The operator |
+| Worker | A process that opens a WebSocket to the engine. | Anyone who writes one |
+| Function | A named handler inside a worker, id \`service::name\`. | The registering worker |
+| Trigger | A \`(type, config, function_id)\` triple. | A worker + a caller |
+
+## Need a capability? Discover before you build
+
+1. **Look at what is already registered** — \`engine::functions::list\`.
+2. **Search the public registry** — \`directory::registry::workers::list\`.
+3. **Build a worker** — only when steps 1 and 2 come up empty.
+
+> Discover in order. Don't jump to a worker you remember; the registry may hold
+> a better fit.
+`
+
+const DEMO_WORKER_AFTER_TS = `import type { Logger } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_ENGINE_URL!, {
+  workerName: 'demo',
+  invocationTimeoutMs: 30_000,
+})
+
+iii.registerFunction(
+  'demo::sum',
+  async (payload: { a: number; b: number }) => {
+    return { c: payload.a + payload.b }
+  },
+  {
+    description: 'Add two numbers.',
+    request_format: {
+      type: 'object',
+      properties: {
+        a: { type: 'number' },
+        b: { type: 'number' },
+      },
+      required: ['a', 'b'],
+    },
+    response_format: {
+      type: 'object',
+      properties: { c: { type: 'number' } },
+      required: ['c'],
+    },
+  },
+)
+`
+
+/** Skill doc after expanding the discovery section (from top-level.md). */
+const III_SKILL_MD_AFTER_DISCOVERY = III_SKILL_MD.replace(
+  `## Need a capability? Discover before you build
+
+1. **Look at what is already registered** — \`engine::functions::list\`.
+2. **Search the public registry** — \`directory::registry::workers::list\`.
+3. **Build a worker** — only when steps 1 and 2 come up empty.
+
+> Discover in order. Don't jump to a worker you remember; the registry may hold
+> a better fit.`,
+  `## Need a capability? Discover before you build — in this order
+
+The most common harness mistake is reimplementing something that already exists.
+Work the steps in order; stop at the first that satisfies the need.
+
+**1. Look at what is already registered in the engine.**
+
+\`\`\`jsonc
+// engine::functions::list   — every function on this engine.
+//   Filter with { prefix: 'svc::' } or { search: 'resize' }.
+// engine::workers::list      — every connected worker.
+\`\`\`
+
+If a registered function fits, just call it:
+\`iii.trigger({ function_id, payload })\`.
+
+**2. Search the public registry** via \`directory::registry::workers::list\`.
+
+**3. Build a worker** only when steps 1 and 2 both come up empty.
+
+## Trust runtime probes over introspection
+
+\`engine::*::list\` reads can come back empty for blurred reasons. **Disambiguate
+with a runtime probe** — call the function with \`iii.trigger(...)\`. If the probe
+succeeds, the registration is live regardless of what \`*::list\` reported.`,
+)
+
+const III_SKILL_MD_WITH_HARNESS_BANNER = `<!-- generated by harness -->
+${III_SKILL_MD}`
+
+const DEMO_PACKAGE_JSON = `{
+  "name": "demo-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "iii-sdk": "^0.12.0"
+  },
+  "scripts": {
+    "start": "node --import tsx src/index.ts"
+  }
+}
+`
+
+const SKILL_OVERWRITE_MD = `---
+name: iii
+description: >-
+  WebSocket-routed worker mesh — updated discovery guidance for harness agents.
+---
+
+# iii
+
+## Need a capability? Discover before you build — in this order
+
+The most common harness mistake is reimplementing something that already exists.
+Work the steps in order; stop at the first that satisfies the need.
+
+**1. Look at what is already registered in the engine.**
+
+\`\`\`jsonc
+// engine::functions::list   — every function on this engine.
+//   Filter with { prefix: 'svc::' } or { search: 'resize' }.
+// engine::workers::list      — every connected worker.
+\`\`\`
+
+If a registered function fits, just call it:
+\`iii.trigger({ function_id, payload })\`.
+
+**2. Search the public registry** via \`directory::registry::workers::list\`.
+
+**3. Build a worker** only when steps 1 and 2 both come up empty.
+
+## Trust runtime probes over introspection
+
+\`engine::*::list\` reads can come back empty for blurred reasons. **Disambiguate
+with a runtime probe** — call the function with \`iii.trigger(...)\`. If the probe
+succeeds, the registration is live regardless of what \`*::list\` reported.
+`
+
+function base(
+  id: string,
+  functionId: string,
+  input: unknown,
+  output?: unknown,
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
+  return {
+    id,
+    role: 'function-call',
+    functionId,
+    input,
+    output,
+    durationMs: 180,
+    createdAt: now,
+    ...extra,
+  }
+}
+
+/** Hero fixture: new TypeScript worker with JSON Schema metadata — rich TS diff. */
+export const coderCreateSingle = base(
+  'coder-create-1',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        content: DEMO_WORKER_TS,
+        mode: '0644',
+        parents: true,
+        overwrite: false,
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: 'workers/demo/src/index.ts',
+        success: true,
+        bytes_written: byteLen(DEMO_WORKER_TS),
+      },
+    ],
+  },
+)
+
+/** Large markdown skill doc — exercises markdown + fenced-code highlighting. */
+export const coderCreateSkillDoc = base(
+  'coder-create-skill',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        content: III_SKILL_MD,
+        mode: '0644',
+        parents: true,
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        success: true,
+        bytes_written: byteLen(III_SKILL_MD),
+      },
+    ],
+  },
+)
+
+/** Multi-file scaffold — two diffs stacked in one call. */
+export const coderCreateMultiScaffold = base(
+  'coder-create-scaffold',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        content: DEMO_WORKER_TS,
+        parents: true,
+      },
+      {
+        path: 'workers/demo/package.json',
+        content: DEMO_PACKAGE_JSON,
+        parents: true,
+      },
+    ],
+  },
+  wrapHarness({
+    results: [
+      {
+        path: 'workers/demo/src/index.ts',
+        success: true,
+        bytes_written: byteLen(DEMO_WORKER_TS),
+      },
+      {
+        path: 'workers/demo/package.json',
+        success: true,
+        bytes_written: byteLen(DEMO_PACKAGE_JSON),
+      },
+    ],
+  }),
+)
+
+export const coderCreateMultiPartialFail = base(
+  'coder-create-multi',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: '.env',
+        content: 'III_ENGINE_URL=ws://127.0.0.1:49134\nSECRET=1\n',
+        overwrite: true,
+      },
+      {
+        path: 'workers/demo/.gitignore',
+        content: 'node_modules/\ndist/\n',
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: '.env',
+        success: false,
+        bytes_written: 0,
+        error: 'C211: path is not accessible',
+      },
+      {
+        path: 'workers/demo/.gitignore',
+        success: true,
+        bytes_written: byteLen('node_modules/\ndist/\n'),
+      },
+    ],
+  },
+)
+
+/** Overwrite an existing skill — File view with substantial markdown body. */
+export const coderCreateOverwrite = base(
+  'coder-create-ow',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        content: SKILL_OVERWRITE_MD,
+        overwrite: true,
+      },
+    ],
+  },
+  wrapHarness({
+    results: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        success: true,
+        bytes_written: byteLen(SKILL_OVERWRITE_MD),
+      },
+    ],
+  }),
+)
+
+export const coderCreatePending = base(
+  'coder-create-pending',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        content: DEMO_WORKER_TS,
+        parents: true,
+      },
+    ],
+  },
+  undefined,
+  { pendingApproval: true },
+)
+
+export const coderCreateRunning = base(
+  'coder-create-running',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        content: III_SKILL_MD,
+        parents: true,
+      },
+    ],
+  },
+  undefined,
+  { running: true },
+)
+
+export const coderUpdateMixedOps = base(
+  'coder-update-ops',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        ops: [
+          {
+            op: 'insert',
+            at_line: 1,
+            content: "import type { Logger } from 'iii-sdk'\n",
+          },
+          {
+            op: 'update_lines',
+            from_line: 3,
+            to_line: 3,
+            content:
+              "const iii = registerWorker(process.env.III_ENGINE_URL!, {\n  workerName: 'demo',\n  invocationTimeoutMs: 30_000,\n})\n",
+          },
+          {
+            op: 'replace',
+            pattern: 'demo::add',
+            replacement: 'demo::sum',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: 'workers/demo/src/index.ts',
+        success: true,
+        applied: 3,
+        new_line_count: 35,
+        before: DEMO_WORKER_TS,
+        after: DEMO_WORKER_AFTER_TS,
+      },
+    ],
+  },
+)
+
+/** Markdown skill — expanded discovery section with jsonc example block. */
+export const coderUpdateSkillDiscovery = base(
+  'coder-update-skill',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        ops: [
+          {
+            op: 'update_lines',
+            from_line: 34,
+            to_line: 41,
+            content: `## Need a capability? Discover before you build — in this order
+
+The most common harness mistake is reimplementing something that already exists.
+Work the steps in order; stop at the first that satisfies the need.
+
+**1. Look at what is already registered in the engine.**
+
+\`\`\`jsonc
+// engine::functions::list   — every function on this engine.
+// engine::workers::list      — every connected worker.
+\`\`\`
+
+If a registered function fits, just call it:
+\`iii.trigger({ function_id, payload })\`.
+
+**2. Search the public registry** via \`directory::registry::workers::list\`.
+
+**3. Build a worker** only when steps 1 and 2 both come up empty.
+
+## Trust runtime probes over introspection
+
+Disambiguate with a runtime probe — call \`iii.trigger(...)\` before re-registering.
+`,
+          },
+        ],
+      },
+    ],
+  },
+  wrapHarness({
+    results: [
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        success: true,
+        applied: 1,
+        new_line_count: 52,
+        before: III_SKILL_MD,
+        after: III_SKILL_MD_AFTER_DISCOVERY,
+      },
+    ],
+  }),
+)
+
+/** Two-file batch: worker refactor + package.json version bump. */
+export const coderUpdateMultiFile = base(
+  'coder-update-multi',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        ops: [
+          {
+            op: 'replace',
+            pattern: 'demo::add',
+            replacement: 'demo::sum',
+          },
+        ],
+      },
+      {
+        path: 'workers/demo/package.json',
+        ops: [
+          {
+            op: 'replace',
+            pattern: '"iii-sdk": "\\^0.12.0"',
+            replacement: '"iii-sdk": "^0.13.0"',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    results: [
+      {
+        path: 'workers/demo/src/index.ts',
+        success: true,
+        applied: 1,
+        new_line_count: 35,
+        before: DEMO_WORKER_TS,
+        after: DEMO_WORKER_TS.replace("'demo::add'", "'demo::sum'"),
+      },
+      {
+        path: 'workers/demo/package.json',
+        success: true,
+        applied: 1,
+        new_line_count: 10,
+        before: DEMO_PACKAGE_JSON,
+        after: DEMO_PACKAGE_JSON.replace('^0.12.0', '^0.13.0'),
+      },
+    ],
+  },
+)
+
+export const coderUpdatePartialFail = base(
+  'coder-update-fail',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: '.env',
+        ops: [{ op: 'replace', pattern: 'SECRET', replacement: 'REDACTED' }],
+      },
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        ops: [
+          {
+            op: 'insert',
+            at_line: 1,
+            content: '<!-- generated by harness -->\n',
+          },
+        ],
+      },
+    ],
+  },
+  wrapHarness({
+    results: [
+      {
+        path: '.env',
+        success: false,
+        applied: 0,
+        new_line_count: 0,
+        error: 'C211: not accessible',
+      },
+      {
+        path: 'workers/iii/skills/SKILL.md',
+        success: true,
+        applied: 1,
+        new_line_count: 48,
+        before: III_SKILL_MD,
+        after: III_SKILL_MD_WITH_HARNESS_BANNER,
+      },
+    ],
+  }),
+)
+
+export const coderUpdatePending = base(
+  'coder-update-pending',
+  'coder::update-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        ops: [
+          {
+            op: 'insert',
+            at_line: 1,
+            content: '// TODO: wire Logger from iii-sdk\n',
+          },
+        ],
+      },
+    ],
+  },
+  undefined,
+  { pendingApproval: true },
+)
+
+export const coderDeleteRecursive = base(
+  'coder-delete-rec',
+  'coder::delete-file',
+  { paths: ['workers/demo/dist/', 'workers/demo/.turbo/'], recursive: true },
+  {
+    results: [
+      { path: 'workers/demo/dist/', success: true, removed: true },
+      { path: 'workers/demo/.turbo/', success: true, removed: true },
+    ],
+  },
+)
+
+export const coderDeleteIdempotent = base(
+  'coder-delete-miss',
+  'coder::delete-file',
+  { paths: ['workers/demo/node_modules/.cache/foo'] },
+  {
+    results: [
+      {
+        path: 'workers/demo/node_modules/.cache/foo',
+        success: true,
+        removed: false,
+      },
+    ],
+  },
+)
+
+export const coderDeleteRunning = base(
+  'coder-delete-running',
+  'coder::delete-file',
+  { paths: ['workers/demo/tmp/scratch.ts'], recursive: false },
+  undefined,
+  { running: true },
+)
+
+export const coderGateError = base(
+  'coder-gate-err',
+  'coder::create-file',
+  {
+    files: [
+      {
+        path: 'workers/demo/src/index.ts',
+        content: DEMO_WORKER_TS,
+      },
+    ],
+  },
+  {
+    error: {
+      kind: 'function_error',
+      message: 'trigger_failed: approval gate unreachable',
+      details: {
+        status: 'denied',
+        denied_by: 'gate_unavailable',
+        function_id: 'coder::create-file',
+        reason: 'approval gate unreachable',
+      },
+      content: [{ type: 'text', text: 'denied' }],
+    },
+  },
+)
+
+export const coderFixtures = [
+  coderCreateSingle,
+  coderCreateSkillDoc,
+  coderCreateMultiScaffold,
+  coderCreateMultiPartialFail,
+  coderCreateOverwrite,
+  coderCreatePending,
+  coderCreateRunning,
+  coderUpdateMixedOps,
+  coderUpdateSkillDiscovery,
+  coderUpdateMultiFile,
+  coderUpdatePartialFail,
+  coderUpdatePending,
+  coderDeleteRecursive,
+  coderDeleteIdempotent,
+  coderDeleteRunning,
+  coderGateError,
+] as const
