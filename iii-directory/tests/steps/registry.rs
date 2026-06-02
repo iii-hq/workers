@@ -327,8 +327,8 @@ fn worker_list_pagination_next_cursor_null(world: &mut IiiSkillsWorld) {
 // ── directory::registry::workers::info assertions ──────────────────
 //
 // The workers::info response shape wraps the worker payload in a
-// top-level `worker` field — same shape as
-// directory::engine::workers::info — so the assertions read
+// top-level `worker` field — same shape as the engine's
+// `engine::workers::list` rows — so the assertions read
 // `v["worker"][...]`.
 
 #[then(regex = r#"^the registry worker-info worker name is "([^"]+)"$"#)]

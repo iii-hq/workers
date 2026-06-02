@@ -116,6 +116,16 @@ pub fn validate_worker_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Outcome of a registry download attempt. Distinguishes between a
+/// successful download, a 404 (worker has no skills bundle — benign),
+/// and a real error (5xx, timeout, malformed response).
+pub enum RegistryDownloadOutcome {
+    /// Skills successfully downloaded and written.
+    Ok(DownloadResult),
+    /// HTTP 404 — the worker has no skills bundle. Benign no-op.
+    NotFound,
+}
+
 /// HTTP GET the worker's skills bundle, parse the response, and write
 /// every entry under `<skills_folder>/<worker>/`. The HTTP request and
 /// the file writes are bounded by `timeout_ms` collectively.
@@ -126,6 +136,25 @@ pub async fn download(
     skills_folder: &Path,
     timeout_ms: u64,
 ) -> Result<DownloadResult, String> {
+    match download_typed(registry_base, worker, spec, skills_folder, timeout_ms).await? {
+        RegistryDownloadOutcome::Ok(result) => Ok(result),
+        RegistryDownloadOutcome::NotFound => Err(format!(
+            "D310 not_found: registry worker {worker:?} has no published skills bundle. \
+             Next: call directory::registry::workers::list to browse worker names."
+        )),
+    }
+}
+
+/// Like [`download`] but returns a typed outcome distinguishing 404
+/// (benign) from real errors (5xx, timeout, malformed). Used by
+/// auto-download paths that need to treat 404 as a no-op.
+pub async fn download_typed(
+    registry_base: &str,
+    worker: &str,
+    spec: &VersionSpec,
+    skills_folder: &Path,
+    timeout_ms: u64,
+) -> Result<RegistryDownloadOutcome, String> {
     validate_worker_name(worker)?;
 
     let url = format!(
@@ -142,20 +171,29 @@ pub async fn download(
         .query(&[(key, value)])
         .send()
         .await
-        .map_err(|e| format!("GET {url} ({key}={value}): {e}"))?;
+        .map_err(|_| {
+            "D320 registry_error: could not reach the registry. Next: retry shortly.".to_string()
+        })?;
 
     let status = response.status();
+
+    // 404 is benign — the worker simply has no skills bundle.
+    if status.as_u16() == 404 {
+        return Ok(RegistryDownloadOutcome::NotFound);
+    }
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        // Clean error only — never leak the internal registry URL or the
+        // raw response body into a handler error an agent has to read.
         return Err(format!(
-            "registry GET {url} returned HTTP {status}: {}",
-            body.trim()
+            "D320 registry_error: registry returned HTTP {}. Next: retry shortly.",
+            status.as_u16()
         ));
     }
     let parsed: WorkerSkillsResponse = response
         .json()
         .await
-        .map_err(|e| format!("decode registry response: {e}"))?;
+        .map_err(|_| "D320 registry_error: could not decode the registry response.".to_string())?;
 
     if let Some(name) = parsed.name.as_deref() {
         if name != worker {
@@ -165,7 +203,18 @@ pub async fn download(
         }
     }
 
-    write_response(worker, parsed, skills_folder)
+    let result = write_response(worker, parsed, skills_folder)?;
+    Ok(RegistryDownloadOutcome::Ok(result))
+}
+
+/// Registry bundles store skill files under a `skills/` directory in the source
+/// repo (`skills/exec.md`, `skills/SKILL.md`). That prefix is redundant once
+/// materialised under `<skills_folder>/<worker>/`, so strip a single leading
+/// `skills/` segment — files land at `<worker>/exec.md`, `<worker>/SKILL.md`
+/// rather than nesting a second `skills/` folder. A bundle-root file like
+/// `index.md` (no prefix) is returned unchanged.
+fn strip_leading_skills_segment(path: &str) -> &str {
+    path.strip_prefix("skills/").unwrap_or(path)
 }
 
 fn write_response(
@@ -180,7 +229,10 @@ fn write_response(
     let mut result = DownloadResult::new(worker);
 
     for skill in response.skills {
-        let rel = validate_relative_path(&skill.path)
+        // Drop the redundant leading `skills/` packaging prefix so files land at
+        // `<worker>/<path>` instead of a nested `<worker>/skills/<path>`.
+        let normalized = strip_leading_skills_segment(&skill.path);
+        let rel = validate_relative_path(normalized)
             .map_err(|e| format!("invalid skill path {:?}: {e}", skill.path))?;
         let dest = dest_root.join(&rel);
         write_file_atomic(&dest, skill.content.as_bytes())?;
@@ -326,6 +378,51 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("resend/prompts/send-email.md")).unwrap();
         assert!(prompt.starts_with("---\n"));
         assert!(prompt.contains("Body."));
+    }
+
+    #[test]
+    fn strip_leading_skills_segment_drops_one_prefix() {
+        assert_eq!(strip_leading_skills_segment("skills/SKILL.md"), "SKILL.md");
+        assert_eq!(strip_leading_skills_segment("skills/exec.md"), "exec.md");
+        assert_eq!(
+            strip_leading_skills_segment("skills/iii-database/query.md"),
+            "iii-database/query.md"
+        );
+        // Only ONE leading segment is stripped (bundle's own nested skills/ kept).
+        assert_eq!(
+            strip_leading_skills_segment("skills/skills/http/x.md"),
+            "skills/http/x.md"
+        );
+        // Bundle-root files and non-prefixed paths are untouched.
+        assert_eq!(strip_leading_skills_segment("index.md"), "index.md");
+        assert_eq!(strip_leading_skills_segment("a/b.md"), "a/b.md");
+    }
+
+    #[test]
+    fn write_response_flattens_skills_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("iii".into()),
+            version: None,
+            skills: vec![
+                SkillEntry {
+                    path: "index.md".into(),
+                    content: "# iii\n".into(),
+                },
+                SkillEntry {
+                    path: "skills/SKILL.md".into(),
+                    content: "# skill\n".into(),
+                },
+            ],
+            prompts: vec![],
+        };
+        let result = write_response("iii", response, tmp.path()).unwrap();
+        // Lands at iii/SKILL.md, NOT iii/skills/SKILL.md.
+        assert!(tmp.path().join("iii/SKILL.md").is_file());
+        assert!(!tmp.path().join("iii/skills/SKILL.md").exists());
+        assert!(tmp.path().join("iii/index.md").is_file());
+        assert!(result.skills_written.contains(&"SKILL.md".to_string()));
+        assert!(result.skills_written.contains(&"index.md".to_string()));
     }
 
     #[test]

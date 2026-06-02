@@ -42,6 +42,39 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that a repo URL is safe to pass to `git clone`. Rejects
+/// empty strings, argument injection (`-`-prefixed), transport tricks
+/// (`::`, `ext::`), insecure `file:` scheme, and anything that isn't
+/// `https://`, `ssh://`, or `git@`-style SCP notation.
+pub fn validate_repo_url(repo: &str) -> Result<(), String> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return Err("repo URL must be non-empty".into());
+    }
+    if repo.starts_with('-') {
+        return Err(format!(
+            "repo URL may not start with '-' (argument injection): {repo:?}"
+        ));
+    }
+    if repo.contains("::") {
+        return Err(format!(
+            "repo URL may not contain '::' (transport trick): {repo:?}"
+        ));
+    }
+    if repo.starts_with("file:") {
+        return Err(format!("repo URL may not use 'file:' scheme: {repo:?}"));
+    }
+    // Only allow https://, ssh://, or git@ (SCP notation).
+    let allowed =
+        repo.starts_with("https://") || repo.starts_with("ssh://") || repo.starts_with("git@");
+    if !allowed {
+        return Err(format!(
+            "repo URL must start with https://, ssh://, or git@ — got: {repo:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Run `git clone --depth 1 --branch <branch> --quiet <repo> <tmpdir>`
 /// then copy `<tmpdir>/skills/<skill>/**` into
 /// `<skills_folder>/<skill>/`.
@@ -57,9 +90,7 @@ pub async fn download(
     timeout_ms: u64,
 ) -> Result<DownloadResult, String> {
     validate_skill_name(skill)?;
-    if repo.trim().is_empty() {
-        return Err("repo URL must be non-empty".into());
-    }
+    validate_repo_url(repo)?;
     if branch.trim().is_empty() {
         return Err("branch must be non-empty".into());
     }
@@ -103,8 +134,19 @@ async fn run_git_clone(
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 tempdir path: {}", dest.display()))?;
     let fut = Command::new("git")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
         .args([
-            "clone", "--depth", "1", "--branch", branch, "--quiet", repo, dest_str,
+            "-c",
+            "protocol.ext.allow=never",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            branch,
+            "--quiet",
+            repo,
+            dest_str,
         ])
         .output();
     let output = timeout(Duration::from_millis(timeout_ms), fut)
@@ -221,5 +263,57 @@ mod tests {
         assert!(is_prompt_relpath(Path::new("a/prompts/b.md")));
         assert!(!is_prompt_relpath(Path::new("foo/bar.md")));
         assert!(!is_prompt_relpath(Path::new("promptsx/foo.md")));
+    }
+
+    // ── validate_repo_url ─────────────────────────────────────────────
+
+    #[test]
+    fn repo_url_accepts_https() {
+        assert!(validate_repo_url("https://github.com/x/y").is_ok());
+    }
+
+    #[test]
+    fn repo_url_accepts_git_at_scp() {
+        assert!(validate_repo_url("git@github.com:x/y").is_ok());
+    }
+
+    #[test]
+    fn repo_url_accepts_ssh() {
+        assert!(validate_repo_url("ssh://git@github.com/x/y").is_ok());
+    }
+
+    #[test]
+    fn repo_url_rejects_ext_transport() {
+        let err = validate_repo_url("ext::sh -c 'x'").unwrap_err();
+        assert!(err.contains("::"), "got: {err}");
+    }
+
+    #[test]
+    fn repo_url_rejects_file_scheme() {
+        let err = validate_repo_url("file:///etc").unwrap_err();
+        assert!(err.contains("file:"), "got: {err}");
+    }
+
+    #[test]
+    fn repo_url_rejects_arg_injection() {
+        let err = validate_repo_url("--upload-pack=evil").unwrap_err();
+        assert!(err.contains("'-'"), "got: {err}");
+    }
+
+    #[test]
+    fn repo_url_rejects_empty() {
+        assert!(validate_repo_url("").is_err());
+        assert!(validate_repo_url("   ").is_err());
+    }
+
+    #[test]
+    fn repo_url_rejects_http_insecure() {
+        let err = validate_repo_url("http://insecure.com/repo").unwrap_err();
+        assert!(err.contains("https://"), "got: {err}");
+    }
+
+    #[test]
+    fn repo_url_rejects_double_colon() {
+        assert!(validate_repo_url("git::https://x.com/y").is_err());
     }
 }

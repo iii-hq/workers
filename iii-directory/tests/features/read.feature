@@ -83,7 +83,7 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
 
   # ── directory::skills::get ───────────────────────────────────────────
 
-  Scenario: directory::skills::get returns the body, id, title, description, and modified_at
+  Scenario: directory::skills::get returns the body, id, title, and modified_at
     Given a skill file at "ns/lookup.md" with body:
       """
       # Lookup
@@ -93,7 +93,8 @@ Feature: filesystem-backed reads (directory::skills::list / directory::skills::g
     When I get skill "ns/lookup"
     Then the get response has id "ns/lookup"
     And  the get response has title "Lookup"
-    And  the get response has description "Body content here."
+    # `description` deliberately not returned by `get` — the body already
+    # carries the same first paragraph; teasers live on `list` rows.
     And  the get response body contains "Body content here."
     And  the get response has a non-empty modified_at
     And  the get response has a null type

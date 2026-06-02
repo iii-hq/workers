@@ -1,0 +1,7 @@
+reports/*
+!reports/.gitkeep
+skills-home/
+.iii/
+data/
+*.log
+.DS_Store

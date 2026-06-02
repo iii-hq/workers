@@ -1,18 +1,23 @@
 //! Function registrations for `iii-directory` (formerly `skills` / `engine-catalog`).
 //!
 //! All public functions sit under a single `directory::*` namespace,
-//! split into four sub-namespaces:
+//! split into three sub-namespaces:
 //!
 //!   * `directory::skills::*` / `directory::prompts::*` — filesystem-backed
 //!     reads + downloads. Plain JSON shapes; no envelope or templating.
-//!   * `directory::engine::*` — read-side enrichment over engine
-//!     introspection (`engine::functions::list`, `engine::workers::list`,
-//!     `engine::trigger-types::list`, `engine::triggers::list`).
 //!   * `directory::registry::*` — HTTP proxy over the workers registry
 //!     (`api.workers.iii.dev`) for worker listing + per-worker metadata.
+//!
+//! Engine introspection (functions / triggers / workers / registered
+//! triggers) is no longer wrapped here — callers should invoke the
+//! native ids directly: `engine::functions::list`,
+//! `engine::trigger-types::list`, `engine::triggers::list`,
+//! `engine::workers::list`. See the harness `iii` skill for the
+//! recommended composition patterns.
 
-pub mod directory;
 pub mod download;
+pub mod engine_fn;
+pub mod error;
 pub mod prompts;
 pub mod registry;
 pub mod skills;
@@ -52,12 +57,33 @@ pub fn register_all(
     prompts::register(iii, cfg);
     let subs = Subscribers::from(trigger_types);
     download::register(iii, cfg, &subs);
-    directory::register(iii, cfg);
     registry::register(iii, cfg);
+    engine_fn::register(iii);
     tracing::info!(
         "iii-directory registered 3 directory::skills::* (list + get + index), \
          2 directory::prompts::* (list + get), 1 directory::skills::download, \
-         8 directory::engine::* and 2 directory::registry::workers::* functions"
+         2 directory::registry::workers::*, and 1 directory::engine::functions::info"
+    );
+}
+
+/// Register all functions with a pre-built registered-workers cache.
+/// Used when the cache is shared with auto-download event handlers.
+pub fn register_all_with_cache(
+    iii: &Arc<III>,
+    cfg: &Arc<SkillsConfig>,
+    trigger_types: &RegisteredTriggerTypes,
+    cache: &std::sync::Arc<skills::RegisteredWorkersCache>,
+) {
+    skills::register_with_cache(iii, cfg, cache);
+    prompts::register(iii, cfg);
+    let subs = Subscribers::from(trigger_types);
+    download::register(iii, cfg, &subs);
+    registry::register(iii, cfg);
+    engine_fn::register(iii);
+    tracing::info!(
+        "iii-directory registered 3 directory::skills::* (list + get + index), \
+         2 directory::prompts::* (list + get), 1 directory::skills::download, \
+         2 directory::registry::workers::*, and 1 directory::engine::functions::info"
     );
 }
 
