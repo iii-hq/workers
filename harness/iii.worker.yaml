@@ -12,7 +12,7 @@ scripts:
   start: node ./index.mjs
 
 dependencies:
-  iii-state: "^0.11.0"
-  iii-stream: "^0.11.0"
-  iii-directory: "^0.5.1"
-  configuration: "^0.11.0"
+  iii-state: "^0.17.0"
+  iii-stream: "^0.17.0"
+  configuration: "^0.17.0"
+  iii-directory: "^0.8.1"
