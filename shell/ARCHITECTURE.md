@@ -1,6 +1,6 @@
 # shell — architecture and operator notes
 
-The published `README.md` and `skill.md` for this worker are rendered from `docs/`. This file holds the operator/contributor material that does not belong in the published surfaces — full configuration table, threat model, wire shapes for the streaming functions, troubleshooting, tests, and deferred work.
+The published `README.md` and `skills/SKILL.md` for this worker are hand-maintained. This file holds the operator/contributor material that does not belong in the published surfaces: full configuration table, threat model, wire shapes for the streaming functions, troubleshooting, tests, and deferred work.
 
 ## Build and wire-up
 

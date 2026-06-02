@@ -207,4 +207,4 @@ cd web && pnpm typecheck && pnpm lint
 
 ## License
 
-Apache 2.0 — see [LICENSE](../LICENSE).
+Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).
