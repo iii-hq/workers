@@ -10,9 +10,9 @@ allowed_env:
   - LC_ALL
   - TERM
 # Default allowlist is intentionally read-only. Tools that can shell out
-# (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, cargo
-# build.rs, node -e, python3 -c, npm run, env <cmd>) are left out on
-# purpose — add them per deployment after you've decided on the threat
+# (git hooks, curl -o/file://, find -exec, awk system(), sed e/-i, Rust
+# build-script hooks, node -e, python3 -c, npm run, env <cmd>) are left out on
+# purpose; add them per deployment after you've decided on the threat
 # model. This worker is NOT a sandbox. Use `printenv` for read-only env
 # inspection; `env` is excluded because `env <cmd>` execs arbitrary
 # programs while passing argv[0]=="env" through the allowlist gate.
@@ -43,9 +43,9 @@ allowlist:
 # Denylist patterns are advisory, not a security boundary. They run as
 # regex against `argv.join(" ")`, so a caller invoking an allowlisted
 # shell or interpreter (sh, node, python, etc.) can bypass any pattern
-# by constructing the forbidden token at runtime — variables, eval,
-# IFS tricks, base64, etc. Treat these as a tripwire for honest
-# mistakes; the actual security boundary is the sandbox backend.
+# by constructing the forbidden token at runtime (variables, eval,
+# IFS tricks, base64, etc.). Treat these as a tripwire for honest
+# mistakes; the security boundary is the sandbox backend.
 denylist_patterns:
   - "rm\\s+-rf\\s+/"
   - ":\\(\\)\\s*\\{\\s*:\\|"
@@ -74,7 +74,7 @@ fs:
   #
   # Default is /tmp: exists on every Unix host, is writable, and contains
   # only ephemeral data. Operators should point this at the workspace
-  # they actually intend the shell worker to manage.
+  # they intend the shell worker to manage.
   host_root: /tmp
   allow_unjailed: false
   max_read_bytes: 16777216
