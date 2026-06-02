@@ -17,12 +17,9 @@ on:
           - iii-lsp
           - iii-lsp-vscode
           - image-resize
-          - llm-budget
           - mcp
           - shell
           - storage
-          - todo-worker
-          - todo-worker-python
       bump:
         description: 'Version bump'
         required: true

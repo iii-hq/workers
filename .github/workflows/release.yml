@@ -11,12 +11,9 @@ on:
       - 'iii-directory/v*'
       - 'iii-lsp/v*'
       - 'image-resize/v*'
-      - 'llm-budget/v*'
       - 'mcp/v*'
       - 'shell/v*'
       - 'storage/v*'
-      - 'todo-worker/v*'
-      - 'todo-worker-python/v*'
   workflow_dispatch:
     inputs:
       tag:
