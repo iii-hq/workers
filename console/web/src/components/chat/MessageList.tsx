@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Prompt } from '@/components/ui/Prompt'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import type {
   FunctionCallMessage as FunctionCallMessageType,
   Message as MessageType,
 } from '@/types/chat'
+import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { FunctionCallGroup } from './FunctionCallGroup'
 import { Message } from './Message'
 
@@ -85,6 +86,10 @@ export function MessageList({
 
   const items = useMemo(() => groupConsecutiveFcalls(messages), [messages])
 
+  // Read optionally so isolated renders (Storybook) still work without the
+  // ConversationsProvider; the empty state falls back to `ready` there.
+  const ctx = useConversationsCtxOptional()
+
   /* Auto-scroll only when the user is already near the bottom. The effect body
      reads layout off refs but the trigger we care about is "messages changed"
      or "thinking flipped", so list both explicitly. */
@@ -138,7 +143,7 @@ export function MessageList({
   }, [messages])
 
   if (messages.length === 0) {
-    return <EmptyState density={density} />
+    return <EmptyState {...resolveEmptyState(ctx, density)} />
   }
 
   const listPad = density === 'dock' ? 'px-4 py-6' : 'px-9 py-8'
@@ -174,40 +179,37 @@ export function MessageList({
   )
 }
 
-function EmptyState({ density }: { density: 'route' | 'dock' }) {
-  const emptyPad = density === 'dock' ? 'px-4' : 'px-9'
-  return (
-    <div className={cn('flex-1 flex items-center justify-center', emptyPad)}>
-      <div className="max-w-[520px] w-full flex flex-col gap-6">
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          <Prompt symbol="$">new session</Prompt>
-        </div>
-        <h1 className="font-mono text-[28px] font-medium tracking-[-0.01em] text-ink lowercase">
-          how can i help.
-        </h1>
-        <p className="font-mono text-[14px] leading-[1.7] text-ink-faint lowercase">
-          pick a mode and a model, attach files if you need to, then send a
-          message. responses are mocked locally — swap{' '}
-          <code className="font-mono text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1">
-            lib/backend/real.ts
-          </code>{' '}
-          for a real provider when you're ready.
-        </p>
-        <ul className="font-mono text-[13px] leading-[1.7] text-ink-faint flex flex-col gap-1">
-          <li>
-            · <span className="text-ink">plan</span> — outline an approach
-            before doing.
-          </li>
-          <li>
-            · <span className="text-ink">ask</span> — answer a question with
-            context.
-          </li>
-          <li>
-            · <span className="text-ink">agent</span> — take action and report
-            back.
-          </li>
-        </ul>
-      </div>
-    </div>
-  )
+type ChatCtx = ReturnType<typeof useConversationsCtxOptional>
+
+/**
+ * Map harness presence + the model catalog (from ConversationsContext) onto an
+ * `EmptyState` variant. Loading flags hold the `ready` hero so the first paint
+ * never flashes an install/configure prompt before the probes resolve.
+ */
+function resolveEmptyState(
+  ctx: ChatCtx,
+  density: 'route' | 'dock',
+): EmptyStateProps {
+  if (!ctx) return { variant: 'ready', density }
+
+  const { harnessStatus, modelOptions, catalogLoading } = ctx
+  const base: EmptyStateProps = {
+    variant: 'ready',
+    density,
+    stages: harnessStatus.stages,
+    errorMessage: harnessStatus.error,
+    onInstallHarness: harnessStatus.install,
+    onRetryInstall: harnessStatus.retry,
+    onConfigureProvider: () => {
+      window.location.hash = '#/configuration/workers/harness'
+    },
+  }
+
+  if (harnessStatus.error) return { ...base, variant: 'install-failed' }
+  if (harnessStatus.installing) return { ...base, variant: 'installing' }
+  if (harnessStatus.loading) return base
+  if (!harnessStatus.present) return { ...base, variant: 'no-harness' }
+  if (catalogLoading) return base
+  if (modelOptions.length === 0) return { ...base, variant: 'no-provider' }
+  return base
 }

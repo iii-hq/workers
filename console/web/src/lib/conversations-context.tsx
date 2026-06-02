@@ -9,6 +9,10 @@ import {
   type ConversationsApi,
   useConversations,
 } from '@/hooks/use-conversations'
+import {
+  type HarnessStatus,
+  useHarnessStatus,
+} from '@/hooks/use-harness-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
@@ -33,6 +37,12 @@ interface ConversationsContextValue extends ConversationsApi {
    */
   refreshModels: () => Promise<void>
   refreshingModels: boolean
+  /**
+   * Presence of the `harness` worker plus the in-app install lifecycle.
+   * Powers the chat empty state (install / configure / ready). Only live on
+   * the real backend.
+   */
+  harnessStatus: HarnessStatus
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -60,6 +70,7 @@ export function ConversationsProvider({
     refresh,
   } = useModelPickerSource(backend.id)
   const api = useConversations(catalogKeys, !catalogLoading)
+  const harnessStatus = useHarnessStatus(backend.id === 'real')
 
   const [refreshingModels, setRefreshingModels] = useState(false)
   const refreshModels = useCallback(async () => {
@@ -88,6 +99,7 @@ export function ConversationsProvider({
     presentProviders,
     refreshModels,
     refreshingModels,
+    harnessStatus,
   }
 
   return (

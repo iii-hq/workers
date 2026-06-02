@@ -6,10 +6,15 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
+import {
+  harnessComposerPlaceholder,
+  isChatBlockedByHarness,
+} from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
 import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { makeSessionId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
@@ -97,6 +102,12 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
+  const conversationsCtx = useConversationsCtxOptional()
+  const harnessBlocked = conversationsCtx
+    ? isChatBlockedByHarness(conversationsCtx.harnessStatus)
+    : false
+  const harnessBlockedRef = useRef(harnessBlocked)
+  harnessBlockedRef.current = harnessBlocked
 
   // Matches iii.session.id on every span so the traces UI can group by it.
   const sessionId = useMemo(
@@ -165,6 +176,7 @@ export function ChatView({
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
+      if (harnessBlockedRef.current) return
       const conversationId = conversation.id
 
       // Snapshot prior history BEFORE appending the new user msg —
@@ -593,6 +605,12 @@ export function ChatView({
             onSubmit={handleSubmit}
             onStop={handleStop}
             isStreaming={isStreaming}
+            blocked={harnessBlocked}
+            blockedPlaceholder={
+              conversationsCtx
+                ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
+                : undefined
+            }
           />
         </div>
       </footer>

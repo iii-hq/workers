@@ -34,6 +34,10 @@ interface ComposerProps {
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
   isStreaming?: boolean
+  /** External lock (e.g. harness not installed). Editor + send disabled. */
+  blocked?: boolean
+  /** Placeholder while `blocked` is true. */
+  blockedPlaceholder?: string
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /** Initial attachment chips (applied once on mount). */
@@ -54,6 +58,8 @@ export function Composer({
   onSubmit,
   onStop,
   isStreaming,
+  blocked,
+  blockedPlaceholder = 'chat unavailable…',
   initialContent,
   initialAttachments,
   functionEntries,
@@ -64,15 +70,17 @@ export function Composer({
   const [clearToken, setClearToken] = useState(0)
   const textRef = useRef('')
 
+  const inputDisabled = isStreaming || blocked
+
   const handleSubmit = useCallback(() => {
-    if (isStreaming) return
+    if (inputDisabled) return
     const text = textRef.current.trim()
     if (!text && attachments.length === 0) return
     onSubmit({ text, attachments })
     textRef.current = ''
     setAttachments([])
     setClearToken((t) => t + 1)
-  }, [isStreaming, attachments, onSubmit])
+  }, [inputDisabled, attachments, onSubmit])
 
   const handleAttach = useCallback((next: Attachment[]) => {
     setAttachments((current) => [...current, ...next])
@@ -103,27 +111,33 @@ export function Composer({
           }}
           onSubmit={handleSubmit}
           clearToken={clearToken}
-          placeholder={isStreaming ? 'streaming response…' : 'send a message…'}
-          disabled={isStreaming}
+          placeholder={
+            isStreaming
+              ? 'streaming response…'
+              : blocked
+                ? blockedPlaceholder
+                : 'send a message…'
+          }
+          disabled={inputDisabled}
           initialContent={initialContent}
           functionEntries={functionEntries}
         />
       </div>
 
       <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-t border-rule-2">
-        <AttachmentButton onAttach={handleAttach} disabled={isStreaming} />
+        <AttachmentButton onAttach={handleAttach} disabled={inputDisabled} />
         <ModePicker value={mode} onChange={onModeChange} />
         <PermissionModePicker
           value={permissionMode}
           onChange={onPermissionModeChange}
-          disabled={isStreaming || !!permissionModeLoading}
+          disabled={inputDisabled || !!permissionModeLoading}
         />
         <div className="flex-1 min-w-0" />
         <ModelPicker
           value={model}
           options={modelOptions}
           onChange={onModelChange}
-          disabled={isStreaming}
+          disabled={inputDisabled}
           loading={catalogLoading}
         />
         {isStreaming ? (
@@ -142,6 +156,7 @@ export function Composer({
             variant="primary"
             size="sm"
             onClick={handleSubmit}
+            disabled={blocked}
             aria-label="send message"
           >
             send
