@@ -1,3 +1,4 @@
+import { CircleQuestionMark, SettingsIcon } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChatDock } from '@/components/chat/ChatDock'
 import {
@@ -125,7 +126,7 @@ function Header({
       <div className="flex items-center gap-3">
         <DockToggle collapsed={dockCollapsed} onToggle={onToggleDock} />
         <Wordmark />
-        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
+        <span className="font-mono text-[11px] mb-[-2px] leading-[14px] uppercase tracking-[0.16em] text-ink-faint font-semibold">
           {view}
         </span>
       </div>
@@ -140,9 +141,11 @@ function Header({
           onClick={onOpenShortcuts}
           aria-label="keyboard shortcuts (?)"
           title="keyboard shortcuts (?)"
-          className="font-mono text-[14px] leading-none w-7 h-7 flex items-center justify-center border bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors focus-visible:border-accent focus-visible:outline-none"
+          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center border bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink transition-colors focus-visible:border-accent focus-visible:outline-none"
         >
-          <span aria-hidden>?</span>
+          <span aria-hidden>
+            <CircleQuestionMark className="w-4 h-4" />
+          </span>
         </button>
         <button
           type="button"
@@ -151,13 +154,13 @@ function Header({
           aria-label="configuration"
           title="configuration"
           className={cn(
-            'font-mono text-[14px] leading-none w-7 h-7 flex items-center justify-center border transition-colors',
+            'font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center border transition-colors',
             onConfiguration
               ? 'bg-ink text-bg border-ink'
               : 'bg-transparent text-ink-faint border-rule hover:text-ink hover:border-ink',
           )}
         >
-          <span aria-hidden>⚙</span>
+          <SettingsIcon className="w-4 h-4" />
         </button>
       </div>
     </header>

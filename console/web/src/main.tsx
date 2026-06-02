@@ -3,7 +3,16 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { App } from './App'
+import faviconUrl from './icons/favicon.svg?url'
 import './index.css'
+
+const favicon =
+  document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??
+  document.createElement('link')
+favicon.rel = 'icon'
+favicon.type = 'image/svg+xml'
+favicon.href = faviconUrl
+if (!favicon.isConnected) document.head.appendChild(favicon)
 
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')

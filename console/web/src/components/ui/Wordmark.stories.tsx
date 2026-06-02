@@ -20,3 +20,15 @@ export const Default: Story = {
     </div>
   ),
 }
+
+export const InverseOnInk: Story = {
+  name: 'inverse (on ink panel)',
+  render: () => (
+    <div className="flex items-center gap-4 bg-ink px-4 py-3">
+      <Wordmark tone="inverse" />
+      <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-bg">
+        three eye
+      </span>
+    </div>
+  ),
+}

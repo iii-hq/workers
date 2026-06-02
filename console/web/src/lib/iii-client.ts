@@ -20,11 +20,12 @@
 import {
   type IIIConnectionState,
   type ISdk,
+  type RegisterTriggerInput,
   type RemoteFunctionHandler,
   registerWorker,
 } from 'iii-browser-sdk'
 
-export type { IIIConnectionState }
+export type { IIIConnectionState, RegisterTriggerInput }
 
 export interface IiiClient {
   browserId: string
@@ -36,6 +37,19 @@ export interface IiiClient {
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
   ): () => void
+  /**
+   * Register an engine trigger bound to a function id. Thin passthrough to
+   * the SDK's `registerTrigger`; returns an unregister fn that is also run on
+   * `dispose()`. Pair with `on()` + `browserId` to bind a trigger to a
+   * browser-local handler:
+   *   const off = client.on('foo', handler)
+   *   const offTrigger = client.registerTrigger({
+   *     type: 'worker',
+   *     function_id: `foo::${client.browserId}`,
+   *     config: { operations: ['add'] },
+   *   })
+   */
+  registerTrigger(input: RegisterTriggerInput): () => void
   addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void
@@ -104,6 +118,9 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   // Track per-functionId unregister fns so dispose() can clean them all up
   // even if individual `on()` callers forgot.
   const handlerUnregisters = new Set<() => void>()
+  // Same idea for trigger registrations, so an unmount that forgets to
+  // unregister still releases the engine-side binding on dispose().
+  const triggerUnregisters = new Set<() => void>()
 
   function call<T>(
     functionId: string,
@@ -142,6 +159,23 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     return unregister
   }
 
+  function registerTrigger(input: RegisterTriggerInput): () => void {
+    const trigger = sdk.registerTrigger(input)
+    let active = true
+    const unregister = () => {
+      if (!active) return
+      active = false
+      triggerUnregisters.delete(unregister)
+      try {
+        trigger.unregister()
+      } catch {
+        // SDK already disposed; nothing to do.
+      }
+    }
+    triggerUnregisters.add(unregister)
+    return unregister
+  }
+
   function addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void {
@@ -152,6 +186,9 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     for (const unregister of [...handlerUnregisters]) {
       unregister()
     }
+    for (const unregister of [...triggerUnregisters]) {
+      unregister()
+    }
     await sdk.shutdown()
   }
 
@@ -159,6 +196,7 @@ function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     browserId,
     call,
     on,
+    registerTrigger,
     addConnectionStateListener,
     dispose,
   }
