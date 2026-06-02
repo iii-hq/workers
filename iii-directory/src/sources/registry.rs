@@ -212,19 +212,33 @@ pub async fn download_typed(
 /// materialised under `<skills_folder>/<worker>/`, so strip a single leading
 /// `skills/` segment — files land at `<worker>/exec.md`, `<worker>/SKILL.md`
 /// rather than nesting a second `skills/` folder. A bundle-root file like
-/// `index.md` (no prefix) is returned unchanged.
+/// `SKILL.md` or `index.md` (no prefix) is returned unchanged.
 fn strip_leading_skills_segment(path: &str) -> &str {
     path.strip_prefix("skills/").unwrap_or(path)
 }
 
+/// Stale registry snapshots may ship both legacy `index.md` and canonical
+/// `SKILL.md` overviews. Prefer `SKILL.md` on disk and drop redundant
+/// `index.md` entries before writing.
+fn dedupe_stale_overview(skills: &mut Vec<SkillEntry>) {
+    let has_skill_md = skills
+        .iter()
+        .any(|s| strip_leading_skills_segment(&s.path) == "SKILL.md");
+    if has_skill_md {
+        skills.retain(|s| strip_leading_skills_segment(&s.path) != "index.md");
+    }
+}
+
 fn write_response(
     worker: &str,
-    response: WorkerSkillsResponse,
+    mut response: WorkerSkillsResponse,
     skills_folder: &Path,
 ) -> Result<DownloadResult, String> {
     let dest_root = skills_folder.join(worker);
     std::fs::create_dir_all(&dest_root)
         .map_err(|e| format!("create_dir_all {}: {e}", dest_root.display()))?;
+
+    dedupe_stale_overview(&mut response.skills);
 
     let mut result = DownloadResult::new(worker);
 
@@ -395,6 +409,7 @@ mod tests {
         );
         // Bundle-root files and non-prefixed paths are untouched.
         assert_eq!(strip_leading_skills_segment("index.md"), "index.md");
+        assert_eq!(strip_leading_skills_segment("SKILL.md"), "SKILL.md");
         assert_eq!(strip_leading_skills_segment("a/b.md"), "a/b.md");
     }
 
@@ -404,25 +419,46 @@ mod tests {
         let response = WorkerSkillsResponse {
             name: Some("iii".into()),
             version: None,
-            skills: vec![
-                SkillEntry {
-                    path: "index.md".into(),
-                    content: "# iii\n".into(),
-                },
-                SkillEntry {
-                    path: "skills/SKILL.md".into(),
-                    content: "# skill\n".into(),
-                },
-            ],
+            skills: vec![SkillEntry {
+                path: "skills/SKILL.md".into(),
+                content: "# skill\n".into(),
+            }],
             prompts: vec![],
         };
         let result = write_response("iii", response, tmp.path()).unwrap();
         // Lands at iii/SKILL.md, NOT iii/skills/SKILL.md.
         assert!(tmp.path().join("iii/SKILL.md").is_file());
         assert!(!tmp.path().join("iii/skills/SKILL.md").exists());
-        assert!(tmp.path().join("iii/index.md").is_file());
-        assert!(result.skills_written.contains(&"SKILL.md".to_string()));
-        assert!(result.skills_written.contains(&"index.md".to_string()));
+        assert!(!tmp.path().join("iii/index.md").exists());
+        assert_eq!(result.skills_written, vec!["SKILL.md"]);
+    }
+
+    #[test]
+    fn write_response_dedupes_stale_index_when_skill_md_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("iii-directory".into()),
+            version: None,
+            skills: vec![
+                SkillEntry {
+                    path: "index.md".into(),
+                    content: "# stale index\n".into(),
+                },
+                SkillEntry {
+                    path: "SKILL.md".into(),
+                    content: "# canonical\n".into(),
+                },
+            ],
+            prompts: vec![],
+        };
+        let result = write_response("iii-directory", response, tmp.path()).unwrap();
+        assert!(tmp.path().join("iii-directory/SKILL.md").is_file());
+        assert!(!tmp.path().join("iii-directory/index.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("iii-directory/SKILL.md")).unwrap(),
+            "# canonical\n"
+        );
+        assert_eq!(result.skills_written, vec!["SKILL.md"]);
     }
 
     #[test]
