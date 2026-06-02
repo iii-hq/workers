@@ -1,0 +1,21 @@
+accounts:
+  alice:
+    provider: smtp
+    from: "Alice <alice@local.test>"
+    smtp:
+      host: localhost
+      port: 3025
+      starttls: false
+  bob:
+    provider: smtp
+    from: "Bob <bob@local.test>"
+    smtp:
+      host: localhost
+      port: 3025
+      starttls: false
+
+limits:
+  max_attachment_bytes: 26214400
+  max_recipients: 100
+  send_timeout_ms: 30000
+  imap_connect_timeout_ms: 15000

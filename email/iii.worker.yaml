@@ -1,0 +1,14 @@
+iii: v1
+name: email
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: email
+description: Email worker — SMTP send and real-time IMAP read with IDLE push (email::*).
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build --release
+  start: ./target/release/email --config ./config.yaml
