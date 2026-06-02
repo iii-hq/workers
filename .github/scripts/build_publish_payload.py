@@ -172,13 +172,13 @@ def normalize_worker_interface(
 
     baseline_ids = {
         tt["id"]
-        for tt in _extract_array(baseline_trigger_types_json or {}, "trigger_types")
+        for tt in _extract_array(baseline_trigger_types_json or {}, "triggers")
         if isinstance(tt.get("id"), str)
     }
 
     triggers = []
     if trigger_types_json:
-        for trigger_type in _extract_array(trigger_types_json, "trigger_types"):
+        for trigger_type in _extract_array(trigger_types_json, "triggers"):
             tt_id = trigger_type.get("id")
             if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
                 continue

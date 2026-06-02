@@ -110,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           iii trigger \
-            'engine::trigger-types::list' \
+            'engine::triggers::list' \
             --json '{"include_internal": false}' \
             > trigger-types-baseline.json
           cat trigger-types-baseline.json
