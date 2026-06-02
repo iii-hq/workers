@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks ``<worker>/skill.md`` and ``<worker>/skills/**/*.md`` and produces the JSON
-body expected by the workers-registry endpoint.  Skill paths map to keys as:
+Walks ``<worker>/skills/SKILL.md`` (and legacy top-of-tree paths) plus
+``<worker>/skills/**/*.md`` and produces the JSON body expected by the
+workers-registry endpoint.  Skill paths map to keys as:
 
-    <worker>/skill.md             -> "index.md"
-    <worker>/skills/index.md      -> "index.md"   (override; warn if both exist)
-    <worker>/skills/<rel>.md      -> "skills/<rel>.md"
+    <worker>/skills/SKILL.md      -> "index.md"
+    <worker>/skills/index.md      -> "index.md"   (legacy fallback)
+    <worker>/skill.md             -> "index.md"   (legacy fallback)
+    <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md / index.md)
 
 If no non-empty markdown is found the script writes ``skip=true`` to
 ``$GITHUB_OUTPUT`` (so the calling workflow can gate the POST step off) and
@@ -25,38 +27,59 @@ import sys
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._/\-]*\.md$", re.IGNORECASE)
 
 
+def _read_nonempty(path: pathlib.Path) -> str | None:
+    body = path.read_text(encoding="utf-8")
+    return body if body.strip() else None
+
+
+def _resolve_top_skill(
+    worker_root: pathlib.Path,
+) -> tuple[str | None, pathlib.Path | None]:
+    """Return ``(index.md body, winning path)`` from the top-of-tree candidates.
+
+    Resolution order: ``skills/SKILL.md``, then legacy ``skills/index.md``, then
+    legacy ``skill.md``.  When multiple candidates exist, a GitHub Actions
+    warning is emitted and the highest-priority file wins.
+    """
+    leaves_dir = worker_root / "skills"
+    candidates: list[tuple[str, pathlib.Path]] = [
+        ("skills/SKILL.md", leaves_dir / "SKILL.md"),
+        ("skills/index.md", leaves_dir / "index.md"),
+        ("skill.md", worker_root / "skill.md"),
+    ]
+    present = [(label, path) for label, path in candidates if path.is_file()]
+    if not present:
+        return None, None
+
+    winner_label, winner_path = present[0]
+    for label, _ in present[1:]:
+        print(
+            f"::warning::{worker_root.name}: both {label} and "
+            f"{winner_label} present; using {winner_label} as the top-of-tree."
+        )
+    return _read_nonempty(winner_path), winner_path
+
+
 def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     """Return a ``{payload-key: markdown-body}`` map for one worker directory.
 
-    The top-of-tree resolution order is ``skills/index.md`` then ``skill.md``;
-    if both exist, a GitHub Actions warning is emitted and the nested one wins
-    (this matches ``iii-directory``'s on-disk convention).  Empty bodies are
-    skipped silently so blank placeholder files don't end up in the registry.
+    The worker overview is always published as registry key ``index.md``,
+    sourced from ``skills/SKILL.md`` when present.  Empty bodies are skipped
+    silently so blank placeholder files don't end up in the registry.
     """
     skills: dict[str, str] = {}
 
     leaves_dir = worker_root / "skills"
+    skills_skill = leaves_dir / "SKILL.md"
     skills_index = leaves_dir / "index.md"
-    intro = worker_root / "skill.md"
 
-    if skills_index.is_file():
-        body = skills_index.read_text(encoding="utf-8")
-        if body.strip():
-            skills["index.md"] = body
-        if intro.is_file():
-            print(
-                f"::warning::{worker_root.name}: both skill.md and "
-                "skills/index.md present; using skills/index.md as the "
-                "top-of-tree."
-            )
-    elif intro.is_file():
-        body = intro.read_text(encoding="utf-8")
-        if body.strip():
-            skills["index.md"] = body
+    top_body, _ = _resolve_top_skill(worker_root)
+    if top_body is not None:
+        skills["index.md"] = top_body
 
     if leaves_dir.is_dir():
         for path in sorted(leaves_dir.rglob("*.md")):
-            if path == skills_index:
+            if path in (skills_skill, skills_index):
                 continue
             rel = path.relative_to(worker_root).as_posix()
             if not KEY_RE.match(rel):

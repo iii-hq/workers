@@ -6,8 +6,8 @@ Enforces:
     2. iii.worker.yaml parses and has required fields + valid enum values.
     3. The manifest version on this ref is greater than or equal to on --base-ref.
     4. tests/ exists and is non-empty.
-    5. For workers in BOOTSTRAP_WORKERS, skill.md exists, is non-empty, and is
-       within the 256 KiB cap — the harness bootstraps these onto disk via
+    5. For workers in BOOTSTRAP_WORKERS, skills/SKILL.md exists, is non-empty,
+       and is within the 256 KiB cap — the harness bootstraps these onto disk via
        iii-directory on first boot; a missing or oversized file breaks the
        chat surface's orientation.
 
@@ -153,22 +153,25 @@ def main(argv: list[str] | None = None) -> int:
     elif not any(tests_dir.iterdir()):
         soft(f"{worker}/tests/ is empty")
 
-    # 5. Bundled workers must ship skill.md within the size cap.
+    # 5. Bundled workers must ship skills/SKILL.md within the size cap.
     if worker in BOOTSTRAP_WORKERS:
-        skill_md = root / "skill.md"
+        skill_md = root / "skills" / "SKILL.md"
+        legacy_skill_md = root / "skill.md"
+        if not skill_md.exists() and legacy_skill_md.exists():
+            skill_md = legacy_skill_md
         if not skill_md.exists():
             hard(
-                f"{worker}/skill.md is missing — bundled workers must ship one "
+                f"{worker}/skills/SKILL.md is missing — bundled workers must ship one "
                 f"(see binary-worker.md)"
             )
         elif skill_md.stat().st_size == 0:
             hard(
-                f"{worker}/skill.md is empty — must contain the H1 + summary "
-                f"(see binary-worker.md)"
+                f"{worker}/{skill_md.relative_to(root).as_posix()} is empty — "
+                f"must contain the H1 + summary (see binary-worker.md)"
             )
         elif skill_md.stat().st_size > SKILL_MD_SIZE_CAP:
             hard(
-                f"{worker}/skill.md exceeds 256 KiB cap "
+                f"{worker}/{skill_md.relative_to(root).as_posix()} exceeds 256 KiB cap "
                 f"({skill_md.stat().st_size} bytes; see binary-worker.md)"
             )
 
