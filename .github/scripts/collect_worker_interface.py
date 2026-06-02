@@ -6,19 +6,12 @@ import subprocess
 import sys
 import time
 
-from build_publish_payload import normalize_worker_interface
+from build_publish_payload import (
+    _function_ids_for_workers,
+    _resolve_target_worker_names,
+    normalize_worker_interface,
+)
 
-
-def count_worker_matches(workers_json: dict[str, object], worker_name: str) -> int:
-    workers = workers_json.get("workers", [])
-    if not isinstance(workers, list):
-        return 0
-    return sum(
-        1
-        for worker in workers
-        if isinstance(worker, dict)
-        and (worker.get("name") == worker_name or worker.get("id") == worker_name)
-    )
 
 
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
@@ -38,15 +31,38 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
     return json.loads(completed.stdout)
 
 
-def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
+def wait_for_worker(
+    worker_name: str,
+    wait_seconds: int,
+    *,
+    workers_baseline_json: dict[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
     deadline = time.monotonic() + wait_seconds
     workers_json = run_iii("engine::workers::list", {})
+    functions_json = run_iii("engine::functions::list", {"include_internal": True})
 
-    while count_worker_matches(workers_json, worker_name) != 1 and time.monotonic() < deadline:
+    def ready() -> bool:
+        workers = workers_json.get("workers", [])
+        functions = functions_json.get("functions", [])
+        if not isinstance(workers, list) or not isinstance(functions, list):
+            return False
+        try:
+            target_names = _resolve_target_worker_names(
+                workers=workers,
+                worker_name=worker_name,
+                functions=functions,
+                baseline_workers_json=workers_baseline_json,
+            )
+        except ValueError:
+            return False
+        return len(_function_ids_for_workers(functions, target_names)) > 0
+
+    while not ready() and time.monotonic() < deadline:
         time.sleep(2)
         workers_json = run_iii("engine::workers::list", {})
+        functions_json = run_iii("engine::functions::list", {"include_internal": True})
 
-    return workers_json
+    return workers_json, functions_json
 
 
 def collect_trigger_types() -> dict[str, object] | None:
@@ -70,6 +86,7 @@ def main() -> int:
     parser.add_argument("--out", default="worker-interface.json")
     parser.add_argument("--wait-seconds", type=int, default=0)
     parser.add_argument("--trigger-types-baseline", default="")
+    parser.add_argument("--workers-baseline", default="")
     parser.add_argument(
         "--assert-non-empty",
         action="store_true",
@@ -109,8 +126,17 @@ def main() -> int:
         if baseline_path.exists():
             baseline_json = json.loads(baseline_path.read_text(encoding="utf-8"))
 
-    workers_json = wait_for_worker(args.worker, args.wait_seconds)
-    functions_json = run_iii("engine::functions::list", {"include_internal": True})
+    workers_baseline_json = None
+    if args.workers_baseline:
+        workers_baseline_path = pathlib.Path(args.workers_baseline)
+        if workers_baseline_path.exists():
+            workers_baseline_json = json.loads(workers_baseline_path.read_text(encoding="utf-8"))
+
+    workers_json, functions_json = wait_for_worker(
+        args.worker,
+        args.wait_seconds,
+        workers_baseline_json=workers_baseline_json,
+    )
     trigger_types_json = collect_trigger_types()
 
     interface = normalize_worker_interface(
@@ -119,6 +145,7 @@ def main() -> int:
         functions_json=functions_json,
         trigger_types_json=trigger_types_json,
         baseline_trigger_types_json=baseline_json,
+        baseline_workers_json=workers_baseline_json,
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))
