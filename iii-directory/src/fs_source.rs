@@ -95,6 +95,10 @@ pub struct SkillFrontmatter {
     /// reference-type skills that aren't 1:1 with a single function.
     #[serde(default)]
     pub function_id: Option<String>,
+    /// Optional short description. When present and non-empty, preferred
+    /// over the body first-paragraph as the teaser text in `list` rows.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 // ───────────────────────── pure helpers ──────────────────────────────
@@ -169,21 +173,22 @@ fn walk_markdown(base_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
 
 /// Convert a `<skills_folder>`-relative path to a skill id.
 ///
-/// `SKILLS.md` (the literal filename, any case-sensitive match) is
-/// treated as an alias for `index.md`, so a file at `<ns>/SKILLS.md`
-/// produces the id `<ns>/index`. The alias runs on the final path
-/// component only — directories named `SKILLS` are *not* renamed.
+/// Both `SKILLS.md` and `SKILL.md` (case-sensitive exact match on the
+/// final path component) are treated as aliases for `index.md`, so
+/// `<ns>/SKILLS.md` and `<ns>/SKILL.md` both produce the id
+/// `<ns>/index`. The alias runs on the final path component only —
+/// directories named `SKILLS` or `SKILL` are *not* renamed.
 fn rel_to_id(rel: &Path) -> Result<String, String> {
     let rel_str = rel
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 path: {}", rel.display()))?;
     let aliased = if let Some(parent) = rel.parent() {
-        let last_is_skills_md = rel
+        let is_index_alias = rel
             .file_name()
             .and_then(|s| s.to_str())
-            .map(|n| n == "SKILLS.md")
+            .map(|n| n == "SKILLS.md" || n == "SKILL.md")
             .unwrap_or(false);
-        if last_is_skills_md {
+        if is_index_alias {
             let parent_str = parent.to_str().unwrap_or("");
             if parent_str.is_empty() {
                 "index.md".to_string()
@@ -390,9 +395,8 @@ pub fn scan_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReason>) {
 
 /// Read a fs entry's body fresh from disk, strip any leading
 /// frontmatter, and enforce the same 256 KiB cap as the registry
-/// previously did. The cap is checked against the raw file size
-/// (matching `crate::how_to::scan_how_tos`) so a file with large
-/// frontmatter can't pass one path and fail the other.
+/// previously did. The cap is checked against the raw file size so a
+/// file with large frontmatter can't pass one path and fail the other.
 /// Empty-after-strip bodies are an error so the resolver returns a
 /// clear "not found" rather than serving an empty resource.
 pub fn read_body(abs_path: &Path) -> Result<String, String> {
@@ -426,6 +430,134 @@ pub fn read_skill_with_frontmatter(abs_path: &Path) -> Result<(SkillFrontmatter,
         .and_then(|t| serde_yaml::from_str::<SkillFrontmatter>(t).ok())
         .unwrap_or_default();
     Ok((fm, body.to_string()))
+}
+
+/// Top-level namespace directories under `root`. Returns a sorted,
+/// deduped list of directory names.
+fn top_level_namespaces(root: &Path) -> Vec<String> {
+    let mut ns = Vec::new();
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return ns,
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                ns.push(name.to_string());
+            }
+        }
+    }
+    ns.sort();
+    ns.dedup();
+    ns
+}
+
+/// Merged scan of skills from a global root and a local root.
+///
+/// **Whole-namespace local override**: for any top-level namespace
+/// directory present under `local_root` (mere existence of the
+/// directory is enough), that namespace's skills come ONLY from
+/// `local_root`; all other namespaces come from `global_root`.
+/// Downloads always write the global root.
+///
+/// ```text
+///   global_root/
+///     worker-a/   ← global (no local override)
+///     worker-b/   ← shadowed by local
+///   local_root/
+///     worker-b/   ← takes over entirely
+///     worker-c/   ← local-only namespace
+/// ```
+pub fn scan_skills_merged(
+    global_root: &Path,
+    local_root: &Path,
+) -> (Vec<FsSkill>, Vec<SkipReason>) {
+    let local_ns = top_level_namespaces(local_root);
+
+    // Scan global, filtering out namespaces that are shadowed locally.
+    let (global_skills, mut global_skipped) = scan_skills(global_root);
+    let global_filtered: Vec<FsSkill> = global_skills
+        .into_iter()
+        .filter(|s| {
+            let top_seg = s.id.split('/').next().unwrap_or("");
+            !local_ns.contains(&top_seg.to_string())
+        })
+        .collect();
+
+    // Also filter global skipped diagnostics for shadowed namespaces.
+    global_skipped.retain(|s| {
+        let rel = s
+            .path
+            .strip_prefix(global_root)
+            .ok()
+            .and_then(|p| p.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        !local_ns.contains(&rel.to_string())
+    });
+
+    // Scan local.
+    let (local_skills, local_skipped) = scan_skills(local_root);
+
+    // Merge: local skills first (they won any shadowed namespace),
+    // then global-only namespaces. Re-sort by id for deterministic order.
+    let mut merged = local_skills;
+    merged.extend(global_filtered);
+    merged.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut all_skipped = global_skipped;
+    all_skipped.extend(local_skipped);
+
+    (merged, all_skipped)
+}
+
+/// Merged scan of prompts from a global root and a local root.
+///
+/// Same whole-namespace override semantics as [`scan_skills_merged`].
+pub fn scan_prompts_merged(
+    global_root: &Path,
+    local_root: &Path,
+) -> (Vec<FsPrompt>, Vec<SkipReason>) {
+    let local_ns = top_level_namespaces(local_root);
+
+    let (global_prompts, mut global_skipped) = scan_prompts(global_root);
+    let global_filtered: Vec<FsPrompt> = global_prompts
+        .into_iter()
+        .filter(|p| {
+            // Prompt paths are under <ns>/prompts/<name>.md; the namespace
+            // is inferred from the abs_path relative to global_root.
+            let top_seg = p
+                .abs_path
+                .strip_prefix(global_root)
+                .ok()
+                .and_then(|r| r.components().next())
+                .and_then(|c| c.as_os_str().to_str())
+                .unwrap_or("");
+            !local_ns.contains(&top_seg.to_string())
+        })
+        .collect();
+
+    global_skipped.retain(|s| {
+        let rel = s
+            .path
+            .strip_prefix(global_root)
+            .ok()
+            .and_then(|p| p.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        !local_ns.contains(&rel.to_string())
+    });
+
+    let (local_prompts, local_skipped) = scan_prompts(local_root);
+
+    let mut merged = local_prompts;
+    merged.extend(global_filtered);
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut all_skipped = global_skipped;
+    all_skipped.extend(local_skipped);
+
+    (merged, all_skipped)
 }
 
 #[cfg(test)]
@@ -572,6 +704,63 @@ mod tests {
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "resend/emails/index");
+    }
+
+    #[test]
+    fn scan_skills_treats_skill_md_as_index_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("my-worker");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("SKILL.md"), "# my-worker\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "my-worker/index");
+    }
+
+    #[test]
+    fn scan_skills_collision_index_and_skill_md() {
+        // When both index.md and SKILL.md exist in the same namespace,
+        // they both map to <ns>/index. Deterministic lex sort means
+        // SKILL.md < index.md alphabetically, so SKILL.md wins first-seen
+        // and index.md is reported as duplicate.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("resend");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("SKILL.md"), "# from SKILL\n").unwrap();
+        std::fs::write(ns.join("index.md"), "# from index\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert_eq!(skills.len(), 1, "should keep exactly one entry");
+        assert_eq!(skills[0].id, "resend/index");
+        assert_eq!(
+            skipped.len(),
+            1,
+            "second entry should be reported as duplicate"
+        );
+        assert!(
+            skipped[0].reason.contains("duplicate id \"resend/index\""),
+            "expected duplicate-id skip, got: {}",
+            skipped[0].reason
+        );
+    }
+
+    #[test]
+    fn scan_skills_collision_all_three_aliases() {
+        // SKILL.md, SKILLS.md, and index.md all map to <ns>/index.
+        // Lex order: SKILL.md < SKILLS.md < index.md — first wins.
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("triple");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("SKILL.md"), "# from SKILL\n").unwrap();
+        std::fs::write(ns.join("SKILLS.md"), "# from SKILLS\n").unwrap();
+        std::fs::write(ns.join("index.md"), "# from index\n").unwrap();
+
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "triple/index");
+        assert_eq!(skipped.len(), 2, "two duplicates should be skipped");
     }
 
     #[test]
@@ -805,6 +994,28 @@ mod tests {
     }
 
     #[test]
+    fn read_with_frontmatter_extracts_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("desc.md");
+        std::fs::write(
+            &path,
+            "---\ntitle: My skill\ndescription: A short teaser.\n---\n# Heading\n\nBody.\n",
+        )
+        .unwrap();
+        let (fm, _body) = read_skill_with_frontmatter(&path).unwrap();
+        assert_eq!(fm.description.as_deref(), Some("A short teaser."));
+    }
+
+    #[test]
+    fn read_with_frontmatter_description_defaults_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("no-desc.md");
+        std::fs::write(&path, "---\ntitle: Hi\n---\n# Heading\n\nBody.\n").unwrap();
+        let (fm, _body) = read_skill_with_frontmatter(&path).unwrap();
+        assert!(fm.description.is_none());
+    }
+
+    #[test]
     fn read_with_frontmatter_enforces_size_cap() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("big.md");
@@ -821,5 +1032,68 @@ mod tests {
         std::fs::write(&path, "---\ntitle: x\n---\n").unwrap();
         let err = read_skill_with_frontmatter(&path).unwrap_err();
         assert!(err.contains("empty body"), "got: {err}");
+    }
+
+    // ── scan_skills_merged ──────────────────────────────────────────
+
+    #[test]
+    fn merged_local_namespace_shadows_global() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+
+        // Global has worker-a and worker-b.
+        write_fixture(global.path(), "worker-a/index.md", "# Global A\n");
+        write_fixture(global.path(), "worker-b/index.md", "# Global B\n");
+
+        // Local has worker-b (shadows global) and worker-c (local-only).
+        write_fixture(local.path(), "worker-b/index.md", "# Local B\n");
+        write_fixture(local.path(), "worker-c/index.md", "# Local C\n");
+
+        let (skills, skipped) = scan_skills_merged(global.path(), local.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["worker-a/index", "worker-b/index", "worker-c/index"]
+        );
+
+        // worker-b must come from local, not global.
+        let worker_b = skills.iter().find(|s| s.id == "worker-b/index").unwrap();
+        assert!(
+            worker_b.abs_path.starts_with(local.path()),
+            "worker-b should come from local root, got: {}",
+            worker_b.abs_path.display()
+        );
+    }
+
+    #[test]
+    fn merged_global_only_namespace_still_listed() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+
+        write_fixture(global.path(), "only-global/readme.md", "# Global\n");
+
+        let (skills, _skipped) = scan_skills_merged(global.path(), local.path());
+        let ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["only-global/readme"]);
+    }
+
+    #[test]
+    fn merged_empty_local_dir_shadows_global_namespace() {
+        // Mere existence of the directory in local is enough to shadow.
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+
+        write_fixture(global.path(), "worker-x/index.md", "# Global X\n");
+        // Create local worker-x directory with no .md files.
+        std::fs::create_dir_all(local.path().join("worker-x")).unwrap();
+
+        let (skills, _skipped) = scan_skills_merged(global.path(), local.path());
+        assert!(
+            skills.is_empty(),
+            "empty local dir should shadow global; got: {:?}",
+            skills.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
     }
 }

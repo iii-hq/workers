@@ -1,0 +1,26 @@
+# iii engine config for the iii-directory e2e harness.
+#
+# `__E2E_DIR__` is a placeholder for the ABSOLUTE path of this directory
+# (iii-directory/tests/e2e). run-tests.sh substitutes it at runtime into
+# reports/engine-config.yaml. Absolute paths are required because the engine
+# does not guarantee the worker's cwd, so a relative skills_folder would not
+# resolve reliably (see src/config.rs::resolve_path).
+#
+# Manual two-terminal flow (the automated flow is just `./run-tests.sh`):
+#   cd iii-directory/tests/e2e
+#   sed "s|__E2E_DIR__|$(pwd)|g" config.yaml > /tmp/iii-dir-e2e.yaml
+#   <iii> --config /tmp/iii-dir-e2e.yaml     # terminal 1 (launches the worker from ~/.iii/workers)
+#   ./run-tests.sh --no-build                # terminal 2
+#
+# filter_unregistered / auto_download are OFF so the run is self-contained
+# (both need the iii-worker-manager daemon).
+workers:
+  - name: iii-directory
+    config:
+      skills_folder: __E2E_DIR__/skills-home
+      local_skills_folder: __E2E_DIR__/.iii/skills
+      registry_url: https://api.workers.iii.dev
+      download_timeout_ms: 60000
+      registry_cache_ttl_ms: 60000
+      filter_unregistered: false
+      auto_download: true

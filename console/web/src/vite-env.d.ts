@@ -11,7 +11,7 @@ interface ImportMetaEnv {
    */
   readonly VITE_ENGINE_WS_URL?: string
   /**
-   * TTL in ms for cached `directory::engine::functions::list` results.
+   * TTL in ms for cached `engine::functions::list` results.
    * Default 10000 (10s).
    */
   readonly VITE_FUNCTIONS_LIST_CACHE_MS?: string

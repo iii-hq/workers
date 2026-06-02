@@ -1,16 +1,23 @@
 # iii-directory
 
-Engine introspection, workers registry proxy, and filesystem-backed
-skill + prompt reader for the [iii engine](https://github.com/iii-hq/iii).
-Every public function sits under a single `directory::*` namespace,
-split into four sub-namespaces (all MCP-agnostic):
+Workers registry HTTP proxy and filesystem-backed skill + prompt
+reader for the [iii engine](https://github.com/iii-hq/iii). Every
+public function sits under a single `directory::*` namespace, split
+into three sub-namespaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, description, body, modified_at }`, and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). `title` prefers the YAML frontmatter `title:` over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. | Orientation: "when and why to use my worker's tools" |
 | **Prompts** (`directory::prompts::*`) | Static prompt templates listed by `directory::prompts::list` and read by `directory::prompts::get` | Parametric command templates the *user* invokes |
-| **Engine** (`directory::engine::*`) | Read-side enrichment over `engine::functions::list`, `engine::workers::list`, `engine::trigger-types::list`, `engine::triggers::list` | "What's connected to the engine right now?" |
-| **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with `directory::engine::workers::*` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
+| **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
+
+Engine introspection (functions / triggers / registered triggers /
+workers) is served by the engine natively at
+`engine::functions::*`, `engine::triggers::*`,
+`engine::registered-triggers::*`, and `engine::workers::*`. Earlier
+versions of this crate wrapped those calls under `directory::engine::*`
+helpers; the wrappers have been removed — call the engine ids
+directly.
 
 Skills and prompts are sourced from a single configured folder on disk
 (`skills_folder`). The only write path is the
@@ -19,7 +26,7 @@ Skills and prompts are sourced from a single configured folder on disk
 [workers registry](https://workers.iii.dev) or a GitHub repo. Once
 downloaded, files belong to the developer — edit them however you want.
 
-`directory::engine::workers::*` and `directory::registry::workers::*`
+`directory::registry::workers::*` and the engine's `engine::workers::*`
 share the core `name` / `description` / `version` fields so a parser
 that touches only those keys works against either surface; the
 registry view also surfaces publication metadata (`type`, `config`,
@@ -191,24 +198,28 @@ other adapter.
 | `directory::prompts::list` | Metadata-only listing of every fs-backed prompt. |
 | `directory::prompts::get` | Fetch one prompt's body + `{name, description, modified_at}`. Plain shape, no envelope. |
 
-### `directory::engine::*` (engine introspection)
+### Engine introspection (native)
+
+Engine introspection is no longer wrapped here. Call the engine's
+native ids directly — every one takes the same filters
+(`prefix`, `search`, `worker`, `include_internal` where applicable):
 
 | Function ID | Description |
 |---|---|
-| `directory::engine::functions::list` | List functions registered with the engine; filter by search/prefix/worker. |
-| `directory::engine::functions::info` | Single-function detail: schemas, owning worker, registered triggers, bundled how-to. |
-| `directory::engine::triggers::list` | List trigger TYPES registered with the engine; filter by search/prefix/worker. |
-| `directory::engine::triggers::info` | Single trigger-type detail: configuration schema, return schema, instance count. |
-| `directory::engine::registered-triggers::list` | List registered trigger INSTANCES (subscriber rows). |
-| `directory::engine::registered-triggers::info` | Composite: instance + trigger-type detail + function detail. |
-| `directory::engine::workers::list` | List workers connected to the engine; shares the core `name` / `description` / `version` fields with `directory::registry::workers::list`. |
-| `directory::engine::workers::info` | One worker's `worker` envelope + functions + trigger types + registered triggers. |
+| `engine::functions::list` | List functions registered with the engine. |
+| `engine::functions::info` | Single-function detail: schemas, owning worker. |
+| `engine::triggers::list` | List trigger TYPES (the providers, e.g. `http`, `cron`). |
+| `engine::triggers::info` | Single trigger-type detail: configuration schema, return schema. |
+| `engine::registered-triggers::list` | List trigger INSTANCES (subscriber rows). |
+| `engine::registered-triggers::info` | Single registered-trigger detail. |
+| `engine::workers::list` | List workers with an open engine WS connection. Daemon-managed providers (`iii-http`, `iii-cron`, `iii-state`) won't appear — call `worker::list` from the supervisor to see those. |
+| `engine::workers::info` | One worker's detail by `name`. |
 
 ### `directory::registry::*` (workers registry HTTP proxy)
 
 | Function ID | Description |
 |---|---|
-| `directory::registry::workers::list` | Browse / search published workers in `api.workers.iii.dev`. Optional free-text `search` (matched fuzzy by `pg_trgm`) and opaque `cursor` for pagination; page size is server-authored. Response is `{ workers: [...], pagination: { next_cursor, has_more, page_size } }`. Shares the core `name` / `description` / `version` fields with `directory::engine::workers::list`. |
+| `directory::registry::workers::list` | Browse / search published workers in `api.workers.iii.dev`. Optional free-text `search` (matched fuzzy by `pg_trgm`) and opaque `cursor` for pagination; page size is server-authored. Response is `{ workers: [...], pagination: { next_cursor, has_more, page_size } }`. Shares the core `name` / `description` / `version` fields with the engine's `engine::workers::list`. |
 | `directory::registry::workers::info` | Full registry detail for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions + triggers) and `GET /w/{slug}/skills` for the skills/prompts tree — and merges them into `{ worker, readme, api_reference, skills_tree }`. The user-facing input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
 
 Both `directory::registry::*` responses are cached in-process for

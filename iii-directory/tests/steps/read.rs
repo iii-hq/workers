@@ -194,15 +194,6 @@ fn get_title(world: &mut IiiSkillsWorld, expected: String) {
     assert_eq!(v["title"].as_str().unwrap_or(""), expected);
 }
 
-#[then(regex = r#"^the get response has description "([^"]+)"$"#)]
-fn get_description(world: &mut IiiSkillsWorld, expected: String) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = world.stash.get(LAST_GET).expect("no get recorded");
-    assert_eq!(v["description"].as_str().unwrap_or(""), expected);
-}
-
 #[then(regex = r#"^the get response has type "([^"]+)"$"#)]
 fn get_type(world: &mut IiiSkillsWorld, expected: String) {
     if world.iii.is_none() {
