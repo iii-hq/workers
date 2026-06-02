@@ -177,7 +177,12 @@ fn try_update_one(
     }
     atomic_write(&abs, &new_bytes)?;
     let after = utf8_snapshot(&new_bytes, cfg.max_read_bytes);
-    Ok((spec.ops.len() as u32, final_lines.len() as u64, before, after))
+    Ok((
+        spec.ops.len() as u32,
+        final_lines.len() as u64,
+        before,
+        after,
+    ))
 }
 
 /// Include a UTF-8 snapshot in the wire response when the body fits `max_read_bytes`.
