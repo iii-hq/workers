@@ -23,7 +23,6 @@ import { groupHeading, summarizeGroup } from '../lib/groupTraces'
 interface TraceGroupsViewProps {
   attribute: GroupByAttribute
   showSystem: boolean
-  isPaused: boolean
   onSelectTrace: (traceId: string) => void
   /**
    * Called with the full TraceGroup when a row is clicked. Routes that
@@ -37,7 +36,6 @@ interface TraceGroupsViewProps {
 export function TraceGroupsView({
   attribute,
   showSystem,
-  isPaused,
   onSelectTrace,
   onSelectGroup,
   selectedTraceId,
@@ -45,7 +43,6 @@ export function TraceGroupsView({
   const { groups, isLoading, unavailable } = useTraceGroups({
     groupBy: attribute,
     includeInternal: showSystem,
-    isPaused,
   })
 
   if (unavailable) {

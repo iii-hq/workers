@@ -16,6 +16,7 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useTracesLiveRefresh } from '@/lib/traces-live'
 import { cn } from '@/lib/utils'
 import { fetchTraceTree, type TraceGroup } from './api/traces'
 import { FlameGraph } from './components/FlameGraph'
@@ -90,8 +91,11 @@ export function Traces() {
     filterParams,
     showSystem,
     debouncedSearch,
-    isPaused,
   })
+
+  // Replace polling with the engine `trace` trigger: refetch the trace queries
+  // when the observability worker signals new spans, suspended while paused.
+  useTracesLiveRefresh({ isPaused })
 
   const totalPages = Math.max(
     1,
@@ -269,7 +273,6 @@ export function Traces() {
                 <TraceGroupsView
                   attribute={groupAttribute}
                   showSystem={showSystem}
-                  isPaused={isPaused}
                   selectedTraceId={selectedTraceId}
                   onSelectTrace={(id) => selectTrace(id)}
                   onSelectGroup={(group) => setSelectedGroup(group)}

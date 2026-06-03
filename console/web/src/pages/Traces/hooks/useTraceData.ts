@@ -22,7 +22,6 @@ export interface UseTraceDataOptions {
   filterParams: TracesFilterParams
   showSystem: boolean
   debouncedSearch: string
-  isPaused: boolean
 }
 
 export interface UseTraceDataReturn {
@@ -40,7 +39,6 @@ export function useTraceData({
   filterParams,
   showSystem,
   debouncedSearch,
-  isPaused,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
@@ -68,7 +66,11 @@ export function useTraceData({
         limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
       }),
-    refetchInterval: isPaused ? false : 3000,
+    // Live updates arrive via `useTracesLiveRefresh` (the engine `trace`
+    // trigger), which invalidates the ['traces'] key — no polling interval.
+    // Initial mount fetch + manual Refresh + signal-driven invalidation cover
+    // refresh; reconnect/tab-visible re-sync handles cold-start races.
+    refetchInterval: false,
     staleTime: 1000,
   })
 
