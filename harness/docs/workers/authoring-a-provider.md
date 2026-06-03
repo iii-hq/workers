@@ -20,7 +20,7 @@ flowchart TB
   stream -->|"harness::provider::resolve"| reg
   reg -->|"configuration::get id=harness"| cfg
   orch[turn-orchestrator] -->|"provider::id::stream"| stream
-  refresh -->|"models::register"| cat[models-catalog]
+  refresh -->|"models::reconcile"| cat[models-catalog]
 ```
 
 A provider must:
@@ -62,7 +62,7 @@ OpenAI-compatible provider shown):
 | `stream.ts` | Async generator: build request body, fetch SSE, yield events. |
 | `sse.ts` / `wire-messages.ts` | SSE parsing + `AgentMessage[]` -> upstream payload. |
 | `complete.ts` | (optional) legacy `provider::<id>::complete` drain-and-return. |
-| `discover.ts` + `refresh-fn.ts` | (optional) upstream `/v1/models` -> `models::register`. |
+| `discover.ts` + `refresh-fn.ts` | (optional) upstream `/v1/models` -> `models::reconcile`. |
 | `iii.worker.yaml` | Worker manifest. |
 
 ## Step 2 — `config.ts` (defaults)

@@ -1,7 +1,7 @@
 import { addons } from 'storybook/manager-api'
 import { create } from 'storybook/theming'
-import brandImageDark from '../src/icons/iii-white.svg'
 import brandImageLight from '../src/icons/iii-ink.svg'
+import brandImageDark from '../src/icons/iii-white.svg'
 
 /** iii Schematic light ramp — matches index.css default tokens. */
 export const lightTheme = create({

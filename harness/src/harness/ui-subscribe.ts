@@ -12,6 +12,11 @@ const ALL_SESSIONS = '__all__';
 export class FanoutState {
   // browser_id -> set of session ids (or "__all__")
   private readonly subs = new Map<string, Set<string>>();
+  // browser_id set interested in model-catalog changes. Kept separate from
+  // session subs so the agent-events pump (which evicts on a missing
+  // ui::session::event handler) can't tear down a browser's model
+  // subscription, and so model pushes never fan out as session events.
+  private readonly modelSubs = new Set<string>();
 
   subscribe(browser_id: string, session_id: string | null): void {
     const key = session_id ?? ALL_SESSIONS;
@@ -31,8 +36,22 @@ export class FanoutState {
     if (set.size === 0) this.subs.delete(browser_id);
   }
 
+  subscribeModels(browser_id: string): void {
+    this.modelSubs.add(browser_id);
+  }
+
+  unsubscribeModels(browser_id: string): void {
+    this.modelSubs.delete(browser_id);
+  }
+
+  /** Browsers subscribed to model-catalog changes. */
+  modelSubscribers(): string[] {
+    return [...this.modelSubs];
+  }
+
   evictBrowser(browser_id: string): void {
     this.subs.delete(browser_id);
+    this.modelSubs.delete(browser_id);
   }
 
   browserCount(): number {
@@ -88,6 +107,35 @@ export function registerSubscriptions(iii: ISdk, state: FanoutState): void {
     {
       description:
         "Remove a browser's subscription to a session (or its all-sessions sub if session_id is null).",
+    },
+  );
+
+  iii.registerFunction(
+    'ui::models::subscribe',
+    async (input: unknown) => {
+      const body = unwrapBody(input);
+      const browser_id = typeof body.browser_id === 'string' ? body.browser_id : null;
+      if (!browser_id) throw new Error('missing browser_id');
+      state.subscribeModels(browser_id);
+      return { ok: true };
+    },
+    {
+      description:
+        "Register a browser's interest in model-catalog changes (ui::models::changed pushes).",
+    },
+  );
+
+  iii.registerFunction(
+    'ui::models::unsubscribe',
+    async (input: unknown) => {
+      const body = unwrapBody(input);
+      const browser_id = typeof body.browser_id === 'string' ? body.browser_id : null;
+      if (!browser_id) throw new Error('missing browser_id');
+      state.unsubscribeModels(browser_id);
+      return { ok: true };
+    },
+    {
+      description: "Remove a browser's model-catalog change subscription.",
     },
   );
 }

@@ -31,4 +31,25 @@ describe('FanoutState', () => {
     s.evictBrowser('b1');
     expect(s.browserCount()).toBe(0);
   });
+
+  it('tracks model subscribers separately from session subs', () => {
+    const s = new FanoutState();
+    s.subscribe('b1', 's1');
+    s.subscribeModels('b1');
+    expect(s.modelSubscribers()).toEqual(['b1']);
+    // Dropping the session sub must not tear down the model subscription —
+    // this isolation is what keeps the agent-events pump from evicting a
+    // model-only subscriber.
+    s.unsubscribe('b1', 's1');
+    expect(s.modelSubscribers()).toEqual(['b1']);
+    s.unsubscribeModels('b1');
+    expect(s.modelSubscribers()).toEqual([]);
+  });
+
+  it('evicting a browser also drops its model subscription', () => {
+    const s = new FanoutState();
+    s.subscribeModels('b1');
+    s.evictBrowser('b1');
+    expect(s.modelSubscribers()).toEqual([]);
+  });
 });

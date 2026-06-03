@@ -3,8 +3,18 @@ import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
-import type { Attachment, Mode, ModelId } from '@/types/chat'
-import { STATIC_MODEL_OPTIONS } from '@/types/chat'
+import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
+
+const STORY_MODEL_OPTIONS: ModelOption[] = [
+  { id: 'openai::gpt-5', label: 'gpt-5', contextWindow: 400_000 },
+  {
+    id: 'anthropic::claude-opus-4-7',
+    label: 'claude opus 4.7',
+    contextWindow: 1_000_000,
+  },
+  { id: 'openai::gpt-5-mini', label: 'gpt-5 mini', contextWindow: 400_000 },
+]
+
 import { Composer } from './Composer'
 import { $createFunctionMentionNode } from './lexical/FunctionMentionNode'
 
@@ -39,7 +49,7 @@ function seedWithText() {
  */
 function ComposerHarness({
   initialMode = 'agent',
-  initialModel = STATIC_MODEL_OPTIONS[0].id,
+  initialModel = STORY_MODEL_OPTIONS[0].id,
   initialContent,
   initialAttachments,
   isStreaming,
@@ -56,7 +66,7 @@ function ComposerHarness({
     <Composer
       mode={mode}
       model={model}
-      modelOptions={STATIC_MODEL_OPTIONS}
+      modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
       permissionMode="manual"
       onModeChange={setMode}

@@ -22,11 +22,11 @@
 
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
+import { reconcileModels } from '../runtime/models-discovery.js';
 import { logger } from '../runtime/otel.js';
+import { PROVIDER_ID } from './auth.js';
 
 const DISCOVERY_TIMEOUT_MS = 5_000;
-const REGISTER_TIMEOUT_MS = 5_000;
-
 const DEFAULT_CONTEXT_WINDOW = 32_768;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
@@ -246,36 +246,12 @@ export async function discoverLoadedModel(
   return ids.map((id) => toCatalogModel(id, contextWindow));
 }
 
-/**
- * Register the discovered model(s) via `models::register`. Best-effort
- * per-model — failures are logged and skipped.
- *
- * Parallel via Promise.allSettled — same rationale as
- * provider-lmstudio: serializing register calls bottlenecks startup.
- */
+/** Register discovered models in one `models::reconcile` call. */
 export async function registerDiscovered(iii: ISdk, models: readonly Model[]): Promise<string[]> {
-  const settled = await Promise.allSettled(
-    models.map(async (m) => {
-      await iii.trigger({
-        function_id: 'models::register',
-        payload: m,
-        timeoutMs: REGISTER_TIMEOUT_MS,
-      });
-      return m.id;
-    }),
-  );
-  const registered: string[] = [];
-  settled.forEach((r, i) => {
-    if (r.status === 'fulfilled') {
-      registered.push(r.value);
-    } else {
-      logger.warn('llamacpp discovery: register failed', {
-        id: models[i]?.id,
-        err: String(r.reason),
-      });
-    }
-  });
-  return registered;
+  if (models.length === 0) return [];
+  const provider = models[0]?.provider;
+  if (!provider) return [];
+  return reconcileModels(iii, provider, models);
 }
 
 /**
@@ -290,10 +266,13 @@ export async function discoverAndRegister(
 ): Promise<string[]> {
   const models = await discoverLoadedModel(chatUrl, headers);
   if (models.length === 0) {
+    // Empty can mean "server offline" or "no model loaded" — we can't tell
+    // them apart here, so keep the last-known catalog rather than risk wiping
+    // it on a transient blip.
     logger.info('llamacpp discovery: no loaded model found', {});
     return [];
   }
-  const registered = await registerDiscovered(iii, models);
+  const registered = await reconcileModels(iii, PROVIDER_ID, models);
   logger.info('llamacpp discovery: registered models', { count: registered.length });
   logger.debug('llamacpp discovery: registered model ids', { ids: registered });
   return registered;

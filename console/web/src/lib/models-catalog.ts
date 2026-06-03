@@ -63,6 +63,39 @@ export async function refreshProviderModels(
   )
 }
 
+/**
+ * Subscribe to the harness `ui::models::changed` fanout so the picker can
+ * re-pull the catalog the instant a provider's models change — credential
+ * added/removed, `refresh_models`, or a provider added/removed via the CLI.
+ *
+ * Registers a browser-local handler plus `ui::models::subscribe` (separate
+ * from the session subscription so the agent-events pump can't evict it) so
+ * the harness `models-changed` pump targets this browser. Returns a disposer
+ * that unregisters the handler and drops the subscription.
+ */
+export async function subscribeModelChanges(
+  onChange: () => void,
+): Promise<() => void> {
+  const client = await getIiiClient()
+  await client.call('ui::models::subscribe', {
+    browser_id: client.browserId,
+  })
+  const offHandler = client.on('ui::models::changed', () => {
+    onChange()
+  })
+  let disposed = false
+  return () => {
+    if (disposed) return
+    disposed = true
+    offHandler()
+    void client
+      .call('ui::models::unsubscribe', {
+        browser_id: client.browserId,
+      })
+      .catch(() => {})
+  }
+}
+
 /** A provider declared to the harness, from `harness::provider::list`. */
 export interface ProviderListEntry {
   id: string

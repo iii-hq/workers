@@ -9,6 +9,7 @@ import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import {
   harnessComposerPlaceholder,
   isChatBlockedByHarness,
+  isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
@@ -141,7 +142,12 @@ export function ChatView({
     ) => fn(sessionId, functionCallId, decision)
   }, [backend])
 
-  const approvalSettings = useApprovalSettings(sessionId)
+  const approvalEnabled =
+    backend.id === 'real' &&
+    (conversationsCtx
+      ? isHarnessAvailable(conversationsCtx.harnessStatus)
+      : false)
+  const approvalSettings = useApprovalSettings(sessionId, approvalEnabled)
 
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
@@ -178,6 +184,14 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
       const conversationId = conversation.id
+      const model = conversation.model
+      if (!model) {
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice('select a model before sending.', 'warn'),
+        )
+        return
+      }
 
       // Snapshot prior history BEFORE appending the new user msg —
       // run::start overwrites flat state with whatever we send.
@@ -217,7 +231,7 @@ export function ChatView({
         try {
           const result = await backend.compactSession(
             sessionId,
-            conversation.model,
+            model,
             priorHistory,
             contextWindow,
           )
@@ -266,7 +280,7 @@ export function ChatView({
         for await (const event of backend.stream(
           payload.text || '(attachments only)',
           conversation.mode,
-          conversation.model,
+          model,
           { signal: controller.signal, sessionId, history: priorHistory },
         )) {
           switch (event.kind) {
@@ -358,7 +372,7 @@ export function ChatView({
                   id: uid(),
                   role: 'assistant',
                   content: '',
-                  model: conversation.model,
+                  model,
                   mode: conversation.mode,
                   streaming: true,
                   createdAt: Date.now(),

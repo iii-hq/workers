@@ -30,15 +30,21 @@ interface UseApprovalSettingsResult {
  */
 export function useApprovalSettings(
   sessionId: string,
+  enabled = true,
 ): UseApprovalSettingsResult {
   const [settings, setSettings] = useState<ApprovalSettings>(
     DEFAULT_APPROVAL_SETTINGS,
   )
-  const [loaded, setLoaded] = useState(false)
+  const [loaded, setLoaded] = useState(!enabled)
   const activeRef = useRef(sessionId)
 
   useEffect(() => {
     activeRef.current = sessionId
+    if (!enabled) {
+      setSettings(DEFAULT_APPROVAL_SETTINGS)
+      setLoaded(true)
+      return
+    }
     setLoaded(false)
     let cancelled = false
     void (async () => {
@@ -83,7 +89,7 @@ export function useApprovalSettings(
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+  }, [sessionId, enabled])
 
   const setMode = useCallback(
     async (mode: PermissionMode) => {

@@ -54,7 +54,7 @@ override it for individual models if needed.
 
 LM Studio model IDs are user-controlled (whatever you have loaded). Startup
 discovery and `provider::lmstudio::refresh_models` register the loaded models
-into the catalog via `models::register`, so capability lookups resolve
+into the catalog via `models::reconcile`, so capability lookups resolve
 against the real ids the user is running.
 
 ### Optional API key

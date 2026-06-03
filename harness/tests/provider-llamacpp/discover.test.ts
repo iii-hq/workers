@@ -205,8 +205,8 @@ describe('discoverLoadedModel', () => {
 });
 
 describe('registerDiscovered', () => {
-  it('fans out registers in parallel and collects fulfilled ids', async () => {
-    const trigger = vi.fn().mockResolvedValue(undefined);
+  it('reconciles all models in one catalog write', async () => {
+    const trigger = vi.fn().mockResolvedValue({ ids: ['a', 'b'], count: 2 });
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     const models: Model[] = [
       {
@@ -226,14 +226,13 @@ describe('registerDiscovered', () => {
     ];
     const out = await registerDiscovered(sdk, models);
     expect(out.sort()).toEqual(['a', 'b']);
-    expect(trigger).toHaveBeenCalledTimes(2);
+    expect(trigger).toHaveBeenCalledWith(
+      expect.objectContaining({ function_id: 'models::reconcile' }),
+    );
   });
 
-  it('logs and skips failing registers but keeps the successes', async () => {
-    const trigger = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('boom'));
+  it('returns [] when reconcile fails', async () => {
+    const trigger = vi.fn().mockRejectedValue(new Error('boom'));
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     const models: Model[] = [
       {
@@ -243,16 +242,9 @@ describe('registerDiscovered', () => {
         display_name: 'a',
         context_window: 1,
       },
-      {
-        id: 'b',
-        provider: 'llamacpp',
-        api: 'openai-completions',
-        display_name: 'b',
-        context_window: 1,
-      },
     ];
     const out = await registerDiscovered(sdk, models);
-    expect(out).toEqual(['a']);
+    expect(out).toEqual([]);
   });
 });
 
@@ -285,7 +277,7 @@ describe('discoverAndRegister', () => {
     const out = await discoverAndRegister(sdk, 'http://localhost:8080/v1/chat/completions', {});
     expect(out).toEqual(['Meta-Llama-3.1-8B']);
     expect(trigger).toHaveBeenCalledWith(
-      expect.objectContaining({ function_id: 'models::register' }),
+      expect.objectContaining({ function_id: 'models::reconcile' }),
     );
   });
 });
