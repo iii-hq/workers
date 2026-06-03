@@ -259,7 +259,21 @@ impl RegisteredWorkersCache {
             // Drop the guard before the async fetch.
         }
 
-        // Phase 2: fetch from engine WITHOUT holding the lock.
+        self.fetch_and_store(iii).await
+    }
+
+    /// Always fetch `worker::list` fresh (ignoring the TTL), refresh the
+    /// cache, and return the current registered set (falling back to the
+    /// last-known set on error). Used by `directory::skills::index` so a
+    /// just-registered worker shows up immediately instead of waiting on
+    /// the TTL or a worker-add cache invalidation.
+    pub async fn get_fresh(&self, iii: &III) -> Option<HashSet<String>> {
+        self.fetch_and_store(iii).await
+    }
+
+    /// Fetch `worker::list` from the engine WITHOUT holding the lock,
+    /// then store the result (or fall back to the stale set on error).
+    async fn fetch_and_store(&self, iii: &III) -> Option<HashSet<String>> {
         let result = iii
             .trigger(TriggerRequest {
                 function_id: "worker::list".to_string(),
@@ -269,7 +283,7 @@ impl RegisteredWorkersCache {
             })
             .await;
 
-        // Phase 3: re-acquire the lock and store or fall back.
+        // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;
         match result {
             Ok(val) => {
@@ -344,6 +358,7 @@ pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     iii: &III,
+    fresh: bool,
 ) -> Vec<FsSkill> {
     let (merged, _skipped) =
         fs_source::scan_skills_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
@@ -352,7 +367,16 @@ pub async fn resolve_visible_skills(
         return merged;
     }
 
-    match cache.get_or_fetch(iii).await {
+    // `fresh` callers (the index) re-fetch `worker::list` every call so a
+    // just-registered worker is never hidden by a stale registered-workers
+    // cache; cached callers (`list`/`get`) keep the TTL fast path.
+    let registered = if fresh {
+        cache.get_fresh(iii).await
+    } else {
+        cache.get_or_fetch(iii).await
+    };
+
+    match registered {
         Some(registered) => filter_to_registered(merged, &registered),
         None => {
             tracing::info!(
@@ -443,7 +467,7 @@ fn register_list_skills(
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {
-                let entries = resolve_visible_skills(&cfg, &cache, &iii).await;
+                let entries = resolve_visible_skills(&cfg, &cache, &iii, false).await;
                 let out = list_skills_filtered(entries, &input);
                 Ok::<_, IIIError>(ListSkillsOutput { skills: out })
             }
@@ -557,7 +581,7 @@ fn register_index_skills(
             let iii = iii_inner.clone();
             let cache = cache_inner.clone();
             async move {
-                let entries = resolve_visible_skills(&cfg, &cache, &iii).await;
+                let entries = resolve_visible_skills(&cfg, &cache, &iii, true).await;
                 let siblings = id_set(&entries);
                 let rows: Vec<SkillEntry> = entries
                     .into_iter()
@@ -818,7 +842,7 @@ async fn get_skill_visible(
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
     validate_id(&id)?;
-    let visible = resolve_visible_skills(cfg, cache, iii).await;
+    let visible = resolve_visible_skills(cfg, cache, iii, false).await;
     let siblings = id_set(&visible);
 
     if let Some(fs) = find_fs_skill_in(&visible, &id) {
@@ -1090,10 +1114,12 @@ pub fn extract_description(markdown: &str) -> Option<String> {
     Some(buf)
 }
 
-/// Character budget cap for the rendered index block. When the total
-/// rendered markdown exceeds this limit it is truncated and a
-/// continuation hint is appended so the consumer knows to call
-/// `directory::skills::list` for the full catalog.
+/// Character budget cap for the per-worker DESCRIPTION paragraphs in the
+/// rendered index. Every worker's heading and `get` pointer are always
+/// emitted (the index must list every installed worker); only the
+/// description paragraph is dropped once the running body would exceed
+/// this limit, with a note pointing at `directory::skills::get` for the
+/// full reference. Workers themselves are never truncated away.
 const INDEX_CHAR_BUDGET: usize = 3000;
 
 /// True when `on_disk_id` is the root overview doc of a top-level worker
@@ -1142,9 +1168,12 @@ fn is_index_overview(entry: &SkillEntry) -> bool {
 /// by `id` (the order `fs_source::scan_skills` returns); this function
 /// does not re-sort.
 ///
-/// When the rendered output exceeds [`INDEX_CHAR_BUDGET`], it is
-/// truncated after the last complete worker block that fits, and a
-/// continuation hint is appended.
+/// Every worker overview row is ALWAYS rendered (heading + `get` pointer)
+/// so the index lists every installed worker. Only the optional
+/// description paragraph is budget-sensitive: once the running body would
+/// exceed [`INDEX_CHAR_BUDGET`], later descriptions are omitted (with a
+/// note pointing at `directory::skills::get`) while the remaining workers
+/// are still listed.
 fn render_index_markdown(entries: &[SkillEntry]) -> String {
     let workers: Vec<&SkillEntry> = entries.iter().filter(|e| is_index_overview(e)).collect();
 
@@ -1152,33 +1181,40 @@ fn render_index_markdown(entries: &[SkillEntry]) -> String {
     out.push_str("# Skills index\n\n");
     out.push_str(&format!("{} worker(s).\n", workers.len()));
 
-    let header_len = out.len();
-    let mut truncated = false;
+    let mut omitted_descriptions = false;
 
     for worker in &workers {
-        let mut block = String::new();
-        block.push('\n');
-        block.push_str(&format!("## {}\n", worker.title));
+        out.push('\n');
+        out.push_str(&format!("## {}\n", worker.title));
+
+        // The heading and the get-pointer are ALWAYS emitted so every
+        // installed worker appears — the index is the discovery surface, so
+        // dropping a worker entirely is never acceptable. Only the optional
+        // description paragraph is budget-sensitive: keep it while the body
+        // stays under INDEX_CHAR_BUDGET, otherwise omit it (recoverable via
+        // directory::skills::get) and keep listing the remaining workers.
         if !worker.description.is_empty() {
-            block.push('\n');
-            block.push_str(&format!("{}\n", worker.description));
+            let desc_cost = "\n".len() + worker.description.len() + "\n".len();
+            if out.len() + desc_cost <= INDEX_CHAR_BUDGET {
+                out.push('\n');
+                out.push_str(&format!("{}\n", worker.description));
+            } else {
+                omitted_descriptions = true;
+            }
         }
-        block.push('\n');
-        block.push_str(&format!(
+
+        out.push('\n');
+        out.push_str(&format!(
             "Full reference: call `directory::skills::get {{ \"id\": \"{id}\" }}` \
              (legacy `iii://{id}`).\n",
             id = worker.id
         ));
-
-        if out.len() + block.len() > INDEX_CHAR_BUDGET && out.len() > header_len {
-            truncated = true;
-            break;
-        }
-        out.push_str(&block);
     }
 
-    if truncated {
-        out.push_str("\n(... truncated; call directory::skills::list to browse all skills)\n");
+    if omitted_descriptions {
+        out.push_str(
+            "\n(some descriptions omitted to save space; call directory::skills::get for the full reference)\n",
+        );
     }
 
     out
@@ -2575,30 +2611,47 @@ First paragraph.
     // ── render_index character budget cap ──────────────────────────────
 
     #[test]
-    fn render_index_truncates_on_cap_overflow() {
-        // Create enough workers to exceed INDEX_CHAR_BUDGET.
+    fn render_index_lists_every_worker_when_over_budget() {
+        // Enough workers (with big descriptions) to blow past
+        // INDEX_CHAR_BUDGET. Every worker must still appear; only the
+        // descriptions get dropped once the budget is hit.
         let mut entries = Vec::new();
         for i in 0..50 {
             entries.push(entry(
                 &format!("worker-{i:02}/index"),
-                &format!("Worker {i}"),
+                &format!("Worker {i:02}"),
                 Some("index"),
                 &"x".repeat(200),
             ));
         }
         let body = render_index_markdown(&entries);
+
+        // Count header reflects ALL workers.
         assert!(
-            body.len() <= INDEX_CHAR_BUDGET + 200,
-            "body should be near the cap; got {} chars",
-            body.len()
+            body.contains("50 worker(s).\n"),
+            "count must reflect every worker; got: {body}"
+        );
+        // Every worker heading is present — none dropped.
+        for i in 0..50 {
+            let heading = format!("## Worker {i:02}\n");
+            assert!(
+                body.contains(&heading),
+                "worker {i:02} must be listed even over budget; missing {heading:?}"
+            );
+        }
+        // Over budget, the omission note appears and points at get.
+        assert!(
+            body.contains("descriptions omitted"),
+            "should note omitted descriptions; got: {body}"
         );
         assert!(
-            body.contains("truncated"),
-            "should contain truncation hint; got: {body}"
+            body.contains("directory::skills::get"),
+            "omission note should reference the get function; got: {body}"
         );
+        // The old whole-worker truncation behaviour is gone.
         assert!(
-            body.contains("directory::skills::list"),
-            "truncation hint should reference list function; got: {body}"
+            !body.contains("truncated"),
+            "workers must never be truncated away; got: {body}"
         );
     }
 
