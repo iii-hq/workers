@@ -129,7 +129,9 @@ describe('buildSystemPrompt', () => {
     const out = buildSystemPrompt([]);
     expect(out).toMatch(/LOAD IT BEFORE you build/);
     expect(out).not.toMatch(/ONLY when the engine schema is not enough/);
-    expect(out).toMatch(/the engine \(source 1\) gives the exact per-call CONTRACT; the skill gives\s+the APPROACH/);
+    expect(out).toMatch(
+      /the engine \(source 1\) gives the exact per-call CONTRACT; the skill gives\s+the APPROACH/,
+    );
   });
 
   it('preamble forbids importing foreign-ecosystem patterns before reading the worker skill (build-first directive)', () => {

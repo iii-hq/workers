@@ -117,13 +117,17 @@ describe('unwrapAgentTrigger (H1)', () => {
 describe('isArgumentDecodeError (H2)', () => {
   it('matches serde "missing field" / "serialization error"', () => {
     expect(
-      isArgumentDecodeError(new Error('invocation_failed: serialization error: missing field `sandbox_id`')),
+      isArgumentDecodeError(
+        new Error('invocation_failed: serialization error: missing field `sandbox_id`'),
+      ),
     ).toBe(true);
   });
 
   it('matches untagged-enum decode failures (content_b64 mistake)', () => {
     expect(
-      isArgumentDecodeError(new Error('data did not match any variant of untagged enum WriteContent')),
+      isArgumentDecodeError(
+        new Error('data did not match any variant of untagged enum WriteContent'),
+      ),
     ).toBe(true);
   });
 
@@ -325,9 +329,11 @@ describe('triggerFunctionCall', () => {
     // model must receive code + fix.
     const s211 = {
       code: 'S211',
-      docs_url: 'https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#S211',
+      docs_url:
+        'https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#S211',
       fix: { parents: true },
-      fix_note: 'merge `fix` into the original request and resubmit: `parents: true` auto-creates missing intermediate directories',
+      fix_note:
+        'merge `fix` into the original request and resubmit: `parents: true` auto-creates missing intermediate directories',
       message: 'parent directory not found: parent not found: /app',
       retryable: false,
       type: 'filesystem',

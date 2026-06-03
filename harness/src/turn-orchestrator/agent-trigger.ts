@@ -326,7 +326,7 @@ export async function triggerFunctionCall(
       // Best-effort: `contract` is omitted if the fetch fails.
       const contract = await fetchContract(iii, function_call.function_id);
       const baseMessage =
-        '`payload` could not be decoded into this function\'s arguments. Pass `payload` as a JSON OBJECT (an object literal — NOT a JSON-encoded string) whose fields match the schema: every required field, correct value types, and no field the schema does not define.';
+        "`payload` could not be decoded into this function's arguments. Pass `payload` as a JSON OBJECT (an object literal — NOT a JSON-encoded string) whose fields match the schema: every required field, correct value types, and no field the schema does not define.";
       return errorResult({
         error: 'invalid_arguments',
         function: function_call.function_id,
