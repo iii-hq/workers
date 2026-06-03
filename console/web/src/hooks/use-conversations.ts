@@ -7,7 +7,14 @@ import {
   saveConversations,
   saveLastModel,
 } from '@/lib/storage'
-import { type Conversation, DEFAULT_MODE, type Message, type MessagePatch, type Mode, type ModelId } from '@/types/chat'
+import {
+  type Conversation,
+  DEFAULT_MODE,
+  type Message,
+  type MessagePatch,
+  type Mode,
+  type ModelId,
+} from '@/types/chat'
 
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
@@ -73,7 +80,9 @@ export function useConversations(
   const persistRef = useRef<number | null>(null)
   useEffect(() => {
     if (persistRef.current) cancelAnimationFrame(persistRef.current)
-    persistRef.current = requestAnimationFrame(() => saveConversations(conversations))
+    persistRef.current = requestAnimationFrame(() =>
+      saveConversations(conversations),
+    )
     return () => {
       if (persistRef.current) cancelAnimationFrame(persistRef.current)
     }
@@ -116,11 +125,17 @@ export function useConversations(
     }
   }, [conversations, activeId])
 
-  const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
+  const active = useMemo(
+    () => conversations.find((c) => c.id === activeId) ?? null,
+    [conversations, activeId],
+  )
 
-  const patchConversation = useCallback((id: string, patch: (c: Conversation) => Conversation) => {
-    setConversations((list) => list.map((c) => (c.id === id ? patch(c) : c)))
-  }, [])
+  const patchConversation = useCallback(
+    (id: string, patch: (c: Conversation) => Conversation) => {
+      setConversations((list) => list.map((c) => (c.id === id ? patch(c) : c)))
+    },
+    [],
+  )
 
   const createNew = useCallback(() => {
     const next = emptyConversation(loadLastModel())
@@ -156,7 +171,8 @@ export function useConversations(
   )
 
   const setMode = useCallback(
-    (id: string, mode: Mode) => patchConversation(id, (c) => ({ ...c, mode, updatedAt: Date.now() })),
+    (id: string, mode: Mode) =>
+      patchConversation(id, (c) => ({ ...c, mode, updatedAt: Date.now() })),
     [patchConversation],
   )
 
@@ -169,7 +185,11 @@ export function useConversations(
           messages,
           updatedAt: Date.now(),
         }
-        if (!c.titleManual && message.role === 'user' && c.messages.every((m) => m.role !== 'user')) {
+        if (
+          !c.titleManual &&
+          message.role === 'user' &&
+          c.messages.every((m) => m.role !== 'user')
+        ) {
           next.title = deriveTitle(message.content)
         }
         return next
@@ -181,7 +201,9 @@ export function useConversations(
     (id: string, messageId: string, patch: MessagePatch) =>
       patchConversation(id, (c) => ({
         ...c,
-        messages: c.messages.map((m) => (m.id === messageId ? ({ ...m, ...patch } as Message) : m)),
+        messages: c.messages.map((m) =>
+          m.id === messageId ? ({ ...m, ...patch } as Message) : m,
+        ),
         updatedAt: Date.now(),
       })),
     [patchConversation],

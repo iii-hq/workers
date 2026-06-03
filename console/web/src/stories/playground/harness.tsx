@@ -2,20 +2,25 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { ChatView } from '@/components/chat/ChatView'
 import { uid } from '@/hooks/use-conversations'
 import type { ChatBackend, StreamEvent } from '@/lib/backend'
-import {
-  type Conversation,
-  type Message,
-  type MessagePatch,
-  type Mode,
-  type ModelId,
-  type ModelOption,
+import type {
+  Conversation,
+  Message,
+  MessagePatch,
+  Mode,
+  ModelId,
+  ModelOption,
 } from '@/types/chat'
 
 const PLAYGROUND_MODEL_OPTIONS: ModelOption[] = [
   { id: 'openai::gpt-5', label: 'gpt-5', contextWindow: 400_000 },
-  { id: 'anthropic::claude-opus-4-7', label: 'claude opus 4.7', contextWindow: 1_000_000 },
+  {
+    id: 'anthropic::claude-opus-4-7',
+    label: 'claude opus 4.7',
+    contextWindow: 1_000_000,
+  },
   { id: 'openai::gpt-5-mini', label: 'gpt-5 mini', contextWindow: 400_000 },
 ]
+
 import { EventLog, type EventLogHandle } from './EventLog'
 
 function makeConvo(mode: Mode): Conversation {

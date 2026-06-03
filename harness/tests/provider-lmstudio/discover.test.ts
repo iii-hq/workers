@@ -388,10 +388,7 @@ describe('discoverAndRegister', () => {
     const payload = (reconcile[0][0] as { payload: { provider: string; models: { id: string }[] } })
       .payload;
     expect(payload.provider).toBe('lmstudio');
-    expect(payload.models.map((m) => m.id)).toEqual([
-      'qwen/qwen3-4b-2507',
-      'meta/llama3.2-3b',
-    ]);
+    expect(payload.models.map((m) => m.id)).toEqual(['qwen/qwen3-4b-2507', 'meta/llama3.2-3b']);
   });
 
   it('returns [] and never calls the register bus when LM Studio is unreachable', async () => {

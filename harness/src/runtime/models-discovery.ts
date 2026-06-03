@@ -140,10 +140,7 @@ export async function reconcileModels(
   models: readonly Model[],
 ): Promise<string[]> {
   try {
-    const res = await iii.trigger<
-      unknown,
-      { ids?: string[]; count?: number }
-    >({
+    const res = await iii.trigger<unknown, { ids?: string[]; count?: number }>({
       function_id: 'models::reconcile',
       payload: { provider, models: [...models] },
       timeoutMs: REGISTER_TIMEOUT_MS,

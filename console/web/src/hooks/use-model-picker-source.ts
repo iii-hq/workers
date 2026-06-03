@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { onHarnessConfigSaved } from '@/lib/harness-config-events'
 import {
   catalogRowsToModelOptions,
   fetchModelsCatalog,
@@ -6,7 +7,6 @@ import {
   type ProviderListEntry,
   subscribeModelChanges,
 } from '@/lib/models-catalog'
-import { onHarnessConfigSaved } from '@/lib/harness-config-events'
 import type { ModelOption } from '@/types/chat'
 
 /**

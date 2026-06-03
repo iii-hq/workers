@@ -55,7 +55,9 @@ export function ModelPicker({
 
   const pickerOptions = options
   const safeValue =
-    value != null && pickerOptions.some((o) => o.id === value) ? value : undefined
+    value != null && pickerOptions.some((o) => o.id === value)
+      ? value
+      : undefined
 
   // Groups from the registered models, plus an empty group for each present
   // provider that has no models yet (present-but-unconfigured) so it still

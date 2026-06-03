@@ -38,7 +38,10 @@ export function registerProviderRefreshOnConfig(
 
   const refreshProviders = async (providerIds: readonly string[]): Promise<void> => {
     const listing = new Set(
-      registry.list().filter((p) => p.supports_model_listing).map((p) => p.id),
+      registry
+        .list()
+        .filter((p) => p.supports_model_listing)
+        .map((p) => p.id),
     );
     const targets = providerIds.filter((id) => listing.has(id));
     if (targets.length === 0) return;
@@ -73,7 +76,10 @@ export function registerProviderRefreshOnConfig(
 
     let targets: string[];
     if (event.old_value === null && event.new_value === null) {
-      targets = registry.list().filter((p) => p.supports_model_listing).map((p) => p.id);
+      targets = registry
+        .list()
+        .filter((p) => p.supports_model_listing)
+        .map((p) => p.id);
     } else {
       targets = providersAffectedByConfigChange(oldCfg, newCfg);
     }

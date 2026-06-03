@@ -63,9 +63,11 @@ describe('discoverAndRegister', () => {
       max_tokens: 8192,
       source: 'stored',
     });
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ error: 'invalid' }), { status: 401 }),
-    ) as typeof globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ error: 'invalid' }), { status: 401 }),
+      ) as typeof globalThis.fetch;
 
     const { iii, trigger } = makeIii();
     const out = await discoverAndRegister(iii, WORKER);
@@ -85,9 +87,9 @@ describe('discoverAndRegister', () => {
       max_tokens: 8192,
       source: 'stored',
     });
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('unavailable', { status: 503 }),
-    ) as typeof globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('unavailable', { status: 503 })) as typeof globalThis.fetch;
 
     const { iii, trigger } = makeIii();
     const out = await discoverAndRegister(iii, WORKER);
