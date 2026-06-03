@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
+import { useWorkerLifecycle } from './use-worker-lifecycle'
 
 /**
  * Watches the engine for the `harness` worker and drives an in-app install of
@@ -164,11 +165,19 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     }
   }, [])
 
-  // One-time presence probe + live `worker` subscription. Kept in a ref so
-  // the latest handler runs without re-subscribing.
-  const handlerRef = useRef(handleEvent)
-  handlerRef.current = handleEvent
+  // Live `worker` add subscription for install progress + CLI detection.
+  // The shared hook always sends a `stages` filter — omitting it matches no
+  // events (the engine filters on operations AND stages).
+  useWorkerLifecycle({
+    enabled,
+    fnId: HARNESS_WATCH_FN,
+    operations: ['add'],
+    onEvent: handleEvent,
+  })
 
+  // One-time presence probe on mount. Live changes — the in-app CTA or a CLI
+  // `iii worker add harness` — arrive purely through the `worker` add trigger
+  // above (the engine's push channel). No polling, no focus re-checks.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
@@ -176,9 +185,6 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       return
     }
     let cancelled = false
-    let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
-
     void (async () => {
       const client = await getIiiClient()
       try {
@@ -189,32 +195,9 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       } finally {
         if (!cancelled) setLoading(false)
       }
-      if (cancelled) return
-
-      // Subscribe to harness add events for live progress + CLI detection.
-      // If the engine doesn't publish the `worker` trigger type, fall back to
-      // the progress-less path (install() re-checks presence on resolve).
-      try {
-        offHandler = client.on(HARNESS_WATCH_FN, (data: unknown) => {
-          handlerRef.current(data)
-        })
-        offTrigger = client.registerTrigger({
-          type: 'worker',
-          function_id: `${HARNESS_WATCH_FN}::${client.browserId}`,
-          config: { operations: ['add'] },
-        })
-      } catch {
-        offTrigger?.()
-        offHandler?.()
-        offTrigger = undefined
-        offHandler = undefined
-      }
     })()
-
     return () => {
       cancelled = true
-      offTrigger?.()
-      offHandler?.()
     }
   }, [enabled])
 
@@ -264,6 +247,15 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     }),
     [present, loading, installing, stages, error, install],
   )
+}
+
+/**
+ * Whether harness-owned bus functions (`models::list`, `approval::*`, etc.)
+ * are registered and safe to call. False during the initial presence probe
+ * and while the worker is absent.
+ */
+export function isHarnessAvailable(status: HarnessStatus): boolean {
+  return status.present && !status.loading
 }
 
 /**

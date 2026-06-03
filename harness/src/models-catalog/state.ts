@@ -1,34 +1,52 @@
 /**
- * State-backed reads for the models catalog. The catalog is populated
- * exclusively by provider discovery (`models::register`) — there is no
- * embedded seed or fallback. `models::list` / `models::get` return only what
- * providers have registered into iii state.
+ * State-backed reads for the models catalog. Each provider owns one key in
+ * scope `models` whose value is a `Model[]`. Discovery writes via
+ * `models::reconcile` (single state set per provider).
  */
 
 import type { ISdk } from '../runtime/iii.js';
 import { stateGet, stateListValues } from '../runtime/state.js';
-import {
-  type ListFilter,
-  MODELS_KEY_PREFIX,
-  MODELS_SCOPE,
-  type Model,
-  supportsModel,
-} from './types.js';
+import { type ListFilter, MODELS_SCOPE, type Model, supportsModel } from './types.js';
 
-export function modelKey(provider: string, id: string): string {
-  return `${MODELS_KEY_PREFIX}${provider}:${id}`;
+/** State key for a provider's catalog array (scope `models`, key = provider id). */
+export function providerStateKey(provider: string): string {
+  return provider;
+}
+
+export function isModel(v: unknown): v is Model {
+  return Boolean(v && typeof v === 'object' && typeof (v as Model).id === 'string');
+}
+
+/** Parse a stored catalog value; only `Model[]` is valid. */
+export function parseModelArray(v: unknown): Model[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter(isModel);
+}
+
+export async function getProviderModels(iii: ISdk, provider: string): Promise<Model[]> {
+  const v = await stateGet(iii, MODELS_SCOPE, providerStateKey(provider));
+  return parseModelArray(v);
 }
 
 export async function listFromState(iii: ISdk, filter: ListFilter): Promise<Model[]> {
-  const models = (await stateListValues<Model>(iii, { scope: MODELS_SCOPE })).filter(
-    (m): m is Model => Boolean(m && typeof m === 'object' && m.id),
-  );
-  return models
-    .filter((m) => filter.provider === undefined || m.provider === filter.provider)
-    .filter((m) => filter.capability === undefined || supportsModel(m, filter.capability));
+  if (filter.provider !== undefined) {
+    const models = await getProviderModels(iii, filter.provider);
+    return filter.capability === undefined
+      ? models
+      : models.filter((m) => supportsModel(m, filter.capability!));
+  }
+
+  const entries = await stateListValues<unknown>(iii, { scope: MODELS_SCOPE });
+  const out: Model[] = [];
+  for (const entry of entries) {
+    out.push(...parseModelArray(entry));
+  }
+  return filter.capability === undefined
+    ? out
+    : out.filter((m) => supportsModel(m, filter.capability!));
 }
 
 export async function getFromState(iii: ISdk, provider: string, id: string): Promise<Model | null> {
-  const v = await stateGet(iii, MODELS_SCOPE, modelKey(provider, id));
-  return v && typeof v === 'object' ? (v as Model) : null;
+  const models = await getProviderModels(iii, provider);
+  return models.find((m) => m.id === id) ?? null;
 }

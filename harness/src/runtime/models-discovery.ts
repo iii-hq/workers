@@ -2,7 +2,7 @@
  * Shared helpers for cloud-provider model discovery. Cloud providers
  * (anthropic, openai, kimi) hit their upstream `/v1/models` endpoint, map
  * the result onto the catalog `Model` shape with sane per-provider defaults,
- * and register each into the iii models catalog via `models::register`.
+ * and register each into the iii models catalog via `models::reconcile`.
  *
  * This mirrors the local-provider discovery in
  * `provider-lmstudio/discover.ts`, extended to remote APIs. The console
@@ -47,6 +47,47 @@ async function fetchWithTimeout(
   }
 }
 
+export type ModelsFetchResult =
+  | { kind: 'ok'; json: unknown }
+  | { kind: 'auth_error'; status: number }
+  | { kind: 'transient_error'; status?: number };
+
+function isAuthStatus(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/**
+ * GET `url` for cloud provider model listing. Distinguishes invalid credentials
+ * (401/403) from transient failures so discovery can prune vs keep the catalog.
+ * Never throws across the bus boundary.
+ */
+export async function fetchModelsForDiscovery(
+  url: string,
+  headers: Record<string, string>,
+): Promise<ModelsFetchResult> {
+  let resp: Response;
+  try {
+    resp = await fetchWithTimeout(url, { method: 'GET', headers }, DISCOVERY_TIMEOUT_MS);
+  } catch (err) {
+    logger.warn('model discovery: fetch failed', { url, err: String(err) });
+    return { kind: 'transient_error' };
+  }
+  if (!resp.ok) {
+    if (isAuthStatus(resp.status)) {
+      logger.info('model discovery: auth rejected', { url, status: resp.status });
+      return { kind: 'auth_error', status: resp.status };
+    }
+    logger.warn('model discovery: non-2xx response', { url, status: resp.status });
+    return { kind: 'transient_error', status: resp.status };
+  }
+  try {
+    return { kind: 'ok', json: await resp.json() };
+  } catch (err) {
+    logger.warn('model discovery: invalid JSON', { url, err: String(err) });
+    return { kind: 'transient_error' };
+  }
+}
+
 /**
  * GET `url` and return the parsed JSON, or `null` on any error / non-2xx.
  * Discovery is best-effort and must never throw across the bus boundary.
@@ -55,23 +96,8 @@ export async function fetchModelsJson(
   url: string,
   headers: Record<string, string>,
 ): Promise<unknown | null> {
-  let resp: Response;
-  try {
-    resp = await fetchWithTimeout(url, { method: 'GET', headers }, DISCOVERY_TIMEOUT_MS);
-  } catch (err) {
-    logger.warn('model discovery: fetch failed', { url, err: String(err) });
-    return null;
-  }
-  if (!resp.ok) {
-    logger.warn('model discovery: non-2xx response', { url, status: resp.status });
-    return null;
-  }
-  try {
-    return await resp.json();
-  } catch (err) {
-    logger.warn('model discovery: invalid JSON', { url, err: String(err) });
-    return null;
-  }
+  const result = await fetchModelsForDiscovery(url, headers);
+  return result.kind === 'ok' ? result.json : null;
 }
 
 export type ModelStub = {
@@ -103,26 +129,29 @@ export function enrichModel(opts: {
   };
 }
 
-/** Register each model into the catalog. Best-effort, parallel, never throws. */
-export async function registerModels(iii: ISdk, models: readonly Model[]): Promise<string[]> {
-  const settled = await Promise.allSettled(
-    models.map(async (m) => {
-      await iii.trigger({
-        function_id: 'models::register',
-        payload: m,
-        timeoutMs: REGISTER_TIMEOUT_MS,
-      });
-      return m.id;
-    }),
-  );
-  const registered: string[] = [];
-  settled.forEach((r, i) => {
-    if (r.status === 'fulfilled') registered.push(r.value);
-    else
-      logger.warn('model discovery: register failed', {
-        id: models[i]?.id,
-        err: String(r.reason),
-      });
-  });
-  return registered;
+/**
+ * Replace the provider's catalog with `models` in one `models::reconcile` call
+ * (single state write). Best-effort: failures are logged and swallowed so
+ * discovery never throws across the bus boundary.
+ */
+export async function reconcileModels(
+  iii: ISdk,
+  provider: string,
+  models: readonly Model[],
+): Promise<string[]> {
+  try {
+    const res = await iii.trigger<
+      unknown,
+      { ids?: string[]; count?: number }
+    >({
+      function_id: 'models::reconcile',
+      payload: { provider, models: [...models] },
+      timeoutMs: REGISTER_TIMEOUT_MS,
+    });
+    if (Array.isArray(res?.ids) && res.ids.length > 0) return res.ids;
+    return models.map((m) => m.id);
+  } catch (err) {
+    logger.warn('model discovery: reconcile failed', { provider, err: String(err) });
+    return [];
+  }
 }

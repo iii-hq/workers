@@ -7,15 +7,7 @@ import {
   saveConversations,
   saveLastModel,
 } from '@/lib/storage'
-import {
-  type Conversation,
-  DEFAULT_MODE,
-  DEFAULT_MODEL,
-  type Message,
-  type MessagePatch,
-  type Mode,
-  type ModelId,
-} from '@/types/chat'
+import { type Conversation, DEFAULT_MODE, type Message, type MessagePatch, type Mode, type ModelId } from '@/types/chat'
 
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
@@ -27,9 +19,7 @@ function deriveTitle(text: string): string {
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
 
-function emptyConversation(
-  defaultModel: ModelId = DEFAULT_MODEL,
-): Conversation {
+function emptyConversation(defaultModel: ModelId | null): Conversation {
   const now = Date.now()
   return {
     id: uid(),
@@ -57,7 +47,7 @@ export interface ConversationsApi {
   compactConversation: (id: string, marker: Message) => void
 }
 
-/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). `catalogReady` gates the migration so it doesn't run against `STATIC_MODEL_OPTIONS` before the live catalog has loaded. */
+/** When set, non-matching `conversation.model` values are rewritten to the first key (catalog load / migration). `catalogReady` gates the migration so it doesn't run before the live catalog has loaded. */
 export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
@@ -72,9 +62,7 @@ export function useConversations(
     /* Always boot with at least one empty conversation so the chat surface
        has something to render. Done in the initializer so StrictMode's
        double-invoke can't create two. */
-    return loaded.length > 0
-      ? loaded
-      : [emptyConversation(loadLastModel() ?? DEFAULT_MODEL)]
+    return loaded.length > 0 ? loaded : [emptyConversation(loadLastModel())]
   })
   const [activeId, setActiveId] = useState<string | null>(() => {
     const stored = loadActiveId()
@@ -85,9 +73,7 @@ export function useConversations(
   const persistRef = useRef<number | null>(null)
   useEffect(() => {
     if (persistRef.current) cancelAnimationFrame(persistRef.current)
-    persistRef.current = requestAnimationFrame(() =>
-      saveConversations(conversations),
-    )
+    persistRef.current = requestAnimationFrame(() => saveConversations(conversations))
     return () => {
       if (persistRef.current) cancelAnimationFrame(persistRef.current)
     }
@@ -95,7 +81,7 @@ export function useConversations(
 
   /* Migrate persisted model ids once catalog-backed keys are known. Gated on
      catalogReady so we don't rewrite catalog-only picks (e.g. claude-haiku-4-5)
-     against STATIC_MODEL_OPTIONS during the brief window before the real
+     against a stale placeholder catalog during the brief window before the real
      catalog fetch resolves. Also reconciles the persisted last-model slot. */
   useEffect(() => {
     if (!catalogSig) return
@@ -106,7 +92,7 @@ export function useConversations(
     setConversations((prev) => {
       let changed = false
       const next = prev.map((c) => {
-        if (valid.has(c.model)) return c
+        if (c.model && valid.has(c.model)) return c
         changed = true
         return { ...c, model: fallback, updatedAt: Date.now() }
       })
@@ -130,20 +116,14 @@ export function useConversations(
     }
   }, [conversations, activeId])
 
-  const active = useMemo(
-    () => conversations.find((c) => c.id === activeId) ?? null,
-    [conversations, activeId],
-  )
+  const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
-  const patchConversation = useCallback(
-    (id: string, patch: (c: Conversation) => Conversation) => {
-      setConversations((list) => list.map((c) => (c.id === id ? patch(c) : c)))
-    },
-    [],
-  )
+  const patchConversation = useCallback((id: string, patch: (c: Conversation) => Conversation) => {
+    setConversations((list) => list.map((c) => (c.id === id ? patch(c) : c)))
+  }, [])
 
   const createNew = useCallback(() => {
-    const next = emptyConversation(loadLastModel() ?? DEFAULT_MODEL)
+    const next = emptyConversation(loadLastModel())
     setConversations((list) => [next, ...list])
     setActiveId(next.id)
     return next.id
@@ -176,8 +156,7 @@ export function useConversations(
   )
 
   const setMode = useCallback(
-    (id: string, mode: Mode) =>
-      patchConversation(id, (c) => ({ ...c, mode, updatedAt: Date.now() })),
+    (id: string, mode: Mode) => patchConversation(id, (c) => ({ ...c, mode, updatedAt: Date.now() })),
     [patchConversation],
   )
 
@@ -190,11 +169,7 @@ export function useConversations(
           messages,
           updatedAt: Date.now(),
         }
-        if (
-          !c.titleManual &&
-          message.role === 'user' &&
-          c.messages.every((m) => m.role !== 'user')
-        ) {
+        if (!c.titleManual && message.role === 'user' && c.messages.every((m) => m.role !== 'user')) {
           next.title = deriveTitle(message.content)
         }
         return next
@@ -206,9 +181,7 @@ export function useConversations(
     (id: string, messageId: string, patch: MessagePatch) =>
       patchConversation(id, (c) => ({
         ...c,
-        messages: c.messages.map((m) =>
-          m.id === messageId ? ({ ...m, ...patch } as Message) : m,
-        ),
+        messages: c.messages.map((m) => (m.id === messageId ? ({ ...m, ...patch } as Message) : m)),
         updatedAt: Date.now(),
       })),
     [patchConversation],

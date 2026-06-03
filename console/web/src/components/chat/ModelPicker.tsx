@@ -15,7 +15,7 @@ import {
 const HARNESS_CONFIG_HASH = '#/configuration/workers/harness'
 
 interface ModelPickerProps {
-  value: ModelId
+  value: ModelId | null
   options: ModelOption[]
   onChange: (next: ModelId) => void
   disabled?: boolean
@@ -53,11 +53,9 @@ export function ModelPicker({
   const presentIds = ctx?.presentProviders.map((p) => p.id) ?? []
   const presentSet = new Set<string>(presentIds)
 
-  const pickerOptions =
-    options.length > 0 ? options : [{ id: value, label: value }]
-  const safeValue = pickerOptions.some((o) => o.id === value)
-    ? value
-    : pickerOptions[0].id
+  const pickerOptions = options
+  const safeValue =
+    value != null && pickerOptions.some((o) => o.id === value) ? value : undefined
 
   // Groups from the registered models, plus an empty group for each present
   // provider that has no models yet (present-but-unconfigured) so it still
@@ -77,7 +75,8 @@ export function ModelPicker({
         value={safeValue}
         groups={groups}
         onChange={onChange}
-        disabled={disabled || loading}
+        disabled={disabled || loading || groups.length === 0}
+        placeholder={loading ? 'loading…' : 'no models'}
         aria-label={loading ? 'model (loading catalog)' : 'model'}
         aria-busy={loading || undefined}
         className={className}

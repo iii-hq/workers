@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-models-catalog
-description: Model capabilities knowledge base on the iii bus (models::*). State-first; seeds from a baked-in baseline when state is empty.
+description: Model capabilities knowledge base on the iii bus (models::*). State-backed catalog written by provider discovery via models::reconcile.
 
 runtime:
   kind: node

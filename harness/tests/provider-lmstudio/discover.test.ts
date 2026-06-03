@@ -220,32 +220,34 @@ describe('registerDiscovered', () => {
     };
   }
 
-  it('triggers models::register for each model and returns the successfully-registered IDs', async () => {
-    const triggers: unknown[] = [];
-    const iii = {
-      trigger: vi.fn(async (args: { function_id: string; payload: unknown }) => {
-        triggers.push(args);
-        return { ok: true };
-      }),
-    } as unknown as ISdk;
+  it('reconciles all models in one catalog write', async () => {
+    const trigger = vi.fn().mockResolvedValue({ ids: ['a', 'b'], count: 2 });
+    const iii = { trigger } as unknown as ISdk;
 
     const out = await registerDiscovered(iii, [makeModel('a'), makeModel('b')]);
     expect(out).toEqual(['a', 'b']);
-    expect(triggers).toHaveLength(2);
-    expect((triggers[0] as { function_id: string }).function_id).toBe('models::register');
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        function_id: 'models::reconcile',
+        payload: expect.objectContaining({
+          provider: 'lmstudio',
+          models: expect.arrayContaining([
+            expect.objectContaining({ id: 'a' }),
+            expect.objectContaining({ id: 'b' }),
+          ]),
+        }),
+      }),
+    );
   });
 
-  it('keeps going when one register call throws — partial success returns the survivors', async () => {
+  it('returns [] when reconcile fails', async () => {
     const iii = {
-      trigger: vi
-        .fn()
-        .mockResolvedValueOnce({ ok: true })
-        .mockRejectedValueOnce(new Error('state worker down'))
-        .mockResolvedValueOnce({ ok: true }),
+      trigger: vi.fn().mockRejectedValue(new Error('state worker down')),
     } as unknown as ISdk;
 
-    const out = await registerDiscovered(iii, [makeModel('a'), makeModel('b'), makeModel('c')]);
-    expect(out).toEqual(['a', 'c']);
+    const out = await registerDiscovered(iii, [makeModel('a'), makeModel('b')]);
+    expect(out).toEqual([]);
   });
 });
 
@@ -377,7 +379,19 @@ describe('discoverAndRegister', () => {
 
     const out = await discoverAndRegister(iii, 'http://localhost:1234/v1/chat/completions', {});
     expect(out).toEqual(['qwen/qwen3-4b-2507', 'meta/llama3.2-3b']);
-    expect((iii.trigger as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+
+    const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
+    const reconcile = calls.filter(
+      (c) => (c[0] as { function_id: string }).function_id === 'models::reconcile',
+    );
+    expect(reconcile).toHaveLength(1);
+    const payload = (reconcile[0][0] as { payload: { provider: string; models: { id: string }[] } })
+      .payload;
+    expect(payload.provider).toBe('lmstudio');
+    expect(payload.models.map((m) => m.id)).toEqual([
+      'qwen/qwen3-4b-2507',
+      'meta/llama3.2-3b',
+    ]);
   });
 
   it('returns [] and never calls the register bus when LM Studio is unreachable', async () => {

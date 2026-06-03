@@ -18,13 +18,12 @@
 
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
+import { reconcileModels } from '../runtime/models-discovery.js';
 import { logger } from '../runtime/otel.js';
+import { PROVIDER_ID } from './auth.js';
 
 /** Timeout for the discovery HTTP call. Short — LM Studio is local. */
 const DISCOVERY_TIMEOUT_MS = 5_000;
-
-/** Timeout for each `models::register` bus call. */
-const REGISTER_TIMEOUT_MS = 5_000;
 
 /** Defaults for fields LM Studio doesn't expose directly. */
 const DEFAULT_CONTEXT_WINDOW = 32_768;
@@ -206,41 +205,12 @@ export async function discoverLoadedIds(
   return ids;
 }
 
-/**
- * Register each discovered model via the `models::register` bus function.
- * Best-effort per-model: failures are logged and skipped, the rest are
- * still registered.
- *
- * Fan out in parallel via Promise.allSettled — the bus has no ordering
- * requirement between registers, and serializing them stretched
- * startup-blocking time to N × REGISTER_TIMEOUT_MS for users with
- * many downloaded models. Pre-fix: 30 models × 5s timeout could leave
- * the worker un-discoverable for 150s. Now: ~5s worst case regardless
- * of N.
- */
+/** Register discovered models in one `models::reconcile` call. */
 export async function registerDiscovered(iii: ISdk, models: readonly Model[]): Promise<string[]> {
-  const settled = await Promise.allSettled(
-    models.map(async (m) => {
-      await iii.trigger({
-        function_id: 'models::register',
-        payload: m,
-        timeoutMs: REGISTER_TIMEOUT_MS,
-      });
-      return m.id;
-    }),
-  );
-  const registered: string[] = [];
-  settled.forEach((r, i) => {
-    if (r.status === 'fulfilled') {
-      registered.push(r.value);
-    } else {
-      logger.warn('lmstudio discovery: register failed', {
-        id: models[i]?.id,
-        err: String(r.reason),
-      });
-    }
-  });
-  return registered;
+  if (models.length === 0) return [];
+  const provider = models[0]?.provider;
+  if (!provider) return [];
+  return reconcileModels(iii, provider, models);
 }
 
 /**
@@ -259,10 +229,13 @@ export async function discoverAndRegister(
 ): Promise<string[]> {
   const models = await discoverAllDownloadedModels(chatUrl, headers);
   if (models.length === 0) {
+    // Empty can mean "server offline" or "nothing downloaded" — we can't tell
+    // them apart here, so keep the last-known catalog rather than risk wiping
+    // it on a transient blip.
     logger.info('lmstudio discovery: no downloaded LLMs found', {});
     return [];
   }
-  const registered = await registerDiscovered(iii, models);
+  const registered = await reconcileModels(iii, PROVIDER_ID, models);
   // Log count at INFO; full id list at DEBUG so model identifiers
   // (which may carry fine-tune / org context) don't leak into
   // shared observability tooling on the cheaper tier.

@@ -89,3 +89,63 @@ export async function readHarnessConfig(iii: ISdk): Promise<HarnessConfigValue> 
   const value = await configurationGet(iii, HARNESS_CONFIG_ID, { raw: false });
   return normalizeHarnessConfig(value);
 }
+
+/** Fields that affect upstream model listing for a provider. */
+const DISCOVERY_FINGERPRINT_KEYS = ['api_key', 'api_url'] as const;
+
+function normalizeApiKey(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * Stable fingerprint of provider settings that should trigger model
+ * re-discovery when changed.
+ */
+export function providerDiscoveryFingerprint(cfg: HarnessProviderConfig): string {
+  const parts: string[] = [];
+  for (const k of DISCOVERY_FINGERPRINT_KEYS) {
+    parts.push(`${k}=${normalizeApiKey(cfg[k])}`);
+  }
+  return parts.join('\u0001');
+}
+
+/**
+ * Provider ids whose discovery-relevant config changed between two harness
+ * snapshots. Permissions-only edits return [].
+ */
+export function providersAffectedByConfigChange(
+  oldCfg: HarnessConfigValue,
+  newCfg: HarnessConfigValue,
+): string[] {
+  const ids = new Set([...Object.keys(oldCfg.providers), ...Object.keys(newCfg.providers)]);
+  const affected: string[] = [];
+  for (const id of ids) {
+    const oldFp = providerDiscoveryFingerprint(oldCfg.providers[id] ?? {});
+    const newFp = providerDiscoveryFingerprint(newCfg.providers[id] ?? {});
+    if (oldFp !== newFp) affected.push(id);
+  }
+  return affected.sort();
+}
+
+export type ConfigurationChangeEvent = {
+  old_value: JsonValue | null;
+  new_value: JsonValue | null;
+};
+
+/** Parse a `configuration` trigger payload into old/new values when present. */
+export function parseConfigurationChangeEvent(payload: unknown): ConfigurationChangeEvent {
+  if (!payload || typeof payload !== 'object') {
+    return { old_value: null, new_value: null };
+  }
+  const o = payload as Record<string, unknown>;
+  const body =
+    o.new_value !== undefined || o.old_value !== undefined
+      ? o
+      : o.payload && typeof o.payload === 'object'
+        ? (o.payload as Record<string, unknown>)
+        : o;
+  return {
+    old_value: (body.old_value ?? null) as JsonValue | null,
+    new_value: (body.new_value ?? null) as JsonValue | null,
+  };
+}

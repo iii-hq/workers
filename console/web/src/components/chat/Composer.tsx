@@ -18,7 +18,7 @@ export interface ComposerSubmitPayload {
 
 interface ComposerProps {
   mode: Mode
-  model: ModelId
+  model: ModelId | null
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   /**

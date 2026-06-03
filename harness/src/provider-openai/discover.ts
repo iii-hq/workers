@@ -11,9 +11,9 @@ import type { ISdk } from '../runtime/iii.js';
 import {
   deriveModelsUrl,
   enrichModel,
-  fetchModelsJson,
+  fetchModelsForDiscovery,
   type ModelStub,
-  registerModels,
+  reconcileModels,
 } from '../runtime/models-discovery.js';
 import { logger } from '../runtime/otel.js';
 import { resolveProvider } from '../runtime/provider-resolve.js';
@@ -45,15 +45,25 @@ export async function discoverAndRegister(iii: ISdk, worker: WorkerConfig): Prom
   const resolved = await resolveProvider(iii, PROVIDER_ID).catch(() => null);
   const cred = resolved?.credential ?? null;
   if (!cred) {
-    logger.info('openai discovery: no credential; skipping', {});
+    // No credential: drop any models a previous run registered so the picker
+    // reflects the removal instead of showing stale, unusable rows.
+    logger.info('openai discovery: no credential; pruning catalog', {});
+    await reconcileModels(iii, PROVIDER_ID, []);
     return [];
   }
   const key = cred.type === 'api_key' ? cred.key : cred.access_token;
   const url = deriveModelsUrl(resolved?.api_url ?? worker.default_api_url);
-  const json = await fetchModelsJson(url, { Authorization: `Bearer ${key}` });
-  if (!json) return [];
+  const fetchResult = await fetchModelsForDiscovery(url, { Authorization: `Bearer ${key}` });
+  if (fetchResult.kind === 'auth_error') {
+    logger.info('openai discovery: invalid credential; pruning catalog', {
+      status: fetchResult.status,
+    });
+    await reconcileModels(iii, PROVIDER_ID, []);
+    return [];
+  }
+  if (fetchResult.kind !== 'ok') return [];
 
-  const models = parseStubs(json).map((stub) =>
+  const models = parseStubs(fetchResult.json).map((stub) =>
     enrichModel({
       provider: PROVIDER_ID,
       api: 'openai-responses',
@@ -61,8 +71,10 @@ export async function discoverAndRegister(iii: ISdk, worker: WorkerConfig): Prom
       defaultContextWindow: DEFAULT_CONTEXT_WINDOW,
     }),
   );
-  if (models.length === 0) return [];
-  const registered = await registerModels(iii, models);
-  logger.info('openai discovery: registered models', { count: registered.length });
+  const registered = await reconcileModels(iii, PROVIDER_ID, models);
+  logger.info('openai discovery: reconciled models', {
+    count: registered.length,
+    discovered: models.length,
+  });
   return registered;
 }

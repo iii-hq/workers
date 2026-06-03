@@ -65,7 +65,7 @@ request (`harness::provider::resolve`). It also calls the SDK-provided
 | [src/provider-openai/config.ts](harness/src/provider-openai/config.ts) | Loads the `provider_openai` section. |
 | [src/provider-openai/types.ts](harness/src/provider-openai/types.ts) | `ChatCompletionsConfig` + `configFromCredential` builder. |
 | [src/provider-openai/auth.ts](harness/src/provider-openai/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
-| [src/provider-openai/discover.ts](harness/src/provider-openai/discover.ts) + [refresh-fn.ts](harness/src/provider-openai/refresh-fn.ts) | `GET /v1/models` discovery (chat-capable subset) → `models::register` (`provider::openai::refresh_models`). |
+| [src/provider-openai/discover.ts](harness/src/provider-openai/discover.ts) + [refresh-fn.ts](harness/src/provider-openai/refresh-fn.ts) | `GET /v1/models` discovery (chat-capable subset) → `models::reconcile` (`provider::openai::refresh_models`). |
 | [src/provider-openai/stream.ts](harness/src/provider-openai/stream.ts) | `streamOpenai` async generator: builds the request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-openai/sse.ts](harness/src/provider-openai/sse.ts) | SSE parser. |
 | [src/provider-openai/wire-messages.ts](harness/src/provider-openai/wire-messages.ts) | `AgentMessage[]` → OpenAI `messages` translation. |
