@@ -98,6 +98,28 @@ describe('runPreflight', () => {
     ).rejects.toBeInstanceOf(CompactionBusyError);
   });
 
+  it("returns ok without claiming compacted when compact_now reports 'empty'", async () => {
+    const { iii } = makeIii({
+      modelsGetResult: { context_window: 10, max_output_tokens: 0 },
+      compactNowResult: { status: 'empty' },
+    });
+
+    const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
+
+    expect(result).toBe('ok');
+  });
+
+  it('returns ok on an unknown compact_now status instead of claiming compacted', async () => {
+    const { iii } = makeIii({
+      modelsGetResult: { context_window: 10, max_output_tokens: 0 },
+      compactNowResult: { status: 'something-new' },
+    });
+
+    const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
+
+    expect(result).toBe('ok');
+  });
+
   it('passes session_id and model info to compact_now', async () => {
     const { iii, calls } = makeIii({
       modelsGetResult: { context_window: 10, max_output_tokens: 0 },

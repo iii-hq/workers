@@ -2,8 +2,10 @@
  * Pre-flight overflow check. Returns 'compacted' when compact_now ran;
  * caller must then reload messages from persistence.
  *
- * @throws ContextOverflowError when the session is too large to compact.
- * @throws CompactionBusyError  when another compaction is in progress.
+ * @throws ContextOverflowError when the session is too large to compact (terminal).
+ * @throws CompactionBusyError  when another compaction is in progress — a
+ *   TransientError subclass, so the turn-step queue retries the step after
+ *   the in-flight compaction releases the lease instead of failing the run.
  */
 
 import { fetchModelLimit } from '../context-compaction/model-resolver.js';
@@ -95,6 +97,16 @@ export async function runPreflight(
   }
   if (res?.status === 'busy') {
     throw new CompactionBusyError('compaction already in progress');
+  }
+  if (res?.status !== 'ok') {
+    // 'empty' (nothing eligible to compact) or an unknown/drifted status:
+    // no compaction ran, so do NOT claim 'compacted' — the caller would
+    // reload messages and proceed as if the context shrank.
+    logger.warn('preflight: compact_now returned non-ok status; proceeding without reload', {
+      session_id,
+      status: res?.status,
+    });
+    return 'ok';
   }
 
   return 'compacted';

@@ -140,12 +140,23 @@ impl HostFsBackend {
     /// Use the sandbox backend for untrusted input.
     pub(crate) fn validate_path(&self, path: &str) -> Result<PathBuf, FsError> {
         let p = Path::new(path);
-        if !p.is_absolute() {
+        let joined;
+        let p = if p.is_absolute() {
+            p
+        } else if path.is_empty() {
+            return Err(FsError::new("S210", "path must not be empty"));
+        } else if let Some(root_canon) = &self.host_root_canon {
+            // Relative paths resolve against the jail root. The canonical
+            // starts_with(host_root) check below still runs on the joined
+            // path, so `..` in the relative form cannot escape the jail.
+            joined = root_canon.join(p);
+            joined.as_path()
+        } else {
             return Err(FsError::new(
                 "S210",
                 format!("path must be absolute: {path}"),
             ));
-        }
+        };
         let canon = canonicalize_with_fallback(p).map_err(|e| {
             // Dangling-symlink errors are structurally jail violations
             // (the path would otherwise resolve through a link that
@@ -160,9 +171,11 @@ impl HostFsBackend {
         })?;
         if let Some(root_canon) = &self.host_root_canon {
             if !canon.starts_with(root_canon) {
+                // Name the jail root so a caller (human or agent) can
+                // self-correct in one step instead of guessing paths.
                 return Err(FsError::new(
                     "S215",
-                    format!("path escapes host_root: {path}"),
+                    format!("path escapes host_root {}: {path}", root_canon.display()),
                 ));
             }
         }
@@ -172,6 +185,21 @@ impl HostFsBackend {
             }
         }
         Ok(canon)
+    }
+
+    /// Lexical operand for handlers whose semantics forbid canonicalizing
+    /// (rm/chmod/mv/sed act on the link itself, not its target). Relative
+    /// inputs anchor to the SAME jail root `validate_path` validated
+    /// against, so the validated path and the operated-on path can never
+    /// diverge (the worker's CWD is unrelated to the jail).
+    fn lexical_operand(&self, path: &str) -> PathBuf {
+        let p = Path::new(path);
+        if p.is_relative() {
+            if let Some(root_canon) = &self.host_root_canon {
+                return normalize_lexical(&root_canon.join(p));
+            }
+        }
+        normalize_lexical(p)
     }
 }
 
@@ -592,7 +620,7 @@ impl FsBackend for HostFsBackend {
         // the target. validate_path canonicalizes for jail confinement; we
         // operate on the lexical path to preserve unlink semantics.
         self.validate_path(&req.path)?;
-        let p = normalize_lexical(Path::new(&req.path));
+        let p = self.lexical_operand(&req.path);
 
         let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
 
@@ -616,7 +644,7 @@ impl FsBackend for HostFsBackend {
     }
     async fn chmod(&self, req: crate::fs::ChmodArgs) -> FsCallResult<crate::fs::ChmodResponse> {
         self.validate_path(&req.path)?;
-        let p = normalize_lexical(Path::new(&req.path));
+        let p = self.lexical_operand(&req.path);
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         if !p.exists() {
             return Err(FsError::new(
@@ -679,8 +707,8 @@ impl FsBackend for HostFsBackend {
     async fn mv(&self, req: crate::fs::MvArgs) -> FsCallResult<crate::fs::MvResponse> {
         self.validate_path(&req.src)?;
         self.validate_path(&req.dst)?;
-        let src_p = normalize_lexical(Path::new(&req.src));
-        let dst_p = normalize_lexical(Path::new(&req.dst));
+        let src_p = self.lexical_operand(&req.src);
+        let dst_p = self.lexical_operand(&req.dst);
         if !src_p.exists() {
             return Err(FsError::new("S211", format!("src not found: {}", req.src)));
         }
@@ -816,7 +844,8 @@ impl FsBackend for HostFsBackend {
             (false, None) => req.files.clone(),
             (true, Some(root)) => {
                 self.validate_path(root)?;
-                let root_path = Path::new(root);
+                let root_anchored = self.lexical_operand(root);
+                let root_path = root_anchored.as_path();
                 let _ = root_path
                     .symlink_metadata()
                     .map_err(|e| FsError::from_io(root, e))?;
@@ -879,7 +908,8 @@ impl FsBackend for HostFsBackend {
         use std::os::unix::fs::PermissionsExt;
 
         for file in files {
-            let p = Path::new(&file);
+            let anchored = self.lexical_operand(&file);
+            let p = anchored.as_path();
             let original = match std::fs::read_to_string(p) {
                 Ok(s) => s,
                 Err(e) => {
@@ -975,7 +1005,11 @@ impl FsBackend for HostFsBackend {
                     if !parent.starts_with(root_canon) {
                         return Err(FsError::new(
                             "S215",
-                            format!("parent escapes host_root: {}", req.path),
+                            format!(
+                                "parent escapes host_root {}: {}",
+                                root_canon.display(),
+                                req.path
+                            ),
                         ));
                     }
                 }
@@ -1159,6 +1193,210 @@ mod tests {
         let h = stub_backend(HostFsConfig::default());
         let err = h.validate_path("relative/path").unwrap_err();
         assert_eq!(err.code, "S210");
+    }
+
+    #[test]
+    fn relative_path_resolves_under_host_root() {
+        // Regression: agents commonly probe with `.` or bare names; under a
+        // jail there is exactly one sensible base, so resolve instead of
+        // erroring with S210.
+        let root = tmp();
+        fs::create_dir(root.join("sub")).unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let dot = h.validate_path(".").unwrap();
+        assert_eq!(dot, root.canonicalize().unwrap());
+        let sub = h.validate_path("sub").unwrap();
+        assert_eq!(sub, root.join("sub").canonicalize().unwrap());
+    }
+
+    #[test]
+    fn relative_dotdot_cannot_escape_host_root() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let err = h.validate_path("../../etc/passwd").unwrap_err();
+        assert_eq!(err.code, "S215");
+    }
+
+    #[test]
+    fn empty_path_rejected_even_under_host_root() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let err = h.validate_path("").unwrap_err();
+        assert_eq!(err.code, "S210");
+    }
+
+    #[test]
+    fn escape_error_names_the_host_root() {
+        // Regression: "path escapes host_root: <path>" gave the caller no way
+        // to recover — the agent burned turns guessing. The message must name
+        // the jail root.
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let err = h.validate_path("/etc").unwrap_err();
+        assert_eq!(err.code, "S215");
+        let root_canon = root.canonicalize().unwrap();
+        assert!(
+            err.message.contains(&root_canon.display().to_string()),
+            "S215 message must name host_root, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn empty_path_rejected_without_host_root() {
+        let h = stub_backend(HostFsConfig::default());
+        let err = h.validate_path("").unwrap_err();
+        assert_eq!(err.code, "S210");
+    }
+
+    #[tokio::test]
+    async fn rm_relative_path_operates_on_jail_file_not_cwd() {
+        // Regression: rm validated host_root/<rel> but removed <cwd>/<rel>
+        // (the operand was rebuilt from the raw request string). The operand
+        // must be the SAME jail-anchored path validate_path saw.
+        let root = tmp();
+        fs::write(root.join("victim.txt"), "x").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let res = b
+            .rm(crate::fs::RmArgs {
+                path: "victim.txt".into(),
+                recursive: false,
+            })
+            .await
+            .unwrap();
+        assert!(res.removed);
+        assert!(!root.join("victim.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn mv_relative_paths_operate_on_jail_files_not_cwd() {
+        let root = tmp();
+        fs::write(root.join("a.txt"), "content").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let res = b
+            .mv(crate::fs::MvArgs {
+                src: "a.txt".into(),
+                dst: "b.txt".into(),
+                overwrite: false,
+            })
+            .await
+            .unwrap();
+        assert!(res.moved);
+        assert!(!root.join("a.txt").exists());
+        assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "content");
+    }
+
+    #[tokio::test]
+    async fn chmod_relative_path_operates_on_jail_file_not_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp();
+        fs::write(root.join("f.txt"), "x").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let res = b
+            .chmod(crate::fs::ChmodArgs {
+                path: "f.txt".into(),
+                mode: "0600".into(),
+                uid: None,
+                gid: None,
+                recursive: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.updated, 1);
+        let mode = fs::metadata(root.join("f.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn sed_relative_file_edits_jail_file_not_cwd() {
+        let root = tmp();
+        fs::write(root.join("s.txt"), "hello world\n").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let res = b
+            .sed(crate::fs::SedArgs {
+                files: vec!["s.txt".into()],
+                path: None,
+                recursive: true,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                pattern: "world".into(),
+                replacement: "jail".into(),
+                regex: false,
+                first_only: false,
+                ignore_case: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.total_replacements, 1);
+        assert_eq!(
+            fs::read_to_string(root.join("s.txt")).unwrap(),
+            "hello jail\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_parents_true_escaping_path_returns_s215_naming_root() {
+        // validate_path pre-empts the parents:true defense-in-depth branch,
+        // but the contract under test is the same either way: an escaping
+        // write with parents:true is S215 and the message names the root.
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let err = b
+            .write(crate::fs::WriteArgs {
+                path: "/etc/shell-escape/nested".into(),
+                mode: "0644".into(),
+                parents: true,
+                content: stub_ref(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S215");
+        let root_canon = root.canonicalize().unwrap();
+        assert!(
+            err.message.contains(&root_canon.display().to_string()),
+            "S215 message must name host_root, got: {}",
+            err.message
+        );
     }
 
     #[test]
