@@ -534,12 +534,12 @@ describe('dispatchWithHook returns DispatchResult', () => {
     );
   });
 
-  it('attaches a "did you mean worker::fn" hint when function_id is a canonical skill path', async () => {
-    // Observed in QA against google/gemma-4-e4b: model saw
-    // `sandbox/skills/sandbox/create` in directory::skills::list,
-    // assumed it was callable, retried 3× on `function_not_found`.
-    // The hint must propose the canonical worker::fn form so the
-    // recovery loop collapses to one turn.
+  it('attaches a "did you mean worker::fn" hint when function_id is a slash path', async () => {
+    // Observed in QA against google/gemma-4-e4b: model invented the
+    // slash path `sandbox/skills/sandbox/create`, assumed it was
+    // callable, retried 3× on `function_not_found`. The hint must
+    // propose the canonical worker::fn form so the recovery loop
+    // collapses to one turn.
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
@@ -555,10 +555,10 @@ describe('dispatchWithHook returns DispatchResult', () => {
     expect(details.error).toBe('function_not_found');
     expect(details.function).toBe('sandbox/skills/sandbox/create');
     expect(details.hint).toMatch(/Did you mean `sandbox::create`\?/);
-    expect(details.hint).toMatch(/Skill ids are NOT function ids/);
+    expect(details.hint).toMatch(/Slash-separated paths are NOT function ids/);
   });
 
-  it('attaches the generic skill-id hint when function_id has slashes but no clean rewrite', async () => {
+  it('attaches the generic slash-path hint when function_id has slashes but no clean rewrite', async () => {
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
@@ -574,10 +574,10 @@ describe('dispatchWithHook returns DispatchResult', () => {
     // worker/skills/worker/fn shape and don't trip the weaker
     // two-segment rewrite either.
     expect(details.hint).not.toMatch(/Did you mean/);
-    expect(details.hint).toMatch(/Skill ids are NOT function ids/);
+    expect(details.hint).toMatch(/Slash-separated paths are NOT function ids/);
   });
 
-  it('falls back to the generic skill-load hint when function_id contains no slash', async () => {
+  it('falls back to the engine discovery hint when function_id contains no slash', async () => {
     vi.spyOn(hookModule, 'consultBefore').mockResolvedValue({ kind: 'allow' });
     const iii = {
       trigger: vi.fn().mockRejectedValue({ code: 'function_not_found' }),
@@ -590,7 +590,7 @@ describe('dispatchWithHook returns DispatchResult', () => {
     if (out.kind !== 'result') throw new Error('expected result kind');
     const details = out.result.details as Record<string, unknown>;
     expect(details.hint).toBe(
-      'load the relevant skill via directory::skills::get, or check the function id',
+      'check the function id with engine::functions::list { search: "<name>" }',
     );
   });
 });
@@ -603,8 +603,8 @@ describe('functionNotFoundHint', () => {
   });
 
   it('handles nested function ids: <w>/skills/<w>/<a>/<b> → <w>::<a>::<b>', () => {
-    expect(functionNotFoundHint('directory/skills/directory/skills/get')).toMatch(
-      /Did you mean `directory::skills::get`\?/,
+    expect(functionNotFoundHint('queue/skills/queue/jobs/get')).toMatch(
+      /Did you mean `queue::jobs::get`\?/,
     );
   });
 
@@ -612,16 +612,15 @@ describe('functionNotFoundHint', () => {
     expect(functionNotFoundHint('sandbox/create')).toMatch(/Did you mean `sandbox::create`\?/);
   });
 
-  it('does not rewrite <w>/index (would shadow the bare-name alias)', () => {
-    // `sandbox/index` is a legitimate skill id (the bare-name alias
-    // resolved by directory::skills::get); rewriting to `sandbox::index`
-    // would be wrong.
+  it('does not rewrite <w>/index (no reliable worker::fn reading)', () => {
+    // `<w>/index` has no trustworthy function-id rewrite; suggesting
+    // `sandbox::index` would be wrong more often than right.
     expect(functionNotFoundHint('sandbox/index')).not.toMatch(/Did you mean/);
   });
 
-  it('returns the generic skill-load hint for slash-free ids', () => {
+  it('returns the engine discovery hint for slash-free ids', () => {
     expect(functionNotFoundHint('misspelled')).toBe(
-      'load the relevant skill via directory::skills::get, or check the function id',
+      'check the function id with engine::functions::list { search: "<name>" }',
     );
   });
 
@@ -630,7 +629,7 @@ describe('functionNotFoundHint', () => {
     const cases = [
       'sandbox/skills/sandbox/create',
       'sandbox/create',
-      'directory/skills/directory/engine/functions/list',
+      'queue/skills/queue/engine/functions/list',
     ];
     for (const c of cases) {
       const hint = functionNotFoundHint(c);

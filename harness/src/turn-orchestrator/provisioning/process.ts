@@ -1,16 +1,14 @@
 /**
- * Load run request, fetch skills, build the provisioned RunRequest, and register the FSM step.
+ * Load run request, build the provisioned RunRequest, and register the FSM step.
  */
 
 import type { ISdk } from '../../runtime/iii.js';
 import { agentTriggerTool } from '../agent-trigger.js';
-import type { TurnOrchestratorConfig } from '../config.js';
 import { runTransition } from '../run-transition.js';
 import type { RunRequest } from '../run-request.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
 import { buildSystemPrompt } from '../system-prompt.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
-import { loadDefaultSkillBodies } from './load-skills.js';
 import { createProvisioningPorts, type ProvisioningPorts } from './ports.js';
 
 export type ProvisioningOutcome = {
@@ -25,12 +23,12 @@ export async function processProvisioning(
   const request = await ports.loadRunRequest(rec.session_id);
 
   const override = request.system_prompt.length > 0 ? request.system_prompt : null;
-
-  const [skillsIndex, bodies] = await Promise.all([
-    ports.fetchSkillsIndex(),
-    loadDefaultSkillBodies(ports, ports.defaultSkillUris),
-  ]);
-  const prompt = buildSystemPrompt(bodies, { override, mode: request.mode, skillsIndex });
+  const prompt = buildSystemPrompt({
+    override,
+    mode: request.mode,
+    provider: request.provider,
+    model: request.model,
+  });
 
   return {
     kind: 'ready',
@@ -59,26 +57,17 @@ export async function runProvisioning(
   await applyProvisioningOutcome(ports, rec, outcome);
 }
 
-export async function handleProvisioning(
-  iii: ISdk,
-  cfg: TurnOrchestratorConfig,
-  rec: TurnStateRecord,
-): Promise<void> {
-  const ports = createProvisioningPorts(iii, cfg);
+export async function handleProvisioning(iii: ISdk, rec: TurnStateRecord): Promise<void> {
+  const ports = createProvisioningPorts(iii);
   await runProvisioning(ports, rec);
 }
 
-export function register(iii: ISdk, cfg: TurnOrchestratorConfig): void {
+export function register(iii: ISdk): void {
   iii.registerFunction(
     'turn::provisioning',
     async (payload: TurnStepPayload) => {
       const parsed = TurnStepPayloadSchema.parse(payload);
-      return runTransition(
-        iii,
-        'provisioning',
-        (i, rec) => handleProvisioning(i, cfg, rec),
-        parsed,
-      );
+      return runTransition(iii, 'provisioning', (i, rec) => handleProvisioning(i, rec), parsed);
     },
     {
       description:

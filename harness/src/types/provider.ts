@@ -62,7 +62,7 @@ export const ProviderStreamOutputSchema = z.object({
 });
 export type ProviderStreamOutput = z.infer<typeof ProviderStreamOutputSchema>;
 
-/** Auto-derived JSON schemas, exposed via `directory::engine::functions::info`. */
+/** Auto-derived JSON schemas, exposed via `engine::functions::info`. */
 export const ProviderStreamInputJsonSchema = zodToJsonSchema(ProviderStreamInputSchema, {
   name: 'ProviderStreamInput',
 });

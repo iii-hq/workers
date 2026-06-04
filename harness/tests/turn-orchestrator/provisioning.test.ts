@@ -1,68 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { TurnOrchestratorConfig } from '../../src/turn-orchestrator/config.js';
 import { defaultRunRequest, installMockTurnStore } from './_helpers/mockTurnStore.js';
 import { type TurnStateRecord, newRecord } from '../../src/turn-orchestrator/state.js';
 import { TurnStepPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
-import { parseDirectoryBody } from '../../src/turn-orchestrator/provisioning/ports.js';
 import { handleProvisioning, register } from '../../src/turn-orchestrator/provisioning/process.js';
 
-type TriggerCall = { function_id: string; payload: unknown; timeoutMs?: number };
-
-function fakeIii(responses: Record<string, unknown> = {}): { iii: ISdk; calls: TriggerCall[] } {
-  const calls: TriggerCall[] = [];
-  const iii = {
-    trigger: async <T, R>(req: {
-      function_id: string;
-      payload: T;
-      timeoutMs?: number;
-    }): Promise<R> => {
-      calls.push({
-        function_id: req.function_id,
-        payload: req.payload,
-        timeoutMs: req.timeoutMs,
-      });
-      return (responses[req.function_id] ?? null) as R;
-    },
+function fakeIii(): ISdk {
+  return {
+    trigger: async () => null,
   } as unknown as ISdk;
-  return { iii, calls };
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('parseDirectoryBody', () => {
-  it('accepts bare string and wrapped body responses', () => {
-    expect(parseDirectoryBody('raw')).toBe('raw');
-    expect(parseDirectoryBody({ body: 'wrapped' })).toBe('wrapped');
-  });
-
-  it('rejects empty wrapped body and non-string shapes', () => {
-    expect(parseDirectoryBody({ body: '' })).toBe('');
-    expect(parseDirectoryBody({ body: 1 })).toBeNull();
-    expect(parseDirectoryBody(null)).toBeNull();
-  });
-});
-
 describe('handleProvisioning', () => {
   it('materializes schemas, persists built prompt, and advances to assistant_streaming', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    const { iii, calls } = fakeIii({
-      'directory::skills::index': { body: 'INDEX' },
-      'directory::skills::get': { body: 'SKILL' },
-    });
-    const cfg = { system_default_skills: ['iii://iii-directory/index'] };
+    const iii = fakeIii();
 
     const store = installMockTurnStore({
       loadRunRequest: vi.fn(async () => ({
         ...defaultRunRequest,
-        mode: 'agent',
+        mode: 'agent' as const,
       })),
     });
     const saveRunRequest = store.saveRunRequest;
 
-    await handleProvisioning(iii, cfg, rec);
+    await handleProvisioning(iii, rec);
 
     expect(rec.state).toBe('assistant_streaming');
     expect(saveRunRequest).toHaveBeenCalledWith(
@@ -74,14 +40,11 @@ describe('handleProvisioning', () => {
         function_schemas: [expect.objectContaining({ name: 'agent_trigger' })],
       }),
     );
-    expect(calls.some((c) => c.function_id === 'directory::skills::index')).toBe(true);
-    expect(calls.some((c) => c.function_id === 'directory::skills::get')).toBe(true);
   });
 
   it('preserves a non-empty caller override verbatim', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    const { iii } = fakeIii();
-    const cfg = { system_default_skills: [] as string[] };
+    const iii = fakeIii();
 
     const store = installMockTurnStore({
       loadRunRequest: vi.fn(async () => ({
@@ -92,7 +55,7 @@ describe('handleProvisioning', () => {
     });
     const saveRunRequest = store.saveRunRequest;
 
-    await handleProvisioning(iii, cfg, rec);
+    await handleProvisioning(iii, rec);
 
     expect(saveRunRequest).toHaveBeenCalledWith(
       's1',
@@ -100,10 +63,9 @@ describe('handleProvisioning', () => {
     );
   });
 
-  it('continues when directory fetches fail', async () => {
+  it('builds the canonical preamble when no override or mode is set', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
-    const { iii } = fakeIii();
-    const cfg = { system_default_skills: ['iii://missing'] };
+    const iii = fakeIii();
 
     const store = installMockTurnStore({
       loadRunRequest: vi.fn(async () => ({
@@ -115,7 +77,7 @@ describe('handleProvisioning', () => {
     });
     const saveRunRequest = store.saveRunRequest;
 
-    await handleProvisioning(iii, cfg, rec);
+    await handleProvisioning(iii, rec);
 
     expect(rec.state).toBe('assistant_streaming');
     expect(saveRunRequest).toHaveBeenCalledWith(
@@ -134,8 +96,6 @@ describe('TurnStepPayloadSchema', () => {
 });
 
 describe('register', () => {
-  const cfg: TurnOrchestratorConfig = { system_default_skills: [] };
-
   type Handler = (payload: unknown) => Promise<unknown>;
 
   function captureHandler(): { iii: ISdk; getHandler: () => Handler; getId: () => string } {
@@ -159,7 +119,7 @@ describe('register', () => {
     };
   }
 
-  it('registers turn::provisioning, threads cfg into the runner, and returns metadata', async () => {
+  it('registers turn::provisioning, runs the transition, and returns metadata', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'provisioning' };
     const store = installMockTurnStore({
       loadRecord: vi.fn(async () => rec),
@@ -174,13 +134,13 @@ describe('register', () => {
     const loadRunRequest = store.loadRunRequest;
 
     const { iii, getHandler, getId } = captureHandler();
-    register(iii, cfg);
+    register(iii);
     expect(getId()).toBe('turn::provisioning');
 
     const result = await getHandler()({ session_id: 's1' });
 
-    // cfg flows through to handleProvisioning (which reads the run request),
-    // and the runner threads the pre-mutation snapshot into saveRecord.
+    // The runner reads the run request and threads the pre-mutation snapshot
+    // into saveRecord.
     expect(loadRunRequest).toHaveBeenCalledWith('s1');
     expect(saveRecord).toHaveBeenCalledWith(
       rec,
@@ -195,7 +155,7 @@ describe('register', () => {
 
   it('rejects payloads missing session_id', async () => {
     const { iii, getHandler } = captureHandler();
-    register(iii, cfg);
+    register(iii);
     await expect(getHandler()({})).rejects.toThrow();
   });
 });
