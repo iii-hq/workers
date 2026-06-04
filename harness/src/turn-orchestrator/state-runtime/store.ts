@@ -15,6 +15,13 @@ import { toView, type TurnStateView } from '../schemas.js';
 import { mirrorMessagesToSessionTree } from '../session-tree-mirror.js';
 import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
 
+/**
+ * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
+ * defines a `turn-step` FIFO queue (session_id grouping, max_retries: 5,
+ * concurrency: 1) that is currently ORPHANED — nothing enqueues to it.
+ * Switching to it changes scheduling semantics for every step (per-session
+ * ordering, retry bound) and is a deliberate follow-up, not a drive-by rename.
+ */
 export const TURN_STEP_QUEUE = 'default';
 
 const NON_STEPABLE_STATES = new Set<TurnState>(['stopped', 'failed', 'function_awaiting_approval']);
