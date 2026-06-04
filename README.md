@@ -18,10 +18,10 @@ Each worker ships an agent skill under `<worker>/skills/`. Install them with the
 npx skills add iii-hq/workers --list
 
 # Install one worker's skill
-npx skills add iii-hq/workers --skill email
+npx skills add iii-hq/workers --skill database
 
 # Install several
-npx skills add iii-hq/workers --skill email,coder,shell
+npx skills add iii-hq/workers --skill database,coder,shell
 
 # Install all worker skills at once
 npx skills add iii-hq/workers --all
