@@ -68,6 +68,9 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   transaction.
 - `database::rollbackTransaction` — roll back and finalize an interactive
   transaction.
+- `database::listDatabases` — list every configured database with its
+  driver, credential-redacted connection URL, pool settings, and TLS mode.
+  Config details only; no health checks or live pool statistics.
 
 Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no

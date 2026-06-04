@@ -79,11 +79,16 @@ pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, St
     Ok(pools)
 }
 
-/// Replace in-memory pools with freshly built ones from `cfg`.
 pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), String> {
     let new_pools = build_pools(&cfg).await?;
-    let mut guard = state.pools.write().await;
-    *guard = new_pools;
+    // Swap pools and the config snapshot inside one critical section (pools
+    // lock first, then config) so a concurrent reader never observes new
+    // pools paired with the old config or vice-versa. A failed build above
+    // leaves both untouched.
+    let mut pools_guard = state.pools.write().await;
+    let mut config_guard = state.config.write().await;
+    *pools_guard = new_pools;
+    *config_guard = cfg;
     Ok(())
 }
 

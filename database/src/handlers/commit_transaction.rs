@@ -157,6 +157,9 @@ mod tests {
         pools.insert("primary".to_string(), crate::pool::Pool::Sqlite(pool));
         let st = crate::handlers::AppState {
             pools: std::sync::Arc::new(tokio::sync::RwLock::new(pools)),
+            config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::config::WorkerConfig::default(),
+            )),
             handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_observability::Logger::new(),

@@ -175,6 +175,7 @@ const { rows } = await iii.trigger({
 | `database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
 | `database::commitTransaction` | Commit and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 | `database::rollbackTransaction` | Rollback and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
+| `database::listDatabases` | List configured databases. Returns `{ databases, count }`; each entry has `name`, `driver`, credential-redacted `url`, `pool` settings, and `tls` (`mode`, `ca_cert_present`, `trust_native`). Config only — no health checks or live pool stats. |
 
 ## Triggers
 

@@ -2,8 +2,10 @@
 //! function handler end-to-end against an in-memory SQLite database.
 
 use database::config::WorkerConfig;
+use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::execute::ExecuteReq;
+use database::handlers::list_databases::{self, ListDatabasesReq};
 use database::handlers::prepare::PrepareReq;
 use database::handlers::query::QueryReq;
 use database::handlers::run_statement::RunReq;
@@ -27,6 +29,7 @@ async fn build_state() -> AppState {
     }
     AppState {
         pools: Arc::new(RwLock::new(pools)),
+        config: Arc::new(RwLock::new(cfg)),
         handles: Arc::new(HandleRegistry::new()),
         transactions: TxRegistry::new(),
         log: Logger::new(),
@@ -140,6 +143,43 @@ async fn end_to_end_query_execute_prepare_run_transaction() {
     .unwrap();
     assert_eq!(r.rows[0]["n"], 11);
     assert_eq!(r.rows[1]["n"], 21);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_databases_reports_configured_primary() {
+    // Arrange
+    let st = build_state().await;
+
+    // Act
+    let resp = list_databases::handle(&st, ListDatabasesReq::default())
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(resp.count, 1);
+    assert_eq!(resp.databases[0].name, "primary");
+    assert_eq!(resp.databases[0].driver, "sqlite");
+    assert_eq!(resp.databases[0].url, "sqlite::memory:");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_config_updates_list_snapshot() {
+    // Arrange
+    let st = build_state().await;
+    let new_yaml =
+        "databases:\n  first:\n    url: \"sqlite::memory:\"\n  second:\n    url: \"sqlite::memory:\"\n";
+    let new_cfg = WorkerConfig::from_yaml(new_yaml).unwrap();
+
+    // Act
+    configuration::apply_config(&st, new_cfg).await.unwrap();
+    let resp = list_databases::handle(&st, ListDatabasesReq::default())
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(resp.count, 2);
+    let names: Vec<&str> = resp.databases.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["first", "second"]);
 }
 
 #[test]

@@ -134,6 +134,7 @@ pub(crate) mod tests {
         pools.insert("primary".to_string(), Pool::Sqlite(pool));
         AppState {
             pools: Arc::new(RwLock::new(pools)),
+            config: Arc::new(RwLock::new(crate::config::WorkerConfig::default())),
             handles: Arc::new(HandleRegistry::new()),
             transactions: TxRegistry::new(),
             log: Logger::new(),
