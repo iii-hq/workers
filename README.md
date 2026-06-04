@@ -8,6 +8,32 @@ useful.
 Workers are installed via `iii worker add <name>`, which resolves the matching
 asset for the host from the workers registry API.
 
+## Skills
+
+Each worker ships an agent skill under `<worker>/skills/`. Install them with the
+`skills` CLI (works with Claude Code, Cursor, and 30+ other agents).
+
+```bash
+# List every worker skill in this repo
+npx skills add iii-hq/workers --list
+
+# Install one worker's skill
+npx skills add iii-hq/workers --skill email
+
+# Install several
+npx skills add iii-hq/workers --skill email,coder,shell
+
+# Install all worker skills at once
+npx skills add iii-hq/workers --all
+```
+
+For the iii engine's top-level skills (mental model, SDKs, config, patterns),
+see [`iii-hq/iii`](https://github.com/iii-hq/iii):
+
+```bash
+npx skills add iii-hq/iii --all
+```
+
 ## Modules
 
 | Worker | Kind | Summary |

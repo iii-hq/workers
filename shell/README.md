@@ -15,6 +15,21 @@ iii worker add iii-sandbox
 iii worker add iii-directory
 ```
 
+## Skills
+
+Install the `shell` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/workers --skill shell
+```
+
+Browse or install every worker skill at once:
+
+```bash
+npx skills add iii-hq/workers --list
+npx skills add iii-hq/workers --all
+```
+
 ## Configure
 
 Settings load from a YAML file passed with `--config <path>` (default `./config.yaml`). The worker refuses to start unless `fs.host_root` is set, or `fs.allow_unjailed: true` is explicitly opted in, because an unset root exposes the whole host filesystem behind only the advisory denylist.
