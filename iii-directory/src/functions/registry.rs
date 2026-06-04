@@ -1,14 +1,15 @@
 //! `directory::registry::*` — HTTP proxy over
 //! `https://api.workers.iii.dev`.
 //!
-//! Two functions, mirroring `directory::engine::workers::*` so callers
-//! learn one shape:
+//! Two functions, mirroring the engine's `engine::workers::*` surface
+//! so callers learn one shape:
 //!
 //!   * `directory::registry::workers::list`  — list workers in the
 //!     public registry, filterable by `search` and paginated via
-//!     opaque `cursor`. Same row envelope (`Worker`) as
-//!     [`crate::functions::directory::Worker`] for the shared core
-//!     fields (`name`, `description`, `version`).
+//!     opaque `cursor`. Row envelope (`Worker`) shares its core fields
+//!     (`name`, `description`, `version`) with the engine's
+//!     `engine::workers::list` rows so callers can pivot between local
+//!     and registry surfaces without re-learning the shape.
 //!   * `directory::registry::workers::info`  — full registry metadata
 //!     for one worker. Wraps the registry-side fields in a top-level
 //!     `worker` envelope (same shape as the list rows), with `readme`
@@ -41,15 +42,31 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::SkillsConfig;
+use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
 use crate::sources::build_http_client;
+use crate::sources::registry::validate_worker_name;
+
+/// Recovery pointer attached to a registry worker miss / error.
+const REGISTRY_NEXT: &[NextAction] = &[NextAction::new(
+    "directory::registry::workers::list",
+    "browse worker names",
+)];
+
+/// Typed outcome of a single registry GET so the caller can turn a 404
+/// into a friendly `not_found` without leaking the internal URL, and
+/// any other failure into a clean `registry_error` (no raw URL/body).
+enum FetchError {
+    NotFound,
+    Other(String),
+}
 
 // ---------- public input/output shapes ----------
 
-/// `directory::registry::workers::list` input. Mirrors
-/// [`crate::functions::directory::WorkerListInput.search`] so callers
-/// can switch between local and registry surfaces without re-learning
-/// the API. Adds `cursor` for paging because the registry is paged
-/// (server-authored page size — the client cannot override it).
+/// `directory::registry::workers::list` input. Mirrors the engine's
+/// `engine::workers::list` search input so callers can switch between
+/// local and registry surfaces without re-learning the API. Adds
+/// `cursor` for paging because the registry is paged (server-authored
+/// page size — the client cannot override it).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct WorkerListInput {
     /// Optional free-text query. Forwarded to the registry as
@@ -89,8 +106,8 @@ pub struct Dependency {
 /// `directory::registry::workers::list` rows and the `worker` field of
 /// `directory::registry::workers::info`. Field names match the
 /// OpenAPI `WorkerListItem` schema. The shared core fields (`name`,
-/// `description`, `version`) line up with
-/// [`crate::functions::directory::Worker`] so callers learn one shape
+/// `description`, `version`) line up with the engine's
+/// `engine::workers::list` row shape so callers learn one envelope
 /// across local + registry surfaces.
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 pub struct Worker {
@@ -209,7 +226,8 @@ pub struct SkillsTree {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerInfoOutput {
     /// Same shape as `directory::registry::workers::list` rows (and
-    /// `directory::engine::workers::info.worker`).
+    /// the engine's `engine::workers::list` rows for the shared core
+    /// fields).
     pub worker: Worker,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readme: Option<String>,
@@ -295,7 +313,7 @@ fn register_worker_list(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
              cursor-based with a server-authored page size — pass back \
              `pagination.next_cursor` as `cursor` to fetch the next page. \
              Shares the core `name` / `description` / `version` fields with \
-             directory::engine::workers::list. Results are cached for \
+             the engine's `engine::workers::list`. Results are cached for \
              `registry_cache_ttl_ms` (default 60s).",
         ),
     );
@@ -317,8 +335,8 @@ fn register_worker_info(iii: &Arc<III>, cfg: &Arc<SkillsConfig>, cache: Registry
         })
         .description(
             "Fetch full registry metadata for one worker: worker envelope \
-             (same core fields as directory::engine::workers::info plus \
-             registry-only `type` / `config` / `supported_targets` / \
+             (same core fields as the engine's `engine::workers::list` row \
+             shape, plus registry-only `type` / `config` / `supported_targets` / \
              `total_downloads` / `dependencies` / `image`), readme, full \
              API reference (functions + triggers schemas), and the tree \
              of skill / prompt file paths fetched from the registry's \
@@ -363,10 +381,6 @@ impl WorkerInfoSpec {
     }
 }
 
-/// Validate the worker-info input shape. Mirrors
-/// `crate::functions::download::classify_input` (one of `version` /
-/// `tag`, default tag "latest"). Pure so it's unit-testable without
-/// the engine or HTTP.
 pub fn classify_worker_info_input(
     input: WorkerInfoInput,
 ) -> Result<(String, WorkerInfoSpec), String> {
@@ -375,6 +389,20 @@ pub fn classify_worker_info_input(
     if name.is_empty() {
         return Err("name must be non-empty".into());
     }
+    // The name flows straight into the registry URL path (`/w/{name}` and
+    // `/w/{name}/skills`). Validate it the same way the download path does so
+    // a crafted name can't traverse out of `/w/` (`../../admin`) or inject a
+    // query/fragment (`x?a=1`, `x#f`) against the registry host.
+    validate_worker_name(&name).map_err(|e| {
+        invalid_input_message(
+            "D311",
+            &e,
+            &[NextAction::new(
+                "directory::registry::workers::list",
+                "browse valid worker names",
+            )],
+        )
+    })?;
     let version = version
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -427,25 +455,22 @@ pub async fn worker_list(
         request = request.query(&query);
     }
 
-    let response = request.send().await.map_err(|e| {
-        format!(
-            "GET {url} (search={:?}, cursor={:?}): {e}",
-            search.as_deref().unwrap_or(""),
-            cursor.as_deref().unwrap_or("")
-        )
+    // Clean errors only — never leak the internal registry URL or the
+    // raw response body into a handler error an agent has to read.
+    let response = request.send().await.map_err(|_| {
+        "D320 registry_error: could not reach the registry. Next: retry shortly.".to_string()
     })?;
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "registry GET {url} returned HTTP {status}: {}",
-            body.trim()
+            "D320 registry_error: registry returned HTTP {}. Next: retry shortly.",
+            status.as_u16()
         ));
     }
     let body = response
         .json::<Value>()
         .await
-        .map_err(|e| format!("decode registry response: {e}"))?;
+        .map_err(|_| "D320 registry_error: could not decode the registry response.".to_string())?;
 
     let out = parse_worker_list_response(&body);
     cache.put(cache_key, &out).await;
@@ -474,7 +499,27 @@ pub async fn worker_info(
     // share the same query value.
     let detail_fut = fetch_json(&client, &detail_url, &version_value);
     let skills_fut = fetch_json(&client, &skills_url, &version_value);
-    let (detail_body, skills_body) = tokio::try_join!(detail_fut, skills_fut)?;
+    let (detail_body, skills_body) = match tokio::try_join!(detail_fut, skills_fut) {
+        Ok(bodies) => bodies,
+        // 404 on either leg → the worker (or this version) isn't published.
+        // Friendly, self-correcting, and leaks no internal URL.
+        Err(FetchError::NotFound) => {
+            let missed = format!("{name}@{version_value}");
+            return Err(not_found_message(
+                "D310",
+                "registry worker",
+                &missed,
+                &[],
+                REGISTRY_NEXT,
+            ));
+        }
+        Err(FetchError::Other(reason)) => {
+            return Err(format!(
+                "D320 registry_error: {reason}. Next: retry shortly, or call \
+                 directory::registry::workers::list to browse worker names."
+            ));
+        }
+    };
 
     let out = parse_worker_info_response(&name, &detail_body, &skills_body);
     cache.put(cache_key, &out).await;
@@ -482,31 +527,34 @@ pub async fn worker_info(
 }
 
 /// Issue `GET {url}?version={version}` and decode the body as JSON.
-/// Surfaces non-2xx statuses as `Err(String)` so the caller can fail
-/// the whole `worker_info` call.
+/// Maps a 404 to [`FetchError::NotFound`] and every other failure to
+/// [`FetchError::Other`] with a clean message (no internal URL, no raw
+/// response body) so handler errors never leak registry internals.
 async fn fetch_json(
     client: &reqwest::Client,
     url: &str,
     version_value: &str,
-) -> Result<Value, String> {
+) -> Result<Value, FetchError> {
     let response = client
         .get(url)
         .query(&[("version", version_value)])
         .send()
         .await
-        .map_err(|e| format!("GET {url} (version={version_value}): {e}"))?;
+        .map_err(|_| FetchError::Other("could not reach the registry".into()))?;
     let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(FetchError::NotFound);
+    }
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "registry GET {url} returned HTTP {status}: {}",
-            body.trim()
-        ));
+        return Err(FetchError::Other(format!(
+            "registry returned HTTP {}",
+            status.as_u16()
+        )));
     }
     response
         .json::<Value>()
         .await
-        .map_err(|e| format!("decode registry response from {url}: {e}"))
+        .map_err(|_| FetchError::Other("could not decode the registry response".into()))
 }
 
 // ---------- pure response parsers ----------
@@ -684,6 +732,48 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.contains("name"), "got: {err}");
+    }
+
+    #[test]
+    fn classify_rejects_name_that_would_traverse_or_inject_the_url() {
+        // The name flows into `/w/{name}`; a crafted name must be rejected
+        // before it can traverse out of `/w/` or inject a query/fragment.
+        for bad in [
+            "../../admin",
+            "shell/../../etc",
+            "x?admin=1",
+            "x#frag",
+            "a/b",
+            "Shell",
+            "shell name",
+            "sh`id`",
+        ] {
+            let err = classify_worker_info_input(WorkerInfoInput {
+                name: bad.into(),
+                version: None,
+                tag: None,
+            })
+            .unwrap_err();
+            assert!(
+                err.contains("D311") && err.contains("invalid_input"),
+                "name {bad:?} must be rejected with D311 invalid_input, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_accepts_real_hyphenated_worker_names() {
+        for good in ["shell", "iii-http", "iii-database", "coder", "x2"] {
+            assert!(
+                classify_worker_info_input(WorkerInfoInput {
+                    name: good.into(),
+                    version: None,
+                    tag: None,
+                })
+                .is_ok(),
+                "real worker name {good:?} must be accepted"
+            );
+        }
     }
 
     #[test]

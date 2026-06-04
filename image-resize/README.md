@@ -63,4 +63,4 @@ Benchmarks on a standard worker instance (2 vCPU, 512MB):
 
 ## License
 
-Apache 2.0
+Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).

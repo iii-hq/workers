@@ -42,7 +42,6 @@ export type Model = {
 };
 
 export const MODELS_SCOPE = 'models';
-export const MODELS_KEY_PREFIX = 'models:';
 
 export type Capability =
   | { type: 'thinking' }

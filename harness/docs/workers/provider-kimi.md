@@ -68,7 +68,7 @@ into the `writer_ref` field of the stream input.
 | [src/provider-kimi/config.ts](harness/src/provider-kimi/config.ts) | Loads the `provider_kimi` section. |
 | [src/provider-kimi/types.ts](harness/src/provider-kimi/types.ts) | `ChatCompletionsConfig` + `configFromCredential` builder. |
 | [src/provider-kimi/auth.ts](harness/src/provider-kimi/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
-| [src/provider-kimi/discover.ts](harness/src/provider-kimi/discover.ts) + [refresh-fn.ts](harness/src/provider-kimi/refresh-fn.ts) | `GET /v1/models` discovery → `models::register` (`provider::kimi::refresh_models`). |
+| [src/provider-kimi/discover.ts](harness/src/provider-kimi/discover.ts) + [refresh-fn.ts](harness/src/provider-kimi/refresh-fn.ts) | `GET /v1/models` discovery → `models::reconcile` (`provider::kimi::refresh_models`). |
 | [src/provider-kimi/stream.ts](harness/src/provider-kimi/stream.ts) | `streamKimi` async generator: builds the request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-kimi/sse.ts](harness/src/provider-kimi/sse.ts) | SSE parser. |
 | [src/provider-kimi/wire-messages.ts](harness/src/provider-kimi/wire-messages.ts) | `AgentMessage[]` → Kimi `messages` translation. |

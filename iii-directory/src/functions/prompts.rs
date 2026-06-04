@@ -21,9 +21,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::SkillsConfig;
-use crate::fs_source::{self, FsPrompt};
+use crate::fs_source;
+use crate::functions::error::{not_found_message, NextAction};
 
 const NAME_MAX_LEN: usize = 64;
+
+/// Recovery pointer attached to a `directory::prompts::get` miss.
+const PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
+    "directory::prompts::list",
+    "browse prompt names",
+)];
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 struct ListPromptsInput {}
@@ -68,7 +75,10 @@ fn register_list_prompts(iii: &Arc<III>, cfg: &Arc<SkillsConfig>) {
         RegisterFunction::new_async(move |_input: ListPromptsInput| {
             let cfg = cfg_inner.clone();
             async move {
-                let (prompts, _skipped) = fs_source::scan_prompts(&cfg.resolved_skills_folder());
+                let (prompts, _skipped) = fs_source::scan_prompts_merged(
+                    &cfg.resolved_skills_folder(),
+                    &cfg.local_skills_folder(),
+                );
                 let out: Vec<PromptEntry> = prompts
                     .into_iter()
                     .map(|p| {
@@ -112,8 +122,18 @@ pub async fn get_prompt(
 ) -> Result<PromptGetOutput, String> {
     let name = req.name;
     validate_name(&name)?;
-    let Some(fs) = find_fs_prompt(cfg, &name) else {
-        return Err(format!("Prompt not found: {name}"));
+    let (prompts, _skipped) =
+        fs_source::scan_prompts_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
+    let Some(fs) = prompts.iter().find(|p| p.name == name).cloned() else {
+        let names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
+        let candidates = rank_prompt_names(&names, &name, 3);
+        return Err(not_found_message(
+            "D210",
+            "prompt",
+            &name,
+            &candidates,
+            PROMPT_NOT_FOUND_NEXT,
+        ));
     };
     let body = fs_source::read_body(&fs.abs_path)?;
     let modified_at = fs_modified_at(&fs.abs_path);
@@ -123,6 +143,28 @@ pub async fn get_prompt(
         body,
         modified_at,
     })
+}
+
+/// Rank prompt names by closeness to a missed name (lowercased Levenshtein,
+/// reusing the skills ranker's distance fn), returning the closest `limit`.
+/// Empty when there are no prompts on disk.
+fn rank_prompt_names(names: &[String], missed: &str, limit: usize) -> Vec<String> {
+    let missed_lc = missed.to_lowercase();
+    let mut scored: Vec<(usize, &String)> = names
+        .iter()
+        .map(|n| {
+            (
+                crate::functions::skills::levenshtein(&missed_lc, &n.to_lowercase()),
+                n,
+            )
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, n)| n.clone())
+        .collect()
 }
 
 // ---------- validation ----------
@@ -149,11 +191,6 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 }
 
 // ---------- fs lookup ----------
-
-fn find_fs_prompt(cfg: &SkillsConfig, name: &str) -> Option<FsPrompt> {
-    let (prompts, _skipped) = fs_source::scan_prompts(&cfg.resolved_skills_folder());
-    prompts.into_iter().find(|p| p.name == name)
-}
 
 fn fs_modified_at(path: &std::path::Path) -> String {
     std::fs::metadata(path)

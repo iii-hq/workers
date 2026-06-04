@@ -11,7 +11,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
   exact semvers share that wire param. The user-facing input still
   accepts `tag:` for ergonomics — the worker rewrites it to `?version=`.
   The `worker` field shares its core fields (`name`, `description`,
-  `version`) with `directory::engine::workers::info.worker`.
+  `version`) with the engine's `engine::workers::list` row shape.
 
   Background:
     Given the iii engine is reachable

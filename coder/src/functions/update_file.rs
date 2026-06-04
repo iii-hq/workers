@@ -74,6 +74,12 @@ pub struct UpdateFileResult {
     pub applied: u32,
     /// Final line count after applying (only meaningful when `success`).
     pub new_line_count: u64,
+    /// UTF-8 body before ops (only on success, capped by `max_read_bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// UTF-8 body after ops (only on success, capped by `max_read_bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -102,11 +108,13 @@ fn update_one(
 ) -> UpdateFileResult {
     let path = spec.path.clone();
     match try_update_one(resolver, cfg, spec) {
-        Ok((applied, new_line_count)) => UpdateFileResult {
+        Ok((applied, new_line_count, before, after)) => UpdateFileResult {
             path,
             success: true,
             applied,
             new_line_count,
+            before,
+            after,
             error: None,
         },
         Err(e) => UpdateFileResult {
@@ -114,6 +122,8 @@ fn update_one(
             success: false,
             applied: 0,
             new_line_count: 0,
+            before: None,
+            after: None,
             error: Some(e.to_wire_string()),
         },
     }
@@ -123,7 +133,7 @@ fn try_update_one(
     resolver: &PathResolver,
     cfg: &CoderConfig,
     spec: UpdateFileSpec,
-) -> Result<(u32, u64), CoderError> {
+) -> Result<(u32, u64, Option<String>, Option<String>), CoderError> {
     let abs = resolver.require_writable(&spec.path)?;
     let md = std::fs::metadata(&abs)?;
     if !md.is_file() {
@@ -144,6 +154,7 @@ fn try_update_one(
     }
 
     let bytes = std::fs::read(&abs)?;
+    let before = utf8_snapshot(&bytes, cfg.max_read_bytes);
     let (mut lines, ending, has_trailing) = split_file(&bytes);
     let original_len = lines.len();
 
@@ -165,7 +176,21 @@ fn try_update_one(
         )));
     }
     atomic_write(&abs, &new_bytes)?;
-    Ok((spec.ops.len() as u32, final_lines.len() as u64))
+    let after = utf8_snapshot(&new_bytes, cfg.max_read_bytes);
+    Ok((
+        spec.ops.len() as u32,
+        final_lines.len() as u64,
+        before,
+        after,
+    ))
+}
+
+/// Include a UTF-8 snapshot in the wire response when the body fits `max_read_bytes`.
+fn utf8_snapshot(bytes: &[u8], max_bytes: u64) -> Option<String> {
+    if (bytes.len() as u64) > max_bytes {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
 fn is_line_op(op: &UpdateOp) -> bool {
@@ -851,6 +876,32 @@ mod handler_tests {
         .unwrap();
         assert!(out.results[0].success);
         assert_eq!(out.results[0].new_line_count, 2);
+        assert_eq!(out.results[0].before.as_deref(), Some("a=b\n"));
+        assert_eq!(out.results[0].after.as_deref(), Some("a=\nb\n"));
+    }
+
+    #[tokio::test]
+    async fn success_includes_utf8_before_and_after_snapshots() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("a.txt"), "old\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            UpdateFileInput {
+                files: vec![UpdateFileSpec {
+                    path: "a.txt".into(),
+                    ops: vec![UpdateOp::UpdateLines {
+                        from_line: 1,
+                        to_line: 1,
+                        content: "new".into(),
+                    }],
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.results[0].before.as_deref(), Some("old\n"));
+        assert_eq!(out.results[0].after.as_deref(), Some("new\n"));
     }
 
     #[tokio::test]

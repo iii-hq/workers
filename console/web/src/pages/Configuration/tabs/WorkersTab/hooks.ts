@@ -5,6 +5,9 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { getDefaultBackend } from '@/lib/backend'
+import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
 import {
   type ConfigurationSchemaView,
   getConfiguration,
@@ -47,6 +50,30 @@ export function useConfigurationsList() {
   })
 }
 
+/** Browser-local handler id bound to the `worker` lifecycle trigger. */
+const WORKER_REGISTRY_WATCH_FN = 'console::workers-config-watch'
+
+/**
+ * Keep the worker configuration list fresh when workers are added or removed
+ * out of band — e.g. `iii worker add harness` run in a terminal — purely off
+ * the engine's `worker` lifecycle trigger (its push channel). No polling.
+ * Each event re-pulls `configuration::list` so a freshly-installed worker's
+ * entry appears once it registers.
+ */
+export function useWorkerRegistryReactivity(): void {
+  const qc = useQueryClient()
+  const enabled = getDefaultBackend().id === 'real'
+
+  useWorkerLifecycle({
+    enabled,
+    fnId: WORKER_REGISTRY_WATCH_FN,
+    operations: ['add', 'remove'],
+    onEvent: () => {
+      qc.invalidateQueries({ queryKey: configurationKeys.list() })
+    },
+  })
+}
+
 export function useConfigurationSchema(id: string | null | undefined) {
   return useQuery<ConfigurationSchemaView>({
     queryKey: configurationKeys.schema(id ?? ''),
@@ -74,6 +101,7 @@ export function useSetConfiguration(id: string | null | undefined) {
     onSuccess: (_data, variables) => {
       const targetId = variables.id ?? id ?? ''
       if (targetId) {
+        notifyHarnessConfigSaved(targetId)
         qc.invalidateQueries({
           queryKey: configurationKeys.rawValue(targetId),
         })

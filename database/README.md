@@ -236,4 +236,4 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 
 ## License
 
-MIT.
+Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).

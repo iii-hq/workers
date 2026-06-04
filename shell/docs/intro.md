@@ -1,5 +1,0 @@
-Unix shell and filesystem worker on the iii bus. Every agent that needs to touch the OS (run a build, read a file, list a directory, call a CLI) goes through `shell::*` and `shell::fs::*`, so allowlists, timeouts, output caps, and a host-root jail live in one place. Both surfaces accept an optional `target` field that forwards the call into a live `iii-sandbox` microVM, so the same allowlist policy gates host and sandbox execution.
-
-<!-- llm-only:start -->
-Host-targeted `shell::exec` is not an isolation boundary. The denylist is a regex tripwire on `argv.join(" ")`. A caller running an allowlisted interpreter (`sh`, `node`, `python3`) can construct any forbidden token at runtime and bypass it. For untrusted input, pass `target: { kind: "sandbox", sandbox_id }` so the call forwards into a microVM. Prefer `shell::fs::ls`, `shell::fs::stat`, and `shell::fs::grep` over `exec`-ing the same tools; the fs backends stay in-process, respect the jail, and return structured results.
-<!-- llm-only:end -->

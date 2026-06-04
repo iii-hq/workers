@@ -14,12 +14,21 @@ use serde::{Deserialize, Serialize};
 /// `registry_url:` in the config so self-hosted deployments can repoint.
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.workers.iii.dev";
 
-/// Default destination for downloaded skills. Resolved relative to the
-/// process current working directory.
-pub const DEFAULT_SKILLS_FOLDER: &str = "./skills";
+/// Default destination for downloaded (global) skills. Uses the `~`
+/// prefix so it expands to the user's home directory at runtime via
+/// `dirs::home_dir()`.
+pub const DEFAULT_SKILLS_FOLDER: &str = "~/.iii/skills";
+
+/// Default destination for local (project-scoped) skill overrides.
+/// Resolved relative to the process current working directory.
+pub const DEFAULT_LOCAL_SKILLS_FOLDER: &str = "./.iii/skills";
 
 fn default_skills_folder() -> String {
     DEFAULT_SKILLS_FOLDER.to_string()
+}
+
+fn default_local_skills_folder() -> String {
+    DEFAULT_LOCAL_SKILLS_FOLDER.to_string()
 }
 
 fn default_registry_url() -> String {
@@ -34,15 +43,32 @@ fn default_registry_cache_ttl_ms() -> u64 {
     60_000
 }
 
+fn default_filter_unregistered() -> bool {
+    true
+}
+
+fn default_auto_download() -> bool {
+    true
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
     /// `directory::skills::get`, `directory::prompts::*`) and every
-    /// write from `directory::skills::download`. Relative paths are
-    /// resolved against the process current working directory; absolute paths
-    /// are used as-is.
+    /// write from `directory::skills::download`. Supports three forms:
+    ///
+    /// - Absolute path — used as-is.
+    /// - `~`-prefixed — expands leading `~` via `dirs::home_dir()`.
+    /// - Relative — resolved against the process current working directory.
     #[serde(default = "default_skills_folder")]
     pub skills_folder: String,
+
+    /// Folder for local (project-scoped) skill overrides. A namespace
+    /// directory present under this root shadows the same namespace in
+    /// the global `skills_folder` entirely (whole-namespace override).
+    /// Supports the same three resolution forms as `skills_folder`.
+    #[serde(default = "default_local_skills_folder")]
+    pub local_skills_folder: String,
 
     /// Workers registry base URL — used by `directory::skills::download`
     /// and the `directory::registry::*` proxies when a `worker=` source
@@ -63,31 +89,83 @@ pub struct SkillsConfig {
     /// caching.
     #[serde(default = "default_registry_cache_ttl_ms")]
     pub registry_cache_ttl_ms: u64,
+
+    /// When `true` (default), read functions hide skills whose top
+    /// namespace segment doesn't match a registered (installed) worker
+    /// name. Orphan namespaces are hidden. When `false`, all scanned
+    /// skills are returned regardless of installed workers.
+    #[serde(default = "default_filter_unregistered")]
+    pub filter_unregistered: bool,
+
+    /// When `true` (default), the worker subscribes to `worker` trigger
+    /// events and runs a boot-time reconcile to auto-download skills
+    /// for installed workers that are missing from the global skills
+    /// folder.
+    #[serde(default = "default_auto_download")]
+    pub auto_download: bool,
 }
 
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
             skills_folder: default_skills_folder(),
+            local_skills_folder: default_local_skills_folder(),
             registry_url: default_registry_url(),
             download_timeout_ms: default_download_timeout_ms(),
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
+            filter_unregistered: default_filter_unregistered(),
+            auto_download: default_auto_download(),
+        }
+    }
+}
+
+/// Resolve a path string supporting three forms:
+///
+/// - `~`-prefixed: expand leading `~` via `dirs::home_dir()`.
+///   Falls back to CWD-relative if `home_dir()` is `None`.
+/// - Absolute: returned as-is.
+/// - Relative: resolved against the process current working directory.
+fn resolve_path(raw: &str) -> PathBuf {
+    if let Some(remainder) = raw.strip_prefix('~') {
+        let tail = remainder.strip_prefix('/').unwrap_or(remainder);
+        match dirs::home_dir() {
+            Some(home) => {
+                if tail.is_empty() {
+                    home
+                } else {
+                    home.join(tail)
+                }
+            }
+            None => {
+                tracing::warn!(
+                    path = %raw,
+                    "dirs::home_dir() returned None; treating '~' path as CWD-relative"
+                );
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                cwd.join(raw)
+            }
+        }
+    } else {
+        let candidate = Path::new(raw);
+        if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(candidate)
         }
     }
 }
 
 impl SkillsConfig {
-    /// Absolute path to the configured skills folder. Relative paths
-    /// are resolved against the process current working directory;
-    /// absolute paths are returned as-is.
+    /// Absolute path to the configured global skills folder.
     pub fn resolved_skills_folder(&self) -> PathBuf {
-        let candidate = Path::new(&self.skills_folder);
-        if candidate.is_absolute() {
-            return candidate.to_path_buf();
-        }
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(candidate)
+        resolve_path(&self.skills_folder)
+    }
+
+    /// Absolute path to the configured local skills folder.
+    pub fn local_skills_folder(&self) -> PathBuf {
+        resolve_path(&self.local_skills_folder)
     }
 
     /// Registry base URL with any trailing slash trimmed so callers can
@@ -111,9 +189,12 @@ mod tests {
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.skills_folder, DEFAULT_SKILLS_FOLDER);
+        assert_eq!(cfg.local_skills_folder, DEFAULT_LOCAL_SKILLS_FOLDER);
         assert_eq!(cfg.registry_url, DEFAULT_REGISTRY_URL);
         assert_eq!(cfg.download_timeout_ms, 60_000);
         assert_eq!(cfg.registry_cache_ttl_ms, 60_000);
+        assert!(cfg.filter_unregistered);
+        assert!(cfg.auto_download);
     }
 
     #[test]
@@ -121,6 +202,10 @@ mod tests {
         let from_empty: SkillsConfig = serde_yaml::from_str("{}").unwrap();
         let from_default = SkillsConfig::default();
         assert_eq!(from_empty.skills_folder, from_default.skills_folder);
+        assert_eq!(
+            from_empty.local_skills_folder,
+            from_default.local_skills_folder
+        );
         assert_eq!(from_empty.registry_url, from_default.registry_url);
         assert_eq!(
             from_empty.download_timeout_ms,
@@ -130,22 +215,33 @@ mod tests {
             from_empty.registry_cache_ttl_ms,
             from_default.registry_cache_ttl_ms
         );
+        assert_eq!(
+            from_empty.filter_unregistered,
+            from_default.filter_unregistered
+        );
+        assert_eq!(from_empty.auto_download, from_default.auto_download);
     }
 
     #[test]
     fn custom_yaml_overrides_each_field() {
         let yaml = "\
 skills_folder: ./my-skills
+local_skills_folder: ./local-skills
 registry_url: https://example.com/registry/
 download_timeout_ms: 30000
 registry_cache_ttl_ms: 5000
+filter_unregistered: false
+auto_download: false
 ";
         let cfg: SkillsConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.skills_folder, "./my-skills");
+        assert_eq!(cfg.local_skills_folder, "./local-skills");
         assert_eq!(cfg.registry_url, "https://example.com/registry/");
         assert_eq!(cfg.download_timeout_ms, 30_000);
         assert_eq!(cfg.registry_cache_ttl_ms, 5_000);
         assert_eq!(cfg.registry_base(), "https://example.com/registry");
+        assert!(!cfg.filter_unregistered);
+        assert!(!cfg.auto_download);
     }
 
     #[test]
@@ -171,6 +267,29 @@ registry_cache_ttl_ms: 5000
         };
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(cfg.resolved_skills_folder(), cwd.join("bar"));
+    }
+
+    #[test]
+    fn resolved_skills_folder_tilde_expands_home() {
+        let cfg = SkillsConfig {
+            skills_folder: "~/.iii/skills".into(),
+            ..SkillsConfig::default()
+        };
+        // dirs::home_dir() must return Some on CI and dev machines.
+        // If it doesn't, the warning fallback is exercised instead.
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(cfg.resolved_skills_folder(), home.join(".iii/skills"),);
+        }
+    }
+
+    #[test]
+    fn local_skills_folder_relative_resolves_against_cwd() {
+        let cfg = SkillsConfig {
+            local_skills_folder: "./.iii/skills".into(),
+            ..SkillsConfig::default()
+        };
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(cfg.local_skills_folder(), cwd.join(".iii/skills"));
     }
 
     #[test]

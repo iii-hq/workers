@@ -86,6 +86,86 @@ def _normalize_registry_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _worker_identity(worker: dict[str, Any]) -> str:
+    name = worker.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    worker_id = worker.get("id")
+    if isinstance(worker_id, str) and worker_id.strip():
+        return worker_id.strip()
+    return ""
+
+
+def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) -> set[str]:
+    if not baseline_workers_json:
+        return set()
+    return {
+        identity
+        for worker in _extract_array(baseline_workers_json, "workers")
+        if (identity := _worker_identity(worker))
+    }
+
+
+def _resolve_target_worker_names(
+    *,
+    workers: list[dict[str, Any]],
+    worker_name: str,
+    functions: list[dict[str, Any]],
+    baseline_workers_json: dict[str, Any] | None,
+) -> set[str]:
+    """Return engine worker names whose bus functions belong in the publish payload."""
+    baseline = _baseline_worker_identities(baseline_workers_json)
+    if baseline:
+        new_names = {
+            identity
+            for worker in workers
+            if (identity := _worker_identity(worker)) and identity not in baseline
+        }
+        if new_names:
+            return new_names
+
+    worker = _match_worker(workers, worker_name)
+    matched = _worker_identity(worker)
+
+    legacy_ids = worker.get("functions") or []
+    if isinstance(legacy_ids, list) and legacy_ids:
+        if matched:
+            return {matched}
+        raise ValueError(f"matched worker for {worker_name!r} has no identity")
+
+    names_with_functions = {
+        name.strip()
+        for fn in functions
+        if isinstance((name := fn.get("worker_name")), str) and name.strip()
+    }
+    if matched and matched in names_with_functions:
+        return {matched}
+
+    raise ValueError(
+        f"no functions found for worker {worker_name!r} "
+        f"(matched identity={matched!r}, workers_with_functions={sorted(names_with_functions)!r})"
+    )
+
+
+def _function_ids_for_workers(
+    functions: list[dict[str, Any]], worker_names: set[str]
+) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for fn in functions:
+        function_id = fn.get("function_id")
+        worker_name = fn.get("worker_name")
+        if not isinstance(function_id, str) or not function_id:
+            continue
+        if not isinstance(worker_name, str) or worker_name not in worker_names:
+            continue
+        if function_id in seen:
+            continue
+        seen.add(function_id)
+        ordered.append(function_id)
+    return ordered
+
+
 def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, Any]:
     by_name = [w for w in workers if w.get("name") == worker_name or w.get("id") == worker_name]
     if len(by_name) == 1:
@@ -135,18 +215,27 @@ def normalize_worker_interface(
     functions_json: dict[str, Any],
     trigger_types_json: dict[str, Any] | None = None,
     baseline_trigger_types_json: dict[str, Any] | None = None,
+    baseline_workers_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
-    worker = _match_worker(workers, worker_name)
+    all_functions = _extract_array(functions_json, "functions")
 
-    worker_function_ids = worker.get("functions") or []
-    if not isinstance(worker_function_ids, list):
-        raise ValueError("worker `functions` must be an array")
+    target_worker_names = _resolve_target_worker_names(
+        workers=workers,
+        worker_name=worker_name,
+        functions=all_functions,
+        baseline_workers_json=baseline_workers_json,
+    )
+
+    worker_function_ids = _function_ids_for_workers(all_functions, target_worker_names)
+    if not worker_function_ids:
+        legacy_worker = _match_worker(workers, worker_name)
+        legacy_ids = legacy_worker.get("functions") or []
+        if isinstance(legacy_ids, list) and legacy_ids:
+            worker_function_ids = [str(fid) for fid in legacy_ids if fid]
 
     functions_by_id = {
-        f.get("function_id"): f
-        for f in _extract_array(functions_json, "functions")
-        if f.get("function_id")
+        f.get("function_id"): f for f in all_functions if f.get("function_id")
     }
 
     missing_function_ids = [fid for fid in worker_function_ids if fid not in functions_by_id]
@@ -172,13 +261,13 @@ def normalize_worker_interface(
 
     baseline_ids = {
         tt["id"]
-        for tt in _extract_array(baseline_trigger_types_json or {}, "trigger_types")
+        for tt in _extract_array(baseline_trigger_types_json or {}, "triggers")
         if isinstance(tt.get("id"), str)
     }
 
     triggers = []
     if trigger_types_json:
-        for trigger_type in _extract_array(trigger_types_json, "trigger_types"):
+        for trigger_type in _extract_array(trigger_types_json, "triggers"):
             tt_id = trigger_type.get("id")
             if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
                 continue

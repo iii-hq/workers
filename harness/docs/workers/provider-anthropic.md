@@ -66,7 +66,7 @@ request (`harness::provider::resolve`). It also calls the SDK-provided
 | [src/provider-anthropic/config.ts](harness/src/provider-anthropic/config.ts) | Loads the `provider_anthropic` section. |
 | [src/provider-anthropic/types.ts](harness/src/provider-anthropic/types.ts) | `AnthropicConfig` + `configWithCredential` builder. |
 | [src/provider-anthropic/auth.ts](harness/src/provider-anthropic/auth.ts) | `buildConfig` (calls `harness::provider::resolve`). |
-| [src/provider-anthropic/discover.ts](harness/src/provider-anthropic/discover.ts) + [refresh-fn.ts](harness/src/provider-anthropic/refresh-fn.ts) | `GET /v1/models` discovery → `models::register` (`provider::anthropic::refresh_models`). |
+| [src/provider-anthropic/discover.ts](harness/src/provider-anthropic/discover.ts) + [refresh-fn.ts](harness/src/provider-anthropic/refresh-fn.ts) | `GET /v1/models` discovery → `models::reconcile` (`provider::anthropic::refresh_models`). |
 | [src/provider-anthropic/cache.ts](harness/src/provider-anthropic/cache.ts) | In-process credential / config cache. |
 | [src/provider-anthropic/stream.ts](harness/src/provider-anthropic/stream.ts) | `streamAnthropic` async generator: builds request body, fetches SSE, yields `AssistantMessageEvent`s. |
 | [src/provider-anthropic/sse.ts](harness/src/provider-anthropic/sse.ts) | SSE parser. |

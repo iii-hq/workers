@@ -6,8 +6,6 @@ export type TurnOrchestratorConfig = {
 
 export function loadOrchestratorConfig(cfg: Record<string, unknown>): TurnOrchestratorConfig {
   return {
-    system_default_skills: getStringArray(cfg, 'system_default_skills', [
-      'iii://iii-directory/index',
-    ]),
+    system_default_skills: getStringArray(cfg, 'system_default_skills', []),
   };
 }

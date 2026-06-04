@@ -1,7 +1,7 @@
 import type { FunctionEntry } from '@/lib/functions'
 import { getIiiClient } from '@/lib/iii-client'
 
-const FUNCTIONS_LIST_RPC = 'directory::engine::functions::list'
+const FUNCTIONS_LIST_RPC = 'engine::functions::list'
 
 let cache: { entries: FunctionEntry[]; fetchedAt: number } | null = null
 

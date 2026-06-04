@@ -1,0 +1,62 @@
+use async_trait::async_trait;
+use iii_sdk::{IIIError, TriggerConfig, TriggerHandler};
+use serde::Deserialize;
+use serde_json::json;
+use std::sync::Arc;
+
+use super::registry::TriggerRegistry;
+
+#[derive(Deserialize)]
+struct Config {
+    account: String,
+    #[serde(default = "default_folder")]
+    folder: String,
+    #[serde(default = "default_timeout")]
+    handler_timeout_ms: u64,
+}
+fn default_folder() -> String {
+    "INBOX".into()
+}
+fn default_timeout() -> u64 {
+    30_000
+}
+
+pub struct Handler {
+    pub registry: Arc<TriggerRegistry>,
+}
+
+#[async_trait]
+impl TriggerHandler for Handler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        let cfg: Config = serde_json::from_value(config.config.clone()).map_err(|e| {
+            IIIError::Handler(
+                json!({
+                    "code":"CONFIG_ERROR",
+                    "message":format!("email::new-mail config: {e}")
+                })
+                .to_string(),
+            )
+        })?;
+        self.registry.register(
+            cfg.account.clone(),
+            cfg.folder.clone(),
+            config.id.clone(),
+            config.function_id.clone(),
+            cfg.handler_timeout_ms,
+        );
+        tracing::info!(
+            instance = %config.id,
+            function = %config.function_id,
+            account = %cfg.account,
+            folder = %cfg.folder,
+            "email::new-mail trigger registered"
+        );
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        self.registry.unregister(&config.id);
+        tracing::info!(instance = %config.id, "email::new-mail trigger unregistered");
+        Ok(())
+    }
+}

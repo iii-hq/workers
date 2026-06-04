@@ -59,7 +59,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 
 The composer's `@`-mentions and the model picker pull from the engine in real time.
 
-- `directory::engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
+- `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
 - `models::list` — provider-grouped model catalog → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 
 ### Theming
@@ -207,4 +207,4 @@ cd web && pnpm typecheck && pnpm lint
 
 ## License
 
-Apache 2.0 — see [LICENSE](../LICENSE).
+Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).

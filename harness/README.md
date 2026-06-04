@@ -1,68 +1,67 @@
-# harness
+# The iii harness
 
-Node/TypeScript port of the iii harness stack. One package, one folder per
-worker, one feature per file. Each worker is independently runnable as
-`pnpm dev:<worker>` (development) or `iii-<worker>` (production binary).
+**The harness is not a layer on top of your backend. On iii, it is the backend.**
 
-The Rust workers `shell`, `iii-directory`, and the engine's `state::*`/
-`stream::*`/`iii::durable::*` primitives are NOT ported — they run
-alongside `harness` over the iii bus.
+Many setups keep the agent loop in one process and everything else (queues, HTTP, state, traces) in another. Tool calls cross that boundary; retries and traces rarely line up.
 
-## Workers
+On iii, agents are workers. Tools are functions. Handoffs use the same triggers and queues as the rest of the system.
 
-| Folder | Bus surface | Role |
-|---|---|---|
-| `src/harness/` | `ui::subscribe`/`unsubscribe`, `harness::fs::read_inline`, `policy::check_permissions`, `harness::provider::{register,resolve,list}` | Meta-worker; loads `iii-permissions.yaml`; spins up the sessions fan-out pump; owns the provider registry + the `harness` entry in the `configuration` worker (api keys, per-provider settings, permissions). |
-| `src/approval-gate/` | `approval::resolve` | Persists operator decisions to scope `approvals` (turn-orchestrator reacts via `turn::on_approval`); default mode seeded from `harness` config `permissions.default_mode`. |
-| `src/turn-orchestrator/` | `run::start`, `turn::{state}`, `turn::get_state` | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. |
-| `src/session/` | `session-tree::*` (11 fns), `session-inbox::*` (3 fns) | Branching session storage + per-session inbox queues. |
-| `src/llm-budget/` | `budget::*` (14 fns) | Workspace + agent LLM spend caps. |
-| `src/hook-fanout/` | `hook-fanout::publish_collect` | Generic publish-and-collect over a stream topic. |
-| `src/models-catalog/` | `models::list`, `models::get`, `models::supports`, `models::register` | Model catalog populated exclusively by provider discovery (`provider::<name>::refresh_models` -> `models::register`); no embedded seed. |
-| `src/provider-anthropic/` | `provider::anthropic::{stream,complete,refresh_models}` | Anthropic SSE → channel writer; self-declares to the harness registry; pulls `/v1/models` into the catalog. |
-| `src/provider-openai/` | `provider::openai::{stream,complete,refresh_models}` | OpenAI SSE → channel writer; self-declares + pulls `/v1/models`. |
-| `src/provider-kimi/` | `provider::kimi::{stream,complete,refresh_models}` | Kimi (Moonshot) SSE → channel writer; self-declares + pulls `/v1/models`. |
-| `src/provider-lmstudio/` | `provider::lmstudio::{stream,complete,refresh_models,load_model,unload_model}` | LM Studio (localhost); self-declares + discovers loaded models. |
-| `src/provider-llamacpp/` | `provider::llamacpp::{stream,complete,refresh_models}` | llama-server (localhost); self-declares + discovers the loaded model. |
-| `src/context-compaction/` | (none — pure side-car on `agent::events`) | Optional out-of-band session-history compactor. |
+This package is the production harness for that model: turn orchestration, approvals, sessions, providers, context compaction, and budgets, all as iii workers next to shell, storage, database, and whatever you add.
+
+Read [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend-mike-piccolo-2aocf/) by Mike Piccolo for the full argument.
+
+---
+
+## What you get
+
+**One trace.** Each hop is a `trigger()` on the bus. Trace IDs propagate across workers, languages, and queue steps. You debug one runtime, not separate logs aligned by timestamp.
+
+**Live discovery.** Workers register functions on connect; the engine keeps a catalog. Agents and the console see what the system can do today, including workers added without redeploying the orchestrator. Providers self-register; the model catalog fills from discovery, not a hardcoded seed.
+
+**Composition, not frameworks.** Thin vs thick harnesses map to how many functions you register and how you wire triggers. Fewer functions for a lean loop; approval rules and extra workers for more structure.
+
+**New capability, new worker.** When the harness needs something else (shell, database, coder, another provider), you add a worker, not a fork of the orchestrator. Published workers install from the [iii worker registry](https://workers.iii.dev) with `iii worker add <name>`; they register on the iii engine and show up in the live catalog.
+
+**Turns, approvals, budgets.** Seven-state durable turn FSM with queue-backed steps. Approval gate with YAML permissions, parallel tool batches, pending state across reload, fail-closed when policy is unreachable. Workspace and agent budget caps. Five provider workers behind one registry.
+
+**Context compaction.** Long sessions exceed model windows. The `context-compaction` worker compacts history as turns accumulate and backs the console `/compact` command.
+
+---
+
+## What ships here
+
+Fifteen workers in one TypeScript package, one folder per worker, one feature per file:
+
+| Concern | Workers |
+| --- | --- |
+| Orchestration | `turn-orchestrator` (durable turn FSM), `hook-fanout` |
+| Governance | `harness` (permissions, provider registry, UI fanout), `approval-gate` |
+| Sessions | `session` (branching session tree + inbox queues) |
+| Context | `context-compaction` (keeps long sessions inside the model window) |
+| Models | `models-catalog`, `provider-anthropic`, `provider-openai`, `provider-kimi`, `provider-lmstudio`, `provider-llamacpp` |
+| Cost | `llm-budget` |
+
+Rust workers (`shell`, `iii-directory`) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
+
+---
 
 ## Quickstart
 
-```bash
-pnpm install
-pnpm build              # compile to dist/
-# In separate terminals (or via your process manager):
-node dist/harness/main.js               --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/turn-orchestrator/main.js     --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/approval-gate/main.js         --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/session/main.js               --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/hook-fanout/main.js           --url ws://127.0.0.1:49134
-node dist/models-catalog/main.js        --url ws://127.0.0.1:49134
-node dist/provider-anthropic/main.js    --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/provider-openai/main.js       --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/provider-kimi/main.js         --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/provider-lmstudio/main.js     --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/provider-llamacpp/main.js     --url ws://127.0.0.1:49134 --config ./config.yaml
-node dist/llm-budget/main.js            --url ws://127.0.0.1:49134
-# Optional side-car:
-node dist/context-compaction/main.js    --url ws://127.0.0.1:49134
-```
+1. Install iii: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
+2. Verify the install: `iii --version`
+3. Add the harness and console workers: `iii worker add harness console`
+4. Start the engine: `iii --config config.yaml`
+5. Open the [console](https://workers.iii.dev/workers/console) at `http://127.0.0.1:3113`
 
-For development, replace `node dist/<worker>/main.js` with `pnpm dev:<worker>`.
+Chat, approve/deny, model picker, and trace explorer ship in one binary ([console](https://workers.iii.dev/workers/console)).
 
-## Configuration
+Tools, orchestration, governance, and observability use the same worker, trigger, and function model as the rest of iii.
 
-All workers honour `--url` / `III_URL` for the engine WebSocket and
-`--config` for the YAML config file (default `./config.yaml`).
+---
 
-The harness worker watches `iii-permissions.yaml` (default
-`./iii-permissions.yaml`) and reloads it on change. The shipped default
-file at the workspace root is symlinked into this folder.
+## Further reading
 
-## Layout
-
-- `docs/` — architecture documentation: [`docs/architecture.md`](docs/architecture.md) is the system overview; one file per worker lives under [`docs/workers/`](docs/workers/).
-- `src/types/` — wire types (mirrors `harness/crates/harness-types`).
-- `src/runtime/` — cross-worker SDK helpers (worker bootstrap, state/stream wrappers, OTel stub).
-- `src/<worker>/` — one folder per worker. Each `register.ts` composes the worker's bus surface from per-feature files; each `main.ts` is the binary entry-point.
-- `tests/` — vitest suites per worker.
+- [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend-mike-piccolo-2aocf/)
+- [console worker](https://workers.iii.dev/workers/console)
+- [iii worker registry](https://workers.iii.dev)
+- [iii engine](https://github.com/iii-hq/iii)

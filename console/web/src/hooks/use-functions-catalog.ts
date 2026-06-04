@@ -3,7 +3,7 @@ import { type FunctionEntry, STATIC_FUNCTIONS } from '@/lib/functions'
 import { fetchFunctionsCatalog } from '@/lib/functions-catalog'
 
 /**
- * Populate `@` mention autocomplete from `directory::engine::functions::list`
+ * Populate `@` mention autocomplete from `engine::functions::list`
  * when the real backend is active; mock / playground uses `STATIC_FUNCTIONS`.
  */
 export function useFunctionsCatalog(backendId: string): {

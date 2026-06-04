@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useConfigurationsList } from './hooks'
+import { useConfigurationsList, useWorkerRegistryReactivity } from './hooks'
 import { WorkerEditor, WorkerEditorEmptySelection } from './WorkerEditor'
 import { WorkersList } from './WorkersList'
 
@@ -36,6 +36,11 @@ export function WorkersTab({
 }: WorkersTabProps) {
   const listQuery = useConfigurationsList()
   const entries = listQuery.data ?? []
+
+  // React to workers added/removed out of band (CLI `iii worker add/remove`)
+  // by invalidating the list so a freshly-installed worker's config appears
+  // without a manual reload.
+  useWorkerRegistryReactivity()
 
   // Land on the first entry once the list resolves so the editor isn't
   // empty on the first visit. Subsequent renders only re-run when the

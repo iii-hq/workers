@@ -11,36 +11,6 @@ export interface ModelOption {
   contextWindow?: number
 }
 
-/**
- * Fallback options for when the engine is unreachable or the mock backend
- * runs. On the real backend the picker lists only provider-registered models
- * (via `models::list`); these static ids are just a non-empty default.
- */
-export const STATIC_MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5`,
-    label: 'gpt-5',
-    contextWindow: 400_000,
-  },
-  {
-    id: `anthropic${CATALOG_MODEL_KEY_SEP}claude-opus-4-7`,
-    label: 'claude opus 4.7',
-    contextWindow: 1_000_000,
-  },
-  {
-    id: `google${CATALOG_MODEL_KEY_SEP}gemini-2-5-pro`,
-    label: 'gemini 2.5 pro',
-    contextWindow: 1_048_576,
-  },
-  {
-    id: `openai${CATALOG_MODEL_KEY_SEP}gpt-5-mini`,
-    label: 'gpt-5 mini',
-    contextWindow: 400_000,
-  },
-]
-
-export const DEFAULT_MODEL: ModelId = STATIC_MODEL_OPTIONS[0].id
-
 export const MODES: { id: Mode; label: string }[] = [
   { id: 'plan', label: 'plan' },
   { id: 'ask', label: 'ask' },
@@ -152,7 +122,7 @@ export interface Conversation {
   title: string
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
-  model: ModelId
+  model: ModelId | null
   mode: Mode
   messages: Message[]
   createdAt: number

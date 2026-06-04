@@ -5,8 +5,8 @@ Feature: directory::registry::workers::list (workers registry HTTP proxy)
   `pagination.next_cursor` to fetch the next page. Responses are cached
   briefly per `(search, cursor)` so the same lookup within
   `registry_cache_ttl_ms` doesn't re-hit HTTP. The shared core fields
-  (`name`, `description`, `version`) line up with
-  `directory::engine::workers::list` so callers learn one envelope.
+  (`name`, `description`, `version`) line up with the engine's
+  `engine::workers::list` so callers learn one envelope.
 
   Background:
     Given the iii engine is reachable

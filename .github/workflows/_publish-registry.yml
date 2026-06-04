@@ -63,7 +63,7 @@ jobs:
 
       - name: Install iii CLI
         env:
-          VERSION: '0.12.0'
+          VERSION: '0.17.0'
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -110,10 +110,16 @@ jobs:
         run: |
           set -euo pipefail
           iii trigger \
-            'engine::trigger-types::list' \
+            'engine::triggers::list' \
             --json '{"include_internal": false}' \
             > trigger-types-baseline.json
           cat trigger-types-baseline.json
+
+      - name: Snapshot engine workers baseline
+        run: |
+          set -euo pipefail
+          iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
+          cat workers-baseline.json
 
       - name: Start local worker for interface collection
         env:
@@ -225,6 +231,7 @@ jobs:
             "--out" "worker-interface.json"
             "--wait-seconds" "120"
             "--trigger-types-baseline" "trigger-types-baseline.json"
+            "--workers-baseline" "workers-baseline.json"
           )
           python3 .github/scripts/collect_worker_interface.py "${args[@]}"
 

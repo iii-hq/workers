@@ -11,6 +11,7 @@ import {
 } from '@/hooks/use-conversations'
 import {
   type HarnessStatus,
+  isHarnessAvailable,
   useHarnessStatus,
 } from '@/hooks/use-harness-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
@@ -62,18 +63,20 @@ interface ConversationsProviderProps {
 export function ConversationsProvider({
   children,
 }: ConversationsProviderProps) {
+  const harnessStatus = useHarnessStatus(backend.id === 'real')
+  const harnessAvailable = isHarnessAvailable(harnessStatus)
   const {
     modelOptions,
     catalogKeys,
     catalogLoading,
     presentProviders,
     refresh,
-  } = useModelPickerSource(backend.id)
+  } = useModelPickerSource(backend.id, harnessAvailable)
   const api = useConversations(catalogKeys, !catalogLoading)
-  const harnessStatus = useHarnessStatus(backend.id === 'real')
 
   const [refreshingModels, setRefreshingModels] = useState(false)
   const refreshModels = useCallback(async () => {
+    if (!harnessAvailable) return
     setRefreshingModels(true)
     try {
       if (backend.id === 'real') {
@@ -89,7 +92,7 @@ export function ConversationsProvider({
     } finally {
       setRefreshingModels(false)
     }
-  }, [refresh, presentProviders])
+  }, [harnessAvailable, refresh, presentProviders])
 
   const value: ConversationsContextValue = {
     ...api,
