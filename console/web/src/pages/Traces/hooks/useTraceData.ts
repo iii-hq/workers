@@ -1,7 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { fetchTraces, type TracesFilterParams } from '../api/traces'
-import { fingerprintTraceList, mapSpanToListItem } from '../lib/traceListItem'
+import {
+  dedupeToTraceRoots,
+  fingerprintTraceList,
+  mapSpanToListItem,
+} from '../lib/traceListItem'
 
 const DEFAULT_TRACE_LIMIT = 500
 
@@ -78,7 +82,12 @@ export function useTraceData({
     if (!tracesData) return
 
     if (tracesData.spans && tracesData.spans.length > 0) {
-      const traces: TraceListItem[] = tracesData.spans.map(mapSpanToListItem)
+      // Search uses `search_all_spans`, which returns every span of each
+      // matching trace; collapse to one row per trace so the flat list stays
+      // trace-per-row (no-op for the non-search roots-only response).
+      const traces: TraceListItem[] = dedupeToTraceRoots(tracesData.spans).map(
+        mapSpanToListItem,
+      )
 
       traces.sort((a, b) => b.startTime - a.startTime)
 

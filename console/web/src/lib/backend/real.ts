@@ -7,11 +7,8 @@ import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId } from '@/lib/session-id'
 import type { Mode, ModelId } from '@/types/chat'
-import type {
-  AgentEvent,
-  AgentMessage,
-  SessionEventEnvelope,
-} from '@/types/iii-agent-event'
+import type { AgentEvent, AgentMessage } from '@/types/iii-agent-event'
+import { startSessionEventsSubscription } from './session-events-live'
 import { createAgentEventTranslator } from './translate'
 import type {
   ChatBackend,
@@ -57,24 +54,25 @@ async function* realStream(
     r?.()
   }
 
-  const off = client.on<SessionEventEnvelope>('ui::session::event', (env) => {
-    if (!env || env.session_id !== sessionId || !env.event) return
-    queue.push(env.event)
-    wake()
-  })
+  // Subscribe directly to this session's `agent::events` stream via a scoped
+  // engine stream trigger (`group_id = sessionId`), replacing the harness
+  // fanout hop (`ui::subscribe` → per-browser `ui::session::event` push).
+  // Registered before the `harness::trigger` kickoff below — both travel the
+  // same ordered WS connection, so the trigger is in place before the turn's
+  // first event is written.
+  const stopSubscription = startSessionEventsSubscription(
+    client,
+    sessionId,
+    (event) => {
+      queue.push(event)
+      wake()
+    },
+  )
 
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
 
-  let subscribed = false
-
   try {
-    await client.call('ui::subscribe', {
-      browser_id: client.browserId,
-      session_id: sessionId,
-    })
-    subscribed = true
-
     const { translate } = createAgentEventTranslator()
 
     client
@@ -155,15 +153,7 @@ async function* realStream(
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)
-    off()
-    if (subscribed) {
-      await client
-        .call('ui::unsubscribe', {
-          browser_id: client.browserId,
-          session_id: sessionId,
-        })
-        .catch(() => {})
-    }
+    stopSubscription()
   }
 }
 

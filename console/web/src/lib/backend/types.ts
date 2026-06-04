@@ -70,8 +70,9 @@ export interface ChatStreamOptions {
    * for the same conversation must pass the same value so the engine
    * groups every turn under one session in the traces UI.
    *
-   * The real backend uses it as `session_id` in `ui::subscribe` and
-   * `run::start`; the mock backend ignores it. When omitted, the real
+   * The real backend uses it as the `group_id` of its scoped `agent::events`
+   * stream trigger and as `session_id` in `harness::trigger`; the mock backend
+   * ignores it. When omitted, the real
    * backend falls back to a fresh `console-<uuid>` so callers that
    * haven't been updated yet still work (with the pre-fix behavior of
    * one session per send).

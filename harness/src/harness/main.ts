@@ -5,6 +5,6 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'harness',
   description:
-    'Meta-worker: ui::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions, agent::events fanout to subscribed browsers.',
+    'Meta-worker: ui::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions.',
   register: (iii, ctx) => register(iii, ctx),
 });

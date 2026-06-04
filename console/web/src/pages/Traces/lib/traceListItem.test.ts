@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { StoredSpan } from '../api/traces'
 import type { TraceListItem } from '../hooks/useTraceData'
 import {
+  dedupeToTraceRoots,
   fingerprintTraceList,
   mapSpanToListItem,
   normalizeSpanAttributes,
@@ -29,6 +30,71 @@ function makeSpan(overrides: Partial<StoredSpan> = {}): StoredSpan {
     ...overrides,
   }
 }
+
+describe('dedupeToTraceRoots', () => {
+  it('collapses a search_all_spans flood to one root per trace', () => {
+    // What the engine returns for a `harness::trigger` search: the whole turn.
+    const spans = [
+      makeSpan({
+        span_id: 'root',
+        name: 'handle_invocation harness::trigger',
+        start_time_unix_nano: 100,
+      }),
+      makeSpan({
+        span_id: 'call',
+        parent_span_id: 'root',
+        name: 'call harness::trigger',
+        start_time_unix_nano: 110,
+      }),
+      makeSpan({
+        span_id: 'child',
+        parent_span_id: 'call',
+        name: 'run::start',
+        start_time_unix_nano: 120,
+      }),
+    ]
+
+    const out = dedupeToTraceRoots(spans)
+    expect(out).toHaveLength(1)
+    expect(out[0].span_id).toBe('root')
+  })
+
+  it('keeps one root per distinct trace', () => {
+    const out = dedupeToTraceRoots([
+      makeSpan({ trace_id: 'a', span_id: 'a-root' }),
+      makeSpan({ trace_id: 'a', span_id: 'a-child', parent_span_id: 'a-root' }),
+      makeSpan({ trace_id: 'b', span_id: 'b-root' }),
+    ])
+    expect(out.map((s) => s.trace_id).sort()).toEqual(['a', 'b'])
+    expect(out.find((s) => s.trace_id === 'a')?.span_id).toBe('a-root')
+  })
+
+  it('is a no-op for a roots-only list (non-search response)', () => {
+    const spans = [
+      makeSpan({ trace_id: 'a', span_id: 'a' }),
+      makeSpan({ trace_id: 'b', span_id: 'b' }),
+    ]
+    expect(dedupeToTraceRoots(spans)).toHaveLength(2)
+  })
+
+  it('falls back to the earliest span when no root is present', () => {
+    // Root span aged out of the ring buffer; keep the earliest survivor.
+    const out = dedupeToTraceRoots([
+      makeSpan({
+        span_id: 'late',
+        parent_span_id: 'gone',
+        start_time_unix_nano: 200,
+      }),
+      makeSpan({
+        span_id: 'early',
+        parent_span_id: 'gone',
+        start_time_unix_nano: 150,
+      }),
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].span_id).toBe('early')
+  })
+})
 
 describe('normalizeSpanAttributes', () => {
   it('normalizes the array-of-tuples shape into a flat object', () => {

@@ -12,7 +12,7 @@ alongside `harness` over the iii bus.
 
 | Folder | Bus surface | Role |
 |---|---|---|
-| `src/harness/` | `ui::subscribe`/`unsubscribe`, `harness::fs::read_inline`, `policy::check_permissions`, `harness::provider::{register,resolve,list}` | Meta-worker; loads `iii-permissions.yaml`; spins up `ui::*` fanout pumps; owns the provider registry + the `harness` entry in the `configuration` worker (api keys, per-provider settings, permissions). |
+| `src/harness/` | `ui::subscribe`/`unsubscribe`, `harness::fs::read_inline`, `policy::check_permissions`, `harness::provider::{register,resolve,list}` | Meta-worker; loads `iii-permissions.yaml`; spins up the sessions fan-out pump; owns the provider registry + the `harness` entry in the `configuration` worker (api keys, per-provider settings, permissions). |
 | `src/approval-gate/` | `approval::resolve` | Persists operator decisions to scope `approvals` (turn-orchestrator reacts via `turn::on_approval`); default mode seeded from `harness` config `permissions.default_mode`. |
 | `src/turn-orchestrator/` | `run::start`, `turn::{state}`, `turn::get_state` | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. |
 | `src/session/` | `session-tree::*` (11 fns), `session-inbox::*` (3 fns) | Branching session storage + per-session inbox queues. |
