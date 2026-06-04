@@ -33,7 +33,7 @@ function fakeClient() {
   const registerTrigger = vi.fn(
     (input: { type: string; function_id: string; config?: unknown }) => {
       triggers.push(input)
-      return { unregister: triggerUnregister }
+      return triggerUnregister
     },
   )
   const addConnectionStateListener = vi.fn(
@@ -124,6 +124,30 @@ describe('makeTracesChangedHandler', () => {
     ref.current = false
     handler()
     expect(invalidateQueries).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs the onExtra callback when not paused (e.g. reload open trace detail)', () => {
+    const { client } = fakeQueryClient()
+    const onExtra = vi.fn()
+    const handler = makeTracesChangedHandler(
+      client,
+      { current: false },
+      onExtra,
+    )
+
+    handler()
+
+    expect(onExtra).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips onExtra while paused', () => {
+    const { client } = fakeQueryClient()
+    const onExtra = vi.fn()
+    const handler = makeTracesChangedHandler(client, { current: true }, onExtra)
+
+    handler()
+
+    expect(onExtra).not.toHaveBeenCalled()
   })
 })
 

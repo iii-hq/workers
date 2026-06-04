@@ -93,10 +93,6 @@ export function Traces() {
     debouncedSearch,
   })
 
-  // Replace polling with the engine `trace` trigger: refetch the trace queries
-  // when the observability worker signals new spans, suspended while paused.
-  useTracesLiveRefresh({ isPaused })
-
   const totalPages = Math.max(
     1,
     Math.ceil(traceGroups.length / filterState.pageSize),
@@ -141,25 +137,49 @@ export function Traces() {
     containerRef,
   })
 
-  const loadTraceSpans = useCallback(async (traceId: string) => {
-    setIsLoadingSpans(true)
-    setSpansError(null)
-    setWaterfallData(null)
-    try {
-      const data = await fetchTraceTree(traceId)
-      if (data.roots?.length) {
-        const wf = treeToWaterfallData(data.roots)
-        if (wf) setWaterfallData(wf)
-        else setSpansError('failed to process span data')
-      } else {
-        setSpansError('no span data available for this trace')
+  // `silent` reload (used by the live-refresh signal) updates the waterfall in
+  // place without the loading spinner / blank-out / error states, so the open
+  // trace's detail streams in new spans without flicker. A transient empty or
+  // failed read is ignored, keeping the current view rather than clearing it.
+  const loadTraceSpans = useCallback(
+    async (traceId: string, opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false
+      if (!silent) {
+        setIsLoadingSpans(true)
+        setSpansError(null)
+        setWaterfallData(null)
       }
-    } catch (err) {
-      setSpansError(err instanceof Error ? err.message : 'failed to load trace')
-    } finally {
-      setIsLoadingSpans(false)
-    }
-  }, [])
+      try {
+        const data = await fetchTraceTree(traceId)
+        if (data.roots?.length) {
+          const wf = treeToWaterfallData(data.roots)
+          if (wf) setWaterfallData(wf)
+          else if (!silent) setSpansError('failed to process span data')
+        } else if (!silent) {
+          setSpansError('no span data available for this trace')
+        }
+      } catch (err) {
+        if (!silent) {
+          setSpansError(
+            err instanceof Error ? err.message : 'failed to load trace',
+          )
+        }
+      } finally {
+        if (!silent) setIsLoadingSpans(false)
+      }
+    },
+    [],
+  )
+
+  // Live-refresh: refetch the trace list on the engine `trace` trigger, and
+  // silently reload the open trace's detail tree so it streams new spans
+  // without a reselect. Suspended while paused / tab hidden (see the hook).
+  useTracesLiveRefresh({
+    isPaused,
+    onSignal: () => {
+      if (selectedTraceId) loadTraceSpans(selectedTraceId, { silent: true })
+    },
+  })
 
   const selectTrace = useCallback(
     (traceId: string | null) => {
@@ -168,7 +188,6 @@ export function Traces() {
       setWaterfallData(null)
       setSpansError(null)
       if (traceId) {
-        setIsPaused(true)
         loadTraceSpans(traceId)
       }
     },

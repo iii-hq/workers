@@ -109,18 +109,26 @@ describe('formatSpanLabel', () => {
 })
 
 describe('isEngineRoutingSpan', () => {
+  // Engine routing spans carry a `function_id` attribute (set by the engine's
+  // invocation instrumentation). The verb prefix alone is NOT enough — the
+  // harness SDK emits its own `call <fn>` span without that attribute.
   it('matches `handle_invocation X` regardless of service_name', () => {
     expect(
       isEngineRoutingSpan({
         name: 'handle_invocation fn-foo',
         service_name: 'iii',
+        attributes: { function_id: 'fn-foo' },
       }),
     ).toBe(true)
   })
 
   it('matches `call X` regardless of service_name', () => {
     expect(
-      isEngineRoutingSpan({ name: 'call fn-foo', service_name: 'iii' }),
+      isEngineRoutingSpan({
+        name: 'call fn-foo',
+        service_name: 'iii',
+        attributes: { function_id: 'fn-foo' },
+      }),
     ).toBe(true)
   })
 
@@ -131,26 +139,39 @@ describe('isEngineRoutingSpan', () => {
       isEngineRoutingSpan({
         name: 'handle_invocation fn-foo',
         service_name: 'iii-engine',
+        attributes: { function_id: 'fn-foo' },
       }),
     ).toBe(true)
     expect(
       isEngineRoutingSpan({
         name: 'call fn-foo',
         service_name: 'engine',
+        attributes: { function_id: 'fn-foo' },
       }),
     ).toBe(true)
   })
 
-  it('does NOT match a non-routing name', () => {
+  it('does NOT match a worker `call X` span without a function_id attribute', () => {
+    // The harness SDK emits `call <fn>` (service `harness`) for its own
+    // outbound calls — it must NOT be treated as engine routing, or hiding
+    // engine routing would sweep up legitimate harness spans.
     expect(
-      isEngineRoutingSpan({ name: 'process_event', service_name: 'iii' }),
+      isEngineRoutingSpan({
+        name: 'call turn::get_state',
+        service_name: 'harness',
+        attributes: {},
+      }),
     ).toBe(false)
   })
 
-  it('still matches when service_name is missing (verb prefix is sufficient signal)', () => {
+  it('does NOT match a non-routing name', () => {
     expect(
-      isEngineRoutingSpan({ name: 'call fn-foo', service_name: undefined }),
-    ).toBe(true)
+      isEngineRoutingSpan({
+        name: 'process_event',
+        service_name: 'iii',
+        attributes: { function_id: 'process_event' },
+      }),
+    ).toBe(false)
   })
 })
 

@@ -54,6 +54,7 @@ function dlog(msg: string, data?: unknown): void {
 export function makeTracesChangedHandler(
   qc: QueryClient,
   isPausedRef: { current: boolean },
+  onExtra?: () => void,
 ): () => void {
   return () => {
     if (isPausedRef.current) {
@@ -70,6 +71,10 @@ export function makeTracesChangedHandler(
     dlog('signal received → invalidating traces queries')
     qc.invalidateQueries({ queryKey: ['traces'] })
     qc.invalidateQueries({ queryKey: ['traceGroups'] })
+    // Extra refresh hook — e.g. silently reload the open trace's detail tree,
+    // which isn't a React Query cache and so isn't covered by the invalidations
+    // above. Shares the pause/hidden gating.
+    onExtra?.()
   }
 }
 
@@ -123,7 +128,7 @@ export function startTracesSubscription(
   // `on()` registers under `<fn>::<browserId>`; the trigger must target that id.
   const functionId = `${TRACES_CHANGED_FN}::${client.browserId}`
 
-  const trigger = client.registerTrigger({
+  const offTrigger = client.registerTrigger({
     type: TRACE_TRIGGER_TYPE,
     function_id: functionId,
     config: {},
@@ -158,7 +163,7 @@ export function startTracesSubscription(
     offConn()
     offVisibility?.()
     try {
-      trigger.unregister()
+      offTrigger()
     } catch {
       // SDK already disposed; nothing to do.
     }
@@ -170,17 +175,28 @@ export function startTracesSubscription(
  * trigger for the lifetime of the component. The shared `getIiiClient()`
  * singleton is NOT disposed on unmount (it's app-wide), so the explicit
  * cleanup is required.
+ *
+ * `onSignal` runs on each (non-paused, visible) signal alongside the list
+ * refetch — the page uses it to silently reload the open trace's detail tree,
+ * which is fetched imperatively (not a React Query cache) and so isn't covered
+ * by the query invalidations. Read live from a ref so it never re-subscribes.
  */
 export function useTracesLiveRefresh({
   isPaused,
+  onSignal,
 }: {
   isPaused: boolean
+  onSignal?: () => void
 }): void {
   const qc = useQueryClient()
   const isPausedRef = useRef(isPaused)
+  const onSignalRef = useRef(onSignal)
   useEffect(() => {
     isPausedRef.current = isPaused
   }, [isPaused])
+  useEffect(() => {
+    onSignalRef.current = onSignal
+  }, [onSignal])
 
   useEffect(() => {
     let stop: (() => void) | undefined
@@ -190,13 +206,16 @@ export function useTracesLiveRefresh({
       if (disposed) return
       stop = startTracesSubscription(
         client,
-        makeTracesChangedHandler(qc, isPausedRef),
+        makeTracesChangedHandler(qc, isPausedRef, () =>
+          onSignalRef.current?.(),
+        ),
       )
     })()
     return () => {
       disposed = true
       stop?.()
     }
-    // Pause is read via the ref, so the subscription is set up once per mount.
+    // Pause + onSignal are read via refs, so the subscription is set up once
+    // per mount.
   }, [qc])
 }

@@ -10,6 +10,16 @@ import type { VisualizationSpan } from './traceTransform'
 function makeSpan(
   overrides: Partial<VisualizationSpan> = {},
 ): VisualizationSpan {
+  // Engine routing fixtures (`handle_invocation X` / `call X`) carry a
+  // `function_id` attribute in reality — `isEngineRoutingSpan` now requires it
+  // to avoid sweeping up worker `call X` spans. Default it from the name so
+  // engine-routing cases don't have to spell it out (an explicit `attributes`
+  // override still wins).
+  const name = overrides.name ?? 'span'
+  const engineFid = /^(?:handle_invocation|call) (.+)$/.exec(name)?.[1]
+  const attributes: Record<string, unknown> = engineFid
+    ? { function_id: engineFid }
+    : {}
   return {
     span_id: 's-1',
     trace_id: 't-1',
@@ -19,7 +29,7 @@ function makeSpan(
     start_percent: 0,
     width_percent: 100,
     status: 'ok',
-    attributes: {},
+    attributes,
     events: [],
     links: [],
     service_name: 'svc',
