@@ -63,10 +63,21 @@ export function formatSpanLabel(
 
 // We keep `service_name` in the `Pick<...>` so existing callers and
 // fixtures continue to compile — the predicate just no longer uses it.
+//
+// The name prefix alone is NOT sufficient: the harness SDK emits its own
+// client span literally named `call <fn>` (service `harness`) alongside the
+// engine's `call <fn>` invocation span. Gating only on the prefix swept up
+// those worker spans too, collapsing legitimate harness work. Engine-emitted
+// routing spans carry a `function_id` attribute (set by the engine's
+// invocation instrumentation, see `engine/src/invocation/mod.rs`); worker
+// `call <fn>` spans do not — so we additionally require that marker.
 export function isEngineRoutingSpan(
-  span: Pick<VisualizationSpan, 'name' | 'service_name'>,
+  span: Pick<VisualizationSpan, 'name' | 'service_name'> & {
+    attributes?: Record<string, unknown>
+  },
 ): boolean {
-  return ENGINE_VERB_PREFIXES.some((p) => span.name.startsWith(p))
+  if (!ENGINE_VERB_PREFIXES.some((p) => span.name.startsWith(p))) return false
+  return span.attributes?.function_id != null
 }
 
 export function isEngineRoutingPair(

@@ -38,7 +38,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'harness',
     description:
-      'Meta-worker: ui::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions, agent::events fanout to subscribed browsers.',
+      'Meta-worker: ui::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions.',
     register: (iii, ctx) => registerHarness(iii, ctx),
   },
   {

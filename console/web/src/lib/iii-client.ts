@@ -10,8 +10,9 @@
  *      which proxies `/ws` to the engine).
  *   2. Open the WebSocket via `iii-browser-sdk::registerWorker(url)`.
  *   3. Mint a stable `browser_id` for this page; per-browser handlers are
- *      registered under `<functionId>::<browserId>` so the harness fanout
- *      can target this specific browser when it pushes events.
+ *      registered under `<functionId>::<browserId>` so engine triggers — the
+ *      browser's own scoped stream subscriptions and the harness sessions
+ *      fan-out — deliver to this specific browser's connection.
  *
  * Once `_clientPromise` is resolved, every other call (`call`, `on`,
  * `dispose`) goes over the single WS connection.

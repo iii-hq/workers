@@ -81,6 +81,41 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
 }
 
 /**
+ * Collapse a span list to one representative span per `trace_id` — the root
+ * (no parent) when present, else the earliest-started span.
+ *
+ * The flat-list TRACES view is one row per trace. A plain `engine::traces::list`
+ * already returns root spans only, but the SEARCH path passes
+ * `search_all_spans: true`, which returns EVERY span of each matching trace
+ * (so a query like `harness::trigger` matches a child span and the engine
+ * hands back the whole turn). Collapsing here keeps the list one-row-per-trace
+ * regardless, and is a no-op for the non-search response (already roots).
+ */
+export function dedupeToTraceRoots(
+  spans: ReadonlyArray<StoredSpan>,
+): StoredSpan[] {
+  const byTrace = new Map<string, StoredSpan>()
+  for (const span of spans) {
+    const existing = byTrace.get(span.trace_id)
+    if (!existing) {
+      byTrace.set(span.trace_id, span)
+      continue
+    }
+    const spanIsRoot = !span.parent_span_id
+    const existingIsRoot = !existing.parent_span_id
+    if (spanIsRoot && !existingIsRoot) {
+      byTrace.set(span.trace_id, span)
+    } else if (
+      spanIsRoot === existingIsRoot &&
+      span.start_time_unix_nano < existing.start_time_unix_nano
+    ) {
+      byTrace.set(span.trace_id, span)
+    }
+  }
+  return [...byTrace.values()]
+}
+
+/**
  * Stable identity fingerprint for a list of TraceListItems. Used by
  * the hook to dedupe back-to-back fetches that return the same rows.
  *
