@@ -62,7 +62,7 @@ export function agentTriggerTool(): unknown {
   return {
     name: TOOL_NAME,
     description:
-      'Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific arguments as a JSON object (an object literal — never a JSON-encoded string; do not stringify it). Skills loaded into your context tell you which functions exist and what arguments they take. The result is whatever that function returns.',
+      'Call any iii function on the bus. The argument `function` is the function id (use `::` separators, e.g. `shell::fs::ls`). The argument `payload` is the function-specific arguments as a JSON object (an object literal — never a JSON-encoded string; do not stringify it). Discover which functions exist with `engine::functions::list` and fetch the arguments they take with `engine::functions::info`. The result is whatever that function returns.',
     parameters: {
       type: 'object',
       properties: {
@@ -243,13 +243,12 @@ export function isArgumentDecodeError(err: unknown): boolean {
 
 export function functionNotFoundHint(badFunctionId: string): string {
   if (!badFunctionId.includes('/')) {
-    return 'load the relevant skill via directory::skills::get, or check the function id';
+    return 'check the function id with engine::functions::list { search: "<name>" }';
   }
   const generic =
-    'Skill ids are NOT function ids. `agent_trigger` expects the function id ' +
-    '(`worker::fn`) — that is the `function_id` field on each row returned by ' +
-    "`directory::skills::list`, not the row's `id` field (which is the on-disk " +
-    'skill path).';
+    'Slash-separated paths are NOT function ids. `agent_trigger` expects a ' +
+    'namespaced function id (`worker::fn`) — discover the exact id with ' +
+    '`engine::functions::list { search }`.';
   const segments = badFunctionId.split('/').filter((s) => s.length > 0);
   let suggestion: string | null = null;
   if (segments.length >= 4 && segments[1] === 'skills' && segments[0] === segments[2]) {

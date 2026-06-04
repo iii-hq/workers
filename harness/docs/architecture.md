@@ -237,8 +237,11 @@ api keys stored in the `harness` configuration entry.
 Bare-string allow rules: `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`,
 `oauth::anthropic::status`, `oauth::openai-codex::status`, the
-`directory::engine::*` introspection surface, and the
-`directory::skills::*` and `directory::prompts::*` lookups.
+read-only `engine::*` introspection surface (`engine::functions::*`,
+`engine::triggers::*`, `engine::workers::*`,
+`engine::registered-triggers::*`), and `worker::list`. Mutating
+`worker::*` ops (`add`, `start`, `stop`, `remove`, `clear`) stay
+approval-gated.
 
 A function pattern may use `*` to match any substring
 (`compileFunctionMatcher` in

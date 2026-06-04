@@ -41,17 +41,12 @@ rules:
   - models::supports
   - oauth::anthropic::status
   - oauth::openai-codex::status
-  - directory::engine::functions::list
-  - directory::engine::functions::info
-  - directory::engine::triggers::list
-  - directory::engine::triggers::info
-  - directory::engine::workers::list
-  - directory::engine::workers::info
-  - directory::engine::registered_triggers::list
-  - directory::engine::registered_triggers::info
-  - directory::skills::list
-  - directory::skills::get
-  - directory::skills::download
-  - directory::prompts::list
-  - directory::prompts::get
-  - directory::prompts::download
+  - engine::functions::list
+  - engine::functions::info
+  - engine::triggers::list
+  - engine::triggers::info
+  - engine::workers::list
+  - engine::workers::info
+  - engine::registered-triggers::list
+  - engine::registered-triggers::info
+  - worker::list
