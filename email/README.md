@@ -16,6 +16,21 @@ iii worker add harness/auth-credentials
 iii worker add email
 ```
 
+## Skills
+
+Install the `email` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/workers --skill email
+```
+
+Browse or install every worker skill at once:
+
+```bash
+npx skills add iii-hq/workers --list
+npx skills add iii-hq/workers --all
+```
+
 ## Quickstart
 
 ```rust

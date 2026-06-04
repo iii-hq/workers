@@ -59,6 +59,23 @@ iii worker add iii-directory
 
 ---
 
+## Skills
+
+Install the `iii-directory` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/workers --skill iii-directory
+```
+
+Browse or install every worker skill at once:
+
+```bash
+npx skills add iii-hq/workers --list
+npx skills add iii-hq/workers --all
+```
+
+---
+
 ## Configuration
 
 ```yaml

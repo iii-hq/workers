@@ -17,6 +17,21 @@ iii worker add coder
 `~/.iii/config.yaml`, and the engine starts the worker on the next
 `iii start`.
 
+## Skills
+
+Install the `coder` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/workers --skill coder
+```
+
+Browse or install every worker skill at once:
+
+```bash
+npx skills add iii-hq/workers --list
+npx skills add iii-hq/workers --all
+```
+
 ## Quickstart
 
 ```rust

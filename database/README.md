@@ -15,6 +15,21 @@
 iii worker add database@1.0.0
 ```
 
+## Skills
+
+Install the `database` agent skill for Claude Code, Cursor, and 30+ other agents:
+
+```bash
+npx skills add iii-hq/workers --skill database
+```
+
+Browse or install every worker skill at once:
+
+```bash
+npx skills add iii-hq/workers --list
+npx skills add iii-hq/workers --all
+```
+
 ## Configure
 
 Runtime settings live in the **`configuration` worker** under id **`database`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get`, and hot-reloads connection pools when the value changes.
