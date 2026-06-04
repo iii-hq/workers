@@ -7,6 +7,7 @@ use database::handlers::{
     begin_transaction::{self, BeginTxReq},
     commit_transaction::{self, CommitTxReq},
     execute::{self, ExecuteReq},
+    list_databases::{self, ListDatabasesReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
     rollback_transaction::{self, RollbackTxReq},
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
     let log = Logger::new();
     let state = AppState {
         pools: Arc::new(RwLock::new(pools)),
+        config: Arc::new(RwLock::new(cfg)),
         handles: handles.clone(),
         transactions: transactions.clone(),
         log: log.clone(),
@@ -265,6 +267,25 @@ async fn main() -> Result<()> {
             .description("Rollback and finalize an interactive transaction."),
         );
     }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::listDatabases",
+            RegisterFunction::new_async(move |req: ListDatabasesReq| {
+                let st = st.clone();
+                async move {
+                    list_databases::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::IIIError::from)
+                }
+            })
+            .description(
+                "List all configured databases with connection details (driver, \
+                 credential-redacted URL, pool settings, TLS mode). Config only — \
+                 no health checks or live pool statistics.",
+            ),
+        );
+    }
 
     let _row_change = iii.register_trigger_type(RegisterTriggerType::new(
         "database::row-change",
@@ -276,7 +297,7 @@ async fn main() -> Result<()> {
         .context("registering configuration change trigger")?;
 
     tracing::info!(
-        "database worker registered 11 functions and 1 trigger type, waiting for invocations"
+        "database worker registered 12 functions and 1 trigger type, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");
