@@ -215,6 +215,7 @@ async fn build_pool_creates_missing_sqlite_parent_dir() {
 
     let st = AppState {
         pools: Arc::new(RwLock::new(pools)),
+        config: Arc::new(RwLock::new(cfg)),
         handles: Arc::new(HandleRegistry::new()),
         transactions: TxRegistry::new(),
         log: Logger::new(),
