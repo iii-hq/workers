@@ -186,3 +186,61 @@ async fn apply_config_updates_list_snapshot() {
 fn binary_name_matches_manifest() {
     assert_eq!(database::worker_name(), "database");
 }
+
+/// Regression for the registry-publish crash (`unable to open database file:
+/// ./data/iii.db`). This drives the *startup* dispatch path the worker uses at
+/// boot — `pool::build` (called by `main.rs` via `configuration::build_pools`)
+/// — for a file-backed sqlite database whose parent directory does not exist
+/// yet, mirroring the default `sqlite:./data/iii.db` config running from a
+/// clean checkout. The pool must build (creating the parent dir) and serve a
+/// connection rather than dying on startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn build_pool_creates_missing_sqlite_parent_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("data").join("iii.db");
+    assert!(!db_path.parent().unwrap().exists());
+
+    let url = format!("sqlite:{}", db_path.display());
+    let yaml = format!("databases:\n  primary:\n    url: \"{url}\"\n");
+    let cfg = WorkerConfig::from_yaml(&yaml).unwrap();
+
+    let mut pools = HashMap::new();
+    for (name, db) in &cfg.databases {
+        let p = pool::build(name, db)
+            .await
+            .expect("startup pool build must create the missing parent dir");
+        pools.insert(name.clone(), p);
+    }
+    assert!(db_path.parent().unwrap().exists());
+
+    let st = AppState {
+        pools: Arc::new(RwLock::new(pools)),
+        config: Arc::new(RwLock::new(cfg)),
+        handles: Arc::new(HandleRegistry::new()),
+        transactions: TxRegistry::new(),
+        log: Logger::new(),
+    };
+
+    // The freshly-created on-disk db is usable end-to-end.
+    execute::handle(
+        &st,
+        serde_json::from_value::<ExecuteReq>(json!({
+            "db": "primary",
+            "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY)"
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let r = query::handle(
+        &st,
+        serde_json::from_value::<QueryReq>(json!({
+            "db": "primary",
+            "sql": "SELECT count(*) AS n FROM t"
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.row_count, 1);
+}

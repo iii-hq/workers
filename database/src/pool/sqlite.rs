@@ -37,6 +37,23 @@ impl SqlitePool {
         let manager = if path == ":memory:" || path.starts_with(":memory:") {
             SqliteConnectionManager::memory()
         } else {
+            // SQLite opens (and, with the default flags, creates) the database
+            // *file*, but it will NOT create missing parent directories — a
+            // fresh `sqlite:./data/iii.db` boot where `./data` does not yet
+            // exist fails at pool-build time with `unable to open database
+            // file`. r2d2 eagerly opens connections in `build()`, so this
+            // surfaces as a hard startup crash (exactly what broke the registry
+            // publish CI: the worker is launched from a clean checkout with no
+            // `data/` dir). Create the parent dir up front so the default
+            // config — and any relative/nested sqlite path — boots cleanly.
+            if let Some(parent) = parent_dir_to_create(path) {
+                std::fs::create_dir_all(&parent).map_err(|e| DbError::ConfigError {
+                    message: format!(
+                        "sqlite: could not create parent directory {}: {e}",
+                        parent.display()
+                    ),
+                })?;
+            }
             SqliteConnectionManager::file(path)
         };
         let inner = R2Pool::builder()
@@ -75,6 +92,28 @@ impl SqlitePool {
             Ok(conn) => Ok(SqliteConn { conn }),
             Err(e) => Err(classify_acquire_error(&e.to_string(), db_name, timeout)),
         }
+    }
+}
+
+/// Compute the parent directory that must exist before SQLite can open
+/// `path`, or `None` when there is nothing to create. Pure (does no IO) so
+/// the path-parsing rules can be unit-tested without touching the filesystem.
+///
+/// Returns `None` for:
+///   - in-memory databases (`:memory:`, `file::memory:?cache=shared`),
+///   - bare filenames (`iii.db`) whose parent is the current directory.
+///
+/// Handles `file:` URI forms and strips any `?query` suffix (e.g.
+/// `file:./data/iii.db?mode=rwc`) before extracting the parent.
+fn parent_dir_to_create(path: &str) -> Option<std::path::PathBuf> {
+    let without_scheme = path.strip_prefix("file:").unwrap_or(path);
+    let file_part = without_scheme.split('?').next().unwrap_or(without_scheme);
+    if file_part.is_empty() || file_part.contains(":memory:") {
+        return None;
+    }
+    match std::path::Path::new(file_part).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => Some(parent.to_path_buf()),
+        _ => None,
     }
 }
 
@@ -193,5 +232,68 @@ mod tests {
             crate::error::DbError::PoolTimeout { waited_ms, .. } => assert!(waited_ms >= 50),
             other => panic!("expected PoolTimeout, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parent_dir_to_create_skips_in_memory_forms() {
+        assert_eq!(parent_dir_to_create(":memory:"), None);
+        assert_eq!(parent_dir_to_create("file::memory:?cache=shared"), None);
+    }
+
+    #[test]
+    fn parent_dir_to_create_skips_bare_filename() {
+        // No directory component → SQLite creates the file in the CWD.
+        assert_eq!(parent_dir_to_create("iii.db"), None);
+        assert_eq!(parent_dir_to_create(""), None);
+    }
+
+    #[test]
+    fn parent_dir_to_create_returns_nested_dir() {
+        assert_eq!(
+            parent_dir_to_create("./data/iii.db"),
+            Some(std::path::PathBuf::from("./data"))
+        );
+        assert_eq!(
+            parent_dir_to_create("/var/lib/iii/db.sqlite"),
+            Some(std::path::PathBuf::from("/var/lib/iii"))
+        );
+    }
+
+    #[test]
+    fn parent_dir_to_create_handles_file_uri_and_query() {
+        assert_eq!(
+            parent_dir_to_create("file:./data/iii.db?mode=rwc"),
+            Some(std::path::PathBuf::from("./data"))
+        );
+    }
+
+    /// Regression for the registry-publish crash: a fresh boot with the
+    /// default `sqlite:./data/iii.db` config (and no pre-existing `data/`
+    /// dir) must succeed. r2d2 opens connections eagerly in `build()`, so
+    /// before the fix `SqlitePool::new` returned
+    /// `unable to open database file` and the worker died on startup, making
+    /// interface collection time out. `SqlitePool::new` now creates the
+    /// missing parent directory, so the pool builds and a query runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_pool_creates_missing_parent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Point at a *nested* path that does not exist yet, mirroring the
+        // default `./data/iii.db` shape (two missing levels for good measure).
+        let db_path = tmp.path().join("data").join("nested").join("iii.db");
+        assert!(!db_path.parent().unwrap().exists());
+        let url = format!("sqlite:{}", db_path.display());
+
+        let pool = SqlitePool::new(&url, &PoolConfig::default())
+            .expect("pool should build after creating the missing parent dir");
+        assert!(db_path.parent().unwrap().exists());
+
+        let conn = pool.acquire().await.unwrap();
+        let result: i64 = tokio::task::spawn_blocking(move || {
+            conn.with(|c| c.query_row("SELECT 1", [], |row| row.get(0)))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, 1);
     }
 }
