@@ -52,8 +52,11 @@ export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePor
     },
 
     async finishSession(rec) {
-      const messages = await s.loadMessages(rec.session_id);
-      await emit(iii, rec.session_id, { type: 'agent_end', messages });
+      // agent_end is a turn-end SIGNAL only. The transcript reaches the UI
+      // incrementally via message_update/message_complete and is re-read from
+      // session-tree on reload, so no consumer reads agent_end.messages. Emit it
+      // empty instead of reloading the whole session to fill an unused field.
+      await emit(iii, rec.session_id, { type: 'agent_end', messages: [] });
       transitionTo(rec, 'stopped');
     },
   };

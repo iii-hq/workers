@@ -85,7 +85,6 @@ describe('runTransition', () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'steering_check' };
     const store = installMockTurnStore({
       loadRecord: vi.fn(async () => rec),
-      loadMessages: vi.fn(async () => []),
     });
     const handle = vi.fn(async () => {
       throw new Error('boom');

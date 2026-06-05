@@ -2,8 +2,9 @@
  * Integration tests: sync (pre-turn) compaction flow via handleSync.
  *
  * Tests:
- * 1. Success path: status === 'ok', session-tree::append called for replay,
- *    session-tree::append_synthetic called with metadata.compaction_continue === true.
+ * 1. Success path: status === 'ok', no replay reinjection (the last user
+ *    message stays on the path), session-tree::append_synthetic posts the
+ *    continue nudge.
  * 2. Summariser stream returns error → status === 'overflow'.
  * 3. Lease held → status === 'busy'.
  */
@@ -150,7 +151,7 @@ function buildSyncMock(opts: {
 const mediumFixture = loadFixture('medium-with-tools');
 
 describe('flow-sync: success path', () => {
-  it('returns ok, calls append for replay, and append_synthetic with compaction_continue', async () => {
+  it('returns ok and appends the continue nudge (no replay reinjection)', async () => {
     const fixtureMessages = mediumFixture.entries.map((e) => ({
       entry_id: e.id,
       message: e.message,
@@ -175,19 +176,15 @@ describe('flow-sync: success path', () => {
 
     expect(result.status).toBe('ok');
 
-    // session-tree::append should have been called for replay reinsertion
-    expect(appendCalls).toHaveLength(1);
-    const appendPayload = appendCalls[0] as Record<string, unknown>;
-    expect(appendPayload.session_id).toBe(mediumFixture.session_id);
-    expect(appendPayload.message).toBeDefined();
+    // The last user message is already on the path as the compaction's
+    // parent; we no longer reinject it via session-tree::append.
+    expect(appendCalls).toHaveLength(0);
 
-    // session-tree::append_synthetic should have been called with compaction_continue: true
+    // append_synthetic posts the continue nudge as a child of the compaction.
     expect(appendSyntheticCalls).toHaveLength(1);
     const syntheticPayload = appendSyntheticCalls[0] as Record<string, unknown>;
     expect(syntheticPayload.session_id).toBe(mediumFixture.session_id);
-    const metadata = syntheticPayload.metadata as Record<string, unknown>;
-    expect(metadata).toBeDefined();
-    expect(metadata.compaction_continue).toBe(true);
+    expect(String(syntheticPayload.text)).toContain('Continue');
   });
 });
 

@@ -130,7 +130,7 @@ describe('handleSteering', () => {
   it('end_turn: emits turn_end then finishes the session (agent_end + stopped)', async () => {
     const { iii } = makeIii();
     const rec = steeringRec('s1');
-    installMockTurnStore({ loadMessages: vi.fn(async () => []) });
+    const store = installMockTurnStore();
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleSteering(iii, rec);
@@ -139,6 +139,8 @@ describe('handleSteering', () => {
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'agent_end' }));
+    // agent_end is a signal: finishSession no longer reloads the transcript.
+    expect(store.loadMessages).not.toHaveBeenCalled();
   });
 
   it('caps at max_turns: emits a max_turns assistant + message_complete + turn_end and tears down instead of continuing', async () => {
@@ -148,7 +150,7 @@ describe('handleSteering', () => {
       turn_count: 2,
       function_results: [{ role: 'function_result', content: [] }] as never,
     });
-    const store = installMockTurnStore({ loadMessages: vi.fn(async () => []) });
+    const store = installMockTurnStore();
     const appendSpy = store.appendMessages;
     const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
@@ -165,7 +167,9 @@ describe('handleSteering', () => {
       expect.objectContaining({ type: 'message_complete' }),
     );
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
-    expect(store.loadMessages).toHaveBeenCalledWith('s1');
+    // max_turns teardown appends the synthetic notice and finishes without a
+    // transcript reload (agent_end is a signal).
+    expect(store.loadMessages).not.toHaveBeenCalled();
     expect(appendSpy).toHaveBeenCalledWith('s1', [
       expect.objectContaining({
         content: expect.arrayContaining([

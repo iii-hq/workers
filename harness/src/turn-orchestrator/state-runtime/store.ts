@@ -3,17 +3,16 @@
  * through `createTurnStore`.
  */
 
-import { z } from 'zod';
 import { TriggerAction, type ISdk } from '../../runtime/iii.js';
 import { stateGet, stateSet } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentMessage } from '../../types/agent-message.js';
-import { MESSAGES_SCOPE, RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
+import { RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
 import { emit } from '../events.js';
 import { type RunRequest, parseRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
-import { mirrorMessagesToSessionTree } from '../session-tree-mirror.js';
 import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
+import { loadContextView } from './context-view.js';
 
 /**
  * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
@@ -49,26 +48,31 @@ export type TurnStore = {
   loadRecord(session_id: string): Promise<TurnStateRecord | null>;
   saveRecord(rec: TurnStateRecord, previous?: TurnStateRecord | null): Promise<void>;
   writeRecord(rec: TurnStateRecord): Promise<void>;
+  ensureSession(session_id: string): Promise<void>;
   loadMessages(session_id: string): Promise<AgentMessage[]>;
-  saveMessages(session_id: string, messages: AgentMessage[]): Promise<void>;
   appendMessages(session_id: string, msgs: AgentMessage[]): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
 };
 
-const FlatMessagesSchema = z
-  .array(z.custom<AgentMessage>((v) => v != null && typeof v === 'object'))
-  .catch([]);
-
-/** @internal Exported for unit tests. */
-export function parseFlatMessages(raw: unknown): AgentMessage[] {
-  return FlatMessagesSchema.parse(raw ?? []);
-}
-
 const scopedGet = (iii: ISdk, scope: string, session_id: string) =>
   stateGet(iii, scope, session_id);
 const scopedSet = (iii: ISdk, scope: string, session_id: string, value: unknown) =>
   stateSet(iii, scope, session_id, value);
+
+/**
+ * Create the session-tree record if absent. Idempotent, but invoked exactly
+ * once per run (at `run::start`) rather than wrapping every read/write — the
+ * `run::start` gateway always precedes any turn-store load/append for a session,
+ * so re-ensuring on each call was pure RPC overhead.
+ */
+async function ensureSessionTree(iii: ISdk, session_id: string): Promise<void> {
+  await iii.trigger({
+    function_id: 'session-tree::ensure',
+    payload: { session_id },
+    timeoutMs: 10_000,
+  });
+}
 
 async function emitTurnStateChanged(
   iii: ISdk,
@@ -135,19 +139,22 @@ export function createTurnStore(iii: ISdk): TurnStore {
       }
     },
 
-    async loadMessages(session_id) {
-      return parseFlatMessages(await scopedGet(iii, MESSAGES_SCOPE, session_id));
+    async ensureSession(session_id) {
+      await ensureSessionTree(iii, session_id);
     },
 
-    async saveMessages(session_id, messages) {
-      await scopedSet(iii, MESSAGES_SCOPE, session_id, messages);
-      await mirrorMessagesToSessionTree(iii, session_id, messages);
+    async loadMessages(session_id) {
+      return loadContextView(iii, session_id);
     },
 
     async appendMessages(session_id, msgs) {
-      const messages = parseFlatMessages(await scopedGet(iii, MESSAGES_SCOPE, session_id));
-      await scopedSet(iii, MESSAGES_SCOPE, session_id, [...messages, ...msgs]);
-      await mirrorMessagesToSessionTree(iii, session_id, [...messages, ...msgs]);
+      for (const message of msgs) {
+        await iii.trigger({
+          function_id: 'session-tree::append',
+          payload: { session_id, message, parent_id: null },
+          timeoutMs: 10_000,
+        });
+      }
     },
 
     async saveRunRequest(session_id, request) {

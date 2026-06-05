@@ -1,5 +1,5 @@
 /**
- * Register all 11 `session-tree::*` functions. Mirrors
+ * Register the `session-tree::*` functions. Mirrors
  * `session/src/tree/mod.rs::register_with_iii`.
  */
 
@@ -19,7 +19,6 @@ import {
   fork,
   listSessions,
   loadMessagesWithEntryIds,
-  reconcile,
   tree,
   updatePart as updatePartOp,
   updateParts as updatePartsOp,
@@ -38,7 +37,6 @@ export const FUNCTION_IDS = {
   APPEND: 'session-tree::append',
   MESSAGES: 'session-tree::messages',
   LIST: 'session-tree::list',
-  RECONCILE: 'session-tree::reconcile',
   COMPACTIONS: 'session-tree::compactions',
   APPEND_SYNTHETIC: 'session-tree::append_synthetic',
   UPDATE_PART: 'session-tree::update_part',
@@ -163,18 +161,6 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
       description:
         'Load every AgentMessage on the active path of a session, paired with its entry_id, oldest first',
     },
-  );
-
-  iii.registerFunction(
-    FUNCTION_IDS.RECONCILE,
-    async (payload: unknown) => {
-      const obj = (payload ?? {}) as Record<string, unknown>;
-      const session_id = requireString(obj, 'session_id');
-      const snapshot = obj.state_snapshot;
-      if (!Array.isArray(snapshot)) throw new Error('missing required field: state_snapshot');
-      return await reconcile(store, session_id, snapshot as AgentMessage[]);
-    },
-    { description: 'Mirror missing messages from a state-snapshot into session-tree' },
   );
 
   iii.registerFunction(

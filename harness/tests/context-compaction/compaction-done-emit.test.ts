@@ -1,10 +1,10 @@
 /**
  * Asserts that both the sync (handleSync) and async (handleAsync) compaction
  * paths publish a `compaction_done` AgentEvent on `agent::events` after a
- * successful flat-state rewrite. The UI consumes this event to drop the
+ * successful tree compaction. The UI consumes this event to drop the
  * post-compaction CTX bar to its correct value.
  *
- * Strategy: vi.mock the summarize + flat-state + prune + replay helpers so
+ * Strategy: vi.mock the summarize + prune + replay helpers so
  * the handler reaches the emit call deterministically without needing a
  * real provider stream. We capture stream::set payloads via a stub ISdk.
  */
@@ -23,22 +23,12 @@ vi.mock('../../src/context-compaction/summarize.js', () => ({
   })),
 }));
 
-vi.mock('../../src/context-compaction/flat-state.js', () => ({
-  buildSummaryMessage: (text: string) => ({
-    role: 'system',
-    kind: 'compaction',
-    content: [{ type: 'text', text }],
-  }),
-  rewriteFlatMessages: vi.fn(async () => undefined),
-}));
-
 vi.mock('../../src/context-compaction/prune.js', () => ({
   prune: vi.fn(async () => ({ pruned_tokens: 0, pruned_parts: 0, scanned_parts: 0 })),
 }));
 
 vi.mock('../../src/context-compaction/replay.js', () => ({
   extractReplayTarget: () => ({ replay: null, truncatedMessages: [] }),
-  reinjectReplay: vi.fn(async () => 'entry-replay'),
 }));
 
 vi.mock('../../src/context-compaction/model-resolver.js', () => ({
@@ -139,7 +129,7 @@ describe('handleSync emits compaction_done', () => {
     delete process.env.COMPACT_BUSY_TIMEOUT_MS;
   });
 
-  it('publishes a compaction_done event on agent::events with mode="sync" after a successful rewrite', async () => {
+  it('publishes a compaction_done event on agent::events with mode="sync" after successful compaction', async () => {
     const { handleSync } = await import('../../src/context-compaction/handler-sync.js');
     const { iii, streamSetCalls } = makeStubIii();
 

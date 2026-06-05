@@ -2,7 +2,7 @@
  * Stream one provider turn, persist the assistant message, and route onward.
  */
 
-import type { AssistantMessage } from '../../types/agent-message.js';
+import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
 import { decide } from '../provider-router.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
 import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
@@ -113,6 +113,7 @@ export async function finalizeAssistantTurn(
   ports: AssistantStreamingPorts,
   rec: AssistantStreamingTurnRecord,
   asst: AssistantMessage,
+  messages: AgentMessage[],
 ): Promise<void> {
   await ports.emitMessageComplete(rec.session_id, asst, rec.assistant_body_streamed === true);
 
@@ -124,7 +125,7 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  await ports.persistAssistantIfNew(rec.session_id, asst);
+  await ports.persistAssistantIfNew(rec.session_id, asst, messages);
 
   if (route.kind === 'function_execute') {
     rec.function_results = [];
@@ -156,5 +157,5 @@ export async function runAssistantStreaming(
     });
   }
 
-  await finalizeAssistantTurn(ports, rec, asst);
+  await finalizeAssistantTurn(ports, rec, asst, ctx.messages);
 }

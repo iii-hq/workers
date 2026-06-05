@@ -11,13 +11,12 @@ import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { compactionConfig } from './config.js';
 import {
-  persistCompactionFlatState,
   publishCompactionDone,
   runSummarizeCompaction,
 } from './handler-pipeline.js';
 import { acquireLeaseWithWait, releaseLease } from './lease.js';
 import type { ModelLimit } from './overflow.js';
-import { type MessageWithEntryId, extractReplayTarget, reinjectReplay } from './replay.js';
+import { type MessageWithEntryId, extractReplayTarget } from './replay.js';
 
 export type CompactNowInput = {
   session_id: string;
@@ -99,28 +98,19 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       const auto_continued = Boolean(replay);
       setCurrentSpanAttribute('auto_continued', auto_continued);
 
-      let lastEntryId = result.compaction_entry_id || null;
+      // The last user message is already on the path as the compaction's
+      // parent; just nudge the agent to continue past the summary.
       if (replay) {
-        lastEntryId = await reinjectReplay(iii, input.session_id, replay, lastEntryId);
         await iii.trigger<unknown, { entry_id?: string }>({
           function_id: 'session-tree::append_synthetic',
           payload: {
             session_id: input.session_id,
             text: 'Continue if you have next steps, or stop and ask for clarification.',
-            metadata: { compaction_continue: true },
-            parent_id: lastEntryId,
+            parent_id: result.compaction_entry_id || null,
           },
           timeoutMs: 10_000,
         });
       }
-
-      await persistCompactionFlatState(
-        iii,
-        input.session_id,
-        result.summary_text,
-        result.tail_messages,
-        replay ? [replay.message] : undefined,
-      );
 
       await publishCompactionDone(iii, input.session_id, 'sync', result);
 

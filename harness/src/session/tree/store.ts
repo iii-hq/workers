@@ -1,7 +1,7 @@
 /**
  * Session storage backend.
  *
- * - `InMemoryStore` is the test/replay backend.
+ * - `InMemoryStore` is used by unit tests only (constructed directly, not via worker config).
  * - `IiiStateSessionStore` mirrors
  *   `session/src/tree/store_iii_state.rs`. Storage layout:
  *

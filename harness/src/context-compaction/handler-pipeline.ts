@@ -1,13 +1,11 @@
 /**
- * Shared prune → summarize → flat-state rewrite path for sync and async handlers.
+ * Shared prune → summarize path for sync and async compaction handlers.
  */
 
 import { logger } from '../runtime/otel.js';
 import type { ISdk } from '../runtime/iii.js';
 import { emit } from '../turn-orchestrator/events.js';
-import type { AgentMessage } from '../types/agent-message.js';
 import { compactionConfig } from './config.js';
-import { buildSummaryMessage, rewriteFlatMessages } from './flat-state.js';
 import type { ModelLimit } from './overflow.js';
 import { prune } from './prune.js';
 import {
@@ -29,8 +27,8 @@ export interface CompactionDonePayload {
 
 /**
  * Best-effort: a publish failure is logged but never thrown — the
- * caller has already done the load-bearing work (rewriting flat
- * state) and the UI marker is a nice-to-have.
+ * caller has already done the load-bearing work (tree compaction)
+ * and the UI marker is a nice-to-have.
  */
 async function emitCompactionDone(
   iii: ISdk,
@@ -83,18 +81,6 @@ export async function runSummarizeCompaction(
     modelID: model.modelID,
     modelLimit: model.modelLimit,
   });
-}
-
-export async function persistCompactionFlatState(
-  iii: ISdk,
-  session_id: string,
-  summary_text: string,
-  tail_messages: AgentMessage[],
-  extra?: AgentMessage[],
-): Promise<void> {
-  const messages: AgentMessage[] = [buildSummaryMessage(summary_text), ...tail_messages];
-  if (extra) messages.push(...extra);
-  await rewriteFlatMessages(iii, session_id, messages);
 }
 
 export async function publishCompactionDone(

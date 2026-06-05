@@ -86,13 +86,6 @@ export type MessageWithEntryId = {
   message: AgentMessage;
 };
 
-export type ReconcileResult = {
-  state_count: number;
-  tree_count_before: number;
-  tree_count_after: number;
-  repaired: number;
-};
-
 export type ListOrder = 'asc' | 'desc';
 
 export type SessionListRow = {
