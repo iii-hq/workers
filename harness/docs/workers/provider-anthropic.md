@@ -45,10 +45,37 @@ by [src/provider-anthropic/cache.ts](harness/src/provider-anthropic/cache.ts).
 From the `provider_anthropic` section of
 [config.yaml](harness/config.yaml):
 
-- `default_max_tokens` (default `8192`) — upper bound for the request's
-  `max_tokens` field when the caller omits it.
+- `default_max_tokens` (default `8192`) — fallback for the request's
+  `max_tokens` field when the model is not in the catalog.
 - `default_api_url` (default `https://api.anthropic.com/v1/messages`) —
   endpoint for outbound calls.
+
+### Max output tokens
+
+Per request, `max_tokens` resolves as (see
+[src/runtime/output-tokens.ts](harness/src/runtime/output-tokens.ts)):
+
+1. A registry override (`providers.anthropic.max_tokens` in the `harness`
+   config entry) wins, clamped down to the model's catalog
+   `max_output_tokens` when known.
+2. Otherwise `min(model.max_output_tokens, 32_000)` — the catalog limit
+   comes from [models.dev](https://models.dev) at discovery time; the 32k
+   cap is overridable via the `HARNESS_OUTPUT_TOKEN_MAX` env var.
+3. Unknown model → `default_max_tokens`.
+
+### Extended thinking
+
+When the run request carries a `thinking_level`
+(`minimal|low|medium|high|xhigh`), the request body gains
+`thinking: { type: "enabled", budget_tokens }` plus the
+`anthropic-beta: interleaved-thinking-2025-05-14` header. Budgets come
+from the catalog's `thinking_budgets`, falling back to a formula on the
+model's output ceiling (`high` → `min(16000, output/2−1)`, `xhigh` →
+`min(31999, output−1)`). The budget always stays below `max_tokens`;
+when fewer than 1024 tokens of room remain, thinking is dropped instead
+of sending a request the API would reject. Thinking/redacted-thinking
+SSE blocks stream as `thinking_*` events and persist as a `thinking`
+content block.
 
 ## Dependencies
 

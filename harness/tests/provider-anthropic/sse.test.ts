@@ -104,3 +104,133 @@ describe('handleSseEvent', () => {
     expect(partial.content[0]).toEqual({ type: 'text', text: 'hello' });
   });
 });
+
+describe('handleSseEvent thinking blocks', () => {
+  it('emits thinking_start + thinking_delta + thinking_end in order', () => {
+    const state = emptyPartial();
+    const out: string[] = [];
+    out.push(
+      ...handleSseEvent(
+        'data: {"type":"content_block_start","content_block":{"type":"thinking"}}',
+        state,
+        'm',
+      ).map((e) => e.type),
+    );
+    out.push(
+      ...handleSseEvent(
+        'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"let me think"}}',
+        state,
+        'm',
+      ).map((e) => e.type),
+    );
+    out.push(
+      ...handleSseEvent('data: {"type":"content_block_stop"}', state, 'm').map((e) => e.type),
+    );
+    expect(out).toEqual(['thinking_start', 'thinking_delta', 'thinking_end']);
+    expect(state.thinking_blocks[0]?.text).toBe('let me think');
+  });
+
+  it('accumulates signature_delta without emitting events', () => {
+    const state = emptyPartial();
+    handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"thinking"}}',
+      state,
+      'm',
+    );
+    const events = handleSseEvent(
+      'data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig123"}}',
+      state,
+      'm',
+    );
+    expect(events).toEqual([]);
+    expect(state.thinking_blocks[0]?.signature).toBe('sig123');
+  });
+
+  it('persists a leading ThinkingContent block in the assembled message', () => {
+    const state = emptyPartial();
+    handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"thinking"}}',
+      state,
+      'm',
+    );
+    handleSseEvent(
+      'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"why"}}',
+      state,
+      'm',
+    );
+    handleSseEvent('data: {"type":"content_block_stop"}', state, 'm');
+    state.text_blocks.push('answer');
+    const partial = buildPartial(state, 'm');
+    expect(partial.content).toEqual([
+      { type: 'thinking', text: 'why' },
+      { type: 'text', text: 'answer' },
+    ]);
+  });
+
+  it('emits the end event matching the open block kind (regression: tool_use end)', () => {
+    const state = emptyPartial();
+    handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"x"}}',
+      state,
+      'm',
+    );
+    const stop = handleSseEvent('data: {"type":"content_block_stop"}', state, 'm');
+    expect(stop[0]?.type).toBe('functioncall_end');
+  });
+
+  it('text block after a thinking block still emits text_end', () => {
+    const state = emptyPartial();
+    handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"thinking"}}',
+      state,
+      'm',
+    );
+    handleSseEvent('data: {"type":"content_block_stop"}', state, 'm');
+    handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"text"}}',
+      state,
+      'm',
+    );
+    const stop = handleSseEvent('data: {"type":"content_block_stop"}', state, 'm');
+    expect(stop[0]?.type).toBe('text_end');
+  });
+
+  it('preserves interleaved thinking/tool_use arrival order in the assembled message', () => {
+    const state = emptyPartial();
+    const feed = (line: string) => handleSseEvent(`data: ${line}`, state, 'm');
+    // thinking₁ → tool_use₁ → thinking₂ → tool_use₂ (interleaved-thinking beta shape)
+    feed('{"type":"content_block_start","content_block":{"type":"thinking"}}');
+    feed('{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"plan A"}}');
+    feed('{"type":"content_block_stop"}');
+    feed('{"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"x"}}');
+    feed('{"type":"content_block_stop"}');
+    feed('{"type":"content_block_start","content_block":{"type":"thinking"}}');
+    feed('{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"plan B"}}');
+    feed('{"type":"content_block_stop"}');
+    feed('{"type":"content_block_start","content_block":{"type":"tool_use","id":"t2","name":"y"}}');
+    feed('{"type":"content_block_stop"}');
+    const partial = buildPartial(state, 'm');
+    expect(partial.content.map((b) => b.type)).toEqual([
+      'thinking',
+      'function_call',
+      'thinking',
+      'function_call',
+    ]);
+    expect(partial.content[0]).toMatchObject({ text: 'plan A' });
+    expect(partial.content[2]).toMatchObject({ text: 'plan B' });
+  });
+
+  it('redacted_thinking does not crash and emits thinking events', () => {
+    const state = emptyPartial();
+    const start = handleSseEvent(
+      'data: {"type":"content_block_start","content_block":{"type":"redacted_thinking","data":"opaque"}}',
+      state,
+      'm',
+    );
+    expect(start[0]?.type).toBe('thinking_start');
+    const stop = handleSseEvent('data: {"type":"content_block_stop"}', state, 'm');
+    expect(stop[0]?.type).toBe('thinking_end');
+    // Opaque content is not persisted.
+    expect(buildPartial(state, 'm').content).toEqual([]);
+  });
+});

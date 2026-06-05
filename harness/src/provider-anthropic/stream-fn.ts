@@ -20,6 +20,7 @@ import { isTerminal } from '../types/stream-event.js';
 import { buildConfig } from './auth.js';
 import type { WorkerConfig } from './config.js';
 import { streamAnthropic } from './stream.js';
+import { buildThinkingConfig } from './thinking.js';
 
 export const FUNCTION_ID = 'provider::anthropic::stream';
 
@@ -34,12 +35,14 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
       // (which no longer exists by the time we get here).
       const writer = input.writer_ref as ChannelWriter;
       const cfg = await buildConfig(iii, worker, input.model);
+      const thinking = buildThinkingConfig(input.thinking_level, cfg.max_tokens, cfg.catalog);
       try {
         const events = streamAnthropic({
           cfg,
           system_prompt: input.system_prompt ?? '',
           messages: input.messages as AgentMessage[],
           tools: input.tools as import('../types/function.js').AgentFunction[],
+          ...(thinking ? { thinking } : {}),
         });
         for await (const ev of events) {
           writer.sendMessage(JSON.stringify(ev));

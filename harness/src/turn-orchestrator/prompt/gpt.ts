@@ -1,8 +1,7 @@
 /**
  * Identity prompt for GPT-family models (openai provider) — pragmatic
  * senior-engineer voice with persistence/autonomy emphasis, flat lists, and
- * ## headers (opencode gpt.txt style). Carries the same rules as the
- * anthropic variant.
+ * ## headers. Carries the same rules as the anthropic variant.
  */
 
 export const PROMPT_GPT = `You are an iii agent worker.

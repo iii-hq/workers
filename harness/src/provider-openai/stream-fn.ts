@@ -31,6 +31,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
           system_prompt: input.system_prompt ?? '',
           messages: input.messages as AgentMessage[],
           tools: input.tools as import('../types/function.js').AgentFunction[],
+          ...(input.thinking_level ? { thinking_level: input.thinking_level } : {}),
         });
         for await (const ev of events) {
           writer.sendMessage(JSON.stringify(ev));

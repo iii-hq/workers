@@ -157,10 +157,12 @@ export class ProviderRegistry {
       typeof cfg.api_url === 'string' && cfg.api_url.length > 0
         ? cfg.api_url
         : (decl?.defaults?.api_url ?? null);
+    // Only a user-configured max_tokens counts. The declared default is NOT
+    // seeded here — the per-model clamp (runtime/output-tokens.ts) would
+    // treat it as a deliberate override and pin every request to 8192;
+    // providers apply their own fallback after the clamp.
     const max_tokens =
-      typeof cfg.max_tokens === 'number' && cfg.max_tokens > 0
-        ? cfg.max_tokens
-        : (decl?.defaults?.max_tokens ?? null);
+      typeof cfg.max_tokens === 'number' && cfg.max_tokens > 0 ? cfg.max_tokens : null;
 
     return { configured: credential !== null, source, credential, api_url, max_tokens };
   }

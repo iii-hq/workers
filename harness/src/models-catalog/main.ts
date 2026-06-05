@@ -5,5 +5,5 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'models-catalog',
   description: 'Model capabilities catalog on the iii bus (models::list/get/supports/reconcile).',
-  register: (iii) => register(iii),
+  register: async (iii) => register(iii),
 });

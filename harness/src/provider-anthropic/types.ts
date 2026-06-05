@@ -1,8 +1,11 @@
 /**
  * Anthropic provider config + auth-mode union. Mirrors
- * `provider-anthropic/src/lib.rs::{AnthropicConfig, AuthMode}`.
+ * `provider-anthropic/src/lib.rs::{AnthropicConfig, AuthMode}` for the
+ * wire-relevant fields; `catalog` is a harness-side, in-process-only
+ * addition with no Rust counterpart (never serialized).
  */
 
+import type { Model } from '../models-catalog/types.js';
 import type { Credential } from '../runtime/provider-resolve.js';
 import { DEFAULT_API_URL } from './config.js';
 
@@ -14,6 +17,8 @@ export type AnthropicConfig = {
   max_tokens: number;
   api_url: string;
   auth_mode: AuthMode;
+  /** Catalog entry for `model` when known; used for thinking budgets. */
+  catalog?: Model;
 };
 
 export function configWithCredential(

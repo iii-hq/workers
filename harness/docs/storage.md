@@ -28,6 +28,13 @@ worker self-declares its slice at startup via `harness::provider::register`,
 so the editable shape grows/shrinks with the set of running providers. The
 console renders this entry with its schema-driven configuration form.
 
+A configured `max_tokens` is an explicit override: it wins over the
+per-model default (`min(catalog max_output_tokens, 32_000)` — see
+[src/runtime/output-tokens.ts](../src/runtime/output-tokens.ts)) but is
+clamped down to the model's catalog ceiling when known, so a too-large
+value can't produce upstream 400s. The 32k default cap is overridable via
+the `HARNESS_OUTPUT_TOKEN_MAX` env var.
+
 > Secrets are stored as plaintext in the configuration value. Agents are
 > denied `configuration::get`/`set` and `harness::provider::resolve` in
 > [iii-permissions.yaml](../../iii-permissions.yaml); the console edits the

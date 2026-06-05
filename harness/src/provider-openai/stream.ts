@@ -7,6 +7,7 @@ import { logger } from '../runtime/otel.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
 import type { AgentFunction } from '../types/function.js';
 import type { AssistantMessageEvent } from '../types/stream-event.js';
+import { isReasoningModel, reasoningEffortFor } from './reasoning.js';
 import {
   buildFinal,
   classifyOpenaiError,
@@ -23,6 +24,8 @@ export type StreamArgs = {
   system_prompt: string;
   messages: AgentMessage[];
   tools: AgentFunction[];
+  /** Optional reasoning level; mapped onto `reasoning_effort` for reasoning models. */
+  thinking_level?: string;
 };
 
 export async function* streamOpenai({
@@ -30,7 +33,10 @@ export async function* streamOpenai({
   system_prompt,
   messages,
   tools,
+  thinking_level,
 }: StreamArgs): AsyncGenerator<AssistantMessageEvent> {
+  // `max_completion_tokens` stays set for reasoning models too: reasoning
+  // tokens count toward it, but the clamped default leaves ample room.
   const body: Record<string, unknown> = {
     model: cfg.model,
     max_completion_tokens: cfg.max_tokens,
@@ -38,6 +44,10 @@ export async function* streamOpenai({
     stream: true,
     stream_options: { include_usage: true },
   };
+  if (isReasoningModel(cfg.model, cfg.catalog?.supports_thinking)) {
+    const effort = reasoningEffortFor(thinking_level, cfg.model);
+    if (effort) body.reasoning_effort = effort;
+  }
   if (tools.length > 0) body.tools = functionsToOpenai(tools);
 
   const authName = cfg.auth_header_name ?? 'Authorization';

@@ -11,6 +11,7 @@
 
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from './iii.js';
+import type { ModelsDevModel } from './modelsdev.js';
 import { logger } from './otel.js';
 
 const DISCOVERY_TIMEOUT_MS = 8_000;
@@ -107,26 +108,30 @@ export type ModelStub = {
 
 /**
  * Build a catalog `Model` for a discovered id. Upstream `/v1/models`
- * endpoints expose little metadata, so we fill in a per-provider default
- * context window and conservative capability flags (tools on, the rest
- * left at their defaults).
+ * endpoints expose little metadata, so per-model limits and capability
+ * flags come from models.dev when available (`modelsDev`), with a
+ * per-provider default context window and conservative flags as fallback.
  */
 export function enrichModel(opts: {
   provider: string;
   api: string;
   stub: ModelStub;
   defaultContextWindow: number;
+  modelsDev?: ModelsDevModel;
 }): Model {
-  return {
+  const md = opts.modelsDev;
+  const model: Model = {
     id: opts.stub.id,
     provider: opts.provider,
     api: opts.api,
     display_name: opts.stub.display_name ?? opts.stub.id,
-    context_window: opts.defaultContextWindow,
-    max_output_tokens: 8_192,
-    supports_tools: true,
+    context_window: md?.limit?.context ?? opts.defaultContextWindow,
+    max_output_tokens: md?.limit?.output ?? 8_192,
+    supports_tools: md?.tool_call ?? true,
     transports: ['sse'],
   };
+  if (md?.reasoning !== undefined) model.supports_thinking = md.reasoning;
+  return model;
 }
 
 /**

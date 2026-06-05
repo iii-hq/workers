@@ -100,10 +100,27 @@ describe('ProviderRegistry.resolve', () => {
       expect(r.credential).toEqual({ type: 'api_key', key: 'sk-env' });
       expect(r.source).toBe('environment');
       expect(r.api_url).toBe('https://default');
-      expect(r.max_tokens).toBe(1234);
+      // The declared default max_tokens is NOT seeded as an override —
+      // seeding it would pin every request to 8192 and defeat the clamp.
+      expect(r.max_tokens).toBeNull();
     } finally {
       process.env.III_TEST_PROVIDER_KEY = undefined;
     }
+  });
+
+  it('returns max_tokens only when the user actually configured it', async () => {
+    const { sdk } = makeConfigSdk({
+      permissions: { default_mode: 'manual' },
+      providers: { anthropic: { api_key: 'sk-abc' } },
+    });
+    const reg = new ProviderRegistry(sdk);
+    await reg.declare({
+      id: 'anthropic',
+      credential_env_var: 'ANTHROPIC_API_KEY',
+      defaults: { api_url: 'https://default', max_tokens: 8192 },
+    });
+    const r = await reg.resolve('anthropic');
+    expect(r.max_tokens).toBeNull();
   });
 
   it('reports unconfigured when neither stored nor env credential exists', async () => {

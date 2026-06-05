@@ -4,6 +4,7 @@
  */
 
 import type { ISdk } from '../runtime/iii.js';
+import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js';
 import { resolveProvider } from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
@@ -23,6 +24,12 @@ export async function buildConfig(
     );
   }
   const apiUrl = resolved.api_url ?? worker.default_api_url;
-  const maxTokens = resolved.max_tokens ?? worker.default_max_tokens;
-  return configFromCredential(apiUrl, PROVIDER_ID, model, resolved.credential, maxTokens);
+  const catalog = await getCatalogModel(iii, PROVIDER_ID, model);
+  const maxTokens = clampOutputTokens({
+    modelMaxOutput: catalog?.max_output_tokens,
+    userOverride: resolved.max_tokens,
+    workerDefault: worker.default_max_tokens,
+  });
+  const cfg = configFromCredential(apiUrl, PROVIDER_ID, model, resolved.credential, maxTokens);
+  return catalog ? { ...cfg, catalog } : cfg;
 }

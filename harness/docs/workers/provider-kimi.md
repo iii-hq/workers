@@ -42,8 +42,13 @@ None — the worker is stateless.
 From the `provider_kimi` section of
 [config.yaml](harness/config.yaml):
 
-- `default_max_tokens` (default `8192`) — upper bound for the request's
-  `max_completion_tokens` field when the caller omits it.
+- `default_max_tokens` (default `8192`) — fallback for the request's
+  `max_completion_tokens` field when the model is not in the catalog.
+  When the catalog knows the model (kimi maps to models.dev `moonshotai`),
+  the per-request value resolves as: registry override (clamped to the
+  model ceiling) → `min(catalog max_output_tokens, 32_000)` (env override
+  `HARNESS_OUTPUT_TOKEN_MAX`) → this fallback. See
+  [src/runtime/output-tokens.ts](harness/src/runtime/output-tokens.ts).
 - `default_api_url` (default
   `https://api.moonshot.ai/v1/chat/completions`) — endpoint for outbound
   calls. Override to target Moonshot's China endpoint

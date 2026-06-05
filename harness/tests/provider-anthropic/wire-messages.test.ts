@@ -39,6 +39,50 @@ describe('contentBlockToWire', () => {
       }),
     ).toBeNull();
   });
+
+  it('round-trips signed thinking blocks (required for thinking + tool use)', () => {
+    expect(
+      contentBlockToWire({ type: 'thinking', text: 'reasoning…', signature: 'sig123' }),
+    ).toEqual({ type: 'thinking', thinking: 'reasoning…', signature: 'sig123' });
+  });
+
+  it('drops unsigned thinking blocks (would fail signature verification)', () => {
+    expect(contentBlockToWire({ type: 'thinking', text: 'partial' })).toBeNull();
+  });
+});
+
+describe('toWireMessages thinking round-trip', () => {
+  it('keeps the signed thinking block before tool_use in the assistant turn', () => {
+    const msgs: AgentMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: 'go' }], timestamp: 0 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: 'plan it', signature: 'sig' },
+          { type: 'function_call', id: 't1', function_id: 'shell::exec', arguments: {} },
+        ],
+        stop_reason: 'function_call',
+        error_message: null,
+        error_kind: null,
+        usage: null,
+        model: 'm',
+        provider: 'anthropic',
+        timestamp: 1,
+      },
+      {
+        role: 'function_result',
+        function_call_id: 't1',
+        function_id: 'shell::exec',
+        content: [],
+        details: null,
+        is_error: false,
+        timestamp: 2,
+      },
+    ];
+    const wire = toWireMessages(msgs) as Array<{ role: string; content: Array<{ type: string }> }>;
+    const assistant = wire.find((m) => m.role === 'assistant');
+    expect(assistant?.content.map((b) => b.type)).toEqual(['thinking', 'tool_use']);
+  });
 });
 
 describe('toWireMessages', () => {

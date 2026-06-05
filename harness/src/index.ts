@@ -72,7 +72,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'models-catalog',
     description: 'Model capabilities catalog on the iii bus (models::list/get/supports/register).',
-    register: (iii) => registerModelsCatalog(iii),
+    register: async (iii) => registerModelsCatalog(iii),
   },
   {
     name: 'provider-anthropic',

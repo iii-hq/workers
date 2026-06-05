@@ -58,3 +58,18 @@ describe('parseRunRequest function_schemas', () => {
     expect(parseRunRequest({ function_schemas: [{ name: 'x' }] }).function_schemas).toHaveLength(1);
   });
 });
+
+describe('parseRunRequest thinking_level', () => {
+  it('passes through a string level', () => {
+    expect(parseRunRequest({ thinking_level: 'high' }).thinking_level).toBe('high');
+  });
+
+  it('is undefined when absent', () => {
+    expect(parseRunRequest({}).thinking_level).toBeUndefined();
+  });
+
+  it('coerces non-string values to undefined', () => {
+    expect(parseRunRequest({ thinking_level: 42 }).thinking_level).toBeUndefined();
+    expect(parseRunRequest({ thinking_level: { level: 'high' } }).thinking_level).toBeUndefined();
+  });
+});

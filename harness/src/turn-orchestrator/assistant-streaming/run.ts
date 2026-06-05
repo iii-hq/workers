@@ -31,7 +31,7 @@ export async function prepareStreamContext(
 ): Promise<StreamContext> {
   const request = await ports.loadRunRequest(rec.session_id);
   let messages = await ports.loadMessages(rec.session_id);
-  const { provider, model, system_prompt, function_schemas } = request;
+  const { provider, model, system_prompt, function_schemas, thinking_level } = request;
   const decision = decide({ provider, model });
   const tools = parseFunctionSchemas(function_schemas);
 
@@ -47,6 +47,7 @@ export async function prepareStreamContext(
     system_prompt,
     tools,
     messages,
+    ...(thinking_level ? { thinking_level } : {}),
   };
 }
 

@@ -46,8 +46,16 @@ export function applyMessagesCacheAnchor(wire: Record<string, unknown>[]): void 
   if (!msg) return;
   const content = msg.content;
   if (!Array.isArray(content) || content.length === 0) return;
-  const lastBlock = content[content.length - 1] as Record<string, unknown> | undefined;
-  if (lastBlock) lastBlock.cache_control = ephemeral();
+  // Anchor on the last block that accepts cache_control — Anthropic rejects
+  // it on thinking/redacted_thinking blocks, which can trail a turn under
+  // interleaved thinking.
+  for (let i = content.length - 1; i >= 0; i--) {
+    const block = content[i] as Record<string, unknown> | undefined;
+    if (!block) continue;
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') continue;
+    block.cache_control = ephemeral();
+    return;
+  }
 }
 
 function isStableAssistant(wire: Record<string, unknown>[], idx: number): boolean {

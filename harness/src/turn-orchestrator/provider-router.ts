@@ -61,6 +61,7 @@ export function buildInput(
   system_prompt: string | null | undefined,
   messages: AgentMessage[],
   tools: AgentFunction[],
+  thinking_level?: string,
 ): ProviderStreamInput {
   return {
     writer_ref,
@@ -68,5 +69,6 @@ export function buildInput(
     model: d.model,
     messages: messages as unknown[],
     tools,
+    ...(thinking_level ? { thinking_level } : {}),
   };
 }

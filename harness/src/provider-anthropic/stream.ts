@@ -16,6 +16,7 @@ import {
   handleSseEvent,
   syntheticErrorEvent,
 } from './sse.js';
+import type { ThinkingConfig } from './thinking.js';
 import { type AnthropicConfig, authHeaderFor } from './types.js';
 import { toWireMessages } from './wire-messages.js';
 import { functionsToWire } from './wire-tools.js';
@@ -25,6 +26,8 @@ export type StreamArgs = {
   system_prompt: string;
   messages: AgentMessage[];
   tools: AgentFunction[];
+  /** Extended thinking; absent = off. See `thinking.ts`. */
+  thinking?: ThinkingConfig;
 };
 
 export async function* streamAnthropic({
@@ -32,14 +35,17 @@ export async function* streamAnthropic({
   system_prompt,
   messages,
   tools,
+  thinking,
 }: StreamArgs): AsyncGenerator<AssistantMessageEvent> {
   const wire_messages = toWireMessages(messages) as Record<string, unknown>[];
   applyMessagesCacheAnchor(wire_messages);
   const wire_tools = functionsToWire(tools) as Record<string, unknown>[];
   applyToolsCacheControl(wire_tools);
+  // No `temperature`: the API default applies (required when thinking is on).
   const body = {
     model: cfg.model,
     max_tokens: cfg.max_tokens,
+    ...(thinking ? { thinking } : {}),
     system: buildSystemField(system_prompt),
     messages: wire_messages,
     tools: wire_tools,
@@ -51,9 +57,10 @@ export async function* streamAnthropic({
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
   };
-
-  console.log('headers', headers);
-  console.log('body', body);
+  if (thinking) {
+    // Lets thinking interleave with tool calls.
+    headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
+  }
 
   const ac = new AbortController();
   let resp: Response;

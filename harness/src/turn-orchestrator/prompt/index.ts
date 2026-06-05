@@ -1,6 +1,5 @@
 /**
- * Per-model identity prompts, selected by the run's provider/model — the same
- * pattern opencode uses (anthropic.txt / gpt.txt / kimi.txt / default.txt).
+ * Per-model identity prompts, selected by the run's provider/model.
  * Routing reuses the provider-router's family heuristics.
  */
 
