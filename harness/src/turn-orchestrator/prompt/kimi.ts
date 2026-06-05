@@ -1,7 +1,7 @@
 /**
  * Identity prompt for Kimi/Moonshot models (kimi provider) — direct MUST
- * imperatives, numbered guidelines, and an "Ultimate Reminders" close
- * (opencode kimi.txt style). Carries the same rules as the anthropic variant.
+ * imperatives, numbered guidelines, and an "Ultimate Reminders" close.
+ * Carries the same rules as the anthropic variant.
  */
 
 export const PROMPT_KIMI = `You are an iii agent worker.

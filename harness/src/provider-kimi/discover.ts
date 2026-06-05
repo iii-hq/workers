@@ -14,6 +14,7 @@ import {
   type ModelStub,
   reconcileModels,
 } from '../runtime/models-discovery.js';
+import { getModelsDevIndex, lookupModelsDev } from '../runtime/modelsdev.js';
 import { logger } from '../runtime/otel.js';
 import { resolveProvider } from '../runtime/provider-resolve.js';
 import { PROVIDER_ID } from './auth.js';
@@ -55,12 +56,14 @@ export async function discoverAndRegister(iii: ISdk, worker: WorkerConfig): Prom
   }
   if (fetchResult.kind !== 'ok') return [];
 
+  const modelsDev = await getModelsDevIndex();
   const models = parseStubs(fetchResult.json).map((stub) =>
     enrichModel({
       provider: PROVIDER_ID,
       api: 'openai-completions',
       stub,
       defaultContextWindow: DEFAULT_CONTEXT_WINDOW,
+      modelsDev: lookupModelsDev(modelsDev, PROVIDER_ID, stub.id),
     }),
   );
   const registered = await reconcileModels(iii, PROVIDER_ID, models);

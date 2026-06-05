@@ -97,4 +97,13 @@ describe('buildInput', () => {
     expect(input.tools).toHaveLength(1);
     expect(input.writer_ref.channel_id).toBe('c');
   });
+
+  it('carries thinking_level when provided and omits it when absent', () => {
+    const decision = { provider: 'anthropic', model: 'claude' } as const;
+    const writer = { channel_id: 'c', access_key: 'k', direction: 'write' } as const;
+    const withLevel = buildInput(decision, writer, 'sys', [], [], 'high');
+    expect(withLevel.thinking_level).toBe('high');
+    const withoutLevel = buildInput(decision, writer, 'sys', [], []);
+    expect(withoutLevel).not.toHaveProperty('thinking_level');
+  });
 });

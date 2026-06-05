@@ -88,8 +88,13 @@ None — the worker is stateless.
 From the `provider_lmstudio` section of
 [config.yaml](harness-node/config.yaml):
 
-- `default_max_tokens` (default `8192`) — upper bound for the request's
-  `max_completion_tokens` field.
+- `default_max_tokens` (default `8192`) — fallback for the request's
+  `max_completion_tokens` field when the model is not in the catalog.
+  When the local model is registered in the catalog, the per-request value
+  resolves as: registry override (clamped to the catalog ceiling) →
+  `min(catalog max_output_tokens, 32_000)` (env override
+  `HARNESS_OUTPUT_TOKEN_MAX`) → this fallback. See
+  [src/runtime/output-tokens.ts](harness-node/src/runtime/output-tokens.ts).
 - `default_api_url` (default
   `http://localhost:1234/v1/chat/completions`) — endpoint for outbound
   calls. Override if LM Studio is running on a non-default port or behind

@@ -48,6 +48,13 @@ provider_llamacpp:
 Default URL: `http://localhost:8080/v1/chat/completions` (llama-server's
 default port; LM Studio uses 1234).
 
+`default_max_tokens` is the fallback for `max_completion_tokens` when the
+model is not in the catalog. When the loaded model is registered in the
+catalog, the per-request value resolves as: registry override (clamped to
+the catalog ceiling) → `min(catalog max_output_tokens, 32_000)` (env
+override `HARNESS_OUTPUT_TOKEN_MAX`) → this fallback. See
+[src/runtime/output-tokens.ts](harness/src/runtime/output-tokens.ts).
+
 Both env and YAML values are validated as http(s) URLs; a malformed
 value falls back to the next tier. A WARN log fires when the resolved
 host is non-loopback so operators see they're shipping bearers to a

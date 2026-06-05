@@ -1,6 +1,7 @@
 import type { ISdk } from '../runtime/iii.js';
 import { normalizeChatCompletionsUrl } from '../runtime/openai-compat-url.js';
 import { logger } from '../runtime/otel.js';
+import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js';
 import {
   type Credential,
   type ProviderResolveResult,
@@ -124,7 +125,12 @@ export async function buildConfig(
   // worker.default_api_url is already normalised in resolveApiUrl.
   const overrideUrl = resolved.api_url ? normalizeChatCompletionsUrl(resolved.api_url) : null;
   const apiUrl = overrideUrl ?? worker.default_api_url;
-  const maxTokens = resolved.max_tokens ?? worker.default_max_tokens;
+  const catalog = await getCatalogModel(iii, PROVIDER_ID, model);
+  const maxTokens = clampOutputTokens({
+    modelMaxOutput: catalog?.max_output_tokens,
+    userOverride: resolved.max_tokens,
+    workerDefault: worker.default_max_tokens,
+  });
   const key = selectAuthKey(cred, apiUrl);
   // configFromCredential expects a Credential. When no key is
   // available we still pass a synthetic api_key with the LM Studio

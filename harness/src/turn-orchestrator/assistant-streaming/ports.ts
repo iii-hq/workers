@@ -23,6 +23,8 @@ export type StreamContext = {
   system_prompt: string;
   tools: AgentFunction[];
   messages: AgentMessage[];
+  /** Optional reasoning/thinking level from the run request. Absent = off. */
+  thinking_level?: string;
 };
 
 export type StreamTurnOutcome = {
@@ -93,7 +95,14 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
         session_id: ctx.session_id,
         targetFn: targetFunctionId(ctx.decision),
         buildInput: (writerRef) =>
-          buildInput(ctx.decision, writerRef, ctx.system_prompt, ctx.messages, ctx.tools),
+          buildInput(
+            ctx.decision,
+            writerRef,
+            ctx.system_prompt,
+            ctx.messages,
+            ctx.tools,
+            ctx.thinking_level,
+          ),
         onDelta,
       });
       return { final, error };

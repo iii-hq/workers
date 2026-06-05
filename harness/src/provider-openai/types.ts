@@ -1,3 +1,4 @@
+import type { Model } from '../models-catalog/types.js';
 import type { Credential } from '../runtime/provider-resolve.js';
 
 export type ChatCompletionsConfig = {
@@ -11,6 +12,8 @@ export type ChatCompletionsConfig = {
   auth_value_prefix?: string;
   extra_headers?: Array<readonly [string, string]>;
   max_tokens: number;
+  /** Catalog entry for `model` when known; used for reasoning detection. In-process only — never serialized, no Rust counterpart. */
+  catalog?: Model;
 };
 
 export function configFromCredential(

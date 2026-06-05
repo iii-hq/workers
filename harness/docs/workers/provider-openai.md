@@ -41,13 +41,43 @@ None — the worker is stateless.
 From the `provider_openai` section of
 [config.yaml](harness/config.yaml):
 
-- `default_max_tokens` (default `8192`) — upper bound for the request's
-  `max_tokens` field when the caller omits it.
+- `default_max_tokens` (default `8192`) — fallback for the request's
+  `max_completion_tokens` field when the model is not in the catalog.
 - `default_api_url` (default `https://api.openai.com/v1/chat/completions`)
   — endpoint for outbound calls. Override this to target
   `azure-openai`, `groq`, `openrouter`, or any other Chat-Completions
   compatible gateway; the harness registry looks up the credential by the
   `provider` field, so adjust the gateway and the credential together.
+
+### Max output tokens
+
+Per request, `max_completion_tokens` resolves as (see
+[src/runtime/output-tokens.ts](harness/src/runtime/output-tokens.ts)):
+
+1. A registry override (`providers.openai.max_tokens` in the `harness`
+   config entry) wins, clamped down to the model's catalog
+   `max_output_tokens` when known.
+2. Otherwise `min(model.max_output_tokens, 32_000)` — the catalog limit
+   comes from [models.dev](https://models.dev) at discovery time; the 32k
+   cap is overridable via the `HARNESS_OUTPUT_TOKEN_MAX` env var.
+3. Unknown model → `default_max_tokens`.
+
+Reasoning tokens count toward `max_completion_tokens`; the clamped
+default leaves ample room, but a very low registry override can starve
+output on reasoning models.
+
+### Reasoning effort
+
+Reasoning models (catalog `supports_thinking`, or ids matching
+`gpt-5*`/`o3*`/`o4*` — the o1 family is excluded, it rejects the param)
+get `reasoning_effort: "medium"` by default. Note for gateway routing
+(`default_api_url` overridden): the default applies to gpt-5-style ids
+there too; a gateway that rejects `reasoning_effort` can be opted out per
+model by setting `supports_thinking: false` in the catalog.
+A `thinking_level` on the run request maps onto the effort ladder for
+the model family (gpt-5.1: none–high; gpt-5.2+: adds xhigh; gpt-5-pro:
+high only; o-series: low–high; chat-tuned variants take no effort
+param). See [src/provider-openai/reasoning.ts](harness/src/provider-openai/reasoning.ts).
 
 ## Dependencies
 

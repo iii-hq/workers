@@ -16,6 +16,8 @@ const RunRequestSchema = z.object({
     .transform((v): Mode | null => (v === 'plan' || v === 'ask' || v === 'agent' ? v : null)),
   system_prompt: z.string().catch(''),
   function_schemas: z.array(z.unknown()).catch([]),
+  /** Optional reasoning/thinking level ('off'|'minimal'|'low'|'medium'|'high'|'xhigh'). */
+  thinking_level: z.string().optional().catch(undefined),
 });
 
 export type RunRequest = z.infer<typeof RunRequestSchema>;

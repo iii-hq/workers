@@ -38,6 +38,12 @@ export const ProviderStreamInputSchema = z.object({
   /** Pass-through; the providers serialize this themselves. */
   messages: z.array(z.unknown()),
   tools: z.array(AgentFunctionSchema).default([]),
+  /**
+   * Optional reasoning/thinking level. Providers that support it map this
+   * onto their native parameter (Anthropic `thinking`, OpenAI
+   * `reasoning_effort`); others ignore it. Absent = off.
+   */
+  thinking_level: z.string().optional(),
 });
 export type ProviderStreamInput = z.infer<typeof ProviderStreamInputSchema>;
 

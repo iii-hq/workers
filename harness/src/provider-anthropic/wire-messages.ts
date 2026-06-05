@@ -44,6 +44,13 @@ export function contentBlockToWire(b: ContentBlock): unknown | null {
       input: b.arguments,
     };
   }
+  if (b.type === 'thinking') {
+    // During tool use Anthropic requires signed thinking blocks passed back
+    // unmodified (400 otherwise); unsigned blocks (aborted/partial stream)
+    // would fail signature verification and are dropped instead.
+    if (b.signature) return { type: 'thinking', thinking: b.text, signature: b.signature };
+    return null;
+  }
   return null;
 }
 
