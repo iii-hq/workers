@@ -49,7 +49,7 @@ Rust workers (`shell`, `iii-directory`) and engine builtins (`state::*`, `stream
 
 1. Install iii: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
 2. Verify the install: `iii --version`
-3. Add the harness and console workers: `iii worker add harness console`
+3. Add the harness and console workers: `iii worker add harness console coder`
 4. Start the engine: `iii --config config.yaml`
 5. Open the [console](https://workers.iii.dev/workers/console) at `http://127.0.0.1:3113`
 

@@ -162,6 +162,185 @@ jobs:
         run: cargo test --all-features
 
   # ──────────────────────────────────────────────────────────────
+  # Interface boot smoke: build each changed Rust worker from source,
+  # boot it against a live engine exactly as the registry-publish flow
+  # does, and assert its interface is collectable & non-empty. This is
+  # the PR-time guard for the class of failure that broke publish in
+  # #104 (database/v0.2.6): the worker compiled and passed the 2s
+  # liveness check but then crashed building its SQLite pool because
+  # the default `sqlite:./data/iii.db` parent dir was missing — so
+  # `Collect worker interface` timed out at release time, never on PRs.
+  # Scoped to Rust workers (the binary-deploy bucket where this lives);
+  # building from source means a clean checkout with no `data/` dir,
+  # which is precisely the condition that triggered the crash.
+  # ──────────────────────────────────────────────────────────────
+  interface-smoke:
+    name: "${{ matrix.worker }}: interface boot smoke"
+    needs: discover
+    if: needs.discover.outputs.rust != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.rust) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install --quiet pyyaml
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.worker }} -> target
+
+      # Workers that embed a Vite SPA into the binary (e.g. console) have a
+      # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
+      # short-circuits it — mirrors the `rust` job above.
+      - name: Setup pnpm (workers with bundled web/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node (workers with bundled web/)
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: ${{ matrix.worker }}/web/pnpm-lock.yaml
+
+      - name: Pre-build SPA bundle
+        if: hashFiles(format('{0}/web/package.json', matrix.worker)) != ''
+        working-directory: ${{ matrix.worker }}/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      # Build with default features so we boot the same artifact that ships
+      # in the GitHub Release (`_rust-binary.yml` builds default features).
+      - name: Build worker binary
+        working-directory: ${{ matrix.worker }}
+        run: cargo build
+
+      - name: Install iii CLI + engine
+        env:
+          VERSION: '0.17.0'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
+      - name: Start III engine
+        run: |
+          set -euo pipefail
+          printf 'workers: []\n' > config.yaml
+          iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
+          echo "$!" > iii-engine.pid
+
+          for _ in {1..60}; do
+            if ! kill -0 "$(cat iii-engine.pid)" 2>/dev/null; then
+              echo "::error::iii engine exited before becoming ready"
+              cat iii-engine.log
+              exit 1
+            fi
+            if iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::iii engine did not become ready"
+          cat iii-engine.log || true
+          exit 1
+
+      - name: Snapshot engine baselines
+        run: |
+          set -euo pipefail
+          iii trigger 'engine::triggers::list' --json '{"include_internal": false}' \
+            > trigger-types-baseline.json
+          iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
+
+      - name: Start worker from source
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: |
+          set -euo pipefail
+          # Resolve the cargo bin name the same way the publish flow does
+          # (iii.worker.yaml `bin:`, falling back to the worker name).
+          bin=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print(m.bin or m.name)')
+
+          worker_log="worker-$WORKER.log"
+          # Run from inside the worker dir — this is what makes a relative
+          # default db path (sqlite:./data/iii.db) resolve against a clean
+          # checkout with no data/ dir, reproducing the publish boot exactly.
+          pushd "$WORKER" >/dev/null
+          echo "Starting local worker: (cd $WORKER && ./target/debug/$bin)"
+          "./target/debug/$bin" > "../$worker_log" 2>&1 &
+          echo "$!" > ../worker.pid
+          popd >/dev/null
+
+          sleep 2
+          if ! kill -0 "$(cat worker.pid)" 2>/dev/null; then
+            echo "::error::$WORKER exited before interface collection"
+            cat "$worker_log" || true
+            exit 1
+          fi
+
+      - name: Collect worker interface
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/collect_worker_interface.py \
+            --worker "$WORKER" \
+            --out worker-interface.json \
+            --wait-seconds 120 \
+            --trigger-types-baseline trigger-types-baseline.json \
+            --workers-baseline workers-baseline.json
+
+      - name: Assert worker interface was collected
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty --assert-file worker-interface.json
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "::group::iii engine log"
+          tail -n 200 iii-engine.log || true
+          echo "::endgroup::"
+          echo "::group::worker log"
+          tail -n 200 "worker-${{ matrix.worker }}.log" || true
+          echo "::endgroup::"
+
+      - name: Stop processes
+        if: always()
+        run: |
+          if [[ -f worker.pid ]]; then
+            kill "$(cat worker.pid)" 2>/dev/null || true
+          fi
+          if [[ -f iii-engine.pid ]]; then
+            kill "$(cat iii-engine.pid)" 2>/dev/null || true
+          fi
+
+  # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test
   # ──────────────────────────────────────────────────────────────
   node:
