@@ -72,9 +72,9 @@ export interface FunctionCallMessage extends BaseMessage {
 }
 
 /**
- * `kind: 'compaction'` represents collapsed history; messages before it
- * must NOT be reshipped on subsequent `run::start` calls. The translator
- * (`translateUiHistoryForBackend`) honours this barrier.
+ * `kind: 'compaction'` renders the collapsed-history marker in the
+ * transcript. The session-tree is the single source of truth for what the
+ * provider sees, so this marker is purely presentational.
  */
 export interface SystemMessage extends BaseMessage {
   role: 'system'

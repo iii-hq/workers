@@ -16,9 +16,10 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import { useTracesLiveRefresh } from '@/lib/traces-live'
+import { getIiiClient } from '@/lib/iii-client'
+import { startTraceSpansStream } from '@/lib/traces-stream'
 import { cn } from '@/lib/utils'
-import { fetchTraceTree, type TraceGroup } from './api/traces'
+import { fetchTraces, type StoredSpan, type TraceGroup } from './api/traces'
 import { FlameGraph } from './components/FlameGraph'
 import { FlowView } from './components/FlowView'
 import { ServiceBreakdown } from './components/ServiceBreakdown'
@@ -35,7 +36,7 @@ import { useResizablePanels } from './hooks/useResizablePanels'
 import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
 import {
-  treeToWaterfallData,
+  toWaterfallData,
   type VisualizationSpan,
   type WaterfallData,
 } from './lib/traceTransform'
@@ -91,6 +92,7 @@ export function Traces() {
     filterParams,
     showSystem,
     debouncedSearch,
+    isPaused,
   })
 
   const totalPages = Math.max(
@@ -137,10 +139,26 @@ export function Traces() {
     containerRef,
   })
 
-  // `silent` reload (used by the live-refresh signal) updates the waterfall in
-  // place without the loading spinner / blank-out / error states, so the open
-  // trace's detail streams in new spans without flicker. A transient empty or
-  // failed read is ignored, keeping the current view rather than clearing it.
+  // Live detail: the selected trace's spans are seeded once (one flat read),
+  // then APPENDED from the engine `trace-spans` stream and rebuilt into the
+  // waterfall via `toWaterfallData`. Accumulated by `span_id` so re-delivered
+  // spans dedupe. Frozen while paused.
+  const detailSpansRef = useRef<Map<string, StoredSpan>>(new Map())
+  const isPausedRef = useRef(isPaused)
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+
+  const rebuildDetail = useCallback((traceId: string): WaterfallData | null => {
+    const wf = toWaterfallData([...detailSpansRef.current.values()], traceId)
+    if (wf) setWaterfallData(wf)
+    return wf
+  }, [])
+
+  // `silent` reload (the live append path) updates the waterfall in place
+  // without the loading spinner / blank-out / error states, so the open trace
+  // streams in new spans without flicker. A transient empty / failed read is
+  // ignored, keeping the current view rather than clearing it.
   const loadTraceSpans = useCallback(
     async (traceId: string, opts?: { silent?: boolean }) => {
       const silent = opts?.silent ?? false
@@ -150,12 +168,20 @@ export function Traces() {
         setWaterfallData(null)
       }
       try {
-        const data = await fetchTraceTree(traceId)
-        if (data.roots?.length) {
-          const wf = treeToWaterfallData(data.roots)
-          if (wf) setWaterfallData(wf)
-          else if (!silent) setSpansError('failed to process span data')
-        } else if (!silent) {
+        // Seed the full trace, NON-internal — matching what the engine pushes
+        // on the `trace-spans` stream (the subscriber excludes internal spans),
+        // so the seed and the live increments are consistent. `limit` is a
+        // practical ceiling; a pathologically large trace (>limit spans) seeds
+        // partially and fills in as the stream delivers the remainder.
+        const { spans } = await fetchTraces({
+          trace_id: traceId,
+          search_all_spans: true,
+          include_internal: false,
+          limit: 10000,
+        })
+        detailSpansRef.current = new Map(spans.map((s) => [s.span_id, s]))
+        const wf = rebuildDetail(traceId)
+        if (!wf && !silent) {
           setSpansError('no span data available for this trace')
         }
       } catch (err) {
@@ -168,18 +194,44 @@ export function Traces() {
         if (!silent) setIsLoadingSpans(false)
       }
     },
-    [],
+    [rebuildDetail],
   )
 
-  // Live-refresh: refetch the trace list on the engine `trace` trigger, and
-  // silently reload the open trace's detail tree so it streams new spans
-  // without a reselect. Suspended while paused / tab hidden (see the hook).
-  useTracesLiveRefresh({
-    isPaused,
-    onSignal: () => {
-      if (selectedTraceId) loadTraceSpans(selectedTraceId, { silent: true })
+  // Merge a pushed batch of spans for the open trace into the waterfall.
+  const appendDetailSpans = useCallback(
+    (traceId: string, spans: StoredSpan[]) => {
+      if (spans.length === 0) return
+      for (const s of spans) detailSpansRef.current.set(s.span_id, s)
+      rebuildDetail(traceId)
     },
-  })
+    [rebuildDetail],
+  )
+
+  // Subscribe the open trace to its scoped `trace-spans` stream: only this
+  // trace's span activity arrives, appending without a reselect or refetch.
+  // Re-subscribes when the selection changes; frozen while paused.
+  //
+  // `active` is shared with the handler so a stream frame still in flight when
+  // the selection changes is dropped: without it, the unregistered-but-running
+  // handler would append the OLD trace's spans into `detailSpansRef` (already
+  // reset for the NEW trace) and rebuild the wrong waterfall.
+  useEffect(() => {
+    if (!selectedTraceId) return
+    let stop: (() => void) | undefined
+    let active = true
+    void (async () => {
+      const client = await getIiiClient()
+      if (!active) return
+      stop = startTraceSpansStream(client, selectedTraceId, (spans) => {
+        if (!active || isPausedRef.current) return
+        appendDetailSpans(selectedTraceId, spans)
+      })
+    })()
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [selectedTraceId, appendDetailSpans])
 
   const selectTrace = useCallback(
     (traceId: string | null) => {
@@ -187,6 +239,7 @@ export function Traces() {
       setSelectedSpan(null)
       setWaterfallData(null)
       setSpansError(null)
+      detailSpansRef.current = new Map()
       if (traceId) {
         loadTraceSpans(traceId)
       }
