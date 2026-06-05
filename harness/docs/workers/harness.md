@@ -13,21 +13,21 @@ engine URL and the permissions file path, loads
 `chokidar` so policy changes apply without a restart.
 
 It does NOT participate in the durable run loop and registers no triggers
-that drive transitions; its only fan-out trigger is the passive sessions
+that drive transitions; its only fan-out trigger is the passive models-catalog
 state trigger.
 
 ## Registered functions
 
 - `harness::trigger` — Browser kickoff for a chat turn: take `{session_id?, message_id?, payload}` (where `payload` is a flat `run::start` payload), forward `payload` to `run::start`, and return the result wrapped in an HTTP-style `{status_code, headers, body}` envelope. The target function id is always `run::start` — clients don't choose it. Routing through this hop (instead of calling `run::start` directly) lets the harness span wrapper seed `iii.session.id` / `iii.message.id` baggage from the outer body (see [architecture.md § Telemetry & trace correlation](harness/docs/architecture.md#telemetry--trace-correlation)).
-- `ui::subscribe` — Register a browser's interest in a session (or all sessions if session_id is null).
-- `ui::unsubscribe` — Remove a browser's subscription to a session (or its all-sessions sub if session_id is null).
+- `ui::models::subscribe` — Register a browser's interest in model-catalog changes (`ui::models::changed::<browser_id>` pushes).
+- `ui::models::unsubscribe` — Remove a browser's model-catalog change subscription.
 - `harness::fs::read_inline` — Read a host file via shell::fs::read, drain its channel, and return a `{content:[{text}], details:{size, truncated, bytes_read}}` envelope (max 256 KiB inline by default).
 - `policy::check_permissions` — Evaluate a function call against the current `iii-permissions.yaml`. Returns `{ decision: "allow" | "deny" | "needs_approval", rule_id?, matched_constraint? }`.
-- `harness::fanout::session_created` — Internal handler invoked by the sessions state trigger; fans the new session id out to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. Gates in-handler on the `state:created` marker.
+- `harness::fanout::models_changed` — Internal handler invoked by the models-catalog state trigger; debounces writes and fans out `ui::models::changed::<browser_id>` to every subscribed browser.
 
 ## Triggers
 
-- **State trigger** on `scope: turn_state` (no `condition_function_id`) → `harness::fanout::session_created`. Lives in [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts). The handler gates on `state:created` events where key = session id — the first persist of a turn record signals session creation. (This replaced the earlier `session_index` marker scope.)
+- **State trigger** on `scope: models` (no `condition_function_id`) → `harness::fanout::models_changed`. Lives in [src/harness/fanout/models-changed.ts](harness/src/harness/fanout/models-changed.ts). The handler debounces models-scope state writes and pushes `ui::models::changed::<browser_id>` to every browser that called `ui::models::subscribe`.
 
 The harness no longer fans `agent::events` out to browsers: each browser
 subscribes directly to the engine `agent::events` stream with a
@@ -37,10 +37,10 @@ harness meta-worker no longer re-pushes it.
 
 ## State keys
 
-The harness reads state but doesn't own any keys. The sessions state
-trigger observes `turn_state` scope `state:created` events — those entries are
-owned by the orchestrator (see
-[workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md)).
+The harness reads state but doesn't own any keys. The models-catalog state
+trigger observes `models` scope writes — those entries are owned by the
+models-catalog worker (see
+[workers/models-catalog.md](harness/docs/workers/models-catalog.md)).
 
 ## Configuration
 
@@ -75,13 +75,13 @@ From [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml):
 | [src/harness/register.ts](harness/src/harness/register.ts) | Composes the worker's bus surface; called by both `main.ts` and the composite [src/index.ts](harness/src/index.ts). |
 | [src/harness/config.ts](harness/src/harness/config.ts) | Loads `engine_url` + `permissions_path` from `config.yaml`. |
 | [src/harness/trigger.ts](harness/src/harness/trigger.ts) | `harness::trigger` handler — WS ingestion bridge for browser-originated chat turns. Forwards the flat `payload` to `run::start` (target function id hard-coded, not client-supplied); the wrapping `instrumentHandler` (see `runtime/otel.ts`) reads `session_id`/`message_id` from the outer body and seeds baggage. |
-| [src/harness/ui-subscribe.ts](harness/src/harness/ui-subscribe.ts) | In-memory `FanoutState` plus `ui::subscribe` / `ui::unsubscribe`. |
+| [src/harness/ui-subscribe.ts](harness/src/harness/ui-subscribe.ts) | In-memory `FanoutState` plus `ui::models::subscribe` / `ui::models::unsubscribe`. |
 | [src/harness/fs.ts](harness/src/harness/fs.ts) | `harness::fs::read_inline` — wraps `shell::fs::read` and inlines the channel into the legacy `{content, details}` envelope. |
 | [src/harness/policy/check-permissions.ts](harness/src/harness/policy/check-permissions.ts) | `registerPolicy` — registers `policy::check_permissions` and maps a `Decision` to the wire reply (`allow` / `deny` / `needs_approval`). |
 | [src/harness/policy/handle.ts](harness/src/harness/policy/handle.ts) | `PermissionsHandle` + `loadAndWatch` — loads `iii-permissions.yaml`, holds the current `Permissions`, and hot-reloads it via a debounced `chokidar` watcher. |
 | [src/harness/policy/permissions.ts](harness/src/harness/policy/permissions.ts) | `Permissions` — parses the YAML into compiled rules and evaluates a call via `check(function_id, args)` (first match wins → `Decision`). |
 | [src/harness/policy/compile.ts](harness/src/harness/policy/compile.ts) | `compileRule` / `matchFunctionId` / `matchConstraints` — compiles a `RuleSpec` into a `CompiledRule`, matches a `function_id` by exact equality or `*` glob, and evaluates `equals` / `matches` (regex) arg constraints. |
 | [src/harness/policy/types.ts](harness/src/harness/policy/types.ts) | `RuleSpec`, `ConstraintSpec`, `Decision`, `MatchedConstraint` types for `iii-permissions.yaml` rules and evaluation results. |
-| [src/harness/fanout/index.ts](harness/src/harness/fanout/index.ts) | Spawns the sessions fan-out pump. |
-| [src/harness/fanout/sessions-poll.ts](harness/src/harness/fanout/sessions-poll.ts) | State-trigger handler on scope `turn_state` that fans new session ids to every all-sessions subscriber via `ui::sessions::changed::<browser_id>`. |
+| [src/harness/fanout/index.ts](harness/src/harness/fanout/index.ts) | Spawns the models-catalog fan-out pump. |
+| [src/harness/fanout/models-changed.ts](harness/src/harness/fanout/models-changed.ts) | State-trigger handler on scope `models` that debounces catalog writes and fans `ui::models::changed::<browser_id>` to subscribed browsers. |
 | [src/harness/iii.worker.yaml](harness/src/harness/iii.worker.yaml) | iii worker manifest (dependencies, install/start scripts). |

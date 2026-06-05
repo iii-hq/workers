@@ -191,12 +191,13 @@ When `compact_now` runs:
 
 1. The entry matching `last_user_message_id` is extracted from the message
    list before it is passed to the summariser (so it is not summarised away).
-2. After `summarizeAndAppend` completes, `replay.ts::reinjectReplay` re-adds
-   the extracted user message to the session tree.
-3. A synthetic assistant prompt ("Continue if you have next steps, or stop and
+2. That user message already sits on the active path as the compaction node's
+   parent, so it needs no reinjection — `context-view.ts` reconstructs the
+   window as `[summary, ...tail]`, which already ends with it.
+3. A synthetic user prompt ("Continue if you have next steps, or stop and
    ask for clarification.") is appended via `session-tree::append_synthetic`
-   so the model picks up where it left off.
-4. `CompactNowResult.auto_continued` is `true` when this replay happened.
+   as a child of the compaction so the model picks up where it left off.
+4. `CompactNowResult.auto_continued` is `true` when a replay target existed.
 
 ## Backward compatibility
 
@@ -235,7 +236,7 @@ Compaction-related keys use dedicated scopes (key = `session_id`):
 | `prune_lease` | Same nonce-and-readback pattern, separate scope so the prune path does not block async compaction. |
 | `last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
 
-Flat transcript rewrites use scope `messages`, key `session_id` (see [flat-state.ts](harness/src/context-compaction/flat-state.ts)).
+Compaction appends a `Compaction` entry to `session-tree` (and optionally replay + synthetic continue). The turn FSM reconstructs the compacted provider window at read time via [context-view.ts](harness/src/turn-orchestrator/state-runtime/context-view.ts); there is no separate flat `messages` scope.
 
 ## Observability
 
@@ -277,15 +278,15 @@ Worker manifest deps (`iii.worker.yaml`):
 | `src/context-compaction/config.ts` | Reads all `COMPACT_*` env vars. |
 | `src/context-compaction/handler-async.ts` | Async TurnEnd path: envelope decode, overflow check, lease, prune, summarise. |
 | `src/context-compaction/handler-sync.ts` | Sync pre-turn path: lease-with-wait, extract replay, prune, summarise, reinject. |
-| `src/context-compaction/handler-pipeline.ts` | Shared prune → summarise → flat-state rewrite pipeline used by both handlers. |
-| `src/context-compaction/flat-state.ts` | Rewrites scope `messages` after compaction so the next turn reads the new flat transcript. |
+| `src/context-compaction/handler-pipeline.ts` | Shared prune → summarise pipeline used by both handlers. |
+| `src/context-compaction/flat-state.ts` | `buildSummaryMessage` helper for the compacted provider window. |
 | `src/context-compaction/model-resolver.ts` | Shared model-resolution helpers: `fetchModelLimit` (catalog lookup) and `resolveModelFromSession` (session-scan + catalog lookup). |
 | `src/context-compaction/prune.ts` | Tool-output pruning (`prune`). |
 | `src/context-compaction/summarize.ts` | `summarizeAndAppend`: load → select tail → summarise → append Compaction entry. |
 | `src/context-compaction/overflow.ts` | `usable`, `isOverflow`, `preserveRecentBudget` — model-adaptive math. |
 | `src/context-compaction/selection.ts` | `selectWithEntryIds`, `completedCompactions` — tail selection with entry ID tracking. |
 | `src/context-compaction/template.ts` | `SUMMARY_TEMPLATE` + `buildPrompt` — structured prompt construction. |
-| `src/context-compaction/replay.ts` | `extractReplayTarget` + `reinjectReplay` — user-message replay for sync path. |
+| `src/context-compaction/replay.ts` | `extractReplayTarget` — locates the last user message so it is excluded from the summary on the sync path. |
 | `src/context-compaction/lease.ts` | `acquireLease`, `acquireLeaseWithWait`, `releaseLease`, `stampLastCompaction`. |
 | `src/context-compaction/stream-collect.ts` | Drives `provider::<name>::stream` via in-process channel and collects the final message. |
 | `src/context-compaction/strip-media.ts` | Strips images and truncates tool outputs before sending to the summariser. |
