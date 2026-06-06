@@ -145,10 +145,23 @@ jobs:
               bin_path="/tmp/${bin_name}"
               chmod +x "$bin_path"
 
+              # Interface collection only needs the worker to connect and
+              # register its functions/trigger types — not a working backend.
+              # A worker may ship config.collect.yaml to boot a lighter copy
+              # for this. storage's default config.yaml declares a local
+              # bucket and spawns a rustfs sidecar the prebuilt binary doesn't
+              # bundle, which crashes startup with LOCAL_BACKEND_BIN_NOT_FOUND;
+              # config.collect.yaml gives it a sidecar-free config instead.
+              collect_args=()
+              if [[ -f "$WORKER/config.collect.yaml" ]]; then
+                echo "Using interface-collection config: $WORKER/config.collect.yaml"
+                collect_args+=(--config ./config.collect.yaml)
+              fi
+
               worker_log="worker-$WORKER.log"
               pushd "$WORKER" >/dev/null
-              echo "Starting local worker with: (cd $WORKER && $bin_path)"
-              "$bin_path" > "../$worker_log" 2>&1 &
+              echo "Starting local worker with: (cd $WORKER && $bin_path ${collect_args[*]})"
+              "$bin_path" "${collect_args[@]}" > "../$worker_log" 2>&1 &
               echo "$!" > ../worker.pid
               popd >/dev/null
 
@@ -203,6 +216,12 @@ jobs:
                 cargo_args+=(--bin "$BIN")
               fi
               cargo_args+=(--)
+              # Use the sidecar-free interface-collection config when shipped
+              # (see release-binary note above).
+              if [[ -f config.collect.yaml ]]; then
+                echo "Using interface-collection config: $WORKER/config.collect.yaml"
+                cargo_args+=(--config ./config.collect.yaml)
+              fi
 
               echo "Starting local worker with: (cd $WORKER && cargo ${cargo_args[*]})"
               cargo "${cargo_args[@]}" > "../$worker_log" 2>&1 &
