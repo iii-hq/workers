@@ -223,10 +223,11 @@ export function FlameGraph({
   const [viewState, dispatch] = useReducer(viewReducer, initialViewState)
   const { hoveredNode, tooltipPos, zoomLevel, panOffset } = viewState
 
-  // Same defaults as the waterfall view: critical-path-only is on, engine
-  // routing is hidden. The engine-routing toggle is persisted via the
-  // shared hook so the preference survives view swaps.
-  const [showCriticalPath, setShowCriticalPath] = useState(true)
+  // Same defaults as the waterfall view: critical-path-only is OFF (show the
+  // full tree first; opt into the hot-path filter), engine routing is hidden.
+  // The engine-routing toggle is persisted via the shared hook so the
+  // preference survives view swaps.
+  const [showCriticalPath, setShowCriticalPath] = useState(false)
   const [showEngineRouting, setShowEngineRouting] = useShowEngineRouting()
 
   const ROW_HEIGHT = 26
