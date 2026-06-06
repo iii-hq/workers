@@ -286,12 +286,25 @@ jobs:
           bin=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print(m.bin or m.name)')
 
           worker_log="worker-$WORKER.log"
+          # Interface collection only needs the worker to connect and register
+          # its functions/trigger types — not a working backend. A worker may
+          # ship config.collect.yaml to boot a lighter copy for this. storage's
+          # default config.yaml declares a local bucket and spawns a rustfs
+          # sidecar that isn't available here, crashing startup with
+          # LOCAL_BACKEND_BIN_NOT_FOUND; config.collect.yaml gives it a
+          # sidecar-free config instead. Kept in lockstep with
+          # _publish-registry.yml so this smoke check mirrors the publish boot.
+          collect_args=()
+          if [[ -f "$WORKER/config.collect.yaml" ]]; then
+            echo "Using interface-collection config: $WORKER/config.collect.yaml"
+            collect_args+=(--config ./config.collect.yaml)
+          fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.
           pushd "$WORKER" >/dev/null
-          echo "Starting local worker: (cd $WORKER && ./target/debug/$bin)"
-          "./target/debug/$bin" > "../$worker_log" 2>&1 &
+          echo "Starting local worker: (cd $WORKER && ./target/debug/$bin ${collect_args[*]})"
+          "./target/debug/$bin" "${collect_args[@]}" > "../$worker_log" 2>&1 &
           echo "$!" > ../worker.pid
           popd >/dev/null
 
