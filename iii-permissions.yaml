@@ -32,6 +32,13 @@ rules:
   - '!oauth::openai-codex::login'
   - '!run::start'
   - '!router::stream_assistant'
+  # Internal lifecycle hooks — agents must never force a config reload directly.
+  # The handlers already re-fetch from configuration::get (ignoring the event
+  # payload), so a direct call cannot inject config. These denies are
+  # defense-in-depth: they close the agent-callable surface so a future handler
+  # change cannot inadvertently re-open the injection path.
+  - '!storage::on-config-change'
+  - '!database::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

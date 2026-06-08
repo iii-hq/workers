@@ -24,7 +24,7 @@ pub async fn handle(state: &AppState, req: DeleteReq) -> Result<DeleteResp, Stri
             message: "key must not be empty".into(),
         }));
     }
-    let backend = state.backend(&req.bucket).map_err(err_to_str)?;
+    let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let r = backend
         .delete(BackendDeleteReq {
             key: req.key.clone(),
@@ -50,6 +50,7 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     fn state_with(resp: Option<Result<BackendDeleteResp, BackendError>>) -> AppState {
         let m = Arc::new(MockBackend::default());
@@ -57,7 +58,8 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m as Arc<dyn Backend>);
         AppState {
-            backends: Arc::new(map),
+            backends: Arc::new(RwLock::new(map)),
+            local_ctx: None,
         }
     }
 

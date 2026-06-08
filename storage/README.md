@@ -86,42 +86,71 @@ iii.trigger(TriggerRequest {
 
 ## Configuration
 
-`storage` reads one `config.yaml` describing one or more buckets. Each
-bucket pins a `provider` (`s3` | `gcs` | `r2` | `local`) and the
-credentials for that provider. Buckets without `notifications:` work
-fine for RPCs; they just don't fire triggers.
+The storage worker gets its live configuration from the `configuration` worker,
+not from a local file. On startup it:
+
+1. Registers its config schema with the `configuration` worker
+   (`configuration::register`, id `storage`).
+2. Fetches the live, env-expanded config (`configuration::get`).
+3. Subscribes to `configuration:updated` events and hot-reloads.
+
+`--config <path>` is an **optional seed**: when given, the file is loaded and
+sent as `initial_value` the first time the schema is registered (no stored value
+yet). It is not the live source of truth — once a value exists in the
+`configuration` worker, that value wins.
+
+### Hot-reload scope
+
+On a `configuration:updated` event the worker re-fetches the authoritative
+config from the `configuration` worker (it does **not** trust the event
+payload). It then rebuilds the in-memory **backend map only**, and only when the
+bucket/notification **topology is unchanged** — i.e. when just backend
+connection settings changed (credentials, endpoint, path-style).
+
+Any change to the bucket set, a bucket's provider or underlying name, a
+notification source, or the local rustfs data dir is **refused**: the worker
+keeps the previously-running backends and logs that a restart is required.
+This avoids a split-brain where RPC reads/writes move to a new backend while
+the notification pollers/webhook stay wired to the old topology. A failed
+rebuild likewise keeps the previous backends.
+
+A fresh install with no configured buckets runs with zero backends until a
+bucket is configured.
+
+### Config shape
+
+Each bucket pins a `provider` (`s3` | `gcs` | `r2` | `local`) and the
+credentials for that provider. Buckets without `notifications:` work fine for
+RPCs; they just don't fire triggers.
 
 ```yaml
-workers:
-  - name: storage
-    config:
-      providers:
-        local:
-          data_dir: ./data/storage           # rustfs sidecar root
+providers:
+  local:
+    data_dir: ./data/storage           # rustfs sidecar root
 
-      buckets:
-        uploads:
-          provider: s3
-          bucket: my-app-uploads             # underlying cloud bucket
-          region: us-east-1
-          notifications:
-            sqs_queue_url: https://sqs.us-east-1.amazonaws.com/123/my-app-uploads-events
+buckets:
+  uploads:
+    provider: s3
+    bucket: my-app-uploads             # underlying cloud bucket
+    region: us-east-1
+    notifications:
+      sqs_queue_url: https://sqs.us-east-1.amazonaws.com/123/my-app-uploads-events
 
-        documents:
-          provider: gcs
-          bucket: my-app-documents
-          # credentials_file: /etc/iii/gcs-sa.json   # required for presignUrl
+  documents:
+    provider: gcs
+    bucket: my-app-documents
+    # credentials_file: /etc/iii/gcs-sa.json   # required for presignUrl
 
-        avatars:
-          provider: r2
-          bucket: avatars
-          account_id: ${R2_ACCOUNT_ID}
-          access_key_id: ${R2_ACCESS_KEY_ID}
-          secret_access_key: ${R2_SECRET_ACCESS_KEY}
+  avatars:
+    provider: r2
+    bucket: avatars
+    account_id: ${R2_ACCOUNT_ID}
+    access_key_id: ${R2_ACCESS_KEY_ID}
+    secret_access_key: ${R2_SECRET_ACCESS_KEY}
 
-        scratch:
-          provider: local
-          bucket: scratch
+  scratch:
+    provider: local
+    bucket: scratch
 ```
 
 The map key (`uploads`) is the worker-facing bucket name handlers
@@ -214,21 +243,23 @@ triggers:
 ## Local development & testing
 
 The committed `config.yaml` declares a single `scratch` bucket served by the
-bundled rustfs sidecar, so you can run the worker against a local engine with
-zero credentials.
+bundled rustfs sidecar. Pass it as a seed so the `configuration` worker picks it
+up on first boot — zero cloud credentials required.
 
 ```bash
-# In one terminal: start the engine
+# In one terminal: start the engine (must include the configuration worker)
 iii start
 
-# In another: build & run the worker
+# In another: build & run the worker, seeding config.yaml on first registration
 cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
 ```
 
-The worker spawns a rustfs process on a random port, waits for it to become
-healthy, then registers `storage::putObject`, `storage::getObject`,
-`storage::deleteObject`, and `storage::presignUrl`. Files land under
-`./data/storage/` (configurable via `providers.local.data_dir`).
+The worker registers its schema with the `configuration` worker (seeding
+`config.yaml` if no stored value exists), fetches the live config, then spawns a
+rustfs process on a random port, waits for it to become healthy, and registers
+`storage::putObject`, `storage::getObject`, `storage::deleteObject`, and
+`storage::presignUrl`. Files land under `./data/storage/` (configurable via
+`providers.local.data_dir`).
 
 Running `--manifest` prints the registry-publish JSON without touching the
 engine — useful when testing CI flows:
