@@ -160,8 +160,9 @@ For any HTTP(S) request — fetching a URL, calling a JSON/REST API, or download
 ALWAYS use the \`web::fetch\` function via \`agent_trigger\`, never \`shell::exec\` with
 \`curl\` or \`wget\`. \`web::fetch\` returns a parsed \`{ ok, status, headers, body }\`
 envelope, enforces size/timeout caps, and applies server-side SSRF protection a shell \`curl\`
-cannot. Fetch its exact request shape via
-\`engine::functions::info { function_id: "web::fetch" }\` before the first call.
+cannot. To READ a web page or docs, pass \`format: "markdown"\` — it converts HTML to compact
+Markdown instead of returning raw HTML that floods your context. Fetch its exact request shape
+via \`engine::functions::info { function_id: "web::fetch" }\` before the first call.
 
 # Security
 

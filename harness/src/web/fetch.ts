@@ -25,7 +25,16 @@ import * as nodeHttps from 'node:https';
 import type { Readable } from 'node:stream';
 import { logger } from '../runtime/otel.js';
 import type { WebConfig } from './config.js';
-import type { FetchPayload, FetchResult, ResponseFormat } from './schemas.js';
+import {
+  ACCEPT_LANGUAGE,
+  BROWSER_USER_AGENT,
+  acceptHeaderFor,
+  convertHtmlToMarkdown,
+  extractTextFromHtml,
+  isImageMime,
+  isViewableImageMime,
+} from './convert.js';
+import type { FetchImageResult, FetchPayload, FetchResult, ResponseFormat } from './schemas.js';
 import { type ParsedTarget, type SsrfPolicy, checkTarget, parseTarget } from './ssrf.js';
 
 const HEADER_DENY_ON_REDIRECT = new Set(['authorization', 'cookie', 'proxy-authorization']);
@@ -254,17 +263,53 @@ export function stripCrossOriginAuth(
   return out;
 }
 
-export async function executeFetch(payload: FetchPayload, cfg: WebConfig): Promise<FetchResult> {
+/** Default to `default_timeout_ms`, never exceed `max_timeout_ms`. Exported for unit tests. */
+export function resolveTimeout(payload: FetchPayload, cfg: WebConfig): number {
+  return Math.min(payload.timeout_ms ?? cfg.default_timeout_ms, cfg.max_timeout_ms);
+}
+
+/**
+ * Resolve the response-body cap. Raw fetches default to the hard ceiling,
+ * preserving the historical "default to max_response_bytes" contract that
+ * download/API callers rely on (a smaller silent default would truncate
+ * their bodies and hand back partial JSON as if it were complete). Page-
+ * reading mode (`format` set) defaults to the context-safe
+ * `default_response_bytes` instead, since a transformed page body flows
+ * whole into the model's context window. Never exceeds `max_response_bytes`.
+ * Exported for unit tests.
+ */
+export function resolveMaxBytes(payload: FetchPayload, cfg: WebConfig): number {
+  const fallback = payload.format ? cfg.default_response_bytes : cfg.max_response_bytes;
+  return Math.min(payload.max_bytes ?? fallback, cfg.max_response_bytes);
+}
+
+export async function executeFetch(
+  payload: FetchPayload,
+  cfg: WebConfig,
+): Promise<FetchResult | FetchImageResult> {
   const t0 = Date.now();
   const method = payload.method ?? 'GET';
   const followRedirects = payload.follow_redirects ?? true;
-  const responseFormat: ResponseFormat = payload.response_format ?? 'text';
-  const timeoutMs = Math.min(payload.timeout_ms ?? cfg.max_timeout_ms, cfg.max_timeout_ms);
-  const maxBytes = Math.min(payload.max_bytes ?? cfg.max_response_bytes, cfg.max_response_bytes);
+  const pageFormat = payload.format;
+  // Page-reading mode forces text transport; the transform output is a string.
+  const responseFormat: ResponseFormat = pageFormat ? 'text' : (payload.response_format ?? 'text');
+  const timeoutMs = resolveTimeout(payload, cfg);
+  const maxBytes = resolveMaxBytes(payload, cfg);
 
   let currentUrl = payload.url;
+  // Page reads go out looking like a browser (UA + Accept + Accept-Language);
+  // caller-supplied headers always win — they land later in the spread and
+  // gate the page-mode injections below.
+  const callerHeaderKeys = new Set(Object.keys(payload.headers ?? {}).map((k) => k.toLowerCase()));
+  const browserUaInjected = pageFormat !== undefined && !callerHeaderKeys.has('user-agent');
   const baseHeaders: Record<string, string> = {
-    'user-agent': cfg.user_agent,
+    'user-agent': browserUaInjected ? BROWSER_USER_AGENT : cfg.user_agent,
+    ...(pageFormat && !callerHeaderKeys.has('accept')
+      ? { accept: acceptHeaderFor(pageFormat) }
+      : {}),
+    ...(pageFormat && !callerHeaderKeys.has('accept-language')
+      ? { 'accept-language': ACCEPT_LANGUAGE }
+      : {}),
     ...(payload.headers ?? {}),
   };
   const jsonApplied = applyJsonPayload(payload, baseHeaders);
@@ -309,7 +354,7 @@ export async function executeFetch(payload: FetchPayload, cfg: WebConfig): Promi
       return logResult(check);
     }
 
-    const outcome = await performRequest(
+    let outcome = await performRequest(
       parsed,
       check.address,
       check.family,
@@ -319,6 +364,29 @@ export async function executeFetch(payload: FetchPayload, cfg: WebConfig): Promi
       timeoutMs,
       maxBytes,
     );
+    // Cloudflare bot detection rejects the browser UA when the TLS
+    // fingerprint doesn't match a real browser (403 + cf-mitigated:
+    // challenge). Retry the hop once with the honest configured UA —
+    // only in page mode, only when WE injected the browser UA, and only
+    // for idempotent methods (a replayed POST would duplicate the action).
+    if (
+      browserUaInjected &&
+      (method === 'GET' || method === 'HEAD') &&
+      outcome.kind === 'response' &&
+      outcome.resp.status === 403 &&
+      outcome.resp.headers['cf-mitigated'] === 'challenge'
+    ) {
+      outcome = await performRequest(
+        parsed,
+        check.address,
+        check.family,
+        method,
+        { ...currentHeaders, 'user-agent': cfg.user_agent },
+        effectiveBody,
+        timeoutMs,
+        maxBytes,
+      );
+    }
     if (outcome.kind === 'timeout') {
       return logResult({
         ok: false,
@@ -357,6 +425,111 @@ export async function executeFetch(payload: FetchPayload, cfg: WebConfig): Promi
         continue;
       }
       // 3xx without Location — fall through and return the response.
+    }
+
+    if (pageFormat) {
+      const contentType = resp.headers['content-type'] ?? '';
+      const mime = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+
+      if (isImageMime(mime)) {
+        // Only emit an image block the provider will actually accept:
+        // allowlisted media type, 2xx status (a CDN error pixel must not be
+        // laundered into a "successful" image), complete (not truncated at
+        // max_bytes — partial bytes are a corrupt image), and non-empty.
+        // Anything else would 400 the whole Anthropic turn — fall through
+        // to the normal envelope with base64 transport instead.
+        const viewable =
+          isViewableImageMime(mime) &&
+          resp.status >= 200 &&
+          resp.status < 300 &&
+          !resp.truncated &&
+          resp.bytes.length > 0;
+
+        if (viewable) {
+          const result: FetchImageResult = {
+            content: [
+              { type: 'image', mime, data: resp.bytes.toString('base64') },
+              { type: 'text', text: `Image fetched (${mime}, ${resp.bytes.length} bytes)` },
+            ],
+            details: {
+              ok: true,
+              status: resp.status,
+              status_text: resp.statusText,
+              content_type: mime,
+              bytes: resp.bytes.length,
+            },
+          };
+          if (redirectChain.length > 0) result.details.redirect_chain = redirectChain;
+          logger.info('web::fetch ok (image)', {
+            host: telemetryHost,
+            method,
+            status: resp.status,
+            mime,
+            bytes: resp.bytes.length,
+            ms: Date.now() - t0,
+          });
+          return result;
+        }
+
+        const result: FetchResult = {
+          ok: true,
+          status: resp.status,
+          status_text: resp.statusText,
+          headers: resp.headers,
+          body: resp.bytes.toString('base64'),
+          response_format: 'base64',
+          bytes_truncated: resp.truncated,
+          content_type: mime,
+        };
+        if (redirectChain.length > 0) result.redirect_chain = redirectChain;
+        return logResult(result);
+      }
+
+      const raw = resp.bytes.toString('utf8');
+      // application/xhtml+xml is advertised in the format:"html" Accept
+      // header, so it must be transformable too.
+      const isHtml = mime === 'text/html' || mime === 'application/xhtml+xml';
+      const result: FetchResult = {
+        ok: true,
+        status: resp.status,
+        status_text: resp.statusText,
+        headers: resp.headers,
+        body: raw,
+        response_format: responseFormat,
+        bytes_truncated: resp.truncated,
+        content_type: mime,
+      };
+      // Turndown recurses per nesting level and stack-overflows around
+      // ~2000 nested elements (~22 KB of adversarial HTML — far below the
+      // byte cap), so a hostile page could otherwise break the handler's
+      // never-throws contract. On transform failure fall back to the raw
+      // body (transformed stays unset, signalling no conversion ran).
+      // Bodies above max_transform_bytes skip the transform entirely: the
+      // conversion is synchronous CPU on the worker's event loop, and a
+      // 5 MiB page would stall every concurrent bus call.
+      const withinTransformCap = resp.bytes.length <= cfg.max_transform_bytes;
+      if (isHtml && withinTransformCap && (pageFormat === 'markdown' || pageFormat === 'text')) {
+        try {
+          result.body =
+            pageFormat === 'markdown' ? convertHtmlToMarkdown(raw) : extractTextFromHtml(raw);
+          result.transformed = pageFormat;
+          // A transformed body reads as a complete page — make truncation
+          // visible in-band, since agents rarely re-check bytes_truncated.
+          if (resp.truncated) {
+            result.body +=
+              '\n\n[Content truncated at max_bytes — the page continues beyond this point]';
+          }
+        } catch (err) {
+          logger.warn('web::fetch html transform failed; returning raw body', {
+            host: telemetryHost,
+            format: pageFormat,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          result.body = raw;
+        }
+      }
+      if (redirectChain.length > 0) result.redirect_chain = redirectChain;
+      return logResult(result);
     }
 
     const body = encodeBody(resp.bytes, responseFormat);

@@ -135,7 +135,9 @@ the handler contract is the trigger type's, not a generic one.
 
 For any HTTP(S) request use \`web::fetch\` — never \`shell::exec\` with
 \`curl\` or \`wget\`. It returns a parsed \`{ ok, status, headers, body }\` envelope with size
-and timeout caps plus server-side SSRF protection.
+and timeout caps plus server-side SSRF protection. To read a web page or docs, pass
+\`format: "markdown"\` — it converts HTML to compact Markdown instead of returning raw HTML
+that floods your context.
 
 ## Security
 

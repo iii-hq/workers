@@ -14,8 +14,11 @@ function fakeIii(): { iii: ISdk; registered: Map<string, (payload: unknown) => P
 }
 
 const cfg: WebConfig = {
-  max_timeout_ms: 30_000,
+  default_timeout_ms: 30_000,
+  max_timeout_ms: 120_000,
+  default_response_bytes: 256 * 1024,
   max_response_bytes: 5 * 1024 * 1024,
+  max_transform_bytes: 1024 * 1024,
   max_redirects: 5,
   user_agent: 'test',
   allow_loopback: true,
@@ -35,6 +38,28 @@ describe('web::fetch handler', () => {
         request_format: expect.any(Object),
       }),
     );
+  });
+
+  it('exposes the page-reading `format` field in the request_format schema', () => {
+    const { iii } = fakeIii();
+    const spy = vi.spyOn(iii, 'registerFunction');
+    register(iii, cfg);
+    const options = spy.mock.calls[0]?.[2] as { request_format: unknown };
+    expect(JSON.stringify(options.request_format)).toContain('"format"');
+    expect(JSON.stringify(options.request_format)).toContain('markdown');
+  });
+
+  it('returns invalid_payload for a bad page format', async () => {
+    const { iii, registered } = fakeIii();
+    register(iii, cfg);
+    const handler = registered.get('web::fetch');
+    if (!handler) throw new Error('handler missing');
+    const r = (await handler({ url: 'https://example.com/', format: 'pdf' })) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('invalid_payload');
   });
 
   it('returns invalid_payload envelope (not throw) for missing url', async () => {

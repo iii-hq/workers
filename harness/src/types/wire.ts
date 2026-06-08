@@ -32,3 +32,24 @@ export function formatFunctionResultContent(msg: FunctionResultMessage): string 
   }
   return body;
 }
+
+export type WireResultBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mime: string; data: string };
+
+/**
+ * Block-preserving variant of `formatFunctionResultContent` for providers
+ * whose tool-result content accepts structured blocks (Anthropic). The
+ * text body is built exactly as the flat-string path (including the
+ * `[PERMISSION_DENIED]` envelope), followed by any image blocks in their
+ * original order. Text-only providers keep using the flat string.
+ */
+export function formatFunctionResultBlocks(msg: FunctionResultMessage): WireResultBlock[] {
+  const blocks: WireResultBlock[] = [];
+  const body = formatFunctionResultContent(msg);
+  if (body.length > 0) blocks.push({ type: 'text', text: body });
+  for (const c of msg.content) {
+    if (c.type === 'image') blocks.push({ type: 'image', mime: c.mime, data: c.data });
+  }
+  return blocks;
+}
