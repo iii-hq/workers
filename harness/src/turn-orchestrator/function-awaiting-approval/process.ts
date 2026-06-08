@@ -17,15 +17,20 @@ import type { TurnStateRecord } from '../state.js';
 import { createAwaitingApprovalPorts } from './ports.js';
 import { processResolvedApprovals, routeAfterApprovalProcessing } from './run.js';
 
+/** Enqueue one `turn::function_awaiting_approval` wake on the turn-step queue. */
+async function enqueueAwaitingApprovalWake(iii: ISdk, session_id: string): Promise<void> {
+  await iii.trigger({
+    function_id: 'turn::function_awaiting_approval',
+    payload: { session_id },
+    action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
+  });
+}
+
 export async function handleApprovalStateWrite(iii: ISdk, event: unknown): Promise<void> {
   const parsed = ApprovalDecisionEventSchema.safeParse(event);
   if (!parsed.success) return;
   try {
-    await iii.trigger({
-      function_id: 'turn::function_awaiting_approval',
-      payload: { session_id: parsed.data.session_id },
-      action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
-    });
+    await enqueueAwaitingApprovalWake(iii, parsed.data.session_id);
   } catch (err) {
     logger.warn('turn::on_approval: wake failed', {
       session_id: parsed.data.session_id,
@@ -38,8 +43,18 @@ export async function handleAwaitingApproval(iii: ISdk, rec: TurnStateRecord): P
   const batch = parseFunctionBatchRecord(rec);
   const executePorts = createPorts(iii);
   const readPorts = createAwaitingApprovalPorts(iii);
-  await processResolvedApprovals(readPorts, executePorts, batch);
+  const resolved = await processResolvedApprovals(readPorts, executePorts, batch);
   await routeAfterApprovalProcessing(executePorts, batch);
+
+  // A wake that resolved at least one call but left siblings parked kicks one
+  // fresh, uncontended wake. This wake's own re-scan already drains siblings
+  // whose decision landed mid-wake; the follow-up covers the remaining gap —
+  // a sibling still pending here whose contender wake was dropped (lost the
+  // lease race, exhausted retries) would otherwise orphan the batch. A wake
+  // that resolves nothing enqueues nothing, so this cannot storm.
+  if (resolved > 0 && batch.awaiting_approval.length > 0) {
+    await enqueueAwaitingApprovalWake(iii, batch.session_id);
+  }
 }
 
 export function register(iii: ISdk): void {
