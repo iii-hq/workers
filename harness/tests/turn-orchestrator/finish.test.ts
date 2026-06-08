@@ -5,11 +5,8 @@ import { newRecord } from '../../src/turn-orchestrator/state.js';
 import { installMockTurnStore } from './_helpers/mockTurnStore.js';
 
 describe('TurnStatePorts.finishSession', () => {
-  it('emits agent_end with the transcript and sets state to stopped', async () => {
-    const messages = [
-      { role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }], timestamp: 1 },
-    ];
-    installMockTurnStore({ loadMessages: vi.fn(async () => messages) });
+  it('emits agent_end as a signal (no transcript reload) and sets state to stopped', async () => {
+    const store = installMockTurnStore();
     const emitted: Array<{ type: string; messages?: unknown }> = [];
     const iii = {
       trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
@@ -27,6 +24,9 @@ describe('TurnStatePorts.finishSession', () => {
     expect(rec.state).toBe('stopped');
     const agentEnd = emitted.find((e) => e.type === 'agent_end');
     expect(agentEnd).toBeDefined();
-    expect(agentEnd?.messages).toEqual(messages);
+    // agent_end is a turn-end signal; no consumer reads .messages, so the
+    // session is no longer reloaded just to populate it.
+    expect(agentEnd?.messages).toEqual([]);
+    expect(store.loadMessages).not.toHaveBeenCalled();
   });
 });

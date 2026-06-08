@@ -18,12 +18,17 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
   const store = createTurnStore(iii);
   const { session_id, messages, max_turns, message_id: _message_id, ...run } = payload;
 
+  // Single ensure for the whole run: this is the gateway that begins the turn
+  // loop, so every later loadMessages/appendMessages is guaranteed a live record
+  // without re-ensuring per call. Must precede the first tree write below.
+  await store.ensureSession(session_id);
+
   await store.saveRunRequest(session_id, {
     ...run,
     mode: run.mode ?? null,
     function_schemas: [],
   });
-  await store.saveMessages(session_id, messages);
+  await store.appendMessages(session_id, messages);
 
   const record = newRecord(session_id, max_turns);
   await store.saveRecord(record);

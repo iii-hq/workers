@@ -1,30 +1,21 @@
 /**
- * Drain inboxes, route steering_check outcomes, and apply transitions.
+ * Route steering_check outcomes and apply transitions.
  */
 
-import type { AgentMessage } from '../../types/agent-message.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
 import { emitTurnEndOnce, resumeToAssistantStreaming } from '../state-runtime/turn-end.js';
 import type { SteeringCheckTurnRecord } from '../state.js';
 import type { SteeringCheckPorts } from './ports.js';
 
-export type SteeringRoute = 'steering' | 'followup' | 'continue_after_function' | 'end_turn';
+export type SteeringRoute = 'continue_after_function' | 'end_turn';
 
 export type SteeringCheckOutcome =
   | { kind: 'max_turns_reached' }
-  | { kind: 'resume_with_inbox'; inbox: AgentMessage[] }
   | { kind: 'continue_after_function' }
   | { kind: 'end_turn' };
 
-export function route(
-  has_steering: boolean,
-  has_followup: boolean,
-  has_function_results: boolean,
-): SteeringRoute {
-  if (has_steering) return 'steering';
-  if (has_followup) return 'followup';
-  if (has_function_results) return 'continue_after_function';
-  return 'end_turn';
+export function route(has_function_results: boolean): SteeringRoute {
+  return has_function_results ? 'continue_after_function' : 'end_turn';
 }
 
 function maxTurnsReached(rec: SteeringCheckTurnRecord): boolean {
@@ -51,28 +42,16 @@ async function endForMaxTurns(
 }
 
 export async function processSteeringCheck(
-  ports: SteeringCheckPorts,
+  _ports: SteeringCheckPorts,
   rec: SteeringCheckTurnRecord,
 ): Promise<SteeringCheckOutcome> {
-  const steering = await ports.drainInbox('steering', rec.session_id);
-  const followup = steering.length > 0 ? [] : await ports.drainInbox('followup', rec.session_id);
+  const decision = route(rec.function_results.length > 0);
 
-  const decision = route(steering.length > 0, followup.length > 0, rec.function_results.length > 0);
-
-  if (
-    (decision === 'steering' ||
-      decision === 'followup' ||
-      decision === 'continue_after_function') &&
-    maxTurnsReached(rec)
-  ) {
+  if (decision === 'continue_after_function' && maxTurnsReached(rec)) {
     return { kind: 'max_turns_reached' };
   }
 
   switch (decision) {
-    case 'steering':
-      return { kind: 'resume_with_inbox', inbox: steering };
-    case 'followup':
-      return { kind: 'resume_with_inbox', inbox: followup };
     case 'continue_after_function':
       return { kind: 'continue_after_function' };
     case 'end_turn':
@@ -89,12 +68,6 @@ export async function applySteeringCheckOutcome(
     case 'max_turns_reached':
       await endForMaxTurns(ports, rec);
       return;
-    case 'resume_with_inbox': {
-      await emitTurnEndOnce(ports, rec);
-      await ports.appendMessages(rec.session_id, outcome.inbox);
-      resumeToAssistantStreaming(rec);
-      return;
-    }
     case 'continue_after_function':
       resumeToAssistantStreaming(rec);
       return;

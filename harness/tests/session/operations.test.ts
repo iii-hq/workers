@@ -8,7 +8,6 @@ import {
   fork,
   loadMessages,
   loadMessagesWithEntryIds,
-  reconcile,
   tree,
 } from '../../src/session/tree/operations.js';
 import { InMemoryStore } from '../../src/session/tree/store.js';
@@ -39,6 +38,16 @@ describe('session-tree operations', () => {
     expect(path).toEqual([e1, e2]);
   });
 
+  it('append with null parent_id chains to the active tip', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const e1 = await appendMessage(store, sid, null, userMsg('a'));
+    const e2 = await appendMessage(store, sid, e1, asstMsg('b'));
+    const e3 = await appendMessage(store, sid, null, userMsg('c'));
+    const path = await activePath(store, sid);
+    expect(path).toEqual([e1, e2, e3]);
+  });
+
   it('loadMessages filters non-message entries from active path', async () => {
     const store = new InMemoryStore();
     const sid = await createSession(store);
@@ -47,25 +56,6 @@ describe('session-tree operations', () => {
     const messages = await loadMessages(store, sid);
     expect(messages).toHaveLength(2);
     expect((messages[0] as { content: Array<{ text: string }> }).content[0].text).toBe('a');
-  });
-
-  it('reconcile appends missing tail messages', async () => {
-    const store = new InMemoryStore();
-    const sid = await createSession(store);
-    await appendMessage(store, sid, null, userMsg('one'));
-    const result = await reconcile(store, sid, [userMsg('one'), asstMsg('two'), userMsg('three')]);
-    expect(result.repaired).toBe(2);
-    const after = await loadMessages(store, sid);
-    expect(after).toHaveLength(3);
-  });
-
-  it('reconcile is idempotent', async () => {
-    const store = new InMemoryStore();
-    const sid = await createSession(store);
-    const snap = [userMsg('a'), asstMsg('b')];
-    await reconcile(store, sid, snap);
-    const second = await reconcile(store, sid, snap);
-    expect(second.repaired).toBe(0);
   });
 
   it('fork copies path entries with re-mapped ids', async () => {

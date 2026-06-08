@@ -1,5 +1,4 @@
 import type { Mode, ModelId } from '@/types/chat'
-import type { AgentMessage } from '@/types/iii-agent-event'
 
 /**
  * The streaming contract every ChatBackend honors. The order is:
@@ -82,16 +81,6 @@ export interface ChatStreamOptions {
    * `active ?? draftId ?? newSessionId()` plumbing.
    */
   sessionId?: string
-  /**
-   * Prior conversation turns to ship along with the new user prompt.
-   * Without this, `run::start` overwrites the orchestrator's flat
-   * message state with only the latest user message and the assistant
-   * loses all context from earlier user submissions. ChatView builds
-   * this from `conversation.messages` minus the just-appended user
-   * turn. Real backend prepends it to the payload's `messages` array;
-   * mock backend ignores.
-   */
-  history?: AgentMessage[]
 }
 
 export type CompactResult =
@@ -126,14 +115,13 @@ export interface ChatBackend {
     decision: 'allow' | 'deny',
   ): Promise<void>
   /**
-   * Powers `/compact`. `history` is reconciled into session-tree first so a
-   * stale mirror doesn't yield a spurious 'empty'. `contextWindow` skips
-   * the server's `models::get` lookup when known.
+   * Powers `/compact`. Compacts the session-tree (the single source of
+   * truth) directly. `contextWindow` skips the server's `models::get`
+   * lookup when known.
    */
   compactSession?(
     sessionId: string,
     model: ModelId,
-    history?: AgentMessage[],
     contextWindow?: number,
   ): Promise<CompactResult>
 }

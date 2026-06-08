@@ -247,7 +247,7 @@ type DisplayAction =
 
 const initialDisplayState: DisplayState = {
   expandedIds: new Set(),
-  showCriticalPath: true,
+  showCriticalPath: false,
 }
 
 // Note: `hoveredSpanId` used to live here, but mouse-sweep over the

@@ -137,7 +137,7 @@ describe('finalizeAssistantTurn', () => {
     rec.state = 'assistant_streaming';
     const asst = assistant({ stop_reason: 'error', error_message: 'auth failed' });
 
-    await finalizeAssistantTurn(ports, rec, asst);
+    await finalizeAssistantTurn(ports, rec, asst, []);
 
     expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
@@ -152,9 +152,10 @@ describe('finalizeAssistantTurn', () => {
       content: [{ type: 'function_call', id: 'fc-1', function_id: 'shell::run', arguments: {} }],
     });
 
-    await finalizeAssistantTurn(ports, rec, asst);
+    await finalizeAssistantTurn(ports, rec, asst, []);
 
     expect(ports.persistAssistantIfNew).toHaveBeenCalledOnce();
+    expect(ports.persistAssistantIfNew).toHaveBeenCalledWith('s1', asst, []);
     expect(rec.state).toBe('function_execute');
     expect(rec.work?.prepared).toHaveLength(1);
     expect(rec.function_results).toEqual([]);

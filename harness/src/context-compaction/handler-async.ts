@@ -10,7 +10,6 @@ import { logger } from '../runtime/otel.js';
 import { compactionConfig } from './config.js';
 import {
   isSummarizeOk,
-  persistCompactionFlatState,
   publishCompactionDone,
   runSummarizeCompaction,
 } from './handler-pipeline.js';
@@ -111,7 +110,7 @@ async function resolveModelFromEvent(
 }
 
 export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
-  return withSpan('compaction.async', {}, async () => {
+  return withSpan('compaction::async', {}, async () => {
     const payload = extractEventPayload(frame);
     if (!payload) return;
 
@@ -169,12 +168,6 @@ export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
 
       setCurrentSpanAttribute('used_prior_summary', isSummarizeOk(result));
       if (isSummarizeOk(result)) {
-        await persistCompactionFlatState(
-          iii,
-          payload.session_id,
-          result.summary_text,
-          result.tail_messages,
-        );
         await publishCompactionDone(iii, payload.session_id, 'async', result);
       }
     } catch (err) {

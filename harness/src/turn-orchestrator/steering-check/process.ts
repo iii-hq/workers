@@ -1,5 +1,5 @@
 /**
- * Drain inboxes, route, apply steering_check outcomes, and register the FSM step.
+ * Route steering_check outcomes, apply transitions, and register the FSM step.
  */
 
 import type { ISdk } from '../../runtime/iii.js';
@@ -28,7 +28,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state steering_check: drain inboxes and route onward.',
+        'Run one durable FSM transition for session in state steering_check: continue after tool results or end the turn.',
     },
   );
 }

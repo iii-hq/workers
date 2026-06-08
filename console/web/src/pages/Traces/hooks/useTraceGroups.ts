@@ -56,8 +56,10 @@ export function useTraceGroups({
         limit: DEFAULT_GROUP_LIMIT,
         include_internal: includeInternal,
       }),
-    // Live updates arrive via `useTracesLiveRefresh` (the engine `trace`
-    // trigger), which invalidates the ['traceGroups'] key — no polling.
+    // Live updates: `useTraceData`'s `trace-rows` stream effect invalidates
+    // the ['traceGroups'] key on span activity (the aggregate can't be
+    // appended like the flat list), so the group view refetches reactively —
+    // no polling interval.
     refetchInterval: false,
     staleTime: 1000,
     retry: (failureCount, err) => {

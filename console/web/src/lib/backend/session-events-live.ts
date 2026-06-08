@@ -13,8 +13,8 @@
  * The handler is named with the `iii::` prefix (`is_iii_builtin_function_id`),
  * so the spans produced by DELIVERING this trigger are tagged
  * `iii.function.kind=internal` — hidden from the Traces view by the default
- * `include_internal:false` query and skipped by the engine's trigger
- * loop-break, matching the `traces-live.ts` approach. Without this, every
+ * `include_internal:false` query and skipped by the engine's trigger/stream
+ * loop-break, matching the `traces-stream.ts` approach. Without this, every
  * delivery would flood the trace list with `session_event` spans.
  *
  * The iii-browser-sdk replays both registered functions and triggers on

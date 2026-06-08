@@ -12,7 +12,6 @@ import {
   type ListOrder,
   type ListSessionsResult,
   type MessageWithEntryId,
-  type ReconcileResult,
   type SessionEntry,
   SessionError,
   type SessionListRow,
@@ -70,11 +69,16 @@ export async function appendMessage(
   parent_id: string | null,
   message: AgentMessage,
 ): Promise<string> {
+  let resolvedParent = parent_id;
+  if (resolvedParent === null) {
+    const path = await activePath(store, session_id);
+    resolvedParent = path.at(-1) ?? null;
+  }
   const id = randomUUID();
   const entry: SessionEntry = {
     type: 'message',
     id,
-    parent_id,
+    parent_id: resolvedParent,
     message,
     timestamp: Date.now(),
   };
@@ -131,34 +135,11 @@ export async function loadMessagesWithEntryIds(
   const out: MessageWithEntryId[] = [];
   for (const id of path) {
     const e = byId.get(id);
-    if (e?.type === 'message') out.push({ entry_id: id, message: e.message });
+    if (e?.type === 'message') {
+      out.push({ entry_id: id, message: e.message });
+    }
   }
   return out;
-}
-
-export async function reconcile(
-  store: SessionStore,
-  session_id: string,
-  state_snapshot: AgentMessage[],
-): Promise<ReconcileResult> {
-  const treePairs = await loadMessagesWithEntryIds(store, session_id);
-  const tree_count_before = treePairs.length;
-  const state_count = state_snapshot.length;
-  if (state_snapshot.length <= treePairs.length) {
-    return { state_count, tree_count_before, tree_count_after: tree_count_before, repaired: 0 };
-  }
-  let lastId: string | null = treePairs.at(-1)?.entry_id ?? null;
-  let repaired = 0;
-  for (const msg of state_snapshot.slice(treePairs.length)) {
-    lastId = await appendMessage(store, session_id, lastId, msg);
-    repaired++;
-  }
-  return {
-    state_count,
-    tree_count_before,
-    tree_count_after: tree_count_before + repaired,
-    repaired,
-  };
 }
 
 export async function loadContext(

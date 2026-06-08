@@ -1,6 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { fetchTraces, type TracesFilterParams } from '../api/traces'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  isAppendableTraceList,
+  mergeTraceListSpans,
+  startTraceListStream,
+} from '@/lib/traces-stream'
+import {
+  fetchTraces,
+  type TracesFilterParams,
+  type TracesResponse,
+} from '../api/traces'
 import {
   dedupeToTraceRoots,
   fingerprintTraceList,
@@ -26,6 +36,7 @@ export interface UseTraceDataOptions {
   filterParams: TracesFilterParams
   showSystem: boolean
   debouncedSearch: string
+  isPaused: boolean
 }
 
 export interface UseTraceDataReturn {
@@ -43,6 +54,7 @@ export function useTraceData({
   filterParams,
   showSystem,
   debouncedSearch,
+  isPaused,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
@@ -70,10 +82,11 @@ export function useTraceData({
         limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
       }),
-    // Live updates arrive via `useTracesLiveRefresh` (the engine `trace`
-    // trigger), which invalidates the ['traces'] key — no polling interval.
-    // Initial mount fetch + manual Refresh + signal-driven invalidation cover
-    // refresh; reconnect/tab-visible re-sync handles cold-start races.
+    // This query is the one-time SEED read. Live updates arrive by APPEND over
+    // the engine `iii:devtools:trace-rows` stream (see the stream effect
+    // below), which merges new rows straight into this cache — no polling
+    // interval. Reconnect / tab-visible re-seed once to self-heal dropped
+    // frames; manual Refresh re-reads on demand.
     refetchInterval: false,
     staleTime: 1000,
   })
@@ -117,6 +130,96 @@ export function useTraceData({
       setHasOtelConfigured(false)
     }
   }, [tracesData])
+
+  // ── Live append over the engine `trace-rows` stream ──────────────────────
+  // The engine pushes new root rows as spans close. The UNFILTERED list merges
+  // them directly into the seed query's cache (pure append, no refetch); a
+  // filtered/searched list — and the group-by aggregate, which can't be
+  // appended — refetches on activity instead (the engine already coalesces to
+  // ~one push per window, so this is not a poll). Pause / tab-hidden freeze it;
+  // reconnect and tab-visible re-seed once to recover anything dropped while
+  // away. Subscribes once for the hook's lifetime (params are read via refs).
+  const qc = useQueryClient()
+  const mergeKeyRef = useRef<{ key: unknown[]; unfiltered: boolean }>({
+    key: [],
+    unfiltered: false,
+  })
+  mergeKeyRef.current = {
+    key: ['traces', filterParams, showSystem, debouncedSearch],
+    unfiltered: isAppendableTraceList(filterParams, debouncedSearch),
+  }
+  const isPausedRef = useRef(isPaused)
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+
+  useEffect(() => {
+    let stop: (() => void) | undefined
+    let disposed = false
+
+    const isHidden = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const reseed = () => {
+      qc.invalidateQueries({ queryKey: ['traces'] })
+      qc.invalidateQueries({ queryKey: ['traceGroups'] })
+    }
+
+    void (async () => {
+      const client = await getIiiClient()
+      if (disposed) return
+
+      const offStream = startTraceListStream(client, (spans) => {
+        if (isPausedRef.current || isHidden()) return
+        const { key, unfiltered } = mergeKeyRef.current
+        if (unfiltered) {
+          qc.setQueryData<TracesResponse>(key, (old) => {
+            const merged = mergeTraceListSpans(
+              old?.spans ?? [],
+              spans,
+              DEFAULT_TRACE_LIMIT,
+            )
+            return {
+              spans: merged,
+              total: merged.length,
+              offset: 0,
+              limit: DEFAULT_TRACE_LIMIT,
+            }
+          })
+        } else {
+          qc.invalidateQueries({ queryKey: ['traces'] })
+        }
+        // The group-by aggregate can't be appended; refetch it on activity.
+        qc.invalidateQueries({ queryKey: ['traceGroups'] })
+      })
+
+      const offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected' && !isPausedRef.current) reseed()
+      })
+
+      let offVisibility: (() => void) | undefined
+      if (typeof document !== 'undefined') {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible' && !isPausedRef.current) {
+            reseed()
+          }
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        offVisibility = () =>
+          document.removeEventListener('visibilitychange', onVisible)
+      }
+
+      stop = () => {
+        offStream()
+        offConn()
+        offVisibility?.()
+      }
+    })()
+
+    return () => {
+      disposed = true
+      stop?.()
+    }
+  }, [qc])
 
   const flushPendingTraces = () => {
     if (pendingTracesRef.current) {

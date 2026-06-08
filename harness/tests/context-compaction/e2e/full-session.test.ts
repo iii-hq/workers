@@ -6,23 +6,27 @@
  * up to an InMemoryStore. Verifies the three structural guarantees that
  * the unit/integration tests cannot observe in isolation:
  *
- * 1. The flat state at scope `messages`, key `<sid>` is
- *    rewritten to a reduced array: [summary-as-asst-msg, ...tail, replay].
+ * 1. The reconstructed provider window (from session-tree + compactions)
+ *    is reduced to: [summary-as-asst-msg, ...tail, continue-nudge].
  * 2. The session tree's active path stays connected — the Compaction
- *    entry, replayed user message, and synthetic continue-prompt are
- *    chained via parent_id back to the pre-compaction tail.
+ *    entry and continue-prompt are chained via parent_id back to the
+ *    pre-compaction tail.
  * 3. The downstream provider input (what would land in `buildInput`)
  *    no longer exceeds the model's usable token budget.
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { payloadStoreKey, stateStoreKey } from '../../_helpers/stateStoreKey.js';
+import { payloadStoreKey } from '../../_helpers/stateStoreKey.js';
 import { handleSync } from '../../../src/context-compaction/handler-sync.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
-import { MESSAGES_SCOPE } from '../../../src/turn-orchestrator/state.js';
+import {
+  compactionEntries,
+  loadMessagesWithEntryIds,
+} from '../../../src/session/tree/operations.js';
 import { registerTree } from '../../../src/session/tree/register.js';
 import { InMemoryStore } from '../../../src/session/tree/store.js';
 import type { SessionEntry } from '../../../src/session/tree/types.js';
+import { buildContextView } from '../../../src/turn-orchestrator/state-runtime/context-view.js';
 import { runPreflight } from '../../../src/turn-orchestrator/preflight.js';
 import type { AgentMessage } from '../../../src/types/agent-message.js';
 
@@ -67,17 +71,24 @@ function buildOverflowingMessages(turns: number): AgentMessage[] {
   return out;
 }
 
+async function loadProviderWindow(
+  store: InMemoryStore,
+  session_id: string,
+): Promise<AgentMessage[]> {
+  const messages = await loadMessagesWithEntryIds(store, session_id);
+  const compactions = await compactionEntries(store, session_id);
+  return buildContextView(messages, compactions);
+}
+
 // ---------------------------------------------------------------------------
 // Test ISdk: wires the real session-tree handlers to an InMemoryStore,
 // plus a stub `models::get`, a stub provider stream (returns a known
-// summary), and an in-memory `state::*` so leases and the flat-state
-// rewrite both work without touching the network.
+// summary), and an in-memory `state::*` so leases work without the network.
 // ---------------------------------------------------------------------------
 
 type FunctionHandler = (payload: unknown) => Promise<unknown>;
 
 function buildTestSdk(opts: {
-  flatMessages: AgentMessage[];
   summaryText: string;
   /** Capture every provider stream invocation's `messages` payload. */
   providerInvocations: AgentMessage[][];
@@ -86,9 +97,6 @@ function buildTestSdk(opts: {
   const stateStore = new Map<string, unknown>();
   const handlers = new Map<string, FunctionHandler>();
   const store = new InMemoryStore();
-
-  // Pre-seed flat state with the overflowing transcript.
-  stateStore.set(stateStoreKey(MESSAGES_SCOPE, opts.session_id), opts.flatMessages);
 
   // Stub channel writer so streamAndCollect can deliver a synthetic done event.
   let channelCb: ((raw: string) => void) | null = null;
@@ -106,7 +114,7 @@ function buildTestSdk(opts: {
     const fn = req.function_id;
     const payload = req.payload;
 
-    // 1) state::* — back the lease / flat-state rewrite with stateStore.
+    // 1) state::* — back the lease with stateStore.
     if (fn === 'state::get') {
       const p = (payload ?? {}) as { scope: string; key: string };
       const v = stateStore.get(payloadStoreKey(p));
@@ -254,36 +262,34 @@ async function seedSessionTreeFrom(
 // ---------------------------------------------------------------------------
 
 describe('e2e full-session compaction', () => {
-  it('preflight + sync compaction reduces flat state AND keeps tree connected', async () => {
+  it('preflight + sync compaction reduces provider window AND keeps tree connected', async () => {
     const SUMMARY = 'EARLIER TURNS SUMMARY: discussed lorem and friends.';
     const overflowing = buildOverflowingMessages(30);
     const providerInvocations: AgentMessage[][] = [];
 
-    const { iii, store, stateStore } = buildTestSdk({
+    const { iii, store } = buildTestSdk({
       session_id: SESSION_ID,
-      flatMessages: overflowing,
       summaryText: SUMMARY,
       providerInvocations,
     });
 
-    // Seed the session tree with the same transcript so replay extraction works.
+    // Seed the session tree with the transcript so replay extraction works.
     const entryIds = await seedSessionTreeFrom(iii, SESSION_ID, overflowing);
     const lastUserId = entryIds[entryIds.length - 1] ?? ''; // the final user msg
 
-    // Sanity check: the pre-compaction flat state matches the seed.
-    const beforeFlat = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SESSION_ID)) as AgentMessage[];
-    expect(beforeFlat.length).toBe(overflowing.length);
+    const beforeView = await loadProviderWindow(store, SESSION_ID);
+    expect(beforeView.length).toBe(overflowing.length);
 
     // Run preflight. The 30-turn fixture should overflow the 8k usable budget.
     const result = await runPreflight(iii, SESSION_ID, overflowing, PROVIDER_ID, MODEL_ID);
     expect(result).toBe('compacted');
 
-    // --- Assertion 1: flat state is reduced and shaped correctly. ---
-    const afterFlat = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SESSION_ID)) as AgentMessage[];
-    expect(afterFlat.length).toBeLessThan(overflowing.length);
+    // --- Assertion 1: reconstructed window is reduced and shaped correctly. ---
+    const afterView = await loadProviderWindow(store, SESSION_ID);
+    expect(afterView.length).toBeLessThan(overflowing.length);
 
     // First message must be the summary-as-assistant-msg containing SUMMARY.
-    const first = afterFlat[0];
+    const first = afterView[0];
     expect(first?.role).toBe('assistant');
     if (first?.role === 'assistant') {
       const text = first.content[0];
@@ -291,13 +297,21 @@ describe('e2e full-session compaction', () => {
       if (text?.type === 'text') expect(text.text).toContain(SUMMARY);
     }
 
-    // Last message is the replay (the final user message that triggered the turn).
-    const last = afterFlat[afterFlat.length - 1];
+    // The window keeps the final user message (it stays on the path as the
+    // compaction's parent) and now ends with the continue nudge.
+    const finalUserInView = afterView.some(
+      (m) =>
+        m.role === 'user' &&
+        m.content[0]?.type === 'text' &&
+        m.content[0].text.includes('final user message'),
+    );
+    expect(finalUserInView).toBe(true);
+    const last = afterView[afterView.length - 1];
     expect(last?.role).toBe('user');
     if (last?.role === 'user') {
       const text = last.content[0];
       if (text?.type === 'text') {
-        expect(text.text).toContain('final user message');
+        expect(text.text).toMatch(/Continue if you have next steps/);
       }
     }
 
@@ -308,7 +322,7 @@ describe('e2e full-session compaction', () => {
     const entries = (await store.loadEntries(SESSION_ID)) as SessionEntry[];
     const byId = new Map(entries.map((e) => [e.id, e] as const));
 
-    // The just-appended synthetic should be the active leaf.
+    // The just-appended continue nudge should be the active leaf.
     const leafId = path[path.length - 1];
     const leaf = leafId ? byId.get(leafId) : undefined;
     expect(leaf?.type).toBe('message');
@@ -327,8 +341,8 @@ describe('e2e full-session compaction', () => {
     const hasCompactionOnPath = path.some((id) => byId.get(id)?.type === 'compaction');
     expect(hasCompactionOnPath).toBe(true);
 
-    // The replay-user-msg must appear on the active path (it was reinjected
-    // with parent_id chained off the compaction entry).
+    // The final user message remains on the active path as the compaction's
+    // parent (no reinjection needed in the tree-only model).
     const userReplayOnPath = path
       .map((id) => byId.get(id))
       .filter((e): e is Extract<SessionEntry, { type: 'message' }> => e?.type === 'message')
@@ -352,9 +366,8 @@ describe('e2e full-session compaction', () => {
     const tinyMessages: AgentMessage[] = [userMsg('hi'), asstMsg('hello'), userMsg('what is 2+2?')];
     const providerInvocations: AgentMessage[][] = [];
     const SID = `${SESSION_ID}-small`;
-    const { iii, stateStore } = buildTestSdk({
+    const { iii, store } = buildTestSdk({
       session_id: SID,
-      flatMessages: tinyMessages,
       summaryText: SUMMARY,
       providerInvocations,
     });
@@ -373,8 +386,8 @@ describe('e2e full-session compaction', () => {
       else process.env.COMPACT_RESERVED_TOKENS = prev;
     }
 
-    // Flat state is untouched.
-    const after = stateStore.get(stateStoreKey(MESSAGES_SCOPE, SID)) as AgentMessage[];
+    // Provider window is untouched (no compaction entry).
+    const after = await loadProviderWindow(store, SID);
     expect(after.length).toBe(tinyMessages.length);
 
     // Summariser was never invoked.

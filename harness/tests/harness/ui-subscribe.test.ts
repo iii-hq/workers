@@ -2,54 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { FanoutState } from '../../src/harness/ui-subscribe.js';
 
 describe('FanoutState', () => {
-  it('subscribes per-browser to specific session', () => {
+  it('tracks model subscribers', () => {
     const s = new FanoutState();
-    s.subscribe('b1', 's1');
-    expect(s.subscribersFor('s1')).toEqual(['b1']);
-    expect(s.subscribersFor('other')).toEqual([]);
-  });
-
-  it('null session subscribes to all sessions', () => {
-    const s = new FanoutState();
-    s.subscribe('b1', null);
-    expect(s.subscribersFor('any-session')).toContain('b1');
-    expect(s.allSubscribers()).toEqual(['b1']);
-  });
-
-  it('unsubscribe removes the targeted entry', () => {
-    const s = new FanoutState();
-    s.subscribe('b1', 's1');
-    s.subscribe('b1', 's2');
-    s.unsubscribe('b1', 's1');
-    expect(s.subscribersFor('s1')).toEqual([]);
-    expect(s.subscribersFor('s2')).toEqual(['b1']);
-  });
-
-  it('evicts a browser entirely', () => {
-    const s = new FanoutState();
-    s.subscribe('b1', null);
-    s.evictBrowser('b1');
-    expect(s.browserCount()).toBe(0);
-  });
-
-  it('tracks model subscribers separately from session subs', () => {
-    const s = new FanoutState();
-    s.subscribe('b1', 's1');
     s.subscribeModels('b1');
-    expect(s.modelSubscribers()).toEqual(['b1']);
-    // Dropping the session sub must not tear down the model subscription —
-    // this isolation is what keeps the agent-events pump from evicting a
-    // model-only subscriber.
-    s.unsubscribe('b1', 's1');
     expect(s.modelSubscribers()).toEqual(['b1']);
     s.unsubscribeModels('b1');
     expect(s.modelSubscribers()).toEqual([]);
   });
 
-  it('evicting a browser also drops its model subscription', () => {
+  it('tracks multiple model subscribers independently', () => {
     const s = new FanoutState();
     s.subscribeModels('b1');
-    s.evictBrowser('b1');
-    expect(s.modelSubscribers()).toEqual([]);
+    s.subscribeModels('b2');
+    expect(s.modelSubscribers().sort()).toEqual(['b1', 'b2']);
+    s.unsubscribeModels('b1');
+    expect(s.modelSubscribers()).toEqual(['b2']);
   });
 });

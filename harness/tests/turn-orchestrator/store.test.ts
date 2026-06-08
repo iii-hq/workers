@@ -2,24 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ISdk } from '../../src/runtime/iii.js';
 import {
   createTurnStore,
-  parseFlatMessages,
   shouldWakeStep,
 } from '../../src/turn-orchestrator/state-runtime/store.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
-
-describe('parseFlatMessages', () => {
-  it('returns the array when messages are objects', () => {
-    const messages = [{ role: 'user', content: [], timestamp: 1 }];
-    expect(parseFlatMessages(messages)).toEqual(messages);
-  });
-
-  it('returns [] for null, undefined, and non-arrays', () => {
-    expect(parseFlatMessages(null)).toEqual([]);
-    expect(parseFlatMessages(undefined)).toEqual([]);
-    expect(parseFlatMessages('bad')).toEqual([]);
-    expect(parseFlatMessages({})).toEqual([]);
-  });
-});
 
 function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unknown }> } {
   const emits: Array<{ session_id: string; event: unknown }> = [];
@@ -121,6 +106,47 @@ describe('saveRecord no-op suppression', () => {
     await store.saveRecord(rec, previous);
 
     expect(emits).toHaveLength(1);
+  });
+});
+
+describe('session-tree call reduction', () => {
+  function recordingIii(): { iii: ISdk; calls: string[] } {
+    const calls: string[] = [];
+    const iii = {
+      trigger: vi.fn(async ({ function_id }: { function_id: string }) => {
+        calls.push(function_id);
+        if (function_id === 'session-tree::messages') return { messages: [] };
+        if (function_id === 'session-tree::compactions') return { entries: [] };
+        return null;
+      }),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  it('loadMessages reads the window without re-ensuring the session', async () => {
+    const { iii, calls } = recordingIii();
+    await createTurnStore(iii).loadMessages('sess-a');
+    expect(calls).toContain('session-tree::messages');
+    expect(calls).toContain('session-tree::compactions');
+    expect(calls).not.toContain('session-tree::ensure');
+  });
+
+  it('appendMessages writes without re-ensuring the session', async () => {
+    const { iii, calls } = recordingIii();
+    const msg = {
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'hi' }],
+      timestamp: 1,
+    };
+    await createTurnStore(iii).appendMessages('sess-a', [msg]);
+    expect(calls.filter((c) => c === 'session-tree::append')).toHaveLength(1);
+    expect(calls).not.toContain('session-tree::ensure');
+  });
+
+  it('ensureSession is the sole trigger of session-tree::ensure', async () => {
+    const { iii, calls } = recordingIii();
+    await createTurnStore(iii).ensureSession('sess-a');
+    expect(calls.filter((c) => c === 'session-tree::ensure')).toHaveLength(1);
   });
 });
 

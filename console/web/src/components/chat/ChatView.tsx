@@ -13,7 +13,6 @@ import {
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import type { ChatBackend } from '@/lib/backend'
-import { translateUiHistoryForBackend } from '@/lib/backend/history'
 import type { CompactResult } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
@@ -171,15 +170,6 @@ export function ChatView({
     })
   }, [sessionId])
 
-  /* Read the messages snapshot through a ref inside handleSubmit so
-   * the callback identity is stable across token-by-token re-renders.
-   * Pre-fix, listing `conversation.messages` in the deps array
-   * rebuilt handleSubmit on every assistant/thought delta, which
-   * cascaded into Composer rebuilding and `LexicalShell` re-binding
-   * its `KEY_ENTER_COMMAND` listener once per token. */
-  const messagesRef = useRef(conversation.messages)
-  messagesRef.current = conversation.messages
-
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
@@ -192,10 +182,6 @@ export function ChatView({
         )
         return
       }
-
-      // Snapshot prior history BEFORE appending the new user msg —
-      // run::start overwrites flat state with whatever we send.
-      const priorHistory = translateUiHistoryForBackend(messagesRef.current)
 
       const userMsg: UserMessage = {
         id: uid(),
@@ -232,7 +218,6 @@ export function ChatView({
           const result = await backend.compactSession(
             sessionId,
             model,
-            priorHistory,
             contextWindow,
           )
           if (result.status === 'ok') {
@@ -281,7 +266,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           model,
-          { signal: controller.signal, sessionId, history: priorHistory },
+          { signal: controller.signal, sessionId },
         )) {
           switch (event.kind) {
             case 'thought-start': {

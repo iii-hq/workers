@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { extractReplayTarget, reinjectReplay } from '../../src/context-compaction/replay.js';
+import { describe, expect, it } from 'vitest';
+import { extractReplayTarget } from '../../src/context-compaction/replay.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
 
 const user = (text = 'q'): { entry_id: string; message: AgentMessage } => ({
@@ -35,21 +35,5 @@ describe('extractReplayTarget', () => {
     const entries = [user('q1'), asst('a1')];
     const { replay } = extractReplayTarget(entries, 'a-a1');
     expect(replay).toBeUndefined();
-  });
-});
-
-describe('reinjectReplay', () => {
-  it('writes the replay user message back via session-tree::append', async () => {
-    const trigger = vi.fn(async () => ({ entry_id: 'new' }));
-    const iii = { trigger } as unknown as Parameters<typeof reinjectReplay>[0];
-    await reinjectReplay(iii, 'sid', user('q2'));
-    expect(trigger).toHaveBeenCalledTimes(1);
-    const call = trigger.mock.calls[0]![0] as {
-      function_id: string;
-      payload: { session_id: string; message: { role: string } };
-    };
-    expect(call.function_id).toBe('session-tree::append');
-    expect(call.payload.session_id).toBe('sid');
-    expect(call.payload.message.role).toBe('user');
   });
 });

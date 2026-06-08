@@ -1,7 +1,8 @@
 /**
  * TurnState + TurnStateRecord types and parsers.
  *
- * Persistence uses semantic iii scopes (`turn_state`, `messages`, `run_request`, …)
+ * Persistence uses semantic iii scopes (`turn_state`, `run_request`, …). Conversation
+ * history lives in `session-tree::*` and is reconstructed at read time.
  * keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
  */
 
@@ -11,7 +12,6 @@ import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-e
 
 /** Shared iii scope names for turn-orchestrator persistence (key = session_id). */
 export const TURN_STATE_SCOPE = 'turn_state';
-export const MESSAGES_SCOPE = 'messages';
 export const RUN_REQUEST_SCOPE = 'run_request';
 
 export type TurnState =

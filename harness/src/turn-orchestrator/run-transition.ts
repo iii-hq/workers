@@ -67,8 +67,9 @@ async function failTransition(
     body_streamed: false,
   });
 
-  const messages = await store.loadMessages(rec.session_id);
-  await emit(iii, rec.session_id, { type: 'agent_end', messages });
+  // agent_end carries no transcript — consumers read it as a signal only (see
+  // finishSession). Avoid reloading the session just to fill an unused field.
+  await emit(iii, rec.session_id, { type: 'agent_end', messages: [] });
   logger.error('transition failed; session marked failed', {
     session_id: rec.session_id,
     from_state,

@@ -21,7 +21,7 @@ workers.
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. Default mode from `harness` config `permissions.default_mode`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
-| session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`) plus per-session inbox queues (`session-inbox::*`). | [workers/session.md](harness/docs/workers/session.md) |
+| session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Model-capability catalogue in iii state (provider-registered only; no embedded seed or fallback), refreshed by `provider::<name>::refresh_models`. | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
@@ -69,7 +69,6 @@ flowchart LR
 
   client -- "harness::trigger(run::start, ...)" --> harness
   harness -- "iii.trigger run::start" --> turnOrch
-  client -- "ui::subscribe" --> harness
 
   turnOrch -- "provider::*::stream" --> provAnth
   turnOrch -- "provider::*::stream" --> provOAI
@@ -77,7 +76,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "provider::*::stream" --> provLlama
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "session-tree::* mirror" --> session
+  turnOrch -- "session-tree::* read/append" --> session
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
@@ -94,8 +93,6 @@ flowchart LR
 
   state -- "agent::events stream (scoped trigger)" --> client
   state -- "agent::events stream" --> compact
-  state -- "state trigger (scope=turn_state)" --> harness
-  harness -- "ui::sessions::changed::<browser_id>" --> client
   compact -- "session-tree::compact" --> session
 ```
 

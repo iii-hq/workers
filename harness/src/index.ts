@@ -38,7 +38,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'harness',
     description:
-      'Meta-worker: ui::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions.',
+      'Meta-worker: ui::models::subscribe/unsubscribe, harness::fs::read_inline, policy::check_permissions.',
     register: (iii, ctx) => registerHarness(iii, ctx),
   },
   {
@@ -59,8 +59,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   },
   {
     name: 'session',
-    description:
-      'Session storage (parent-id tree under session-tree::*) and per-session inbox (session-inbox::*) backed by iii state.',
+    description: 'Session storage (parent-id tree under session-tree::*) backed by iii state.',
     register: (iii, ctx) => registerSession(iii, ctx),
   },
   {
