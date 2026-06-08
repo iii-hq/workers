@@ -17,9 +17,7 @@ function wakeEnqueues(
 ): number {
   const trigger = h.iii.trigger as unknown as {
     mock: {
-      calls: Array<
-        [{ function_id?: string; payload?: { session_id?: string }; action?: unknown }]
-      >;
+      calls: Array<[{ function_id?: string; payload?: { session_id?: string }; action?: unknown }]>;
     };
   };
   return trigger.mock.calls.filter(
@@ -221,21 +219,19 @@ describe('parallel approval e2e', () => {
     // own turn-step wake was dropped (retries exhausted against the lease the
     // driving wake holds). fc-late was read first and skipped, so only a re-scan
     // within the same wake can pick it up.
-    vi.spyOn(agentTriggerModule, 'triggerFunctionCall').mockImplementation(
-      async (_iii, call) => {
-        if (call.id === 'fc-driver') {
-          h.stateStore.set('approvals/sess-drain/fc-late', {
-            decision: 'allow',
-            reason: null,
-          });
-        }
-        return {
-          content: [{ type: 'text' as const, text: `${call.id}-ok` }],
-          details: {},
-          terminate: false,
-        };
-      },
-    );
+    vi.spyOn(agentTriggerModule, 'triggerFunctionCall').mockImplementation(async (_iii, call) => {
+      if (call.id === 'fc-driver') {
+        h.stateStore.set('approvals/sess-drain/fc-late', {
+          decision: 'allow',
+          reason: null,
+        });
+      }
+      return {
+        content: [{ type: 'text' as const, text: `${call.id}-ok` }],
+        details: {},
+        terminate: false,
+      };
+    });
 
     h.seedExecute(
       'sess-drain',

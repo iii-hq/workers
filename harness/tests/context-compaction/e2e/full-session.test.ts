@@ -19,7 +19,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { payloadStoreKey } from '../../_helpers/stateStoreKey.js';
 import { handleSync } from '../../../src/context-compaction/handler-sync.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
-import { compactionEntries, loadMessagesWithEntryIds } from '../../../src/session/tree/operations.js';
+import {
+  compactionEntries,
+  loadMessagesWithEntryIds,
+} from '../../../src/session/tree/operations.js';
 import { registerTree } from '../../../src/session/tree/register.js';
 import { InMemoryStore } from '../../../src/session/tree/store.js';
 import type { SessionEntry } from '../../../src/session/tree/types.js';
@@ -68,7 +71,10 @@ function buildOverflowingMessages(turns: number): AgentMessage[] {
   return out;
 }
 
-async function loadProviderWindow(store: InMemoryStore, session_id: string): Promise<AgentMessage[]> {
+async function loadProviderWindow(
+  store: InMemoryStore,
+  session_id: string,
+): Promise<AgentMessage[]> {
   const messages = await loadMessagesWithEntryIds(store, session_id);
   const compactions = await compactionEntries(store, session_id);
   return buildContextView(messages, compactions);

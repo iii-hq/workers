@@ -59,8 +59,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   },
   {
     name: 'session',
-    description:
-      'Session storage (parent-id tree under session-tree::*) backed by iii state.',
+    description: 'Session storage (parent-id tree under session-tree::*) backed by iii state.',
     register: (iii, ctx) => registerSession(iii, ctx),
   },
   {

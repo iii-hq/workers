@@ -10,10 +10,7 @@ import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { compactionConfig } from './config.js';
-import {
-  publishCompactionDone,
-  runSummarizeCompaction,
-} from './handler-pipeline.js';
+import { publishCompactionDone, runSummarizeCompaction } from './handler-pipeline.js';
 import { acquireLeaseWithWait, releaseLease } from './lease.js';
 import type { ModelLimit } from './overflow.js';
 import { type MessageWithEntryId, extractReplayTarget } from './replay.js';
