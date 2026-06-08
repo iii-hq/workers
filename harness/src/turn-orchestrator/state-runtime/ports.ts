@@ -7,7 +7,7 @@ import type { RunRequest } from '../run-request.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage, FunctionResultMessage } from '../../types/agent-message.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
-import { createTurnStore, type TurnStore } from './store.js';
+import { createTurnStore } from './store.js';
 
 export type TurnStatePorts = {
   loadMessages(session_id: string): Promise<AgentMessage[]>;
@@ -23,8 +23,8 @@ export type TurnStatePorts = {
   finishSession(rec: TurnStateRecord): Promise<void>;
 };
 
-export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePorts {
-  const s = store ?? createTurnStore(iii);
+export function createTurnStatePorts(iii: ISdk): TurnStatePorts {
+  const s = createTurnStore(iii);
 
   return {
     loadMessages(session_id) {

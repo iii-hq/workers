@@ -1,12 +1,9 @@
 /**
- * TurnState + TurnStateRecord types and parsers.
- *
- * Persistence uses semantic iii scopes (`turn_state`, `run_request`, …). Conversation
- * history lives in `session-tree::*` and is reconstructed at read time.
- * keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
+ * TurnState + TurnStateRecord types and constructors. Persisted under iii scope
+ * `turn_state` keyed by session_id; conversation history lives in `session-tree::*`.
+ * State is cleared on deploy, so records are read back typed (no re-parsing).
  */
 
-import { z } from 'zod';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
 
@@ -89,34 +86,6 @@ export type TurnStateRecord =
       work?: TurnWork;
       awaiting_approval?: AwaitingApprovalEntry[];
     });
-
-const TURN_STATES = [
-  'provisioning',
-  'assistant_streaming',
-  'function_execute',
-  'function_awaiting_approval',
-  'steering_check',
-  'stopped',
-  'failed',
-] as const satisfies readonly TurnState[];
-
-/** Minimal structural guard for persisted turn_state — nested fields pass through. */
-const TurnStateRecordSchema = z
-  .object({
-    session_id: z.string(),
-    state: z.enum(TURN_STATES),
-    turn_count: z.number().catch(0),
-    function_results: z.array(z.unknown()).catch([]),
-    turn_end_emitted: z.boolean().catch(false),
-    started_at_ms: z.number().catch(0),
-    updated_at_ms: z.number().catch(0),
-  })
-  .passthrough();
-
-export function parseTurnStateRecord(raw: unknown): TurnStateRecord | null {
-  const result = TurnStateRecordSchema.safeParse(raw);
-  return result.success ? (result.data as TurnStateRecord) : null;
-}
 
 export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
   const now = Date.now();

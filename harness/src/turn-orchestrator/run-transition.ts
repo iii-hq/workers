@@ -88,8 +88,8 @@ export async function runTransition(
   if (!options?.serialize) {
     return runTransitionInner(iii, state, handle, payload);
   }
-  const acquired = await acquireSessionLease(iii, payload.session_id);
-  if (!acquired) {
+  const leaseNonce = await acquireSessionLease(iii, payload.session_id);
+  if (!leaseNonce) {
     // Another wake holds the session. Retry via the queue once it releases;
     // by then the persisted state has usually advanced and we stale-skip.
     throw new TransientError(
@@ -99,7 +99,7 @@ export async function runTransition(
   try {
     return await runTransitionInner(iii, state, handle, payload);
   } finally {
-    await releaseSessionLease(iii, payload.session_id);
+    await releaseSessionLease(iii, payload.session_id, leaseNonce);
   }
 }
 

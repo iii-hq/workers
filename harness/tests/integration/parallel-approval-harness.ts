@@ -152,14 +152,12 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         }
 
         if (function_id === 'state::update') {
-          // Faithful atomic read-modify-write per (scope, key): the engine's
-          // kv adapter holds the store write-lock for the whole op, so
-          // increment returns the prior value (null/absent → treated as 0).
-          // Both the event counter and the per-session lease depend on this.
+          // Atomic read-modify-write returning the prior value. Models the
+          // `increment` op (event counter) and root-path `set` op (lease).
           const p = payload as {
             scope: string;
             key: string;
-            ops?: Array<{ type: string; path?: string; by?: number }>;
+            ops?: Array<{ type: string; path?: string; by?: number; value?: unknown }>;
           };
           const storeKey = `${p.scope}/${p.key}`;
           const old_value = stateStore.has(storeKey)
@@ -167,8 +165,11 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
             : null;
           let next: unknown = old_value;
           for (const op of p.ops ?? []) {
-            if (op.type === 'increment' && (op.path ?? '') === '') {
+            if ((op.path ?? '') !== '') continue;
+            if (op.type === 'increment') {
               next = (typeof next === 'number' ? next : 0) + (op.by ?? 1);
+            } else if (op.type === 'set') {
+              next = op.value;
             }
           }
           stateStore.set(storeKey, next);

@@ -4,7 +4,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { PermissionModeSchema, type ApprovalSettings, type PermissionMode } from '../schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { mutationError, ok } from './reply.js';
-import { readSettings, writeSettings } from './store.js';
+import { updateSettings } from './store.js';
 import { type MutationReply, sessionIdField } from './types.js';
 
 const PayloadSchema = z.object({
@@ -22,10 +22,11 @@ export async function setMode(
   session_id: string,
   mode: PermissionMode,
 ): Promise<ApprovalSettings> {
-  const current = await readSettings(iii, session_id);
-  const next: ApprovalSettings = { ...current, mode, mode_set_at: Date.now() };
-  await writeSettings(iii, session_id, next);
-  return next;
+  // Field-scoped, no read: disjoint from add_always_allow/approve_always so both survive.
+  return updateSettings(iii, session_id, [
+    { type: 'set', path: 'mode', value: mode },
+    { type: 'set', path: 'mode_set_at', value: Date.now() },
+  ]);
 }
 
 export function registerSetMode(iii: ISdk): void {

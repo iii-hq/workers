@@ -5,7 +5,7 @@ import type { ApprovalSettings } from '../schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { type MutationReply, functionIdField, sessionIdField } from './types.js';
 import { mutationError, ok } from './reply.js';
-import { readSettings, writeSettings } from './store.js';
+import { readSettings, updateSettings } from './store.js';
 
 const PayloadSchema = z.object({
   session_id: sessionIdField,
@@ -28,15 +28,14 @@ export async function approveAlways(
   if (current.approved_always.some((entry) => entry.function_id === function_id)) {
     return current;
   }
-  const next: ApprovalSettings = {
-    ...current,
-    approved_always: [
-      ...current.approved_always,
-      { function_id, granted_at: Date.now(), granted_by: 'user_click' },
-    ],
-  };
-  await writeSettings(iii, session_id, next);
-  return next;
+  // Known race: see addAlwaysAllow — pre-read only narrows the duplicate window.
+  return updateSettings(iii, session_id, [
+    {
+      type: 'append',
+      path: 'approved_always',
+      value: { function_id, granted_at: Date.now(), granted_by: 'user_click' },
+    },
+  ]);
 }
 
 export function registerApproveAlways(iii: ISdk): void {
