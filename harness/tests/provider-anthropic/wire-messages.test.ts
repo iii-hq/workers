@@ -6,6 +6,7 @@ import {
   toWireMessages,
 } from '../../src/provider-anthropic/wire-messages.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
+import type { ContentBlock } from '../../src/types/content.js';
 
 describe('encode/decodeToolName', () => {
   it('replaces :: with __', () => {
@@ -123,6 +124,50 @@ describe('toWireMessages', () => {
       },
     ];
     expect(toWireMessages(msgs)).toEqual([]);
+  });
+
+  describe('tool_result image rendering', () => {
+    const mkResult = (content: ContentBlock[]): AgentMessage => ({
+      role: 'function_result',
+      function_call_id: 'toolu_img',
+      function_id: 'web::fetch',
+      content,
+      details: {},
+      is_error: false,
+      timestamp: 0,
+    });
+
+    it('keeps the flat-string content shape when the result has no images', () => {
+      const wire = toWireMessages([mkResult([{ type: 'text', text: 'plain' }])]) as Array<
+        Record<string, unknown>
+      >;
+      const content = (wire[0] as { content: Array<{ content: unknown }> }).content;
+      expect(content[0]?.content).toBe('plain'); // string, NOT an array
+    });
+
+    it('switches to an array of text + image source blocks when an image is present', () => {
+      const wire = toWireMessages([
+        mkResult([
+          { type: 'image', mime: 'image/png', data: 'aGVsbG8=' },
+          { type: 'text', text: 'Image fetched (image/png, 5 bytes)' },
+        ]),
+      ]) as Array<Record<string, unknown>>;
+      const content = (wire[0] as { content: Array<{ content: unknown }> }).content;
+      expect(content[0]?.content).toEqual([
+        { type: 'text', text: 'Image fetched (image/png, 5 bytes)' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      ]);
+    });
+
+    it('renders an image-only result as a single image source block', () => {
+      const wire = toWireMessages([
+        mkResult([{ type: 'image', mime: 'image/jpeg', data: 'eA==' }]),
+      ]) as Array<Record<string, unknown>>;
+      const content = (wire[0] as { content: Array<{ content: unknown }> }).content;
+      expect(content[0]?.content).toEqual([
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'eA==' } },
+      ]);
+    });
   });
 
   describe('boundary dedup of duplicate tool_result blocks', () => {

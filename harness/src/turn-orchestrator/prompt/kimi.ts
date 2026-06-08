@@ -126,7 +126,9 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
    the handler contract is the trigger type's, not a generic one.
 6. For any HTTP(S) request you MUST use \`web::fetch\`, never \`shell::exec\` with
    \`curl\` or \`wget\`. It returns a parsed \`{ ok, status, headers, body }\` envelope with
-   size/timeout caps and server-side SSRF protection.
+   size/timeout caps and server-side SSRF protection. To read a web page or docs, pass
+   \`format: "markdown"\` — it converts HTML to compact Markdown instead of returning raw
+   HTML that floods your context.
 
 # Security
 

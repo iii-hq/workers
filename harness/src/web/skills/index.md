@@ -1,7 +1,7 @@
 ---
 type: index
 title: web
-description: Outbound HTTP(S) client on the iii bus — the single web::fetch trigger. Use instead of shell::exec curl. Authoring guide for an agent calling it: the minimal call, the full request/response envelope, the ok:true-vs-ok:false rule (HTTP 4xx/5xx are ok:true), an error→cause→fix table, the json-vs-body and response_format rules, and the SSRF guard (blocked ranges, pin-to-IP, per-hop redirect re-check, cross-origin auth stripping). Self-contained; meant for system-prompt injection — do not re-fetch.
+description: Outbound HTTP(S) client on the iii bus — the single web::fetch trigger. Use instead of shell::exec curl. Authoring guide for an agent calling it: the minimal call, the full request/response envelope, the ok:true-vs-ok:false rule (HTTP 4xx/5xx are ok:true), an error→cause→fix table, the json-vs-body and response_format rules, page-reading mode (format:"markdown" → HTML→Markdown, browser UA, viewable images), and the SSRF guard (blocked ranges, pin-to-IP, per-hop redirect re-check, cross-origin auth stripping). Self-contained — read once via directory::skills::get; do not re-fetch.
 functions:
   - web::fetch
 ---
@@ -12,6 +12,7 @@ functions:
 
 | You want to… | Call |
 |---|---|
+| **Read a web page** (docs, articles) | `{ "url": "https://…", "format": "markdown" }` |
 | GET a page/API | `{ "url": "https://…" }` |
 | Parse a JSON API response | `{ "url": "https://…", "response_format": "json" }` |
 | POST/PUT JSON | `{ "url": "…", "method": "post", "json": { … } }` |
@@ -43,6 +44,8 @@ else                  → success; use r.body or r.json
 
 Do **not** treat `ok: true` as "2xx". Always check `status` too.
 
+One exception: in page-reading mode (`format` set), an `image/*` response returns the image itself plus a one-line text summary instead of this envelope — there is no top-level `ok`/`status` to branch on (see "Images in page-reading mode" below).
+
 # Request fields
 
 | Field | Default | Notes |
@@ -53,8 +56,9 @@ Do **not** treat `ok: true` as "2xx". Always check `status` too.
 | `json` | — | structured payload; auto-stringified + sets `content-type: application/json`. **Wins over `body`.** |
 | `body` | — | raw string body; use for non-JSON. Ignored on GET/HEAD. |
 | `response_format` | `"text"` | `"text"` \| `"base64"` (binary) \| `"json"` (also parses into `json`) |
-| `timeout_ms` | worker max (30000) | clamped DOWN to the ceiling; can't raise it |
-| `max_bytes` | worker max (5 MiB) | over-cap body is truncated, not errored |
+| `format` | — | page-reading mode: `"markdown"` (HTML→Markdown) \| `"text"` (HTML→plain text) \| `"html"` (raw). Sends a browser UA + matching `Accept`; retries once with the honest UA on a Cloudflare challenge; images come back viewable. Forces text transport (`response_format` ignored). |
+| `timeout_ms` | 30000 | clamped DOWN to the worker ceiling (120000 by default); can't raise past it |
+| `max_bytes` | 5 MiB (256 KiB in `format` mode) | raw fetches default to the 5 MiB ceiling; page-reading mode (`format` set) uses a context-safe 256 KiB. Pass an explicit value to override (up to the 5 MiB ceiling). Over-cap body is truncated, not errored |
 | `follow_redirects` | `true` | each hop re-checked against the SSRF blocklist |
 
 # Response
@@ -72,7 +76,9 @@ Do **not** treat `ok: true` as "2xx". Always check `status` too.
   "parse_error": "…",         // only when response_format="json" AND JSON.parse failed (body still set)
   "response_format": "json",
   "bytes_truncated": false,   // true when body hit max_bytes (NOT an error)
-  "redirect_chain": ["https://…/a"]  // omitted when no redirects
+  "redirect_chain": ["https://…/a"],  // omitted when no redirects
+  "content_type": "text/html",  // only in page-reading mode (format set)
+  "transformed": "markdown"     // only when an HTML transform actually ran
 }
 ```
 
@@ -89,11 +95,24 @@ Do **not** treat `ok: true` as "2xx". Always check `status` too.
 | `invalid_payload` | Payload failed schema (bad `method`, wrong types). `message` lists the bad fields. | Correct the named fields. |
 | `invalid_url` | `url` isn't a parseable absolute `http(s)://` URL. | Pass a full absolute URL incl. scheme. |
 | `blocked_host` | Target resolves to a private / link-local / cloud-metadata IP (SSRF guard). | Don't target internal/metadata hosts. For loopback in dev, the operator sets `web.allow_loopback`. |
-| `timeout` | Slower than `timeout_ms` (or the 30 s ceiling). | Raise `timeout_ms` (up to ceiling) or shrink work via `max_bytes`. |
+| `timeout` | Slower than `timeout_ms` (30 s default; 120 s ceiling). | Raise `timeout_ms` (up to ceiling) or shrink work via `max_bytes`. |
 | `too_many_redirects` | More than `max_redirects` (5) hops. | Use the final URL directly, or set `follow_redirects: false` and read the `location` header. |
 | `transport_error` | Connection refused/reset, TLS failure, DNS failure, or a redirect `Location` that won't parse. | Check host/port/cert; retry if transient. |
 
 There is **no `too_large` error** — oversize responses come back `ok: true` with `bytes_truncated: true`. Branch on the flag, not on an error.
+
+# Page reading vs API fetch
+
+Two orthogonal knobs — pick ONE:
+
+- **`response_format`** = transport encoding for APIs/binaries (`text`/`base64`/`json`). The body is returned untouched.
+- **`format`** = page-reading mode (`markdown`/`text`/`html`). The request goes out with a browser User-Agent + format-matched `Accept` header, and `text/html` responses are transformed (`markdown` is the right default for reading pages — far fewer tokens than raw HTML). Non-HTML bodies pass through unchanged. If Cloudflare answers `403` with a challenge, the worker retries once with its honest UA (beats the UA-fingerprint rule only, not full JS challenges). For very large pages, lower `max_bytes` — conversion runs on the capped body.
+
+Don't combine them: when `format` is set, `response_format` is ignored (treated as `"text"`).
+
+**Images in page-reading mode:** a viewable `image/*` response returns the actual image (plus a one-line text summary like `Image fetched (image/png, 8123 bytes)`) instead of the JSON envelope — providers that support tool-result images (Anthropic) show it to the model; others see the text line. "Viewable" means jpeg/png/gif/webp, 2xx status, complete (not truncated), and non-empty — anything else (svg, error pages served as images, truncated bytes) comes back as the normal envelope with `response_format: "base64"` so a hostile image can't fail the provider request. Without `format`, use `response_format: "base64"` as before.
+
+**Transform bounds:** the HTML→markdown/text conversion runs only on bodies ≤ `web.max_transform_bytes` (1 MiB default) — larger pages come back raw with `transformed` unset (lower `max_bytes` to read huge pages). If the body was truncated at `max_bytes`, the transformed text ends with a visible `[Content truncated at max_bytes — …]` line.
 
 # Rules that save a turn
 
@@ -122,6 +141,10 @@ On each 3xx the `Location` is re-resolved and **re-validated** before following,
 # Examples
 
 ```jsonc
+// Read a documentation page as Markdown
+{ "url": "https://docs.example.com/guide", "format": "markdown" }
+// → { ok:true, status:200, body:"# Guide\n\n…", transformed:"markdown", content_type:"text/html" }
+
 // Parse a JSON API
 { "url": "https://api.example.com/status", "response_format": "json" }
 // → { ok:true, status:200, json:{ healthy:true } }

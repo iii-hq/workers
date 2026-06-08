@@ -7,12 +7,17 @@
 import type { ISdk } from '../../runtime/iii.js';
 import type { WebConfig } from '../config.js';
 import { executeFetch } from '../fetch.js';
-import { FetchPayloadSchema, type FetchResult, fetchFunctionOptions } from '../schemas.js';
+import {
+  type FetchImageResult,
+  FetchPayloadSchema,
+  type FetchResult,
+  fetchFunctionOptions,
+} from '../schemas.js';
 
 export function register(iii: ISdk, cfg: WebConfig): void {
   iii.registerFunction(
     'web::fetch',
-    async (payload: unknown): Promise<FetchResult> => {
+    async (payload: unknown): Promise<FetchResult | FetchImageResult> => {
       const parsed = FetchPayloadSchema.safeParse(payload);
       if (!parsed.success) {
         return {

@@ -131,7 +131,8 @@ methods \`registerFunction\`, \`registerTrigger\`, and \`trigger\` — call them
 
 For any HTTP(S) request use \`web::fetch\`, never \`shell::exec\` with
 \`curl\` or \`wget\`. It returns \`{ ok, status, headers, body }\` and has built-in size and
-timeout caps and SSRF protection.
+timeout caps and SSRF protection. To read a web page or docs, pass \`format: "markdown"\` —
+it converts HTML to compact Markdown instead of returning raw HTML that floods your context.
 
 # Security
 

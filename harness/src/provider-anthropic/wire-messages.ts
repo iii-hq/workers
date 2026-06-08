@@ -7,7 +7,7 @@
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { ContentBlock } from '../types/content.js';
-import { formatFunctionResultContent } from '../types/wire.js';
+import { formatFunctionResultBlocks, formatFunctionResultContent } from '../types/wire.js';
 
 /**
  * Content shipped in the synthetic `tool_result` placeholder we inject
@@ -124,10 +124,26 @@ export function toWireMessages(messages: AgentMessage[]): unknown[] {
       // and the whole turn fails. Latest-wins: replace any existing block
       // with the same tool_use_id in the current pending batch so the
       // most recent function_result is what the model sees.
+      // Anthropic tool_result content accepts either a flat string or an
+      // array of text/image blocks. Keep the flat string whenever there
+      // are no images — that's the long-standing wire shape (and what
+      // prompt caching has seen) — and only switch to the array form when
+      // an image block must reach the model (e.g. web::fetch image mode).
+      const resultBlocks = formatFunctionResultBlocks(m);
+      const hasImages = resultBlocks.some((b) => b.type === 'image');
       const block = {
         type: 'tool_result',
         tool_use_id: m.function_call_id,
-        content: formatFunctionResultContent(m),
+        content: hasImages
+          ? resultBlocks.map((b) =>
+              b.type === 'image'
+                ? {
+                    type: 'image',
+                    source: { type: 'base64', media_type: b.mime, data: b.data },
+                  }
+                : { type: 'text', text: b.text },
+            )
+          : formatFunctionResultContent(m),
         is_error: m.is_error,
       };
       const existingIdx = pending.findIndex(
