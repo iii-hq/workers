@@ -1,0 +1,18 @@
+# Interface-collection config for the registry publish workflow.
+#
+# The publish job (.github/workflows/_publish-registry.yml) boots a throwaway
+# copy of this worker purely to read back the functions and trigger types it
+# registers with the engine — the published "interface". That interface is
+# static: it does NOT depend on which databases are configured.
+#
+# The default config seeds a `primary` SQLite pool at `sqlite:./data/iii.db`.
+# The data/ directory does not exist on a fresh CI runner, so pool init fails
+# with "unable to open database file" before the worker can connect and register.
+#
+# This config points the primary pool at an in-memory SQLite database instead.
+# The pool opens instantly with no file I/O, the worker registers, interface
+# collection completes, and the publish step runs normally.
+
+databases:
+  primary:
+    url: "sqlite::memory:"
