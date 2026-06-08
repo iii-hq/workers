@@ -178,10 +178,9 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
 
         if (function_id === 'stream::set') {
           const p = payload as { stream_name?: string; data: AgentEvent };
-          // events.ts mirrors every turn_end onto a second `agent::turn_end`
-          // stream for compaction. Record only the primary `agent::events`
-          // stream so `emitted` is a faithful one-entry-per-event log.
-          if (p.stream_name === 'agent::turn_end') return null;
+          // Only agent::events carries event frames; turn_end now enqueues a
+          // compaction wake (a separate function_id) rather than mirroring to a
+          // second stream, so `emitted` stays a faithful one-entry-per-event log.
           emitted.push(p.data);
           return null;
         }

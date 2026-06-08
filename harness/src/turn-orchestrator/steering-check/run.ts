@@ -1,87 +1,59 @@
 /**
- * Route steering_check outcomes and apply transitions.
+ * Run one steering_check transition: feed function results back to the model,
+ * or end the turn.
+ *
+ * The turn_state record is persisted atomically by the shared runTransition
+ * runner, so this only mutates `rec` and emits the things that write can't
+ * carry — the live-stream events (turn_end / agent_end / message_complete) and
+ * the session-tree history append.
  */
 
+import type { ISdk } from '../../runtime/iii.js';
+import { emptyAssistant } from '../../types/agent-message.js';
+import { emit } from '../events.js';
+import { createTurnStore } from '../state-runtime/store.js';
+import { transitionTo, type SteeringCheckTurnRecord } from '../state.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce, resumeToAssistantStreaming } from '../state-runtime/turn-end.js';
-import type { SteeringCheckTurnRecord } from '../state.js';
-import type { SteeringCheckPorts } from './ports.js';
-
-export type SteeringRoute = 'continue_after_function' | 'end_turn';
-
-export type SteeringCheckOutcome =
-  | { kind: 'max_turns_reached' }
-  | { kind: 'continue_after_function' }
-  | { kind: 'end_turn' };
-
-export function route(has_function_results: boolean): SteeringRoute {
-  return has_function_results ? 'continue_after_function' : 'end_turn';
-}
 
 function maxTurnsReached(rec: SteeringCheckTurnRecord): boolean {
   return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
 }
 
-async function endForMaxTurns(
-  ports: SteeringCheckPorts,
-  rec: SteeringCheckTurnRecord,
-): Promise<void> {
-  const msg = syntheticAssistant({
-    stop_reason: 'end',
-    text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,
-  });
-  rec.last_assistant = msg;
-  await ports.appendMessages(rec.session_id, [msg]);
-  await ports.emit(rec.session_id, {
-    type: 'message_complete',
-    message: msg,
-    body_streamed: false,
-  });
-  await emitTurnEndOnce(ports, rec, msg);
-  await ports.finishSession(rec);
-}
-
-export async function processSteeringCheck(
-  _ports: SteeringCheckPorts,
-  rec: SteeringCheckTurnRecord,
-): Promise<SteeringCheckOutcome> {
-  const decision = route(rec.function_results.length > 0);
-
-  if (decision === 'continue_after_function' && maxTurnsReached(rec)) {
-    return { kind: 'max_turns_reached' };
+export async function runSteeringCheck(iii: ISdk, rec: SteeringCheckTurnRecord): Promise<void> {
+  // Function results under the turn cap: feed them back to the model. Pure state
+  // update — runTransition persists it and wakes turn::assistant_streaming.
+  if (rec.function_results.length > 0 && !maxTurnsReached(rec)) {
+    rec.function_results = [];
+    transitionTo(rec, 'assistant_streaming');
+    return;
   }
 
-  switch (decision) {
-    case 'continue_after_function':
-      return { kind: 'continue_after_function' };
-    case 'end_turn':
-      return { kind: 'end_turn' };
+  // Function results but the turn cap is hit: append a synthetic notice so the
+  // user sees why the loop stopped, then fall through to teardown.
+  if (rec.function_results.length > 0) {
+    const msg = syntheticAssistant({
+      stop_reason: 'end',
+      text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,
+    });
+    rec.last_assistant = msg;
+    await createTurnStore(iii).appendMessages(rec.session_id, [msg]);
+    await emit(iii, rec.session_id, {
+      type: 'message_complete',
+      message: msg,
+      body_streamed: false,
+    });
   }
-}
 
-export async function applySteeringCheckOutcome(
-  ports: SteeringCheckPorts,
-  rec: SteeringCheckTurnRecord,
-  outcome: SteeringCheckOutcome,
-): Promise<void> {
-  switch (outcome.kind) {
-    case 'max_turns_reached':
-      await endForMaxTurns(ports, rec);
-      return;
-    case 'continue_after_function':
-      resumeToAssistantStreaming(rec);
-      return;
-    case 'end_turn':
-      await emitTurnEndOnce(ports, rec);
-      await ports.finishSession(rec);
-      return;
+  // Terminal: emit turn_end once, then agent_end (a signal carrying no
+  // transcript) and settle in `stopped`.
+  if (!rec.turn_end_emitted) {
+    await emit(iii, rec.session_id, {
+      type: 'turn_end',
+      message: rec.last_assistant ?? emptyAssistant(),
+      function_results: [],
+    });
+    rec.turn_end_emitted = true;
   }
-}
-
-export async function runSteeringCheck(
-  ports: SteeringCheckPorts,
-  rec: SteeringCheckTurnRecord,
-): Promise<void> {
-  const outcome = await processSteeringCheck(ports, rec);
-  await applySteeringCheckOutcome(ports, rec, outcome);
+  await emit(iii, rec.session_id, { type: 'agent_end', messages: [] });
+  transitionTo(rec, 'stopped');
 }

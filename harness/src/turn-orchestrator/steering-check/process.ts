@@ -10,13 +10,11 @@ import {
   type TurnStepPayload,
 } from '../schemas.js';
 import type { TurnStateRecord } from '../state.js';
-import { createSteeringCheckPorts } from './ports.js';
 import { runSteeringCheck } from './run.js';
 
 export async function handleSteering(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   const steering = parseSteeringCheckRecord(rec);
-  const ports = createSteeringCheckPorts(iii);
-  await runSteeringCheck(ports, steering);
+  await runSteeringCheck(iii, steering);
 }
 
 export function register(iii: ISdk): void {

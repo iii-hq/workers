@@ -1,5 +1,5 @@
 /**
- * Shared turn-end and FSM resume helpers for step outcome application.
+ * Shared turn-end helper for step outcome application.
  */
 
 import {
@@ -7,7 +7,7 @@ import {
   type AssistantMessage,
   type FunctionResultMessage,
 } from '../../types/agent-message.js';
-import { transitionTo, type TurnStateRecord } from '../state.js';
+import type { TurnStateRecord } from '../state.js';
 
 export type TurnEndEmitter = {
   emitTurnEnd(
@@ -27,9 +27,4 @@ export async function emitTurnEndOnce(
   const last = message ?? rec.last_assistant ?? emptyAssistant();
   await ports.emitTurnEnd(rec.session_id, last, function_results);
   rec.turn_end_emitted = true;
-}
-
-export function resumeToAssistantStreaming(rec: TurnStateRecord): void {
-  rec.function_results = [];
-  transitionTo(rec, 'assistant_streaming');
 }
