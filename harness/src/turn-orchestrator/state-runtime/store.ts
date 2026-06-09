@@ -12,7 +12,7 @@ import { emit } from '../events.js';
 import { type RunRequest, parseRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
 import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
-import { loadContextView } from './context-view.js';
+import { loadContextView, loadSessionMessages } from './context-view.js';
 import { persistedTrailingResultIds } from './transcript.js';
 
 /**
@@ -157,14 +157,8 @@ export function createTurnStore(iii: ISdk): TurnStore {
     },
 
     async loadTrailingResultIds(session_id) {
-      // Same response (and same `?? []` for an empty/new session) as
-      // loadContextView, the sibling reader of session-tree::messages.
-      const resp = await iii.trigger<unknown, { messages?: Array<{ message: AgentMessage }> }>({
-        function_id: 'session-tree::messages',
-        payload: { session_id },
-      });
-      const messages = (resp?.messages ?? []).map((e) => e.message);
-      return persistedTrailingResultIds(messages);
+      const rows = await loadSessionMessages(iii, session_id);
+      return persistedTrailingResultIds(rows.map((e) => e.message));
     },
 
     async appendMessages(session_id, msgs) {

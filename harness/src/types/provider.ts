@@ -1,12 +1,11 @@
 /**
- * Provider streaming contract. Mirrors
- * `harness/crates/harness-types/src/provider.rs` and is consumed by both
- * the orchestrator (caller) and provider workers (handler).
+ * Provider streaming contract, consumed by both the orchestrator (caller) and
+ * provider workers (handler).
  */
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { ModelSchema } from '../models-catalog/types.js';
+import type { Model } from '../models-catalog/types.js';
 
 /**
  * Lax `StreamChannelRef` — the SDK's canonical type lives in `iii-sdk`,
@@ -48,11 +47,15 @@ export const ProviderStreamInputSchema = z.object({
   /**
    * Optional pre-resolved catalog entry for `model`, threaded from the
    * orchestrator so the provider does not re-fetch `models::get` it already
-   * resolved at turn start. Providers MUST ignore it unless `model_meta.id`
-   * and `model_meta.provider` match this request, and fall back to a live
-   * fetch otherwise — the field is an optimization, never a source of truth.
+   * resolved at turn start. An optimization, never a source of truth: validated
+   * leniently (any object passes; anything else coerces to absent) so a sparse
+   * or partial catalog entry falls back to a live fetch instead of failing the
+   * whole stream. Providers read its fields defensively.
    */
-  model_meta: ModelSchema.optional(),
+  model_meta: z
+    .unknown()
+    .optional()
+    .transform((v) => (v && typeof v === 'object' ? (v as Model) : undefined)),
   /**
    * Optional stable id for the turn (the run's start time). Providers may use
    * it to dedupe per-stream credential resolution within a turn; a new turn

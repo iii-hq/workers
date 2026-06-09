@@ -12,7 +12,24 @@ import {
   tree,
 } from '../../src/session/tree/operations.js';
 import { InMemoryStore } from '../../src/session/tree/store.js';
+import { entryTimestamp } from '../../src/session/tree/types.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
+
+/**
+ * InMemoryStore returns entries in insertion order, but the production
+ * IiiStateSessionStore sorts loadEntries by (timestamp, id). Leaf-resolution
+ * bugs only surface under that sort, so this double reproduces it.
+ */
+class SortingStore extends InMemoryStore {
+  async loadEntries(session_id: string) {
+    const entries = await super.loadEntries(session_id);
+    return entries.sort((a, b) => {
+      const t = entryTimestamp(a) - entryTimestamp(b);
+      if (t !== 0) return t;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  }
+}
 
 const userMsg = (text: string): AgentMessage => ({
   role: 'user',
@@ -107,6 +124,33 @@ describe('session-tree operations', () => {
 
     expect(ids).toEqual([]);
     expect(appendManySpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps a later append on the active path when its timestamp ties or precedes the batch (sorted store, leaf = chain tip)', async () => {
+    const store = new SortingStore();
+    const sid = await createSession(store);
+    const now = vi.spyOn(Date, 'now');
+
+    // Batch lands at t=100 (all entries share the append timestamp).
+    now.mockReturnValue(100);
+    const batch = await appendMessages(store, sid, null, [
+      asstMsg('a'),
+      userMsg('b'),
+      asstMsg('c'),
+    ]);
+
+    // A later single append whose clock did NOT advance (or stepped back): its
+    // timestamp sorts before the batch tail. Pre-fix, the sort-max leaf
+    // heuristic orphaned it; the chain-tip leaf keeps it on the path.
+    now.mockReturnValue(99);
+    const tail = await appendMessage(store, sid, null, asstMsg('d'));
+    now.mockRestore();
+
+    expect(await activePath(store, sid)).toEqual([...batch, tail]);
+    const texts = (await loadMessages(store, sid)).map(
+      (m) => (m.content[0] as { text: string }).text,
+    );
+    expect(texts).toEqual(['a', 'b', 'c', 'd']);
   });
 
   it('loadMessages filters non-message entries from active path', async () => {

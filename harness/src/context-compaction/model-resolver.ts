@@ -1,4 +1,3 @@
-import type { Model } from '../models-catalog/types.js';
 import { RUN_REQUEST_SCOPE } from '../turn-orchestrator/state.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
@@ -11,12 +10,14 @@ export type ResolvedModel = {
 } | null;
 
 /**
- * Derive a {@link ModelLimit} from a catalog {@link Model}. Mirrors the mapping
- * {@link fetchModelLimit} applies to a `models::get` result, so a threaded
- * `model_meta` yields the exact same limit a fresh fetch would — letting
- * callers skip the bus round-trip without changing behavior.
+ * Derive a {@link ModelLimit} from a catalog entry (a full {@link Model} or a
+ * `models::get` result). The single mapping used by both the threaded
+ * `model_meta` path and a fresh fetch, so they yield the exact same limit.
  */
-export function limitFromModel(m: Model): ModelLimit {
+export function limitFromModel(m: {
+  context_window?: number;
+  max_output_tokens?: number;
+}): ModelLimit {
   const context = typeof m.context_window === 'number' ? m.context_window : 0;
   const output = typeof m.max_output_tokens === 'number' ? m.max_output_tokens : 0;
   return { context, input: context, output };
@@ -47,13 +48,10 @@ export async function fetchModelLimit(
       return null;
     }
 
-    const context = typeof entry.context_window === 'number' ? entry.context_window : 0;
-    const output = typeof entry.max_output_tokens === 'number' ? entry.max_output_tokens : 0;
-
     return {
       providerID,
       modelID,
-      modelLimit: { context, input: context, output },
+      modelLimit: limitFromModel(entry),
     };
   } catch (err) {
     logger.debug('model-resolver: models::get failed', {

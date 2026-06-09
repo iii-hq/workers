@@ -303,6 +303,28 @@ describe('createPorts().loadTrailingResultIds', () => {
       timestamp: 1,
     },
   });
+  /** Assistant that requested tool calls — the turn boundary. */
+  const requestingAssistant = (id: string) => ({
+    message: {
+      role: 'assistant' as const,
+      content: [{ type: 'function_call' as const, id, function_id: 'shell::run', arguments: {} }],
+      stop_reason: 'function_call' as const,
+      model: 'm',
+      provider: 'p',
+      timestamp: 1,
+    },
+  });
+  /** Synthetic assistant with no calls (e.g. the max_turns "loop stopped" notice). */
+  const noticeAssistant = () => ({
+    message: {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'loop stopped' }],
+      stop_reason: 'end' as const,
+      model: 'm',
+      provider: 'p',
+      timestamp: 1,
+    },
+  });
 
   it('reads only session-tree::messages (no compactions) on the default leaf', async () => {
     const { iii, calls } = trackingIii([resultMsg('fc-1'), resultMsg('fc-2')]);
@@ -316,12 +338,29 @@ describe('createPorts().loadTrailingResultIds', () => {
     expect(calls[0]?.payload).toEqual({ session_id: 's1' });
   });
 
-  it('returns only the trailing result run (stops at the first non-result)', async () => {
-    const assistant = { message: { role: 'assistant' as const } };
-    const { iii } = trackingIii([resultMsg('old'), assistant, resultMsg('fc-1')]);
+  it('stops at the requesting assistant, not collecting a prior turn run', async () => {
+    const { iii } = trackingIii([
+      resultMsg('old'),
+      requestingAssistant('req'),
+      resultMsg('fc-1'),
+      resultMsg('fc-2'),
+    ]);
 
     const ids = await createPorts(iii).loadTrailingResultIds('s1');
 
-    expect(ids).toEqual(new Set(['fc-1']));
+    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
+  });
+
+  it('skips a trailing no-call notice so the results behind it stay deduped (max_turns replay)', async () => {
+    const { iii } = trackingIii([
+      requestingAssistant('req'),
+      resultMsg('fc-1'),
+      resultMsg('fc-2'),
+      noticeAssistant(),
+    ]);
+
+    const ids = await createPorts(iii).loadTrailingResultIds('s1');
+
+    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
   });
 });

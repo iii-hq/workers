@@ -1,14 +1,12 @@
+import type { ModelContextLimit } from '../types/agent-event.js';
 import {
   MAX_PRESERVE_RECENT_TOKENS,
   MIN_PRESERVE_RECENT_TOKENS,
   compactionConfig,
 } from './config.js';
 
-export type ModelLimit = {
-  context: number;
-  input: number;
-  output: number;
-};
+/** A model's token limits. Single shape, defined in types/agent-event.ts. */
+export type ModelLimit = ModelContextLimit;
 
 export type ModelLike = {
   id: string;

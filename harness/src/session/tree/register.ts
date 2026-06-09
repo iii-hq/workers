@@ -158,6 +158,12 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
       const parent_id = typeof obj.parent_id === 'string' ? obj.parent_id : null;
       const messages = obj.messages;
       if (!Array.isArray(messages)) throw new Error('missing required field: messages (array)');
+      // Mirror the singular APPEND guard: reject falsy/non-object elements at
+      // the boundary so a caller-side map bug can't persist `message: null`
+      // entries onto the active path.
+      if (messages.some((m) => !m || typeof m !== 'object')) {
+        throw new Error('messages must all be non-null AgentMessage objects');
+      }
       const entry_ids = await appendMessagesOp(
         store,
         session_id,

@@ -90,9 +90,12 @@ export async function appendMessage(
  * Append several messages as one linear chain in a single store round-trip.
  * Equivalent to calling {@link appendMessage} for each message in order, but
  * resolves the active leaf once (not once per message) and writes through
- * {@link SessionStore.appendMany} so meta is refreshed once. Entries get
- * strictly increasing timestamps so the batch's last entry remains the
- * resolvable leaf for the next append.
+ * {@link SessionStore.appendMany} so meta is refreshed once.
+ *
+ * Entries share a single append timestamp; their order is carried by the
+ * parent chain, not the clock, and {@link activePath} resolves the leaf by
+ * chain tip — so a later append with an equal-or-earlier wall-clock timestamp
+ * still chains onto this batch's tail instead of being orphaned.
  */
 export async function appendMessages(
   store: SessionStore,
@@ -108,15 +111,15 @@ export async function appendMessages(
     parent = path.at(-1) ?? null;
   }
 
-  const base = Date.now();
-  const entries: SessionEntry[] = messages.map((message, i) => {
+  const timestamp = Date.now();
+  const entries: SessionEntry[] = messages.map((message) => {
     const id = randomUUID();
     const entry: SessionEntry = {
       type: 'message',
       id,
       parent_id: parent,
       message,
-      timestamp: base + i,
+      timestamp,
     };
     parent = id;
     return entry;
@@ -124,6 +127,28 @@ export async function appendMessages(
 
   await store.appendMany(session_id, entries);
   return entries.map((e) => e.id);
+}
+
+/**
+ * The active leaf is the tip of the newest chain: the most-recent entry that is
+ * not the parent of any other entry. `entries` is sorted ascending by
+ * (timestamp, id), so we scan from the end and take the first tip. Resolving by
+ * chain tip rather than raw sort-max keeps a freshly appended child as the leaf
+ * even when its wall-clock timestamp ties or precedes a sibling's — the case a
+ * batch append (shared timestamp) or a clock that did not advance would
+ * otherwise mis-resolve. Falls back to the most-recent entry only if every
+ * entry is some entry's parent (a cycle — should not occur).
+ */
+function resolveActiveLeaf(entries: SessionEntry[]): string | null {
+  const parentIds = new Set<string>();
+  for (const e of entries) {
+    if (e.parent_id) parentIds.add(e.parent_id);
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry && !parentIds.has(entry.id)) return entry.id;
+  }
+  return entries.at(-1)?.id ?? null;
 }
 
 export async function activePath(
@@ -134,9 +159,8 @@ export async function activePath(
   const entries = await store.loadEntries(session_id);
   if (entries.length === 0) return [];
   const byId = new Map(entries.map((e) => [e.id, e] as const));
-  const last = entries.at(-1);
-  if (!last) return [];
-  const start = leaf ?? last.id;
+  const start = leaf ?? resolveActiveLeaf(entries);
+  if (start === null) return [];
   const path: string[] = [];
   let cursor: string | null = start;
   while (cursor !== null) {
