@@ -184,7 +184,14 @@ async fn get_config_value(iii: &III) -> Result<Value, String> {
 async fn try_get_config_value(iii: &III) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        // `trigger_with_retry` flattens the structured `IIIError` to its
+        // Display string, so we substring-match the recovered message rather
+        // than branch on `IIIError::Remote { code }`. The engine's missing-entry
+        // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
+        // `NOT_FOUND`), so uppercase before matching to catch them all. A
+        // false negative is non-fatal — it just propagates the raw retry error
+        // instead of the cleaner "not found", and boot fails closed either way.
+        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }

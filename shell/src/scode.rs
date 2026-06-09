@@ -84,11 +84,14 @@ pub fn scan_s_code(s: &str) -> Option<&str> {
             && bytes[i + 2].is_ascii_digit()
             && bytes[i + 3].is_ascii_digit()
         {
-            // Reject matches preceded by alphanumerics so we don't grab
-            // the tail of a longer identifier (e.g. "FOO_S211").
+            // Reject matches glued to a longer identifier on EITHER side so we
+            // don't grab a substring of it: "FOO_S211" (left) or "S211foo" /
+            // "S2119" (right) are not standalone S-codes.
             let preceded_by_word =
                 i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            if !preceded_by_word {
+            let followed_by_word = i + 4 < bytes.len()
+                && (bytes[i + 4].is_ascii_alphanumeric() || bytes[i + 4] == b'_');
+            if !preceded_by_word && !followed_by_word {
                 return Some(&s[i..i + 4]);
             }
         }
@@ -237,6 +240,14 @@ mod tests {
     fn scan_s_code_rejects_glued_identifier() {
         assert_eq!(scan_s_code("fooS211bar"), None);
         assert_eq!(scan_s_code("FOO_S211"), None);
+        // Right-hand boundary: a trailing alphanumeric/underscore means the
+        // 3-digit run is part of a longer token, not a standalone S-code.
+        assert_eq!(scan_s_code("S211foo"), None);
+        assert_eq!(scan_s_code("S2119"), None);
+        assert_eq!(scan_s_code("S211_x"), None);
+        // But normal punctuation/whitespace boundaries still match.
+        assert_eq!(scan_s_code("S211: not found"), Some("S211"));
+        assert_eq!(scan_s_code("error S217."), Some("S217"));
     }
 
     #[test]

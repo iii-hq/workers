@@ -237,6 +237,10 @@ async fn main() -> Result<()> {
         let st = state.clone();
         iii.register_function(
             "shell::list",
+            // Ignore the payload: shell::list takes no args, and the engine
+            // injects a `_caller_worker_id` field into every call — a typed
+            // request param would reject that injected field. (ListRequest is
+            // schema-only; see its doc comment.)
             RegisterFunction::new_async(move |_req: Value| {
                 let st = st.clone();
                 telemetry::record_call("shell::list", async move {
@@ -256,6 +260,8 @@ async fn main() -> Result<()> {
         let st = state.clone();
         iii.register_function(
             "shell::config-status",
+            // Ignore the payload (see shell::list): no-arg call, and the
+            // engine-injected `_caller_worker_id` would break a typed param.
             RegisterFunction::new_async(move |_req: Value| {
                 let st = st.clone();
                 telemetry::record_call("shell::config-status", async move {

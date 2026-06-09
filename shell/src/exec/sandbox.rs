@@ -54,15 +54,16 @@ impl ExecBackend for SandboxExecBackend {
         if !self.enabled {
             return Err(ExecError::new("S210", "sandbox target disabled in config"));
         }
-        // cwd/env are HOST-ONLY for now: the `sandbox::exec` payload forwards
-        // only { sandbox_id, cmd, args, timeout_ms }, so honoring cwd/env here
-        // would silently drop them. Fail loudly instead so the contract is
-        // honest — an agent that wants per-call cwd/env must target the host.
+        // cwd/env/stdin are HOST-ONLY for now: the `sandbox::exec` payload
+        // forwards only { sandbox_id, cmd, args, timeout_ms }, so honoring them
+        // here would silently drop them. Fail loudly instead so the contract is
+        // honest — an agent that wants per-call cwd/env/stdin must target the
+        // host. `is_empty()` is false when any of the three is set.
         if !overrides.is_empty() {
             return Err(ExecError::new(
                 "S210",
-                "cwd/env overrides are host-only; the sandbox exec protocol does not \
-                 forward them. Drop cwd/env, or use target: host.",
+                "cwd/env/stdin overrides are host-only; the sandbox exec protocol does not \
+                 forward them. Drop cwd/env/stdin, or use target: host.",
             ));
         }
         let cmd = argv

@@ -105,6 +105,37 @@ export const FS_WRITE_INLINE_CASES: TestCase[] = [
     },
   },
   {
+    // Top-level mode/parents alongside `files` were silently dropped before —
+    // each entry carries its own. Both forms must reject (S210) so the mismatch
+    // surfaces instead of masking a caller bug.
+    name: 'fs_write_batch_rejects_top_level_mode_s210',
+    async run(ctx: CaseContext) {
+      const root = newWorkdir('batch-mode');
+      await ctx.expectError(
+        () =>
+          ctx.call('shell::fs::write', {
+            mode: '0600',
+            files: [{ path: join(root, 'a.txt'), content: 'A' }],
+          }),
+        'S210',
+      );
+    },
+  },
+  {
+    name: 'fs_write_batch_rejects_top_level_parents_s210',
+    async run(ctx: CaseContext) {
+      const root = newWorkdir('batch-parents');
+      await ctx.expectError(
+        () =>
+          ctx.call('shell::fs::write', {
+            parents: true,
+            files: [{ path: join(root, 'a.txt'), content: 'A' }],
+          }),
+        'S210',
+      );
+    },
+  },
+  {
     name: 'fs_write_rejects_missing_content_s210',
     async run(ctx: CaseContext) {
       const root = newWorkdir('nocontent');

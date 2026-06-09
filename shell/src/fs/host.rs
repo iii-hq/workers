@@ -1256,6 +1256,28 @@ impl FsBackend for HostFsBackend {
 
             for (file, anchored_path) in anchored {
                 let p = anchored_path.as_path();
+                // Symlink operands are skipped: sed reads through the link
+                // (metadata/read_to_string follow it) but rewrites via
+                // rename(tmp, p), which would REPLACE the link with a regular
+                // file — silently destroying the link and detaching it from its
+                // target. Refuse rather than corrupt. (symlink_metadata does
+                // not follow, so this detects the link itself. Mirrors the
+                // chmod recursive walk's skip-symlinks policy.)
+                if let Ok(lmd) = std::fs::symlink_metadata(p) {
+                    if lmd.file_type().is_symlink() {
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file.clone(),
+                            replacements: 0,
+                            success: false,
+                            error: Some(
+                                "operand is a symlink; skipped (sed would replace the link \
+                                 with a regular file). Pass the resolved target path instead."
+                                    .to_string(),
+                            ),
+                        });
+                        continue;
+                    }
+                }
                 // Size cap BEFORE reading: stat the file and skip (per-file
                 // error, nothing written) if it exceeds the read cap. Mirrors
                 // grep's OOM defense; sed previously read any size unconditionally.

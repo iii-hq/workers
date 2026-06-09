@@ -269,6 +269,11 @@ impl From<&JobRecord> for JobSummary {
 
 /// `shell::list` takes no arguments; this empty struct publishes an accurate
 /// (empty-object) request schema.
+///
+/// NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
+/// a `_caller_worker_id` field into every call's payload, so a strict no-arg
+/// struct would reject EVERY call. The handler ignores the payload entirely
+/// (`move |_req: Value|` in main.rs) for the same reason.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRequest {}
 
@@ -280,6 +285,8 @@ pub struct ListResponse {
 
 /// `shell::config-status` takes no arguments; this empty struct publishes an
 /// accurate (empty-object) request schema, mirroring [`ListRequest`]. The
-/// response is `configuration::ReloadStatus`.
+/// response is `configuration::ReloadStatus`. Like [`ListRequest`], it is NOT
+/// `deny_unknown_fields` — the engine-injected `_caller_worker_id` would
+/// otherwise be rejected; the handler ignores the payload.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConfigStatusRequest {}

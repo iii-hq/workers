@@ -63,9 +63,11 @@ agents, pair with the `skills` worker.
 ## Functions
 
 - `shell::exec`: run an allowlisted command in the foreground and return its
-  stdout, stderr, exit code, and timing; blocks until exit or timeout. Accepts
-  an optional host-only `stdin` (string piped to the program's stdin, then EOF);
-  rejected with `S210` on a sandbox target.
+  stdout, stderr, exit code, and timing; blocks until exit or timeout. Sandbox
+  execution is fully valid (`target: { kind: "sandbox", sandbox_id }`); only the
+  host-only override fields — `stdin` (string piped to the program's stdin, then
+  EOF), plus `cwd`/`env` — are rejected with `S210` when supplied on a sandbox
+  target, because the sandbox exec protocol does not forward them.
 - `shell::exec_bg`: spawn an allowlisted command as a background job and return
   a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
   terminates them — unbounded by default, capped only when the operator sets a

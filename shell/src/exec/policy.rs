@@ -81,10 +81,16 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
-/// True if `key` is in the always-rejected denylist (case-sensitive: env var
-/// names are case-sensitive on Unix, and the dangerous names are upper-case).
+/// True if `key` is always rejected. Two layers: (1) family-prefix checks for
+/// the dynamic-loader variables (`LD_*` on glibc, `DYLD_*` on macOS) — the set
+/// of these is open-ended across libc/OS versions, so an exact-name list would
+/// silently let a future `LD_SOMETHING` through if an operator widened
+/// `allowed_env`; (2) the explicit [`DANGEROUS_ENV_KEYS`] denylist for the
+/// non-family names (PATH/IFS/HOME, glibc lookup paths, interpreter startup
+/// keys). Case-sensitive: env var names are case-sensitive on Unix and the
+/// dangerous names are upper-case.
 fn is_dangerous_env_key(key: &str) -> bool {
-    DANGEROUS_ENV_KEYS.contains(&key)
+    key.starts_with("LD_") || key.starts_with("DYLD_") || DANGEROUS_ENV_KEYS.contains(&key)
 }
 
 /// Validated per-call exec overrides, ready to apply in `build_command`.
@@ -286,6 +292,15 @@ mod tests {
             assert!(is_dangerous_env_key(k), "{k} must be dangerous");
         }
         assert!(!is_dangerous_env_key("NODE_ENV"));
+        // Family-prefix coverage: loader vars NOT in the explicit list (future
+        // / less-common names) are still rejected by the LD_/DYLD_ prefix.
+        for k in ["LD_BIND_NOW", "LD_SOMETHING_NEW", "DYLD_PRINT_LIBRARIES"] {
+            assert!(
+                is_dangerous_env_key(k),
+                "{k} must be rejected by family prefix"
+            );
+            assert!(!DANGEROUS_ENV_KEYS.contains(&k), "{k} is prefix-only");
+        }
     }
 
     #[test]

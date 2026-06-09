@@ -52,13 +52,16 @@ pub async fn handle(
     match req.target {
         Target::Host => spawn_host_job(cfg, argv, overrides).await,
         Target::Sandbox { sandbox_id } => {
-            // cwd/env are host-only — the sandbox::exec payload does not
+            // cwd/env/stdin are host-only — the sandbox::exec payload does not
             // forward them. Reject loudly (S210 in the message) rather than
             // silently ignoring an override on a sandbox-targeted job.
+            // `is_empty()` is false when ANY of cwd/env/stdin is set, so the
+            // message must name all three or it sends `stdin` callers down the
+            // wrong correction path.
             if !overrides.is_empty() {
                 return Err(
-                    "S210: cwd/env overrides are host-only; the sandbox exec protocol does \
-                     not forward them. Drop cwd/env, or use target: host."
+                    "S210: cwd/env/stdin overrides are host-only; the sandbox exec protocol \
+                     does not forward them. Drop cwd/env/stdin, or use target: host."
                         .to_string(),
                 );
             }
@@ -120,8 +123,14 @@ pub(crate) async fn spawn_host_job(
         Ok((_, guard)) => guard,
         Err((running, mut handle)) => {
             if let Some(mut ch) = handle.child.take() {
-                // Signal, THEN reap. start_kill alone leaves a zombie until the
-                // worker exits; awaiting wait() lets the kernel release the pid.
+                // The child was spawned with its own process group
+                // (process_group(0)), and a long-running command may have
+                // already forked descendants before we lost the slot race.
+                // start_kill() only signals the direct leader, leaking the
+                // group — so SIGKILL the whole group. Safe to signal by pid
+                // here: we still own the un-reaped Child, so the pid cannot
+                // have been recycled. THEN reap with wait() to release it.
+                crate::exec::host::kill_process_group(ch.id());
                 let _ = ch.start_kill();
                 let _ = ch.wait().await;
             }

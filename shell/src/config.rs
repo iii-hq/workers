@@ -243,6 +243,24 @@ impl ShellConfig {
         // fails to canonicalize (does not exist) is NOT rejected here — the
         // normal exec spawn surfaces its own not-found error.
         if cmd.contains('/') {
+            // Unjailed mode (host_root: null) has NO writable boundary — the
+            // whole host filesystem is reachable via shell::fs::write, so an
+            // agent can plant `/tmp/ls` and run `command: "/tmp/ls"` (basename
+            // `ls` is allowlisted), bypassing the read-only allowlist entirely.
+            // There is no path that distinguishes "agent-planted" from "system
+            // binary" here, so reject ALL command paths and require a bare,
+            // PATH-resolved name. (In jailed mode the check below is precise:
+            // only paths inside host_root are rejected.)
+            if self.fs.host_root.is_none() {
+                return Err(format!(
+                    "command path '{}' is not allowed when fs is unjailed \
+                     (fs.host_root is null): any host path is writable via \
+                     shell::fs::write, so a command path could execute \
+                     agent-planted bytes and bypass the allowlist. Use a bare \
+                     command name (PATH-resolved).",
+                    cmd
+                ));
+            }
             if let Some(host_root) = &self.fs.host_root {
                 if let Ok(canon_cmd) = std::fs::canonicalize(&cmd) {
                     if let Ok(canon_root) = std::fs::canonicalize(host_root) {
@@ -357,10 +375,19 @@ mod tests {
 
     #[test]
     fn test_allowlist_basename_match() {
-        let c = cfg_with(vec!["ls"], vec![]);
+        // Basename matching for an absolute command path is only meaningful in
+        // JAILED mode: an out-of-jail path (not writable via shell::fs::write)
+        // is permitted by basename. Unjailed mode rejects all paths outright
+        // (see exec_command_path_rejected_when_unjailed), so set a host_root
+        // that does NOT contain /usr/bin/ls to exercise the basename contract.
+        let mut c = cfg_with(vec!["ls"], vec![]);
+        c.fs.host_root =
+            Some(std::env::temp_dir().join(format!("shell-basename-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir_all(c.fs.host_root.as_ref().unwrap()).unwrap();
         assert!(c
             .is_command_allowed(&["/usr/bin/ls".into(), "-la".into()])
             .is_ok());
+        std::fs::remove_dir_all(c.fs.host_root.as_ref().unwrap()).ok();
     }
 
     #[test]
@@ -471,6 +498,31 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn exec_command_path_rejected_when_unjailed() {
+        // Unjailed mode (host_root: null) has no writable boundary: the whole
+        // host FS is reachable via shell::fs::write, so ANY command path could
+        // execute agent-planted bytes and bypass the allowlist. Reject every
+        // path; only bare PATH-resolved names are permitted.
+        let mut c = ShellConfig {
+            allowlist: vec!["ls".into()],
+            ..Default::default()
+        };
+        c.fs.host_root = None;
+        c.fs.allow_unjailed = true;
+        c.compile_denylist().unwrap();
+
+        // Even a real system binary is rejected — there is no way to tell it
+        // apart from an agent-planted file when nothing confines writes.
+        let err = c
+            .is_command_allowed(&["/bin/ls".into()])
+            .expect_err("command path must be rejected when unjailed");
+        assert!(err.contains("unjailed"), "got: {err}");
+
+        // The bare name still resolves via PATH and is allowed.
+        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
     }
 
     #[test]

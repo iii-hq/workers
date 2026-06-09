@@ -23,12 +23,17 @@ pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
     }
 
     // Branch 1: the in-handle Child is still present (job spawned but its drain
-    // task has not yet taken the Child). start_kill it directly and reap is left
-    // to the drain task's own wait().
+    // task has not yet taken the Child). We still own the un-reaped Child, so
+    // the pid cannot have been recycled — SIGKILL the whole process group
+    // (process_group(0) at spawn) so a command that already forked cannot leave
+    // descendants running after we report killed: true. The group SIGKILL is
+    // the authoritative kill; start_kill() is best-effort on the leader (it can
+    // race the group signal and find the leader already a zombie — that error
+    // is not a kill failure, so don't surface it). Reaping is left to the drain
+    // task's wait().
     if let Some(child) = h.child.as_mut() {
-        child.start_kill().map_err(|e| {
-            ExecError::new("S216", format!("failed to kill job {}: {}", req.job_id, e))
-        })?;
+        crate::exec::host::kill_process_group(child.id());
+        let _ = child.start_kill();
         h.record.status = JobStatus::Killed;
         h.record.finished_at_ms = Some(jobs::now_ms());
         return Ok(KillResponse {
@@ -208,10 +213,14 @@ mod host_kill_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn killing_running_host_job_terminates_the_real_child() {
-        use crate::jobs::HOST_SWEEP_TEST_GUARD;
+        use crate::jobs::{GAUGE_TEST_GUARD, HOST_SWEEP_TEST_GUARD};
         use std::time::{Duration, Instant};
 
-        // Serialize with other host-bg/sweep tests sharing the global JOBS map.
+        // spawn_host_job() reserves a running slot and bumps RUNNING_JOBS, so
+        // take the gauge guard FIRST (same order as exec_bg.rs host-path tests)
+        // to serialize with the +1/-1 gauge assertions in jobs.rs, then the
+        // sweep guard to serialize on the global JOBS map.
+        let _gauge_gate = GAUGE_TEST_GUARD.lock().await;
         let _guard = HOST_SWEEP_TEST_GUARD.lock().await;
 
         let mut cfg = open_cfg();

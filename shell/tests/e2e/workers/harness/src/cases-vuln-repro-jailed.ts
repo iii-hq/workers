@@ -53,7 +53,10 @@ export const VULN_REPRO_JAILED_CASES: TestCase[] = [
         });
       } catch (e: any) {
         rejected = true;
-        observed = e?.message ?? String(e);
+        // v0.4.0 surfaces the S-code in the structured `code` field, not the
+        // message text — so read `code` and fold it into `observed`.
+        const code = e && typeof e === 'object' && 'code' in e ? String(e.code) : '';
+        observed = `${code ? code + ': ' : ''}${e?.message ?? String(e)}`;
       }
 
       expect(
@@ -111,7 +114,10 @@ export const VULN_REPRO_JAILED_CASES: TestCase[] = [
         });
       } catch (e: any) {
         rejected = true;
-        observed = e?.message ?? String(e);
+        // v0.4.0 surfaces the S-code in the structured `code` field, not the
+        // message text — so read `code` and fold it into `observed`.
+        const code = e && typeof e === 'object' && 'code' in e ? String(e.code) : '';
+        observed = `${code ? code + ': ' : ''}${e?.message ?? String(e)}`;
       }
 
       expect(

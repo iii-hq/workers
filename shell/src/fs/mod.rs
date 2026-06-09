@@ -482,11 +482,17 @@ pub struct WriteRequest {
     #[serde(default)]
     pub content: Option<WriteContentWire>,
     /// Octal permission string for the single-file form, e.g. "0644".
-    #[serde(default = "default_write_mode")]
-    pub mode: String,
-    /// Create missing parent directories (single-file form).
+    /// `Option` (not a defaulted `String`) so the batch-form check can tell
+    /// "caller omitted mode" from "caller sent a mode" and reject the latter
+    /// instead of silently dropping it. Defaults to "0644" in the single-file
+    /// path. Omit when using `files` (each entry carries its own `mode`).
     #[serde(default)]
-    pub parents: bool,
+    pub mode: Option<String>,
+    /// Create missing parent directories (single-file form). `Option` for the
+    /// same reason as `mode` — so a top-level `parents` sent alongside `files`
+    /// is rejected, not ignored. Defaults to `false`. Omit when using `files`.
+    #[serde(default)]
+    pub parents: Option<bool>,
     /// Batch form: write several files in one call. When present, the
     /// single-file fields (`path`/`content`/`mode`/`parents`) must be omitted.
     #[serde(default)]
@@ -501,10 +507,16 @@ impl WriteRequest {
     /// Rejects (S210) an ambiguous request (both forms) or an empty `files`.
     pub fn into_specs(self) -> Result<(Target, Vec<WriteArgs>, bool), FsError> {
         if let Some(files) = self.files {
-            if self.path.is_some() || self.content.is_some() {
+            if self.path.is_some()
+                || self.content.is_some()
+                || self.mode.is_some()
+                || self.parents.is_some()
+            {
                 return Err(FsError::new(
                     "S210",
-                    "provide either the single-file `path`+`content` or a `files` array, not both",
+                    "provide either the single-file fields (`path`,`content`,`mode`,`parents`) \
+                     or a `files` array, not both — each `files` entry carries its own \
+                     `mode`/`parents`",
                 ));
             }
             if files.is_empty() {
@@ -537,8 +549,8 @@ impl WriteRequest {
                 self.target,
                 vec![WriteArgs {
                     path,
-                    mode: self.mode,
-                    parents: self.parents,
+                    mode: self.mode.unwrap_or_else(default_write_mode),
+                    parents: self.parents.unwrap_or(false),
                     content: content.into(),
                 }],
                 false,
@@ -837,6 +849,39 @@ mod tests {
     fn write_request_rejects_missing_content() {
         let req: WriteRequest = serde_json::from_value(serde_json::json!({"path":"/a"})).unwrap();
         assert_eq!(req.into_specs().unwrap_err().code, "S210");
+    }
+
+    #[test]
+    fn write_request_batch_rejects_top_level_mode_or_parents() {
+        // Top-level mode/parents alongside `files` were silently dropped before
+        // — each entry carries its own. Reject (S210) so the mismatch surfaces
+        // instead of masking a caller bug.
+        let with_mode: WriteRequest = serde_json::from_value(serde_json::json!({
+            "mode": "0600",
+            "files": [{"path":"/b","content":"B"}]
+        }))
+        .unwrap();
+        assert_eq!(with_mode.into_specs().unwrap_err().code, "S210");
+
+        let with_parents: WriteRequest = serde_json::from_value(serde_json::json!({
+            "parents": true,
+            "files": [{"path":"/b","content":"B"}]
+        }))
+        .unwrap();
+        assert_eq!(with_parents.into_specs().unwrap_err().code, "S210");
+    }
+
+    #[test]
+    fn write_request_single_form_defaults_mode_and_parents() {
+        // Omitted mode/parents still default to "0644"/false in the flat form.
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({
+            "path": "/x", "content": "hi"
+        }))
+        .unwrap();
+        let (_t, specs, batch) = req.into_specs().unwrap();
+        assert!(!batch);
+        assert_eq!(specs[0].mode, "0644");
+        assert!(!specs[0].parents);
     }
 
     #[test]
