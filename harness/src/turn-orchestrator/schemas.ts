@@ -46,6 +46,16 @@ export type RunStartResult = {
   reason?: 'session_busy';
 };
 
+// --- run::abort ---
+export const RunAbortPayloadSchema = SessionIdPayloadSchema;
+export type RunAbortPayload = z.infer<typeof RunAbortPayloadSchema>;
+/** `aborted` is false when no turn was running (or it was already finishing). */
+export type RunAbortResult = {
+  session_id: string;
+  aborted: boolean;
+  state: TurnState | null;
+};
+
 // --- turn::{state} durable step ---
 export const TurnStepPayloadSchema = SessionIdPayloadSchema;
 export type TurnStepPayload = z.infer<typeof TurnStepPayloadSchema>;

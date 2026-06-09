@@ -43,7 +43,10 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   mode_set_at: 0,
 };
 
-const wireDecisionSchema = z.enum(['allow', 'deny']);
+// 'aborted' is a user-initiated cancel of the parked call: the orchestrator
+// converts it to a terminating synthetic result (see denialResultFromDecision)
+// so the turn ends instead of resuming for another round-trip.
+const wireDecisionSchema = z.enum(['allow', 'deny', 'aborted']);
 
 const deniedBySchema = z.enum(['permissions', 'user', 'gate_unavailable']);
 

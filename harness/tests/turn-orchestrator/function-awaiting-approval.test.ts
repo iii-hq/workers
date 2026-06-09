@@ -94,6 +94,11 @@ describe('applyDecisionToPrepared', () => {
       result: denialResultFromDecision({ decision: 'deny', reason: 'policy' }),
     });
   });
+
+  it('a denial resumes the loop; an abort terminates the turn', () => {
+    expect(denialResultFromDecision({ decision: 'deny', reason: null }).terminate).toBe(false);
+    expect(denialResultFromDecision({ decision: 'aborted', reason: null }).terminate).toBe(true);
+  });
 });
 
 describe('handleAwaitingApproval', () => {
