@@ -46,8 +46,8 @@ export function createAgentEventTranslator(): {
     const prev = mirrors.get(sessionId) ?? []
     const next = pendingApprovalsFromTurnState(event.new_value)
     mirrors.set(sessionId, next)
-    const { added } = diffPending(prev, next)
-    return added.map((entry) => ({
+    const { added, removed } = diffPending(prev, next)
+    const out: StreamEvent[] = added.map((entry) => ({
       kind: 'fcall-start' as const,
       functionId: entry.function_id,
       input: entry.args,
@@ -55,6 +55,15 @@ export function createAgentEventTranslator(): {
       functionCallId: entry.function_call_id,
       sessionId,
     }))
+    // A call that left awaiting_approval is no longer pending: clear its prompt.
+    // (A resolved+executed call also emits fcall-end; double-clearing is fine.)
+    for (const entry of removed) {
+      out.push({
+        kind: 'fcall-approval-cleared',
+        functionCallId: entry.function_call_id,
+      })
+    }
+    return out
   }
 
   function translate(event: AgentEvent, sessionId?: string): StreamEvent[] {
@@ -90,6 +99,7 @@ export function createAgentEventTranslator(): {
               ? wrapErrorOutput(event.result)
               : event.result,
             durationMs: event.duration_ms,
+            functionCallId: event.function_call_id,
           },
         ]
 

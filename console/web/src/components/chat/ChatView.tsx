@@ -340,15 +340,35 @@ export function ChatView({
               break
             }
             case 'fcall-end': {
-              if (!fcallId) break
-              onPatchMessage(conversationId, fcallId, {
+              // Correlate by function_call_id: parallel and approval-resolved
+              // calls finish out of order, so the cursor (last-started) is the
+              // wrong card. Fall back to the cursor only when no id is carried
+              // (mock backend / legacy events).
+              const targetId: string | null = event.functionCallId
+                ? ([...fcallMap.entries()].find(
+                    ([, fcid]) => fcid === event.functionCallId,
+                  )?.[0] ?? null)
+                : fcallId
+              if (!targetId) break
+              onPatchMessage(conversationId, targetId, {
                 output: event.output,
                 durationMs: event.durationMs,
                 running: false,
                 pendingApproval: false,
               })
-              fcallMap.delete(fcallId)
-              fcallId = null
+              fcallMap.delete(targetId)
+              if (targetId === fcallId) fcallId = null
+              break
+            }
+            case 'fcall-approval-cleared': {
+              const clearedId = [...fcallMap.entries()].find(
+                ([, fcid]) => fcid === event.functionCallId,
+              )?.[0]
+              if (clearedId) {
+                onPatchMessage(conversationId, clearedId, {
+                  pendingApproval: false,
+                })
+              }
               break
             }
             case 'assistant-token': {

@@ -175,6 +175,7 @@ function toneFor(kind: StreamEvent['kind']): string {
       return 'text-ink-ghost'
     case 'fcall-start':
     case 'fcall-end':
+    case 'fcall-approval-cleared':
       return 'text-accent'
     case 'assistant-token':
       return 'text-ink-ghost'
