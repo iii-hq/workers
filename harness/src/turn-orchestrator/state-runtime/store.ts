@@ -4,7 +4,7 @@
  */
 
 import { TriggerAction, type ISdk } from '../../runtime/iii.js';
-import { stateGet, stateSet } from '../../runtime/state.js';
+import { createState, stateGet, stateSet } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import { RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
@@ -33,20 +33,49 @@ export function shouldWakeStep(previousState: TurnState | null, newState: TurnSt
   return true;
 }
 
+const WAKE_ENQUEUE_ATTEMPTS = 3;
+const WAKE_ENQUEUE_BACKOFF_MS = 250;
+
+/**
+ * Enqueue the next FSM step. Retried because a lost wake strands the record in
+ * a non-terminal state with nothing scheduled to advance it (and run::start
+ * then reports the session busy until its stale-takeover window). On final
+ * failure we log at error level and rely on that takeover as the recovery
+ * valve — re-enqueueing from a later save is suppressed by shouldWakeStep.
+ */
 async function enqueueTurnStep(iii: ISdk, session_id: string, state: TurnState): Promise<void> {
-  try {
-    await iii.trigger({
-      function_id: `turn::${state}`,
-      payload: { session_id },
-      action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
-    });
-  } catch (err) {
-    logger.warn('wakeStep failed', { session_id, state, err: String(err) });
+  for (let attempt = 1; attempt <= WAKE_ENQUEUE_ATTEMPTS; attempt++) {
+    try {
+      await iii.trigger({
+        function_id: `turn::${state}`,
+        payload: { session_id },
+        action: TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }),
+      });
+      return;
+    } catch (err) {
+      if (attempt === WAKE_ENQUEUE_ATTEMPTS) {
+        logger.error('wakeStep failed after retries; turn is stranded until stale takeover', {
+          session_id,
+          state,
+          attempts: attempt,
+          err: String(err),
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, WAKE_ENQUEUE_BACKOFF_MS * attempt));
+    }
   }
 }
 
 export type TurnStore = {
   loadRecord(session_id: string): Promise<TurnStateRecord | null>;
+  /**
+   * Like {@link loadRecord} but THROWS on a state-read failure instead of
+   * tolerantly returning null. For guards that must fail closed: run::start's
+   * in-flight check would clobber a live turn if a transient read error were
+   * indistinguishable from "no record".
+   */
+  loadRecordStrict(session_id: string): Promise<TurnStateRecord | null>;
   saveRecord(rec: TurnStateRecord, previous?: TurnStateRecord | null): Promise<void>;
   writeRecord(rec: TurnStateRecord): Promise<void>;
   ensureSession(session_id: string): Promise<void>;
@@ -132,9 +161,16 @@ async function persistRecord(
 }
 
 export function createTurnStore(iii: ISdk): TurnStore {
+  const strictState = createState(iii, { tolerant: false });
+
   return {
     async loadRecord(session_id) {
       return parseTurnStateRecord(await scopedGet(iii, TURN_STATE_SCOPE, session_id));
+    },
+
+    async loadRecordStrict(session_id) {
+      const raw = await strictState.get({ scope: TURN_STATE_SCOPE, key: session_id });
+      return parseTurnStateRecord(raw);
     },
 
     async writeRecord(rec) {

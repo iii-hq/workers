@@ -59,7 +59,10 @@ export async function loadSessionMessages(
   const resp = await iii.trigger<unknown, { messages?: SessionMessageRow[] }>({
     function_id: 'session-tree::messages',
     payload: { session_id },
-    timeoutMs: 10_000,
+    // Matches the SDK default this read always ran under: long sessions
+    // (thousands of entries) can legitimately take >10s to list+sort, and a
+    // tighter budget here fails the whole turn step.
+    timeoutMs: 30_000,
   });
   return resp?.messages ?? [];
 }

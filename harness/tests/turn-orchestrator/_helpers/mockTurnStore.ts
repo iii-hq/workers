@@ -20,6 +20,7 @@ export type MockTurnStore = {
 export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore {
   return {
     loadRecord: vi.fn(async () => null),
+    loadRecordStrict: vi.fn(async () => null),
     saveRecord: vi.fn(async () => {}),
     writeRecord: vi.fn(async () => {}),
     ensureSession: vi.fn(async () => {}),

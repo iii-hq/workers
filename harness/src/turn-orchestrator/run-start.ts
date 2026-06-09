@@ -16,6 +16,16 @@ import { RunStartPayloadSchema, type RunStartPayload, type RunStartResult } from
 import { createTurnStore } from './state-runtime/store.js';
 import { isTurnInFlight, newRecord } from './state.js';
 
+/**
+ * Idle window after which an in-flight (non-parked) record is treated as
+ * abandoned and a new run::start may take it over. `updated_at_ms` bumps on
+ * every state transition, so a live turn refreshes it each round-trip; a
+ * single very long provider stream is the one legitimate gap, hence the
+ * generous window. `function_awaiting_approval` is exempt — it parks on the
+ * user indefinitely by design; `run::abort` is its escape, not staleness.
+ */
+export const STALE_TURN_TAKEOVER_MS = 30 * 60 * 1000;
+
 export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunStartResult> {
   const store = createTurnStore(iii);
   const { session_id, messages, max_turns, message_id: _message_id, ...run } = payload;
@@ -23,16 +33,30 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
   // Refuse to clobber a turn that is still running for this session. A second
   // run::start (second tab, TUI/ACP client, or a double-submit) would otherwise
   // reset the live turn_state record to a fresh `provisioning` and race the
-  // in-flight step's last-write-wins saveRecord, corrupting both turns. Read
-  // the committed record first; terminal turns (stopped/failed) and fresh
-  // sessions start normally. No mutation happens on the busy path.
-  const existing = await store.loadRecord(session_id);
+  // in-flight step's last-write-wins saveRecord, corrupting both turns. The
+  // read is STRICT (throws on a state-read failure) so a transient blip can't
+  // masquerade as "no record" and fail the guard open. Terminal turns
+  // (stopped/failed) and fresh sessions start normally; a record idle past the
+  // takeover window is treated as wedged (lost wake, DLQ'd step) and
+  // deliberately taken over — the recovery valve the old clobber provided by
+  // accident. No mutation happens on the busy path.
+  const existing = await store.loadRecordStrict(session_id);
   if (existing && isTurnInFlight(existing)) {
-    logger.warn('run::start ignored: session already has a turn in flight', {
+    const idleMs = Date.now() - existing.updated_at_ms;
+    const takeOver =
+      existing.state !== 'function_awaiting_approval' && idleMs > STALE_TURN_TAKEOVER_MS;
+    if (!takeOver) {
+      logger.warn('run::start ignored: session already has a turn in flight', {
+        session_id,
+        state: existing.state,
+      });
+      return { session_id, started: false, reason: 'session_busy' };
+    }
+    logger.error('run::start taking over a stale in-flight turn', {
       session_id,
       state: existing.state,
+      idle_ms: idleMs,
     });
-    return { session_id, started: false, reason: 'session_busy' };
   }
 
   // Single ensure for the whole run: this is the gateway that begins the turn
