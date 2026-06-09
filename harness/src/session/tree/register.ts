@@ -9,6 +9,7 @@ import type { AgentMessage } from '../../types/agent-message.js';
 import {
   type UpdatePartItem,
   appendMessage,
+  appendMessages as appendMessagesOp,
   appendSynthetic as appendSyntheticOp,
   cloneSession,
   compact as compactOp,
@@ -35,6 +36,7 @@ export const FUNCTION_IDS = {
   CREATE: 'session-tree::create',
   ENSURE: 'session-tree::ensure',
   APPEND: 'session-tree::append',
+  APPEND_BATCH: 'session-tree::append_batch',
   MESSAGES: 'session-tree::messages',
   LIST: 'session-tree::list',
   COMPACTIONS: 'session-tree::compactions',
@@ -146,6 +148,28 @@ export function registerTree(iii: ISdk, store: SessionStore): void {
       return { entry_id };
     },
     { description: 'Append an AgentMessage entry to a session' },
+  );
+
+  iii.registerFunction(
+    FUNCTION_IDS.APPEND_BATCH,
+    async (payload: unknown) => {
+      const obj = (payload ?? {}) as Record<string, unknown>;
+      const session_id = requireString(obj, 'session_id');
+      const parent_id = typeof obj.parent_id === 'string' ? obj.parent_id : null;
+      const messages = obj.messages;
+      if (!Array.isArray(messages)) throw new Error('missing required field: messages (array)');
+      const entry_ids = await appendMessagesOp(
+        store,
+        session_id,
+        parent_id,
+        messages as AgentMessage[],
+      );
+      return { entry_ids };
+    },
+    {
+      description:
+        'Append a chain of AgentMessage entries to a session in one call (resolves the active leaf once; returns entry_ids in order).',
+    },
   );
 
   iii.registerFunction(

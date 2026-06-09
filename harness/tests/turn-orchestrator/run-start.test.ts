@@ -176,9 +176,9 @@ describe('execute', () => {
     expect(ensureCalls).toHaveLength(1);
     expect(ensureCalls[0]?.payload).toEqual({ session_id: 'sess-1' });
 
-    // The single ensure must precede the run's first tree write (append).
+    // The single ensure must precede the run's first tree write (append batch).
     const ensureIdx = calls.findIndex((c) => c.function_id === 'session-tree::ensure');
-    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append_batch');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
   });

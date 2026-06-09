@@ -20,6 +20,11 @@ import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } fro
 export interface SessionStore {
   create(meta: SessionMeta): Promise<void>;
   append(session_id: string, entry: SessionEntry): Promise<void>;
+  /**
+   * Append several pre-chained entries, refreshing session meta once for the
+   * whole batch (vs once per {@link append}). Entries are written in order.
+   */
+  appendMany(session_id: string, entries: SessionEntry[]): Promise<void>;
   loadEntries(session_id: string): Promise<SessionEntry[]>;
   loadMeta(session_id: string): Promise<SessionMeta>;
   list(): Promise<SessionMeta[]>;
@@ -40,6 +45,14 @@ export class InMemoryStore implements SessionStore {
     const list = this.entries.get(session_id);
     if (!list) throw new SessionError('not_found', `session not found: ${session_id}`);
     list.push(entry);
+    const m = this.meta.get(session_id);
+    if (m) m.updated_at = Date.now();
+  }
+
+  async appendMany(session_id: string, entries: SessionEntry[]): Promise<void> {
+    const list = this.entries.get(session_id);
+    if (!list) throw new SessionError('not_found', `session not found: ${session_id}`);
+    list.push(...entries);
     const m = this.meta.get(session_id);
     if (m) m.updated_at = Date.now();
   }
@@ -101,6 +114,29 @@ export class IiiStateSessionStore implements SessionStore {
       throw new SessionError('storage', `state::set entry: ${String(e)}`);
     }
     // Best-effort meta refresh — failures here log only.
+    try {
+      await this.refreshMetaUpdatedAt(session_id);
+    } catch (e) {
+      logger.warn('meta updated_at refresh failed', {
+        session_id,
+        err: String(e),
+      });
+    }
+  }
+
+  async appendMany(session_id: string, entries: SessionEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.state.set({
+          scope: entriesScope(session_id),
+          key: entry.id,
+          value: entry,
+        });
+      } catch (e) {
+        throw new SessionError('storage', `state::set entry: ${String(e)}`);
+      }
+    }
+    // One meta refresh for the whole batch (vs once per entry in `append`).
     try {
       await this.refreshMetaUpdatedAt(session_id);
     } catch (e) {

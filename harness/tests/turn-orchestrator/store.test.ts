@@ -139,8 +139,28 @@ describe('session-tree call reduction', () => {
       timestamp: 1,
     };
     await createTurnStore(iii).appendMessages('sess-a', [msg]);
-    expect(calls.filter((c) => c === 'session-tree::append')).toHaveLength(1);
+    // One batch trigger for the whole call, not a per-message append.
+    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
+    expect(calls).not.toContain('session-tree::append');
     expect(calls).not.toContain('session-tree::ensure');
+  });
+
+  it('appendMessages batches a multi-message call into one trigger', async () => {
+    const { iii, calls } = recordingIii();
+    const mk = (text: string) => ({
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text }],
+      timestamp: 1,
+    });
+    await createTurnStore(iii).appendMessages('sess-a', [mk('a'), mk('b'), mk('c')]);
+    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
+  });
+
+  it('appendMessages on an empty list triggers nothing', async () => {
+    const { iii, calls } = recordingIii();
+    await createTurnStore(iii).appendMessages('sess-a', []);
+    expect(calls).not.toContain('session-tree::append_batch');
+    expect(calls).not.toContain('session-tree::append');
   });
 
   it('ensureSession is the sole trigger of session-tree::ensure', async () => {

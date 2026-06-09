@@ -86,6 +86,46 @@ export async function appendMessage(
   return id;
 }
 
+/**
+ * Append several messages as one linear chain in a single store round-trip.
+ * Equivalent to calling {@link appendMessage} for each message in order, but
+ * resolves the active leaf once (not once per message) and writes through
+ * {@link SessionStore.appendMany} so meta is refreshed once. Entries get
+ * strictly increasing timestamps so the batch's last entry remains the
+ * resolvable leaf for the next append.
+ */
+export async function appendMessages(
+  store: SessionStore,
+  session_id: string,
+  parent_id: string | null,
+  messages: AgentMessage[],
+): Promise<string[]> {
+  if (messages.length === 0) return [];
+
+  let parent = parent_id;
+  if (parent === null) {
+    const path = await activePath(store, session_id);
+    parent = path.at(-1) ?? null;
+  }
+
+  const base = Date.now();
+  const entries: SessionEntry[] = messages.map((message, i) => {
+    const id = randomUUID();
+    const entry: SessionEntry = {
+      type: 'message',
+      id,
+      parent_id: parent,
+      message,
+      timestamp: base + i,
+    };
+    parent = id;
+    return entry;
+  });
+
+  await store.appendMany(session_id, entries);
+  return entries.map((e) => e.id);
+}
+
 export async function activePath(
   store: SessionStore,
   session_id: string,

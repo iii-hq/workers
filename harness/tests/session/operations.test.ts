@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   activePath,
   appendMessage,
+  appendMessages,
   cloneSession,
   createSession,
   exportHtml,
@@ -46,6 +47,66 @@ describe('session-tree operations', () => {
     const e3 = await appendMessage(store, sid, null, userMsg('c'));
     const path = await activePath(store, sid);
     expect(path).toEqual([e1, e2, e3]);
+  });
+
+  it('appendMessages chains a batch and is equivalent to serial appends', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const e0 = await appendMessage(store, sid, null, userMsg('seed'));
+
+    const ids = await appendMessages(store, sid, null, [asstMsg('a'), userMsg('b'), asstMsg('c')]);
+
+    expect(ids).toHaveLength(3);
+    // The batch chains onto the existing leaf and links each entry to the prior.
+    const path = await activePath(store, sid);
+    expect(path).toEqual([e0, ...ids]);
+    const messages = await loadMessages(store, sid);
+    expect(messages.map((m) => (m.content[0] as { text: string }).text)).toEqual([
+      'seed',
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  it('appendMessages resolves the active leaf once for the whole batch', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    await appendMessage(store, sid, null, userMsg('seed'));
+
+    // loadEntries backs activePath; one call means the leaf was resolved once.
+    const loadEntriesSpy = vi.spyOn(store, 'loadEntries');
+    const appendManySpy = vi.spyOn(store, 'appendMany');
+
+    await appendMessages(store, sid, null, [asstMsg('a'), userMsg('b'), asstMsg('c')]);
+
+    expect(loadEntriesSpy).toHaveBeenCalledTimes(1);
+    expect(appendManySpy).toHaveBeenCalledTimes(1);
+    expect(appendManySpy.mock.calls[0]?.[1]).toHaveLength(3);
+  });
+
+  it('appendMessages with an explicit parent skips leaf resolution', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const e0 = await appendMessage(store, sid, null, userMsg('seed'));
+    const loadEntriesSpy = vi.spyOn(store, 'loadEntries');
+
+    const ids = await appendMessages(store, sid, e0, [asstMsg('a')]);
+
+    expect(loadEntriesSpy).not.toHaveBeenCalled();
+    const path = await activePath(store, sid);
+    expect(path).toEqual([e0, ...ids]);
+  });
+
+  it('appendMessages on an empty list is a no-op', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const appendManySpy = vi.spyOn(store, 'appendMany');
+
+    const ids = await appendMessages(store, sid, null, []);
+
+    expect(ids).toEqual([]);
+    expect(appendManySpy).not.toHaveBeenCalled();
   });
 
   it('loadMessages filters non-message entries from active path', async () => {
