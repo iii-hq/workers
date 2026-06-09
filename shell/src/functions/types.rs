@@ -115,13 +115,21 @@ pub struct ExecRequest {
     pub cwd: Option<String>,
     /// Optional per-call environment values (host target only). A key may be
     /// set ONLY if the operator listed it in `allowed_env`, and NEVER for an
-    /// exec-hijacking key (PATH, IFS, LD_*/DYLD_*) — those are rejected even if
-    /// allowlisted. Supplying a key that is not in `allowed_env`, or any
-    /// dangerous key, rejects the WHOLE call (S210) naming the offending key;
-    /// the env is never silently dropped. Permitted values override what would
-    /// otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
+    /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
+    /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS) — those are
+    /// rejected even if allowlisted. Supplying a key that is not in `allowed_env`,
+    /// or any dangerous key, rejects the WHOLE call (S210) naming the offending
+    /// key; the env is never silently dropped. Permitted values override what
+    /// would otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
+    /// Optional bytes written to the program's standard input, followed by EOF.
+    /// Use this to pipe content to a command that reads stdin (`tee`, `patch`,
+    /// `cat`, a filter) instead of wrapping it in a shell heredoc. Omit to leave
+    /// stdin closed (`/dev/null`, the default). HOST target only — rejected
+    /// (S210) on a sandbox target, like cwd/env.
+    #[serde(default)]
+    pub stdin: Option<String>,
     /// Where to run the command. Defaults to the host worker; pass
     /// `{ kind: "sandbox", sandbox_id }` to forward the call to a microVM.
     #[serde(default)]
@@ -153,10 +161,16 @@ pub struct ExecBgRequest {
     pub cwd: Option<String>,
     /// Optional per-call environment values (host target only). Same gating as
     /// [`ExecRequest::env`]: a key must be in `allowed_env` and must not be an
-    /// exec-hijacking key (PATH, IFS, LD_*/DYLD_*); any violation rejects the
-    /// whole call (S210). Rejected (S210) on a sandbox target.
+    /// exec-hijacking key (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup
+    /// and interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
+    /// rejects the whole call (S210). Rejected (S210) on a sandbox target.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
+    /// Optional bytes written to the job's standard input, then EOF. See
+    /// [`ExecRequest::stdin`]. HOST target only — rejected (S210) on a sandbox
+    /// target.
+    #[serde(default)]
+    pub stdin: Option<String>,
     /// Where to run. See [`ExecRequest::target`].
     #[serde(default)]
     pub target: Target,

@@ -84,6 +84,26 @@ pub struct HostFsConfig {
 const MAX_PATTERN_BYTES: usize = 4096;
 const REGEX_SIZE_LIMIT: usize = 256 * 1024;
 
+/// Hard ceiling on the size of a single file `sed` will read+rewrite when the
+/// backend config sets no `max_read_bytes` (cap == 0). `sed` builds a
+/// same-size output String in memory, so an unbounded file is an OOM vector;
+/// N concurrent calls multiply it. 16 MiB mirrors a sane edit target.
+const SED_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Upper bound on bytes buffered while reading a SINGLE grep "line". A file
+/// with no newlines would otherwise buffer the whole file before the
+/// per-match `max_line_bytes` truncation ever ran. We stop reading a line at
+/// this cap (discarding the remainder up to the next newline) so memory stays
+/// bounded DURING the read, not just in the returned match.
+const GREP_MAX_LINE_SCAN_BYTES: usize = 1024 * 1024;
+
+/// Defaults reused when a caller passes 0 for the corresponding grep cap. 0
+/// must mean "use the default", not "unlimited" — an unbounded match count or
+/// line length is a memory/DoS vector. These mirror the schema defaults in
+/// `fs/mod.rs` (`default_max_matches` / `default_max_line_bytes`).
+const DEFAULT_GREP_MAX_MATCHES: usize = 10_000;
+const DEFAULT_GREP_MAX_LINE_BYTES: usize = 4096;
+
 /// Reject setuid/setgid/sticky bits unless the operator opted in. The policy
 /// reads the backend's config flag at the call site; `parse_mode` stays a pure
 /// octal parser. Centralized so mkdir/chmod/write stay consistent.
@@ -619,28 +639,36 @@ async fn pump_file_to_channel(
 #[async_trait]
 impl FsBackend for HostFsBackend {
     async fn ls(&self, req: LsArgs) -> FsCallResult<LsResponse> {
+        // Jail validation runs here, on the async fn, BEFORE the blocking work.
         let p = self.validate_path(&req.path)?;
-        let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-        if !md.is_dir() {
-            return Err(FsError::new(
-                "S212",
-                format!("not a directory: {}", req.path),
-            ));
-        }
-        let rd = std::fs::read_dir(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-        let mut entries = Vec::new();
-        for ent in rd {
-            let ent = match ent {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let md = match ent.path().symlink_metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let name = ent.file_name().to_string_lossy().into_owned();
-            entries.push(fs_entry_from_metadata(name, &md));
-        }
+        // The symlink_metadata stat, read_dir, and the per-entry
+        // symlink_metadata loop are all blocking std::fs work that scales with
+        // directory size; move it off the executor (mirrors grep/sed).
+        let req_path = req.path;
+        let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
+            let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+            if !md.is_dir() {
+                return Err(FsError::new("S212", format!("not a directory: {req_path}")));
+            }
+            let rd = std::fs::read_dir(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+            let mut entries = Vec::new();
+            for ent in rd {
+                let ent = match ent {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let md = match ent.path().symlink_metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let name = ent.file_name().to_string_lossy().into_owned();
+                entries.push(fs_entry_from_metadata(name, &md));
+            }
+            Ok(entries)
+        });
+        let entries = join
+            .await
+            .map_err(|e| FsError::new("S216", format!("ls task join failed: {e}")))??;
         Ok(LsResponse { entries })
     }
 
@@ -706,27 +734,37 @@ impl FsBackend for HostFsBackend {
         self.validate_path(&req.path)?;
         let p = self.lexical_operand(&req.path);
 
-        let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-
-        if md.is_dir() && !md.file_type().is_symlink() {
-            if req.recursive {
-                std::fs::remove_dir_all(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-            } else {
-                let mut rd = std::fs::read_dir(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-                if rd.next().is_some() {
-                    return Err(FsError::new(
-                        "S214",
-                        format!(
-                            "directory not empty: {}; pass recursive: true to remove it",
-                            req.path
-                        ),
-                    ));
+        // The symlink_metadata stat, recursive remove_dir_all, the non-recursive
+        // read_dir emptiness probe, and the unlink are all blocking std::fs work
+        // that scales with subtree size; move it off the executor (mirrors
+        // grep/sed). Jail validation already ran above on the async fn.
+        let recursive = req.recursive;
+        let req_path = req.path.clone();
+        let join = tokio::task::spawn_blocking(move || -> Result<(), FsError> {
+            let md = std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+            if md.is_dir() && !md.file_type().is_symlink() {
+                if recursive {
+                    std::fs::remove_dir_all(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+                } else {
+                    let mut rd =
+                        std::fs::read_dir(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+                    if rd.next().is_some() {
+                        return Err(FsError::new(
+                            "S214",
+                            format!(
+                                "directory not empty: {req_path}; pass recursive: true to remove it"
+                            ),
+                        ));
+                    }
+                    std::fs::remove_dir(&p).map_err(|e| FsError::from_io(&req_path, e))?;
                 }
-                std::fs::remove_dir(&p).map_err(|e| FsError::from_io(&req.path, e))?;
+            } else {
+                std::fs::remove_file(&p).map_err(|e| FsError::from_io(&req_path, e))?;
             }
-        } else {
-            std::fs::remove_file(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-        }
+            Ok(())
+        });
+        join.await
+            .map_err(|e| FsError::new("S216", format!("rm task join failed: {e}")))??;
         Ok(crate::fs::RmResponse {
             removed: true,
             path: req.path.clone(),
@@ -734,65 +772,75 @@ impl FsBackend for HostFsBackend {
         })
     }
     async fn chmod(&self, req: crate::fs::ChmodArgs) -> FsCallResult<crate::fs::ChmodResponse> {
+        // Jail validation + mode parsing run here, on the async fn, BEFORE the
+        // blocking work.
         self.validate_path(&req.path)?;
         let p = self.lexical_operand(&req.path);
         let bits = crate::fs::error::parse_mode(&req.mode)?;
         check_special_bits(bits, self.cfg.allow_special_bits)?;
-        if !p.exists() {
-            return Err(FsError::new(
-                "S211",
-                format!("path not found: {}", req.path),
-            ));
-        }
+
+        // The exists probe, the recursive WalkDir traversal, and the per-entry
+        // set_permissions/chown loop are all blocking std::fs work that scales
+        // with subtree size; move it off the executor (mirrors grep/sed).
+        // Owned values (canonical-anchored PathBuf, mode bits, uid/gid, flags)
+        // move into the closure.
         let uid = req.uid;
         let gid = req.gid;
-        let apply = |target: &Path| -> Result<(), FsError> {
-            let perms = std::fs::Permissions::from_mode(bits);
-            std::fs::set_permissions(target, perms)
-                .map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
-            if uid.is_some() || gid.is_some() {
-                std::os::unix::fs::chown(target, uid, gid)
+        let recursive = req.recursive;
+        let req_path = req.path.clone();
+        let join = tokio::task::spawn_blocking(move || -> Result<u64, FsError> {
+            if !p.exists() {
+                return Err(FsError::new("S211", format!("path not found: {req_path}")));
+            }
+            let apply = |target: &Path| -> Result<(), FsError> {
+                let perms = std::fs::Permissions::from_mode(bits);
+                std::fs::set_permissions(target, perms)
                     .map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
-            }
-            Ok(())
-        };
-        let mut updated: u64 = 0;
-        if req.recursive {
-            // Reject if the walk root itself is a symlink: descending into
-            // a symlink target would change perms outside the recursive
-            // root, and skipping the root entry silently (which is what
-            // the per-entry skip below would do) is a quiet no-op that
-            // looks like success to the caller. S212 = wrong file type.
-            let root_md =
-                std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req.path, e))?;
-            if root_md.file_type().is_symlink() {
-                return Err(FsError::new(
-                    "S212",
-                    format!(
-                        "recursive chmod refuses to follow symlink at root: {}",
-                        req.path
-                    ),
-                ));
-            }
-            for entry in walkdir::WalkDir::new(&p)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                // Skip symlink entries inside the walk: chmod(2)/chown(2)
-                // follow symlinks and would rewrite the target's
-                // mode/owner — possibly outside the recursive root or the
-                // jail. lchmod isn't portable.
-                if entry.file_type().is_symlink() {
-                    continue;
+                if uid.is_some() || gid.is_some() {
+                    std::os::unix::fs::chown(target, uid, gid)
+                        .map_err(|e| FsError::from_io(&target.to_string_lossy(), e))?;
                 }
-                apply(entry.path())?;
-                updated += 1;
+                Ok(())
+            };
+            let mut updated: u64 = 0;
+            if recursive {
+                // Reject if the walk root itself is a symlink: descending into
+                // a symlink target would change perms outside the recursive
+                // root, and skipping the root entry silently (which is what
+                // the per-entry skip below would do) is a quiet no-op that
+                // looks like success to the caller. S212 = wrong file type.
+                let root_md =
+                    std::fs::symlink_metadata(&p).map_err(|e| FsError::from_io(&req_path, e))?;
+                if root_md.file_type().is_symlink() {
+                    return Err(FsError::new(
+                        "S212",
+                        format!("recursive chmod refuses to follow symlink at root: {req_path}"),
+                    ));
+                }
+                for entry in walkdir::WalkDir::new(&p)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    // Skip symlink entries inside the walk: chmod(2)/chown(2)
+                    // follow symlinks and would rewrite the target's
+                    // mode/owner — possibly outside the recursive root or the
+                    // jail. lchmod isn't portable.
+                    if entry.file_type().is_symlink() {
+                        continue;
+                    }
+                    apply(entry.path())?;
+                    updated += 1;
+                }
+            } else {
+                apply(&p)?;
+                updated = 1;
             }
-        } else {
-            apply(&p)?;
-            updated = 1;
-        }
+            Ok(updated)
+        });
+        let updated = join
+            .await
+            .map_err(|e| FsError::new("S216", format!("chmod task join failed: {e}")))??;
         Ok(crate::fs::ChmodResponse {
             entries_changed: updated,
             path: req.path.clone(),
@@ -823,32 +871,41 @@ impl FsBackend for HostFsBackend {
                 ),
             ));
         }
-        match std::fs::rename(&src_p, &dst_p) {
-            Ok(()) => Ok(crate::fs::MvResponse {
-                moved: true,
-                src: req.src.clone(),
-                dst: req.dst.clone(),
-                overwrote: dst_existed,
-            }),
-            // EXDEV: cross-fs move — fall back to copy+rename+unlink.
-            // File-only; directories are unsupported (matches engine daemon).
-            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-                let tmp = temp_sibling(&dst_p);
-                std::fs::copy(&src_p, &tmp).map_err(|e| FsError::from_io(&req.dst, e))?;
-                if let Err(e) = std::fs::rename(&tmp, &dst_p) {
-                    let _ = std::fs::remove_file(&tmp);
-                    return Err(FsError::from_io(&req.dst, e));
+        // The rename and the EXDEV copy+rename+unlink fallback are blocking
+        // std::fs work; the cross-filesystem copy in particular is O(file size)
+        // and would pin a worker thread on a large file. Move the whole
+        // rename-or-fallback unit off the executor (mirrors grep/sed). Jail
+        // validation already ran above on the async fn; we move owned copies of
+        // the anchored src/dst paths and the src/dst strings (for error
+        // messages) into the closure.
+        let src_str = req.src.clone();
+        let dst_str = req.dst.clone();
+        let join = tokio::task::spawn_blocking(move || -> Result<(), FsError> {
+            match std::fs::rename(&src_p, &dst_p) {
+                Ok(()) => Ok(()),
+                // EXDEV: cross-fs move — fall back to copy+rename+unlink.
+                // File-only; directories are unsupported (matches engine daemon).
+                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                    let tmp = temp_sibling(&dst_p);
+                    std::fs::copy(&src_p, &tmp).map_err(|e| FsError::from_io(&dst_str, e))?;
+                    if let Err(e) = std::fs::rename(&tmp, &dst_p) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(FsError::from_io(&dst_str, e));
+                    }
+                    std::fs::remove_file(&src_p).map_err(|e| FsError::from_io(&src_str, e))?;
+                    Ok(())
                 }
-                std::fs::remove_file(&src_p).map_err(|e| FsError::from_io(&req.src, e))?;
-                Ok(crate::fs::MvResponse {
-                    moved: true,
-                    src: req.src.clone(),
-                    dst: req.dst.clone(),
-                    overwrote: dst_existed,
-                })
+                Err(e) => Err(FsError::from_io(&dst_str, e)),
             }
-            Err(e) => Err(FsError::from_io(&req.dst, e)),
-        }
+        });
+        join.await
+            .map_err(|e| FsError::new("S216", format!("mv task join failed: {e}")))??;
+        Ok(crate::fs::MvResponse {
+            moved: true,
+            src: req.src.clone(),
+            dst: req.dst.clone(),
+            overwrote: dst_existed,
+        })
     }
     async fn grep(&self, req: crate::fs::GrepArgs) -> FsCallResult<crate::fs::GrepResponse> {
         let root = self.validate_path(&req.path)?;
@@ -867,8 +924,20 @@ impl FsBackend for HostFsBackend {
         // worker thread — the residual stat at the top used to run on the
         // executor — so a grep over a large tree can't stall it. Capture owned
         // data; the compiled Regex is Send+Sync so it moves into the closure.
-        let max_matches_usize = req.max_matches as usize;
-        let max_line_usize = req.max_line_bytes as usize;
+        //
+        // A 0 cap means "use the default", NOT "unlimited": an unbounded match
+        // count or line length is a memory/DoS vector. Clamp both before the
+        // closure so the scan always runs with a positive bound.
+        let max_matches_usize = if req.max_matches == 0 {
+            DEFAULT_GREP_MAX_MATCHES
+        } else {
+            req.max_matches as usize
+        };
+        let max_line_usize = if req.max_line_bytes == 0 {
+            DEFAULT_GREP_MAX_LINE_BYTES
+        } else {
+            req.max_line_bytes as usize
+        };
         let include_glob = req.include_glob;
         let exclude_glob = req.exclude_glob;
         let recursive = req.recursive;
@@ -907,14 +976,69 @@ impl FsBackend for HostFsBackend {
                 }
                 let f = std::fs::File::open(file_path)
                     .map_err(|e| FsError::from_io(&file_path.to_string_lossy(), e))?;
-                let reader = std::io::BufReader::new(f);
-                use std::io::BufRead;
-                for (idx, line_res) in reader.lines().enumerate() {
-                    let Ok(mut line) = line_res else {
-                        continue;
-                    };
+                let mut reader = std::io::BufReader::new(f);
+                use std::io::{BufRead, Read};
+                // Byte-bounded line read: `reader.lines()` materializes each
+                // full line before `max_line_bytes` truncation ever runs, so a
+                // file with no newlines buffers the WHOLE file. Read with
+                // `read_until(b'\n')` capped at GREP_MAX_LINE_SCAN_BYTES; once a
+                // single line hits the cap we stop buffering and discard the
+                // rest of the line up to the next newline, so memory is bounded
+                // during the read, not just in the returned match.
+                let mut idx = 0usize;
+                let mut buf: Vec<u8> = Vec::new();
+                loop {
+                    buf.clear();
+                    // Read at most GREP_MAX_LINE_SCAN_BYTES of this line.
+                    // `take(cap)` bounds the buffer; if the line is longer the
+                    // read stops without a trailing newline and we drain the
+                    // remainder below.
+                    let n = (&mut reader)
+                        .take(GREP_MAX_LINE_SCAN_BYTES as u64)
+                        .read_until(b'\n', &mut buf)
+                        .map_err(|e| FsError::from_io(&file_path.to_string_lossy(), e))?;
+                    if n == 0 {
+                        break;
+                    }
+                    let ended_with_nl = buf.last() == Some(&b'\n');
+                    // A line longer than the scan cap: no newline yet AND we
+                    // filled the cap. Discard the remainder of this line (up to
+                    // and including the next newline) one bounded read at a
+                    // time so nothing further is buffered.
+                    let mut truncated_line = false;
+                    if !ended_with_nl && buf.len() >= GREP_MAX_LINE_SCAN_BYTES {
+                        truncated_line = true;
+                        let mut scratch: Vec<u8> = Vec::new();
+                        loop {
+                            scratch.clear();
+                            let m = (&mut reader)
+                                .take(GREP_MAX_LINE_SCAN_BYTES as u64)
+                                .read_until(b'\n', &mut scratch)
+                                .map_err(|e| FsError::from_io(&file_path.to_string_lossy(), e))?;
+                            // Stop at EOF (m==0) or once we consumed the newline
+                            // that ends this over-long line. Inspect the bytes
+                            // directly rather than comparing lengths — a chunk
+                            // can fill the cap AND end in '\n' simultaneously.
+                            if m == 0 || scratch.last() == Some(&b'\n') {
+                                break;
+                            }
+                        }
+                    }
+                    idx += 1;
+                    // Strip the trailing newline (and a preceding CR) so the
+                    // match content matches the previous `lines()` behavior.
+                    if buf.last() == Some(&b'\n') {
+                        buf.pop();
+                        if buf.last() == Some(&b'\r') {
+                            buf.pop();
+                        }
+                    }
+                    // Lossy is fine: grep operated on `String` lines before too
+                    // (invalid-UTF8 lines were dropped by `lines()`); lossy
+                    // keeps a best-effort match rather than silently skipping.
+                    let mut line = String::from_utf8_lossy(&buf).into_owned();
                     if re.is_match(&line) {
-                        if max_line_usize > 0 && line.len() > max_line_usize {
+                        if line.len() > max_line_usize {
                             // Floor to nearest char boundary so a multi-byte
                             // codepoint straddling the cut doesn't panic.
                             let cut = (0..=max_line_usize)
@@ -923,13 +1047,16 @@ impl FsBackend for HostFsBackend {
                                 .unwrap_or(0);
                             line.truncate(cut);
                             line.push('…');
+                        } else if truncated_line {
+                            // Cut at the scan cap before matching; mark partial.
+                            line.push('…');
                         }
                         out.push(crate::fs::wire::FsMatch {
                             path: file_path.to_string_lossy().into_owned(),
-                            line: (idx + 1) as u64,
+                            line: idx as u64,
                             content: line,
                         });
-                        if max_matches_usize > 0 && out.len() >= max_matches_usize {
+                        if out.len() >= max_matches_usize {
                             return Ok(true);
                         }
                     }
@@ -1061,6 +1188,15 @@ impl FsBackend for HostFsBackend {
         let exclude_glob = req.exclude_glob;
         let host_root_canon = self.host_root_canon.clone();
         let denylist_canon = self.denylist_canon.clone();
+        // Per-file read cap: sed builds a same-size output String in memory, so
+        // an unbounded file is an OOM vector (grep skips binary + bounds its
+        // line read; sed did neither). Honor the backend's max_read_bytes; a 0
+        // cap (no limit configured) falls back to a hard ceiling.
+        let read_cap: u64 = if self.cfg.max_read_bytes > 0 {
+            self.cfg.max_read_bytes as u64
+        } else {
+            SED_MAX_FILE_BYTES
+        };
 
         let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
             use std::os::unix::fs::PermissionsExt;
@@ -1120,6 +1256,45 @@ impl FsBackend for HostFsBackend {
 
             for (file, anchored_path) in anchored {
                 let p = anchored_path.as_path();
+                // Size cap BEFORE reading: stat the file and skip (per-file
+                // error, nothing written) if it exceeds the read cap. Mirrors
+                // grep's OOM defense; sed previously read any size unconditionally.
+                match std::fs::metadata(p) {
+                    Ok(md) if md.len() > read_cap => {
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file.clone(),
+                            replacements: 0,
+                            success: false,
+                            error: Some(format!(
+                                "file size {} exceeds read cap {} bytes; skipped",
+                                md.len(),
+                                read_cap
+                            )),
+                        });
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file.clone(),
+                            replacements: 0,
+                            success: false,
+                            error: Some(format!("{e}")),
+                        });
+                        continue;
+                    }
+                }
+                // Binary skip: reuse grep's heuristic. sed only does text
+                // replacement; rewriting a binary would corrupt it.
+                if looks_binary(p) {
+                    results.push(crate::fs::wire::FsSedFileResult {
+                        path: file.clone(),
+                        replacements: 0,
+                        success: false,
+                        error: Some("binary file; skipped".to_string()),
+                    });
+                    continue;
+                }
                 let original = match std::fs::read_to_string(p) {
                     Ok(s) => s,
                     Err(e) => {
@@ -1253,47 +1428,73 @@ impl FsBackend for HostFsBackend {
             .map_err(|e| FsError::from_io(&req.path, e))?;
         let guard = TempGuard::new(temp.clone());
 
-        let reader =
-            iii_sdk::channels::ChannelReader::new(&self.chan.engine_address(), &req.content);
         let cap = self.cfg.max_write_bytes;
-        let mut total: u64 = 0;
-        // Per-chunk idle timeout: if the caller opens a write but never sends
-        // data and never closes the channel, the worker would hold the temp
-        // file open indefinitely. N parked writers = resource exhaustion.
-        let idle = std::time::Duration::from_secs(30);
-        loop {
-            let next = match tokio::time::timeout(idle, reader.next_binary()).await {
-                Ok(r) => r,
-                Err(_) => {
+        let total: u64 = match &req.content {
+            // Inline path: the bytes are right here, no channel to drain. Enforce
+            // max_write_bytes up front so an oversize inline payload is rejected
+            // before it touches the temp file.
+            crate::fs::WriteContent::Inline(data) => {
+                let bytes = data.as_bytes();
+                if cap > 0 && bytes.len() as u64 > cap as u64 {
                     return Err(FsError::new(
-                        "S216",
-                        format!("channel idle for {}s — aborting write", idle.as_secs()),
+                        "S218",
+                        format!(
+                            "inline write payload {} bytes exceeds max_write_bytes {}",
+                            bytes.len(),
+                            cap
+                        ),
                     ));
                 }
-            };
-            match next {
-                Ok(Some(chunk)) => {
-                    let new_total = total + chunk.len() as u64;
-                    if cap > 0 && new_total > cap as u64 {
-                        return Err(FsError::new(
-                            "S218",
-                            format!(
-                                "write payload exceeds max_write_bytes {} (after {} bytes)",
-                                cap, total
-                            ),
-                        ));
-                    }
-                    if let Err(e) = file.write_all(&chunk).await {
-                        return Err(FsError::from_io(&req.path, e));
-                    }
-                    total = new_total;
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    return Err(FsError::new("S216", format!("channel read failed: {e}")));
-                }
+                file.write_all(bytes)
+                    .await
+                    .map_err(|e| FsError::from_io(&req.path, e))?;
+                bytes.len() as u64
             }
-        }
+            // Streaming path: drain the caller's write channel chunk by chunk.
+            crate::fs::WriteContent::Stream(channel) => {
+                let reader =
+                    iii_sdk::channels::ChannelReader::new(&self.chan.engine_address(), channel);
+                let mut total: u64 = 0;
+                // Per-chunk idle timeout: if the caller opens a write but never
+                // sends data and never closes the channel, the worker would hold
+                // the temp file open indefinitely. N parked writers = exhaustion.
+                let idle = std::time::Duration::from_secs(30);
+                loop {
+                    let next = match tokio::time::timeout(idle, reader.next_binary()).await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return Err(FsError::new(
+                                "S216",
+                                format!("channel idle for {}s — aborting write", idle.as_secs()),
+                            ));
+                        }
+                    };
+                    match next {
+                        Ok(Some(chunk)) => {
+                            let new_total = total + chunk.len() as u64;
+                            if cap > 0 && new_total > cap as u64 {
+                                return Err(FsError::new(
+                                    "S218",
+                                    format!(
+                                        "write payload exceeds max_write_bytes {} (after {} bytes)",
+                                        cap, total
+                                    ),
+                                ));
+                            }
+                            if let Err(e) = file.write_all(&chunk).await {
+                                return Err(FsError::from_io(&req.path, e));
+                            }
+                            total = new_total;
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            return Err(FsError::new("S216", format!("channel read failed: {e}")));
+                        }
+                    }
+                }
+                total
+            }
+        };
 
         if let Err(e) = file.flush().await {
             return Err(FsError::from_io(&req.path, e));
@@ -1315,6 +1516,7 @@ impl FsBackend for HostFsBackend {
         Ok(crate::fs::WriteResponse {
             bytes_written: total,
             path: req.path,
+            files: Vec::new(),
         })
     }
     async fn read(&self, req: crate::fs::ReadArgs) -> FsCallResult<crate::fs::ReadResponse> {
@@ -1618,7 +1820,7 @@ mod tests {
                 path: "/etc/shell-escape/nested".into(),
                 mode: "0644".into(),
                 parents: true,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
             })
             .await
             .unwrap_err();
@@ -2164,7 +2366,7 @@ mod tests {
                 path: "rel/path".into(),
                 mode: "0644".into(),
                 parents: false,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
             })
             .await
             .unwrap_err();
@@ -2179,7 +2381,7 @@ mod tests {
                 path: "/tmp/shell-write-bad-mode".into(),
                 mode: "not-octal".into(),
                 parents: false,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
             })
             .await
             .unwrap_err();
@@ -2199,7 +2401,87 @@ mod tests {
                 path: "/etc/shell-escape".into(),
                 mode: "0644".into(),
                 parents: false,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S215");
+    }
+
+    #[tokio::test]
+    async fn write_inline_string_creates_file_with_content_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        // Inline content takes NO channel (StubChan's create_channel errors) —
+        // proving an agent can write a file with a plain string.
+        let resp = b
+            .write(crate::fs::WriteArgs {
+                path: "hello.txt".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("hello world\n".into()),
+            })
+            .await
+            .expect("inline write succeeds without a channel");
+        assert_eq!(resp.bytes_written, 12);
+        assert_eq!(resp.path, "hello.txt");
+        assert!(resp.files.is_empty(), "single write leaves files empty");
+        assert_eq!(
+            fs::read_to_string(root.join("hello.txt")).unwrap(),
+            "hello world\n"
+        );
+        let mode = fs::metadata(root.join("hello.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644);
+    }
+
+    #[tokio::test]
+    async fn write_inline_respects_max_write_bytes_cap() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            max_write_bytes: 4,
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let err = b
+            .write(crate::fs::WriteArgs {
+                path: "big.txt".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("too many bytes".into()),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S218");
+        assert!(
+            !root.join("big.txt").exists(),
+            "an over-cap inline write must not leave a partial file"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_inline_escaping_path_returns_s215() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let err = b
+            .write(crate::fs::WriteArgs {
+                path: "../../etc/evil".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("x".into()),
             })
             .await
             .unwrap_err();
@@ -2220,7 +2502,7 @@ mod tests {
                 path: target,
                 mode: "0644".into(),
                 parents: false,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
             })
             .await
             .unwrap_err();
@@ -2769,7 +3051,7 @@ mod tests {
                 path: "f.txt".into(),
                 mode: "1644".into(),
                 parents: false,
-                content: stub_ref(),
+                content: crate::fs::WriteContent::Stream(stub_ref()),
             })
             .await
             .unwrap_err();

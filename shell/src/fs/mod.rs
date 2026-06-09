@@ -167,14 +167,21 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+/// Backend-side bytes to write: either inline UTF-8 text (the common
+/// agent path, HOST only) or a streaming channel ref (host or sandbox, for
+/// large/streamed payloads).
+#[derive(Debug)]
+pub enum WriteContent {
+    Inline(String),
+    Stream(iii_sdk::channels::StreamChannelRef),
+}
+
+#[derive(Debug)]
 pub struct WriteArgs {
     pub path: String,
-    #[serde(default = "default_write_mode")]
     pub mode: String,
-    #[serde(default)]
     pub parents: bool,
-    pub content: iii_sdk::channels::StreamChannelRef,
+    pub content: WriteContent,
 }
 
 #[derive(Debug, Deserialize)]
@@ -423,33 +430,115 @@ impl SedRequest {
     }
 }
 
+/// Wire form of write content. A plain JSON **string** is written inline (host
+/// target only); a JSON **object** is a streaming `ContentRef` (host or sandbox,
+/// for large/streamed payloads). Untagged, so callers just pass `"content":
+/// "text"` or `"content": { channel_id, access_key, direction }`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum WriteContentWire {
+    /// Inline UTF-8 text, written verbatim. HOST target only.
+    Inline(String),
+    /// Open write-stream channel ref. Required for sandbox targets and large
+    /// or streamed payloads.
+    Stream(ContentRef),
+}
+impl From<WriteContentWire> for WriteContent {
+    fn from(w: WriteContentWire) -> Self {
+        match w {
+            WriteContentWire::Inline(s) => WriteContent::Inline(s),
+            WriteContentWire::Stream(r) => WriteContent::Stream(r.into()),
+        }
+    }
+}
+
+/// One file in a batch `shell::fs::write` (`files: [...]`).
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct WriteRequest {
-    /// host (default) or { kind: "sandbox", sandbox_id }.
-    #[serde(default)]
-    pub target: Target,
+pub struct WriteFileSpec {
     /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Inline string (recommended) or a streaming ContentRef.
+    pub content: WriteContentWire,
     /// Octal permission string, e.g. "0644".
     #[serde(default = "default_write_mode")]
     pub mode: String,
     /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
-    /// ContentRef { channel_id, access_key, direction } identifying an open write stream channel.
-    pub content: ContentRef,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WriteRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
+    #[serde(default)]
+    pub target: Target,
+    /// Single-file form: the path to write. Jail-relative when fs.host_root is
+    /// set, else absolute. Omit when using `files`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Single-file content: a plain string written inline (host target only),
+    /// OR a ContentRef { channel_id, access_key, direction } for an open write
+    /// stream channel. Omit when using `files`.
+    #[serde(default)]
+    pub content: Option<WriteContentWire>,
+    /// Octal permission string for the single-file form, e.g. "0644".
+    #[serde(default = "default_write_mode")]
+    pub mode: String,
+    /// Create missing parent directories (single-file form).
+    #[serde(default)]
+    pub parents: bool,
+    /// Batch form: write several files in one call. When present, the
+    /// single-file fields (`path`/`content`/`mode`/`parents`) must be omitted.
+    #[serde(default)]
+    pub files: Option<Vec<WriteFileSpec>>,
 }
 impl WriteRequest {
-    pub fn split(self) -> (Target, WriteArgs) {
-        (
-            self.target,
-            WriteArgs {
-                path: self.path,
-                mode: self.mode,
-                parents: self.parents,
-                content: self.content.into(),
-            },
-        )
+    /// Normalize into `(target, one-or-more backend WriteArgs)`. Rejects (S210)
+    /// an ambiguous request (both single and `files`) or an empty one.
+    pub fn into_specs(self) -> Result<(Target, Vec<WriteArgs>), FsError> {
+        if let Some(files) = self.files {
+            if self.path.is_some() || self.content.is_some() {
+                return Err(FsError::new(
+                    "S210",
+                    "provide either the single-file `path`+`content` or a `files` array, not both",
+                ));
+            }
+            if files.is_empty() {
+                return Err(FsError::new(
+                    "S210",
+                    "`files` is empty; provide at least one { path, content } entry",
+                ));
+            }
+            let specs = files
+                .into_iter()
+                .map(|f| WriteArgs {
+                    path: f.path,
+                    mode: f.mode,
+                    parents: f.parents,
+                    content: f.content.into(),
+                })
+                .collect();
+            Ok((self.target, specs))
+        } else {
+            let path = self
+                .path
+                .ok_or_else(|| FsError::new("S210", "missing `path` (or pass a `files` array)"))?;
+            let content = self.content.ok_or_else(|| {
+                FsError::new(
+                    "S210",
+                    "missing `content` (a string to write inline, or a ContentRef)",
+                )
+            })?;
+            Ok((
+                self.target,
+                vec![WriteArgs {
+                    path,
+                    mode: self.mode,
+                    parents: self.parents,
+                    content: content.into(),
+                }],
+            ))
+        }
     }
 }
 
@@ -545,11 +634,24 @@ pub struct SedResponse {
     pub total_replacements: u64,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WriteResponse {
-    /// Number of bytes written to the file.
-    pub bytes_written: u64,
-    /// Absolute path of the file that was written.
+pub struct WriteFileResult {
+    /// Path of the written file.
     pub path: String,
+    /// Bytes written to this file.
+    pub bytes_written: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WriteResponse {
+    /// Bytes written: this file for a single write; the sum across `files` for
+    /// a batch write.
+    pub bytes_written: u64,
+    /// Path written for a single write; empty for a batch (see `files`).
+    pub path: String,
+    /// Per-file results for a batch (`files: [...]`) write; empty for a
+    /// single-file write.
+    #[serde(default)]
+    pub files: Vec<WriteFileResult>,
 }
 
 /// Backend-internal read result, holding the SDK's `StreamChannelRef`
@@ -655,18 +757,64 @@ mod tests {
     }
 
     #[test]
-    fn write_args_mode_defaults_0644() {
-        let r: WriteArgs = serde_json::from_value(serde_json::json!({
+    fn write_request_single_defaults_mode_0644_and_parses_contentref() {
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({
             "path":"/x",
-            "content": {
-                "channel_id": "c-1",
-                "access_key": "k-1",
-                "direction": "read"
-            }
+            "content": { "channel_id": "c-1", "access_key": "k-1", "direction": "read" }
         }))
         .unwrap();
-        assert_eq!(r.mode, "0644");
-        assert_eq!(r.content.channel_id, "c-1");
+        let (_t, specs) = req.into_specs().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].mode, "0644");
+        match &specs[0].content {
+            WriteContent::Stream(r) => assert_eq!(r.channel_id, "c-1"),
+            other => panic!("expected stream content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_request_inline_string_content() {
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({
+            "path": "/x", "content": "hello world"
+        }))
+        .unwrap();
+        let (_t, specs) = req.into_specs().unwrap();
+        assert_eq!(specs.len(), 1);
+        match &specs[0].content {
+            WriteContent::Inline(s) => assert_eq!(s, "hello world"),
+            other => panic!("expected inline content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_request_batch_files() {
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({
+            "files": [
+                {"path": "/a", "content": "A"},
+                {"path": "/b", "content": "B", "mode": "0600"}
+            ]
+        }))
+        .unwrap();
+        let (_t, specs) = req.into_specs().unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].path, "/a");
+        assert_eq!(specs[1].mode, "0600");
+    }
+
+    #[test]
+    fn write_request_rejects_both_single_and_files() {
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({
+            "path": "/a", "content": "A",
+            "files": [{"path":"/b","content":"B"}]
+        }))
+        .unwrap();
+        assert_eq!(req.into_specs().unwrap_err().code, "S210");
+    }
+
+    #[test]
+    fn write_request_rejects_missing_content() {
+        let req: WriteRequest = serde_json::from_value(serde_json::json!({"path":"/a"})).unwrap();
+        assert_eq!(req.into_specs().unwrap_err().code, "S210");
     }
 
     #[test]
@@ -690,14 +838,17 @@ mod tests {
     }
 
     #[test]
-    fn write_request_splits_contentref_to_streamchannelref() {
+    fn write_request_contentref_normalizes_to_stream() {
         let req: WriteRequest = serde_json::from_value(serde_json::json!({
             "path": "/x",
             "content": {"channel_id": "c", "access_key": "k", "direction": "read"},
         }))
         .unwrap();
-        let (_t, args) = req.split();
-        assert_eq!(args.content.channel_id, "c");
+        let (_t, specs) = req.into_specs().unwrap();
+        match &specs[0].content {
+            WriteContent::Stream(r) => assert_eq!(r.channel_id, "c"),
+            other => panic!("expected stream content, got {other:?}"),
+        }
     }
 
     #[test]

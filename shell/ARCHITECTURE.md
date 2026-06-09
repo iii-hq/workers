@@ -47,7 +47,8 @@ The shell worker integrates with the central `configuration` worker rather than 
 
 | key | default | enforced where |
 |-----|---------|----------------|
-| `max_timeout_ms` | `30000` | hard cap; per-call `timeout_ms` clamped to this |
+| `max_timeout_ms` | `30000` | foreground `exec` hard cap; per-call `timeout_ms` clamped to this |
+| `max_bg_timeout_ms` | `0` | host bg job hard cap in ms; `0` = unbounded (separate from `max_timeout_ms`, which bounds foreground exec) |
 | `default_timeout_ms` | `10000` | applied when caller omits `timeout_ms` |
 | `max_output_bytes` | `1048576` (1 MiB) | stdout/stderr truncated; `*_truncated` flagged |
 | `working_dir` | `null` | pins cwd for spawned commands when set |
@@ -56,12 +57,13 @@ The shell worker integrates with the central `configuration` worker rather than 
 | `allowlist` | `[]` (open) | command basename allowlist; empty = open |
 | `denylist_patterns` | `[]` | advisory regex tripwire on `argv.join(" ")` |
 | `max_concurrent_jobs` | `16` | rejects new `exec_bg` past the cap |
-| `job_retention_secs` | `3600` | finished jobs pruned on every `shell::list` |
+| `job_retention_secs` | `3600` | finished jobs evicted by a background reaper (interval `min(30s, retention/2)`) — the primary prune path; prune-on-`shell::list` remains as a harmless secondary trigger |
 | `fs.host_root` | `null` | jail root; required unless `fs.allow_unjailed: true` |
 | `fs.allow_unjailed` | `false` | explicit opt-in to running with `host_root: null` |
 | `fs.max_read_bytes` | `0` (unlimited) | pre-flight cap via `fs::metadata` (`S218`) |
 | `fs.max_write_bytes` | `0` (unlimited) | mid-stream cap during write (`S218`) |
 | `fs.denylist_paths` | `[]` | absolute-prefix denylist; rejected with `S215` |
+| `fs.allow_special_bits` | `false` | setuid/setgid/sticky bits in `mkdir`/`chmod`/`write` modes are rejected with `S210` unless `true` |
 | `sandbox.enabled` | `true` | `false` → every sandbox-target call returns `S210` |
 
 ## Threat model

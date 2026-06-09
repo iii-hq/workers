@@ -308,6 +308,7 @@ mod tests {
         let overrides = ExecOverrides {
             cwd: Some(std::path::PathBuf::from("/tmp")),
             env: None,
+            stdin: None,
         };
         let err = b
             .run(&["echo".into()], 1000, &overrides)

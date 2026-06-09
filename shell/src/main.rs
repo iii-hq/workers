@@ -162,9 +162,12 @@ async fn main() -> Result<()> {
                  configured max; negative/fractional values fall back to the default. `target` \
                  defaults to the host; pass { kind: \"sandbox\", sandbox_id } to run in a microVM. \
                  Optional host-only `cwd` scopes this call to a directory (jail-confined exactly \
-                 like shell::fs::* paths; escaping it is S215) and optional `env` (object) sets \
+                 like shell::fs::* paths; escaping it is S215), optional `env` (object) sets \
                  per-call values — but only for keys already in allowed_env and never for \
-                 PATH/IFS/LD_*/DYLD_* (those reject S210); cwd/env on a sandbox target reject S210. \
+                 PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup and interpreter-startup keys \
+                 (those reject S210) — and optional host-only `stdin` (string) is written to the \
+                 program's standard input (use it for `tee`, `patch`, or any stdin filter instead \
+                 of a shell heredoc). cwd/env/stdin on a sandbox target reject S210. \
                  Backend errors return { code, message }; common: S216 host exec error, S300 VM \
                  boot failed, S200 in-VM failure. argv-parse and allowlist/denylist rejections are \
                  plain-string messages naming the violation.",
@@ -187,12 +190,14 @@ async fn main() -> Result<()> {
             .description(
                 "Spawn an allowlisted command as a background job; returns { job_id, argv } \
                  immediately. Same payload as shell::exec (command + args, do NOT pass argv as an \
-                 array), including the optional host-only `cwd` (jail-confined; escape is S215) and \
-                 `env` (only allowed_env keys, never PATH/IFS/LD_*/DYLD_*; violations and cwd/env on \
-                 a sandbox target reject with an S210 message). Poll with shell::status, terminate \
-                 with shell::kill, list with shell::list. \
-                 Host-targeted background jobs ignore the per-call timeout_ms but are bounded by the \
-                 configured hard cap (max_timeout_ms): a job that exceeds it is killed and marked killed. \
+                 array), including the optional host-only `cwd` (jail-confined; escape is S215), \
+                 `env` (only allowed_env keys, never PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
+                 and interpreter-startup keys), and `stdin` (string written to the job's stdin); \
+                 violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll \
+                 with shell::status, terminate with shell::kill, list with shell::list. \
+                 Host background jobs ignore the per-call timeout_ms and run until they exit or \
+                 shell::kill terminates them; set the operator config `max_bg_timeout_ms` (0 = \
+                 unbounded, the default) to force-kill a runaway job after that long. \
                  Spawn-time failures (argv-parse, allowlist/denylist, cwd/env gating, spawn, \
                  concurrency cap) are plain-string messages naming the violation; once spawned, \
                  per-job failures surface through shell::status (the job record's status/stderr), \
@@ -284,17 +289,18 @@ async fn main() -> Result<()> {
     // shutdown: the process exits on signal regardless of where this loop is.
     spawn_job_reaper(state.clone());
 
-    tracing::info!("shell registered 16 functions, ready");
+    tracing::info!("shell registered all functions, ready");
     wait_for_shutdown_signal().await?;
     tracing::info!("shell shutting down");
 
-    // Deterministic cleanup: kill in-flight host jobs so they do not outlive
-    // the worker as orphans. kill_on_drop(true) on the spawned commands is the
-    // backstop when the runtime tears down the detached tasks; this explicit
-    // sweep is the primary, logged path. A running host bg job's Child is owned
-    // by its drain task (not the handle), so the sweep signals the recorded
-    // host_pid directly. Best-effort and non-blocking — only the SIGKILL is
-    // delivered, no per-child wait — so a wedged process cannot stall shutdown.
+    // Deterministic cleanup: terminate in-flight host jobs so they do not
+    // outlive the worker as orphans. A running host bg job's Child is owned by
+    // its drain task (not the handle), so the sweep does NOT signal a pid
+    // directly (that risked killing a reused pid); it notifies each job's
+    // kill-signal channel and the drain task kills the child's process group,
+    // then the sweep polls up to ~3s for the jobs to finalize so shutdown is
+    // deterministic. kill_on_drop(true) on the spawned commands is the backstop
+    // if a drain task does not finish within that window.
     let killed = jobs::kill_running_host_jobs().await;
     if killed > 0 {
         tracing::info!(count = killed, "killed in-flight host jobs on shutdown");
@@ -412,11 +418,15 @@ fn register_fs(iii: &iii_sdk::III, state: &AppState) {
         fs_write,
         fs::WriteRequest,
         fs::WriteResponse,
-        "Stream a file to a path. `content` is a ContentRef { channel_id, access_key, direction } \
-         for a write stream channel you opened through the engine's streaming layer. channel_id \
-         and access_key come from that open call; they are not values you construct here. `mode` \
-         is octal (default \"0644\"); `parents: true` creates missing parents. Errors return \
-         { code, message }; common: S210 bad mode/payload, S215 jail/denylist, S218 payload exceeds \
+        "Write a file. Simplest form: { path, content: \"text\" } — `content` as a plain STRING is \
+         written inline (host target only), no streaming channel needed. For large/streamed payloads \
+         or a sandbox target, pass `content` as a ContentRef { channel_id, access_key, direction } \
+         from a write stream channel you opened through the engine's streaming layer (inline strings \
+         reject S210 on a sandbox target). To write several files at once, pass `files: [{ path, \
+         content, mode?, parents? }, ...]` instead of the single-file fields (host target, inline \
+         content) — the response then carries per-file results in `files`. `mode` is octal \
+         (default \"0644\"); `parents: true` creates missing parents. Errors return { code, message }; \
+         common: S210 bad mode/payload or inline-on-sandbox, S215 jail/denylist, S218 payload exceeds \
          max_write_bytes, S216 channel/IO error."
     );
     fs_fn!("shell::fs::read", fs_read, fs::ReadRequest, fs::ReadResponseWire,

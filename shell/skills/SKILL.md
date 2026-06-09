@@ -63,12 +63,18 @@ agents, pair with the `skills` worker.
 ## Functions
 
 - `shell::exec`: run an allowlisted command in the foreground and return its
-  stdout, stderr, exit code, and timing; blocks until exit or timeout.
+  stdout, stderr, exit code, and timing; blocks until exit or timeout. Accepts
+  an optional host-only `stdin` (string piped to the program's stdin, then EOF);
+  rejected with `S210` on a sandbox target.
 - `shell::exec_bg`: spawn an allowlisted command as a background job and return
-  a `job_id` immediately. Host-targeted jobs ignore `timeout_ms` (end via
-  `shell::kill` or natural exit); sandbox jobs honor it.
+  a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
+  terminates them — unbounded by default, capped only when the operator sets a
+  positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
+  job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`.
+  Same optional host-only `stdin` as `shell::exec`.
 - `shell::status`: fetch one job's full record: state, exit code, and captured
-  stdout/stderr.
+  stdout/stderr. A missing id (never existed or aged out) returns an `S211`
+  ("no such job") error.
 - `shell::list`: enumerate current jobs as lightweight summaries (no argv,
   stdout, or stderr).
 - `shell::kill`: terminate a running background job by `job_id`.
@@ -86,8 +92,14 @@ agents, pair with the `skills` worker.
 - `shell::fs::grep`: recursive regex search across a tree, returning structured
   matches.
 - `shell::fs::sed`: regex find-and-replace across one file or many.
-- `shell::fs::write`: stream bytes into a file via a channel; writes through a
-  temp file and renames atomically.
+- `shell::fs::write`: write a file. Simplest form is inline string `content`
+  (host target only): `{ path, content: "file text" }`, with `mode` (octal,
+  default `"0644"`) and `parents: true`. A `ContentRef` object in `content`
+  instead streams large/staged payloads via a channel (temp file + atomic
+  rename) and is **required** for sandbox targets. Batch form: pass
+  `files: [{ path, content, mode?, parents? }, ...]` to write several files in
+  one host call; the response then carries per-file `files: [{ path,
+  bytes_written }]` (a single-file write leaves `files` empty).
 - `shell::fs::read`: stream a file's bytes out through a channel.
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host

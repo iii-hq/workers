@@ -12,6 +12,18 @@ use crate::target::Target;
 use crate::triggers::{IiiTriggerFwd, TriggerFwd};
 use tokio::io::AsyncReadExt;
 
+/// Grace for joining a host job's stdout/stderr drain tasks after the child has
+/// exited. A process-group kill closes the pipes so the drains finish at once;
+/// this only bounds the pathological case where the direct child exited but a
+/// grandchild inherited and still holds the pipe — there the job finalizes
+/// (freeing its slot) instead of wedging forever.
+const DRAIN_GRACE_MS: u64 = 10_000;
+
+/// Slack added to a sandbox job's in-VM `timeout_ms` to form the client-side RPC
+/// deadline. The engine should answer within timeout_ms; the slack covers
+/// transport + queueing before we declare it unresponsive and finalize the job.
+const SANDBOX_RPC_SLACK_MS: u64 = 30_000;
+
 pub async fn handle(
     cfg: Arc<ShellConfig>,
     iii: iii_sdk::III,
@@ -32,8 +44,10 @@ pub async fn handle(
     // gating). exec_bg returns its spawn-time failures as plain strings (its
     // documented contract), so we stringify the S-code into the message — the
     // agent still sees the code (e.g. "S215") and the self-correcting text.
-    let overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
+    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
         .map_err(|e| format!("{}: {}", e.code, e.message))?;
+    // stdin needs no gating (opaque input bytes); host-only via is_empty().
+    overrides.stdin = req.stdin;
 
     match req.target {
         Target::Host => spawn_host_job(cfg, argv, overrides).await,
@@ -59,13 +73,14 @@ pub async fn handle(
     }
 }
 
-async fn spawn_host_job(
+pub(crate) async fn spawn_host_job(
     cfg: Arc<ShellConfig>,
     argv: Vec<String>,
     overrides: ExecOverrides,
 ) -> Result<ExecBgResponse, String> {
     let mut cmd = build_command(&argv, &cfg, &overrides)?;
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
+    crate::exec::host::pump_stdin(&mut child, &overrides.stdin);
 
     // Capture the OS pid NOW, before the detached drain task takes the `Child`
     // out of the handle. Once the task owns the Child, `JobHandle.child` is None
@@ -119,14 +134,20 @@ async fn spawn_host_job(
 
     let id_clone = id.clone();
     let limit = cfg.max_output_bytes;
-    // Host background jobs used to run forever (timeout_ms ignored). Bound them
-    // by the configured HARD cap — not the foreground default — since a bg job
-    // may legitimately run longer than a foreground call. Snapshotting the cap
-    // at spawn time is intentional: a later hot-reload of max_timeout_ms does
-    // not retroactively re-bound an already-running job (it would race the
-    // detached task's own timeout future); newly spawned jobs pick up the new
-    // cap on their next spawn.
-    let cap_ms = cfg.max_timeout_ms;
+    // Host bg hard cap, separate from the foreground `max_timeout_ms`: a bg job
+    // is how callers run long work (installs, builds, dev servers), so binding
+    // it to the short foreground cap would kill legitimate jobs. `0` means
+    // UNBOUNDED — run until exit or shell::kill. A positive value force-kills a
+    // runaway job. Snapshotting at spawn is intentional: a later hot-reload does
+    // not retroactively re-bound an already-running job; new jobs pick up the
+    // new cap on their next spawn.
+    let cap_ms = cfg.max_bg_timeout_ms;
+    // Register the kill-signal channel BEFORE spawning the drain task so a
+    // shell::kill (or shutdown sweep) arriving immediately can request
+    // termination. The drain task below owns the un-reaped Child and is the ONLY
+    // code that signals the process — so a kill request can never land on a pid
+    // that wait() already reaped and the OS reused.
+    let kill_notify = jobs::register_kill_signal(&id);
     tokio::spawn(async move {
         // Owns this job's contribution to the shell.jobs.running gauge: dropped
         // when this task ends (any path — completion, early return, or panic),
@@ -134,7 +155,10 @@ async fn spawn_host_job(
         let _running_guard = running_guard;
         let handle = match jobs::get(&id_clone).await {
             Some(h) => h,
-            None => return,
+            None => {
+                jobs::unregister_kill_signal(&id_clone);
+                return;
+            }
         };
 
         // Drain stdout/stderr concurrently — sequential reads deadlock
@@ -157,69 +181,77 @@ async fn spawn_host_job(
             })
         });
 
-        // Take ownership of the child and run the bounded wait FIRST, before
-        // joining the drain tasks. The drains read EOF only after the child
-        // closes its pipes, and a killed child closes them — so waiting on the
-        // drains before bounding/killing the child would deadlock for the whole
-        // child lifetime. We therefore: (1) bound child.wait() by the hard cap,
-        // killing+reaping on expiry; (2) THEN join the now-unblocked drains.
-        let mut timed_out = false;
+        // Take ownership of the Child so we can wait()/kill it without holding
+        // the handle lock across an await.
         let child = {
             let mut h = handle.lock().await;
             h.child.take()
         };
-        if let Some(mut ch) = child {
-            let wait_res =
-                tokio::time::timeout(std::time::Duration::from_millis(cap_ms), ch.wait()).await;
-            match wait_res {
-                Ok(Ok(s)) => {
-                    let mut h = handle.lock().await;
-                    h.record.exit_code = s.code();
-                    if h.record.status == JobStatus::Running {
-                        h.record.status = if s.success() {
-                            JobStatus::Finished
-                        } else {
-                            JobStatus::Failed
-                        };
-                    }
+
+        // Race the child's exit against (a) the hard cap and (b) an external kill
+        // request (shell::kill / shutdown sweep, delivered via `kill_notify`). On
+        // either trigger we kill the child's WHOLE process group while we still
+        // own the un-reaped Child — so the pid/pgid cannot have been reused and
+        // grandchildren die too — then loop back to reap via wait(). The `if`
+        // guards make the cap and kill arms fire at most once each.
+        let mut timed_out = false;
+        let mut killed_by_request = false;
+        let exit_status = if let Some(mut ch) = child {
+            let pid = ch.id();
+            // cap_ms == 0 → unbounded: a future that never resolves, so the cap
+            // arm never fires and only natural exit / shell::kill ends the job.
+            let cap = async move {
+                if cap_ms == 0 {
+                    std::future::pending::<()>().await
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(cap_ms)).await
                 }
-                Ok(Err(_)) => {
-                    // Wait I/O error. Only finalize an un-finalized job: an
-                    // external kill/sweep may have already set Killed, and
-                    // finalize-once must not downgrade it to Failed.
-                    let mut h = handle.lock().await;
-                    if h.record.status == JobStatus::Running {
-                        h.record.status = JobStatus::Failed;
-                    }
-                }
-                Err(_) => {
-                    // Exceeded the hard cap: kill and reap so the pipes close
-                    // (unblocking the drains) and no zombie is left. If
-                    // shell::kill already flipped the status to Killed we leave
-                    // it; only an unfinalized Running job is marked timed-out.
-                    let _ = ch.start_kill();
-                    let _ = ch.wait().await;
-                    let mut h = handle.lock().await;
-                    if h.record.status == JobStatus::Running {
-                        h.record.status = JobStatus::Killed;
+            };
+            tokio::pin!(cap);
+            loop {
+                tokio::select! {
+                    r = ch.wait() => break r.ok(),
+                    _ = &mut cap, if !timed_out && !killed_by_request => {
                         timed_out = true;
+                        crate::exec::host::kill_process_group(pid);
+                    }
+                    _ = kill_notify.notified(), if !timed_out && !killed_by_request => {
+                        killed_by_request = true;
+                        crate::exec::host::kill_process_group(pid);
                     }
                 }
             }
-        }
-
-        // Child has exited (naturally, on error, or after the cap-kill), so its
-        // pipes are closed and these joins complete promptly.
-        let (stdout_buf, stdout_trunc) = match stdout_task {
-            Some(t) => t.await.unwrap_or_else(|_| (Vec::new(), false)),
-            None => (Vec::new(), false),
-        };
-        let (stderr_buf, stderr_trunc) = match stderr_task {
-            Some(t) => t.await.unwrap_or_else(|_| (Vec::new(), false)),
-            None => (Vec::new(), false),
+        } else {
+            None
         };
 
+        // Join the drains under a bounded grace. After a group-kill the pipes
+        // close so these complete at once; the grace only bites the pathological
+        // case where the direct child exited naturally but a grandchild still
+        // holds the pipe open — there we abort the reader (freeing the fd) and
+        // report what we have as truncated, so the job finalizes and frees its
+        // concurrency slot instead of wedging forever.
+        let (stdout_buf, stdout_trunc) = join_drain(stdout_task).await;
+        let (stderr_buf, stderr_trunc) = join_drain(stderr_task).await;
+
+        // Single finalize critical section: status, exit_code, stdout, stderr and
+        // finished_at_ms are published together, so a poller never observes a
+        // terminal status with empty output (or output with a stale status).
         let mut h = handle.lock().await;
+        // Finalize-once: an external killer (shell::kill / shutdown sweep) may
+        // have already flipped status to Killed and stamped finished_at_ms. Never
+        // downgrade a terminal status, and never clobber that kill-time timestamp.
+        if h.record.status == JobStatus::Running {
+            h.record.status = if timed_out || killed_by_request {
+                JobStatus::Killed
+            } else {
+                match &exit_status {
+                    Some(s) if s.success() => JobStatus::Finished,
+                    _ => JobStatus::Failed,
+                }
+            };
+        }
+        h.record.exit_code = exit_status.and_then(|s| s.code());
         h.record.stdout = String::from_utf8_lossy(&stdout_buf).into_owned();
         h.record.stderr = String::from_utf8_lossy(&stderr_buf).into_owned();
         if timed_out {
@@ -236,18 +268,11 @@ async fn spawn_host_job(
         }
         h.record.stdout_truncated = stdout_trunc;
         h.record.stderr_truncated = stderr_trunc;
-        // Finalize-once: an external killer (shell::kill or the shutdown sweep)
-        // may have already set status=Killed and finished_at_ms before our
-        // bounded wait returned (an external SIGKILL makes child.wait() return,
-        // which lands us here). Mirror the sandbox path's already_killed guard:
-        // do NOT clobber a kill-time finished_at_ms, and never downgrade a
-        // terminal status. The Ok(Ok)/Err/timeout arms above already only flip
-        // status while it is still Running, so this just protects the timestamp:
-        // pollers expect the user-visible cancellation time, not when the killed
-        // process's wait() happened to return.
         if h.record.finished_at_ms.is_none() {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        drop(h);
+        jobs::unregister_kill_signal(&id_clone);
     });
 
     Ok(ExecBgResponse { job_id: id, argv })
@@ -313,7 +338,35 @@ pub(crate) async fn spawn_sandbox_job(
             "args": args,
             "timeout_ms": timeout_ms,
         });
-        let res = fwd.trigger("sandbox::exec", payload).await;
+        // Bound the engine RPC with a client-side deadline. Without one, a hung or
+        // partitioned engine would park this task forever, permanently holding the
+        // job's concurrency slot and keeping the shell.jobs.running gauge inflated.
+        // The in-VM work is bounded by the payload's timeout_ms; we allow that plus
+        // transport/queueing slack before declaring the engine unresponsive.
+        let rpc_timeout =
+            std::time::Duration::from_millis(timeout_ms.saturating_add(SANDBOX_RPC_SLACK_MS));
+        let res =
+            match tokio::time::timeout(rpc_timeout, fwd.trigger("sandbox::exec", payload)).await {
+                Ok(r) => r,
+                Err(_) => {
+                    // RPC deadline blown: finalize the job (unless an external kill
+                    // already did) so its slot/gauge are released, then stop.
+                    if let Some(handle) = jobs::get(&id_clone).await {
+                        let mut h = handle.lock().await;
+                        if h.record.status == JobStatus::Running {
+                            h.record.status = JobStatus::Failed;
+                            h.record.stderr = format!(
+                                "sandbox::exec RPC timed out after {}ms (engine unresponsive)",
+                                rpc_timeout.as_millis()
+                            );
+                            if h.record.finished_at_ms.is_none() {
+                                h.record.finished_at_ms = Some(jobs::now_ms());
+                            }
+                        }
+                    }
+                    return;
+                }
+            };
 
         let handle = match jobs::get(&id_clone).await {
             Some(h) => h,
@@ -371,6 +424,30 @@ pub(crate) async fn spawn_sandbox_job(
     Ok(ExecBgResponse { job_id: id, argv })
 }
 
+/// Join one drain task under [`DRAIN_GRACE_MS`]. Returns `(bytes, truncated)`.
+/// On grace expiry (a grandchild is holding the pipe open after the child
+/// exited) the reader task is aborted to release its file descriptor and the
+/// stream is reported truncated, so the owning job can still finalize.
+async fn join_drain(task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>) -> (Vec<u8>, bool) {
+    match task {
+        None => (Vec::new(), false),
+        Some(mut t) => {
+            match tokio::time::timeout(std::time::Duration::from_millis(DRAIN_GRACE_MS), &mut t)
+                .await
+            {
+                Ok(Ok(v)) => v,
+                // Reader task panicked or was cancelled: no recoverable output.
+                Ok(Err(_)) => (Vec::new(), false),
+                // Grace expired: abort the reader to free the fd, report truncated.
+                Err(_) => {
+                    t.abort();
+                    (Vec::new(), true)
+                }
+            }
+        }
+    }
+}
+
 async fn read_bounded<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     limit: usize,
@@ -407,11 +484,15 @@ mod host_path_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn cfg(max_timeout_ms: u64, max_concurrent_jobs: usize) -> Arc<ShellConfig> {
+    // The first arg sets the HOST BG hard cap (`max_bg_timeout_ms`) for these
+    // background-job tests; `max_timeout_ms` is set to match for good measure.
+    // (0 → unbounded bg job.)
+    fn cfg(bg_cap_ms: u64, max_concurrent_jobs: usize) -> Arc<ShellConfig> {
         let mut c = ShellConfig {
             inherit_env: true,
             max_output_bytes: 4096,
-            max_timeout_ms,
+            max_timeout_ms: bg_cap_ms,
+            max_bg_timeout_ms: bg_cap_ms,
             max_concurrent_jobs,
             ..Default::default()
         };
@@ -613,6 +694,64 @@ mod host_path_tests {
         // SAFETY: signal 0 performs error checking only; it never delivers a
         // signal or touches process memory.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// End-to-end: the shutdown sweep terminates a real running host child.
+    /// Drives the real `spawn_host_job` so a real drain task listens on the
+    /// kill-signal channel; `kill_running_host_jobs` notifies it and the drain
+    /// task group-kills the live process. (Relocated from jobs.rs, which could
+    /// only fake the handle — the sweep no longer signals a bare pid, so a faked
+    /// job with no registered drain task can't be killed.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_sweep_terminates_real_host_job() {
+        use std::time::{Duration, Instant};
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+
+        let resp = spawn_host_job(
+            cfg(60_000, 16),
+            vec!["sleep".into(), "30".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+        let pid = jobs::get(&resp.job_id)
+            .await
+            .expect("job exists")
+            .lock()
+            .await
+            .host_pid
+            .expect("host bg job has a pid");
+        assert!(pid_is_alive(pid), "child alive before sweep");
+
+        let signalled = jobs::kill_running_host_jobs().await;
+        assert!(signalled >= 1, "sweep must signal the running host job");
+
+        // The sweep's bounded grace waits for finalization, so the child should
+        // already be dead; assert it within a tight margin and check the status.
+        let start = Instant::now();
+        loop {
+            if !pid_is_alive(pid) {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "swept host child (pid {pid}) must die within 3s"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let status = jobs::get(&resp.job_id)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .record
+            .status
+            .clone();
+        assert_eq!(status, JobStatus::Killed, "swept job is marked Killed");
+
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
 }
 

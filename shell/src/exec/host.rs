@@ -67,8 +67,15 @@ pub fn build_command(
     } else if let Some(dir) = &cfg.working_dir {
         cmd.current_dir(dir);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
+    // stdin is piped when the caller supplied bytes (the spawn site writes them
+    // then closes the pipe so the child sees EOF); otherwise /dev/null, the
+    // prior default, so a command that reads stdin doesn't block forever.
+    cmd.stdin(if overrides.stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Tokio's Command does NOT kill children on drop by default. Both the
         // foreground exec path and the background spawn build via this helper;
@@ -76,7 +83,53 @@ pub fn build_command(
         // so without this they would become orphaned processes outliving the
         // worker. This is the backstop; main() also runs an explicit kill sweep.
         .kill_on_drop(true);
+    // Put the child in its own process group (it becomes the group leader, so
+    // pgid == pid). Termination then signals the WHOLE group via `-pid`, killing
+    // any grandchildren the command spawned — not just the direct child, which
+    // `start_kill`/`kill_on_drop` alone would leave orphaned. The group kill is
+    // always issued while the caller still owns the un-reaped Child, so the pgid
+    // cannot have been reused.
+    #[cfg(unix)]
+    cmd.process_group(0);
     Ok(cmd)
+}
+
+/// SIGKILL an entire process group by its leader pid. The caller MUST still own
+/// the un-reaped `Child` for `pid` when calling this, so the pid (and therefore
+/// the pgid, since children are spawned with `process_group(0)`) cannot have been
+/// reused by the OS — this is what makes signalling by number safe. The negated
+/// pid targets the whole group, terminating grandchildren too. No-op on non-unix;
+/// a vanished process (ESRCH) is ignored.
+#[cfg(unix)]
+pub(crate) fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        // SAFETY: see the doc above — `pid` is an un-reaped child we own, and the
+        // negative value signals its process group.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kill_process_group(_pid: Option<u32>) {}
+
+/// Feed `stdin` (if any) to the child's stdin pipe, then close it so the child
+/// sees EOF. Runs in a detached task so a child that interleaves reading stdin
+/// with writing stdout cannot deadlock against our stdout/stderr drains
+/// (each side would otherwise block on a full pipe). Best-effort: a child that
+/// exited before consuming its input just makes the write fail, which we ignore.
+pub(crate) fn pump_stdin(child: &mut tokio::process::Child, stdin: &Option<String>) {
+    if let Some(data) = stdin {
+        if let Some(mut sin) = child.stdin.take() {
+            let bytes = data.clone().into_bytes();
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let _ = sin.write_all(&bytes).await;
+                let _ = sin.shutdown().await;
+            });
+        }
+    }
 }
 
 pub async fn run_to_completion(
@@ -88,6 +141,7 @@ pub async fn run_to_completion(
     let started = std::time::Instant::now();
     let mut cmd = build_command(argv, cfg, overrides)?;
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
+    pump_stdin(&mut child, &overrides.stdin);
 
     let mut stdout_reader = child.stdout.take().ok_or("no stdout pipe")?;
     let mut stderr_reader = child.stderr.take().ok_or("no stderr pipe")?;
@@ -104,6 +158,10 @@ pub async fn run_to_completion(
         Ok(Ok(status)) => (status.code(), false),
         Ok(Err(e)) => return Err(format!("wait: {}", e)),
         Err(_) => {
+            // Hard timeout: kill the whole process group (grandchildren too) while
+            // we still own the un-reaped child, then reap. start_kill is the
+            // non-unix fallback (kill_process_group is a no-op there).
+            kill_process_group(child.id());
             let _ = child.start_kill();
             let _ = child.wait().await;
             (None, true)

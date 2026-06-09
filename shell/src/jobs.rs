@@ -37,9 +37,11 @@ pub struct JobHandle {
     /// PID of the host child process, set ONLY for host-backed background jobs.
     /// The detached drain task takes `child` out of the handle (so the task can
     /// own the `Child` and `wait()` on it), which leaves `child: None` here even
-    /// while the process is alive. `host_pid` therefore stays reachable after the
-    /// take so `shell::kill` and the shutdown sweep can still signal a live host
-    /// process by pid. Sandbox jobs own no local process and leave this `None`.
+    /// while the process is alive. `host_pid` is now only a DISCRIMINATOR — `Some`
+    /// means "host bg job, terminate via the kill-signal channel" and `None` means
+    /// "sandbox job, no local process". Termination never signals this pid
+    /// directly (that risked SIGKILLing a reused pid after `wait()` reaped the
+    /// child); see [`kill_signal_for`] and the drain task.
     pub host_pid: Option<u32>,
 }
 
@@ -56,6 +58,52 @@ impl Jobs {
 }
 
 pub static JOBS: Lazy<Jobs> = Lazy::new(Jobs::new);
+
+/// Per-job kill-signal channels for live host background jobs, keyed by job id.
+///
+/// The detached drain task is the ONLY code that signals a host child, and it
+/// does so while it still owns the un-reaped `Child` — so the signal can never
+/// land on a pid that `wait()` already reaped and the OS reused. `shell::kill`
+/// and the shutdown sweep REQUEST termination by notifying the job's channel
+/// here; the drain task selects on it and kills the child's process group.
+///
+/// A `std::sync::Mutex` (not the tokio one) because every access is a short,
+/// non-async map operation; it is never held across an `.await`. Registered when
+/// a host bg job spawns and removed when its drain task finalizes.
+static KILL_SIGNALS: Lazy<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Register (or replace) a host bg job's kill-signal channel and return it for
+/// the drain task to await. Called once at spawn, before the drain task starts.
+pub fn register_kill_signal(id: &str) -> Arc<tokio::sync::Notify> {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    KILL_SIGNALS
+        .lock()
+        .expect("kill-signal map poisoned")
+        .insert(id.to_string(), notify.clone());
+    notify
+}
+
+/// Look up a live host bg job's kill-signal channel. `shell::kill` and the
+/// shutdown sweep call this and `notify_one()` the result to request termination.
+/// Returns `None` once the drain task has finalized and unregistered (the job is
+/// already terminal, so there is nothing to kill).
+pub fn kill_signal_for(id: &str) -> Option<Arc<tokio::sync::Notify>> {
+    KILL_SIGNALS
+        .lock()
+        .expect("kill-signal map poisoned")
+        .get(id)
+        .cloned()
+}
+
+/// Remove a job's kill-signal channel. Called by the drain task as it finalizes,
+/// so the map does not grow without bound across the worker's lifetime.
+pub fn unregister_kill_signal(id: &str) {
+    KILL_SIGNALS
+        .lock()
+        .expect("kill-signal map poisoned")
+        .remove(id);
+}
 
 /// Live count of background jobs in the `Running` state, maintained as a plain
 /// atomic so the `shell.jobs.running` observable gauge can read it from a
@@ -202,51 +250,54 @@ pub async fn list_all() -> Vec<JobRecord> {
 }
 
 /// Best-effort terminate every still-running host-backed job. Called on shutdown
-/// so the worker does not leave orphaned OS processes behind. `kill_on_drop(true)`
-/// on the spawned commands is the backstop when the runtime tears the tasks down;
-/// this explicit sweep is the primary path so shutdown is deterministic and logged.
+/// so the worker does not leave orphaned OS processes behind.
 ///
 /// A running host bg job's `Child` is owned by its detached drain task (taken out
-/// of the handle at spawn), so `handle.child` is almost always `None` for the real
-/// case — relying on the in-handle child would make this a no-op. We therefore
-/// signal the recorded `host_pid` directly with `SIGKILL` via `libc::kill`. Only
-/// the signal is delivered — we do NOT reap here (the detached task's own
-/// `child.wait()` reaps the process); not awaiting means a single wedged process
-/// cannot stall shutdown. Returns the number of jobs signalled.
+/// of the handle at spawn), so we do NOT signal a pid directly here — that risked
+/// SIGKILLing a reused pid after the drain task's `wait()` had reaped the child.
+/// Instead we notify each running host job's kill-signal channel; the drain task,
+/// which still owns the un-reaped `Child`, kills the child's process group (so
+/// grandchildren die too) and finalizes. We then poll briefly so shutdown is
+/// deterministic rather than racing process exit; `kill_on_drop(true)` on each
+/// child is the backstop if a drain task does not finish within the window.
 ///
 /// Sandbox-backed jobs (`host_pid: None`) own no local process and are skipped, as
-/// are terminal jobs. The status flip to `Killed` happens here; the detached task
-/// will see `Killed` after its `wait()` returns and the finalize-once guard keeps
-/// it from being downgraded back to `Exited`.
+/// are terminal jobs. Returns the number of jobs signalled.
 pub async fn kill_running_host_jobs() -> usize {
     let handles = snapshot().await;
-    let mut killed = 0usize;
-    for (id, handle) in handles {
-        let mut h = handle.lock().await;
-        if h.record.status != JobStatus::Running {
-            continue;
-        }
-        // Only host bg jobs carry a pid; sandbox jobs (None) own no local process.
-        let Some(pid) = h.host_pid else {
-            continue;
-        };
-        // SAFETY: SIGKILL to a pid. The pid came from a child we spawned and the
-        // record is still Running (the detached task has not finalized), so PID
-        // reuse is not a concern in this window. An already-exited child yields
-        // ESRCH, which we treat as "nothing to orphan".
-        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        if rc == 0 {
-            h.record.status = JobStatus::Killed;
-            h.record.finished_at_ms = Some(now_ms());
-            killed += 1;
-            tracing::info!(job_id = %id, pid, "killed running host job on shutdown");
-        } else {
-            // ESRCH (no such process) means the child already exited; nothing to
-            // orphan, so log at debug rather than warn.
-            tracing::debug!(job_id = %id, pid, "SIGKILL on shutdown failed (child likely already exited)");
+    let mut requested: Vec<String> = Vec::new();
+    for (id, handle) in &handles {
+        let h = handle.lock().await;
+        let is_running_host = h.record.status == JobStatus::Running && h.host_pid.is_some();
+        drop(h);
+        if is_running_host {
+            if let Some(notify) = kill_signal_for(id) {
+                notify.notify_one();
+                requested.push(id.clone());
+                tracing::info!(job_id = %id, "requested shutdown kill of running host job");
+            }
         }
     }
-    killed
+    if requested.is_empty() {
+        return 0;
+    }
+    // Bounded grace for the notified drain tasks to group-kill and finalize.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let mut still_running = 0usize;
+        for id in &requested {
+            if let Some(h) = get(id).await {
+                if h.lock().await.record.status == JobStatus::Running {
+                    still_running += 1;
+                }
+            }
+        }
+        if still_running == 0 || std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    requested.len()
 }
 
 /// Used by integration tests to assert lifecycle invariants. The
@@ -446,95 +497,9 @@ mod tests {
         JOBS.map.lock().await.remove(&done);
     }
 
-    /// The shutdown sweep must ACTUALLY terminate a live host child, not just
-    /// skip-and-no-op. We spawn a real long sleep, record its pid as a host bg
-    /// job whose `child` has already been taken (mirroring spawn_host_job, where
-    /// the detached drain task owns the Child), run the sweep, and assert the OS
-    /// process is dead within a tight deadline. With the sweep wired to the
-    /// (absent) in-handle child it would be a no-op and the pid would stay alive
-    /// for the full 30s — so this deadline assertion fails on that mutation.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn kill_running_host_jobs_terminates_real_child() {
-        use crate::config::ShellConfig;
-        use crate::exec::host::build_command;
-        use crate::exec::policy::ExecOverrides;
-        use std::time::{Duration, Instant};
-
-        // Acquire GAUGE before SWEEP (consistent global lock order) — this test
-        // reserves a running job, perturbing the gauge other tests assert on.
-        let _gauge_gate = GAUGE_TEST_GUARD.lock().await;
-        // Serialize with other host-bg tests: the sweep is global and would
-        // otherwise SIGKILL their live children mid-test.
-        let _guard = HOST_SWEEP_TEST_GUARD.lock().await;
-
-        fn pid_alive(pid: u32) -> bool {
-            // SAFETY: signal 0 only performs permission/existence checking.
-            unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-        }
-
-        let mut cfg = ShellConfig {
-            inherit_env: true,
-            max_output_bytes: 4096,
-            ..Default::default()
-        };
-        cfg.compile_denylist().unwrap();
-
-        let argv = vec!["sleep".to_string(), "30".to_string()];
-        let mut command =
-            build_command(&argv, &cfg, &ExecOverrides::default()).expect("build_command");
-        let mut child = command.spawn().expect("spawn sleep");
-        let pid = child.id().expect("child has a pid");
-        // Mirror spawn_host_job: the detached drain task takes the Child, leaving
-        // `child: None` in the handle while the process is still alive. The only
-        // way to reach it after that is `host_pid`.
-        let _ = child.stdout.take();
-        let _ = child.stderr.take();
-        // Keep the Child owned by a local task so the kernel doesn't reap it as a
-        // zombie before our pid-liveness probe runs — exactly like the real drain
-        // task's `child.wait()`. We do NOT take it into the handle.
-        let waiter = tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
-
-        assert!(pid_alive(pid), "freshly spawned sleep should be alive");
-
-        let id = format!("kill-sweep-real-{}", uuid::Uuid::new_v4());
-        let handle = JobHandle {
-            record: JobRecord {
-                finished_at_ms: None,
-                ..make_handle(&id, JobStatus::Running).record
-            },
-            child: None,
-            host_pid: Some(pid),
-        };
-        try_reserve_and_insert(handle, usize::MAX)
-            .await
-            .ok()
-            .expect("seed running host job");
-
-        let signalled = kill_running_host_jobs().await;
-        assert!(signalled >= 1, "sweep must signal the running host job");
-
-        let status = get(&id).await.unwrap().lock().await.record.status.clone();
-        assert_eq!(status, JobStatus::Killed, "swept job is marked Killed");
-
-        // Tight deadline: SIGKILL'd `sleep 30` must die almost immediately. If the
-        // sweep were a no-op (the old in-handle-child path), the pid would stay
-        // alive well past this window.
-        let start = Instant::now();
-        loop {
-            if !pid_alive(pid) {
-                break;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(3),
-                "swept host child (pid {pid}) must die within 3s of the sweep"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let _ = waiter.await;
-        JOBS.map.lock().await.remove(&id);
-    }
+    // The end-to-end "shutdown sweep terminates a real child" test now lives in
+    // `functions::exec_bg` (`shutdown_sweep_terminates_real_host_job`), where it
+    // can drive the real `spawn_host_job` drain task that owns the Child and
+    // performs the process-group kill — the sweep only requests termination via
+    // the kill-signal channel, so a faked handle here could not be killed.
 }

@@ -17,6 +17,9 @@ pub const CONFIG_ID: &str = "shell";
 const CONFIG_FN_ID: &str = "shell::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
+/// Base backoff between configuration RPC retries; multiplied by the attempt
+/// number for a linear backoff (250ms, 500ms, …).
+const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
 /// Live runtime swapped on hot-reload. `config` and `host_backend` are always
 /// built from the same `ShellConfig`, so a reader never mixes new config with
@@ -346,7 +349,10 @@ async fn trigger_with_retry(iii: &III, function_id: &str, payload: Value) -> Res
                 last_err = e.to_string();
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(function_id, attempt, error = %last_err, "configuration RPC failed; retrying");
-                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                    tokio::time::sleep(Duration::from_millis(
+                        CONFIG_RETRY_BACKOFF_MS * u64::from(attempt),
+                    ))
+                    .await;
                 }
             }
         }

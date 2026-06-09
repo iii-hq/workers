@@ -241,7 +241,7 @@ async fn write_forwards_content_ref_verbatim() {
             path: "/sb/x".into(),
             mode: "0600".into(),
             parents: false,
-            content: content_ref.clone(),
+            content: shell::fs::WriteContent::Stream(content_ref.clone()),
         })
         .await
         .unwrap();

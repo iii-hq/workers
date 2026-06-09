@@ -41,37 +41,28 @@ pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
 
     // Branch 2: a RUNNING host bg job whose drain task already took the Child out
     // of the handle (the common case — child is None almost immediately after
-    // spawn). The live process is unreachable via the handle, but `host_pid` still
-    // points at it, so signal SIGKILL directly. The detached drain task's
-    // child.wait() reaps the process; its finalize-once guard keeps the Killed
-    // status and this kill-time finished_at_ms from being clobbered.
-    if let Some(pid) = h.host_pid {
-        // SAFETY: SIGKILL to a pid we spawned. The record is still Running, so the
-        // drain task has not finalized and PID reuse cannot have happened yet. An
-        // already-exited child yields ESRCH, which we still report as killed (the
-        // user's intent — terminate — is satisfied; nothing is left running).
-        let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        if rc != 0 {
-            let errno = std::io::Error::last_os_error();
-            // ESRCH means the process already exited between the status check and
-            // the signal — the job is effectively done. Any other errno is a real
-            // failure to deliver the signal.
-            if errno.raw_os_error() != Some(libc::ESRCH) {
-                return Err(ExecError::new(
-                    "S216",
-                    format!(
-                        "failed to signal host job {} (pid {}): {}",
-                        req.job_id, pid, errno
-                    ),
-                ));
-            }
-        }
+    // spawn). We do NOT signal a bare pid here: the drain task may be between its
+    // `wait()` reaping the child and acquiring the lock to flip status, so the pid
+    // could already be free for OS reuse — signalling it could hit an unrelated
+    // process (and the worker may run as root). Instead, mark the job Killed and
+    // notify its kill-signal channel; the drain task, which still owns the
+    // un-reaped Child, kills the process group safely while the pid is guaranteed
+    // live, and its finalize-once guard preserves this Killed status + timestamp.
+    if h.host_pid.is_some() {
         h.record.status = JobStatus::Killed;
         h.record.finished_at_ms = Some(jobs::now_ms());
+        let status = h.record.status.clone();
+        let notify = jobs::kill_signal_for(&req.job_id);
+        // Release the handle lock BEFORE notifying so the woken drain task can
+        // acquire it immediately to perform the group-kill and finalize.
+        drop(h);
+        if let Some(n) = notify {
+            n.notify_one();
+        }
         return Ok(KillResponse {
             job_id: req.job_id,
             killed: true,
-            status: h.record.status.clone(),
+            status,
             reason: None,
         });
     }
@@ -206,79 +197,57 @@ mod host_kill_tests {
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
 
-    /// The real fix: a RUNNING host bg job whose drain task already took the
-    /// `Child` out of the handle (`child: None`) must still be terminated — by
-    /// `host_pid`, not the absent in-handle child. Before the fix, kill::handle
-    /// fell through to the sandbox else-branch and never signalled the live
-    /// process, so a `sleep 30` would keep running for 30s. We assert the pid is
-    /// dead within a TIGHT 3s deadline, so reverting the pid-kill (leaving only
-    /// the sandbox caveat) makes this test fail. We also assert the response
-    /// carries NO sandbox caveat — this is a real host kill, not the in-VM no-op.
+    /// A RUNNING host bg job whose drain task already owns the `Child`
+    /// (`child: None` in the handle) is terminated by `shell::kill` through the
+    /// kill-signal channel: `kill::handle` marks it Killed and notifies; the REAL
+    /// drain task (driven here via `spawn_host_job`) group-kills the live process
+    /// while it still owns the un-reaped Child. We assert the OS process dies
+    /// within a tight 3s deadline and the response carries no sandbox caveat.
+    /// (The previous bare-pid SIGKILL was removed: the pid could be reused after
+    /// the drain task's `wait()` reaped the child, risking an unrelated kill.)
     #[cfg(unix)]
     #[tokio::test]
     async fn killing_running_host_job_terminates_the_real_child() {
+        use crate::jobs::HOST_SWEEP_TEST_GUARD;
         use std::time::{Duration, Instant};
 
-        let cfg = open_cfg();
-        let argv = vec!["sleep".to_string(), "30".to_string()];
-        let mut command =
-            build_command(&argv, &cfg, &ExecOverrides::default()).expect("build_command");
-        let mut child = command.spawn().expect("spawn sleep");
-        let pid = child.id().expect("child has pid");
+        // Serialize with other host-bg/sweep tests sharing the global JOBS map.
+        let _guard = HOST_SWEEP_TEST_GUARD.lock().await;
 
-        // Mirror spawn_host_job's steady state: the detached drain task owns the
-        // Child (here a local waiter task), so the handle holds `child: None` and
-        // only `host_pid` can reach the live process. Drain the pipes off first.
-        let _ = child.stdout.take();
-        let _ = child.stderr.take();
-        let waiter = tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
+        let mut cfg = open_cfg();
+        cfg.max_timeout_ms = 60_000; // hard cap well past the test window
+        cfg.max_concurrent_jobs = 64;
+        // Drive the REAL spawn path so a real drain task is listening on the
+        // kill-signal channel (a faked handle cannot be killed — by design).
+        let resp = crate::functions::exec_bg::spawn_host_job(
+            Arc::new(cfg),
+            vec!["sleep".to_string(), "30".to_string()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn host bg job");
+        let id = resp.job_id;
 
+        // The drain task records the child's pid on the handle (host_pid).
+        let pid = jobs::get(&id)
+            .await
+            .expect("job exists")
+            .lock()
+            .await
+            .host_pid
+            .expect("host bg job has a pid");
         assert!(pid_alive(pid), "child should be alive before kill");
-
-        let id = format!("job-{}", uuid::Uuid::new_v4());
-        let record = JobRecord {
-            id: id.clone(),
-            argv,
-            started_at_ms: jobs::now_ms(),
-            finished_at_ms: None,
-            status: JobStatus::Running,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-        };
-        jobs::JOBS.map.lock().await.insert(
-            id.clone(),
-            Arc::new(Mutex::new(JobHandle {
-                record,
-                // Child taken by the drain task; reachable only via host_pid.
-                child: None,
-                host_pid: Some(pid),
-            })),
-        );
 
         let resp = handle(KillRequest { job_id: id.clone() }).await.unwrap();
         assert!(resp.killed, "running host job must report killed");
         assert_eq!(resp.status, JobStatus::Killed);
         assert!(
             resp.reason.is_none(),
-            "host pid-kill must NOT return the sandbox caveat reason"
+            "host kill must NOT return the sandbox caveat reason"
         );
 
-        // Record reflects the cancellation.
-        {
-            let h = jobs::get(&id).await.expect("job exists");
-            let r = h.lock().await;
-            assert_eq!(r.record.status, JobStatus::Killed);
-            assert!(r.record.finished_at_ms.is_some());
-        }
-
-        // TIGHT deadline: a SIGKILL'd `sleep 30` dies within milliseconds. If the
-        // pid-kill were reverted (kill falls to the sandbox no-op), the process
-        // would survive the full 30s and blow past this 3s window.
+        // TIGHT deadline: the notified drain task group-kills the process; a
+        // SIGKILL'd `sleep 30` dies within milliseconds.
         let start = Instant::now();
         loop {
             if !pid_alive(pid) {
@@ -291,7 +260,14 @@ mod host_kill_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let _ = waiter.await;
+        // Record reflects the cancellation.
+        {
+            let h = jobs::get(&id).await.expect("job exists");
+            let r = h.lock().await;
+            assert_eq!(r.record.status, JobStatus::Killed);
+            assert!(r.record.finished_at_ms.is_some());
+        }
+
         jobs::JOBS.map.lock().await.remove(&id);
     }
 

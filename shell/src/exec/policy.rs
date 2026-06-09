@@ -44,6 +44,12 @@ use crate::exec::error::ExecError;
 ///   config-reading allowlisted program (git/ssh/curl/python) at a jail-planted
 ///   config; the worker still forwards its own `HOME` when allowlisted, callers
 ///   just cannot override it per call.
+/// - `BASH_ENV` / `ENV` / `PYTHONSTARTUP` / `PERL5OPT` / `RUBYOPT` /
+///   `NODE_OPTIONS`: startup-file / option-injection vectors honored by
+///   sh/bash/python/perl/ruby/node at process start — a non-interactive
+///   interpreter sources or applies them before running anything, so pointing
+///   them at a jail-planted file/option turns an allowlisted interpreter into
+///   arbitrary code execution (same exec-hijack class as the loader vars).
 pub const DANGEROUS_ENV_KEYS: &[&str] = &[
     "PATH",
     "IFS",
@@ -67,6 +73,12 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
     "MALLOC_TRACE",
     "RES_OPTIONS",
     "LOCALDOMAIN",
+    "BASH_ENV",
+    "ENV",
+    "PYTHONSTARTUP",
+    "PERL5OPT",
+    "RUBYOPT",
+    "NODE_OPTIONS",
 ];
 
 /// True if `key` is in the always-rejected denylist (case-sensitive: env var
@@ -87,14 +99,19 @@ pub struct ExecOverrides {
     /// Per-call env values, already gated against `allowed_env` +
     /// [`DANGEROUS_ENV_KEYS`]. Applied on top of the config-forwarded env.
     pub env: Option<BTreeMap<String, String>>,
+    /// Bytes fed to the child's stdin (then EOF). `None` leaves stdin closed
+    /// (`/dev/null`). Needs no jail/allowlist gating — it is opaque input data,
+    /// not a path or env key — but like cwd/env it is HOST-only (the sandbox
+    /// exec protocol does not forward stdin), enforced via [`is_empty`].
+    pub stdin: Option<String>,
 }
 
 impl ExecOverrides {
     /// True when there is nothing to apply — used by the sandbox backend to
     /// fast-path the common (omitted) case while still rejecting a populated
-    /// override (cwd/env are host-only for now).
+    /// override (cwd/env/stdin are host-only for now).
     pub fn is_empty(&self) -> bool {
-        self.cwd.is_none() && self.env.is_none()
+        self.cwd.is_none() && self.env.is_none() && self.stdin.is_none()
     }
 }
 
@@ -166,7 +183,6 @@ fn static_code(code: &str) -> &'static str {
         "S210" => "S210",
         "S211" => "S211",
         "S215" => "S215",
-        "S216" => "S216",
         _ => "S216",
     }
 }
@@ -181,14 +197,24 @@ fn validate_env(
     env: &BTreeMap<String, String>,
     cfg: &ShellConfig,
 ) -> Result<BTreeMap<String, String>, ExecError> {
+    // The keys an agent can actually set per call: in allowed_env AND not in the
+    // dangerous denylist. Listing the raw allowed_env would name HOME/PATH (both
+    // default-allowed but always-rejected) as "settable", contradicting the very
+    // error that rejected them and sending the agent into a retry loop.
+    let settable = cfg
+        .allowed_env
+        .iter()
+        .filter(|k| !is_dangerous_env_key(k))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     for key in env.keys() {
         if is_dangerous_env_key(key) {
             return Err(ExecError::new(
                 "S210",
                 format!(
                     "env key '{key}' is never settable per-call (exec-hijacking key); \
-                     remove it. Settable keys (must also be in allowed_env): [{}]",
-                    cfg.allowed_env.join(", ")
+                     remove it. Settable keys (in allowed_env, minus exec-hijacking keys): [{settable}]"
                 ),
             ));
         }
@@ -197,8 +223,7 @@ fn validate_env(
                 "S210",
                 format!(
                     "env key '{key}' is not in allowed_env; the operator must permit it. \
-                     Permitted keys: [{}]",
-                    cfg.allowed_env.join(", ")
+                     Settable keys: [{settable}]"
                 ),
             ));
         }
@@ -223,7 +248,13 @@ pub fn build_overrides(
         Some(e) => Some(validate_env(e, cfg)?),
         None => None,
     };
-    Ok(ExecOverrides { cwd, env })
+    // `stdin` is set by the handler after this call (it needs no gating); leave
+    // it None here so build_overrides stays the cwd/env confinement entry point.
+    Ok(ExecOverrides {
+        cwd,
+        env,
+        stdin: None,
+    })
 }
 
 #[cfg(test)]
@@ -249,6 +280,8 @@ mod tests {
             "DYLD_INSERT_LIBRARIES",
             "GCONV_PATH",
             "HOSTALIASES",
+            "BASH_ENV",
+            "ENV",
         ] {
             assert!(is_dangerous_env_key(k), "{k} must be dangerous");
         }

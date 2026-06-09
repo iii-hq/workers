@@ -9,6 +9,16 @@ pub struct ShellConfig {
     #[serde(default = "default_max_timeout_ms")]
     pub max_timeout_ms: u64,
 
+    /// Hard cap, in milliseconds, on a HOST background job (`shell::exec_bg`).
+    /// `0` (the default) means UNBOUNDED — a host bg job runs until it exits or
+    /// `shell::kill` terminates it. This is deliberately separate from
+    /// `max_timeout_ms` (which bounds foreground `shell::exec`): background jobs
+    /// are how callers run long work (installs, builds, dev servers), so binding
+    /// them to the short foreground cap would kill legitimate jobs. Set a
+    /// positive value to force-kill runaway bg jobs after that long.
+    #[serde(default = "default_max_bg_timeout_ms")]
+    pub max_bg_timeout_ms: u64,
+
     #[serde(default = "default_default_timeout_ms")]
     pub default_timeout_ms: u64,
 
@@ -54,6 +64,12 @@ pub struct ShellConfig {
 
 fn default_max_timeout_ms() -> u64 {
     30_000
+}
+fn default_max_bg_timeout_ms() -> u64 {
+    // 0 == unbounded: a host bg job is not force-killed by time, only by
+    // shell::kill or natural exit. Operators set a positive cap to bound
+    // runaway jobs.
+    0
 }
 fn default_default_timeout_ms() -> u64 {
     10_000
@@ -142,6 +158,7 @@ impl Default for ShellConfig {
     fn default() -> Self {
         Self {
             max_timeout_ms: default_max_timeout_ms(),
+            max_bg_timeout_ms: default_max_bg_timeout_ms(),
             default_timeout_ms: default_default_timeout_ms(),
             max_output_bytes: default_max_output_bytes(),
             working_dir: None,
@@ -213,6 +230,36 @@ impl ShellConfig {
                 return Err(format!("command matches denylist: {}", re.as_str()));
             }
         }
+
+        // Confinement guard: a command given as a PATH (contains a '/') that
+        // canonicalizes to a location INSIDE the writable fs jail is rejected.
+        // `shell::fs::write` can plant an executable (0755) under `fs.host_root`,
+        // and the basename allowlist check above matches by file_name — so
+        // `command: "<host_root>/ls"` would otherwise pass the allowlist and be
+        // executed verbatim, a host RCE that bypasses the read-only allowlist.
+        // Bare program names (no '/') are PATH-resolved by the OS and stay
+        // allowed; legitimate absolute paths OUTSIDE the jail (e.g. /usr/bin/ls)
+        // are not writable via shell::fs::write and stay allowed. A path that
+        // fails to canonicalize (does not exist) is NOT rejected here — the
+        // normal exec spawn surfaces its own not-found error.
+        if cmd.contains('/') {
+            if let Some(host_root) = &self.fs.host_root {
+                if let Ok(canon_cmd) = std::fs::canonicalize(&cmd) {
+                    if let Ok(canon_root) = std::fs::canonicalize(host_root) {
+                        if canon_cmd.starts_with(&canon_root) {
+                            return Err(format!(
+                                "command path '{}' resolves inside the writable fs jail ({}); \
+                                 executing files written via shell::fs::write is not allowed. \
+                                 Use a bare command name (PATH-resolved) or a path outside the jail.",
+                                cmd,
+                                host_root.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -371,6 +418,59 @@ mod tests {
             .is_command_allowed(&["env".into(), "nmap".into(), "host".into()])
             .expect_err("env <cmd> must be rejected");
         assert!(err.contains("not in allowlist"));
+    }
+
+    #[test]
+    fn exec_command_path_inside_jail_is_rejected() {
+        // An agent can plant `<host_root>/ls` (0755) via shell::fs::write; the
+        // basename allowlist matches "ls", so without the confinement guard
+        // `command: "<host_root>/ls"` would execute that jail-planted file —
+        // host RCE. The guard must reject a command path that canonicalizes
+        // inside the jail while still permitting bare PATH-resolved names and
+        // out-of-jail absolute paths.
+        let root = std::env::temp_dir().join(format!("shell-cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("ls"), "#!/bin/sh\necho pwned\n").unwrap();
+
+        let mut c = ShellConfig {
+            allowlist: vec!["ls".into()],
+            ..Default::default()
+        };
+        c.fs.host_root = Some(root.clone());
+        c.compile_denylist().unwrap();
+
+        // The jail-planted path is rejected with a jail-mentioning error.
+        let jailed_cmd = root.join("ls").to_string_lossy().to_string();
+        let err = c
+            .is_command_allowed(&[jailed_cmd])
+            .expect_err("jail-planted command must be rejected");
+        assert!(err.contains("jail"), "got: {err}");
+
+        // A bare command name stays allowed (PATH-resolved by the OS).
+        assert!(c.is_command_allowed(&["ls".into()]).is_ok());
+
+        // An out-of-jail absolute path whose basename is allowlisted stays
+        // allowed — it is not writable via shell::fs::write.
+        for candidate in ["/bin/cat", "/usr/bin/true"] {
+            if std::path::Path::new(candidate).exists() {
+                let mut c2 = ShellConfig {
+                    allowlist: vec![std::path::Path::new(candidate)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string()],
+                    ..Default::default()
+                };
+                c2.fs.host_root = Some(root.clone());
+                c2.compile_denylist().unwrap();
+                assert!(
+                    c2.is_command_allowed(&[candidate.to_string()]).is_ok(),
+                    "out-of-jail absolute path {candidate} must be allowed"
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

@@ -133,13 +133,25 @@ impl FsBackend for SandboxFsBackend {
         .await
     }
     async fn write(&self, req: WriteArgs) -> FsCallResult<WriteResponse> {
+        // The sandbox exec/fs protocol moves bytes via a stream channel, so a
+        // sandbox write needs a ContentRef. Inline string content is host-only.
+        let content = match req.content {
+            crate::fs::WriteContent::Stream(channel) => crate::fs::ContentRef::from(channel),
+            crate::fs::WriteContent::Inline(_) => {
+                return Err(crate::fs::error::FsError::new(
+                    "S210",
+                    "inline string content is host-only; for a sandbox target open a write \
+                     stream channel and pass its ContentRef as `content`, or use target: host",
+                ));
+            }
+        };
         self.dispatch(
             "sandbox::fs::write",
             json!({
                 "path": req.path,
                 "mode": req.mode,
                 "parents": req.parents,
-                "content": req.content,
+                "content": content,
             }),
         )
         .await
@@ -243,7 +255,7 @@ mod tests {
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
-                content: content.clone(),
+                content: crate::fs::WriteContent::Stream(content.clone()),
             })
             .await
             .unwrap();
@@ -258,6 +270,30 @@ mod tests {
         assert_eq!(obj["content"]["channel_id"].as_str(), Some("c-1"));
         assert_eq!(obj["content"]["access_key"].as_str(), Some("k-1"));
         assert_eq!(obj["content"]["direction"].as_str(), Some("read"));
+    }
+
+    #[tokio::test]
+    async fn write_rejects_inline_content_on_sandbox_with_s210() {
+        let stub = Arc::new(StubFwd {
+            captured: Mutex::new(None),
+            respond_with: Ok(json!({ "bytes_written": 0, "path": "" })),
+        });
+        let b = SandboxFsBackend::new(stub.clone(), true, Uuid::new_v4());
+        let err = b
+            .write(WriteArgs {
+                path: "/sb/x".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("hello".into()),
+            })
+            .await
+            .expect_err("inline content on a sandbox target must reject");
+        assert_eq!(err.code, "S210");
+        assert!(err.message.contains("host-only"), "got: {}", err.message);
+        assert!(
+            stub.captured.lock().unwrap().is_none(),
+            "rejected inline write must not forward to the engine"
+        );
     }
 
     #[tokio::test]
