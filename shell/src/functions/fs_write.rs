@@ -14,13 +14,15 @@ pub async fn handle(
 ) -> Result<WriteResponse, iii_sdk::IIIError> {
     let req: WriteRequest = serde_json::from_value(payload)
         .map_err(|e| FsError::new("S210", format!("bad write payload: {e}")))?;
-    let (target, mut specs) = req.into_specs().map_err(iii_sdk::IIIError::from)?;
+    let (target, mut specs, batch) = req.into_specs().map_err(iii_sdk::IIIError::from)?;
     let backend = pick_backend(target, host, iii, sandbox_enabled);
 
-    // Single-file: return the backend response verbatim (files stays empty),
-    // preserving the { bytes_written, path } shape for sandbox round-trips and
-    // prior single-file callers.
-    if specs.len() == 1 {
+    // Single-file form (`path`+`content`): return the backend response verbatim
+    // (files stays empty), preserving the { bytes_written, path } shape for
+    // sandbox round-trips and prior single-file callers. The batch form always
+    // returns the per-file `files` array below, even for one entry, so a caller
+    // that sends `files` always gets `files` back.
+    if !batch {
         return backend
             .write(specs.pop().unwrap())
             .await

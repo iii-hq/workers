@@ -7,6 +7,9 @@ import { JOB_CASES } from './cases-jobs.ts';
 import { EDGE_CASES } from './cases-edge.ts';
 import { FS_HOST_CASES } from './cases-fs-host.ts';
 import { FS_HOST_JAIL_CASES } from './cases-fs-host-jail.ts';
+import { FS_WRITE_INLINE_CASES } from './cases-fs-write-inline.ts';
+import { EXEC_STDIN_CASES } from './cases-exec-stdin.ts';
+import { JOBS_BG_TIMEOUT_CASES } from './cases-jobs-bg-timeout.ts';
 import { FS_SANDBOX_CASES } from './cases-fs-sandbox.ts';
 import { FS_PROTOCOL_BREAK_CASES } from './cases-fs-protocol-break.ts';
 import { STREAMING_BREAK_CASES } from './cases-streaming-break.ts';
@@ -47,15 +50,20 @@ export class Runner {
     fn: () => Promise<unknown>,
     pattern: string | RegExp,
   ): Promise<void> {
-    const matches = (msg: string): boolean =>
-      typeof pattern === 'string' ? msg.includes(pattern) : pattern.test(msg);
+    const matches = (s: string): boolean =>
+      typeof pattern === 'string' ? s.includes(pattern) : pattern.test(s);
     const display = typeof pattern === 'string' ? `"${pattern}"` : pattern.toString();
     try {
       await fn();
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      if (!matches(msg)) {
-        throw new Error(`expected error matching ${display}, got: ${msg}`);
+      // The SDK rejects with the raw wire error body { code, message, stacktrace }.
+      // v0.4.0 surfaces S-codes as the structured `code` so agents branch on
+      // error.code rather than parsing the message — so match the pattern
+      // against the code AND the human message.
+      const code = e && typeof e === 'object' && 'code' in e ? String(e.code) : '';
+      if (!matches(msg) && !matches(code)) {
+        throw new Error(`expected error matching ${display}, got: ${code ? code + ': ' : ''}${msg}`);
       }
       return;
     }
@@ -131,6 +139,9 @@ export class Runner {
             ...EDGE_CASES,
             ...FS_HOST_CASES,
             ...FS_HOST_JAIL_CASES,
+            ...FS_WRITE_INLINE_CASES,
+            ...EXEC_STDIN_CASES,
+            ...JOBS_BG_TIMEOUT_CASES,
             ...FS_SANDBOX_CASES,
             ...FS_PROTOCOL_BREAK_CASES,
             ...STREAMING_BREAK_CASES,

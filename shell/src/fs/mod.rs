@@ -493,9 +493,13 @@ pub struct WriteRequest {
     pub files: Option<Vec<WriteFileSpec>>,
 }
 impl WriteRequest {
-    /// Normalize into `(target, one-or-more backend WriteArgs)`. Rejects (S210)
-    /// an ambiguous request (both single and `files`) or an empty one.
-    pub fn into_specs(self) -> Result<(Target, Vec<WriteArgs>), FsError> {
+    /// Normalize into `(target, specs, is_batch)`. `is_batch` is true when the
+    /// caller used the `files: [...]` form — the handler then returns the
+    /// per-file `files` response shape EVEN for a single entry, so a caller that
+    /// sends `files` always gets `files` back. The single-file form
+    /// (`path`+`content`) returns the flat `{ bytes_written, path }` shape.
+    /// Rejects (S210) an ambiguous request (both forms) or an empty `files`.
+    pub fn into_specs(self) -> Result<(Target, Vec<WriteArgs>, bool), FsError> {
         if let Some(files) = self.files {
             if self.path.is_some() || self.content.is_some() {
                 return Err(FsError::new(
@@ -518,7 +522,7 @@ impl WriteRequest {
                     content: f.content.into(),
                 })
                 .collect();
-            Ok((self.target, specs))
+            Ok((self.target, specs, true))
         } else {
             let path = self
                 .path
@@ -537,6 +541,7 @@ impl WriteRequest {
                     parents: self.parents,
                     content: content.into(),
                 }],
+                false,
             ))
         }
     }
@@ -763,7 +768,7 @@ mod tests {
             "content": { "channel_id": "c-1", "access_key": "k-1", "direction": "read" }
         }))
         .unwrap();
-        let (_t, specs) = req.into_specs().unwrap();
+        let (_t, specs, _batch) = req.into_specs().unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].mode, "0644");
         match &specs[0].content {
@@ -778,7 +783,7 @@ mod tests {
             "path": "/x", "content": "hello world"
         }))
         .unwrap();
-        let (_t, specs) = req.into_specs().unwrap();
+        let (_t, specs, _batch) = req.into_specs().unwrap();
         assert_eq!(specs.len(), 1);
         match &specs[0].content {
             WriteContent::Inline(s) => assert_eq!(s, "hello world"),
@@ -795,10 +800,27 @@ mod tests {
             ]
         }))
         .unwrap();
-        let (_t, specs) = req.into_specs().unwrap();
+        let (_t, specs, batch) = req.into_specs().unwrap();
+        assert!(batch, "files form must be flagged as batch");
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].path, "/a");
         assert_eq!(specs[1].mode, "0600");
+    }
+
+    #[test]
+    fn write_request_single_form_is_not_batch() {
+        // A single-element `files` array is still the batch form (returns the
+        // `files` response shape); a flat path+content is the single form.
+        let single: WriteRequest =
+            serde_json::from_value(serde_json::json!({"path": "/x", "content": "y"})).unwrap();
+        let (_t, _s, batch) = single.into_specs().unwrap();
+        assert!(!batch, "flat path+content is the single form");
+        let one: WriteRequest =
+            serde_json::from_value(serde_json::json!({"files": [{"path": "/x", "content": "y"}]}))
+                .unwrap();
+        let (_t, specs, batch) = one.into_specs().unwrap();
+        assert!(batch, "single-element files[] is still the batch form");
+        assert_eq!(specs.len(), 1);
     }
 
     #[test]
@@ -844,7 +866,7 @@ mod tests {
             "content": {"channel_id": "c", "access_key": "k", "direction": "read"},
         }))
         .unwrap();
-        let (_t, specs) = req.into_specs().unwrap();
+        let (_t, specs, _batch) = req.into_specs().unwrap();
         match &specs[0].content {
             WriteContent::Stream(r) => assert_eq!(r.channel_id, "c"),
             other => panic!("expected stream content, got {other:?}"),
