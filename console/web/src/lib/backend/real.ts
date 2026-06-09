@@ -97,24 +97,37 @@ async function* realStream(
     const { provider, model: modelId } = resolveRunParams(model)
 
     let kickoffError: Error | null = null
+    let sessionBusy = false
     client
-      .call('harness::trigger', {
-        session_id: sessionId,
-        message_id: messageId,
-        payload: {
+      .call<{ status_code?: number; body?: { started?: boolean } }>(
+        'harness::trigger',
+        {
           session_id: sessionId,
           message_id: messageId,
-          provider,
-          model: modelId,
-          mode,
-          messages: [
-            {
-              role: 'user',
-              content: [{ type: 'text', text: prompt }],
-              timestamp: Date.now(),
-            },
-          ],
+          payload: {
+            session_id: sessionId,
+            message_id: messageId,
+            provider,
+            model: modelId,
+            mode,
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'text', text: prompt }],
+                timestamp: Date.now(),
+              },
+            ],
+          },
         },
+      )
+      .then((res) => {
+        // run::start refused: a turn is still in flight for this session and
+        // the message was NOT appended. Surface it instead of waiting on
+        // events that may never come (e.g. a turn parked on an approval).
+        if (res?.body?.started === false) {
+          sessionBusy = true
+          wake()
+        }
       })
       .catch((err) => {
         kickoffError = err instanceof Error ? err : new Error(String(err))
@@ -126,6 +139,16 @@ async function* realStream(
 
     while (true) {
       if (signal?.aborted) return
+      if (sessionBusy) {
+        yield {
+          kind: 'stop-reason',
+          reason: 'error',
+          message:
+            'A turn is still running in this session — your message was not sent. Stop the current turn (or answer its pending approval), then resend.',
+        }
+        yield { kind: 'assistant-end' }
+        return
+      }
       if (kickoffError) {
         const err = kickoffError as Error
         yield {
@@ -135,13 +158,18 @@ async function* realStream(
         yield { kind: 'assistant-end' }
         return
       }
-      while (queue.length === 0 && !kickoffError && !signal?.aborted) {
+      while (
+        queue.length === 0 &&
+        !kickoffError &&
+        !sessionBusy &&
+        !signal?.aborted
+      ) {
         await new Promise<void>((resolve) => {
           resolveNext = resolve
         })
       }
       if (signal?.aborted) return
-      if (kickoffError) continue
+      if (kickoffError || sessionBusy) continue
       const event = queue.shift()
       if (!event) continue
       const streamEvents = translate(event, sessionId)
@@ -167,6 +195,11 @@ async function realResolveApproval(
     function_call_id: functionCallId,
     decision,
   })
+}
+
+async function realAbortRun(sessionId: string): Promise<void> {
+  const client = await getIiiClient()
+  await client.call('run::abort', { session_id: sessionId })
 }
 
 async function realCompactSession(
@@ -249,5 +282,6 @@ export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
   resolveApproval: realResolveApproval,
+  abortRun: realAbortRun,
   compactSession: realCompactSession,
 }

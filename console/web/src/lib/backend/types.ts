@@ -115,6 +115,12 @@ export interface ChatBackend {
     decision: 'allow' | 'deny',
   ): Promise<void>
   /**
+   * Server-side cancel of the session's in-flight turn (`run::abort`).
+   * The client-side AbortSignal only stops rendering; without this the
+   * server keeps running and `run::start` rejects new messages as busy.
+   */
+  abortRun?(sessionId: string): Promise<void>
+  /**
    * Powers `/compact`. Compacts the session-tree (the single source of
    * truth) directly. `contextWindow` skips the server's `models::get`
    * lookup when known.

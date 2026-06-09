@@ -477,7 +477,11 @@ export function ChatView({
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort()
-  }, [])
+    // Server-side cancel: without it the turn keeps running and run::start
+    // rejects the next message as busy. Best-effort (a retry lands between
+    // FSM steps); errors are non-fatal — the client stream already stopped.
+    void backend.abortRun?.(sessionId).catch(() => {})
+  }, [backend, sessionId])
 
   // Covers the gap between submit / fcall-end and the next streamed token,
   // where the assistant/thought shimmer hasn't yet rendered.
