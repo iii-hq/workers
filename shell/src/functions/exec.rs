@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use crate::config::ShellConfig;
 use crate::exec::host::parse_argv;
-use crate::exec_dispatch::{err_to_string, pick_exec_backend};
+use crate::exec::policy::build_overrides;
+use crate::exec_dispatch::pick_exec_backend;
 use crate::functions::types::{ExecRequest, ExecResponse};
 
 pub async fn handle(
     cfg: Arc<ShellConfig>,
     iii: iii_sdk::III,
     req: ExecRequest,
-) -> Result<ExecResponse, String> {
+) -> Result<ExecResponse, iii_sdk::IIIError> {
     // Field-level type errors (wrong-type `command`, non-string `args[i]`,
     // bad `target.kind`) come from the per-field deserializers in
     // `functions::types`; they surface here as the trigger `Err` carrying
@@ -19,15 +20,34 @@ pub async fn handle(
     //   Some(_) → use args verbatim, even if empty
     // The typed-schema migration must NOT collapse "absent args" into
     // "args: []" or callers lose the shell-words path.
+    // argv-parse and allowlist/denylist rejections are plain Strings with no
+    // S-code; via `From<String> for IIIError` they become the engine's
+    // `invocation_failed` envelope, message naming the violation. Only the
+    // backend `ExecError` below carries an S-code, surfaced as the wire `code`
+    // through `From<ExecError> for IIIError` (Remote) so an agent can branch
+    // on `error.code`.
     let argv = parse_argv(&req.command, req.args.as_ref()).map_err(|e| format!("argv: {}", e))?;
 
     cfg.is_command_allowed(&argv)?;
+
+    // Gate the per-call cwd/env BEFORE picking a backend. A jail-escaping cwd
+    // (S215) or an env key outside allowed_env / in DANGEROUS_ENV_KEYS (S210)
+    // rejects here, carrying the S-code to the wire via From<ExecError>. The
+    // sandbox backend additionally rejects any populated override (host-only).
+    let mut overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
+        .map_err(iii_sdk::IIIError::from)?;
+    // stdin needs no gating (opaque input bytes); it is host-only, enforced by
+    // the sandbox backend's is_empty() rejection of any populated override.
+    overrides.stdin = req.stdin;
 
     let timeout = cfg.resolve_timeout(req.timeout_ms);
 
     let backend = pick_exec_backend(req.target, cfg, iii);
 
-    let out = backend.run(&argv, timeout).await.map_err(err_to_string)?;
+    let out = backend
+        .run(&argv, timeout, &overrides)
+        .await
+        .map_err(iii_sdk::IIIError::from)?;
 
     Ok(ExecResponse::from(out))
 }

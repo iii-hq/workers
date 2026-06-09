@@ -38,6 +38,10 @@ workers:
   - name: shell
     config:
       max_timeout_ms: 5000
+      # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms).
+      # Set > max_timeout_ms so the bg-timeout e2e cases prove both that a bg job
+      # survives past the foreground cap and that it is killed at its own cap.
+      max_bg_timeout_ms: 6000
       default_timeout_ms: 1500
       max_output_bytes: 4096
       working_dir: ./data

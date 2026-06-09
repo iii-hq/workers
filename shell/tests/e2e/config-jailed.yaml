@@ -26,6 +26,8 @@ workers:
   - name: shell
     config:
       max_timeout_ms: 5000
+      # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms).
+      max_bg_timeout_ms: 6000
       default_timeout_ms: 1500
       max_output_bytes: 4096
       working_dir: ./data

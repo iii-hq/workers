@@ -6,7 +6,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::config::ShellConfig;
-use crate::exec::error::ExecError;
 use crate::exec::host::HostExecBackend;
 use crate::exec::sandbox::SandboxExecBackend;
 use crate::exec::ExecBackend;
@@ -32,13 +31,7 @@ fn sandbox_for(id: Uuid, iii: iii_sdk::III, enabled: bool) -> Arc<dyn ExecBacken
     ))
 }
 
-pub fn err_to_string(e: ExecError) -> String {
-    e.to_json()
-}
-
-// No unit tests in this module: the JSON envelope shape is already
-// covered by `exec::error::tests::to_json_emits_code_and_message`,
-// and `pick_exec_backend`'s match arms are trivial constructors that
-// would require a real `iii_sdk::III` to exercise. Real coverage of
-// the dispatcher's behavior comes from the integration tests in T8
-// once the handler is wired through.
+// No unit tests in this module: `pick_exec_backend`'s match arms are trivial
+// constructors that would require a real `iii_sdk::III` to exercise. The
+// ExecError -> wire-code conversion is covered by
+// `exec::error::tests` (the `From<ExecError> for IIIError` Remote lift).

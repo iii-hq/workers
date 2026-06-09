@@ -63,26 +63,45 @@ agents, pair with the `skills` worker.
 ## Functions
 
 - `shell::exec`: run an allowlisted command in the foreground and return its
-  stdout, stderr, exit code, and timing; blocks until exit or timeout.
+  stdout, stderr, exit code, and timing; blocks until exit or timeout. Sandbox
+  execution is fully valid (`target: { kind: "sandbox", sandbox_id }`); only the
+  host-only override fields — `stdin` (string piped to the program's stdin, then
+  EOF), plus `cwd`/`env` — are rejected with `S210` when supplied on a sandbox
+  target, because the sandbox exec protocol does not forward them.
 - `shell::exec_bg`: spawn an allowlisted command as a background job and return
-  a `job_id` immediately. Host-targeted jobs ignore `timeout_ms` (end via
-  `shell::kill` or natural exit); sandbox jobs honor it.
+  a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
+  terminates them — unbounded by default, capped only when the operator sets a
+  positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
+  job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`.
+  Same optional host-only `stdin` as `shell::exec`.
 - `shell::status`: fetch one job's full record: state, exit code, and captured
-  stdout/stderr.
+  stdout/stderr. A missing id (never existed or aged out) returns an `S211`
+  ("no such job") error.
 - `shell::list`: enumerate current jobs as lightweight summaries (no argv,
   stdout, or stderr).
 - `shell::kill`: terminate a running background job by `job_id`.
+- `shell::config-status` *(operator/automation only — not agent-callable)*:
+  report the last hot-reload outcome — `last_outcome` (`applied`/`rejected`),
+  `last_error`, and `rejected_reloads` (count since boot). A rejected outcome or
+  non-zero count means a stored config was refused and shell is enforcing an
+  older policy than the central store. Takes no arguments.
 - `shell::fs::ls`: list a directory's entries with structured metadata.
 - `shell::fs::stat`: read one path's metadata (size, mode, symlink flag).
-- `shell::fs::mkdir`: create a directory, optionally with missing parents.
-- `shell::fs::rm`: remove a file or directory, optionally recursive.
-- `shell::fs::chmod`: change a path's mode, and optionally its uid/gid.
-- `shell::fs::mv`: rename or move one path within the jail.
+- `shell::fs::mkdir`: create a directory, optionally with missing parents. Returns `{ created: bool, path: string, already_existed: bool }`.
+- `shell::fs::rm`: remove a file or directory, optionally recursive. Returns `{ removed: bool, path: string, was_present: bool }`.
+- `shell::fs::chmod`: change a path's mode, and optionally its uid/gid. Returns `{ entries_changed: u64, path: string, recursive: bool }`. **Note**: the field was renamed from `updated` to `entries_changed` — callers relying on `updated` must migrate.
+- `shell::fs::mv`: rename or move one path within the jail. Returns `{ moved: bool, src: string, dst: string, overwrote: bool }`.
 - `shell::fs::grep`: recursive regex search across a tree, returning structured
   matches.
 - `shell::fs::sed`: regex find-and-replace across one file or many.
-- `shell::fs::write`: stream bytes into a file via a channel; writes through a
-  temp file and renames atomically.
+- `shell::fs::write`: write a file. Simplest form is inline string `content`
+  (host target only): `{ path, content: "file text" }`, with `mode` (octal,
+  default `"0644"`) and `parents: true`. A `ContentRef` object in `content`
+  instead streams large/staged payloads via a channel (temp file + atomic
+  rename) and is **required** for sandbox targets. Batch form: pass
+  `files: [{ path, content, mode?, parents? }, ...]` to write several files in
+  one host call; the response then carries per-file `files: [{ path,
+  bytes_written }]` (a single-file write leaves `files` empty).
 - `shell::fs::read`: stream a file's bytes out through a channel.
 
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host

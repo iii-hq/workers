@@ -1,0 +1,12 @@
+# Interface-collection config for the registry publish workflow.
+#
+# The publish job (.github/workflows/_publish-registry.yml) boots a throwaway
+# copy of this worker purely to read back the functions it registers with the
+# engine — the published "interface". The shell worker refuses to start unless
+# the fs jail is configured. Interface collection runs no fs operations, so we
+# boot UNJAILED (allow_unjailed: true, no host_root) — this needs no pre-created
+# directory, so it works on a clean CI runner with just `--config config.collect.yaml`.
+max_bg_timeout_ms: 0  # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms)
+fs:
+  allow_unjailed: true
+allowlist: []

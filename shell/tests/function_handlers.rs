@@ -12,7 +12,10 @@ use shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {
-        Ok(id) => id,
+        // Drop the running-job gauge guard immediately: these test seeds have no
+        // finalize task to decrement it later, so dropping here keeps the gauge
+        // net-neutral (one increment, one decrement) rather than leaking a count.
+        Ok((id, _guard)) => id,
         Err(_) => panic!("usize::MAX cap must always accept"),
     }
 }
@@ -111,7 +114,15 @@ async fn exec_handler_rejects_unlisted_command() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("allowlist"));
+    // Allowlist rejections are intentionally plain-string (no S-code): they
+    // flow through `From<String>` to `IIIError::Handler`, which the engine maps
+    // to `code: "invocation_failed"` with the violation in the message — NOT a
+    // Remote S-code. Assert that contract so the split stays explicit.
+    assert!(
+        matches!(err, iii_sdk::IIIError::Handler(_)),
+        "allowlist rejection must be the plain-string Handler path, got {err:?}"
+    );
+    assert!(err.to_string().contains("allowlist"), "got: {err}");
 }
 
 /// `args[i]` validation is per-index; a non-string element must be rejected
@@ -212,6 +223,7 @@ async fn status_handler_returns_record_for_inserted_job() {
             stderr_truncated: false,
         },
         child: None,
+        host_pid: None,
     })
     .await;
     let r = resp(
@@ -230,7 +242,15 @@ async fn status_handler_rejects_unknown_job_id() {
     ))
     .await
     .unwrap_err();
-    assert!(err.contains("no such job"));
+    // The handler now returns the TYPED ExecError carrying the S-code, and it
+    // lifts to `IIIError::Remote { code, .. }` so the engine maps the S-code to
+    // the wire `code` verbatim (not the old `invocation_failed`/Handler collapse).
+    assert_eq!(err.code, "S211");
+    assert!(err.message.contains("no such job"));
+    match iii_sdk::IIIError::from(err) {
+        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S211"),
+        other => panic!("expected IIIError::Remote, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -246,7 +266,14 @@ async fn kill_handler_rejects_unknown_job_id() {
     ))
     .await
     .unwrap_err();
-    assert!(err.contains("no such job"));
+    // Typed ExecError carrying the S-code; lifts to `IIIError::Remote` so the
+    // S-code reaches the wire `code` verbatim.
+    assert_eq!(err.code, "S211");
+    assert!(err.message.contains("no such job"));
+    match iii_sdk::IIIError::from(err) {
+        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S211"),
+        other => panic!("expected IIIError::Remote, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -266,6 +293,7 @@ async fn kill_handler_returns_killed_false_when_job_already_terminal() {
             stderr_truncated: false,
         },
         child: None,
+        host_pid: None,
     })
     .await;
     let r = resp(
@@ -295,6 +323,7 @@ async fn list_handler_returns_jobs_array_and_count() {
             stderr_truncated: false,
         },
         child: None,
+        host_pid: None,
     })
     .await;
     let r = resp(
@@ -426,7 +455,7 @@ async fn fs_chmod_handler_sets_mode() {
         .await
         .unwrap(),
     );
-    assert!(r["updated"].as_u64().unwrap() >= 1);
+    assert!(r["entries_changed"].as_u64().unwrap() >= 1);
     let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o640);
 }
@@ -521,16 +550,25 @@ async fn fs_dispatch_split_target_rejects_unknown_kind() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("S210"), "got: {err}");
+    // The S210 payload-deser code is now the top-level wire `code` (Remote),
+    // not buried in a stringified-JSON message.
+    match err {
+        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S210"),
+        other => panic!("expected IIIError::Remote {{ code: S210 }}, got {other:?}"),
+    }
 }
 
 #[tokio::test]
 async fn fs_handler_rejects_bad_payload_shape() {
-    // path must be a string. Hits the S210 mapping in fs_ls::handle.
+    // path must be a string. Hits the S210 mapping in fs_ls::handle, which now
+    // lifts to `IIIError::Remote { code: "S210", .. }`.
     let err = functions::fs_ls::handle(fs_host_backend(), fresh_iii(), true, json!({"path": 42}))
         .await
         .unwrap_err();
-    assert!(err.contains("S210"), "got: {err}");
+    match err {
+        iii_sdk::IIIError::Remote { code, .. } => assert_eq!(code, "S210"),
+        other => panic!("expected IIIError::Remote {{ code: S210 }}, got {other:?}"),
+    }
 }
 
 #[allow(dead_code)]

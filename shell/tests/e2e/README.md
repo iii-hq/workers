@@ -87,6 +87,24 @@ The harness includes ~52 `shell::fs::*` cases across four files:
   streaming-specific cases (missing/wrong-type `content`, malformed
   channel ref).
 
+## v0.4.0 feature coverage
+
+Three case files exercise the v0.4.0 API additions end-to-end over the engine:
+
+- **`cases-fs-write-inline.ts`** — `shell::fs::write` with inline string
+  `content` (host) and the multi-file `files: [...]` batch form, plus the
+  ambiguity/host-only rejections (both single+`files`, empty `files`, missing
+  content, inline-on-sandbox → `S210`). Reuses `fsReadStream` to confirm
+  written bytes on disk.
+- **`cases-exec-stdin.ts`** — the per-call `stdin` field on `shell::exec` /
+  `shell::exec_bg` (piped to `cat`), the closed-stdin default, and the
+  stdin-on-sandbox → `S210` rejection.
+- **`cases-jobs-bg-timeout.ts`** — the separate `max_bg_timeout_ms` host bg
+  cap. The e2e config sets it to `6000` (> `max_timeout_ms: 5000`), so the cap
+  test also proves a bg job survives past the foreground cap (the v0.4.0
+  regression fix). The shipped default `max_bg_timeout_ms: 0` (unbounded) is
+  covered by the Rust unit tests.
+
 ## Vulnerability reproductions
 
 `cases-vuln-repro.ts` and `cases-vuln-repro-jailed.ts` reproduce the

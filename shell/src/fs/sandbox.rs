@@ -4,7 +4,6 @@
 //! passthroughs.
 
 use async_trait::async_trait;
-use iii_sdk::IIIError;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -58,96 +57,9 @@ impl SandboxFsBackend {
             .fwd
             .trigger(function_id, payload)
             .await
-            .map_err(map_iii_err)?;
+            .map_err(|e| crate::scode::map_iii_err(&e, FsError::new))?;
         serde_json::from_value(resp)
             .map_err(|e| FsError::new("S216", format!("bad engine response: {e}")))
-    }
-}
-
-/// Recover an S2xx code from an `IIIError`. Engine `Remote` errors carry
-/// the code structurally; the engine's `invocation_failed` wrapper hides
-/// it inside the message string; mock paths emit a JSON payload as
-/// `Handler(string)`. Unknown shapes fall through to S216.
-fn map_iii_err(err: IIIError) -> FsError {
-    match &err {
-        IIIError::Remote { code, message, .. } if code.starts_with('S') => {
-            return FsError::new(
-                map_static_code(code),
-                format!("forwarded from engine: {message}"),
-            );
-        }
-        IIIError::Remote { message, .. } => {
-            if let Some(c) = scan_s_code(message) {
-                return FsError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (wrapped): {message}"),
-                );
-            }
-        }
-        IIIError::Handler(s) => {
-            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                if let Some(c) = parsed.get("code").and_then(|v| v.as_str()) {
-                    let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    return FsError::new(
-                        map_static_code(c),
-                        format!("forwarded from engine: {msg}"),
-                    );
-                }
-            }
-            if let Some(c) = scan_s_code(s) {
-                return FsError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (raw): {s}"),
-                );
-            }
-        }
-        _ => {}
-    }
-    FsError::new("S216", format!("engine error: {err:?}"))
-}
-
-fn scan_s_code(s: &str) -> Option<&str> {
-    let bytes = s.as_bytes();
-    // The window is 4 bytes (`bytes[i..=i+3]`), so the last valid `i` is
-    // `len - 4`. The loop bound `< len - 3` gives `i <= len - 4`.
-    // `saturating_sub(3)` collapses to 0 when `len < 4`, which yields an
-    // empty range (no false access) on too-short inputs.
-    for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i] == b'S'
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-        {
-            // Reject matches preceded by alphanumerics so we don't grab
-            // the tail of a longer identifier (e.g. "FOO_S211").
-            let preceded_by_word =
-                i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            if !preceded_by_word {
-                return Some(&s[i..i + 4]);
-            }
-        }
-    }
-    None
-}
-
-fn map_static_code(code: &str) -> &'static str {
-    match code {
-        "S001" => "S001",
-        "S002" => "S002",
-        "S003" => "S003",
-        "S004" => "S004",
-        "S200" => "S200",
-        "S210" => "S210",
-        "S211" => "S211",
-        "S212" => "S212",
-        "S213" => "S213",
-        "S214" => "S214",
-        "S215" => "S215",
-        "S216" => "S216",
-        "S217" => "S217",
-        "S218" => "S218",
-        "S219" => "S219",
-        _ => "S216",
     }
 }
 
@@ -221,13 +133,25 @@ impl FsBackend for SandboxFsBackend {
         .await
     }
     async fn write(&self, req: WriteArgs) -> FsCallResult<WriteResponse> {
+        // The sandbox exec/fs protocol moves bytes via a stream channel, so a
+        // sandbox write needs a ContentRef. Inline string content is host-only.
+        let content = match req.content {
+            crate::fs::WriteContent::Stream(channel) => crate::fs::ContentRef::from(channel),
+            crate::fs::WriteContent::Inline(_) => {
+                return Err(crate::fs::error::FsError::new(
+                    "S210",
+                    "inline string content is host-only; for a sandbox target open a write \
+                     stream channel and pass its ContentRef as `content`, or use target: host",
+                ));
+            }
+        };
         self.dispatch(
             "sandbox::fs::write",
             json!({
                 "path": req.path,
                 "mode": req.mode,
                 "parents": req.parents,
-                "content": req.content,
+                "content": content,
             }),
         )
         .await
@@ -242,6 +166,7 @@ impl FsBackend for SandboxFsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::IIIError;
     use std::sync::Mutex;
 
     struct StubFwd {
@@ -330,7 +255,7 @@ mod tests {
                 path: "/sb/x".into(),
                 mode: "0644".into(),
                 parents: false,
-                content: content.clone(),
+                content: crate::fs::WriteContent::Stream(content.clone()),
             })
             .await
             .unwrap();
@@ -345,6 +270,30 @@ mod tests {
         assert_eq!(obj["content"]["channel_id"].as_str(), Some("c-1"));
         assert_eq!(obj["content"]["access_key"].as_str(), Some("k-1"));
         assert_eq!(obj["content"]["direction"].as_str(), Some("read"));
+    }
+
+    #[tokio::test]
+    async fn write_rejects_inline_content_on_sandbox_with_s210() {
+        let stub = Arc::new(StubFwd {
+            captured: Mutex::new(None),
+            respond_with: Ok(json!({ "bytes_written": 0, "path": "" })),
+        });
+        let b = SandboxFsBackend::new(stub.clone(), true, Uuid::new_v4());
+        let err = b
+            .write(WriteArgs {
+                path: "/sb/x".into(),
+                mode: "0644".into(),
+                parents: false,
+                content: crate::fs::WriteContent::Inline("hello".into()),
+            })
+            .await
+            .expect_err("inline content on a sandbox target must reject");
+        assert_eq!(err.code, "S210");
+        assert!(err.message.contains("host-only"), "got: {}", err.message);
+        assert!(
+            stub.captured.lock().unwrap().is_none(),
+            "rejected inline write must not forward to the engine"
+        );
     }
 
     #[tokio::test]
