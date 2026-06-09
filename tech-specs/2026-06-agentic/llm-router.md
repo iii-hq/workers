@@ -57,11 +57,12 @@ A provider worker MUST:
 1. Register `provider::<id>::stream` honouring the channel-writer contract below.
 2. Self-declare to the router at startup via `router::provider::register`.
 3. Resolve credentials per request via `router::provider::resolve` (never read keys directly).
+4. Treat closure of its stream channel as cancellation: abort the upstream request and stop writing
+   frames (see [Stream liveness and cancellation](#stream-liveness-and-cancellation)).
 
 A provider worker MAY:
 
-4. Register `provider::<id>::complete` (legacy non-streaming) and
-   `provider::<id>::refresh_models` (live model discovery into the catalog).
+5. Register `provider::<id>::refresh_models` (live model discovery into the catalog).
 
 ### Provider stream contract
 
@@ -77,7 +78,7 @@ type ProviderStreamInput = {
   model: string;
   messages: AgentMessage[];         // provider serialises to its own wire format
   tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
-  thinking_level?: string;          // "minimal"|"low"|"medium"|"high"|"xhigh"; provider maps or ignores
+  thinking_level?: ThinkingLevel;   // provider maps to its native knob or ignores
 };
 
 type ProviderStreamOutput = { ok: boolean; status?: string };
@@ -85,6 +86,19 @@ type ProviderStreamOutput = { ok: boolean; status?: string };
 
 The router treats `provider::<id>::*` as an interface it *calls*, not functions it registers. See
 [Authoring a provider](#authoring-a-provider).
+
+### Stream liveness and cancellation
+
+- **Heartbeat.** A provider SHOULD write `{ type: "ping" }` at least every 30s when the upstream is
+  alive but producing no frames (long thinking stretches, queued requests). Consumers ignore `ping`.
+- **Idle timeout.** The router applies an idle timeout per stream (default 120s without any frame;
+  configurable in the `llm-router` entry). On expiry it cancels the provider call and writes a
+  terminal `error` frame (`error_kind: "transient"`) to the caller's channel — a provider crash
+  mid-stream can therefore never hang a consumer.
+- **Cancellation.** [`router::abort`](#routerabort) (or the caller closing its read side) closes the
+  provider's stream channel; channel closure **is** the abort signal, which a provider MUST honour
+  by cancelling its upstream HTTP call. The router synthesizes the terminal frame if the provider
+  exits without one.
 
 ## Functions
 
@@ -94,6 +108,7 @@ Consumer-facing:
   `AssistantMessageEvent` frames.
 - `router::complete` — Non-streaming: return the final `AssistantMessage` (drains the stream
   internally).
+- `router::abort` — Abort an in-flight `router::chat` stream by `request_id`.
 - `router::models::list` — List available models, optionally filtered by provider/capability.
 - `router::models::get` — Look up one model's capabilities by `(provider, id)`.
 - `router::models::supports` — Check whether a model supports a capability.
@@ -104,6 +119,8 @@ Provider protocol (router side):
 - `router::provider::register` — A provider self-declares its id, config schema, and defaults.
 - `router::provider::resolve` — A provider resolves its credential + settings at request time.
   **Agent-gated** (see [Security](#security)).
+- `router::provider::update_credential` — A provider persists a refreshed/rotated credential
+  (OAuth). **Agent-gated.**
 - `router::models::reconcile` — A provider replaces its catalog slice in one write.
 
 ## Triggers
@@ -136,7 +153,7 @@ iii.registerTrigger({
 ## API Reference
 
 Shared types (`AgentMessage`, `AssistantMessage`, `AssistantMessageEvent`, `AgentFunction`, `Model`,
-`StreamChannelRef`, `Credential`, `Usage`) are defined in
+`ThinkingLevel`, `StreamChannelRef`, `Credential`, `Usage`) are defined in
 [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 ### `router::chat`
@@ -153,12 +170,13 @@ Request:
 ```typescript
 type ChatRequest = {
   writer_ref: StreamChannelRef;     // direction "write"; the caller's channel
+  request_id?: string;              // correlation id for router::abort + tracing; generated when omitted
   model: string;
   provider?: string;                // disambiguate when a model id exists on multiple providers
   system_prompt?: string | null;
   messages: AgentMessage[];
   tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
-  thinking_level?: string;
+  thinking_level?: ThinkingLevel;
   metadata?: Record<string, unknown>; // passthrough for tracing (session_id, message_id, …)
 };
 ```
@@ -181,11 +199,12 @@ type ChatResponse = {
 ```
 
 Streamed over the channel: a sequence of `AssistantMessageEvent`, terminating in `done` (carrying the
-final `AssistantMessage`) or `error`.
+final `AssistantMessage`) or `error`. The router fills `usage.cost_usd` (on the `usage` frame and the
+final message) from the catalog's `pricing` when the provider reports token counts but no cost.
 
 Errors (thrown before streaming starts): `model is required`; `no provider registered for model
-<id>`; `provider <id> unavailable`. Mid-stream failures arrive as an `error` frame, not a thrown
-error.
+<id>`; `ambiguous model <id> (providers: …)`; `provider <id> unavailable`. Mid-stream failures
+arrive as an `error` frame, not a thrown error.
 
 Example:
 
@@ -223,6 +242,21 @@ type CompleteResponse = {
   provider: string;
   model: string;
 };
+```
+
+### `router::abort`
+
+Abort an in-flight stream. The router closes the provider's stream channel (closure **is** the
+cancellation signal — see [Stream liveness and cancellation](#stream-liveness-and-cancellation))
+and, if the provider has not already terminated, synthesizes a terminal `done` frame on the caller's
+channel carrying the partial message with `stop_reason: "aborted"`. The original `router::chat` call
+then resolves normally.
+
+- Invocation: **sync**
+
+```typescript
+type AbortRequest = { request_id: string };
+type AbortResponse = { aborted: boolean }; // false when unknown or already terminal
 ```
 
 ### `router::models::list`
@@ -290,9 +324,17 @@ type ProviderDeclaration = {
   defaults?: { api_url?: string; max_tokens?: number; [k: string]: unknown };
   config_schema?: Record<string, unknown>; // custom JSON Schema; omit for the standard one
   supports_model_listing?: boolean;
+  models?: Model[];                 // static catalog slice; reconciled at registration
 };
 type ProviderRegisterResponse = { ok: true; id: string };
 ```
+
+When the declaration carries `models`, the router runs `router::models::reconcile` with them
+immediately. A provider without live listing MUST declare its routable models here, so the catalog
+never has silent holes — model-only routing and `context-manager`'s budget resolution
+(`router::models::get`) both depend on catalog coverage; a missing record silently degrades a 200k
+model to the conservative 8k fallback budget. Later `provider::<id>::refresh_models` discovery
+replaces the slice.
 
 ### `router::provider::resolve`
 
@@ -311,6 +353,19 @@ type ProviderResolveResponse = {
   api_url?: string;
   max_tokens?: number;
 };
+```
+
+### `router::provider::update_credential`
+
+The write-back path for rotating credentials: an OAuth provider that refreshes an expired token
+persists the new credential here — provider workers never write the configuration entry directly.
+**Agent-gated** like `resolve` (see [Security](#security)).
+
+- Invocation: **sync**
+
+```typescript
+type ProviderUpdateCredentialRequest = { id: string; credential: Credential };
+type ProviderUpdateCredentialResponse = { ok: true };
 ```
 
 ### `router::models::reconcile`
@@ -346,7 +401,8 @@ strings, each mapping to a field on `Model`:
   or textually describe images first.
 - `cache` -> `supports_cache` — the provider supports prompt caching; the provider may insert cache
   markers to cut cost/latency on repeated prefixes.
-- `thinking` -> `supports_thinking` — the model exposes a reasoning/thinking budget at all.
+- `thinking` -> `supports_thinking` — the model exposes a reasoning/thinking budget at all (a
+  `thinking_level` of `"minimal"` likewise needs only this flag).
 - `thinking:low` | `thinking:medium` | `thinking:high` -> still `supports_thinking` — the level picks
   a budget tier (mapped to the provider's native knob; see `thinking_budgets`).
 - `thinking:xhigh` -> `supports_xhigh` — the model supports the extra-high reasoning tier specifically
@@ -395,8 +451,12 @@ ceiling when known, so an over-large value can't cause upstream 400s.
 `decide(model, provider?)` resolves a target `provider::<id>::stream`:
 
 1. If `provider` is given and registered -> that provider.
-2. Else, the unique provider whose catalog contains `model`.
-3. Else, an optional model-name heuristic (prefix/regex per provider).
+2. Else, the unique provider whose catalog contains `model`. If **several** providers serve the same
+   model id, the call fails with `ambiguous model <id> (providers: a, b)` — the caller must pass
+   `provider`; the router never picks silently.
+3. Else, an optional model-name heuristic from the `llm-router` configuration entry —
+   `routing_heuristics: [{ pattern, provider }]`, first match wins (e.g.
+   `{ "pattern": "^gpt-", "provider": "openai" }`).
 4. Else -> throw `no provider registered for model <id>`.
 
 Routing reads the live registry; adding a provider worker makes its models routable with no router
@@ -404,12 +464,21 @@ change.
 
 ## Security
 
-- `router::provider::resolve` and `configuration::*` MUST be denied to in-run agents in the
-  deployment's `iii-permissions.yaml`. Credentials live in plaintext in the configuration value;
-  these denials keep an agent from reading them via a function call. Provider workers (and operator UIs)
-  call them as worker/user-initiated calls, which bypass the agent gate.
-- `router::chat` / `router::complete` / `router::models::*` / `router::provider::list` are safe to
-  expose to consumers.
+Agent-gating relies on provenance propagation through nested triggers — see
+[README § Security model](README.md#security-model).
+
+Agent exposure (`iii-permissions.yaml`):
+
+- **Deny to in-run agents:** `router::provider::resolve` and `router::provider::update_credential`
+  (credential read/write), `router::provider::register` (provider spoofing),
+  `router::models::reconcile` (catalog poisoning), and all of `configuration::*` (the entry carries
+  plaintext keys). Provider workers and operator UIs call these as worker/user-initiated calls,
+  which bypass the agent gate.
+- **Deny by default:** `router::chat` / `router::complete` / `router::abort` — not secret-bearing,
+  but an agent that can call the router directly generates spend outside the harness loop's
+  accounting and `max_turns` guard.
+- **Safe:** `router::models::list` / `router::models::get` / `router::models::supports` /
+  `router::provider::list`.
 
 ## Authoring a provider
 
@@ -417,10 +486,15 @@ To add a provider `foo`:
 
 1. Implement `provider::foo::stream` honouring [the provider stream contract](#provider-stream-contract);
    write `AssistantMessageEvent` frames to the hydrated `writer_ref`, end with `done`/`error`, close.
+   Honour [liveness and cancellation](#stream-liveness-and-cancellation): emit `ping` through silent
+   stretches, abort the upstream request when the channel closes.
 2. At startup, call `router::provider::register` with
-   `{ id: "foo", credential_env_var: "FOO_API_KEY", defaults, supports_model_listing }`.
+   `{ id: "foo", credential_env_var: "FOO_API_KEY", defaults, supports_model_listing, models }` —
+   include the static `models` slice unless step 4 is implemented.
 3. In the stream handler, call `router::provider::resolve({ id: "foo" })` for the credential +
    `api_url`/`max_tokens`. Cloud providers throw on `credential: null`; local providers tolerate it.
+   OAuth providers refresh expired tokens themselves and persist the result via
+   `router::provider::update_credential`.
 4. (Optional) Implement `provider::foo::refresh_models` -> `router::models::reconcile` for live model
    discovery.
 
@@ -440,5 +514,6 @@ catalog.
   [session-manager](session-manager.md) / [context-manager](context-manager.md) upstream).
 - Does **not** run the agent loop, dispatch functions, or gate approvals — that is the
   [harness](harness.md).
-- Does **not** seed models from a static list — the catalog is provider-sourced via
-  `router::models::reconcile`.
+- Does **not** seed models from a static list of its own — the catalog is provider-sourced via
+  `router::models::reconcile` (live discovery, or the static `models` slice in a provider's
+  declaration).

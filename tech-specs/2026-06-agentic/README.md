@@ -99,9 +99,9 @@ plain LLM loop without `context-manager`).
    directly without harness".
 4. **`context-manager` does not own storage.** It operates on message arrays passed in and returns
    results; the caller persists them. This keeps it reusable by any harness or AI feature.
-5. **`session-manager` is the single reactive surface.** Consumers bind to its triggers (new session,
-   new message, message content updated, status changed) and render live — they never poll and never
-   need to know about the provider or the loop.
+5. **`session-manager` is the single reactive surface.** Consumers bind to its triggers (session
+   created, message added/updated, status changed, meta updated, session deleted) and render live —
+   they never poll and never need to know about the provider or the loop.
 
 ## Conventions
 
@@ -193,6 +193,11 @@ type ContentBlock =
   | FunctionResultContent;
 ```
 
+`FunctionResultMessage` (a `role`, below) is the **canonical transcript form** for function output;
+`FunctionResultContent` (a block) is the adapter-boundary form for providers whose wire format
+embeds tool results inside another message (e.g. Anthropic `tool_result` blocks in a `user` turn).
+Workers in this spec store the message form and let provider adapters map it.
+
 ### Messages (the "many message types")
 
 The canonical transcript message union. Owned by [session-manager](session-manager.md); consumed by
@@ -246,6 +251,12 @@ type AgentMessage =
   | CustomMessage;
 ```
 
+Provider wire mapping: providers serialise `user` / `assistant` / `function_result` messages to
+their native format. `custom` messages have **no** wire mapping — `context::assemble` (or the
+harness, in raw mode) strips them before the router sees them. Replayed `thinking` blocks follow
+each provider's rules (e.g. Anthropic requires the `signature`; providers drop blocks they cannot
+replay).
+
 ### Session entries
 
 How `session-manager` stores messages: each `AgentMessage` is wrapped in an entry envelope that gives
@@ -254,15 +265,28 @@ items (system notices, UI markers, attachments) use the `custom` kind.
 
 ```typescript
 type SessionEntry =
-  | { kind: "message"; id: string; parent_id: string | null; timestamp: number; message: AgentMessage }
-  | { kind: "custom";  id: string; parent_id: string | null; timestamp: number; custom_type: string; data: unknown };
+  | { kind: "message"; id: string; parent_id: string | null; timestamp: number;
+      revision: number; origin?: Record<string, unknown>; message: AgentMessage }
+  | { kind: "custom";  id: string; parent_id: string | null; timestamp: number;
+      revision: number; origin?: Record<string, unknown>; custom_type: string; data: unknown };
 ```
+
+`revision` starts at 0 and increments on every content update (streaming); events echo it so
+consumers can apply full-message snapshots last-write-wins. `origin` is opaque writer-supplied
+correlation — the harness sets `{ turn_id }` on everything its loop writes.
+
+When to use which custom shape: a **`custom` message** (`role: "custom"` inside a `kind: "message"`
+entry) is a transcript item — rendered in order, part of the conversation (system notices, UI
+markers). A **`custom` entry** (`kind: "custom"`) is bookkeeping *about* the conversation that is
+not a message at all (e.g. the harness's compaction record) — `session::messages` only returns it
+when asked (`include_custom`). Neither reaches the model: providers only ever receive `user` /
+`assistant` / `function_result` roles (see the wire-mapping note above).
 
 ### Streaming events
 
 The discriminated union providers stream over an iii channel, relayed verbatim by `llm-router` and
-the `harness`. Non-terminal frames carry a `partial` accumulator; `done`/`error` carry the final
-assembled message. `done` and `error` are terminal.
+the `harness`. Non-terminal content frames carry a `partial` accumulator (`usage`, `ping`, and
+`stop` do not); `done`/`error` carry the final assembled message. `done` and `error` are terminal.
 
 ```typescript
 type StopReason = "end" | "length" | "function_call" | "aborted" | "error";
@@ -270,7 +294,7 @@ type ErrorKind  = "auth_expired" | "rate_limited" | "context_overflow" | "transi
 type Usage = {
   input?: number; output?: number;
   cache_read?: number; cache_write?: number;
-  cost_usd?: number;
+  cost_usd?: number;   // filled by llm-router from catalog pricing; providers leave it unset
 };
 
 type AssistantMessageEvent =
@@ -285,6 +309,7 @@ type AssistantMessageEvent =
   | { type: "functioncall_delta";partial: AssistantMessage; delta: string }
   | { type: "functioncall_end";  partial: AssistantMessage }
   | { type: "usage";             usage: Usage }
+  | { type: "ping" }                              // liveness heartbeat; consumers ignore
   | { type: "stop";              stop_reason: StopReason; error_message?: string; error_kind?: ErrorKind }
   | { type: "done";              message: AssistantMessage }   // terminal
   | { type: "error";             error: AssistantMessage };    // terminal
@@ -295,6 +320,10 @@ type AssistantMessageEvent =
 The capability record `llm-router` serves and every worker reads to make budget/feature decisions.
 
 ```typescript
+// "minimal" requests the lowest reasoning effort and needs only `thinking` support;
+// levels map to provider-native knobs via Model.thinking_budgets.
+type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
 type Capability =
   | "thinking" | "thinking:low" | "thinking:medium" | "thinking:high" | "thinking:xhigh"
   | "tools" | "vision" | "cache";
@@ -311,7 +340,7 @@ type Model = {
   supports_tools?: boolean;
   supports_vision?: boolean;
   supports_cache?: boolean;
-  thinking_budgets?: Record<string, number>;
+  thinking_budgets?: Partial<Record<ThinkingLevel, number>>;
   pricing?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
 };
 ```
@@ -356,6 +385,55 @@ type Credential =
   | { type: "oauth";   access_token: string; refresh_token?: string; expires_at?: number };
 ```
 
+## Cross-cutting conventions
+
+### Observability
+
+Every worker wraps its registered functions in OTel spans (no-op when OTel is not initialised),
+named `<worker>.<verb>`, with `session_id` / `turn_id` / `request_id` attributes taken from the
+request or its `metadata` / `origin` passthrough. The notable spans: `harness.turn` (per step),
+`router.chat` (per stream: provider, model, usage), `context.assemble` (tokens before/after,
+pruned/compacted flags), `context.compact` (lease wait, tokens), and `session.append` /
+`session.update_message` (entry id, revision). Consumers propagate `metadata` so traces stitch
+end-to-end.
+
+### Error conventions
+
+Errors thrown across the bus carry a stable snake_case code, worker-prefixed, in a
+`{ code, message }` shape — e.g. `router/no_provider_for_model`, `router/ambiguous_model`,
+`session/not_found`, `context/model_unresolved`, `harness/invalid_message_role`. The prose "Errors"
+lists in each spec name the conditions; codes map 1:1 onto them. Failures *inside* a stream never
+throw — they arrive as `error` frames carrying an `ErrorKind`.
+
+### Trigger delivery
+
+Custom trigger types are evaluated by the **emitting** worker: it owns the type's handler, keeps the
+subscriber set, applies each binding's `config` filter, and dispatches. Delivery is at-least-once
+and unordered across entries — consumers reconcile via `revision` (message updates) and the parent
+chain (transcript order), never via arrival order. Subscriptions are engine registrations:
+subscribers re-register on reconnect, and an emitter rebuilds its subscriber set from the engine
+after a restart.
+
+## Security model
+
+Everything callable over the bus is callable by the model through `agent_trigger`, so security is a
+deployment property, not an option:
+
+- **Provenance.** Every `iii.trigger` issued on behalf of a model (i.e. from
+  `harness::function::dispatch`) carries agent provenance in its invocation metadata, and the engine
+  MUST propagate that mark through nested triggers — a function the agent calls cannot launder a
+  call by re-triggering. `iii-permissions.yaml` rules apply to any call whose chain carries the
+  mark; worker- and user-initiated calls bypass them. Without provenance propagation, agent-gating
+  is advisory — deployments MUST NOT expose credentials on engines that lack it.
+- **Fail closed.** The harness dispatch policy defaults to deny: when no `functions` allow-list is
+  supplied, every `agent_trigger` call is refused (see
+  [harness.md § Functions (the white box)](harness.md#functions-the-white-box)). Deployments opt
+  functions in via `allow` globs or an approval sibling.
+- **Agent exposure.** Each worker spec carries an "Agent exposure" section listing which of its
+  functions may be exposed to in-run agents. The short version: reads are generally safe (tenancy
+  caveats aside); every mutating surface of `session-manager`, the `harness` entry points, and the
+  router's provider/config plane is deny-by-default.
+
 ## Spec index
 
 - [context-manager.md](context-manager.md)
@@ -370,3 +448,19 @@ The existing [`harness/`](../../harness) package in this repo implements the sam
 `provider-*`, `approval-gate`, `llm-budget`, `hook-fanout`, …). This spec is a greenfield
 consolidation of that experience into four standalone workers; it borrows the proven wire types and
 streaming contract but is not bound to the current package's structure.
+
+### Migration map
+
+| Existing worker(s) | Replaced by |
+|---|---|
+| `turn-orchestrator` (`run::start`, `turn::*` FSM) | [harness](harness.md) (`harness::send`, `harness::turn`) |
+| `session` (`session-tree::*`) | [session-manager](session-manager.md) (`session::*`) |
+| `context-compaction` (`compact_now`, `prune_tool_outputs`) | [context-manager](context-manager.md) (`context::*`, storage-agnostic) |
+| `models-catalog` (`models::*`) + the orchestrator's provider routing | [llm-router](llm-router.md) (`router::*`) |
+| `provider-*` workers | same protocol shape, re-pointed at `router::provider::*` |
+| `approval-gate`, `llm-budget`, `hook-fanout` | out of scope in v1 — siblings (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)) |
+
+Function prefixes do not collide, so both stacks can run side by side during migration. Transcripts
+move with a one-shot copy from `session_tree:*` scopes into `session:*` (entry shapes are
+compatible modulo the new envelope fields: `revision`, `origin`); compaction entries become
+`custom_type: "compaction"` entries.

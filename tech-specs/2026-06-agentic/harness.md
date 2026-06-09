@@ -36,6 +36,9 @@ sequenceDiagram
   H->>S: session::set_status working
   H->>S: session::messages
   H->>X: context::assemble
+  opt assemble compacted the head
+    H->>S: session::append (custom compaction entry)
+  end
   H->>R: router::chat (over channel)
   R-->>H: AssistantMessageEvent frames
   H->>S: session::append (assistant) then session::update_message (stream deltas)
@@ -52,34 +55,119 @@ sequenceDiagram
 ## The loop
 
 `harness::send` is the entry point; it ensures the session, persists the user message, and enqueues
-the first `harness::turn` step, then returns immediately. The loop runs as durable enqueued steps so a
-crash or restart resumes mid-turn. One `harness::turn` step does:
+the first `harness::turn` step, then returns immediately — or merges into a turn that is already
+running (see [Concurrency & steering](#concurrency--steering)). The loop runs as durable enqueued
+steps so a crash or restart resumes mid-turn (see
+[Durability & idempotency](#durability--idempotency)). Every `session::append` /
+`session::update_message` the loop issues carries `origin: { turn_id }`, so session events are
+attributable to a turn. One `harness::turn` step does:
 
 1. Mark working: `session::set_status working` (first step of a turn).
-2. Load active path: `session::messages`.
-3. Assemble context: `context::assemble` (skipped if `context-manager` absent -> raw messages + base
-   system prompt). Attach the single `agent_trigger` invocation schema to the router request (see
-   [Functions (the white box)](#functions-the-white-box)); function discovery is runtime — the model
-   calls `engine::functions::list` / `engine::functions::info` through `agent_trigger`.
-4. Generate: open a channel, call `router::chat`; `session::append` an assistant message, then
-   `session::update_message` as deltas arrive (each fires `session::message_updated`). Deltas may be
-   batched to throttle update frequency; the final update writes the complete `AssistantMessage`.
+2. Load active path: `session::messages` with `include_custom: true` (custom entries carry the
+   compaction record, below).
+3. Assemble context: read the latest compaction entry (if any) on the active path, reduce the
+   candidate window to it, and call `context::assemble` with `previous_summary` set (see
+   [Compaction persistence](#compaction-persistence)); skipped if `context-manager` absent -> raw
+   messages + base system prompt. If the response reports `applied.compacted`, persist the new
+   summary (same section). Attach the single `agent_trigger` invocation schema to the router request
+   (see [Functions (the white box)](#functions-the-white-box)); function discovery is runtime — the
+   model calls `engine::functions::list` / `engine::functions::info` through `agent_trigger`.
+4. Generate: open a channel, call `router::chat` with `request_id = <turn_id>:<step>` (recorded on
+   the turn record as `stream_request_id` for [`harness::stop`](#harnessstop)); `session::append` an
+   assistant message, then `session::update_message` as deltas arrive (each fires
+   `session::message_updated`). Deltas may be batched to throttle update frequency; the final update
+   writes the complete `AssistantMessage`.
 5. If the message has `function_call` content: unwrap each `agent_trigger` call, dispatch via
-   `harness::function::dispatch`, append each `function_result`, then re-enqueue `harness::turn` to
-   let the model react.
-6. Else, steering check: re-read `session::messages` for any user message appended after this turn
-   started (see [Triggers](#triggers)); if present, continue with another generate step; otherwise
-   mark the turn `completed`, `session::set_status done`, and stop.
+   `harness::function::dispatch` sequentially in content order (the `agent_trigger` schema declares
+   `execution_mode: "sequential"`), append each `function_result` — checkpointing per call (see
+   [Durability & idempotency](#durability--idempotency)) — then re-enqueue `harness::turn` to let
+   the model react.
+6. Else, steering check: re-read `session::messages` for user-role entries after the turn record's
+   `watermark_entry_id` (see [Concurrency & steering](#concurrency--steering)); if present, continue
+   with another generate step; otherwise mark the turn `completed`, `session::set_status done`, and
+   stop.
 
 A `max_turns` guard caps runaway loops (turn ends `completed` with a synthetic notice). Cancellation
-is cooperative: `harness::stop` sets an abort flag the next step checks, records `TurnStatus`
-`cancelled`, then sets `session::set_status done`.
+is cooperative *between* steps and explicit *during* generation: `harness::stop` sets an abort flag
+the next step checks, and when a stream is in flight it also calls
+[`router::abort`](llm-router.md#routerabort) with the `stream_request_id` recorded on the turn
+record. The generate step then finalises the partial assistant message (`stop_reason: "aborted"`),
+records `TurnStatus` `cancelled`, and sets `session::set_status done`.
 
 The harness maps the turn lifecycle onto the session's coarse status: `working` while a turn is
-running or awaiting functions, `done` once it ends (`completed`, `cancelled`, or `failed`). The
-internal `TurnStatus` (below) is finer-grained and stays inside the harness; consumers watch the
-session status for idle/working/done, and call `harness::status` when they need to distinguish
-completion from cancellation.
+running or awaiting functions, `done` when it ends `completed` or `cancelled`, and `error` (with a
+short `reason`) when it ends `failed`. The internal `TurnStatus` (below) is finer-grained and stays
+inside the harness; consumers watch the session status, and call `harness::status` when they need to
+distinguish completion from cancellation.
+
+## Compaction persistence
+
+`context-manager` is stateless — if nobody persists its compaction output, every turn past the
+budget re-summarises the whole head (one extra LLM call per turn) and summaries never converge. The
+harness is the caller, so the harness persists:
+
+- When `context::assemble` returns `applied.compacted: true`, the harness appends a `custom` session
+  entry — `{ custom_type: "compaction", data: { summary, tail_start_entry_id, tokens_before } }` —
+  mapping `applied.tail_start_index` onto the entry id of the loaded active path.
+- At the start of every assemble (loop step 3), the harness scans the loaded path for the **latest**
+  compaction entry. When present, the candidate window passed to `context::assemble` is only the
+  messages from `tail_start_entry_id` onward (compaction entries themselves are never sent), with
+  `options.previous_summary` set to the stored summary so a re-compaction updates it in place.
+- `options.lease_key` is always the `session_id`, so concurrent compactions of one session are
+  mutually excluded across workers.
+
+Result: one summarisation per overflow, amortised — not one per turn. The durable transcript is
+untouched; the compaction entry is loop bookkeeping the harness owns (see
+[context-manager.md § The compaction round trip](context-manager.md#the-compaction-round-trip)).
+
+## Durability & idempotency
+
+The `harness-turn` queue is **at-least-once**: any step may be redelivered after a crash, and every
+step must tolerate it. The rules:
+
+- **Stale-step guard.** Each dequeue compares `payload.step` to the turn record's current `step`; a
+  lower step is acked and dropped. The guard only catches *old* steps — redelivery of the *current*
+  step while it is still executing is indistinguishable from a resume, so the queue's
+  visibility/processing timeout MUST exceed the worst-case step duration (which the router's stream
+  idle timeout bounds — see
+  [llm-router.md § Stream liveness](llm-router.md#stream-liveness-and-cancellation)).
+- **Deterministic entry ids.** Every entry a step writes uses a deterministic id supplied via
+  `session::append`'s `entry_id` (idempotent: appending an existing id is a no-op). The assistant
+  message of a generate step is `e_<turn_id>_<step>_assistant`; a `function_result` is
+  `e_<turn_id>_<function_call_id>`. A redelivered step therefore writes into the same entries
+  instead of duplicating them: if the deterministic assistant entry already exists, the resumed
+  generate step streams into it via `session::update_message` rather than appending a second
+  message — a crash never yields two assistant messages.
+- **Per-call checkpoints.** The turn record carries
+  `calls: Record<function_call_id, { state: "dispatched" | "done"; entry_id?: string }>`. The
+  dispatch loop checkpoints `dispatched` *before* invoking the target function and `done` *after*
+  the `function_result` entry is appended. On redelivery: `done` calls are skipped; a call found
+  `dispatched` but not `done` is **not re-invoked** — the side effect may or may not have happened,
+  so the harness appends a synthetic `function_result` with `is_error: true`
+  (`"interrupted: executed at most once, result unknown (restart during execution)"`) and lets the
+  model decide whether to retry. Step delivery is at-least-once; function side effects are
+  at-most-once.
+- **Status writes** (`session::set_status`, turn record transitions) are naturally idempotent —
+  re-setting the same value is a no-op and fires no event.
+
+## Concurrency & steering
+
+One turn per session, enforced at the entry point:
+
+- **Turn CAS.** `harness::send` seeds the turn record with an atomic check-and-set: it creates a new
+  turn only if no record exists or the existing record is terminal (`completed` / `cancelled` /
+  `failed`). Two concurrent sends create exactly one turn — the loser of the CAS takes the merge
+  path.
+- **Merge path.** If a turn is already `running` / `awaiting_functions`, `harness::send` only
+  appends the user message and returns the running turn's id with `merged: true`. The running loop's
+  steering check folds the message in. A merged send never changes the running turn's `model`,
+  `system_prompt`, or `functions` policy — per-send options are stored on the turn record when the
+  turn is created and apply unchanged until it ends.
+- **Steering watermark.** The turn record stores `watermark_entry_id` — the active-path leaf
+  observed when the latest generate step assembled its context. The steering check (loop step 6)
+  asks `session::messages` for user-role entries **after the watermark**; if any exist it continues
+  with another generate step (advancing the watermark), otherwise the turn completes. "Arrived after
+  this turn started" is defined by entry position, never wall-clock time.
 
 ## Functions (the white box)
 
@@ -91,12 +179,21 @@ The harness:
 - Attaches **one** invocation schema (`agent_trigger`) to each `router::chat` request so the model
   can trigger any allowed function via `{ function, payload }`.
 - On `function_call` content: unwraps `agent_trigger` → target `function_id` + `payload`, enforces
-  allow/deny policy (see `harness::send` options or an approval sibling in v1), dispatches via
-  `iii.trigger({ function_id, payload })` through `harness::function::dispatch`, and captures the
-  result as a `function_result` message.
+  the dispatch policy below, dispatches via `iii.trigger({ function_id, payload })` through
+  `harness::function::dispatch`, and captures the result as a `function_result` message.
+
+The dispatch policy is **fail-closed**: a call is dispatched only if the target matches an `allow`
+glob and no `deny` glob (see `harness::send` options). When `options.functions` is omitted entirely,
+every call is denied with an `is_error` function_result explaining the policy — a default install is
+a plain chat loop until functions are explicitly allowed, or until an approval sibling upgrades "no
+match" from deny to a held approval (see
+[Out of scope](#out-of-scope-future-sibling-workers)).
 
 `engine::functions::list` is how the **model** discovers what's callable — by triggering it through
-`agent_trigger` at runtime — not how the harness builds a schema list at turn start.
+`agent_trigger` at runtime — not how the harness builds a schema list at turn start. The harness
+post-filters `engine::functions::list` / `engine::functions::info` results through the same
+allow/deny globs before folding them into the `function_result`, so the model only discovers
+functions it can actually call.
 
 A function can do anything an iii function can, including calling back to the consumer (the diagram's
 `funcs -> chat` edge) — that is the function's own behaviour, not the harness's.
@@ -111,6 +208,16 @@ Terminology: see [README.md § Terminology](README.md#terminology).
   function; capture its result.
 - `harness::stop` — Request cancellation of an in-flight turn.
 - `harness::status` — Read the current turn status for a session.
+
+## Agent exposure
+
+Deny-by-default for in-run agents (see [README § Security model](README.md#security-model)):
+
+- **Deny:** `harness::send` — self-invocation: a model that can start turns can fork unbounded loops
+  outside any `max_turns` guard (the prior deployment denies `run::start` for the same reason);
+  `harness::turn` (internal); `harness::function::dispatch` (forged call ids, policy re-entry);
+  `harness::stop`.
+- **Safe:** `harness::status` (read-only).
 
 ## Triggers
 
@@ -139,12 +246,13 @@ iii.registerFunction("harness::on_steering", async (evt) => {
     status.status === "cancelled" ||
     status.status === "failed"
   ) {
+    // model/options for the fresh turn come from app config — a merged send ignores them anyway.
     await iii.trigger({
       function_id: "harness::send",
       payload: { session_id: evt.session_id, message: evt.message, model: "<model>" },
     });
   }
-  // else: a turn is running; its steering check re-reads session::messages and folds this in.
+  // else: a turn is running; its steering check (watermark) folds this message in.
 });
 
 iii.registerTrigger({
@@ -160,8 +268,8 @@ This is opt-in; the default harness has no bound triggers.
 
 ## API Reference
 
-Shared types (`AgentMessage`, `ContentBlock`, `AssistantMessage`, `AgentFunction`) are defined in
-[README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
+Shared types (`AgentMessage`, `ContentBlock`, `AssistantMessage`, `AgentFunction`, `ThinkingLevel`)
+are defined in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 ```typescript
 type TurnStatus =
@@ -175,7 +283,9 @@ type TurnStatus =
 ### `harness::send`
 
 Accept an incoming message, ensure the session, append the user message, and enqueue the first turn
-step. Returns before the turn runs.
+step. Returns before the turn runs. If a turn is already running for the session, the message is
+appended and folded into it instead — no second turn starts (see
+[Concurrency & steering](#concurrency--steering)).
 
 - Invocation: **sync** (kicks an async/enqueued loop)
 
@@ -184,13 +294,14 @@ Request:
 ```typescript
 type SendRequest = {
   session_id?: string;            // omit to create a new session
-  message: AgentMessage | string; // string is sugar for a user text message
+  message: AgentMessage | string; // string is sugar for a user text message;
+                                  // role must be "user" or "custom" (else harness/invalid_message_role)
   model: string;
   provider?: string;
   options?: {
     system_prompt?: string;
     max_turns?: number;           // default 16
-    thinking_level?: string;
+    thinking_level?: ThinkingLevel;
     functions?: {
       allow?: string[];           // function_id globs the agent may dispatch to (e.g. "shell::*")
       deny?: string[];
@@ -205,8 +316,9 @@ Response:
 ```typescript
 type SendResponse = {
   session_id: string;
-  turn_id: string;     // identifies this loop invocation
+  turn_id: string;     // the new turn — or the running turn when merged
   accepted: true;
+  merged?: boolean;    // true when folded into an in-flight turn (steering)
 };
 ```
 
@@ -222,8 +334,9 @@ Example:
 
 ### `harness::turn`
 
-Internal durable loop step. Documented for completeness; consumers do not call it. Enqueued onto a
-FIFO `harness-turn` queue; each run advances one step of [the loop](#the-loop).
+Internal durable loop step. Documented for completeness; consumers do not call it. Enqueued onto the
+`harness-turn` queue (FIFO per session, parallel across sessions — see
+[Dependencies](#dependencies)); each run advances one step of [the loop](#the-loop).
 
 - Invocation: **enqueue** (`TriggerAction.Enqueue({ queue: "harness-turn" })`)
 
@@ -240,9 +353,10 @@ type TurnStepResult = {
 };
 ```
 
-Failure handling: an unexpected throw marks the turn `failed` and appends a `custom`
-(`custom_type: "error"`) entry so the UI sees the reason. A step may opt into queue retry/backoff for
-transient provider errors instead of failing the turn.
+Failure handling: an unexpected throw marks the turn `failed`, appends a `custom`
+(`custom_type: "error"`) entry so the UI sees the reason, and sets `session::set_status error` with
+a short `reason`. A step may opt into queue retry/backoff for transient provider errors instead of
+failing the turn (subject to [Durability & idempotency](#durability--idempotency)).
 
 ### `harness::function::dispatch`
 
@@ -271,14 +385,15 @@ type FunctionDispatchResponse = {
 };
 ```
 
-The harness performs no approval check here in v1; gating is delegated to an optional approval sibling
-that can wrap or precede dispatch (see [Out of scope](#out-of-scope-future-sibling-workers)).
+v1 enforces the fail-closed allow/deny globs only — there is no *hold* state. Approval-with-hold
+(park the call, resume on a decision) is delegated to an optional approval sibling that can wrap or
+precede dispatch (see [Out of scope](#out-of-scope-future-sibling-workers)).
 
 ### `harness::stop`
 
-Request cancellation. Sets an abort flag the next `harness::turn` step observes; an in-flight provider
-stream is closed best-effort. The turn record transitions to `cancelled` before `session::set_status
-done`.
+Request cancellation. Sets an abort flag the next `harness::turn` step observes, and aborts an
+in-flight stream via [`router::abort`](llm-router.md#routerabort) using the `stream_request_id` on
+the turn record. The turn record transitions to `cancelled` before `session::set_status done`.
 
 - Invocation: **sync**
 
@@ -310,7 +425,7 @@ type StatusResponse = {
 
 | Scope | Key | Value | Purpose |
 |---|---|---|---|
-| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, abort? }` | Loop progress; survives restart. |
+| `harness_turn` | `<session_id>` | turn record `{ turn_id, status, step, turn_count, abort?, watermark_entry_id?, stream_request_id?, options, calls }` | Loop progress, per-send options, per-call checkpoints, steering watermark; survives restart. Seeded by CAS from `harness::send` (see [Concurrency & steering](#concurrency--steering)). |
 
 Transcript truth lives in [session-manager](session-manager.md); the harness keeps only loop
 bookkeeping.
@@ -321,7 +436,9 @@ bookkeeping.
   and set status. Required.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
-- `iii-queue` — the durable `harness-turn` loop.
+- `iii-queue` — the durable `harness-turn` loop. The queue MUST provide per-session ordering with
+  cross-session parallelism (partition by `session_id`); a single global FIFO would head-of-line
+  block every session behind one long stream step.
 - iii engine `iii.trigger` — function dispatch (`agent_trigger` unwrap → target function).
 
 ## Out of scope (future sibling workers)
