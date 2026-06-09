@@ -8,8 +8,9 @@
  *   the in-flight compaction releases the lease instead of failing the run.
  */
 
-import { fetchModelLimit } from '../context-compaction/model-resolver.js';
+import { fetchModelLimit, limitFromModel } from '../context-compaction/model-resolver.js';
 import { usable as computeUsable } from '../context-compaction/overflow.js';
+import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
@@ -39,8 +40,13 @@ export async function runPreflight(
   messages: AgentMessage[],
   providerID: string,
   modelID: string,
+  modelMeta?: Model,
 ): Promise<'ok' | 'compacted'> {
-  const model = await fetchModelLimit(iii, providerID, modelID);
+  // The turn's model, resolved once at provisioning. Use it directly when
+  // threaded (same limit a fetch yields); fetch only when it was absent.
+  const model = modelMeta
+    ? { providerID, modelID, modelLimit: limitFromModel(modelMeta) }
+    : await fetchModelLimit(iii, providerID, modelID);
   if (!model || model.modelLimit.context === 0) {
     if (model && model.modelLimit.context === 0) {
       logger.debug('preflight: model has no context_window; skipping pre-flight check', {

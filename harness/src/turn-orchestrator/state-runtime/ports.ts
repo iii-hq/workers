@@ -5,6 +5,7 @@
 import { emit } from '../events.js';
 import type { RunRequest } from '../run-request.js';
 import type { ISdk } from '../../runtime/iii.js';
+import type { ModelContextLimit } from '../../types/agent-event.js';
 import type { AgentMessage, FunctionResultMessage } from '../../types/agent-message.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
 import { createTurnStore, type TurnStore } from './store.js';
@@ -19,6 +20,7 @@ export type TurnStatePorts = {
     session_id: string,
     message: AgentMessage,
     function_results: FunctionResultMessage[],
+    model_limit?: ModelContextLimit,
   ): Promise<void>;
   finishSession(rec: TurnStateRecord): Promise<void>;
 };
@@ -47,8 +49,13 @@ export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePor
       return s.saveRunRequest(session_id, request);
     },
 
-    async emitTurnEnd(session_id, message, function_results) {
-      await emit(iii, session_id, { type: 'turn_end', message, function_results });
+    async emitTurnEnd(session_id, message, function_results, model_limit) {
+      await emit(iii, session_id, {
+        type: 'turn_end',
+        message,
+        function_results,
+        ...(model_limit ? { model_limit } : {}),
+      });
     },
 
     async finishSession(rec) {

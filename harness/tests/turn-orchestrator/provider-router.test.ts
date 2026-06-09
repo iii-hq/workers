@@ -106,4 +106,39 @@ describe('buildInput', () => {
     const withoutLevel = buildInput(decision, writer, 'sys', [], []);
     expect(withoutLevel).not.toHaveProperty('thinking_level');
   });
+
+  it('carries model_meta when provided and omits it when absent', () => {
+    const decision = { provider: 'anthropic', model: 'claude-sonnet-4-6' } as const;
+    const writer = { channel_id: 'c', access_key: 'k', direction: 'write' } as const;
+    const model_meta = {
+      id: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      api: 'anthropic-messages',
+      display_name: 'Claude Sonnet 4.6',
+      context_window: 1_000_000,
+      max_output_tokens: 64_000,
+    };
+    const withMeta = buildInput(decision, writer, 'sys', [], [], undefined, model_meta);
+    expect(withMeta.model_meta).toEqual(model_meta);
+    const withoutMeta = buildInput(decision, writer, 'sys', [], []);
+    expect(withoutMeta).not.toHaveProperty('model_meta');
+  });
+
+  it('carries resolution_key when provided and omits it when absent', () => {
+    const decision = { provider: 'anthropic', model: 'claude' } as const;
+    const writer = { channel_id: 'c', access_key: 'k', direction: 'write' } as const;
+    const withKey = buildInput(
+      decision,
+      writer,
+      'sys',
+      [],
+      [],
+      undefined,
+      undefined,
+      1738000000000,
+    );
+    expect(withKey.resolution_key).toBe(1738000000000);
+    const withoutKey = buildInput(decision, writer, 'sys', [], []);
+    expect(withoutKey).not.toHaveProperty('resolution_key');
+  });
 });

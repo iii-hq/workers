@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import type { Model } from '../../models-catalog/types.js';
 import { logger } from '../../runtime/otel.js';
 import type { ISdk } from '../../runtime/iii.js';
 import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
@@ -25,6 +26,10 @@ export type StreamContext = {
   messages: AgentMessage[];
   /** Optional reasoning/thinking level from the run request. Absent = off. */
   thinking_level?: string;
+  /** Turn's pre-resolved catalog entry, threaded to the provider. Absent = off. */
+  model_meta?: Model;
+  /** Turn's stable id (run start time), so the provider dedupes credential resolution. */
+  resolution_key?: number;
 };
 
 export type StreamTurnOutcome = {
@@ -36,7 +41,7 @@ export type StreamTurnOutcome = {
 export type AssistantRoute =
   | { kind: 'stopped'; reason: 'error' | 'aborted' }
   | { kind: 'function_execute' }
-  | { kind: 'steering_check' };
+  | { kind: 'end_turn' };
 
 export function parseFunctionSchemas(raw: unknown[]): AgentFunction[] {
   return z.array(AgentFunctionSchema).parse(raw) as AgentFunction[];
@@ -62,6 +67,7 @@ export type AssistantStreamingPorts = TurnStatePorts & {
     messages: AgentMessage[],
     provider: string,
     model: string,
+    model_meta?: Model,
   ): Promise<'ok' | 'compacted'>;
   streamTurn(
     ctx: StreamContext,
@@ -90,8 +96,8 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
   return {
     ...base,
 
-    async runPreflight(session_id, messages, provider, model) {
-      return runPreflight(iii, session_id, messages, provider, model);
+    async runPreflight(session_id, messages, provider, model, model_meta) {
+      return runPreflight(iii, session_id, messages, provider, model, model_meta);
     },
 
     async streamTurn(ctx, onDelta) {
@@ -106,6 +112,8 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
             ctx.messages,
             ctx.tools,
             ctx.thinking_level,
+            ctx.model_meta,
+            ctx.resolution_key,
           ),
         onDelta,
       });

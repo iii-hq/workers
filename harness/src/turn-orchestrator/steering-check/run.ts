@@ -1,9 +1,20 @@
 /**
  * Route steering_check outcomes and apply transitions.
+ *
+ * COMPAT (release A of the steering_check removal): nothing transitions into
+ * the `steering_check` state anymore — its routing is inlined into
+ * assistant-streaming finalizeAssistantTurn and function-execute finalizeBatch.
+ * This module stays registered for one release so queue messages / records
+ * persisted in `steering_check` at deploy time drain instead of DLQ-wedging
+ * the turn. Release B removes the state, schemas, and this registration.
  */
 
-import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce, resumeToAssistantStreaming } from '../state-runtime/turn-end.js';
+import {
+  emitTurnEndOnce,
+  endTurnForMaxTurns,
+  maxTurnsReached,
+  resumeToAssistantStreaming,
+} from '../state-runtime/turn-end.js';
 import type { SteeringCheckTurnRecord } from '../state.js';
 import type { SteeringCheckPorts } from './ports.js';
 
@@ -16,29 +27,6 @@ export type SteeringCheckOutcome =
 
 export function route(has_function_results: boolean): SteeringRoute {
   return has_function_results ? 'continue_after_function' : 'end_turn';
-}
-
-function maxTurnsReached(rec: SteeringCheckTurnRecord): boolean {
-  return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
-}
-
-async function endForMaxTurns(
-  ports: SteeringCheckPorts,
-  rec: SteeringCheckTurnRecord,
-): Promise<void> {
-  const msg = syntheticAssistant({
-    stop_reason: 'end',
-    text: `loop stopped: max_turns (${rec.max_turns ?? 0}) reached`,
-  });
-  rec.last_assistant = msg;
-  await ports.appendMessages(rec.session_id, [msg]);
-  await ports.emit(rec.session_id, {
-    type: 'message_complete',
-    message: msg,
-    body_streamed: false,
-  });
-  await emitTurnEndOnce(ports, rec, msg);
-  await ports.finishSession(rec);
 }
 
 export async function processSteeringCheck(
@@ -66,7 +54,7 @@ export async function applySteeringCheckOutcome(
 ): Promise<void> {
   switch (outcome.kind) {
     case 'max_turns_reached':
-      await endForMaxTurns(ports, rec);
+      await endTurnForMaxTurns(ports, rec);
       return;
     case 'continue_after_function':
       resumeToAssistantStreaming(rec);

@@ -120,7 +120,7 @@ describe('parallel approval e2e', () => {
     await h.resolveApproval('sess-order', 'fc-1', 'allow');
     rec = h.loadTurnRecord('sess-order');
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
     expect(rec?.work).toBeUndefined();
   });
 
@@ -254,7 +254,7 @@ describe('parallel approval e2e', () => {
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-driver')).toHaveLength(1);
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-late')).toHaveLength(1);
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
   });
 
   it('re-enqueues a follow-up wake when a resolved call leaves siblings pending', async () => {
@@ -298,7 +298,7 @@ describe('parallel approval e2e', () => {
       decision: 'allow',
       reason: null,
     });
-    expect(h.loadTurnRecord('sess-wake')?.state).toBe('steering_check');
+    expect(h.loadTurnRecord('sess-wake')?.state).toBe('assistant_streaming');
     expect(h.loadTurnRecord('sess-wake')?.work).toBeUndefined();
   });
 });

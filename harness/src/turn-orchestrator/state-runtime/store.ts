@@ -13,6 +13,7 @@ import { type RunRequest, parseRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
 import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
 import { loadContextView } from './context-view.js';
+import { persistedTrailingResultIds } from './transcript.js';
 
 /**
  * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
@@ -50,6 +51,14 @@ export type TurnStore = {
   writeRecord(rec: TurnStateRecord): Promise<void>;
   ensureSession(session_id: string): Promise<void>;
   loadMessages(session_id: string): Promise<AgentMessage[]>;
+  /**
+   * Function_call_ids in the trailing `function_result` run, for batch dedup.
+   * Reads the raw message list on the default leaf (not the compaction-rebuilt
+   * window {@link loadMessages} returns), so it skips the paired
+   * `session-tree::compactions` read — the trailing results live in the tail
+   * either way.
+   */
+  loadTrailingResultIds(session_id: string): Promise<Set<string>>;
   appendMessages(session_id: string, msgs: AgentMessage[]): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
@@ -145,6 +154,17 @@ export function createTurnStore(iii: ISdk): TurnStore {
 
     async loadMessages(session_id) {
       return loadContextView(iii, session_id);
+    },
+
+    async loadTrailingResultIds(session_id) {
+      // Same response (and same `?? []` for an empty/new session) as
+      // loadContextView, the sibling reader of session-tree::messages.
+      const resp = await iii.trigger<unknown, { messages?: Array<{ message: AgentMessage }> }>({
+        function_id: 'session-tree::messages',
+        payload: { session_id },
+      });
+      const messages = (resp?.messages ?? []).map((e) => e.message);
+      return persistedTrailingResultIds(messages);
     },
 
     async appendMessages(session_id, msgs) {

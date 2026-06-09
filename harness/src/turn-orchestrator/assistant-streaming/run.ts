@@ -34,9 +34,13 @@ export async function prepareStreamContext(
   const { provider, model, system_prompt, function_schemas, thinking_level } = request;
   const decision = decide({ provider, model });
   const tools = parseFunctionSchemas(function_schemas);
+  // Resolved once at provisioning; preflight + provider read it instead of
+  // re-fetching models::get. Absent on pre-existing records → readers fall back.
+  const model_meta = rec.model_meta;
 
   if (
-    (await ports.runPreflight(rec.session_id, messages, decision.provider, model)) === 'compacted'
+    (await ports.runPreflight(rec.session_id, messages, decision.provider, model, model_meta)) ===
+    'compacted'
   ) {
     messages = await ports.loadMessages(rec.session_id);
   }
@@ -48,6 +52,10 @@ export async function prepareStreamContext(
     tools,
     messages,
     ...(thinking_level ? { thinking_level } : {}),
+    ...(model_meta ? { model_meta } : {}),
+    // Stable per run, fresh per run: dedupes the provider's credential resolution
+    // within the turn while still re-resolving on the next user turn.
+    resolution_key: rec.started_at_ms,
   };
 }
 
@@ -107,7 +115,7 @@ export function routeAssistantTurn(asst: AssistantMessage): AssistantRoute {
   if (hasFunctionCalls(asst)) {
     return { kind: 'function_execute' };
   }
-  return { kind: 'steering_check' };
+  return { kind: 'end_turn' };
 }
 
 export async function finalizeAssistantTurn(
@@ -135,7 +143,10 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  transitionTo(rec, 'steering_check');
+  // end_turn: no function calls — finish inline (formerly the
+  // turn::steering_check hop, which always routed an empty-results turn here).
+  await emitTurnEndOnce(ports, rec, asst);
+  await ports.finishSession(rec);
 }
 
 export async function runAssistantStreaming(

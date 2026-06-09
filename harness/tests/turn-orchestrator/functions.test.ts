@@ -10,7 +10,8 @@ import { parseApprovalDecision } from '../../src/turn-orchestrator/function-awai
 import { handleExecute } from '../../src/turn-orchestrator/function-execute/process.js';
 import { enterFunctionExecute } from '../../src/turn-orchestrator/function-execute/run.js';
 import type { FunctionBatchWork } from '../../src/turn-orchestrator/function-execute/types.js';
-import type { AssistantMessage } from '../../src/types/agent-message.js';
+import { persistedTrailingResultIds } from '../../src/turn-orchestrator/state-runtime/transcript.js';
+import type { AgentMessage, AssistantMessage } from '../../src/types/agent-message.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -108,6 +109,7 @@ describe('handleExecute new flow', () => {
         terminate: false,
       },
     });
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
     const iii = { trigger: vi.fn().mockResolvedValue(null) } as unknown as ISdk;
     const rec: TurnStateRecord = newRecord('s1');
     enterFunctionExecute(
@@ -118,9 +120,15 @@ describe('handleExecute new flow', () => {
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
-    expect(rec.state).toBe('steering_check');
-    expect(rec.function_results).toHaveLength(1);
-    expect(rec.function_results[0]?.function_call_id).toBe('fc-1');
+    // Resumed inline for the next round-trip (formerly via the steering_check
+    // hop); the batch results travel on turn_end, the record is cleared.
+    expect(rec.state).toBe('assistant_streaming');
+    expect(rec.function_results).toEqual([]);
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: Array<{ function_call_id: string }> }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
+    expect(turnEnd?.function_results[0]?.function_call_id).toBe('fc-1');
   });
 
   it('finishes the session when every function result terminates', async () => {
@@ -242,13 +250,18 @@ describe('handleExecute new flow', () => {
       executed: {},
     });
     mockFinalizePersistence();
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
-    expect(rec.state).toBe('steering_check');
-    expect(rec.function_results).toHaveLength(1);
-    expect(rec.function_results[0]?.is_error).toBe(true);
-    const details = rec.function_results[0]?.details as Record<string, unknown>;
+    // Denial result travels on turn_end; the record resumes with cleared results.
+    expect(rec.state).toBe('assistant_streaming');
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: Array<{ is_error: boolean; details: Record<string, unknown> }> }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
+    expect(turnEnd?.function_results[0]?.is_error).toBe(true);
+    const details = turnEnd?.function_results[0]?.details as Record<string, unknown>;
     expect(details?.status).toBe('denied');
     expect(details?.denied_by).toBe('gate_unavailable');
     expect(details?.function_id).toBe('shell::fs::write');
@@ -281,7 +294,7 @@ describe('handleExecute new flow', () => {
       (call) => (call[0] as { function_id: string }).function_id === 'shell::run',
     );
     expect(shellCalls).toHaveLength(0);
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
   it('replays persisted executed calls without re-dispatching (re-entry with pre-populated work.executed)', async () => {
@@ -311,10 +324,10 @@ describe('handleExecute new flow', () => {
     await handleExecute(iii, rec);
 
     expect(dispatchSpy).not.toHaveBeenCalled();
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
-  it('transitions to steering_check after a successful hook dispatch', async () => {
+  it('resumes to assistant_streaming after a successful hook dispatch', async () => {
     vi.spyOn(agentTriggerModule, 'dispatchWithHook').mockResolvedValueOnce({
       kind: 'result',
       result: {
@@ -331,7 +344,7 @@ describe('handleExecute new flow', () => {
     mockFinalizePersistence();
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
   });
 
   it('emits turn lifecycle and sets turn_end_emitted when last_assistant is present', async () => {
@@ -376,7 +389,7 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy.mock.calls.some((call) => call[2]?.type === 'turn_end')).toBe(true);
   });
@@ -400,6 +413,9 @@ describe('handleExecute new flow', () => {
     let storedMessages: unknown[] = [];
     installMockTurnStore({
       loadMessages: vi.fn(async () => storedMessages as never),
+      loadTrailingResultIds: vi.fn(async () =>
+        persistedTrailingResultIds(storedMessages as AgentMessage[]),
+      ),
       appendMessages: vi.fn(async (_sid, msgs) => {
         storedMessages = [...storedMessages, ...msgs];
       }),

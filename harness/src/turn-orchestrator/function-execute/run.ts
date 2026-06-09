@@ -12,10 +12,13 @@ import {
   missingFunctionResult,
   unwrapAgentTrigger,
 } from '../agent-trigger.js';
-import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
-import { persistedTrailingResultIds } from '../state-runtime/transcript.js';
 import {
-  transitionTo,
+  emitTurnEndOnce,
+  endTurnForMaxTurns,
+  maxTurnsReached,
+  resumeToAssistantStreaming,
+} from '../state-runtime/turn-end.js';
+import {
   type AwaitingApprovalEntry,
   type FunctionBatchTurnRecord,
   type TurnStateRecord,
@@ -205,8 +208,7 @@ export async function finalizeBatch(
     function_results.push(toFunctionResultMessage(entry, result));
   }
 
-  const messages = await ports.loadMessages(rec.session_id);
-  const alreadyPersisted = persistedTrailingResultIds(messages);
+  const alreadyPersisted = await ports.loadTrailingResultIds(rec.session_id);
   const fresh = function_results.filter((r) => !alreadyPersisted.has(r.function_call_id));
   if (fresh.length < function_results.length) {
     logger.warn('finalizeBatch: skipped duplicate function_results (re-entry detected)', {
@@ -223,10 +225,14 @@ export async function finalizeBatch(
 
   await emitTurnEndOnce(ports, rec, lastAssistant, function_results);
 
+  // Routing formerly done by the turn::steering_check FSM hop, now inline:
+  // one durable step (and its queue wake) less per round-trip.
   if (allTerminate) {
     await ports.finishSession(rec);
+  } else if (maxTurnsReached(rec)) {
+    await endTurnForMaxTurns(ports, rec);
   } else {
-    transitionTo(rec, 'steering_check');
+    resumeToAssistantStreaming(rec);
   }
 
   (rec as TurnStateRecord).work = undefined;

@@ -50,7 +50,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
     await h.runExecute('sess-full');
 
     const rec = h.loadTurnRecord('sess-full');
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
     expect(rec?.awaiting_approval).toEqual([]);
     expect(rec?.work).toBeUndefined();
     expect(h.stateStore.has('approvals/sess-full/fc-1')).toBe(false);
@@ -68,7 +68,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
     await h.runExecute('sess-grant');
 
     const rec = h.loadTurnRecord('sess-grant');
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
     expect(rec?.awaiting_approval).toEqual([]);
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-1')).toHaveLength(1);
   });
@@ -84,7 +84,7 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
     await h.runExecute('sess-auto');
 
     expect(awaitingIds(h, 'sess-auto')).toEqual([]);
-    expect(h.loadTurnRecord('sess-auto')?.state).toBe('steering_check');
+    expect(h.loadTurnRecord('sess-auto')?.state).toBe('assistant_streaming');
   });
 
   it('manual mode with no grant parks the call (falls through to policy → needs_approval)', async () => {
@@ -145,10 +145,21 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
 
     const rec = h.loadTurnRecord('sess-escalate');
     // Denied up front: not parked, not executed, batch finalizes with an
-    // error result carrying the human_only_function denial.
+    // error result carrying the human_only_function denial. The result
+    // travels on turn_end; the inline resume clears the record.
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
-    const denied = rec?.function_results?.find((r) => r.function_call_id === 'fc-1');
+    expect(rec?.state).toBe('assistant_streaming');
+    expect(rec?.function_results).toEqual([]);
+    const turnEnd = h.emitted.find((e) => e.type === 'turn_end') as
+      | {
+          function_results: Array<{
+            function_call_id: string;
+            is_error: boolean;
+            details: unknown;
+          }>;
+        }
+      | undefined;
+    const denied = turnEnd?.function_results.find((r) => r.function_call_id === 'fc-1');
     expect(denied?.is_error).toBe(true);
     expect(JSON.stringify(denied?.details)).toContain('human_only_function');
     // No real mode change leaked into settings.

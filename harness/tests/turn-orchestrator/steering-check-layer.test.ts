@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentMessage } from '../../src/types/agent-message.js';
 import {
   applySteeringCheckOutcome,
   processSteeringCheck,
@@ -110,7 +109,8 @@ describe('applySteeringCheckOutcome', () => {
 
     expect(rec.state).toBe('stopped');
     expect(rec.turn_end_emitted).toBe(true);
-    expect(emitTurnEnd).toHaveBeenCalledWith('s1', expect.anything(), []);
+    // 4th arg is the optional model_limit, undefined here (no model_meta on rec).
+    expect(emitTurnEnd).toHaveBeenCalledWith('s1', expect.anything(), [], undefined);
     expect(finishSession).toHaveBeenCalled();
   });
 });

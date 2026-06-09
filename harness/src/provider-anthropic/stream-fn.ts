@@ -34,7 +34,13 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
       // use it directly instead of re-instantiating from the wire shape
       // (which no longer exists by the time we get here).
       const writer = input.writer_ref as ChannelWriter;
-      const cfg = await buildConfig(iii, worker, input.model);
+      const cfg = await buildConfig(
+        iii,
+        worker,
+        input.model,
+        input.model_meta,
+        input.resolution_key,
+      );
       const thinking = buildThinkingConfig(input.thinking_level, cfg.max_tokens, cfg.catalog);
       try {
         const events = streamAnthropic({

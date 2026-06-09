@@ -28,7 +28,7 @@ export function register(iii: ISdk): void {
     },
     {
       description:
-        'Run one durable FSM transition for session in state steering_check: continue after tool results or end the turn.',
+        'DEPRECATED compat drain (steering_check removal, release A): routing is inlined into assistant_streaming/function_execute; this handler only drains records persisted in state steering_check before the deploy. Removed in release B once the queue is confirmed empty.',
     },
   );
 }

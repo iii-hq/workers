@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import type { Model } from '../models-catalog/types.js';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
 
@@ -47,6 +48,15 @@ type TurnStateRecordCore = {
   updated_at_ms: number;
   /** Set during assistant_streaming when message_update deltas were emitted. */
   assistant_body_streamed?: boolean;
+  /**
+   * Full catalog entry for this turn's model, resolved once at `provisioning`
+   * and read by preflight, provider streaming, and turn-end compaction instead
+   * of each re-fetching `models::get`. Optional: absent on records persisted
+   * before this field existed (and on a cold catalog) — every reader falls back
+   * to a live fetch. The model is fixed for a turn, so no invalidation is
+   * needed. Excluded from {@link toView}, so it never bloats turn_state events.
+   */
+  model_meta?: Model;
   error?: { kind: string; message: string };
 };
 

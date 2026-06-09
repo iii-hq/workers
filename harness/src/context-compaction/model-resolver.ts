@@ -1,3 +1,4 @@
+import type { Model } from '../models-catalog/types.js';
 import { RUN_REQUEST_SCOPE } from '../turn-orchestrator/state.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
@@ -8,6 +9,18 @@ export type ResolvedModel = {
   modelID: string;
   modelLimit: ModelLimit;
 } | null;
+
+/**
+ * Derive a {@link ModelLimit} from a catalog {@link Model}. Mirrors the mapping
+ * {@link fetchModelLimit} applies to a `models::get` result, so a threaded
+ * `model_meta` yields the exact same limit a fresh fetch would — letting
+ * callers skip the bus round-trip without changing behavior.
+ */
+export function limitFromModel(m: Model): ModelLimit {
+  const context = typeof m.context_window === 'number' ? m.context_window : 0;
+  const output = typeof m.max_output_tokens === 'number' ? m.max_output_tokens : 0;
+  return { context, input: context, output };
+}
 
 export async function fetchModelLimit(
   iii: ISdk,

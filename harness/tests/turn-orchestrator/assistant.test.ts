@@ -154,7 +154,7 @@ describe('handleStreaming', () => {
     expect(rec.work?.prepared).toHaveLength(1);
   });
 
-  it('routes to steering_check when the assistant made no calls', async () => {
+  it('ends the turn inline when the assistant made no calls', async () => {
     const finalMsg = assistant({ content: [{ type: 'text', text: 'done reply' }] });
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const { iii } = fakeIiiWithDone(finalMsg);
@@ -164,11 +164,13 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    // No-function-call turns finish inline (formerly the steering_check hop).
+    expect(rec.state).toBe('stopped');
+    expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 
-  it('captures provider done frame and routes correctly (text-only → steering_check)', async () => {
+  it('captures provider done frame and routes correctly (text-only → end of turn)', async () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const finalMsg = assistant({ content: [{ type: 'text', text: 'done reply' }] });
     let deliver: ((msg: string) => void) | null = null;
@@ -199,7 +201,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('stopped');
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 

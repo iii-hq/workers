@@ -8,6 +8,7 @@ import { logger } from '../runtime/otel.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
 import type { AgentFunction } from '../types/function.js';
 import type { AssistantMessageEvent } from '../types/stream-event.js';
+import { invalidateProviderResolveCache } from './auth.js';
 import { applyMessagesCacheAnchor, applyToolsCacheControl, buildSystemField } from './cache.js';
 import {
   buildFinal,
@@ -79,6 +80,9 @@ export async function* streamAnthropic({
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const kind = classifyAnthropicError(text, resp.status);
+    // A 401/403 means the cached credential is stale (rotated mid-turn); drop it
+    // so the next stream re-resolves instead of replaying the dead key.
+    if (kind === 'auth_expired') invalidateProviderResolveCache();
     yield syntheticErrorEvent(text || `anthropic http ${resp.status}`, cfg.model, kind);
     return;
   }

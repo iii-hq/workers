@@ -7,6 +7,7 @@
 import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import type { ModelContextLimit } from '../types/agent-event.js';
 import { compactionConfig } from './config.js';
 import {
   isSummarizeOk,
@@ -54,24 +55,34 @@ export function turnEndUsage(event: unknown): Record<string, unknown> | null {
 type ResolvedModel = {
   providerID: string;
   modelID: string;
-  modelLimit: { context: number; input: number; output: number };
+  modelLimit: ModelContextLimit;
 } | null;
 
-async function resolveModelFromEvent(
+/**
+ * The fields we read off the orchestrator-produced `turn_end` event. The
+ * message is always an AssistantMessage, so provider/model are present (empty
+ * strings on synthetic/error turns); model_limit is threaded when the catalog
+ * resolved at turn start.
+ */
+type TurnEndEventView = {
+  message: { provider: string; model: string };
+  model_limit?: ModelContextLimit;
+};
+
+export async function resolveModelFromEvent(
   iii: ISdk,
   session_id: string,
   event: unknown,
 ): Promise<ResolvedModel> {
-  let providerID: string | null = null;
-  let modelID: string | null = null;
+  const ev = event as TurnEndEventView;
+  let providerID = ev.message.provider || null;
+  let modelID = ev.message.model || null;
 
-  if (event && typeof event === 'object') {
-    const ev = event as Record<string, unknown>;
-    const msg = ev.message as Record<string, unknown> | undefined;
-    if (msg) {
-      if (typeof msg.provider === 'string' && msg.provider) providerID = msg.provider;
-      if (typeof msg.model === 'string' && msg.model) modelID = msg.model;
-    }
+  // Closed system: the orchestrator threads the turn's limit onto turn_end, so
+  // when ids and the limit are present we trust them and skip the models::get
+  // round-trip. Empty ids (synthetic/error turns) fall through to the scan.
+  if (providerID && modelID && ev.model_limit) {
+    return { providerID, modelID, modelLimit: ev.model_limit };
   }
 
   if (!providerID || !modelID) {
@@ -87,8 +98,7 @@ async function resolveModelFromEvent(
       const messages = resp?.messages ?? [];
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i]?.message;
-        if (!m) continue;
-        if (m.role !== 'assistant') continue;
+        if (m?.role !== 'assistant') continue;
         if (!providerID && typeof m.provider === 'string' && m.provider) {
           providerID = m.provider;
         }

@@ -113,14 +113,19 @@ describe('handleAwaitingApproval', () => {
       loadMessages: vi.fn(async () => []),
       appendMessages: vi.fn(async () => {}),
     });
-    vi.spyOn(events, 'emit').mockResolvedValue(undefined);
+    const emitSpy = vi.spyOn(events, 'emit').mockResolvedValue(undefined);
 
     await handleAwaitingApproval(iii, rec);
 
     expect(rec.awaiting_approval).toEqual([]);
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
     expect(rec.work).toBeUndefined();
-    expect(rec.function_results).toHaveLength(1);
+    // Results travel on turn_end; the inline resume clears the record.
+    expect(rec.function_results).toEqual([]);
+    const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
+      | { function_results: unknown[] }
+      | undefined;
+    expect(turnEnd?.function_results).toHaveLength(1);
   });
 
   it('leaves state parked when awaiting entries remain undecided', async () => {

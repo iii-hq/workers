@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { ModelSchema } from '../models-catalog/types.js';
 
 /**
  * Lax `StreamChannelRef` — the SDK's canonical type lives in `iii-sdk`,
@@ -44,6 +45,20 @@ export const ProviderStreamInputSchema = z.object({
    * `reasoning_effort`); others ignore it. Absent = off.
    */
   thinking_level: z.string().optional(),
+  /**
+   * Optional pre-resolved catalog entry for `model`, threaded from the
+   * orchestrator so the provider does not re-fetch `models::get` it already
+   * resolved at turn start. Providers MUST ignore it unless `model_meta.id`
+   * and `model_meta.provider` match this request, and fall back to a live
+   * fetch otherwise — the field is an optimization, never a source of truth.
+   */
+  model_meta: ModelSchema.optional(),
+  /**
+   * Optional stable id for the turn (the run's start time). Providers may use
+   * it to dedupe per-stream credential resolution within a turn; a new turn
+   * carries a new key. Purely an optimization key — never a source of truth.
+   */
+  resolution_key: z.number().optional(),
 });
 export type ProviderStreamInput = z.infer<typeof ProviderStreamInputSchema>;
 
