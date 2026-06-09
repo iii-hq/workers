@@ -56,6 +56,10 @@ async fn mkdir_parents_true_creates_deeply_nested_path() {
         .await
         .expect("idempotent re-mkdir");
     assert!(!again.created, "second mkdir reports not created");
+    assert!(
+        again.already_existed,
+        "second mkdir reports already_existed"
+    );
 }
 
 #[tokio::test]
@@ -74,6 +78,7 @@ async fn mv_overwrite_true_replaces_existing_dst() {
         .await
         .expect("mv overwrite=true succeeds");
     assert!(r.moved);
+    assert!(r.overwrote, "dst pre-existed so overwrote must be true");
     assert!(!src.exists(), "src removed after rename");
     assert_eq!(std::fs::read(&dst).unwrap(), b"new");
 }
@@ -96,9 +101,9 @@ async fn chmod_recursive_walks_subtree_and_counts() {
         .await
         .expect("chmod recursive succeeds");
     assert!(
-        r.updated >= 3,
+        r.entries_changed >= 3,
         "expected ≥3 paths walked, got {}",
-        r.updated
+        r.entries_changed
     );
 }
 
@@ -272,4 +277,78 @@ async fn stat_reports_is_symlink_for_symlink_target() {
         s.0.size > 0 || s.0.is_symlink,
         "symlink stat reports either size or is_symlink",
     );
+}
+
+#[tokio::test]
+async fn mkdir_parents_over_existing_file_errors() {
+    // mkdir -p over a regular file must error, not report idempotent success.
+    let root = tmpdir("mkdir-file");
+    let f = root.join("not-a-dir");
+    std::fs::write(&f, b"x").unwrap();
+    let err = backend()
+        .mkdir(MkdirArgs {
+            path: f.to_string_lossy().into_owned(),
+            mode: "0755".into(),
+            parents: true,
+        })
+        .await
+        .expect_err("mkdir -p over a regular file must error");
+    assert_eq!(err.code, "S213", "got: {err:?}");
+}
+
+#[tokio::test]
+async fn host_responses_populate_new_path_fields() {
+    // Lock in that the host backend actually fills the structured response
+    // fields (not just the legacy bool) so a regression to Default is caught.
+    let root = tmpdir("fields");
+
+    let d = root.join("d");
+    let mk = backend()
+        .mkdir(MkdirArgs {
+            path: d.to_string_lossy().into_owned(),
+            mode: "0755".into(),
+            parents: false,
+        })
+        .await
+        .expect("mkdir");
+    assert!(mk.created && !mk.already_existed);
+    assert_eq!(mk.path, d.to_string_lossy());
+
+    let ch = backend()
+        .chmod(ChmodArgs {
+            path: d.to_string_lossy().into_owned(),
+            mode: "0700".into(),
+            uid: None,
+            gid: None,
+            recursive: false,
+        })
+        .await
+        .expect("chmod");
+    assert_eq!(ch.path, d.to_string_lossy());
+    assert!(!ch.recursive);
+
+    let src = root.join("s.txt");
+    let dst = root.join("t.txt");
+    std::fs::write(&src, b"x").unwrap();
+    let mv = backend()
+        .mv(MvArgs {
+            src: src.to_string_lossy().into_owned(),
+            dst: dst.to_string_lossy().into_owned(),
+            overwrite: false,
+        })
+        .await
+        .expect("mv");
+    assert_eq!(mv.src, src.to_string_lossy());
+    assert_eq!(mv.dst, dst.to_string_lossy());
+    assert!(!mv.overwrote, "fresh dst was not overwritten");
+
+    let r = backend()
+        .rm(RmArgs {
+            path: dst.to_string_lossy().into_owned(),
+            recursive: false,
+        })
+        .await
+        .expect("rm");
+    assert!(r.removed && r.was_present);
+    assert_eq!(r.path, dst.to_string_lossy());
 }

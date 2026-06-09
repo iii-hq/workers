@@ -4,7 +4,6 @@
 //! passthroughs.
 
 use async_trait::async_trait;
-use iii_sdk::IIIError;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -58,96 +57,9 @@ impl SandboxFsBackend {
             .fwd
             .trigger(function_id, payload)
             .await
-            .map_err(map_iii_err)?;
+            .map_err(|e| crate::scode::map_iii_err(&e, FsError::new))?;
         serde_json::from_value(resp)
             .map_err(|e| FsError::new("S216", format!("bad engine response: {e}")))
-    }
-}
-
-/// Recover an S2xx code from an `IIIError`. Engine `Remote` errors carry
-/// the code structurally; the engine's `invocation_failed` wrapper hides
-/// it inside the message string; mock paths emit a JSON payload as
-/// `Handler(string)`. Unknown shapes fall through to S216.
-fn map_iii_err(err: IIIError) -> FsError {
-    match &err {
-        IIIError::Remote { code, message, .. } if code.starts_with('S') => {
-            return FsError::new(
-                map_static_code(code),
-                format!("forwarded from engine: {message}"),
-            );
-        }
-        IIIError::Remote { message, .. } => {
-            if let Some(c) = scan_s_code(message) {
-                return FsError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (wrapped): {message}"),
-                );
-            }
-        }
-        IIIError::Handler(s) => {
-            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                if let Some(c) = parsed.get("code").and_then(|v| v.as_str()) {
-                    let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    return FsError::new(
-                        map_static_code(c),
-                        format!("forwarded from engine: {msg}"),
-                    );
-                }
-            }
-            if let Some(c) = scan_s_code(s) {
-                return FsError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (raw): {s}"),
-                );
-            }
-        }
-        _ => {}
-    }
-    FsError::new("S216", format!("engine error: {err:?}"))
-}
-
-fn scan_s_code(s: &str) -> Option<&str> {
-    let bytes = s.as_bytes();
-    // The window is 4 bytes (`bytes[i..=i+3]`), so the last valid `i` is
-    // `len - 4`. The loop bound `< len - 3` gives `i <= len - 4`.
-    // `saturating_sub(3)` collapses to 0 when `len < 4`, which yields an
-    // empty range (no false access) on too-short inputs.
-    for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i] == b'S'
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-        {
-            // Reject matches preceded by alphanumerics so we don't grab
-            // the tail of a longer identifier (e.g. "FOO_S211").
-            let preceded_by_word =
-                i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            if !preceded_by_word {
-                return Some(&s[i..i + 4]);
-            }
-        }
-    }
-    None
-}
-
-fn map_static_code(code: &str) -> &'static str {
-    match code {
-        "S001" => "S001",
-        "S002" => "S002",
-        "S003" => "S003",
-        "S004" => "S004",
-        "S200" => "S200",
-        "S210" => "S210",
-        "S211" => "S211",
-        "S212" => "S212",
-        "S213" => "S213",
-        "S214" => "S214",
-        "S215" => "S215",
-        "S216" => "S216",
-        "S217" => "S217",
-        "S218" => "S218",
-        "S219" => "S219",
-        _ => "S216",
     }
 }
 
@@ -242,6 +154,7 @@ impl FsBackend for SandboxFsBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::IIIError;
     use std::sync::Mutex;
 
     struct StubFwd {

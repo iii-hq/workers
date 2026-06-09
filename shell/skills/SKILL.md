@@ -72,12 +72,17 @@ agents, pair with the `skills` worker.
 - `shell::list`: enumerate current jobs as lightweight summaries (no argv,
   stdout, or stderr).
 - `shell::kill`: terminate a running background job by `job_id`.
+- `shell::config-status` *(operator/automation only — not agent-callable)*:
+  report the last hot-reload outcome — `last_outcome` (`applied`/`rejected`),
+  `last_error`, and `rejected_reloads` (count since boot). A rejected outcome or
+  non-zero count means a stored config was refused and shell is enforcing an
+  older policy than the central store. Takes no arguments.
 - `shell::fs::ls`: list a directory's entries with structured metadata.
 - `shell::fs::stat`: read one path's metadata (size, mode, symlink flag).
-- `shell::fs::mkdir`: create a directory, optionally with missing parents.
-- `shell::fs::rm`: remove a file or directory, optionally recursive.
-- `shell::fs::chmod`: change a path's mode, and optionally its uid/gid.
-- `shell::fs::mv`: rename or move one path within the jail.
+- `shell::fs::mkdir`: create a directory, optionally with missing parents. Returns `{ created: bool, path: string, already_existed: bool }`.
+- `shell::fs::rm`: remove a file or directory, optionally recursive. Returns `{ removed: bool, path: string, was_present: bool }`.
+- `shell::fs::chmod`: change a path's mode, and optionally its uid/gid. Returns `{ entries_changed: u64, path: string, recursive: bool }`. **Note**: the field was renamed from `updated` to `entries_changed` — callers relying on `updated` must migrate.
+- `shell::fs::mv`: rename or move one path within the jail. Returns `{ moved: bool, src: string, dst: string, overwrote: bool }`.
 - `shell::fs::grep`: recursive regex search across a tree, returning structured
   matches.
 - `shell::fs::sed`: regex find-and-replace across one file or many.

@@ -60,7 +60,7 @@ impl IiiChannelMaker {
 #[async_trait]
 impl ChannelMaker for IiiChannelMaker {
     async fn create_channel(&self, buffer: usize) -> Result<Channel, IIIError> {
-        self.iii.create_channel(Some(buffer)).await
+        iii_sdk::helpers::create_channel(&self.iii, Some(buffer)).await
     }
     fn engine_address(&self) -> String {
         self.iii.address().to_string()
@@ -73,6 +73,45 @@ pub struct HostFsConfig {
     pub max_read_bytes: usize,
     pub max_write_bytes: usize,
     pub denylist_paths: Vec<PathBuf>,
+    /// Permit setuid/setgid/sticky bits (`mode & 0o7000`) in mkdir/chmod/write.
+    /// Default false rejects them with S210 — they are a privesc primitive
+    /// when the worker runs as root inside the jail.
+    pub allow_special_bits: bool,
+}
+
+/// Hard caps on attacker-controlled regex/sed patterns. An unbounded pattern
+/// can stall compilation and pin memory; N concurrent calls = DoS.
+const MAX_PATTERN_BYTES: usize = 4096;
+const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+
+/// Reject setuid/setgid/sticky bits unless the operator opted in. The policy
+/// reads the backend's config flag at the call site; `parse_mode` stays a pure
+/// octal parser. Centralized so mkdir/chmod/write stay consistent.
+fn check_special_bits(bits: u32, allow_special_bits: bool) -> Result<(), FsError> {
+    if !allow_special_bits && (bits & 0o7000) != 0 {
+        return Err(FsError::new(
+            "S210",
+            format!(
+                "setuid/setgid/sticky bits not allowed (mode {bits:04o}); \
+                 set fs.allow_special_bits to permit"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject over-long patterns before compiling (or before literal use).
+fn check_pattern_len(pattern: &str) -> Result<(), FsError> {
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(FsError::new(
+            "S210",
+            format!(
+                "pattern too long ({} bytes); max is {MAX_PATTERN_BYTES} bytes",
+                pattern.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +131,7 @@ pub struct HostFsBackend {
 }
 
 impl HostFsBackend {
+    #[allow(dead_code)]
     pub fn new(cfg: Arc<HostFsConfig>, chan: Arc<dyn ChannelMaker>) -> Self {
         match Self::try_new(cfg.clone(), chan.clone()) {
             Ok(b) => b,
@@ -139,52 +179,7 @@ impl HostFsBackend {
     /// can mutate the filesystem between validation and subsequent syscalls.
     /// Use the sandbox backend for untrusted input.
     pub(crate) fn validate_path(&self, path: &str) -> Result<PathBuf, FsError> {
-        let p = Path::new(path);
-        let joined;
-        let p = if p.is_absolute() {
-            p
-        } else if path.is_empty() {
-            return Err(FsError::new("S210", "path must not be empty"));
-        } else if let Some(root_canon) = &self.host_root_canon {
-            // Relative paths resolve against the jail root. The canonical
-            // starts_with(host_root) check below still runs on the joined
-            // path, so `..` in the relative form cannot escape the jail.
-            joined = root_canon.join(p);
-            joined.as_path()
-        } else {
-            return Err(FsError::new(
-                "S210",
-                format!("path must be absolute: {path}"),
-            ));
-        };
-        let canon = canonicalize_with_fallback(p).map_err(|e| {
-            // Dangling-symlink errors are structurally jail violations
-            // (the path would otherwise resolve through a link that
-            // pre-fix slipped past the lexical fallback). Map them to
-            // S215 so wire telemetry treats them as such.
-            let msg = format!("{e}");
-            if msg.contains("dangling symlink in path") {
-                FsError::new("S215", format!("{path}: {msg}"))
-            } else {
-                FsError::new("S210", format!("{path}: {msg}"))
-            }
-        })?;
-        if let Some(root_canon) = &self.host_root_canon {
-            if !canon.starts_with(root_canon) {
-                // Name the jail root so a caller (human or agent) can
-                // self-correct in one step instead of guessing paths.
-                return Err(FsError::new(
-                    "S215",
-                    format!("path escapes host_root {}: {path}", root_canon.display()),
-                ));
-            }
-        }
-        for deny_canon in &self.denylist_canon {
-            if canon.starts_with(deny_canon) {
-                return Err(FsError::new("S215", format!("path is denylisted: {path}")));
-            }
-        }
-        Ok(canon)
+        confine_path(path, self.host_root_canon.as_deref(), &self.denylist_canon)
     }
 
     /// Lexical operand for handlers whose semantics forbid canonicalizing
@@ -193,14 +188,85 @@ impl HostFsBackend {
     /// against, so the validated path and the operated-on path can never
     /// diverge (the worker's CWD is unrelated to the jail).
     fn lexical_operand(&self, path: &str) -> PathBuf {
-        let p = Path::new(path);
-        if p.is_relative() {
-            if let Some(root_canon) = &self.host_root_canon {
-                return normalize_lexical(&root_canon.join(p));
-            }
-        }
-        normalize_lexical(p)
+        lexical_operand_with(path, self.host_root_canon.as_deref())
     }
+}
+
+/// Jail-confinement check, factored out of `HostFsBackend::validate_path` so
+/// the same logic can run inside a `spawn_blocking` closure (which needs a
+/// `'static + Send` body and so cannot borrow `&self`). Callers on the blocking
+/// thread pass owned/cloned copies of the precomputed canonical root and
+/// denylist. Behaviour, error codes (S210/S215) and the returned canonical
+/// path are identical to the method form — this is a pure extraction, not a
+/// weakening of any check.
+///
+/// `pub(crate)` so the exec backend can confine a per-call `cwd` against the
+/// SAME jail the fs backend enforces (shell::exec/exec_bg `cwd`) instead of
+/// duplicating the canonicalize / starts_with(host_root) / denylist logic.
+pub(crate) fn confine_path(
+    path: &str,
+    host_root_canon: Option<&Path>,
+    denylist_canon: &[PathBuf],
+) -> Result<PathBuf, FsError> {
+    let p = Path::new(path);
+    let joined;
+    let p = if p.is_absolute() {
+        p
+    } else if path.is_empty() {
+        return Err(FsError::new("S210", "path must not be empty"));
+    } else if let Some(root_canon) = host_root_canon {
+        // Relative paths resolve against the jail root. The canonical
+        // starts_with(host_root) check below still runs on the joined
+        // path, so `..` in the relative form cannot escape the jail.
+        joined = root_canon.join(p);
+        joined.as_path()
+    } else {
+        return Err(FsError::new(
+            "S210",
+            format!("path must be absolute: {path}"),
+        ));
+    };
+    let canon = canonicalize_with_fallback(p).map_err(|e| {
+        // Dangling-symlink errors are structurally jail violations
+        // (the path would otherwise resolve through a link that
+        // pre-fix slipped past the lexical fallback). Map them to
+        // S215 so wire telemetry treats them as such.
+        let msg = format!("{e}");
+        if msg.contains("dangling symlink in path") {
+            FsError::new("S215", format!("{path}: {msg}"))
+        } else {
+            FsError::new("S210", format!("{path}: {msg}"))
+        }
+    })?;
+    if let Some(root_canon) = host_root_canon {
+        if !canon.starts_with(root_canon) {
+            // Name the jail root so a caller (human or agent) can
+            // self-correct in one step instead of guessing paths.
+            return Err(FsError::new(
+                "S215",
+                format!("path escapes host_root {}: {path}", root_canon.display()),
+            ));
+        }
+    }
+    for deny_canon in denylist_canon {
+        if canon.starts_with(deny_canon) {
+            return Err(FsError::new("S215", format!("path is denylisted: {path}")));
+        }
+    }
+    Ok(canon)
+}
+
+/// Free-function form of `HostFsBackend::lexical_operand`, for use inside a
+/// `spawn_blocking` closure that can't borrow `&self`. Anchors relative inputs
+/// to the SAME jail root, identical to the method form.
+fn lexical_operand_with(path: &str, host_root_canon: Option<&Path>) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_relative() {
+        if let Some(root_canon) = host_root_canon {
+            return normalize_lexical(&root_canon.join(p));
+        }
+    }
+    normalize_lexical(p)
 }
 
 /// Resolve `p` to a canonical path that is symlink-free for every existing
@@ -360,26 +426,22 @@ fn expand_regex_replacement(caps: &regex::Captures, template: &str) -> String {
     out
 }
 
-/// When `case_insensitive` is true, delegates to regex with `(?i)` and an
-/// escaped pattern. Hand-rolling case-fold over UTF-8 is unsound (e.g.
-/// `'İ'` U+0130 folds to a length-changing sequence).
+/// When case-insensitive literal replace is requested, the caller passes a
+/// precompiled `(?i)`-escaped matcher in `ci_matcher` (built ONCE per sed
+/// call, not per line — a 10k-line file otherwise does 10k regex compiles).
+/// Hand-rolling case-fold over UTF-8 is unsound (e.g. `'İ'` U+0130 folds to a
+/// length-changing sequence), so we delegate to regex for the fold.
 fn literal_replace_line(
     line: &str,
     needle: &str,
-    case_insensitive: bool,
+    ci_matcher: Option<&regex::Regex>,
     replacement: &str,
     first_only: bool,
 ) -> (String, u64) {
     if line.is_empty() || needle.is_empty() {
         return (line.to_string(), 0);
     }
-    if case_insensitive {
-        let escaped_needle = regex::escape(needle);
-        let pattern = format!("(?i){escaped_needle}");
-        let re = match regex::Regex::new(&pattern) {
-            Ok(r) => r,
-            Err(_) => return (line.to_string(), 0),
-        };
+    if let Some(re) = ci_matcher {
         // Closures returning `String` to `Regex::replacen`/`replace_all`
         // satisfy `Replacer` via the FnMut blanket impl, which inserts the
         // returned string verbatim — no `$N` capture substitution. So the
@@ -595,13 +657,31 @@ impl FsBackend for HostFsBackend {
     async fn mkdir(&self, req: crate::fs::MkdirArgs) -> FsCallResult<crate::fs::MkdirResponse> {
         let p = self.validate_path(&req.path)?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
+        check_special_bits(bits, self.cfg.allow_special_bits)?;
         if p.exists() {
             if req.parents {
-                return Ok(crate::fs::MkdirResponse { created: false });
+                // mkdir -p is idempotent only over an existing DIRECTORY. A
+                // regular file (or symlink to one) at the path is a hard error:
+                // reporting success here would silently mask a misconfigured
+                // path and make later fs ops fail far from the real cause.
+                if !p.is_dir() {
+                    return Err(FsError::new(
+                        "S213",
+                        format!("path exists and is not a directory: {}", req.path),
+                    ));
+                }
+                return Ok(crate::fs::MkdirResponse {
+                    created: false,
+                    path: req.path.clone(),
+                    already_existed: true,
+                });
             }
             return Err(FsError::new(
                 "S213",
-                format!("path already exists: {}", req.path),
+                format!(
+                    "path already exists: {}; pass parents: true for an idempotent create",
+                    req.path
+                ),
             ));
         }
         let res = if req.parents {
@@ -612,7 +692,11 @@ impl FsBackend for HostFsBackend {
         res.map_err(|e| FsError::from_io(&req.path, e))?;
         let perms = std::fs::Permissions::from_mode(bits);
         std::fs::set_permissions(&p, perms).map_err(|e| FsError::from_io(&req.path, e))?;
-        Ok(crate::fs::MkdirResponse { created: true })
+        Ok(crate::fs::MkdirResponse {
+            created: true,
+            path: req.path.clone(),
+            already_existed: false,
+        })
     }
 
     async fn rm(&self, req: crate::fs::RmArgs) -> FsCallResult<crate::fs::RmResponse> {
@@ -632,7 +716,10 @@ impl FsBackend for HostFsBackend {
                 if rd.next().is_some() {
                     return Err(FsError::new(
                         "S214",
-                        format!("directory not empty: {}", req.path),
+                        format!(
+                            "directory not empty: {}; pass recursive: true to remove it",
+                            req.path
+                        ),
                     ));
                 }
                 std::fs::remove_dir(&p).map_err(|e| FsError::from_io(&req.path, e))?;
@@ -640,12 +727,17 @@ impl FsBackend for HostFsBackend {
         } else {
             std::fs::remove_file(&p).map_err(|e| FsError::from_io(&req.path, e))?;
         }
-        Ok(crate::fs::RmResponse { removed: true })
+        Ok(crate::fs::RmResponse {
+            removed: true,
+            path: req.path.clone(),
+            was_present: true,
+        })
     }
     async fn chmod(&self, req: crate::fs::ChmodArgs) -> FsCallResult<crate::fs::ChmodResponse> {
         self.validate_path(&req.path)?;
         let p = self.lexical_operand(&req.path);
         let bits = crate::fs::error::parse_mode(&req.mode)?;
+        check_special_bits(bits, self.cfg.allow_special_bits)?;
         if !p.exists() {
             return Err(FsError::new(
                 "S211",
@@ -701,7 +793,11 @@ impl FsBackend for HostFsBackend {
             apply(&p)?;
             updated = 1;
         }
-        Ok(crate::fs::ChmodResponse { updated })
+        Ok(crate::fs::ChmodResponse {
+            entries_changed: updated,
+            path: req.path.clone(),
+            recursive: req.recursive,
+        })
     }
 
     async fn mv(&self, req: crate::fs::MvArgs) -> FsCallResult<crate::fs::MvResponse> {
@@ -712,14 +808,28 @@ impl FsBackend for HostFsBackend {
         if !src_p.exists() {
             return Err(FsError::new("S211", format!("src not found: {}", req.src)));
         }
-        if dst_p.exists() && !req.overwrite {
+        // Best-effort overwrite guard: `dst_existed` is a pre-rename check, so
+        // `overwrite:false` is race-able and `overwrote` may under-report if a
+        // concurrent writer creates dst in the check→rename window (POSIX rename
+        // replaces atomically). A race-free guard needs renameat2(RENAME_NOREPLACE)
+        // (Linux-only) — tracked as a follow-up; the field doc notes this.
+        let dst_existed = dst_p.exists();
+        if dst_existed && !req.overwrite {
             return Err(FsError::new(
                 "S213",
-                format!("dst already exists: {}", req.dst),
+                format!(
+                    "dst already exists: {}; pass overwrite: true to replace it",
+                    req.dst
+                ),
             ));
         }
         match std::fs::rename(&src_p, &dst_p) {
-            Ok(()) => Ok(crate::fs::MvResponse { moved: true }),
+            Ok(()) => Ok(crate::fs::MvResponse {
+                moved: true,
+                src: req.src.clone(),
+                dst: req.dst.clone(),
+                overwrote: dst_existed,
+            }),
             // EXDEV: cross-fs move — fall back to copy+rename+unlink.
             // File-only; directories are unsupported (matches engine daemon).
             Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
@@ -730,147 +840,156 @@ impl FsBackend for HostFsBackend {
                     return Err(FsError::from_io(&req.dst, e));
                 }
                 std::fs::remove_file(&src_p).map_err(|e| FsError::from_io(&req.src, e))?;
-                Ok(crate::fs::MvResponse { moved: true })
+                Ok(crate::fs::MvResponse {
+                    moved: true,
+                    src: req.src.clone(),
+                    dst: req.dst.clone(),
+                    overwrote: dst_existed,
+                })
             }
             Err(e) => Err(FsError::from_io(&req.dst, e)),
         }
     }
     async fn grep(&self, req: crate::fs::GrepArgs) -> FsCallResult<crate::fs::GrepResponse> {
         let root = self.validate_path(&req.path)?;
-        let md = std::fs::symlink_metadata(&root).map_err(|e| FsError::from_io(&req.path, e))?;
+        // Cap before compiling: an unbounded pattern stalls compilation and
+        // pins memory.
+        check_pattern_len(&req.pattern)?;
         let re = regex::RegexBuilder::new(&req.pattern)
             .case_insensitive(req.ignore_case)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .dfa_size_limit(REGEX_SIZE_LIMIT)
             .build()
             .map_err(|e| FsError::new("S217", format!("bad regex: {e}")))?;
+
+        // The symlink_metadata stat, the walk, and the per-file scan are all
+        // blocking std::fs / BufReader work. Move ALL of it off the Tokio
+        // worker thread — the residual stat at the top used to run on the
+        // executor — so a grep over a large tree can't stall it. Capture owned
+        // data; the compiled Regex is Send+Sync so it moves into the closure.
         let max_matches_usize = req.max_matches as usize;
         let max_line_usize = req.max_line_bytes as usize;
         let include_glob = req.include_glob;
         let exclude_glob = req.exclude_glob;
+        let recursive = req.recursive;
+        let req_path = req.path;
 
-        let should_scan = |rel: &str| -> bool {
-            if !include_glob.is_empty() && !include_glob.iter().any(|g| glob_matches_path(g, rel)) {
-                return false;
-            }
-            if exclude_glob.iter().any(|g| glob_matches_path(g, rel)) {
-                return false;
-            }
-            true
-        };
-
-        let mut out: Vec<crate::fs::wire::FsMatch> = Vec::new();
-        let mut truncated = false;
-
-        let mut scan = |file_path: &Path| -> Result<bool, FsError> {
-            if looks_binary(file_path) {
-                return Ok(false);
-            }
-            let f = std::fs::File::open(file_path)
-                .map_err(|e| FsError::from_io(&file_path.to_string_lossy(), e))?;
-            let reader = std::io::BufReader::new(f);
-            use std::io::BufRead;
-            for (idx, line_res) in reader.lines().enumerate() {
-                let Ok(mut line) = line_res else {
-                    continue;
-                };
-                if re.is_match(&line) {
-                    if max_line_usize > 0 && line.len() > max_line_usize {
-                        // Floor to nearest char boundary so a multi-byte
-                        // codepoint straddling the cut doesn't panic.
-                        let cut = (0..=max_line_usize)
-                            .rev()
-                            .find(|&i| line.is_char_boundary(i))
-                            .unwrap_or(0);
-                        line.truncate(cut);
-                        line.push('…');
-                    }
-                    out.push(crate::fs::wire::FsMatch {
-                        path: file_path.to_string_lossy().into_owned(),
-                        line: (idx + 1) as u64,
-                        content: line,
-                    });
-                    if max_matches_usize > 0 && out.len() >= max_matches_usize {
-                        return Ok(true);
-                    }
-                }
-            }
-            Ok(false)
-        };
-
-        if md.is_dir() {
-            if !req.recursive {
+        let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
+            let md =
+                std::fs::symlink_metadata(&root).map_err(|e| FsError::from_io(&req_path, e))?;
+            let is_dir = md.is_dir();
+            if is_dir && !recursive {
                 return Err(FsError::new(
                     "S210",
                     "recursive=false on a directory is unsupported; \
                      pass a file path or set recursive=true",
                 ));
             }
-            for entry in walkdir::WalkDir::new(&root)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-            {
-                let rel = entry
-                    .path()
-                    .strip_prefix(&root)
-                    .unwrap_or(entry.path())
-                    .to_string_lossy()
-                    .into_owned();
-                if !should_scan(&rel) {
-                    continue;
-                }
-                if scan(entry.path())? {
-                    truncated = true;
-                    break;
-                }
-            }
-        } else {
-            let rel = root
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if should_scan(&rel) && scan(&root)? {
-                truncated = true;
-            }
-        }
 
-        Ok(crate::fs::GrepResponse {
-            matches: out,
-            truncated,
-        })
+            let should_scan = |rel: &str| -> bool {
+                if !include_glob.is_empty()
+                    && !include_glob.iter().any(|g| glob_matches_path(g, rel))
+                {
+                    return false;
+                }
+                if exclude_glob.iter().any(|g| glob_matches_path(g, rel)) {
+                    return false;
+                }
+                true
+            };
+
+            let mut out: Vec<crate::fs::wire::FsMatch> = Vec::new();
+            let mut truncated = false;
+
+            let mut scan = |file_path: &Path| -> Result<bool, FsError> {
+                if looks_binary(file_path) {
+                    return Ok(false);
+                }
+                let f = std::fs::File::open(file_path)
+                    .map_err(|e| FsError::from_io(&file_path.to_string_lossy(), e))?;
+                let reader = std::io::BufReader::new(f);
+                use std::io::BufRead;
+                for (idx, line_res) in reader.lines().enumerate() {
+                    let Ok(mut line) = line_res else {
+                        continue;
+                    };
+                    if re.is_match(&line) {
+                        if max_line_usize > 0 && line.len() > max_line_usize {
+                            // Floor to nearest char boundary so a multi-byte
+                            // codepoint straddling the cut doesn't panic.
+                            let cut = (0..=max_line_usize)
+                                .rev()
+                                .find(|&i| line.is_char_boundary(i))
+                                .unwrap_or(0);
+                            line.truncate(cut);
+                            line.push('…');
+                        }
+                        out.push(crate::fs::wire::FsMatch {
+                            path: file_path.to_string_lossy().into_owned(),
+                            line: (idx + 1) as u64,
+                            content: line,
+                        });
+                        if max_matches_usize > 0 && out.len() >= max_matches_usize {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            };
+
+            if is_dir {
+                for entry in walkdir::WalkDir::new(&root)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_file())
+                {
+                    let rel = entry
+                        .path()
+                        .strip_prefix(&root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy()
+                        .into_owned();
+                    if !should_scan(&rel) {
+                        continue;
+                    }
+                    if scan(entry.path())? {
+                        truncated = true;
+                        break;
+                    }
+                }
+            } else {
+                let rel = root
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if should_scan(&rel) && scan(&root)? {
+                    truncated = true;
+                }
+            }
+
+            Ok((out, truncated))
+        });
+
+        let (matches, truncated) = join
+            .await
+            .map_err(|e| FsError::new("S216", format!("grep task join failed: {e}")))??;
+
+        Ok(crate::fs::GrepResponse { matches, truncated })
     }
     async fn sed(&self, req: crate::fs::SedArgs) -> FsCallResult<crate::fs::SedResponse> {
-        let files: Vec<String> = match (req.files.is_empty(), req.path.as_ref()) {
-            (false, None) => req.files.clone(),
-            (true, Some(root)) => {
-                self.validate_path(root)?;
-                let root_anchored = self.lexical_operand(root);
-                let root_path = root_anchored.as_path();
-                let _ = root_path
-                    .symlink_metadata()
-                    .map_err(|e| FsError::from_io(root, e))?;
-                let target_is_dir = match std::fs::metadata(root_path) {
-                    Ok(m) => m.is_dir(),
-                    Err(e) => return Err(FsError::from_io(root, e)),
-                };
-                if target_is_dir && !req.recursive {
-                    return Err(FsError::new(
-                        "S210",
-                        "recursive=false on a directory is unsupported; \
-                         pass a file path or set recursive=true",
-                    ));
-                }
-                let collected = collect_files_to_sed(
-                    root_path,
-                    req.recursive,
-                    &req.include_glob,
-                    &req.exclude_glob,
-                );
-                collected
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect()
-            }
+        // Decide the file-source shape on the executor (pure, no fs). The
+        // actual directory walk + per-file jail validation are deferred into
+        // the spawn_blocking closure below so NO blocking fs syscall (walkdir
+        // traversal, per-entry symlink_metadata/canonicalize, per-file
+        // validate_path) runs on the async worker thread.
+        enum SedSource {
+            Files(Vec<String>),
+            Dir(String),
+        }
+        let source = match (req.files.is_empty(), req.path.as_ref()) {
+            (false, None) => SedSource::Files(req.files.clone()),
+            (true, Some(root)) => SedSource::Dir(root.clone()),
             (false, Some(_)) => {
                 return Err(FsError::new(
                     "S210",
@@ -885,14 +1004,16 @@ impl FsBackend for HostFsBackend {
             }
         };
 
-        for f in &files {
-            self.validate_path(f)?;
-        }
+        // Cap before compiling (regex) or using (literal) — an unbounded
+        // pattern stalls compilation and pins memory.
+        check_pattern_len(&req.pattern)?;
 
         let matcher: Option<regex::Regex> = if req.regex {
             Some(
                 regex::RegexBuilder::new(&req.pattern)
                     .case_insensitive(req.ignore_case)
+                    .size_limit(REGEX_SIZE_LIMIT)
+                    .dfa_size_limit(REGEX_SIZE_LIMIT)
                     .build()
                     .map_err(|e| FsError::new("S217", format!("bad regex: {e}")))?,
             )
@@ -901,91 +1022,188 @@ impl FsBackend for HostFsBackend {
         } else {
             None
         };
-        let case_fold = req.ignore_case && !req.regex;
+        // Hoist the case-insensitive literal matcher: build it ONCE per sed
+        // call (`literal_replace_line` previously compiled a fresh `(?i)`
+        // regex on every line). Built only for the literal + ignore_case
+        // path; the regex path uses `matcher` above.
+        let ci_matcher: Option<regex::Regex> = if req.ignore_case && !req.regex {
+            let pattern = format!("(?i){}", regex::escape(&req.pattern));
+            Some(
+                regex::RegexBuilder::new(&pattern)
+                    .size_limit(REGEX_SIZE_LIMIT)
+                    .dfa_size_limit(REGEX_SIZE_LIMIT)
+                    .build()
+                    .map_err(|e| FsError::new("S217", format!("bad regex: {e}")))?,
+            )
+        } else {
+            None
+        };
 
-        let mut results: Vec<crate::fs::wire::FsSedFileResult> = Vec::with_capacity(files.len());
-        let mut total: u64 = 0;
-        use std::os::unix::fs::PermissionsExt;
+        // ALL remaining work is blocking fs: the directory walk
+        // (collect_files_to_sed — walkdir + per-entry symlink_metadata +
+        // canonicalize), the per-file jail validation (confine_path), the
+        // jail-relative anchoring, and the read_to_string + per-line replace
+        // + temp-write + rename loop. Pre-fix the walk and the per-file
+        // validation ran on the async worker thread BEFORE spawn_blocking, so
+        // a `sed --path=large-dir --recursive` stalled the executor for the
+        // entire traversal — exactly what spawn_blocking was meant to prevent.
+        // We move it all into the closure. The per-file jail confinement
+        // (confine_path: starts_with(host_root) + denylist) still runs for
+        // EVERY file — it just runs on the blocking thread now, with owned
+        // copies of the precomputed canonical root + denylist (compiled
+        // regexes are Send+Sync and move in too). Streaming read/write paths
+        // are untouched — those already use channels.
+        let pattern = req.pattern;
+        let replacement = req.replacement;
+        let first_only = req.first_only;
+        let recursive = req.recursive;
+        let include_glob = req.include_glob;
+        let exclude_glob = req.exclude_glob;
+        let host_root_canon = self.host_root_canon.clone();
+        let denylist_canon = self.denylist_canon.clone();
 
-        for file in files {
-            let anchored = self.lexical_operand(&file);
-            let p = anchored.as_path();
-            let original = match std::fs::read_to_string(p) {
-                Ok(s) => s,
-                Err(e) => {
-                    results.push(crate::fs::wire::FsSedFileResult {
-                        path: file.clone(),
-                        replacements: 0,
-                        success: false,
-                        error: Some(format!("{e}")),
-                    });
-                    continue;
+        let join = tokio::task::spawn_blocking(move || -> Result<_, FsError> {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Resolve the concrete file list on the blocking thread. For the
+            // directory form this is the walk that previously stalled the
+            // executor; the recursive=false-on-dir guard and the io errors
+            // keep the same S-codes they had on the executor.
+            let files: Vec<String> = match source {
+                SedSource::Files(fs) => fs,
+                SedSource::Dir(root) => {
+                    confine_path(&root, host_root_canon.as_deref(), &denylist_canon)?;
+                    let root_anchored = lexical_operand_with(&root, host_root_canon.as_deref());
+                    let root_path = root_anchored.as_path();
+                    let _ = root_path
+                        .symlink_metadata()
+                        .map_err(|e| FsError::from_io(&root, e))?;
+                    let target_is_dir = match std::fs::metadata(root_path) {
+                        Ok(m) => m.is_dir(),
+                        Err(e) => return Err(FsError::from_io(&root, e)),
+                    };
+                    if target_is_dir && !recursive {
+                        return Err(FsError::new(
+                            "S210",
+                            "recursive=false on a directory is unsupported; \
+                             pass a file path or set recursive=true",
+                        ));
+                    }
+                    collect_files_to_sed(root_path, recursive, &include_glob, &exclude_glob)
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
                 }
             };
-            let mut replacements: u64 = 0;
-            let mut output = String::with_capacity(original.len());
-            for line in original.split_inclusive('\n') {
-                let (new_line, n) = match &matcher {
-                    Some(re) => {
-                        let mut count_here = 0u64;
-                        let produced = if req.first_only {
-                            re.replacen(line, 1, |caps: &regex::Captures| {
-                                count_here += 1;
-                                expand_regex_replacement(caps, &req.replacement)
-                            })
-                            .into_owned()
-                        } else {
-                            re.replace_all(line, |caps: &regex::Captures| {
-                                count_here += 1;
-                                expand_regex_replacement(caps, &req.replacement)
-                            })
-                            .into_owned()
-                        };
-                        (produced, count_here)
+
+            // Per-file jail confinement, exactly as on the executor pre-fix:
+            // validate EVERY file (S210/S215 on the first violation) BEFORE
+            // touching any file, so a single bad path aborts the whole call
+            // with nothing written.
+            for f in &files {
+                confine_path(f, host_root_canon.as_deref(), &denylist_canon)?;
+            }
+
+            // Anchor every file to its jail-relative operand (the operated-on
+            // path, not its canonical target — sed acts on the link itself).
+            let anchored: Vec<(String, PathBuf)> = files
+                .into_iter()
+                .map(|f| {
+                    let p = lexical_operand_with(&f, host_root_canon.as_deref());
+                    (f, p)
+                })
+                .collect();
+
+            let mut results: Vec<crate::fs::wire::FsSedFileResult> =
+                Vec::with_capacity(anchored.len());
+            let mut total: u64 = 0;
+
+            for (file, anchored_path) in anchored {
+                let p = anchored_path.as_path();
+                let original = match std::fs::read_to_string(p) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file.clone(),
+                            replacements: 0,
+                            success: false,
+                            error: Some(format!("{e}")),
+                        });
+                        continue;
                     }
-                    None => literal_replace_line(
-                        line,
-                        &req.pattern,
-                        case_fold,
-                        &req.replacement,
-                        req.first_only,
-                    ),
                 };
-                replacements += n;
-                output.push_str(&new_line);
-            }
-            let tmp = temp_sibling(p);
-            let write_result: Result<(), std::io::Error> = (|| {
-                let original_md = std::fs::metadata(p)?;
-                std::fs::write(&tmp, output.as_bytes())?;
-                std::fs::set_permissions(
-                    &tmp,
-                    std::fs::Permissions::from_mode(original_md.permissions().mode()),
-                )?;
-                std::fs::rename(&tmp, p)?;
-                Ok(())
-            })();
-            match write_result {
-                Ok(()) => {
-                    total += replacements;
-                    results.push(crate::fs::wire::FsSedFileResult {
-                        path: file,
-                        replacements,
-                        success: true,
-                        error: None,
-                    });
+                let mut replacements: u64 = 0;
+                let mut output = String::with_capacity(original.len());
+                for line in original.split_inclusive('\n') {
+                    let (new_line, n) = match &matcher {
+                        Some(re) => {
+                            let mut count_here = 0u64;
+                            let produced = if first_only {
+                                re.replacen(line, 1, |caps: &regex::Captures| {
+                                    count_here += 1;
+                                    expand_regex_replacement(caps, &replacement)
+                                })
+                                .into_owned()
+                            } else {
+                                re.replace_all(line, |caps: &regex::Captures| {
+                                    count_here += 1;
+                                    expand_regex_replacement(caps, &replacement)
+                                })
+                                .into_owned()
+                            };
+                            (produced, count_here)
+                        }
+                        None => literal_replace_line(
+                            line,
+                            &pattern,
+                            ci_matcher.as_ref(),
+                            &replacement,
+                            first_only,
+                        ),
+                    };
+                    replacements += n;
+                    output.push_str(&new_line);
                 }
-                Err(e) => {
-                    let _ = std::fs::remove_file(&tmp);
-                    results.push(crate::fs::wire::FsSedFileResult {
-                        path: file,
-                        replacements: 0,
-                        success: false,
-                        error: Some(format!("{e}")),
-                    });
+                let tmp = temp_sibling(p);
+                let write_result: Result<(), std::io::Error> = (|| {
+                    let original_md = std::fs::metadata(p)?;
+                    std::fs::write(&tmp, output.as_bytes())?;
+                    std::fs::set_permissions(
+                        &tmp,
+                        std::fs::Permissions::from_mode(original_md.permissions().mode()),
+                    )?;
+                    std::fs::rename(&tmp, p)?;
+                    Ok(())
+                })();
+                match write_result {
+                    Ok(()) => {
+                        total += replacements;
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file,
+                            replacements,
+                            success: true,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&tmp);
+                        results.push(crate::fs::wire::FsSedFileResult {
+                            path: file,
+                            replacements: 0,
+                            success: false,
+                            error: Some(format!("{e}")),
+                        });
+                    }
                 }
             }
-        }
+            Ok((results, total))
+        });
+
+        // JoinError -> S216; the inner Result carries the per-file
+        // validation / dir-walk S-codes (S210/S215/io).
+        let (results, total) = join
+            .await
+            .map_err(|e| FsError::new("S216", format!("sed task join failed: {e}")))??;
         Ok(crate::fs::SedResponse {
             results,
             total_replacements: total,
@@ -994,6 +1212,7 @@ impl FsBackend for HostFsBackend {
     async fn write(&self, req: crate::fs::WriteArgs) -> FsCallResult<crate::fs::WriteResponse> {
         let p = self.validate_path(&req.path)?;
         let bits = crate::fs::error::parse_mode(&req.mode)?;
+        check_special_bits(bits, self.cfg.allow_special_bits)?;
 
         // Defense-in-depth: re-check parent against the precomputed
         // canonical root before creating intermediate directories.
@@ -1180,6 +1399,19 @@ mod tests {
     fn stub_backend(cfg: HostFsConfig) -> HostFsBackend {
         HostFsBackend::new(Arc::new(cfg), Arc::new(StubChan))
     }
+
+    #[test]
+    fn try_new_returns_err_on_unreachable_host_root() {
+        let cfg = Arc::new(HostFsConfig {
+            host_root: Some(PathBuf::from("/nonexistent/shell-jail-xyz")),
+            ..HostFsConfig::default()
+        });
+        let chan: Arc<dyn ChannelMaker> = Arc::new(StubChan);
+        let res = HostFsBackend::try_new(cfg, chan);
+        assert!(res.is_err());
+        assert_eq!(res.err().unwrap().code, "S216");
+    }
+
     fn stub_ref() -> iii_sdk::channels::StreamChannelRef {
         iii_sdk::channels::StreamChannelRef {
             channel_id: "c".into(),
@@ -1330,7 +1562,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(res.updated, 1);
+        assert_eq!(res.entries_changed, 1);
         let mode = fs::metadata(root.join("f.txt"))
             .unwrap()
             .permissions()
@@ -1758,7 +1990,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(resp.updated, 1);
+        assert_eq!(resp.entries_changed, 1);
         let perms = std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777;
         assert_eq!(perms, 0o600);
     }
@@ -1816,7 +2048,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(resp.updated, 3);
+        assert_eq!(resp.entries_changed, 3);
         let leaf_perms = std::fs::metadata(tree.join("sub/leaf.txt"))
             .unwrap()
             .permissions()
@@ -2383,5 +2615,323 @@ mod tests {
             .unwrap();
         assert_eq!(resp.total_replacements, 1);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "$1 world\n");
+    }
+
+    // --- glob matcher unit coverage (glob_match / glob_match_simple) ---
+
+    #[test]
+    fn glob_double_star_slash_extension_matches_nested() {
+        // `**/*.rs` must match both a top-level and a deeply nested .rs file.
+        assert!(glob_matches_path("**/*.rs", "main.rs"));
+        assert!(glob_matches_path("**/*.rs", "a/b/c/lib.rs"));
+        assert!(!glob_matches_path("**/*.rs", "a/b/c/lib.txt"));
+    }
+
+    #[test]
+    fn glob_question_mark_is_single_non_slash_char() {
+        assert!(glob_match_simple("a?c", "abc"));
+        assert!(!glob_match_simple("a?c", "ac"));
+        // `?` must not consume a path separator.
+        assert!(!glob_match_simple("a?c", "a/c"));
+    }
+
+    #[test]
+    fn glob_pattern_with_slash_matches_full_relpath() {
+        // A pattern containing `/` is matched against the full relpath, not
+        // just the basename.
+        assert!(glob_matches_path("src/*.rs", "src/main.rs"));
+        assert!(!glob_matches_path("src/*.rs", "other/main.rs"));
+        // `*` does not cross `/`, so a nested file under src fails this glob.
+        assert!(!glob_matches_path("src/*.rs", "src/inner/main.rs"));
+    }
+
+    #[test]
+    fn glob_double_star_catch_all_matches_anything() {
+        assert!(glob_matches_path("**", "anything"));
+        assert!(glob_matches_path("**", "a/b/c.txt"));
+        assert!(glob_match("**", "deep/nested/path"));
+    }
+
+    // --- setuid/setgid/sticky bit rejection ---
+
+    #[tokio::test]
+    async fn chmod_setuid_mode_rejected_by_default_s210() {
+        let root = tmp();
+        let f = root.join("c.txt");
+        fs::write(&f, b"x").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let err = h
+            .chmod(crate::fs::ChmodArgs {
+                path: "c.txt".into(),
+                mode: "4755".into(),
+                uid: None,
+                gid: None,
+                recursive: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(
+            err.message.contains("allow_special_bits"),
+            "message should name the flag, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn chmod_setuid_mode_allowed_when_opted_in() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp();
+        let f = root.join("c.txt");
+        fs::write(&f, b"x").unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            allow_special_bits: true,
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let resp = h
+            .chmod(crate::fs::ChmodArgs {
+                path: "c.txt".into(),
+                mode: "4755".into(),
+                uid: None,
+                gid: None,
+                recursive: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.entries_changed, 1);
+        let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o4755);
+    }
+
+    #[tokio::test]
+    async fn mkdir_setgid_mode_rejected_by_default_s210() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let err = h
+            .mkdir(crate::fs::MkdirArgs {
+                path: "newdir".into(),
+                mode: "2755".into(),
+                parents: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(!root.join("newdir").exists(), "dir must not be created");
+    }
+
+    #[tokio::test]
+    async fn mkdir_setgid_mode_allowed_when_opted_in() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            allow_special_bits: true,
+            ..Default::default()
+        };
+        let h = stub_backend(cfg);
+        let resp = h
+            .mkdir(crate::fs::MkdirArgs {
+                path: "newdir".into(),
+                mode: "2755".into(),
+                parents: false,
+            })
+            .await
+            .unwrap();
+        assert!(resp.created);
+        let mode = fs::metadata(root.join("newdir"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o2755);
+    }
+
+    #[tokio::test]
+    async fn write_sticky_mode_rejected_by_default_s210() {
+        let root = tmp();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+        let err = b
+            .write(crate::fs::WriteArgs {
+                path: "f.txt".into(),
+                mode: "1644".into(),
+                parents: false,
+                content: stub_ref(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(err.message.contains("allow_special_bits"));
+        assert!(!root.join("f.txt").exists());
+    }
+
+    // --- regex / pattern length caps ---
+
+    #[tokio::test]
+    async fn grep_over_long_pattern_rejected_fast() {
+        let root = tmp();
+        fs::write(root.join("a.txt"), "x\n").unwrap();
+        let h = stub_backend(HostFsConfig::default());
+        let huge = "a".repeat(MAX_PATTERN_BYTES + 1);
+        let started = std::time::Instant::now();
+        let err = h
+            .grep(crate::fs::GrepArgs {
+                path: root.to_str().unwrap().into(),
+                pattern: huge,
+                recursive: true,
+                ignore_case: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                max_matches: 100,
+                max_line_bytes: 8192,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "over-long pattern must be rejected without a compile stall"
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_normal_pattern_still_works_after_caps() {
+        let root = tmp();
+        fs::write(root.join("a.txt"), "alpha\nbeta\n").unwrap();
+        let h = stub_backend(HostFsConfig::default());
+        let resp = h
+            .grep(crate::fs::GrepArgs {
+                path: root.to_str().unwrap().into(),
+                pattern: "alpha".into(),
+                recursive: true,
+                ignore_case: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                max_matches: 100,
+                max_line_bytes: 8192,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.matches.len(), 1);
+        assert_eq!(resp.matches[0].content, "alpha");
+    }
+
+    #[tokio::test]
+    async fn sed_over_long_pattern_rejected_fast() {
+        let root = tmp();
+        let f = root.join("s.txt");
+        fs::write(&f, "x\n").unwrap();
+        let h = stub_backend(HostFsConfig::default());
+        let huge = "a".repeat(MAX_PATTERN_BYTES + 1);
+        let started = std::time::Instant::now();
+        let err = h
+            .sed(crate::fs::SedArgs {
+                files: vec![f.to_str().unwrap().into()],
+                path: None,
+                recursive: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                pattern: huge,
+                replacement: "Y".into(),
+                regex: true,
+                first_only: false,
+                ignore_case: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // File must be untouched.
+        assert_eq!(fs::read_to_string(&f).unwrap(), "x\n");
+    }
+
+    /// Companion to `sed_over_long_pattern_rejected_fast`, which exercises the
+    /// `regex=true` path. The literal path (`regex=false`) uses the same
+    /// `check_pattern_len` cap; this asserts it independently so the
+    /// literal-mode huge-pattern branch can't regress unnoticed.
+    #[tokio::test]
+    async fn sed_over_long_literal_pattern_rejected_fast() {
+        let root = tmp();
+        let f = root.join("s.txt");
+        fs::write(&f, "x\n").unwrap();
+        let h = stub_backend(HostFsConfig::default());
+        let huge = "a".repeat(MAX_PATTERN_BYTES + 1);
+        let started = std::time::Instant::now();
+        let err = h
+            .sed(crate::fs::SedArgs {
+                files: vec![f.to_str().unwrap().into()],
+                path: None,
+                recursive: false,
+                include_glob: vec![],
+                exclude_glob: vec![],
+                pattern: huge,
+                replacement: "Y".into(),
+                regex: false,
+                first_only: false,
+                ignore_case: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S210");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // File must be untouched.
+        assert_eq!(fs::read_to_string(&f).unwrap(), "x\n");
+    }
+
+    // --- jail escape via a LIVE (non-dangling) symlink whose target is
+    // outside the jail. The canonicalize + starts_with(host_root) gate in
+    // validate_path is the core security control; this exact vector was
+    // untested. We point host_root/escape at a real existing dir outside the
+    // jail and assert read/stat/ls all reject with S215.
+
+    #[tokio::test]
+    async fn live_symlink_resolving_outside_jail_is_rejected_s215() {
+        use std::os::unix::fs::symlink;
+        let root = tmp();
+        // /etc exists and is outside the jail. A non-dangling symlink whose
+        // target resolves there must be caught by the canonical jail check.
+        symlink("/etc", root.join("escape")).unwrap();
+        let cfg = HostFsConfig {
+            host_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let b = stub_backend(cfg);
+
+        let read_err = b
+            .read(crate::fs::ReadArgs {
+                path: "escape/hostname".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(read_err.code, "S215", "read through escape symlink");
+
+        let stat_err = b
+            .stat(StatArgs {
+                path: "escape/hostname".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(stat_err.code, "S215", "stat through escape symlink");
+
+        let ls_err = b
+            .ls(LsArgs {
+                path: "escape".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(ls_err.code, "S215", "ls through escape symlink");
     }
 }

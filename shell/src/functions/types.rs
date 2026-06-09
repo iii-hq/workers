@@ -8,6 +8,8 @@
 //! caller `command: string` while keeping the loose `timeout_ms` semantic
 //! and the actionable error texts on type mismatches.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -103,6 +105,23 @@ pub struct ExecRequest {
     /// `cfg.default_timeout_ms` (loose wire semantic, preserved on purpose).
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
+    /// Optional working directory for this call (host target only). Confined to
+    /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
+    /// `fs.host_root` is set (else absolute), canonicalized, and must resolve
+    /// inside `host_root` and miss the denylist — a path that escapes returns
+    /// S215. Must already exist and be a directory. Omit to use the configured
+    /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Optional per-call environment values (host target only). A key may be
+    /// set ONLY if the operator listed it in `allowed_env`, and NEVER for an
+    /// exec-hijacking key (PATH, IFS, LD_*/DYLD_*) — those are rejected even if
+    /// allowlisted. Supplying a key that is not in `allowed_env`, or any
+    /// dangerous key, rejects the WHOLE call (S210) naming the offending key;
+    /// the env is never silently dropped. Permitted values override what would
+    /// otherwise be forwarded for that key. Rejected (S210) on a sandbox target.
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
     /// Where to run the command. Defaults to the host worker; pass
     /// `{ kind: "sandbox", sandbox_id }` to forward the call to a microVM.
     #[serde(default)]
@@ -126,6 +145,18 @@ pub struct ExecBgRequest {
     /// sandbox-targeted ones forward it through `cfg.resolve_timeout`.
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
+    /// Optional working directory for this job (host target only). Same jail
+    /// confinement and rules as [`ExecRequest::cwd`]: canonicalized, must
+    /// resolve inside `host_root` (S215 on escape) and be an existing
+    /// directory. Rejected (S210) on a sandbox target.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Optional per-call environment values (host target only). Same gating as
+    /// [`ExecRequest::env`]: a key must be in `allowed_env` and must not be an
+    /// exec-hijacking key (PATH, IFS, LD_*/DYLD_*); any violation rejects the
+    /// whole call (S210). Rejected (S210) on a sandbox target.
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
     /// Where to run. See [`ExecRequest::target`].
     #[serde(default)]
     pub target: Target,
@@ -222,8 +253,19 @@ impl From<&JobRecord> for JobSummary {
     }
 }
 
+/// `shell::list` takes no arguments; this empty struct publishes an accurate
+/// (empty-object) request schema.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListRequest {}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListResponse {
     pub jobs: Vec<JobSummary>,
     pub count: usize,
 }
+
+/// `shell::config-status` takes no arguments; this empty struct publishes an
+/// accurate (empty-object) request schema, mirroring [`ListRequest`]. The
+/// response is `configuration::ReloadStatus`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigStatusRequest {}

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::fs::error::FsError;
 use crate::fs::sandbox::{IiiTriggerFwd, SandboxFsBackend};
 use crate::fs::{FsBackend, Target};
 
@@ -26,8 +25,4 @@ fn sandbox_for(id: Uuid, iii: iii_sdk::III, enabled: bool) -> Arc<dyn FsBackend>
         enabled,
         id,
     ))
-}
-
-pub fn err_to_string(e: FsError) -> String {
-    e.to_json()
 }

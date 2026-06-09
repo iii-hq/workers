@@ -21,8 +21,11 @@ pub use crate::target::Target;
 /// of `shell::fs::write`/`read`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ContentRef {
+    /// Opaque identifier for the open stream channel.
     pub channel_id: String,
+    /// Secret key that authorises access to this channel.
     pub access_key: String,
+    /// Direction of data flow: "read" (consume) or "write" (produce).
     #[serde(default)]
     pub direction: ContentDirection,
 }
@@ -184,8 +187,10 @@ pub struct ReadArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
 }
 impl LsRequest {
@@ -196,8 +201,10 @@ impl LsRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StatRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
 }
 impl StatRequest {
@@ -208,11 +215,15 @@ impl StatRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MkdirRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Octal permission string, e.g. "0755".
     #[serde(default = "default_mkdir_mode")]
     pub mode: String,
+    /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
 }
@@ -231,9 +242,12 @@ impl MkdirRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RmRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Required to delete a non-empty directory.
     #[serde(default)]
     pub recursive: bool,
 }
@@ -251,14 +265,20 @@ impl RmRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChmodRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Octal permission string, e.g. "0755".
     pub mode: String,
+    /// Optional chown to this numeric uid.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// Optional chown to this numeric gid.
     #[serde(default)]
     pub gid: Option<u32>,
+    /// Apply mode/owner change to all files under the path recursively.
     #[serde(default)]
     pub recursive: bool,
 }
@@ -279,10 +299,14 @@ impl ChmodRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MvRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Source path; jail-relative when fs.host_root is set, else absolute.
     pub src: String,
+    /// Destination path; jail-relative when fs.host_root is set, else absolute.
     pub dst: String,
+    /// Replace an existing destination instead of returning an error.
     #[serde(default)]
     pub overwrite: bool,
 }
@@ -301,20 +325,29 @@ impl MvRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Rust regex (RE2-like) matched against each line.
     pub pattern: String,
+    /// Descend into subdirectories (default true).
     #[serde(default = "default_true")]
     pub recursive: bool,
+    /// Match pattern case-insensitively.
     #[serde(default)]
     pub ignore_case: bool,
+    /// Glob filters restricting which file paths are searched.
     #[serde(default)]
     pub include_glob: Vec<String>,
+    /// Glob filters excluding file paths from the search.
     #[serde(default)]
     pub exclude_glob: Vec<String>,
+    /// Stop collecting matches after this many results (default 10 000).
     #[serde(default = "default_max_matches")]
     pub max_matches: u64,
+    /// Skip lines longer than this many bytes (default 4 096).
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: u64,
 }
@@ -338,24 +371,35 @@ impl GrepRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SedRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Explicit list of file paths to edit; provide either this or `path`, not both.
     #[serde(default)]
     pub files: Vec<String>,
+    /// Root path to walk for files; used with `recursive`, `include_glob`, `exclude_glob`.
     #[serde(default)]
     pub path: Option<String>,
+    /// Descend into subdirectories when `path` is set (default true).
     #[serde(default = "default_true")]
     pub recursive: bool,
+    /// Glob filters restricting which file paths are edited.
     #[serde(default)]
     pub include_glob: Vec<String>,
+    /// Glob filters excluding file paths from editing.
     #[serde(default)]
     pub exclude_glob: Vec<String>,
+    /// Rust regex by default; set regex:false for a literal string.
     pub pattern: String,
+    /// String to substitute for each match.
     pub replacement: String,
+    /// Treat pattern as a regex (default true) or a literal string (false).
     #[serde(default = "default_true")]
     pub regex: bool,
+    /// Replace only the first match per file instead of all matches.
     #[serde(default)]
     pub first_only: bool,
+    /// Match pattern case-insensitively.
     #[serde(default)]
     pub ignore_case: bool,
 }
@@ -381,13 +425,18 @@ impl SedRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
+    /// Octal permission string, e.g. "0644".
     #[serde(default = "default_write_mode")]
     pub mode: String,
+    /// Create missing parent directories.
     #[serde(default)]
     pub parents: bool,
+    /// ContentRef { channel_id, access_key, direction } identifying an open write stream channel.
     pub content: ContentRef,
 }
 impl WriteRequest {
@@ -406,8 +455,10 @@ impl WriteRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadRequest {
+    /// host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
+    /// Jail-relative when fs.host_root is set, else absolute.
     pub path: String,
 }
 impl ReadRequest {
@@ -418,6 +469,7 @@ impl ReadRequest {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LsResponse {
+    /// Metadata for each entry in the directory.
     pub entries: Vec<FsEntry>,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -425,33 +477,78 @@ pub struct LsResponse {
 pub struct StatResponse(pub FsEntry);
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MkdirResponse {
+    /// True when a new directory was created; false when it already existed
+    /// (only possible with `parents: true`, which is idempotent).
     pub created: bool,
+    /// The directory path that was targeted. Empty for sandbox targets.
+    #[serde(default)]
+    pub path: String,
+    /// True when the path already existed and `parents` was set. Host only;
+    /// sandbox targets default this to false (not a signal there).
+    #[serde(default)]
+    pub already_existed: bool,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RmResponse {
+    /// True when the path was removed.
     pub removed: bool,
+    /// The path that was targeted. Empty for sandbox targets.
+    #[serde(default)]
+    pub path: String,
+    /// True when the path existed before removal. Host only; sandbox targets
+    /// default this to false, which does NOT mean the path was absent.
+    #[serde(default)]
+    pub was_present: bool,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ChmodResponse {
-    pub updated: u64,
+    /// Number of filesystem entries whose mode/owner changed.
+    #[serde(alias = "updated")]
+    pub entries_changed: u64,
+    /// The path that was targeted. Empty for sandbox targets.
+    #[serde(default)]
+    pub path: String,
+    /// Whether the change was applied recursively. Host only.
+    #[serde(default)]
+    pub recursive: bool,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MvResponse {
+    /// True when the move/rename succeeded.
     pub moved: bool,
+    /// Source path. Empty for sandbox targets.
+    #[serde(default)]
+    pub src: String,
+    /// Destination path. Empty for sandbox targets.
+    #[serde(default)]
+    pub dst: String,
+    /// True when an existing destination was overwritten. Host only (sandbox
+    /// targets default this to false, not a signal there).
+    /// Best-effort: derived from a pre-rename existence check, so under a
+    /// concurrent writer racing the destination it may under-report (and an
+    /// `overwrite:false` move can still replace a file created in that window).
+    #[serde(default)]
+    pub overwrote: bool,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct GrepResponse {
+    /// All collected match locations up to `max_matches`.
     pub matches: Vec<FsMatch>,
+    /// True when the result was capped by `max_matches` or `max_line_bytes`.
     pub truncated: bool,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SedResponse {
+    /// Per-file replacement details.
     pub results: Vec<FsSedFileResult>,
+    /// Sum of replacements made across all files.
     pub total_replacements: u64,
 }
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WriteResponse {
+    /// Number of bytes written to the file.
     pub bytes_written: u64,
+    /// Absolute path of the file that was written.
     pub path: String,
 }
 
@@ -468,9 +565,13 @@ pub struct ReadResponse {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadResponseWire {
+    /// Channel reference for streaming the file content back to the caller.
     pub content: ContentRef,
+    /// File size in bytes at the time of the read.
     pub size: u64,
+    /// Octal permission string of the file, e.g. "0644".
     pub mode: String,
+    /// Last-modified time as a Unix timestamp (seconds).
     pub mtime: i64,
 }
 impl From<ReadResponse> for ReadResponseWire {
@@ -597,5 +698,32 @@ mod tests {
         .unwrap();
         let (_t, args) = req.split();
         assert_eq!(args.content.channel_id, "c");
+    }
+
+    #[test]
+    fn mkdir_response_deserializes_legacy_engine_shape() {
+        // Sandbox round-trip: engine returns only `created`; new fields default.
+        let r: MkdirResponse =
+            serde_json::from_value(serde_json::json!({"created": true})).unwrap();
+        assert!(r.created);
+        assert!(!r.already_existed);
+        assert_eq!(r.path, "");
+    }
+
+    #[test]
+    fn chmod_response_accepts_legacy_updated_key() {
+        // Engine returns `updated`; alias maps it onto `entries_changed`.
+        let r: ChmodResponse = serde_json::from_value(serde_json::json!({"updated": 5})).unwrap();
+        assert_eq!(r.entries_changed, 5);
+    }
+
+    #[test]
+    fn mv_and_rm_responses_deserialize_legacy_shape() {
+        let m: MvResponse = serde_json::from_value(serde_json::json!({"moved": true})).unwrap();
+        assert!(m.moved);
+        assert!(!m.overwrote);
+        let r: RmResponse = serde_json::from_value(serde_json::json!({"removed": true})).unwrap();
+        assert!(r.removed);
+        assert!(!r.was_present);
     }
 }

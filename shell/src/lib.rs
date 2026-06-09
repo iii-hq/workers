@@ -3,11 +3,13 @@
 //! share source files via Cargo's two-target compile.
 
 pub mod config;
+pub mod configuration;
 pub mod exec;
 pub mod exec_dispatch;
 pub mod fs;
 pub mod functions;
 pub mod jobs;
-pub mod manifest;
+pub mod scode;
 pub mod target;
+pub mod telemetry;
 pub mod triggers;

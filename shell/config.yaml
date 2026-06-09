@@ -82,6 +82,11 @@ fs:
   denylist_paths:
     - /etc/passwd
     - /etc/shadow
+  # Permit setuid/setgid/sticky bits (the top octal digit, e.g. 4755) in
+  # mkdir/chmod/write modes. Default false: such modes are a privilege-
+  # escalation primitive when the worker runs as root, so they are rejected
+  # with S210. Set true only if your workload genuinely needs them.
+  # allow_special_bits: false
 
 # When enabled is true, callers can target a live sandbox via the
 # top-level `target` field on shell::exec, shell::exec_bg, and every

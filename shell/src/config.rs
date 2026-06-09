@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use regex::Regex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ShellConfig {
     #[serde(default = "default_max_timeout_ms")]
     pub max_timeout_ms: u64,
@@ -27,6 +27,11 @@ pub struct ShellConfig {
     #[serde(default)]
     pub allowlist: Vec<String>,
 
+    /// ADVISORY ONLY. Regular expressions matched against the whole command
+    /// line (`argv.join(" ")`). A match rejects the exec, but this is a
+    /// best-effort guardrail, NOT the security boundary — the sandbox backend
+    /// is. Do not rely on it to contain untrusted input: regexes over a joined
+    /// argv are trivially evadable (quoting, env indirection, alternate paths).
     #[serde(default)]
     pub denylist_patterns: Vec<String>,
 
@@ -43,6 +48,7 @@ pub struct ShellConfig {
     pub sandbox: SandboxConfig,
 
     #[serde(default, skip)]
+    #[schemars(skip)]
     pub compiled_denylist: Vec<Regex>,
 }
 
@@ -68,7 +74,7 @@ fn default_job_retention_secs() -> u64 {
     3600
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FsConfig {
     #[serde(default)]
     pub host_root: Option<PathBuf>,
@@ -86,9 +92,16 @@ pub struct FsConfig {
     pub max_write_bytes: usize,
     #[serde(default)]
     pub denylist_paths: Vec<PathBuf>,
+    /// Permit setuid/setgid/sticky bits (the top octal digit, `mode & 0o7000`)
+    /// in mkdir/chmod/write modes. Default false: a chmod to e.g. `4755`
+    /// (setuid) is a privilege-escalation primitive when the worker runs as
+    /// root, so the top bits are rejected with S210 unless an operator
+    /// explicitly opts in here.
+    #[serde(default)]
+    pub allow_special_bits: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxConfig {
     #[serde(default = "default_sandbox_enabled")]
     pub enabled: bool,
@@ -112,6 +125,7 @@ impl Default for FsConfig {
             max_read_bytes: default_max_read_bytes(),
             max_write_bytes: default_max_write_bytes(),
             denylist_paths: Vec::new(),
+            allow_special_bits: false,
         }
     }
 }
@@ -142,15 +156,6 @@ impl Default for ShellConfig {
             compiled_denylist: Vec::new(),
         }
     }
-}
-
-pub fn load_config(path: &str) -> Result<ShellConfig> {
-    let content = fs::read_to_string(path).with_context(|| format!("read {}", path))?;
-    let mut cfg: ShellConfig =
-        serde_yaml::from_str(&content).with_context(|| format!("parse {}", path))?;
-    cfg.compile_denylist()?;
-    cfg.validate_fs_jail()?;
-    Ok(cfg)
 }
 
 impl ShellConfig {
@@ -190,7 +195,15 @@ impl ShellConfig {
                 .and_then(|s| s.to_str())
                 .unwrap_or(&cmd);
             if !self.allowlist.iter().any(|a| a == base || a == &cmd) {
-                return Err(format!("command '{}' not in allowlist", base));
+                // Append the permitted commands so an agent can self-correct
+                // (mirrors COMMAND_ARRAY_HINT in functions/types.rs). The
+                // allowlist is the policy the caller must comply with, not a
+                // secret, so list it in full.
+                return Err(format!(
+                    "command '{}' not in allowlist; allowed: [{}]",
+                    base,
+                    self.allowlist.join(", ")
+                ));
             }
         }
 
@@ -206,6 +219,35 @@ impl ShellConfig {
     pub fn resolve_timeout(&self, requested: Option<u64>) -> u64 {
         let t = requested.unwrap_or(self.default_timeout_ms);
         t.min(self.max_timeout_ms)
+    }
+
+    /// Parse a YAML seed (no denylist compile, no jail validation — those run
+    /// in `configuration::build_runtime`).
+    pub fn from_yaml(yaml: &str) -> Result<Self, String> {
+        serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
+    }
+
+    /// Load a YAML seed file. Used only for the optional `--config` seed.
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+        Self::from_yaml(&raw)
+    }
+
+    /// Deserialize the live value fetched from the configuration worker.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))
+    }
+
+    /// Serialize for `initial_value` when registering with the configuration worker.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("ShellConfig serializes")
+    }
+
+    /// JSON Schema registered with the configuration worker so operators get
+    /// a typed editing surface.
+    pub fn json_schema() -> serde_json::Value {
+        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
+        serde_json::to_value(root).expect("ShellConfig JSON Schema serializes")
     }
 }
 
@@ -248,6 +290,19 @@ mod tests {
     }
 
     #[test]
+    fn test_allowlist_rejection_lists_allowed_commands() {
+        // The rejection must name the permitted commands so an agent can
+        // self-correct without trial-and-error against the policy.
+        let c = cfg_with(vec!["ls", "cat", "grep"], vec![]);
+        let err = c
+            .is_command_allowed(&["nmap".into()])
+            .expect_err("must reject");
+        assert!(err.contains("ls"), "got: {err}");
+        assert!(err.contains("cat"), "got: {err}");
+        assert!(err.contains("grep"), "got: {err}");
+    }
+
+    #[test]
     fn test_allowlist_empty_means_open() {
         let c = cfg_with(vec![], vec![]);
         assert!(c.is_command_allowed(&["anything".into()]).is_ok());
@@ -276,22 +331,39 @@ mod tests {
         assert!(c.is_command_allowed(&[]).is_err());
     }
 
+    #[test]
+    fn test_allowlisted_command_still_blocked_by_denylist() {
+        // Both lists non-empty: `tar` is allowlisted (passes argv[0] check)
+        // but the argv string matches a denylist pattern, so it is rejected.
+        // The denylist is the second gate and must apply even to allowlisted
+        // commands.
+        let c = cfg_with(vec!["tar", "ls"], vec![r"--checkpoint-action"]);
+        // Sanity: a benign allowlisted invocation passes.
+        assert!(c
+            .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
+            .is_ok());
+        // The dangerous allowlisted invocation is blocked by the denylist.
+        let err = c
+            .is_command_allowed(&[
+                "tar".into(),
+                "--checkpoint-action=exec=sh".into(),
+                "x".into(),
+            ])
+            .expect_err("denylist must override allowlist");
+        assert!(err.contains("denylist"), "got: {err}");
+    }
+
     /// Loads the shipped `config.yaml` and asserts the default allowlist
     /// preserves read-only env inspection (`printenv`) while rejecting the
     /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
     /// because `is_command_allowed` only checks argv[0]; with `env`
     /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
-    /// Loads the shipped `config.yaml` and asserts the default allowlist
-    /// preserves read-only env inspection (`printenv`) while rejecting the
-    /// `env <cmd>` exec-escape. `env` was removed from the default allowlist
-    /// because `is_command_allowed` only checks argv[0]; with `env`
-    /// allowlisted, `env nmap target` would have argv[0]=="env" and pass.
-    /// Parses the YAML directly (skipping `load_config`'s fs-jail check,
+    /// Parses the YAML directly (skipping the fs-jail check,
     /// which is unrelated to the allowlist policy under test).
     #[test]
     fn shipped_config_blocks_env_exec_escape() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
-        let content = fs::read_to_string(path).expect("read config.yaml");
+        let content = std::fs::read_to_string(path).expect("read config.yaml");
         let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
         assert!(c.is_command_allowed(&["printenv".into()]).is_ok());
@@ -370,5 +442,35 @@ sandbox:
         let mut c = ShellConfig::default();
         c.fs.host_root = Some(std::path::PathBuf::from("/tmp/something"));
         c.validate_fs_jail().expect("pinned host_root is valid");
+    }
+
+    #[test]
+    fn json_schema_has_top_level_keys() {
+        let schema = ShellConfig::json_schema();
+        let obj = schema.as_object().expect("schema is an object");
+        assert!(obj.contains_key("properties"));
+        let props = obj["properties"].as_object().expect("properties object");
+        assert!(props.contains_key("allowlist"));
+        assert!(props.contains_key("fs"));
+        // compiled_denylist must NOT leak into the published schema.
+        assert!(!props.contains_key("compiled_denylist"));
+    }
+
+    #[test]
+    fn to_json_from_json_round_trips() {
+        let mut c = ShellConfig::default();
+        c.fs.host_root = Some(std::path::PathBuf::from("/tmp/shell"));
+        c.allowlist = vec!["ls".into(), "cat".into()];
+        let v = c.to_json();
+        let back = ShellConfig::from_json(&v).expect("from_json round-trips");
+        assert_eq!(back.allowlist, c.allowlist);
+        assert_eq!(back.fs.host_root, c.fs.host_root);
+    }
+
+    #[test]
+    fn from_yaml_parses_seed() {
+        let c = ShellConfig::from_yaml("allowlist: [ls]\nfs:\n  host_root: /tmp/x\n")
+            .expect("seed yaml parses");
+        assert_eq!(c.allowlist, vec!["ls".to_string()]);
     }
 }

@@ -189,6 +189,12 @@ export const FS_SANDBOX_CASES: TestCase[] = [
     name: 'fs_sandbox_chmod_forwards_uid_gid',
     async run(ctx: CaseContext) {
       resetMocks();
+      // The engine (which lives outside workers/shell and was NOT modified
+      // by this work) still returns the LEGACY `updated` key. Shell's
+      // ChmodResponse carries #[serde(alias = "updated")] on entries_changed
+      // to map it. Keeping the mock on the legacy key means this case
+      // actually exercises that alias: legacy {updated:3} round-trips to
+      // entries_changed === 3. If the alias were dropped, this would fail.
       scriptResponse({ updated: 3 });
       const r = await ctx.call('shell::fs::chmod', {
         target: { kind: 'sandbox', sandbox_id: SANDBOX_ID },
@@ -198,7 +204,7 @@ export const FS_SANDBOX_CASES: TestCase[] = [
         gid: 1000,
         recursive: true,
       });
-      expectEqual(r.updated, 3, 'updated count');
+      expectEqual(r.entries_changed, 3, 'entries_changed count');
       expectEqual(captured[0].payload.uid, 1000, 'uid forwarded');
       expectEqual(captured[0].payload.gid, 1000, 'gid forwarded');
     },

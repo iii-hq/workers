@@ -4,12 +4,12 @@
 //! shell does not stream them.
 
 use async_trait::async_trait;
-use iii_sdk::IIIError;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::exec::policy::ExecOverrides;
 use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
 use crate::triggers::TriggerFwd;
 
@@ -45,9 +45,25 @@ impl SandboxExecBackend {
 
 #[async_trait]
 impl ExecBackend for SandboxExecBackend {
-    async fn run(&self, argv: &[String], timeout_ms: u64) -> ExecCallResult<ExecOutcome> {
+    async fn run(
+        &self,
+        argv: &[String],
+        timeout_ms: u64,
+        overrides: &ExecOverrides,
+    ) -> ExecCallResult<ExecOutcome> {
         if !self.enabled {
             return Err(ExecError::new("S210", "sandbox target disabled in config"));
+        }
+        // cwd/env are HOST-ONLY for now: the `sandbox::exec` payload forwards
+        // only { sandbox_id, cmd, args, timeout_ms }, so honoring cwd/env here
+        // would silently drop them. Fail loudly instead so the contract is
+        // honest — an agent that wants per-call cwd/env must target the host.
+        if !overrides.is_empty() {
+            return Err(ExecError::new(
+                "S210",
+                "cwd/env overrides are host-only; the sandbox exec protocol does not \
+                 forward them. Drop cwd/env, or use target: host.",
+            ));
         }
         let cmd = argv
             .first()
@@ -65,7 +81,7 @@ impl ExecBackend for SandboxExecBackend {
         let resp = match self.fwd.trigger("sandbox::exec", payload).await {
             Ok(v) => v,
             Err(e) => {
-                let exec_err = map_iii_err(e);
+                let exec_err = crate::scode::map_iii_err(&e, ExecError::new);
                 // The engine's iii-sandbox returns an *error* (code S200,
                 // type=execution) when the in-VM command exceeds
                 // `timeout_ms` rather than a structured response with
@@ -120,96 +136,11 @@ fn is_engine_timeout(err: &ExecError) -> bool {
     err.code == "S200" || err.message.contains("timed out")
 }
 
-/// Recover an S-code from an `IIIError`. Mirrors
-/// `fs::sandbox::map_iii_err` so codes round-trip identically across
-/// fs and exec paths.
-fn map_iii_err(err: IIIError) -> ExecError {
-    match &err {
-        IIIError::Remote { code, message, .. } if code.starts_with('S') => {
-            return ExecError::new(
-                map_static_code(code),
-                format!("forwarded from engine: {message}"),
-            );
-        }
-        IIIError::Remote { message, .. } => {
-            if let Some(c) = scan_s_code(message) {
-                return ExecError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (wrapped): {message}"),
-                );
-            }
-        }
-        IIIError::Handler(s) => {
-            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                if let Some(c) = parsed.get("code").and_then(|v| v.as_str()) {
-                    let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    return ExecError::new(
-                        map_static_code(c),
-                        format!("forwarded from engine: {msg}"),
-                    );
-                }
-            }
-            if let Some(c) = scan_s_code(s) {
-                return ExecError::new(
-                    map_static_code(c),
-                    format!("forwarded from engine (raw): {s}"),
-                );
-            }
-        }
-        _ => {}
-    }
-    ExecError::new("S216", format!("engine error: {err:?}"))
-}
-
-fn scan_s_code(s: &str) -> Option<&str> {
-    let bytes = s.as_bytes();
-    // The window is 4 bytes (`bytes[i..=i+3]`), so the last valid `i` is
-    // `len - 4`. The loop bound `< len - 3` gives `i <= len - 4`.
-    // `saturating_sub(3)` collapses to 0 when `len < 4`, which yields an
-    // empty range (no false access) on too-short inputs.
-    for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i] == b'S'
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-        {
-            // Reject matches preceded by alphanumerics so we don't grab
-            // the tail of a longer identifier (e.g. "FOO_S211").
-            let preceded_by_word =
-                i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            if !preceded_by_word {
-                return Some(&s[i..i + 4]);
-            }
-        }
-    }
-    None
-}
-
-fn map_static_code(code: &str) -> &'static str {
-    match code {
-        "S001" => "S001",
-        "S002" => "S002",
-        "S003" => "S003",
-        "S004" => "S004",
-        "S100" => "S100",
-        "S101" => "S101",
-        "S102" => "S102",
-        // S200: in-VM execution failure (engine wire-error shape). The
-        // common case — exec timeout — is intercepted in `run` and
-        // surfaced as `{ timed_out: true }`; other S200 reasons (rare)
-        // round-trip to the caller verbatim.
-        "S200" => "S200",
-        "S210" => "S210",
-        "S216" => "S216",
-        "S300" => "S300",
-        "S400" => "S400",
-        _ => "S216",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::IIIError;
+    use serde_json::Value;
     use std::sync::Mutex;
 
     /// Stub forwarder using `Mutex<Option<...>>` to handle the
@@ -275,7 +206,11 @@ mod tests {
         let b = backend(stub.clone(), id);
 
         let out = b
-            .run(&["echo".into(), "hi".into()], 4000)
+            .run(
+                &["echo".into(), "hi".into()],
+                4000,
+                &ExecOverrides::default(),
+            )
             .await
             .expect("ok response");
         assert_eq!(out.stdout, "hi\n");
@@ -309,7 +244,9 @@ mod tests {
             "timed_out": false,
         }));
         let b = backend(stub.clone(), Uuid::new_v4());
-        b.run(&["pwd".into()], 1000).await.unwrap();
+        b.run(&["pwd".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap();
         let (_fid, payload) = stub.captured.lock().unwrap().clone().unwrap();
         assert_eq!(payload["args"], json!([]));
     }
@@ -324,7 +261,14 @@ mod tests {
             "timed_out": true,
         }));
         let b = backend(stub, Uuid::new_v4());
-        let out = b.run(&["sleep".into(), "60".into()], 30000).await.unwrap();
+        let out = b
+            .run(
+                &["sleep".into(), "60".into()],
+                30000,
+                &ExecOverrides::default(),
+            )
+            .await
+            .unwrap();
         assert!(out.timed_out);
     }
 
@@ -332,7 +276,10 @@ mod tests {
     async fn disabled_returns_s210() {
         let stub = StubFwd::ok(json!({}));
         let b = SandboxExecBackend::new(stub, false, Uuid::new_v4());
-        let err = b.run(&["echo".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S210");
         assert!(err.message.contains("disabled"));
     }
@@ -341,15 +288,43 @@ mod tests {
     async fn empty_argv_returns_s210() {
         let stub = StubFwd::ok(json!({}));
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&[], 1000).await.unwrap_err();
+        let err = b
+            .run(&[], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S210");
+    }
+
+    #[tokio::test]
+    async fn populated_overrides_rejected_host_only_s210() {
+        // cwd/env are host-only — the sandbox::exec payload doesn't forward
+        // them, so a populated override must fail loudly rather than be
+        // silently dropped.
+        let stub = StubFwd::ok(json!({
+            "stdout": "", "stderr": "", "exit_code": 0,
+            "duration_ms": 1, "timed_out": false,
+        }));
+        let b = backend(stub, Uuid::new_v4());
+        let overrides = ExecOverrides {
+            cwd: Some(std::path::PathBuf::from("/tmp")),
+            env: None,
+        };
+        let err = b
+            .run(&["echo".into()], 1000, &overrides)
+            .await
+            .expect_err("populated override on sandbox must reject");
+        assert_eq!(err.code, "S210");
+        assert!(err.message.contains("host-only"), "got: {}", err.message);
     }
 
     #[tokio::test]
     async fn remote_s300_round_trips() {
         let stub = StubFwd::remote_err("S300", "VM boot failed: no /dev/kvm");
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&["python3".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["python3".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S300");
         assert!(err.message.contains("VM boot failed"));
     }
@@ -368,7 +343,11 @@ mod tests {
         );
         let b = backend(stub, Uuid::new_v4());
         let out = b
-            .run(&["sleep".into(), "30".into()], 5000)
+            .run(
+                &["sleep".into(), "30".into()],
+                5000,
+                &ExecOverrides::default(),
+            )
             .await
             .expect("timeout must surface as Ok, not Err");
         assert!(out.timed_out, "timed_out must be true");
@@ -392,7 +371,11 @@ mod tests {
         );
         let b = backend(stub, Uuid::new_v4());
         let out = b
-            .run(&["sleep".into(), "30".into()], 5000)
+            .run(
+                &["sleep".into(), "30".into()],
+                5000,
+                &ExecOverrides::default(),
+            )
             .await
             .expect("wrapped timeout must also surface as Ok");
         assert!(
@@ -414,7 +397,7 @@ mod tests {
         );
         let b = backend(stub, Uuid::new_v4());
         let err = b
-            .run(&["echo".into()], 1000)
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
             .await
             .expect_err("non-timeout S2xx must not translate to Ok");
         // Unknown S299 collapses to S216 via map_static_code; the point
@@ -429,7 +412,10 @@ mod tests {
             "handler error: S101: image not installed",
         );
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&["python3".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["python3".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S101");
     }
 
@@ -437,7 +423,10 @@ mod tests {
     async fn handler_json_error_recovers_s_code() {
         let stub = StubFwd::handler_err(r#"{"code":"S002","message":"sandbox not found"}"#);
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&["echo".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S002");
     }
 
@@ -445,7 +434,10 @@ mod tests {
     async fn unknown_code_collapses_to_s216() {
         let stub = StubFwd::remote_err("S999", "unknown");
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&["echo".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S216");
     }
 
@@ -453,7 +445,10 @@ mod tests {
     async fn malformed_response_returns_s216() {
         let stub = StubFwd::ok(json!({ "garbage": true }));
         let b = backend(stub, Uuid::new_v4());
-        let err = b.run(&["echo".into()], 1000).await.unwrap_err();
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "S216");
         assert!(err.message.contains("bad engine response"));
     }

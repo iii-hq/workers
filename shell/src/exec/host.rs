@@ -11,6 +11,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::config::ShellConfig;
+use crate::exec::policy::ExecOverrides;
 use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
 
 pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<String>, String> {
@@ -23,7 +24,17 @@ pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<Strin
     }
 }
 
-pub fn build_command(argv: &[String], cfg: &ShellConfig) -> Result<Command, String> {
+/// Build the host `Command`. `overrides` carries the already-validated per-call
+/// `cwd`/`env` (see `crate::exec::policy`): when both are `None` (the common
+/// case) this is byte-for-byte the prior behaviour. Per-call values are applied
+/// AFTER the config-derived defaults so an override wins for that one key /
+/// directory; the argv itself is unchanged (the allowlist/denylist already ran
+/// in the handler).
+pub fn build_command(
+    argv: &[String],
+    cfg: &ShellConfig,
+    overrides: &ExecOverrides,
+) -> Result<Command, String> {
     let program = argv.first().ok_or_else(|| "empty command".to_string())?;
     let mut cmd = Command::new(program);
     if argv.len() > 1 {
@@ -37,12 +48,34 @@ pub fn build_command(argv: &[String], cfg: &ShellConfig) -> Result<Command, Stri
             }
         }
     }
-    if let Some(dir) = &cfg.working_dir {
+    // Per-call env overrides are applied LAST so a permitted key's per-call
+    // value wins over the config-forwarded value. Keys were already gated
+    // against allowed_env + DANGEROUS_ENV_KEYS in the handler, so this loop
+    // trusts the validated map. Note: when inherit_env is true the child
+    // already inherits the worker's full env; the override still sets these
+    // keys explicitly on top.
+    if let Some(env) = &overrides.env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    // Per-call cwd (already jail-confined to a canonical, existing dir) wins
+    // over cfg.working_dir; absent, fall back to the config default (prior
+    // behaviour).
+    if let Some(dir) = &overrides.cwd {
+        cmd.current_dir(dir);
+    } else if let Some(dir) = &cfg.working_dir {
         cmd.current_dir(dir);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Tokio's Command does NOT kill children on drop by default. Both the
+        // foreground exec path and the background spawn build via this helper;
+        // on shutdown the runtime drops the detached tasks owning each Child,
+        // so without this they would become orphaned processes outliving the
+        // worker. This is the backstop; main() also runs an explicit kill sweep.
+        .kill_on_drop(true);
     Ok(cmd)
 }
 
@@ -50,9 +83,10 @@ pub async fn run_to_completion(
     argv: &[String],
     cfg: &ShellConfig,
     timeout_ms: u64,
+    overrides: &ExecOverrides,
 ) -> Result<ExecOutcome, String> {
     let started = std::time::Instant::now();
-    let mut cmd = build_command(argv, cfg)?;
+    let mut cmd = build_command(argv, cfg, overrides)?;
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
 
     let mut stdout_reader = child.stdout.take().ok_or("no stdout pipe")?;
@@ -134,7 +168,12 @@ impl HostExecBackend {
 
 #[async_trait]
 impl ExecBackend for HostExecBackend {
-    async fn run(&self, argv: &[String], timeout_ms: u64) -> ExecCallResult<ExecOutcome> {
+    async fn run(
+        &self,
+        argv: &[String],
+        timeout_ms: u64,
+        overrides: &ExecOverrides,
+    ) -> ExecCallResult<ExecOutcome> {
         // S216 is the generic "shell-internal error" code in the
         // S2xx range. We deliberately do NOT use S300 here even
         // though it visually parallels SandboxExecBackend's S300
@@ -143,7 +182,7 @@ impl ExecBackend for HostExecBackend {
         // wait failures as S300 would make a "command not found" on
         // the host indistinguishable from a missing /dev/kvm to
         // callers that branch on the code.
-        run_to_completion(argv, &self.cfg, timeout_ms)
+        run_to_completion(argv, &self.cfg, timeout_ms, overrides)
             .await
             .map_err(|e| ExecError::new("S216", format!("host exec: {e}")))
     }
@@ -183,9 +222,14 @@ mod tests {
     #[tokio::test]
     async fn test_run_echo() {
         let cfg = test_cfg();
-        let out = run_to_completion(&["echo".into(), "hi".into()], &cfg, 5000)
-            .await
-            .unwrap();
+        let out = run_to_completion(
+            &["echo".into(), "hi".into()],
+            &cfg,
+            5000,
+            &ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(out.stdout.trim(), "hi");
         assert!(!out.timed_out);
@@ -194,16 +238,27 @@ mod tests {
     #[tokio::test]
     async fn test_run_nonexistent_command() {
         let cfg = test_cfg();
-        let err = run_to_completion(&["_nope_no_exist_".into()], &cfg, 1000).await;
+        let err = run_to_completion(
+            &["_nope_no_exist_".into()],
+            &cfg,
+            1000,
+            &ExecOverrides::default(),
+        )
+        .await;
         assert!(err.is_err());
     }
 
     #[tokio::test]
     async fn test_timeout_kills() {
         let cfg = test_cfg();
-        let out = run_to_completion(&["sleep".into(), "5".into()], &cfg, 200)
-            .await
-            .unwrap();
+        let out = run_to_completion(
+            &["sleep".into(), "5".into()],
+            &cfg,
+            200,
+            &ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.exit_code, None);
     }
@@ -220,6 +275,7 @@ mod tests {
             ],
             &cfg,
             3000,
+            &ExecOverrides::default(),
         )
         .await
         .unwrap();
@@ -232,10 +288,122 @@ mod tests {
         let cfg = Arc::new(test_cfg());
         let backend = HostExecBackend::new(cfg);
         let out = backend
-            .run(&["echo".into(), "via-trait".into()], 5000)
+            .run(
+                &["echo".into(), "via-trait".into()],
+                5000,
+                &ExecOverrides::default(),
+            )
             .await
             .unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(out.stdout.trim(), "via-trait");
+    }
+
+    /// A jail-confined `cwd` actually changes the child's working directory:
+    /// `pwd` prints the override, not the worker's cwd or `cfg.working_dir`.
+    /// Engine-free host path, reusing the existing harness.
+    #[tokio::test]
+    async fn cwd_override_runs_command_in_that_directory() {
+        let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("workdir")).unwrap();
+        let mut cfg = test_cfg();
+        cfg.fs.host_root = Some(root.clone());
+
+        let overrides = crate::exec::policy::build_overrides(Some("workdir"), None, &cfg)
+            .expect("workdir is inside the jail");
+        let out = run_to_completion(&["pwd".into()], &cfg, 5000, &overrides)
+            .await
+            .unwrap();
+        let expected = root.join("workdir").canonicalize().unwrap();
+        assert_eq!(out.stdout.trim(), expected.to_string_lossy());
+        assert_eq!(out.exit_code, Some(0));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A permitted `env` key is visible to the child process. We forward
+    /// `printenv NODE_ENV`; with NODE_ENV in allowed_env and a per-call value,
+    /// the child sees it.
+    #[tokio::test]
+    async fn env_override_is_visible_to_child() {
+        let mut cfg = test_cfg();
+        cfg.allowed_env = vec!["NODE_ENV".into()];
+
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("NODE_ENV".to_string(), "from-override".to_string());
+        let overrides = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+            .expect("NODE_ENV is allowlisted");
+
+        let out = run_to_completion(
+            &["printenv".into(), "NODE_ENV".into()],
+            &cfg,
+            5000,
+            &overrides,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stdout.trim(), "from-override");
+    }
+
+    /// An env key NOT in allowed_env is rejected (S210) before any spawn,
+    /// naming the offending key — the call never reaches the child.
+    #[tokio::test]
+    async fn env_key_outside_allowed_env_is_rejected_s210() {
+        let mut cfg = test_cfg();
+        cfg.allowed_env = vec!["NODE_ENV".into()];
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("SECRET_TOKEN".to_string(), "x".to_string());
+        let err = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+            .expect_err("non-allowlisted key must reject");
+        assert_eq!(err.code, "S210");
+        assert!(
+            err.message.contains("SECRET_TOKEN"),
+            "names key: {}",
+            err.message
+        );
+    }
+
+    /// LD_PRELOAD is rejected (S210) even when the test also adds it to
+    /// allowed_env — proof that the dangerous-key denylist wins over the
+    /// operator's allowlist.
+    #[tokio::test]
+    async fn dangerous_env_key_rejected_even_if_allowlisted_on_host_path() {
+        let mut cfg = test_cfg();
+        cfg.allowed_env = vec!["LD_PRELOAD".into(), "NODE_ENV".into()];
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
+        let err = crate::exec::policy::build_overrides(None, Some(&env), &cfg)
+            .expect_err("LD_PRELOAD must reject even when allowlisted");
+        assert_eq!(err.code, "S210");
+        assert!(err.message.contains("LD_PRELOAD"));
+    }
+
+    /// A `cwd` resolving outside the jail is rejected S215 on the host path.
+    #[tokio::test]
+    async fn cwd_escaping_jail_rejected_s215_on_host_path() {
+        let root = std::env::temp_dir().join(format!("shell-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = test_cfg();
+        cfg.fs.host_root = Some(root.clone());
+        let err = crate::exec::policy::build_overrides(Some("../../etc"), None, &cfg)
+            .expect_err("escape must reject");
+        assert_eq!(err.code, "S215");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Omitting both cwd and env preserves prior behaviour: the empty override
+    /// runs the command exactly as before (no cwd change, no extra env).
+    #[tokio::test]
+    async fn empty_overrides_preserve_default_behaviour() {
+        let cfg = test_cfg();
+        let out = run_to_completion(
+            &["echo".into(), "default".into()],
+            &cfg,
+            5000,
+            &ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stdout.trim(), "default");
+        assert_eq!(out.exit_code, Some(0));
     }
 }

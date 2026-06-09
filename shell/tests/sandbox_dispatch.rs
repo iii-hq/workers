@@ -126,7 +126,7 @@ async fn chmod_forwards_uid_gid_recursive() {
         })
         .await
         .unwrap();
-    assert_eq!(resp.updated, 7);
+    assert_eq!(resp.entries_changed, 7);
     let (_, payload) = stub.last_call();
     assert_eq!(payload["uid"], 1000);
     assert_eq!(payload["gid"], 1000);

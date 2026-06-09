@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::config::ShellConfig;
 use crate::exec::host::{build_command, parse_argv};
+use crate::exec::policy::{build_overrides, ExecOverrides};
 use crate::exec::sandbox::SandboxExecResponse;
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
@@ -26,12 +27,31 @@ pub async fn handle(
 
     cfg.is_command_allowed(&argv)?;
 
+    // Gate the per-call cwd/env up front, BEFORE branching on target. Same
+    // rules as shell::exec (jail-confined cwd, allowed_env + dangerous-key env
+    // gating). exec_bg returns its spawn-time failures as plain strings (its
+    // documented contract), so we stringify the S-code into the message — the
+    // agent still sees the code (e.g. "S215") and the self-correcting text.
+    let overrides = build_overrides(req.cwd.as_deref(), req.env.as_ref(), &cfg)
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+
     match req.target {
-        Target::Host => spawn_host_job(cfg, argv).await,
+        Target::Host => spawn_host_job(cfg, argv, overrides).await,
         Target::Sandbox { sandbox_id } => {
-            // Resolve+clamp timeout for the sandbox path; host path
-            // ignores timeout_ms (preserves today's unbounded host-bg
-            // semantics — documented in README "Caveats").
+            // cwd/env are host-only — the sandbox::exec payload does not
+            // forward them. Reject loudly (S210 in the message) rather than
+            // silently ignoring an override on a sandbox-targeted job.
+            if !overrides.is_empty() {
+                return Err(
+                    "S210: cwd/env overrides are host-only; the sandbox exec protocol does \
+                     not forward them. Drop cwd/env, or use target: host."
+                        .to_string(),
+                );
+            }
+            // Resolve+clamp timeout for the sandbox path. The host path ignores
+            // the per-call timeout_ms but is no longer unbounded: spawn_host_job
+            // bounds the detached wait by cfg.max_timeout_ms (the hard cap), so a
+            // runaway host bg job is killed and finalized rather than leaking.
             let resolved = cfg.resolve_timeout(req.timeout_ms);
             let fwd: Arc<dyn TriggerFwd> = Arc::new(IiiTriggerFwd::new(iii));
             spawn_sandbox_job(cfg, fwd, sandbox_id, argv, resolved).await
@@ -42,9 +62,16 @@ pub async fn handle(
 async fn spawn_host_job(
     cfg: Arc<ShellConfig>,
     argv: Vec<String>,
+    overrides: ExecOverrides,
 ) -> Result<ExecBgResponse, String> {
-    let mut cmd = build_command(&argv, &cfg)?;
+    let mut cmd = build_command(&argv, &cfg, &overrides)?;
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
+
+    // Capture the OS pid NOW, before the detached drain task takes the `Child`
+    // out of the handle. Once the task owns the Child, `JobHandle.child` is None
+    // even while the process is alive, so this pid is the only way shell::kill and
+    // the shutdown sweep can still signal the live host process.
+    let host_pid = child.id();
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -65,30 +92,46 @@ async fn spawn_host_job(
     // Atomic check-and-insert: prevents a TOCTOU where two concurrent
     // exec_bg calls both pass a separate running_count() check before
     // either insert lands. On rejection, kill the orphaned child.
-    match jobs::try_reserve_and_insert(
+    let running_guard = match jobs::try_reserve_and_insert(
         JobHandle {
             record,
             child: Some(child),
+            host_pid,
         },
         cfg.max_concurrent_jobs,
     )
     .await
     {
-        Ok(_) => {}
+        Ok((_, guard)) => guard,
         Err((running, mut handle)) => {
             if let Some(mut ch) = handle.child.take() {
+                // Signal, THEN reap. start_kill alone leaves a zombie until the
+                // worker exits; awaiting wait() lets the kernel release the pid.
                 let _ = ch.start_kill();
+                let _ = ch.wait().await;
             }
             return Err(format!(
                 "max concurrent jobs ({}) reached, currently running: {}",
                 cfg.max_concurrent_jobs, running
             ));
         }
-    }
+    };
 
     let id_clone = id.clone();
     let limit = cfg.max_output_bytes;
+    // Host background jobs used to run forever (timeout_ms ignored). Bound them
+    // by the configured HARD cap — not the foreground default — since a bg job
+    // may legitimately run longer than a foreground call. Snapshotting the cap
+    // at spawn time is intentional: a later hot-reload of max_timeout_ms does
+    // not retroactively re-bound an already-running job (it would race the
+    // detached task's own timeout future); newly spawned jobs pick up the new
+    // cap on their next spawn.
+    let cap_ms = cfg.max_timeout_ms;
     tokio::spawn(async move {
+        // Owns this job's contribution to the shell.jobs.running gauge: dropped
+        // when this task ends (any path — completion, early return, or panic),
+        // which is exactly when the job leaves the Running state.
+        let _running_guard = running_guard;
         let handle = match jobs::get(&id_clone).await {
             Some(h) => h,
             None => return,
@@ -114,6 +157,59 @@ async fn spawn_host_job(
             })
         });
 
+        // Take ownership of the child and run the bounded wait FIRST, before
+        // joining the drain tasks. The drains read EOF only after the child
+        // closes its pipes, and a killed child closes them — so waiting on the
+        // drains before bounding/killing the child would deadlock for the whole
+        // child lifetime. We therefore: (1) bound child.wait() by the hard cap,
+        // killing+reaping on expiry; (2) THEN join the now-unblocked drains.
+        let mut timed_out = false;
+        let child = {
+            let mut h = handle.lock().await;
+            h.child.take()
+        };
+        if let Some(mut ch) = child {
+            let wait_res =
+                tokio::time::timeout(std::time::Duration::from_millis(cap_ms), ch.wait()).await;
+            match wait_res {
+                Ok(Ok(s)) => {
+                    let mut h = handle.lock().await;
+                    h.record.exit_code = s.code();
+                    if h.record.status == JobStatus::Running {
+                        h.record.status = if s.success() {
+                            JobStatus::Finished
+                        } else {
+                            JobStatus::Failed
+                        };
+                    }
+                }
+                Ok(Err(_)) => {
+                    // Wait I/O error. Only finalize an un-finalized job: an
+                    // external kill/sweep may have already set Killed, and
+                    // finalize-once must not downgrade it to Failed.
+                    let mut h = handle.lock().await;
+                    if h.record.status == JobStatus::Running {
+                        h.record.status = JobStatus::Failed;
+                    }
+                }
+                Err(_) => {
+                    // Exceeded the hard cap: kill and reap so the pipes close
+                    // (unblocking the drains) and no zombie is left. If
+                    // shell::kill already flipped the status to Killed we leave
+                    // it; only an unfinalized Running job is marked timed-out.
+                    let _ = ch.start_kill();
+                    let _ = ch.wait().await;
+                    let mut h = handle.lock().await;
+                    if h.record.status == JobStatus::Running {
+                        h.record.status = JobStatus::Killed;
+                        timed_out = true;
+                    }
+                }
+            }
+        }
+
+        // Child has exited (naturally, on error, or after the cap-kill), so its
+        // pipes are closed and these joins complete promptly.
         let (stdout_buf, stdout_trunc) = match stdout_task {
             Some(t) => t.await.unwrap_or_else(|_| (Vec::new(), false)),
             None => (Vec::new(), false),
@@ -123,36 +219,35 @@ async fn spawn_host_job(
             None => (Vec::new(), false),
         };
 
-        {
-            let mut h = handle.lock().await;
-            if let Some(mut ch) = h.child.take() {
-                drop(h);
-                let wait_res = ch.wait().await;
-                let mut h2 = handle.lock().await;
-                match wait_res {
-                    Ok(s) => {
-                        h2.record.exit_code = s.code();
-                        if h2.record.status == JobStatus::Running {
-                            h2.record.status = if s.success() {
-                                JobStatus::Finished
-                            } else {
-                                JobStatus::Failed
-                            };
-                        }
-                    }
-                    Err(_) => {
-                        h2.record.status = JobStatus::Failed;
-                    }
-                }
-            }
-        }
-
         let mut h = handle.lock().await;
         h.record.stdout = String::from_utf8_lossy(&stdout_buf).into_owned();
         h.record.stderr = String::from_utf8_lossy(&stderr_buf).into_owned();
+        if timed_out {
+            // Append the cause without discarding any stderr the child emitted
+            // before it was killed.
+            let note =
+                format!("background job exceeded the host hard cap of {cap_ms}ms and was killed");
+            if h.record.stderr.is_empty() {
+                h.record.stderr = note;
+            } else {
+                h.record.stderr.push('\n');
+                h.record.stderr.push_str(&note);
+            }
+        }
         h.record.stdout_truncated = stdout_trunc;
         h.record.stderr_truncated = stderr_trunc;
-        h.record.finished_at_ms = Some(jobs::now_ms());
+        // Finalize-once: an external killer (shell::kill or the shutdown sweep)
+        // may have already set status=Killed and finished_at_ms before our
+        // bounded wait returned (an external SIGKILL makes child.wait() return,
+        // which lands us here). Mirror the sandbox path's already_killed guard:
+        // do NOT clobber a kill-time finished_at_ms, and never downgrade a
+        // terminal status. The Ok(Ok)/Err/timeout arms above already only flip
+        // status while it is still Running, so this just protects the timestamp:
+        // pollers expect the user-visible cancellation time, not when the killed
+        // process's wait() happened to return.
+        if h.record.finished_at_ms.is_none() {
+            h.record.finished_at_ms = Some(jobs::now_ms());
+        }
     });
 
     Ok(ExecBgResponse { job_id: id, argv })
@@ -182,16 +277,19 @@ pub(crate) async fn spawn_sandbox_job(
     // The concurrency cap (max_concurrent_jobs) covers both backends
     // uniformly via the running-status count in try_reserve_and_insert.
     // On rejection, there is no orphan process to kill.
-    match jobs::try_reserve_and_insert(
+    let running_guard = match jobs::try_reserve_and_insert(
         JobHandle {
             record,
             child: None,
+            // Sandbox jobs own no local OS process — leave host_pid None so the
+            // kill sweep and shell::kill correctly route them to the sandbox path.
+            host_pid: None,
         },
         cfg.max_concurrent_jobs,
     )
     .await
     {
-        Ok(_) => {}
+        Ok((_, guard)) => guard,
         Err((running, _)) => {
             // No orphan child to kill — sandbox jobs don't own a local process.
             return Err(format!(
@@ -199,11 +297,14 @@ pub(crate) async fn spawn_sandbox_job(
                 cfg.max_concurrent_jobs, running
             ));
         }
-    }
+    };
 
     let id_clone = id.clone();
     let argv_for_payload = argv.clone();
     tokio::spawn(async move {
+        // Owns this job's contribution to the shell.jobs.running gauge (see the
+        // host path); dropped when this task ends, i.e. when the job finalizes.
+        let _running_guard = running_guard;
         let cmd = argv_for_payload[0].clone();
         let args: Vec<String> = argv_for_payload.iter().skip(1).cloned().collect();
         let payload = serde_json::json!({
@@ -294,6 +395,224 @@ async fn read_bounded<R: AsyncReadExt + Unpin>(
             }
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::spawn_host_job;
+    use crate::config::ShellConfig;
+    use crate::exec::policy::ExecOverrides;
+    use crate::jobs::{self, JobStatus};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn cfg(max_timeout_ms: u64, max_concurrent_jobs: usize) -> Arc<ShellConfig> {
+        let mut c = ShellConfig {
+            inherit_env: true,
+            max_output_bytes: 4096,
+            max_timeout_ms,
+            max_concurrent_jobs,
+            ..Default::default()
+        };
+        c.compile_denylist().unwrap();
+        Arc::new(c)
+    }
+
+    /// Poll a job until it is fully finalized (`finished_at_ms` set — the last
+    /// write the detached task makes) or the deadline expires, then return its
+    /// status. Waiting on `finished_at_ms` rather than just a non-Running
+    /// status avoids racing the gap between the status flip and the trailing
+    /// stdout/stderr/finished_at_ms writes. Tighter than a fixed sleep:
+    /// returns the instant the task finalizes, so the test stays fast.
+    async fn await_terminal(job_id: &str, deadline_ms: u64) -> JobStatus {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(h) = jobs::get(job_id).await {
+                let r = h.lock().await;
+                if r.record.finished_at_ms.is_some() {
+                    return r.record.status.clone();
+                }
+            }
+            if start.elapsed() >= Duration::from_millis(deadline_ms) {
+                // Deadline hit without finalization — the job is still Running
+                // (a genuine hang), which is what we report.
+                return JobStatus::Running;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn host_bg_job_exceeding_hard_cap_is_killed_and_marked_killed() {
+        // Acquire GAUGE before SWEEP (consistent global lock order): a successful
+        // reserve here perturbs the running gauge that jobs.rs tests assert on,
+        // and the gate is held through await_terminal so the guard's decrement
+        // (which fires when the finalize task ends) lands inside the critical
+        // section rather than racing another test's gauge assertion.
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        // Serialize with the global kill-sweep test: it would otherwise SIGKILL
+        // this job's `sleep 5` child by pid before the 200ms cap fires, which
+        // would finalize the job as (externally) Killed with no "hard cap" note.
+        let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+
+        // Hard cap of 200ms vs a 5s sleep: the detached wait must time out,
+        // kill the child, and finalize the record as Killed (the mapping the
+        // sandbox path uses for timed_out).
+        let cfg = cfg(200, 16);
+        let resp = spawn_host_job(
+            cfg,
+            vec!["sleep".into(), "5".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
+
+        // Generous deadline (2s) so we never flake on a loaded CI box, but the
+        // poll returns the instant the 200ms cap fires.
+        let status = await_terminal(&resp.job_id, 2000).await;
+        assert_eq!(
+            status,
+            JobStatus::Killed,
+            "a host bg job past the hard cap must be killed"
+        );
+
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert!(
+            r.record.stderr.contains("hard cap"),
+            "timed-out job records the cause in stderr: {:?}",
+            r.record.stderr
+        );
+        assert!(r.record.finished_at_ms.is_some(), "finalized");
+        assert!(r.child.is_none(), "child reaped/taken after finalization");
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn host_bg_short_job_finishes_within_cap() {
+        // Hold the gauge gate through finalization for the same reason as the
+        // hard-cap test: a successful reserve perturbs the process-global gauge.
+        let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
+        // Control: a fast command finishes normally well within the cap.
+        let cfg = cfg(5_000, 16);
+        let resp = spawn_host_job(cfg, vec!["true".into()], ExecOverrides::default())
+            .await
+            .expect("spawn_host_job");
+        let status = await_terminal(&resp.job_id, 2000).await;
+        assert_eq!(status, JobStatus::Finished);
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        assert_eq!(h.lock().await.record.exit_code, Some(0));
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn host_bg_rejected_at_cap_returns_rejection_error() {
+        // Drive the full public `spawn_host_job` reject path with cap=0 (always
+        // over the budget — deterministic regardless of the global JOBS map
+        // shared across the concurrent test binary, which a cap=1+count test
+        // would race). The spawn must be REJECTED with the cap message; the
+        // "rejected job never enters JOBS, and its child is killed" guarantees
+        // are proved structurally in jobs.rs (`try_reserve_with_zero_cap_*`,
+        // which asserts the handle is returned and never inserted) and at the
+        // OS pid level in `rejected_child_pid_is_dead` below.
+        let cfg = cfg(30_000, 0);
+        let err = spawn_host_job(
+            cfg.clone(),
+            vec!["sleep".into(), "30".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect_err("cap=0 must reject the spawn");
+        assert!(
+            err.contains("max concurrent jobs"),
+            "rejection message: {err}"
+        );
+    }
+
+    /// Direct, PID-level proof that the reject arm's child is actually dead
+    /// (not leaked). Mirrors exactly what `spawn_host_job` does on rejection:
+    /// build + spawn a child, capture its PID, then `try_reserve_and_insert`
+    /// with cap=0 (forced rejection) and `start_kill` the returned handle —
+    /// the same two lines as the production reject arm. We then reap the child
+    /// and assert via `kill -0 <pid>` that the OS no longer knows the process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_child_pid_is_dead() {
+        use crate::exec::host::build_command;
+        use crate::exec::policy::ExecOverrides;
+        use crate::jobs::{JobHandle, JobRecord};
+
+        let cfg = cfg(30_000, 16);
+        let argv = vec!["sleep".to_string(), "30".to_string()];
+        let mut command =
+            build_command(&argv, &cfg, &ExecOverrides::default()).expect("build_command");
+        let mut child = command.spawn().expect("spawn");
+        let pid = child.id().expect("child has a pid");
+
+        // Sanity: the process is alive right now (kill -0 succeeds).
+        assert!(
+            pid_is_alive(pid),
+            "freshly spawned child should be alive (pid {pid})"
+        );
+
+        let record = JobRecord {
+            id: format!("job-{}", uuid::Uuid::new_v4()),
+            argv: argv.clone(),
+            started_at_ms: jobs::now_ms(),
+            finished_at_ms: None,
+            status: JobStatus::Running,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        // child.stdout/stderr are still owned by `child`; that's fine — we move
+        // the whole child into the handle and never read its pipes here.
+        // Drain the pipes off the handle the way spawn_host_job does, so the
+        // handle's child is the sole owner of the process.
+        let _ = child.stdout.take();
+        let _ = child.stderr.take();
+
+        // cap=0 forces rejection, returning the handle with its child intact —
+        // exactly the path spawn_host_job hits when over the cap.
+        let (_, mut handle) = jobs::try_reserve_and_insert(
+            JobHandle {
+                record,
+                child: Some(child),
+                host_pid: Some(pid),
+            },
+            0,
+        )
+        .await
+        .expect_err("cap=0 must reject and return the handle");
+
+        // The production reject arm does precisely this:
+        let mut killed_child = handle.child.take().expect("rejected handle owns child");
+        killed_child
+            .start_kill()
+            .expect("start_kill on rejected child");
+        // Reap so the kernel releases the zombie before we probe kill -0.
+        let _ = killed_child.wait().await;
+
+        // The OS must no longer have this pid as a live (non-zombie) process.
+        assert!(
+            !pid_is_alive(pid),
+            "rejected child (pid {pid}) must be dead, not leaked"
+        );
+    }
+
+    /// `kill(pid, 0)` probes for the existence of a *live* process without
+    /// sending a signal. After we wait() the child above, the zombie is reaped,
+    /// so this returns false for a dead process.
+    #[cfg(unix)]
+    fn pid_is_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 performs error checking only; it never delivers a
+        // signal or touches process memory.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
 }
 

@@ -6,7 +6,10 @@ use shell::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {
-        Ok(id) => id,
+        // Drop the running-job gauge guard immediately: these test seeds have no
+        // finalize task to decrement it later, so dropping here keeps the gauge
+        // net-neutral (one increment, one decrement) rather than leaking a count.
+        Ok((id, _guard)) => id,
         Err(_) => panic!("usize::MAX cap must always accept"),
     }
 }
@@ -38,6 +41,7 @@ async fn insert_then_get_round_trips_the_record() {
     seed(JobHandle {
         record: rec(id, JobStatus::Running, None),
         child: None,
+        host_pid: None,
     })
     .await;
     let h = jobs::get(id).await.expect("inserted job exists");
@@ -60,11 +64,13 @@ async fn list_all_includes_inserted_jobs() {
     seed(JobHandle {
         record: rec(id1, JobStatus::Running, None),
         child: None,
+        host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(id2, JobStatus::Finished, Some(now_ms())),
         child: None,
+        host_pid: None,
     })
     .await;
     let all = jobs::list_all().await;
@@ -82,21 +88,25 @@ async fn running_count_excludes_terminal_states() {
     seed(JobHandle {
         record: rec(running_id, JobStatus::Running, None),
         child: None,
+        host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(finished_id, JobStatus::Finished, Some(now_ms())),
         child: None,
+        host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(killed_id, JobStatus::Killed, Some(now_ms())),
         child: None,
+        host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(failed_id, JobStatus::Failed, Some(now_ms())),
         child: None,
+        host_pid: None,
     })
     .await;
 
@@ -123,6 +133,7 @@ async fn remove_old_retention_matrix() {
     seed(JobHandle {
         record: rec(stale_id, JobStatus::Finished, Some(stale_finished)),
         child: None,
+        host_pid: None,
     })
     .await;
     assert!(jobs::get(stale_id).await.is_some(), "pre-prune sanity");
@@ -135,6 +146,7 @@ async fn remove_old_retention_matrix() {
     seed(JobHandle {
         record: rec(running_id, JobStatus::Running, None),
         child: None,
+        host_pid: None,
     })
     .await;
     jobs::remove_old(0).await;
@@ -147,6 +159,7 @@ async fn remove_old_retention_matrix() {
     seed(JobHandle {
         record: rec(fresh_id, JobStatus::Finished, Some(recent)),
         child: None,
+        host_pid: None,
     })
     .await;
     jobs::remove_old(60).await;
@@ -165,6 +178,7 @@ async fn concurrent_inserts_and_lookups_dont_deadlock() {
             seed(JobHandle {
                 record: rec(&id, JobStatus::Running, None),
                 child: None,
+                host_pid: None,
             })
             .await;
             jobs::get(&id).await.is_some()
