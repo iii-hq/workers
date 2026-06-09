@@ -14,6 +14,7 @@ import {
   endTurnForMaxTurns,
   maxTurnsReached,
   resumeToAssistantStreaming,
+  transitionToFinishing,
 } from '../state-runtime/turn-end.js';
 import type { SteeringCheckTurnRecord } from '../state.js';
 import type { SteeringCheckPorts } from './ports.js';
@@ -61,7 +62,7 @@ export async function applySteeringCheckOutcome(
       return;
     case 'end_turn':
       await emitTurnEndOnce(ports, rec);
-      await ports.finishSession(rec);
+      transitionToFinishing(rec);
       return;
   }
 }

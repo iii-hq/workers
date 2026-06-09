@@ -1,5 +1,6 @@
 import type { ISdk } from '../runtime/iii.js';
 import { register as registerAssistantStreaming } from './assistant-streaming/process.js';
+import { register as registerFinishing } from './finishing.js';
 import { register as registerFunctionAwaitingApproval } from './function-awaiting-approval/process.js';
 import { register as registerFunctionExecute } from './function-execute/process.js';
 import { register as registerGetState } from './get-state.js';
@@ -14,5 +15,6 @@ export async function register(iii: ISdk, _ctx: { configPath: string }): Promise
   registerFunctionExecute(iii);
   registerFunctionAwaitingApproval(iii);
   registerSteeringCheck(iii);
+  registerFinishing(iii);
   registerGetState(iii);
 }

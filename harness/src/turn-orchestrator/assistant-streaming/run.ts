@@ -5,7 +5,7 @@
 import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
 import { decide } from '../provider-router.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
+import { emitTurnEndOnce, transitionToFinishing } from '../state-runtime/turn-end.js';
 import { enterFunctionExecute } from '../function-execute/run.js';
 import { transitionTo, type AssistantStreamingTurnRecord } from '../state.js';
 import { createDeltaCoalescer } from './coalesce-deltas.js';
@@ -130,7 +130,7 @@ export async function finalizeAssistantTurn(
 
   if (route.kind === 'stopped') {
     await emitTurnEndOnce(ports, rec, asst);
-    await ports.finishSession(rec);
+    transitionToFinishing(rec);
     return;
   }
 
@@ -143,10 +143,10 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  // end_turn: no function calls — finish inline (formerly the
-  // turn::steering_check hop, which always routed an empty-results turn here).
+  // end_turn: no function calls. Emit turn_end now, then route to the finishing
+  // step to emit agent_end after this step's durable save (the agent_end outbox).
   await emitTurnEndOnce(ports, rec, asst);
-  await ports.finishSession(rec);
+  transitionToFinishing(rec);
 }
 
 export async function runAssistantStreaming(

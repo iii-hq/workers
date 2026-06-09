@@ -21,6 +21,11 @@ export type TurnState =
   | 'function_execute'
   | 'function_awaiting_approval'
   | 'steering_check'
+  // Terminal-pending: the turn's work is durably committed; this step only
+  // emits agent_end and advances to `stopped`. Splitting the terminal signal
+  // into its own replayable step keeps a crash from re-running the LLM stream
+  // after consumers already saw the run end (the agent_end "outbox").
+  | 'finishing'
   | 'stopped'
   | 'failed';
 
@@ -106,6 +111,7 @@ const TURN_STATES = [
   'function_execute',
   'function_awaiting_approval',
   'steering_check',
+  'finishing',
   'stopped',
   'failed',
 ] as const satisfies readonly TurnState[];

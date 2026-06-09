@@ -154,7 +154,8 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    // All-terminate routes to the finishing step (which emits agent_end + stops).
+    expect(rec.state).toBe('finishing');
   });
 
   it('does not re-emit function_execution_start for already-executed calls on re-entry', async () => {

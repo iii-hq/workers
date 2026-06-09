@@ -139,7 +139,7 @@ describe('finalizeAssistantTurn', () => {
 
     await finalizeAssistantTurn(ports, rec, asst, []);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(ports.persistAssistantIfNew).not.toHaveBeenCalled();
   });

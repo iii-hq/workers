@@ -97,7 +97,7 @@ describe('applySteeringCheckOutcome', () => {
     expect(emitTurnEnd).not.toHaveBeenCalled();
   });
 
-  it('end_turn: emits turn_end and finishes session', async () => {
+  it('end_turn: emits turn_end then routes to the finishing step', async () => {
     const emitTurnEnd = vi.fn(async () => {});
     const finishSession = vi.fn(async (rec) => {
       rec.state = 'stopped';
@@ -107,10 +107,11 @@ describe('applySteeringCheckOutcome', () => {
 
     await applySteeringCheckOutcome(ports, rec, { kind: 'end_turn' });
 
-    expect(rec.state).toBe('stopped');
+    // agent_end is deferred to turn::finishing; the drain only emits turn_end here.
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     // 4th arg is the optional model_limit, undefined here (no model_meta on rec).
     expect(emitTurnEnd).toHaveBeenCalledWith('s1', expect.anything(), [], undefined);
-    expect(finishSession).toHaveBeenCalled();
+    expect(finishSession).not.toHaveBeenCalled();
   });
 });

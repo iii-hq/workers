@@ -182,8 +182,10 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(rec.state).toBe('stopped');
-    expect(ports.finishSession).toHaveBeenCalledOnce();
+    // Terminal routes hand off to the finishing step for agent_end; the step
+    // itself no longer emits it inline before its durable save.
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
   });
 
   it('skips duplicate function_result ids on re-entry', async () => {
@@ -264,8 +266,9 @@ describe('finalizeBatch', () => {
 
     await finalizeBatch(ports, rec);
 
-    expect(rec.state).toBe('stopped');
-    expect(ports.finishSession).toHaveBeenCalledOnce();
+    // max_turns persists the notice + turn_end, then defers agent_end to finishing.
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
     // Two appends: the batch's function_results, then the synthetic notice.
     expect(appendMessages).toHaveBeenCalledTimes(2);
     const appended = appendMessages.mock.calls[1]?.[1] as Array<{ content: unknown[] }>;

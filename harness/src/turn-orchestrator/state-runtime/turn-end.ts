@@ -41,6 +41,18 @@ export function resumeToAssistantStreaming(rec: TurnStateRecord): void {
   transitionTo(rec, 'assistant_streaming');
 }
 
+/**
+ * Route a terminating turn to the `finishing` step instead of emitting agent_end
+ * inline. The turn's durable work (assistant/results/notice + the turn_end
+ * stream event) is already committed by the enclosing step's saveRecord; the
+ * finishing step then emits agent_end and advances to `stopped` from a clean
+ * replayable boundary, so a crash before the save re-runs the work WITHOUT
+ * consumers having seen a premature run-end.
+ */
+export function transitionToFinishing(rec: TurnStateRecord): void {
+  transitionTo(rec, 'finishing');
+}
+
 export function maxTurnsReached(rec: TurnStateRecord): boolean {
   return rec.max_turns !== undefined && rec.turn_count >= rec.max_turns;
 }
@@ -48,12 +60,12 @@ export function maxTurnsReached(rec: TurnStateRecord): boolean {
 export type MaxTurnsEndPorts = TurnEndEmitter & {
   appendMessages(session_id: string, msgs: AgentMessage[]): Promise<void>;
   emit(session_id: string, event: AgentEvent): Promise<void>;
-  finishSession(rec: TurnStateRecord): Promise<void>;
 };
 
 /**
  * End the loop at the max_turns cap: persist + surface a synthetic assistant
- * notice, emit turn_end (no-op when the step already emitted it), finish.
+ * notice, emit turn_end (no-op when the step already emitted it), then route to
+ * the `finishing` step to emit agent_end after the durable commit.
  */
 export async function endTurnForMaxTurns(
   ports: MaxTurnsEndPorts,
@@ -71,5 +83,5 @@ export async function endTurnForMaxTurns(
     body_streamed: false,
   });
   await emitTurnEndOnce(ports, rec, msg);
-  await ports.finishSession(rec);
+  transitionToFinishing(rec);
 }

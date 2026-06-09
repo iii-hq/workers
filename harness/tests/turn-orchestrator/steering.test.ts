@@ -49,7 +49,7 @@ describe('handleSteering', () => {
     expect(emitSpy).not.toHaveBeenCalled();
   });
 
-  it('end_turn: emits turn_end then finishes the session (agent_end + stopped)', async () => {
+  it('end_turn: emits turn_end then routes to the finishing step', async () => {
     const { iii } = makeIii();
     const rec = steeringRec('s1');
     const store = installMockTurnStore();
@@ -57,11 +57,15 @@ describe('handleSteering', () => {
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    // turn_end is emitted now; agent_end is deferred to turn::finishing.
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'turn_end' }));
-    expect(emitSpy).toHaveBeenCalledWith(iii, 's1', expect.objectContaining({ type: 'agent_end' }));
-    // agent_end is a signal: finishSession no longer reloads the transcript.
+    expect(emitSpy).not.toHaveBeenCalledWith(
+      iii,
+      's1',
+      expect.objectContaining({ type: 'agent_end' }),
+    );
     expect(store.loadMessages).not.toHaveBeenCalled();
   });
 
@@ -78,7 +82,7 @@ describe('handleSteering', () => {
 
     await handleSteering(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant?.content[0]).toEqual(
       expect.objectContaining({ type: 'text', text: expect.stringContaining('max_turns') }),

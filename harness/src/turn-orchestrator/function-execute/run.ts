@@ -17,6 +17,7 @@ import {
   endTurnForMaxTurns,
   maxTurnsReached,
   resumeToAssistantStreaming,
+  transitionToFinishing,
 } from '../state-runtime/turn-end.js';
 import {
   type AwaitingApprovalEntry,
@@ -226,9 +227,10 @@ export async function finalizeBatch(
   await emitTurnEndOnce(ports, rec, lastAssistant, function_results);
 
   // Routing formerly done by the turn::steering_check FSM hop, now inline:
-  // one durable step (and its queue wake) less per round-trip.
+  // one durable step (and its queue wake) less per round-trip. Terminal routes
+  // hand off to the finishing step for agent_end (see transitionToFinishing).
   if (allTerminate) {
-    await ports.finishSession(rec);
+    transitionToFinishing(rec);
   } else if (maxTurnsReached(rec)) {
     await endTurnForMaxTurns(ports, rec);
   } else {

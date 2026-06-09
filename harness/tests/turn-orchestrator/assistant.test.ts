@@ -118,7 +118,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.last_assistant?.stop_reason).toBe('error');
     expect(rec.last_assistant?.error_message).toContain('create_channel failed');
   });
@@ -165,7 +165,7 @@ describe('handleStreaming', () => {
     await handleStreaming(iii, rec);
 
     // No-function-call turns finish inline (formerly the steering_check hop).
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant).toEqual(finalMsg);
   });
@@ -201,7 +201,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.last_assistant).toEqual(finalMsg);
   });
 
@@ -216,7 +216,7 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(appendSpy).not.toHaveBeenCalled();
   });
