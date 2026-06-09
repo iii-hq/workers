@@ -47,8 +47,10 @@ export function register(iii: ISdk): void {
       payload: body.payload,
       timeoutMs: BRIDGE_TIMEOUT_MS,
     });
+    // A turn was already in flight: surface a 409 so the client can wait/retry
+    // instead of treating the ignored kickoff as a started turn.
     return {
-      status_code: 200,
+      status_code: result.started ? 200 : 409,
       headers: { 'content-type': 'application/json' },
       body: result,
     };

@@ -121,7 +121,7 @@ describe('register', () => {
     expect(handler).toBeDefined();
 
     const result = await handler!(harnessRunStartPayload);
-    expect(result).toEqual({ session_id: 'sess-1' });
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
   });
 
   it('rejects invalid payloads at register boundary', async () => {
@@ -147,7 +147,7 @@ describe('execute', () => {
 
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    expect(result).toEqual({ session_id: 'sess-1' });
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
 
     const turnStateSet = calls.find(
       (c) =>
@@ -181,5 +181,61 @@ describe('execute', () => {
     const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append_batch');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
+  });
+
+  /** iii whose state::get on turn_state returns the given persisted record. */
+  function fakeIiiWithRecord(record: unknown): { iii: ISdk; calls: TriggerCall[] } {
+    const calls: TriggerCall[] = [];
+    const iii = {
+      trigger: async <T, R>(req: { function_id: string; payload: T }): Promise<R> => {
+        calls.push({ function_id: req.function_id, payload: req.payload });
+        if (req.function_id === 'state::get') return record as R;
+        return null as R;
+      },
+      registerFunction: vi.fn(),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  const inFlightRecord = (state: string) => ({
+    session_id: 'sess-1',
+    state,
+    turn_count: 1,
+    function_results: [],
+    turn_end_emitted: false,
+    started_at_ms: 1,
+    updated_at_ms: 2,
+  });
+
+  it('refuses to clobber a turn already in flight and makes no writes', async () => {
+    const { iii, calls } = fakeIiiWithRecord(inFlightRecord('assistant_streaming'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: false, reason: 'session_busy' });
+    // Busy path mutates nothing: no ensure, no append, no run_request/turn_state write.
+    expect(calls.some((c) => c.function_id === 'session-tree::ensure')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'state::set')).toBe(false);
+  });
+
+  it('treats a parked function_awaiting_approval turn as in flight', async () => {
+    const { iii } = fakeIiiWithRecord(inFlightRecord('function_awaiting_approval'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result.started).toBe(false);
+  });
+
+  it('starts a fresh turn when the prior turn is terminal (stopped)', async () => {
+    const { iii, calls } = fakeIiiWithRecord({
+      ...inFlightRecord('stopped'),
+      turn_end_emitted: true,
+    });
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
+    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(true);
   });
 });

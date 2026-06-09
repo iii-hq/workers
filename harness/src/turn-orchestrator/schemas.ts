@@ -36,7 +36,15 @@ export const RunStartPayloadSchema = SessionIdPayloadSchema.extend({
   system_prompt: z.string().default(''),
 });
 export type RunStartPayload = z.infer<typeof RunStartPayloadSchema>;
-export type RunStartResult = { session_id: string };
+/**
+ * `started` is false when the session already had a turn in flight and this
+ * call was ignored (no record reset, no message appended) — see run-start.ts.
+ */
+export type RunStartResult = {
+  session_id: string;
+  started: boolean;
+  reason?: 'session_busy';
+};
 
 // --- turn::{state} durable step ---
 export const TurnStepPayloadSchema = SessionIdPayloadSchema;

@@ -147,3 +147,10 @@ export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.state = next;
   rec.updated_at_ms = Date.now();
 }
+
+/** A turn is done once it reaches a terminal state; otherwise it is in flight. */
+const TERMINAL_TURN_STATES = new Set<TurnState>(['stopped', 'failed']);
+
+export function isTurnInFlight(rec: TurnStateRecord): boolean {
+  return !TERMINAL_TURN_STATES.has(rec.state);
+}
