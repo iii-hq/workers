@@ -76,7 +76,7 @@ type ProviderStreamInput = {
   system_prompt?: string | null;
   model: string;
   messages: AgentMessage[];         // provider serialises to its own wire format
-  tools?: AgentFunction[];
+  tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
   thinking_level?: string;          // "minimal"|"low"|"medium"|"high"|"xhigh"; provider maps or ignores
 };
 
@@ -157,11 +157,16 @@ type ChatRequest = {
   provider?: string;                // disambiguate when a model id exists on multiple providers
   system_prompt?: string | null;
   messages: AgentMessage[];
-  tools?: AgentFunction[];
+  tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
   thinking_level?: string;
   metadata?: Record<string, unknown>; // passthrough for tracing (session_id, message_id, …)
 };
 ```
+
+The `tools` field is the **provider adapter boundary** — it maps to each provider's native
+function-calling / tool-use API. In iii domain language these are [function invocation
+schemas](README.md#function-invocation-schema), not "tools". The harness always passes a single
+`AgentFunction` entry for `agent_trigger`; other callers may pass an empty array or their own schemas.
 
 Response:
 
@@ -292,7 +297,7 @@ type ProviderRegisterResponse = { ok: true; id: string };
 ### `router::provider::resolve`
 
 Called by a provider worker per request to get its credential + effective settings. **Agent-gated**:
-denied to in-run agents so a credential can't be exfiltrated through tool calls (see
+denied to in-run agents so a credential can't be exfiltrated through function calls (see
 [Security](#security)). Worker-to-worker calls bypass the agent gate.
 
 - Invocation: **sync**
@@ -335,8 +340,8 @@ consumer adapts the request to the chosen model instead of hardcoding per-model 
 `router::models::supports` and the `capability` filter on `router::models::list` accept these
 strings, each mapping to a field on `Model`:
 
-- `tools` -> `supports_tools` — the model accepts an `AgentFunction[]` and can emit `function_call`
-  content. If false, callers must not attach tools.
+- `tools` -> `supports_tools` — the model accepts function-calling (provider `tools` / tool-use API)
+  and can emit `function_call` content. If false, callers must not attach invocation schemas.
 - `vision` -> `supports_vision` — the model accepts `image` content blocks. If false, callers strip
   or textually describe images first.
 - `cache` -> `supports_cache` — the provider supports prompt caching; the provider may insert cache
@@ -352,12 +357,12 @@ Unknown strings return `{ supported: false }` and match no models.
 ### How callers use it
 
 - **Discovery / model picker** — a UI lists only relevant models:
-  `router::models::list({ capability: "tools" })` for an agent that needs tools, or
+  `router::models::list({ capability: "tools" })` for an agent that needs function-calling, or
   `{ capability: "vision" }` for an image task.
 - **Request shaping (harness)** — before a turn the harness checks `supports_tools` to decide whether
-  to attach the tool schema, `supports_vision` to decide whether to keep image blocks, and
-  `supports_thinking`/`supports_xhigh` to decide whether a requested `thinking_level` is honoured or
-  dropped. This is how one harness drives many models without per-model branches.
+  to attach the `agent_trigger` invocation schema, `supports_vision` to decide whether to keep image
+  blocks, and `supports_thinking`/`supports_xhigh` to decide whether a requested `thinking_level` is
+  honoured or dropped. This is how one harness drives many models without per-model branches.
 - **Budgeting (context-manager)** — `context::assemble` reads `context_window` / `input_limit` /
   `max_output_tokens` to size the usable window, and `thinking_budgets` to leave room for the
   reasoning tokens a thinking tier consumes.
@@ -401,7 +406,7 @@ change.
 
 - `router::provider::resolve` and `configuration::*` MUST be denied to in-run agents in the
   deployment's `iii-permissions.yaml`. Credentials live in plaintext in the configuration value;
-  these denials keep an agent from reading them via a tool call. Provider workers (and operator UIs)
+  these denials keep an agent from reading them via a function call. Provider workers (and operator UIs)
   call them as worker/user-initiated calls, which bypass the agent gate.
 - `router::chat` / `router::complete` / `router::models::*` / `router::provider::list` are safe to
   expose to consumers.
@@ -433,7 +438,7 @@ catalog.
 
 - Does **not** persist conversations or build context — pass full `messages` in each call (use
   [session-manager](session-manager.md) / [context-manager](context-manager.md) upstream).
-- Does **not** run the agent loop, dispatch tools, or gate approvals — that is the
+- Does **not** run the agent loop, dispatch functions, or gate approvals — that is the
   [harness](harness.md).
 - Does **not** seed models from a static list — the catalog is provider-sourced via
   `router::models::reconcile`.

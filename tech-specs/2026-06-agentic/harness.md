@@ -6,7 +6,7 @@ Worker prefix: `harness::*`
 
 `harness` is the thin worker that wires the other three into an agent loop. It owns sequencing and
 nothing else: take an incoming message, persist it, assemble a context, stream a completion, persist
-the result, run any tool calls, and repeat until the turn stops.
+the result, execute any function calls, and repeat until the turn stops.
 
 It is deliberately minimal. The rule of thumb: **if a concern grows real logic, it becomes its own
 worker** rather than living in the harness. Approval gating, spend budgets, compaction *scheduling*,
@@ -14,7 +14,7 @@ hook fan-out, and multi-agent handoff are all out of scope here — they are sib
 call or that can subscribe around it (see [Out of scope](#out-of-scope-future-sibling-workers)).
 
 The harness is the only worker in this spec that depends on the other three, and even those are soft:
-without `context-manager` it sends raw history; without tool functions it is a plain chat loop. It
+without `context-manager` it sends raw history; without function dispatch it is a plain chat loop. It
 needs `session-manager` (to persist/stream) and `llm-router` (to generate).
 
 ## What it wires
@@ -26,7 +26,7 @@ sequenceDiagram
   participant S as session-manager
   participant X as context-manager
   participant R as llm-router
-  participant F as iii function (tool)
+  participant F as iii function
 
   C->>H: harness::send {message, model}
   H->>S: session::create or ensure
@@ -39,12 +39,12 @@ sequenceDiagram
   H->>R: router::chat (over channel)
   R-->>H: AssistantMessageEvent frames
   H->>S: session::append (assistant) then session::update_message (stream deltas)
-  alt assistant requested tool calls
+  alt assistant requested function calls
     H->>F: iii.trigger(function_id, args)
     F-->>H: result
     H->>S: session::append (function_result)
     Note over H: re-enqueue harness::turn
-  else no tool calls
+  else no function calls
     H->>S: session::set_status done
   end
 ```
@@ -58,41 +58,57 @@ crash or restart resumes mid-turn. One `harness::turn` step does:
 1. Mark working: `session::set_status working` (first step of a turn).
 2. Load active path: `session::messages`.
 3. Assemble context: `context::assemble` (skipped if `context-manager` absent -> raw messages + base
-   system prompt). Tools come from the engine registry (see [Tools](#tools-the-white-box)).
+   system prompt). Attach the single `agent_trigger` invocation schema to the router request (see
+   [Functions (the white box)](#functions-the-white-box)); function discovery is runtime — the model
+   calls `engine::functions::list` / `engine::functions::info` through `agent_trigger`.
 4. Generate: open a channel, call `router::chat`; `session::append` an assistant message, then
    `session::update_message` as deltas arrive (each fires `session::message_updated`). Deltas may be
    batched to throttle update frequency; the final update writes the complete `AssistantMessage`.
-5. If the message has `function_call` content: dispatch each via `harness::tool::dispatch`, append
-   each `function_result`, then re-enqueue `harness::turn` to let the model react.
+5. If the message has `function_call` content: unwrap each `agent_trigger` call, dispatch via
+   `harness::function::dispatch`, append each `function_result`, then re-enqueue `harness::turn` to
+   let the model react.
 6. Else, steering check: re-read `session::messages` for any user message appended after this turn
    started (see [Triggers](#triggers)); if present, continue with another generate step; otherwise
-   `session::set_status done` and stop.
+   mark the turn `completed`, `session::set_status done`, and stop.
 
-A `max_turns` guard caps runaway loops. Cancellation is cooperative: `harness::stop` sets an abort
-flag the next step checks, then sets `session::set_status done`.
+A `max_turns` guard caps runaway loops (turn ends `completed` with a synthetic notice). Cancellation
+is cooperative: `harness::stop` sets an abort flag the next step checks, records `TurnStatus`
+`cancelled`, then sets `session::set_status done`.
 
 The harness maps the turn lifecycle onto the session's coarse status: `working` while a turn is
-running or awaiting tools, `done` once it stops. The internal `TurnStatus` (below) is finer-grained
-and stays inside the harness; consumers watch the session status instead.
+running or awaiting functions, `done` once it ends (`completed`, `cancelled`, or `failed`). The
+internal `TurnStatus` (below) is finer-grained and stays inside the harness; consumers watch the
+session status for idle/working/done, and call `harness::status` when they need to distinguish
+completion from cancellation.
 
-## Tools (the white box)
+## Functions (the white box)
 
-"Tools" are not a harness feature — they are the **iii substrate**. Any registered iii function is a
-candidate tool. The harness:
+Functions are not a harness feature — they are the **iii substrate**. Any registered iii function is
+callable; the harness **does not** map registry entries into provider tool schemas.
 
-- Discovers them via `engine::functions::list` and builds the `AgentFunction[]` tool schema
-  (filtered by an allow-list/namespace policy supplied in `options`).
-- Dispatches a model-chosen call with `iii.trigger({ function_id, payload })` via
-  `harness::tool::dispatch`, capturing the result as a `function_result` message.
+The harness:
 
-A tool can do anything an iii function can, including calling back to the consumer (the diagram's
-`funcs -> chat` edge) — that is the tool's own behaviour, not the harness's.
+- Attaches **one** invocation schema (`agent_trigger`) to each `router::chat` request so the model
+  can trigger any allowed function via `{ function, payload }`.
+- On `function_call` content: unwraps `agent_trigger` → target `function_id` + `payload`, enforces
+  allow/deny policy (see `harness::send` options or an approval sibling in v1), dispatches via
+  `iii.trigger({ function_id, payload })` through `harness::function::dispatch`, and captures the
+  result as a `function_result` message.
 
-## Functions
+`engine::functions::list` is how the **model** discovers what's callable — by triggering it through
+`agent_trigger` at runtime — not how the harness builds a schema list at turn start.
+
+A function can do anything an iii function can, including calling back to the consumer (the diagram's
+`funcs -> chat` edge) — that is the function's own behaviour, not the harness's.
+
+Terminology: see [README.md § Terminology](README.md#terminology).
+
+## Registered functions
 
 - `harness::send` — Entry point: persist the incoming message and kick off a turn; returns fast.
 - `harness::turn` — Internal durable loop step (enqueued); not called directly by consumers.
-- `harness::tool::dispatch` — Internal: invoke one iii function as a tool and capture its result.
+- `harness::function::dispatch` — Internal: unwrap an `agent_trigger` call and invoke the target iii
+  function; capture its result.
 - `harness::stop` — Request cancellation of an in-flight turn.
 - `harness::status` — Read the current turn status for a session.
 
@@ -117,7 +133,12 @@ iii.registerFunction("harness::on_steering", async (evt) => {
     function_id: "harness::status",
     payload: { session_id: evt.session_id },
   });
-  if (!status || status.status === "stopped" || status.status === "failed") {
+  if (
+    !status ||
+    status.status === "completed" ||
+    status.status === "cancelled" ||
+    status.status === "failed"
+  ) {
     await iii.trigger({
       function_id: "harness::send",
       payload: { session_id: evt.session_id, message: evt.message, model: "<model>" },
@@ -143,7 +164,12 @@ Shared types (`AgentMessage`, `ContentBlock`, `AssistantMessage`, `AgentFunction
 [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 ```typescript
-type TurnStatus = "running" | "awaiting_tools" | "stopped" | "failed";
+type TurnStatus =
+  | "running"              // generating or between durable steps
+  | "awaiting_functions"   // dispatching function calls / collecting results
+  | "completed"            // turn finished normally (incl. max_turns cap)
+  | "cancelled"            // harness::stop observed
+  | "failed";              // unexpected error; turn record carries reason
 ```
 
 ### `harness::send`
@@ -165,8 +191,8 @@ type SendRequest = {
     system_prompt?: string;
     max_turns?: number;           // default 16
     thinking_level?: string;
-    tools?: {
-      allow?: string[];           // function_id globs to expose (e.g. "shell::*")
+    functions?: {
+      allow?: string[];           // function_id globs the agent may dispatch to (e.g. "shell::*")
       deny?: string[];
     };
     metadata?: Record<string, unknown>; // tracing passthrough (session_id/message_id propagate)
@@ -189,7 +215,7 @@ Example:
 ```jsonc
 // request
 { "message": "Summarise the repo README", "model": "claude-sonnet-4", "provider": "anthropic",
-  "options": { "tools": { "allow": ["shell::*", "fs::*"] } } }
+  "options": { "functions": { "allow": ["shell::*", "fs::*"] } } }
 // response
 { "session_id": "s_7a1", "turn_id": "t_001", "accepted": true }
 ```
@@ -218,15 +244,16 @@ Failure handling: an unexpected throw marks the turn `failed` and appends a `cus
 (`custom_type: "error"`) entry so the UI sees the reason. A step may opt into queue retry/backoff for
 transient provider errors instead of failing the turn.
 
-### `harness::tool::dispatch`
+### `harness::function::dispatch`
 
-Invoke a single iii function as a tool and return a normalised result. Internal to the loop but also
-callable directly to execute a one-off tool with the same result shape.
+Invoke a single iii function and return a normalised result. The loop unwraps `agent_trigger` before
+calling this; it can also be called directly with an already-unwrapped target `function_id` +
+`arguments`.
 
 - Invocation: **sync**
 
 ```typescript
-type ToolDispatchRequest = {
+type FunctionDispatchRequest = {
   session_id: string;
   call: {
     id: string;            // function_call id, echoed into the result
@@ -234,10 +261,10 @@ type ToolDispatchRequest = {
     arguments: unknown;
   };
 };
-type ToolDispatchResponse = {
+type FunctionDispatchResponse = {
   function_call_id: string;
   function_id: string;
-  content: ContentBlock[]; // tool output, normalised to content blocks
+  content: ContentBlock[]; // function output, normalised to content blocks
   is_error: boolean;
   details?: unknown;
   duration_ms: number;
@@ -250,7 +277,8 @@ that can wrap or precede dispatch (see [Out of scope](#out-of-scope-future-sibli
 ### `harness::stop`
 
 Request cancellation. Sets an abort flag the next `harness::turn` step observes; an in-flight provider
-stream is closed best-effort.
+stream is closed best-effort. The turn record transitions to `cancelled` before `session::set_status
+done`.
 
 - Invocation: **sync**
 
@@ -272,7 +300,7 @@ type StatusResponse = {
   step: number;
   turn_count: number;
   max_turns: number;
-  pending_tool_calls: string[];   // function_call ids awaiting results
+  pending_function_calls: string[];   // function_call ids awaiting results
 } | null;                          // null for unknown sessions
 ```
 
@@ -294,18 +322,18 @@ bookkeeping.
 - `llm-router` (`router::chat`) — generation. Required.
 - `context-manager` (`context::assemble`) — context budgeting. Soft; degrades to raw history.
 - `iii-queue` — the durable `harness-turn` loop.
-- iii engine `engine::functions::list` + `iii.trigger` — tool discovery and dispatch.
+- iii engine `iii.trigger` — function dispatch (`agent_trigger` unwrap → target function).
 
 ## Out of scope (future sibling workers)
 
 Kept out to preserve thinness; each is a clean add-on that wraps the loop or subscribes to its events:
 
-- **approval-gate** — intercept `harness::tool::dispatch` (or a pre-dispatch hook) to allow / deny /
-  hold tool calls against a policy; resume via a state trigger.
+- **approval-gate** — intercept `harness::function::dispatch` (or a pre-dispatch hook) to allow / deny /
+  hold function calls against a policy; resume via a state trigger.
 - **llm-budget** — track spend from `router` usage and cap per workspace/agent.
 - **context-scheduler** — decide *when* to compact (the optional reactive trigger in
   [context-manager](context-manager.md#triggers)); the harness only compacts inline on overflow.
-- **hook-fanout** — publish-and-collect lifecycle hooks around turns/tools.
+- **hook-fanout** — publish-and-collect lifecycle hooks around turns and function dispatch.
 - **multi-agent / orchestrator** — agent-to-agent handoff via queues; the harness runs one agent
   loop.
 
@@ -317,5 +345,5 @@ harness calls (config-driven) over embedding the logic.
 - Does **not** store the transcript, build context, or talk to providers itself — it calls the other
   three.
 - Does **not** gate approvals, meter cost, or schedule compaction in v1.
-- Does **not** define tools — tools are any iii function; the harness only discovers and dispatches
-  them.
+- Does **not** define functions — functions are the iii substrate; the harness only exposes the
+  `agent_trigger` invocation surface and dispatches what the model requests.

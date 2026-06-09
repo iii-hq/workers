@@ -6,8 +6,8 @@ Worker prefix: `context::*`
 
 `context-manager` turns a raw conversation history plus a target model into a **model-ready
 context**: a system prompt and an ordered `AgentMessage[]` that fits inside the model's usable token
-budget. It owns the policy for *what the model sees this turn* — token counting, tool-output pruning,
-and history compaction (summarisation) — and nothing else.
+budget. It owns the policy for *what the model sees this turn* — token counting, function-result
+pruning, and history compaction (summarisation) — and nothing else.
 
 It is **stateless with respect to conversation storage**. Callers pass message arrays in and get
 results back; persisting anything (a compaction summary, a pruned message) is the caller's job. This
@@ -67,9 +67,9 @@ tokens cross `usable`.
   history. The main "sync messages with context" entry point.
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
-- `context::prune` — Strip/truncate verbose tool outputs without summarising. A cheaper first pass.
-- `context::count_tokens` — Estimate token usage for a set of messages (+ optional tools/system) vs a
-  model.
+- `context::prune` — Strip/truncate verbose function outputs without summarising. A cheaper first pass.
+- `context::count_tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
+  system) vs a model.
 
 ## Triggers
 
@@ -117,7 +117,7 @@ Shared types (`AgentMessage`, `ContentBlock`, `AgentFunction`, `Model`) are defi
 ### `context::assemble`
 
 Build a model-ready context. Applies prune and/or compaction as needed to fit `usable`, in this
-order: count -> (if over) prune tool outputs -> (if still over) compact head -> assemble final list.
+order: count -> (if over) prune function outputs -> (if still over) compact head -> assemble final list.
 
 - Invocation: **sync**
 
@@ -133,7 +133,7 @@ type AssembleRequest = {
     tail_turns?: number;           // user+assistant pairs always kept verbatim (default 2)
     allow_compaction?: boolean;    // default true
     allow_prune?: boolean;         // default true
-    protected_tools?: string[];    // function_ids whose outputs are never pruned
+    protected_functions?: string[];    // function_ids whose outputs are never pruned
   };
 };
 ```
@@ -215,8 +215,8 @@ type CompactResponse =
   | { status: "overflow" }; // the summariser itself overflowed
 ```
 
-The summary follows a fixed Markdown template (Goal / Constraints / Progress / Key Decisions / Tool
-Calls Made / Next Steps / Critical Context / Relevant Files). When `previous_summary` is supplied the
+The summary follows a fixed Markdown template (Goal / Constraints / Progress / Key Decisions /
+Actions Taken / Next Steps / Critical Context / Relevant Files). When `previous_summary` is supplied the
 summariser updates it rather than starting over.
 
 Summariser model/provider: by default the same `model` passed in (routed through
@@ -226,7 +226,7 @@ worker log and callers should treat it as "compaction unavailable".
 
 ### `context::prune`
 
-Strip or truncate verbose tool outputs without summarising. Walks `function_result` content newest to
+Strip or truncate verbose function outputs without summarising. Walks `function_result` content newest to
 oldest, freeing outputs outside a protected token window.
 
 - Invocation: **sync**
@@ -241,7 +241,7 @@ type PruneRequest = {
     protect_recent_tokens?: number; // default 40000
     min_free_tokens?: number;       // skip if it would free less (default 20000)
     max_output_chars?: number;      // per-output truncation cap (default 2000)
-    protected_tools?: string[];     // function_ids never pruned
+    protected_functions?: string[];     // function_ids never pruned
   };
 };
 ```
@@ -259,7 +259,8 @@ type PruneResponse = {
 
 ### `context::count_tokens`
 
-Estimate token usage for a set of messages, optionally including tool schemas and a system prompt.
+Estimate token usage for a set of messages, optionally including the invocation schema (typically the
+single `agent_trigger` entry) and a system prompt.
 
 - Invocation: **sync**
 
@@ -269,7 +270,7 @@ Request:
 type CountTokensRequest = {
   messages: AgentMessage[];
   system_prompt?: string;
-  tools?: AgentFunction[];
+  tools?: AgentFunction[];   // invocation schema(s) for token counting (typically [agent_trigger])
   model: ModelInput;          // tokenizer selection; falls back to a generic estimator
 };
 ```

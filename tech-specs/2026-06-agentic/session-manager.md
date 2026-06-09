@@ -13,7 +13,7 @@ Two properties define it:
 
 1. **Many message types.** It stores the full `AgentMessage` union — user, assistant,
    `function_result`, and `custom` — where content is the rich `ContentBlock[]` (text, image,
-   thinking, function calls, function results). One transcript carries tool calls, reasoning, images,
+   thinking, function calls, function results). One transcript carries function calls, reasoning, images,
    and app-defined markers without a second store.
 2. **Reactive.** State changes are exposed as **triggers other workers bind to** — not as a stream a
    caller has to publish into. The worker emits four trigger types: a session was created, a message
@@ -143,7 +143,7 @@ type MessageAddedEvent = {
 ```
 
 - **`session::message_updated`** — a message's content changed (e.g. streaming deltas, edited
-  tool output).
+  function output).
   - Config: `{ session_id?: string; roles?: Role[] }`.
   - Payload:
 
@@ -339,7 +339,7 @@ type AppendManyResponse = { entry_ids: string[]; last_entry_id: string };
 ### `session::update_message`
 
 Replace the content (and optionally `details`) of an existing message entry. Used for streaming
-assistant deltas and for edited tool output. Fires `session::message_updated`.
+assistant deltas and for edited function output. Fires `session::message_updated`.
 
 - Invocation: **sync**
 

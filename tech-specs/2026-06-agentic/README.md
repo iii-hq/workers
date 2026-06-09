@@ -66,9 +66,10 @@ flowchart LR
 - **Red** (`context-manager`, `session-manager`, `llm-router`, `harness`) are the four workers this
   spec defines. Each is **standalone**: installable and useful on its own, with no hard dependency on
   the other three.
-- **White** (`trigger functions as needed`) is the **iii substrate itself**. "Tools" are just
-  registered iii functions; the harness invokes them with `iii.trigger(...)` and discovers them from
-  the live engine registry (`engine::functions::list`). There is no separate "tools" worker.
+- **White** (`trigger functions as needed`) is the **iii substrate itself**. Everything callable is a
+  registered iii function; the harness invokes them with `iii.trigger(...)`. The model discovers what
+  exists at runtime via `engine::functions::list` (through the single `agent_trigger` invocation
+  surface — see [Terminology](#terminology)). There is no separate "tools" worker.
 
 ## The four workers
 
@@ -89,7 +90,7 @@ plain LLM loop without `context-manager`).
 1. **Standalone first.** Every red worker is independently installable (`iii worker add <name>`) and
    has a coherent purpose by itself. Cross-worker calls are explicit `iii.trigger` calls, never
    in-process coupling.
-2. **The harness is thin.** `harness` only sequences the other three plus tool dispatch. Anything
+2. **The harness is thin.** `harness` only sequences the other three plus function dispatch. Anything
    that grows real logic — approval gating, spend budgets, compaction *scheduling*, multi-agent
    handoff, hook fan-out — becomes its own sibling worker rather than bloating the harness. See
    [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers).
@@ -124,6 +125,18 @@ Every function is invoked through one of the three iii modes (see `iii-core-prim
   loop steps).
 
 Each function's spec states its expected mode.
+
+### Terminology
+
+In iii there is no "tool" worker or domain concept — everything callable is a **function** registered
+via `iii.registerFunction` and invoked via `iii.trigger`. Message content uses **function_call** and
+**function_result** blocks.
+
+The one exception is at the **provider adapter boundary**: OpenAI, Anthropic, and similar APIs expose
+a `tools` array for function-calling. `llm-router` translates our invocation schema into that wire
+format. In the harness loop the model always sees a **single** provider tool — `agent_trigger` — which
+takes `{ function, payload }` and can reach any allowed iii function. See
+[harness.md § Functions (the white box)](harness.md#functions-the-white-box).
 
 ### Reactive pattern
 
@@ -303,16 +316,17 @@ type Model = {
 };
 ```
 
-### Tool schema
+### Function invocation schema
 
-How a tool (any iii function) is advertised to a model. The harness builds this list from the engine
-registry; `llm-router` passes it through to providers.
+JSON-schema shape for a provider function-calling entry. `llm-router` passes it through to providers
+as a `tools` array entry (adapter boundary). In the harness loop this is always a **single** entry for
+`agent_trigger` — the model does not receive one schema per registered iii function.
 
 ```typescript
 type AgentFunction = {
-  name: string;            // the iii function_id, exposed to the model as the tool name
+  name: string;            // invocation surface name (always "agent_trigger" in the harness loop)
   description: string;
-  parameters: unknown;     // JSON Schema of the arguments
+  parameters: unknown;     // JSON Schema: { function: string, payload?: object }
   label?: string;
   execution_mode?: "parallel" | "sequential";
 };
