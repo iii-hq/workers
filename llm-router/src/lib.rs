@@ -9,4 +9,5 @@ pub mod registry;
 pub mod routing;
 pub mod settings;
 pub mod testkit;
+pub mod triggers;
 pub mod types;
