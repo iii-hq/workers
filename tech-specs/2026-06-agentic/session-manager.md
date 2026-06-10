@@ -46,6 +46,16 @@ via [`session::set_status`](#sessionset_status), which fires
 - A multi-channel bot stores every conversation here and forks sessions to explore alternatives.
 - A dashboard binds `session::status_changed` to show which sessions are working vs done.
 
+## Sub-agent linkage
+
+When the [harness](harness.md#sub-agents-harnessspawn) spawns a sub-agent, the child is a normal
+session whose relationship to its parent lives in `SessionMeta.metadata`:
+`{ parent_session_id, parent_turn_id, function_call_id, depth }`. This is a convention, not new API
+surface — `session::list` filters on it to reconstruct the agent tree, and trigger configs filter
+on it to render a child's transcript live (e.g. `{ metadata: { parent_session_id: "s_7a1" } }` on
+`session::message_updated`). Children are fully independent sessions: deleting the parent does not
+cascade (a cleanup worker can walk the linkage metadata when a deployment wants that).
+
 ## Reactivity model
 
 There is no "subscribe" or "publish" function. Reactivity is entirely via the six emitted trigger

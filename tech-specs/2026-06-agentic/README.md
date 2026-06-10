@@ -41,6 +41,9 @@ flowchart LR
   harness --> funcs
   funcs --> chat
 
+  %% Sub-agents (spawn/join)
+  harness -->|"harness::spawn<br/>child sessions"| harness
+
   %% LLM routing
   harness -->|"send messages from<br/>context + last message"| router
 
@@ -68,8 +71,8 @@ flowchart LR
   the other three.
 - **White** (`trigger functions as needed`) is the **iii substrate itself**. Everything callable is a
   registered iii function; the harness invokes them with `iii.trigger(...)`. The model discovers what
-  exists at runtime via `engine::functions::list` (through the single `agent_trigger` invocation
-  surface — see [Terminology](#terminology)). There is no separate "tools" worker.
+  exists at runtime via `engine::functions::list` (through the `agent_trigger` invocation surface by
+  default — see [Terminology](#terminology)). There is no separate "tools" worker.
 
 ## The four workers
 
@@ -78,7 +81,7 @@ flowchart LR
 | [context-manager](context-manager.md) | Turn raw history + a model into a model-ready context (prune, summarise, fit the window). | Context-window management for any AI feature, not just this harness. | [context-manager.md](context-manager.md) |
 | [session-manager](session-manager.md) | Durable, reactive, branching store of typed conversation entries. | A real-time conversation store any app can subscribe to. | [session-manager.md](session-manager.md) |
 | [llm-router](llm-router.md) | One front door + a provider protocol in front of every LLM provider. | Call any model/provider through one stable surface, with or without an agent loop. | [llm-router.md](llm-router.md) |
-| [harness](harness.md) | A thin durable turn loop that wires the other three together. | The "assemble the agent" worker; deliberately minimal. | [harness.md](harness.md) |
+| [harness](harness.md) | A thin durable turn loop that wires the other three together; spawns sub-agents as child sessions. | The "assemble the agent" worker; deliberately minimal. | [harness.md](harness.md) |
 
 A consumer can install just one of these. `llm-router` on its own gives you provider-agnostic
 completions. `session-manager` on its own gives you a reactive chat store. `harness` is the only
@@ -91,8 +94,12 @@ plain LLM loop without `context-manager`).
    has a coherent purpose by itself. Cross-worker calls are explicit `iii.trigger` calls, never
    in-process coupling.
 2. **The harness is thin.** `harness` only sequences the other three plus function dispatch. Anything
-   that grows real logic — approval gating, spend budgets, compaction *scheduling*, multi-agent
-   handoff, hook fan-out — becomes its own sibling worker rather than bloating the harness. See
+   that grows real logic — approval gating, spend budgets, compaction *scheduling*,
+   orchestration beyond spawn/join — becomes its own sibling worker rather than bloating the
+   harness. The loop-coupled extension surfaces it does own — deferred function results,
+   [`harness::spawn`](harness.md#sub-agents-harnessspawn), and the synchronous
+   [hook points](harness.md#hooks) — exist so siblings and sub-agents plug in without loop changes:
+   the harness provides the points, siblings provide the policy. See
    [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers).
 3. **`llm-router` is consumer-agnostic.** It never assumes a harness, a session, or a UI. It streams
    into a caller-supplied channel and returns. That is what lets a `third-party-worker` "use llm
@@ -101,7 +108,34 @@ plain LLM loop without `context-manager`).
    results; the caller persists them. This keeps it reusable by any harness or AI feature.
 5. **`session-manager` is the single reactive surface.** Consumers bind to its triggers (session
    created, message added/updated, status changed, meta updated, session deleted) and render live —
-   they never poll and never need to know about the provider or the loop.
+   they never poll and never need to know about the provider or the loop. The harness adds one
+   orchestration-grade exception: `harness::turn_started` / `harness::turn_completed` fire at turn
+   boundaries for consumers that react to outcomes rather than rendering transcripts.
+
+## Consumer cookbook
+
+Every consumer is the same triangle — **send** through the harness, **render** from
+`session-manager` triggers, **observe turn boundaries** via `harness::turn_completed` — with
+surface-specific wiring:
+
+- **Web chat** (streaming UI): pass `session.metadata` (tenancy, e.g. `{ owner }`) on the first
+  `harness::send`; bind `session::message_added` / `session::message_updated` /
+  `session::status_changed` filtered by that metadata; render deltas last-write-wins by `revision`.
+  Session status drives the spinner.
+- **Telegram / Slack / WhatsApp bot**: webhooks redeliver — always pass `idempotency_key` (the
+  platform update id) to `harness::send`. Map platform chat ↔ session via `session.metadata`
+  (e.g. `{ telegram_chat_id }`). Either bind `session::message_updated` and edit the platform
+  message throttled (~1/s), or skip streaming and bind `harness::turn_completed` to post one final
+  message.
+- **TUI / CLI**: the chat pattern for live rendering, or the blocking pattern —
+  [`harness::run`](harness.md#harnessrun), then print `final_message` / `result`.
+- **Backend event loops** (cron, system events, agent chains): `harness::run` with an
+  [`output` contract](harness.md#output-contract) is "call an agent like a function"; or fire
+  `harness::send` and bind `harness::turn_completed`. A chain (completed → send → completed …) must
+  carry its own termination condition — `max_turns` bounds a single turn, not the chain (hop
+  counter in `session.metadata`, or a budget sibling).
+
+See [harness.md](harness.md) for `send` / `run` / `spawn` semantics and the turn events.
 
 ## Conventions
 
@@ -134,8 +168,9 @@ via `iii.registerFunction` and invoked via `iii.trigger`. Message content uses *
 
 The one exception is at the **provider adapter boundary**: OpenAI, Anthropic, and similar APIs expose
 a `tools` array for function-calling. `llm-router` translates our invocation schema into that wire
-format. In the harness loop the model always sees a **single** provider tool — `agent_trigger` — which
-takes `{ function, payload }` and can reach any allowed iii function. See
+format. In the harness loop the model sees a **single** provider tool by default — `agent_trigger`,
+which takes `{ function, payload }` and can reach any allowed iii function — or one schema per
+allowed function when a turn opts into `functions.expose: "native"`. See
 [harness.md § Functions (the white box)](harness.md#functions-the-white-box).
 
 ### Reactive pattern
@@ -326,7 +361,7 @@ type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 type Capability =
   | "thinking" | "thinking:low" | "thinking:medium" | "thinking:high" | "thinking:xhigh"
-  | "tools" | "vision" | "cache";
+  | "tools" | "vision" | "cache" | "structured_output";
 
 type Model = {
   id: string;                 // e.g. "claude-sonnet-4"
@@ -340,6 +375,7 @@ type Model = {
   supports_tools?: boolean;
   supports_vision?: boolean;
   supports_cache?: boolean;
+  supports_structured_output?: boolean;
   thinking_budgets?: Partial<Record<ThinkingLevel, number>>;
   pricing?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
 };
@@ -348,17 +384,34 @@ type Model = {
 ### Function invocation schema
 
 JSON-schema shape for a provider function-calling entry. `llm-router` passes it through to providers
-as a `tools` array entry (adapter boundary). In the harness loop this is always a **single** entry for
-`agent_trigger` — the model does not receive one schema per registered iii function.
+as a `tools` array entry (adapter boundary). In the harness loop this is a **single** entry for
+`agent_trigger` by default; a turn that opts into `functions.expose: "native"` attaches one entry
+per allowed function instead (see
+[harness.md § Functions (the white box)](harness.md#functions-the-white-box)).
 
 ```typescript
 type AgentFunction = {
-  name: string;            // invocation surface name (always "agent_trigger" in the harness loop)
+  name: string;            // invocation surface name ("agent_trigger", "submit_result", or a
+                           // function id in native exposure mode)
   description: string;
   parameters: unknown;     // JSON Schema: { function: string, payload?: object }
   label?: string;
   execution_mode?: "parallel" | "sequential";
 };
+```
+
+### Output contract
+
+What a turn must produce — the typed-deliverable surface for sub-agents and backend automations
+(see [harness.md § Output contract](harness.md#output-contract)). Free text by default; `json`
+constrains the final answer to a JSON value, validated against `schema` when supplied. Delivery is
+provider-native structured output when the model declares the `structured_output` capability, else
+the harness's `submit_result` fallback.
+
+```typescript
+type OutputContract =
+  | { type: "text" }
+  | { type: "json"; schema?: unknown };   // JSON Schema; validated when supplied
 ```
 
 ### Channel reference
@@ -429,6 +482,15 @@ deployment property, not an option:
   supplied, every `agent_trigger` call is refused (see
   [harness.md § Functions (the white box)](harness.md#functions-the-white-box)). Deployments opt
   functions in via `allow` globs or an approval sibling.
+- **Sub-agent chains.** [`harness::spawn`](harness.md#sub-agents-harnessspawn) is the only
+  model-reachable way to start new turns (`harness::send` / `harness::run` stay denied to in-run
+  agents). Children inherit agent provenance, their function policy is the parent's intersected
+  with the request (narrow, never escalate), and depth / fan-out / turn budgets bound the tree.
+- **Hooks are operator-trusted code.** [Hook](harness.md#hooks) bindings come only from deployment
+  configuration (never per-send, never from the model), run with worker privileges, and receive
+  model-controlled data as input — hook code must treat its payload as untrusted (confused-deputy
+  risk). Hook invocations carry the agent provenance mark of the work they wrap, and it propagates
+  through their nested triggers, so a hook cannot launder an agent-gated call.
 - **Agent exposure.** Each worker spec carries an "Agent exposure" section listing which of its
   functions may be exposed to in-run agents. The short version: reads are generally safe (tenancy
   caveats aside); every mutating surface of `session-manager`, the `harness` entry points, and the
@@ -458,7 +520,7 @@ streaming contract but is not bound to the current package's structure.
 | `context-compaction` (`compact_now`, `prune_tool_outputs`) | [context-manager](context-manager.md) (`context::*`, storage-agnostic) |
 | `models-catalog` (`models::*`) + the orchestrator's provider routing | [llm-router](llm-router.md) (`router::*`) |
 | `provider-*` workers | same protocol shape, re-pointed at `router::provider::*` |
-| `approval-gate`, `llm-budget`, `hook-fanout` | out of scope in v1 — siblings (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)) |
+| `approval-gate`, `llm-budget`, `hook-fanout` | [harness hooks](harness.md#hooks) + sibling policy/decision workers (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)); `hook-fanout`'s async side maps to the `harness::turn_*` events |
 
 Function prefixes do not collide, so both stacks can run side by side during migration. Transcripts
 move with a one-shot copy from `session_tree:*` scopes into `session:*` (entry shapes are

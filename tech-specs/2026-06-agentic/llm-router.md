@@ -78,6 +78,8 @@ type ProviderStreamInput = {
   model: string;
   messages: AgentMessage[];         // provider serialises to its own wire format
   tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
+  response_format?: { type: "json"; schema?: unknown }; // structured output; only sent to models
+                                    // that declare the "structured_output" capability
   thinking_level?: ThinkingLevel;   // provider maps to its native knob or ignores
 };
 
@@ -163,7 +165,8 @@ the provider for `model`, calls `provider::<id>::stream`, and relays frames to t
 (or pipes the provider's writer through, implementation's choice). The call resolves when the stream
 terminates.
 
-- Invocation: **sync** (open while streaming)
+- Invocation: **sync** (open while streaming — the bus's long-call pattern;
+  [`harness::run`](harness.md#harnessrun) holds its call open the same way)
 
 Request:
 
@@ -176,6 +179,9 @@ type ChatRequest = {
   system_prompt?: string | null;
   messages: AgentMessage[];
   tools?: AgentFunction[];          // provider adapter: maps to OpenAI/Anthropic "tools" array
+  response_format?: { type: "json"; schema?: unknown };
+                                    // provider-native structured output; requires the
+                                    // "structured_output" capability (see Model capabilities)
   thinking_level?: ThinkingLevel;
   metadata?: Record<string, unknown>; // passthrough for tracing (session_id, message_id, …)
 };
@@ -183,8 +189,15 @@ type ChatRequest = {
 
 The `tools` field is the **provider adapter boundary** — it maps to each provider's native
 function-calling / tool-use API. In iii domain language these are [function invocation
-schemas](README.md#function-invocation-schema), not "tools". The harness always passes a single
-`AgentFunction` entry for `agent_trigger`; other callers may pass an empty array or their own schemas.
+schemas](README.md#function-invocation-schema), not "tools". The harness passes a single
+`AgentFunction` entry for `agent_trigger` by default (per-function schemas in native exposure
+mode); other callers may pass an empty array or their own schemas.
+
+`response_format` is the same kind of boundary for structured output: providers map it to their
+native JSON / JSON-Schema mode (e.g. OpenAI `response_format: json_schema`). Callers check
+`router::models::supports(model, "structured_output")` first — supplying it for a model without the
+capability throws before streaming starts, so callers can fall back (the harness falls back to its
+`submit_result` strategy — see [harness.md § Output contract](harness.md#output-contract)).
 
 Response:
 
@@ -203,8 +216,10 @@ final `AssistantMessage`) or `error`. The router fills `usage.cost_usd` (on the 
 final message) from the catalog's `pricing` when the provider reports token counts but no cost.
 
 Errors (thrown before streaming starts): `model is required`; `no provider registered for model
-<id>`; `ambiguous model <id> (providers: …)`; `provider <id> unavailable`. Mid-stream failures
-arrive as an `error` frame, not a thrown error.
+<id>`; `ambiguous model <id> (providers: …)`; `provider <id> unavailable`;
+`structured output unsupported for model <id>` (a `response_format` was supplied but the model
+lacks the `structured_output` capability). Mid-stream failures arrive as an `error` frame, not a
+thrown error.
 
 Example:
 
@@ -401,6 +416,10 @@ strings, each mapping to a field on `Model`:
   or textually describe images first.
 - `cache` -> `supports_cache` — the provider supports prompt caching; the provider may insert cache
   markers to cut cost/latency on repeated prefixes.
+- `structured_output` -> `supports_structured_output` — the provider can constrain decoding to JSON
+  (optionally schema-guided) via a native `response_format`-style knob. If false, callers needing
+  typed output use a function-calling fallback instead (the harness injects `submit_result` — see
+  [harness.md § Output contract](harness.md#output-contract)).
 - `thinking` -> `supports_thinking` — the model exposes a reasoning/thinking budget at all (a
   `thinking_level` of `"minimal"` likewise needs only this flag).
 - `thinking:low` | `thinking:medium` | `thinking:high` -> still `supports_thinking` — the level picks
@@ -417,8 +436,11 @@ Unknown strings return `{ supported: false }` and match no models.
   `{ capability: "vision" }` for an image task.
 - **Request shaping (harness)** — before a turn the harness checks `supports_tools` to decide whether
   to attach the `agent_trigger` invocation schema, `supports_vision` to decide whether to keep image
-  blocks, and `supports_thinking`/`supports_xhigh` to decide whether a requested `thinking_level` is
-  honoured or dropped. This is how one harness drives many models without per-model branches.
+  blocks, `supports_thinking`/`supports_xhigh` to decide whether a requested `thinking_level` is
+  honoured or dropped, and `supports_structured_output` to choose between provider-native
+  `response_format` and the `submit_result` fallback for an
+  [output contract](harness.md#output-contract). This is how one harness drives many models without
+  per-model branches.
 - **Budgeting (context-manager)** — `context::assemble` reads `context_window` / `input_limit` /
   `max_output_tokens` to size the usable window, and `thinking_budgets` to leave room for the
   reasoning tokens a thinking tier consumes.
