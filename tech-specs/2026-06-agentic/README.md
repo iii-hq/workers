@@ -23,6 +23,7 @@ flowchart LR
   tpTop["third-party-worker"]
   router["llm-router"]
   tpBottom["third-party-worker"]
+  gate["approval-gate"]
 
   %% Chat flow
   chat -->|"send message"| harness
@@ -44,6 +45,10 @@ flowchart LR
   %% Sub-agents (spawn/join)
   harness -->|"harness::spawn<br/>child sessions"| harness
 
+  %% Optional approval sibling (pre_dispatch hook + resolve)
+  harness -.->|"pre_dispatch hook"| gate
+  gate -.->|"function::resolve"| harness
+
   %% LLM routing
   harness -->|"send messages from<br/>context + last message"| router
 
@@ -56,10 +61,12 @@ flowchart LR
   classDef green fill:#111,stroke:#22c55e,color:#22c55e,stroke-width:2px;
   classDef red fill:#111,stroke:#ef4444,color:#ff6b6b,stroke-width:2px;
   classDef white fill:#111,stroke:#e5e7eb,color:#e5e7eb,stroke-width:2px;
+  classDef sibling fill:#111,stroke:#ef4444,color:#ff6b6b,stroke-width:2px,stroke-dasharray:5 4;
 
   class chat,tg,tpTop,tpBottom green;
   class ctx,harness,session,router red;
   class funcs white;
+  class gate sibling;
 ```
 
 ### How to read the diagram
@@ -73,6 +80,9 @@ flowchart LR
   registered iii function; the harness invokes them with `iii.trigger(...)`. The model discovers what
   exists at runtime via `engine::functions::list` (through the `agent_trigger` invocation surface by
   default — see [Terminology](#terminology)). There is no separate "tools" worker.
+- **Dashed** (`approval-gate`) is an **optional policy sibling**, specified in
+  [approval-gate.md](approval-gate.md): it plugs into the harness via a `pre_dispatch` hook and
+  `harness::function::resolve` — the four core workers run with or without it.
 
 ## The four workers
 
@@ -147,6 +157,7 @@ See [harness.md](harness.md) for `send` / `run` / `spawn` semantics and the turn
 - `session::*` — session-manager
 - `router::*` — llm-router (plus the `provider::<id>::*` protocol it defines for provider workers)
 - `harness::*` — harness
+- `approval::*` — approval-gate (optional sibling)
 
 ### Invocation modes
 
@@ -469,7 +480,9 @@ subscriber set, applies each binding's `config` filter, and dispatches. Delivery
 and unordered across entries — consumers reconcile via `revision` (message updates) and the parent
 chain (transcript order), never via arrival order. Subscriptions are engine registrations:
 subscribers re-register on reconnect, and an emitter rebuilds its subscriber set from the engine
-after a restart.
+after a restart. The harness's `harness::hook::*` types are the one deliberate exception to async
+delivery: the emitting worker invokes bound functions synchronously in-path, in deterministic
+order, and acts on their return values (see [harness.md § Hooks](harness.md#hooks)).
 
 ## Security model
 
@@ -490,11 +503,14 @@ deployment property, not an option:
   model-reachable way to start new turns (`harness::send` / `harness::run` stay denied to in-run
   agents). Children inherit agent provenance, their function policy is the parent's intersected
   with the request (narrow, never escalate), and depth / fan-out / turn budgets bound the tree.
-- **Hooks are operator-trusted code.** [Hook](harness.md#hooks) bindings come only from deployment
-  configuration (never per-send, never from the model), run with worker privileges, and receive
-  model-controlled data as input — hook code must treat its payload as untrusted (confused-deputy
-  risk). Hook invocations carry the agent provenance mark of the work they wrap, and it propagates
-  through their nested triggers, so a hook cannot launder an agent-gated call.
+- **Hooks are operator-trusted code.** [Hook](harness.md#hooks) bindings are worker-plane trigger
+  registrations on the harness's `harness::hook::*` trigger types — deployment code, never
+  per-send and never model-reachable (trigger registration is an SDK surface, not a function
+  `agent_trigger` can call), with `engine::triggers::list` as the audit surface. Hooks run with
+  worker privileges and receive model-controlled data as input — hook code must treat its payload
+  as untrusted (confused-deputy risk). Hook invocations carry the agent provenance mark of the
+  work they wrap, and it propagates through their nested triggers, so a hook cannot launder an
+  agent-gated call.
 - **Agent exposure.** Each worker spec carries an "Agent exposure" section listing which of its
   functions may be exposed to in-run agents. The short version: reads are generally safe (tenancy
   caveats aside); every mutating surface of `session-manager`, the `harness` entry points, and the
@@ -506,6 +522,8 @@ deployment property, not an option:
 - [session-manager.md](session-manager.md)
 - [llm-router.md](llm-router.md)
 - [harness.md](harness.md)
+- [approval-gate.md](approval-gate.md) — optional sibling: the policy + decision surface for
+  human-held function calls (hook + pending inbox + notification triggers)
 
 ## Prior art
 
@@ -524,9 +542,12 @@ streaming contract but is not bound to the current package's structure.
 | `context-compaction` (`compact_now`, `prune_tool_outputs`) | [context-manager](context-manager.md) (`context::*`, storage-agnostic) |
 | `models-catalog` (`models::*`) + the orchestrator's provider routing | [llm-router](llm-router.md) (`router::*`) |
 | `provider-*` workers | same protocol shape, re-pointed at `router::provider::*` |
-| `approval-gate`, `llm-budget`, `hook-fanout` | [harness hooks](harness.md#hooks) + sibling policy/decision workers (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)); `hook-fanout`'s async side maps to the `harness::turn_*` events |
+| `approval-gate` (`approval::*` + `consultBefore` / `turn::on_approval` in `turn-orchestrator`) | [approval-gate](approval-gate.md): the `approval::gate` `pre_dispatch` hook + `harness::function::resolve`; drops the write-only `approvals` state scope (see [approval-gate.md § Prior art & migration](approval-gate.md#prior-art--migration)) |
+| `llm-budget`, `hook-fanout` | [harness hooks](harness.md#hooks) + sibling policy/decision workers (see [harness.md § Out of scope](harness.md#out-of-scope-future-sibling-workers)); `hook-fanout`'s async side maps to the `harness::turn_*` events |
 
-Function prefixes do not collide, so both stacks can run side by side during migration. Transcripts
+Function prefixes do not collide, so both stacks can run side by side during migration — with one
+exception: `approval::*` is the same prefix in both stacks, so the old `approval-gate` worker is
+retired when the greenfield sibling deploys. Transcripts
 move with a one-shot copy from `session_tree:*` scopes into `session:*` (entry shapes are
 compatible modulo the new envelope fields: `revision`, `origin`); compaction entries become
 `custom_type: "compaction"` entries.
