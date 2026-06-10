@@ -58,3 +58,4 @@ docs/superpowers/
 
 # Local scratch (untracked, not part of any branch)
 harness-node/
+.pnpm-store/
