@@ -29,15 +29,12 @@ import { syntheticAssistant } from './synthetic-assistant.js';
 export async function execute(iii: ISdk, payload: RunAbortPayload): Promise<RunAbortResult> {
   const { session_id } = payload;
   const store = createTurnStore(iii);
-  // Strict read: aborting based on a tolerant null would silently no-op a
-  // session the user is actively trying to stop.
   const rec = await store.loadRecordStrict(session_id);
 
   if (!rec || !isTurnInFlight(rec)) {
     return { session_id, aborted: false, state: rec?.state ?? null };
   }
   if (rec.state === 'finishing') {
-    // Already on the way out; the finishing wake will emit agent_end + stop.
     return { session_id, aborted: false, state: 'finishing' };
   }
 
@@ -46,8 +43,6 @@ export async function execute(iii: ISdk, payload: RunAbortPayload): Promise<RunA
   const ports = createTurnStatePorts(iii, store);
   const msg = syntheticAssistant({ stop_reason: 'aborted', text: 'run aborted by user' });
   rec.last_assistant = msg;
-  // Clear parked approvals so the view stops advertising prompts for a dead
-  // turn; a late approval::resolve decision-wake will stale-skip.
   rec.awaiting_approval = [];
   (rec as TurnStateRecord).work = undefined;
 
@@ -65,7 +60,7 @@ export function register(iii: ISdk): void {
     async (payload: RunAbortPayload) => execute(iii, RunAbortPayloadSchema.parse(payload)),
     {
       description:
-        'Abort the session\'s in-flight turn: emit an aborted assistant + turn_end, clear parked approvals, and route to finishing. Best-effort while a step is mid-execution (retry lands between steps); no-op when no turn is running.',
+        "Abort the session's in-flight turn: emit an aborted assistant + turn_end, clear parked approvals, and route to finishing. Best-effort while a step is mid-execution (retry lands between steps); no-op when no turn is running.",
     },
   );
 }

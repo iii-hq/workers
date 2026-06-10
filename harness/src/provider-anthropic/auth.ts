@@ -45,12 +45,7 @@ export async function buildConfig(
   iii: ISdk,
   worker: WorkerConfig,
   model: string,
-  // The turn's catalog entry, threaded by the orchestrator. It is always for
-  // this turn's model (the orchestrator routes to this provider for that same
-  // model), so we use it directly; absent only when the catalog had no entry,
-  // where we fetch.
   preResolved?: Model,
-  // The turn's stable id, used to dedupe the per-stream credential resolution.
   resolutionKey?: number,
 ): Promise<AnthropicConfig> {
   const resolved = await resolveProviderForTurn(iii, resolutionKey);

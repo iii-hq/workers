@@ -226,9 +226,6 @@ export async function finalizeBatch(
 
   await emitTurnEndOnce(ports, rec, lastAssistant, function_results);
 
-  // Routing formerly done by the turn::steering_check FSM hop, now inline:
-  // one durable step (and its queue wake) less per round-trip. Terminal routes
-  // hand off to the finishing step for agent_end (see transitionToFinishing).
   if (allTerminate) {
     transitionToFinishing(rec);
   } else if (maxTurnsReached(rec)) {

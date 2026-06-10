@@ -109,7 +109,6 @@ export function ChatView({
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
 
-  // Matches iii.session.id on every span so the traces UI can group by it.
   const sessionId = useMemo(
     () => makeSessionId(conversation.id),
     [conversation.id],
@@ -151,10 +150,6 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    // "Approve always" is a per-session grant honored in every mode, so the
-    // button shows on every prompt (full mode never produces prompts, so
-    // it's moot there). Approves this call and stops asking for the same
-    // function for the rest of the conversation.
     return async (sId: string, functionCallId: string, functionId: string) => {
       await approvalSettings.approveAlways(functionId)
       await resolveFn(sId, functionCallId, 'allow')
@@ -233,7 +228,6 @@ export function ChatView({
             }
             onCompactConversation(conversationId, marker)
           } else {
-            // empty | busy | overflow | error: nothing rewritten server-side.
             onPatchMessage(conversationId, pendingId, {
               content: formatCompactResult(result),
               tone: compactResultTone(result),
@@ -340,10 +334,6 @@ export function ChatView({
               break
             }
             case 'fcall-end': {
-              // Correlate by function_call_id: parallel and approval-resolved
-              // calls finish out of order, so the cursor (last-started) is the
-              // wrong card. Fall back to the cursor only when no id is carried
-              // (mock backend / legacy events).
               const targetId: string | null = event.functionCallId
                 ? ([...fcallMap.entries()].find(
                     ([, fcid]) => fcid === event.functionCallId,
@@ -404,12 +394,6 @@ export function ChatView({
               break
             }
             case 'compaction': {
-              // Server-side context-compaction finished rewriting the
-              // session's flat-state. Append a marker so:
-              //   1. The user sees that compaction happened.
-              //   2. estimateConversationTokens stops counting pre-marker
-              //      messages → the CTX bar drops to the real value.
-              // We append (not replace) so the transcript stays scrollable.
               const compactionContent =
                 event.mode === 'sync'
                   ? `compacted ${event.tokensBefore.toLocaleString()} tokens before continuing`
@@ -429,10 +413,6 @@ export function ChatView({
               break
             }
             case 'stop-reason': {
-              // The assistant turn ended abnormally — show the user why
-              // instead of leaving the response looking like it just
-              // ran out of words. Pre-fix this event didn't exist and
-              // the same condition produced a silently truncated reply.
               const noticeContent = formatStopReason(
                 event.reason,
                 event.message,
@@ -463,7 +443,6 @@ export function ChatView({
           }
         }
       } catch (err) {
-        // Backends signal semantic failures via fcall-end; thrown = abort or bug.
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
         }
@@ -497,14 +476,9 @@ export function ChatView({
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort()
-    // Server-side cancel: without it the turn keeps running and run::start
-    // rejects the next message as busy. Best-effort (a retry lands between
-    // FSM steps); errors are non-fatal — the client stream already stopped.
     void backend.abortRun?.(sessionId).catch(() => {})
   }, [backend, sessionId])
 
-  // Covers the gap between submit / fcall-end and the next streamed token,
-  // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
     isStreaming &&
     (() => {

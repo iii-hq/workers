@@ -74,7 +74,6 @@ describe('processProvisioning', () => {
   it('resolves the model once against the DECIDED provider and returns it', async () => {
     const resolveModel = vi.fn(async () => FAKE_MODEL);
     const ports = stubPorts({
-      // provider blank → decide() must resolve it to a concrete provider.
       loadRunRequest: vi.fn(async () => ({
         provider: '',
         model: 'gpt-4',
@@ -89,7 +88,6 @@ describe('processProvisioning', () => {
     const outcome = await processProvisioning(ports, rec);
 
     expect(resolveModel).toHaveBeenCalledTimes(1);
-    // decide() maps a blank provider + 'gpt-4' → openai.
     expect(resolveModel).toHaveBeenCalledWith('openai', 'gpt-4');
     expect(outcome.model_meta).toEqual(FAKE_MODEL);
   });

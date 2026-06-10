@@ -27,11 +27,6 @@ export function decide(req: RouteRequest): RouteDecision {
   if (p === 'kimi') return { provider: 'kimi', model: req.model };
   if (p === 'lmstudio') return { provider: 'lmstudio', model: req.model };
   if (p === 'llamacpp') return { provider: 'llamacpp', model: req.model };
-  // Heuristic for missing provider: model name disambiguates.
-  // Local runtimes (LM Studio, llama.cpp) are intentionally excluded —
-  // their model IDs are user-controlled (e.g. `qwen/qwen3-4b-2507`,
-  // `Meta-Llama-3.1-8B`) and overlap with HF-style IDs from other
-  // services; require explicit provider='lmstudio' / 'llamacpp'.
   if (!p && /^gpt-|^o\d-/i.test(req.model)) {
     return { provider: 'openai', model: req.model };
   }

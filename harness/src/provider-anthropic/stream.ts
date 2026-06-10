@@ -42,7 +42,6 @@ export async function* streamAnthropic({
   applyMessagesCacheAnchor(wire_messages);
   const wire_tools = functionsToWire(tools) as Record<string, unknown>[];
   applyToolsCacheControl(wire_tools);
-  // No `temperature`: the API default applies (required when thinking is on).
   const body = {
     model: cfg.model,
     max_tokens: cfg.max_tokens,
@@ -59,7 +58,6 @@ export async function* streamAnthropic({
     'content-type': 'application/json',
   };
   if (thinking) {
-    // Lets thinking interleave with tool calls.
     headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
   }
 
@@ -80,8 +78,6 @@ export async function* streamAnthropic({
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const kind = classifyAnthropicError(text, resp.status);
-    // A 401/403 means the cached credential is stale (rotated mid-turn); drop it
-    // so the next stream re-resolves instead of replaying the dead key.
     if (kind === 'auth_expired') invalidateProviderResolveCache();
     yield syntheticErrorEvent(text || `anthropic http ${resp.status}`, cfg.model, kind);
     return;

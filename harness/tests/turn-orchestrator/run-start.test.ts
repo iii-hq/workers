@@ -26,7 +26,6 @@ function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
   return { iii, calls };
 }
 
-/** Shape console/web sends inside harness::trigger payload (real.ts). */
 const consoleRunStartPayload = {
   session_id: 'sess-1',
   message_id: 'msg-1',
@@ -42,7 +41,6 @@ const consoleRunStartPayload = {
   ],
 };
 
-/** Minimal shape harness/trigger.test.ts forwards to run::start. */
 const harnessRunStartPayload = {
   session_id: 'sess-1',
   provider: 'anthropic',
@@ -175,19 +173,16 @@ describe('execute', () => {
 
     await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    // Single ensure per run — later loadMessages/appendMessages no longer re-ensure.
     const ensureCalls = calls.filter((c) => c.function_id === 'session-tree::ensure');
     expect(ensureCalls).toHaveLength(1);
     expect(ensureCalls[0]?.payload).toEqual({ session_id: 'sess-1' });
 
-    // The single ensure must precede the run's first tree write (append batch).
     const ensureIdx = calls.findIndex((c) => c.function_id === 'session-tree::ensure');
     const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append_batch');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
   });
 
-  /** iii whose state::get on turn_state returns the given persisted record. */
   function fakeIiiWithRecord(record: unknown): { iii: ISdk; calls: TriggerCall[] } {
     const calls: TriggerCall[] = [];
     const iii = {
@@ -201,7 +196,6 @@ describe('execute', () => {
     return { iii, calls };
   }
 
-  /** A record whose last transition just happened (fresh = genuinely running). */
   const inFlightRecord = (state: string, updated_at_ms = Date.now()) => ({
     session_id: 'sess-1',
     state,
@@ -218,7 +212,6 @@ describe('execute', () => {
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
     expect(result).toEqual({ session_id: 'sess-1', started: false, reason: 'session_busy' });
-    // Busy path mutates nothing: no ensure, no append, no run_request/turn_state write.
     expect(calls.some((c) => c.function_id === 'session-tree::ensure')).toBe(false);
     expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(false);
     expect(calls.some((c) => c.function_id === 'state::set')).toBe(false);
@@ -275,7 +268,6 @@ describe('execute', () => {
     await expect(execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload))).rejects.toThrow(
       /state worker unavailable/,
     );
-    // Nothing was written before the guard read resolved.
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls as Array<
       [{ function_id: string }]
     >;

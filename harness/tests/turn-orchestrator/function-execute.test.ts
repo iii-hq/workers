@@ -182,8 +182,6 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    // Terminal routes hand off to the finishing step for agent_end; the step
-    // itself no longer emits it inline before its durable save.
     expect(rec.state).toBe('finishing');
     expect(ports.finishSession).not.toHaveBeenCalled();
   });
@@ -192,7 +190,6 @@ describe('finalizeBatch', () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const appendMessages = vi.fn(async () => {});
     const ports = stubPorts({
-      // fc-1 already lives in the trailing result run → its id is "persisted".
       loadTrailingResultIds: vi.fn(async () => new Set(['fc-1'])),
       appendMessages,
     });
@@ -217,7 +214,6 @@ describe('finalizeBatch', () => {
     expect(rec.state).toBe('assistant_streaming');
   });
 
-  // Inline replacements for the removed turn::steering_check hop.
   it('resumes to assistant_streaming with cleared results when a result continues', async () => {
     const ports = stubPorts();
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
@@ -266,10 +262,8 @@ describe('finalizeBatch', () => {
 
     await finalizeBatch(ports, rec);
 
-    // max_turns persists the notice + turn_end, then defers agent_end to finishing.
     expect(rec.state).toBe('finishing');
     expect(ports.finishSession).not.toHaveBeenCalled();
-    // Two appends: the batch's function_results, then the synthetic notice.
     expect(appendMessages).toHaveBeenCalledTimes(2);
     const appended = appendMessages.mock.calls[1]?.[1] as Array<{ content: unknown[] }>;
     expect(JSON.stringify(appended)).toContain('max_turns (2) reached');
@@ -337,7 +331,6 @@ describe('createPorts().loadTrailingResultIds', () => {
     expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
     expect(calls.map((c) => c.function_id)).toEqual(['session-tree::messages']);
     expect(calls.some((c) => c.function_id === 'session-tree::compactions')).toBe(false);
-    // Default leaf: no branch_leaf in the payload.
     expect(calls[0]?.payload).toEqual({ session_id: 's1' });
   });
 

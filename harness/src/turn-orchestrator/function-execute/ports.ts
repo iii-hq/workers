@@ -104,9 +104,6 @@ export function createPorts(iii: ISdk): FunctionExecutePorts {
     },
 
     async dispatch(call, session_id) {
-      // Hook/policy see the routing envelope; the target function gets the
-      // caller's untouched args so a payload `function_id` (e.g. for
-      // engine::functions::info) is never clobbered by the routing `function_id`.
       return dispatchWithHook(iii, withRoutingEnvelope(call, session_id), call);
     },
 

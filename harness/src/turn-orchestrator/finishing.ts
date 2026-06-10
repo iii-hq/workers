@@ -17,7 +17,6 @@ import type { TurnStateRecord } from './state.js';
 
 export async function handleFinishing(iii: ISdk, rec: TurnStateRecord): Promise<void> {
   const ports = createTurnStatePorts(iii);
-  // Emits agent_end and transitions the record to `stopped`.
   await ports.finishSession(rec);
 }
 

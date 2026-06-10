@@ -98,9 +98,6 @@ export async function resolveModelFromSession(
   }
 }
 
-// Fallback when no assistant message carries provider/model yet (first-turn
-// sessions, error-only sessions). The orchestrator writes run_request at
-// `run_request` scope during run::start.
 export async function resolveModelFromRunRequest(
   iii: ISdk,
   session_id: string,

@@ -34,8 +34,6 @@ export async function prepareStreamContext(
   const { provider, model, system_prompt, function_schemas, thinking_level } = request;
   const decision = decide({ provider, model });
   const tools = parseFunctionSchemas(function_schemas);
-  // Resolved once at provisioning; preflight + provider read it instead of
-  // re-fetching models::get. Absent on pre-existing records → readers fall back.
   const model_meta = rec.model_meta;
 
   if (
@@ -53,8 +51,6 @@ export async function prepareStreamContext(
     messages,
     ...(thinking_level ? { thinking_level } : {}),
     ...(model_meta ? { model_meta } : {}),
-    // Stable per run, fresh per run: dedupes the provider's credential resolution
-    // within the turn while still re-resolving on the next user turn.
     resolution_key: rec.started_at_ms,
   };
 }
@@ -66,9 +62,6 @@ export async function runStreamTurn(
 ): Promise<StreamTurnOutcome> {
   let body_streamed = false;
 
-  // Coalesce consecutive same-type provider deltas into one message_update to
-  // cut the per-token span/RPC explosion on the streaming path. Discrete
-  // events flush through 1:1; the final flush below guarantees the tail.
   const coalescer = createDeltaCoalescer((partial, event) =>
     ports.emitMessageUpdate(session_id, partial, event),
   );
@@ -143,8 +136,6 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  // end_turn: no function calls. Emit turn_end now, then route to the finishing
-  // step to emit agent_end after this step's durable save (the agent_end outbox).
   await emitTurnEndOnce(ports, rec, asst);
   transitionToFinishing(rec);
 }

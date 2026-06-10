@@ -144,9 +144,6 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
     await h.runExecute('sess-escalate');
 
     const rec = h.loadTurnRecord('sess-escalate');
-    // Denied up front: not parked, not executed, batch finalizes with an
-    // error result carrying the human_only_function denial. The result
-    // travels on turn_end; the inline resume clears the record.
     expect(rec?.awaiting_approval).toEqual([]);
     expect(rec?.state).toBe('assistant_streaming');
     expect(rec?.function_results).toEqual([]);
@@ -162,7 +159,6 @@ describe('mode-driven approval e2e (real consultBefore)', () => {
     const denied = turnEnd?.function_results.find((r) => r.function_call_id === 'fc-1');
     expect(denied?.is_error).toBe(true);
     expect(JSON.stringify(denied?.details)).toContain('human_only_function');
-    // No real mode change leaked into settings.
     const settings = h.stateStore.get(`${SETTINGS_STATE_SCOPE}/sess-escalate`) as {
       mode: string;
     };

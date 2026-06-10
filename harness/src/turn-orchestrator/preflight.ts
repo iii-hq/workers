@@ -42,8 +42,6 @@ export async function runPreflight(
   modelID: string,
   modelMeta?: Model,
 ): Promise<'ok' | 'compacted'> {
-  // The turn's model, resolved once at provisioning. Use it directly when
-  // threaded (same limit a fetch yields); fetch only when it was absent.
   const model = modelMeta
     ? { providerID, modelID, modelLimit: limitFromModel(modelMeta) }
     : await fetchModelLimit(iii, providerID, modelID);
@@ -105,9 +103,6 @@ export async function runPreflight(
     throw new CompactionBusyError('compaction already in progress');
   }
   if (res?.status !== 'ok') {
-    // 'empty' (nothing eligible to compact) or an unknown/drifted status:
-    // no compaction ran, so do NOT claim 'compacted' — the caller would
-    // reload messages and proceed as if the context shrank.
     logger.warn('preflight: compact_now returned non-ok status; proceeding without reload', {
       session_id,
       status: res?.status,

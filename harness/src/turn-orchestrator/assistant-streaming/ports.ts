@@ -137,10 +137,6 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
     },
 
     async persistAssistantIfNew(session_id, asst, messages) {
-      // Dedup against the window already loaded in prepareStreamContext: nothing
-      // is persisted between that load and here within one invocation, and
-      // isDuplicateAssistant only inspects the trailing entry — so reusing it is
-      // identical to a fresh reload and saves a full session round-trip.
       if (isDuplicateAssistant(messages, asst)) {
         logger.warn('finalizeAssistant: skipping duplicate assistant push (re-entry detected)', {
           session_id,

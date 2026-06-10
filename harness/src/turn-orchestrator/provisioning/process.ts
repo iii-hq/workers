@@ -34,9 +34,6 @@ export async function processProvisioning(
     model: request.model,
   });
 
-  // Resolve the model once for the whole turn. The decided provider (not the
-  // raw request.provider, which may be blank) is what every later reader keys
-  // on, so resolve against it. Best-effort: null is fine — readers fall back.
   const decision = decide({ provider: request.provider, model: request.model });
   const model_meta = request.model
     ? await ports.resolveModel(decision.provider, request.model)
@@ -59,8 +56,6 @@ export async function applyProvisioningOutcome(
   outcome: ProvisioningOutcome,
 ): Promise<void> {
   await ports.saveRunRequest(rec.session_id, outcome.runRequest);
-  // Persist the resolved catalog entry on the durable record so preflight,
-  // provider streaming, and turn-end compaction read it instead of re-fetching.
   if (outcome.model_meta) rec.model_meta = outcome.model_meta;
   transitionTo(rec, 'assistant_streaming');
 }

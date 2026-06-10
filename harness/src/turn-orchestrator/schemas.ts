@@ -25,7 +25,6 @@ const SessionIdPayloadSchema = z.object({
   session_id: z.string().min(1),
 });
 
-// --- run::start ---
 export const RunStartPayloadSchema = SessionIdPayloadSchema.extend({
   message_id: z.string().optional(),
   provider: z.string(),
@@ -46,7 +45,6 @@ export type RunStartResult = {
   reason?: 'session_busy';
 };
 
-// --- run::abort ---
 export const RunAbortPayloadSchema = SessionIdPayloadSchema;
 export type RunAbortPayload = z.infer<typeof RunAbortPayloadSchema>;
 /** `aborted` is false when no turn was running (or it was already finishing). */
@@ -56,14 +54,12 @@ export type RunAbortResult = {
   state: TurnState | null;
 };
 
-// --- turn::{state} durable step ---
 export const TurnStepPayloadSchema = SessionIdPayloadSchema;
 export type TurnStepPayload = z.infer<typeof TurnStepPayloadSchema>;
 export type TurnStepResult =
   | { ok: true; from_state: TurnState; to_state: TurnState }
   | { ok: true; skipped: true; reason: 'stale' };
 
-// --- function_execute / function_awaiting_approval persisted record ---
 const AwaitingApprovalEntrySchema = z.object({
   function_call_id: z.string().min(1),
   function_id: z.string().min(1),
@@ -113,7 +109,6 @@ export function parseFunctionBatchRecord(rec: TurnStateRecord): FunctionBatchTur
       `invalid function batch turn record: ${formatZodIssues(result.error)}`,
     );
   }
-  // Return the same object — handlers mutate turn_state in place before saveRecord.
   return rec as FunctionBatchTurnRecord;
 }
 
@@ -165,7 +160,6 @@ export function parseSteeringCheckRecord(rec: TurnStateRecord): SteeringCheckTur
   return rec as SteeringCheckTurnRecord;
 }
 
-// --- turn::get_state ---
 export const GetStatePayloadSchema = SessionIdPayloadSchema;
 export type GetStatePayload = z.infer<typeof GetStatePayloadSchema>;
 
@@ -193,7 +187,6 @@ export function toView(rec: TurnStateRecord): TurnStateView {
 
 export type GetStateResult = TurnStateView | null;
 
-// --- turn::on_approval (approvals-scope state event) ---
 const ApprovalDecisionWriteEventSchema = z.object({
   type: z.literal('state').optional(),
   scope: z.literal('approvals').optional(),

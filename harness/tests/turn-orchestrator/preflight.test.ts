@@ -64,7 +64,6 @@ describe('runPreflight', () => {
   });
 
   it('calls compact_now and returns compacted when projected >= usable', async () => {
-    // Tiny context window so even a small message overflows
     const { iii, calls } = makeIii({
       modelsGetResult: { context_window: 10, max_output_tokens: 0 },
       compactNowResult: { status: 'ok' },
@@ -122,7 +121,6 @@ describe('runPreflight', () => {
 
   it('uses the pre-resolved model and skips models::get', async () => {
     const { iii, calls } = makeIii({
-      // If consulted, this tiny window would force a compact — proving a miss.
       modelsGetResult: { context_window: 1, max_output_tokens: 0 },
     });
     const modelMeta = {

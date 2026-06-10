@@ -130,7 +130,6 @@ export class IiiStateSessionStore implements SessionStore {
     for (const entry of entries) {
       await this.writeEntry(session_id, entry.id, entry);
     }
-    // One meta refresh for the whole batch (vs once per entry in `append`).
     await this.bestEffortMetaRefresh(session_id);
   }
 
@@ -141,9 +140,6 @@ export class IiiStateSessionStore implements SessionStore {
     } catch (e) {
       throw new SessionError('storage', `state::list entries: ${String(e)}`);
     }
-    // PR #150: sort by (timestamp, id) so resumed approval replies that
-    // arrive after the session paused appear in correct transcript order
-    // even when their entry ids are non-monotonic.
     entries.sort((a, b) => {
       const t = entryTimestamp(a) - entryTimestamp(b);
       if (t !== 0) return t;

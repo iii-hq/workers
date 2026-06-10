@@ -97,10 +97,8 @@ describe('handleStreaming turn start', () => {
     await handleStreaming(iii, rec);
 
     expect(rec.turn_count).toBe(1);
-    // createChannel failure → synthetic error → finalizeAssistant sets turn_end_emitted = true
     expect(rec.turn_end_emitted).toBe(true);
     expect(calls.some((c) => c.function_id === 'approval::consume')).toBe(false);
-    // stream::set is called by emit(message_complete) and emit(turn_end) in the error path
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
   });
 });
@@ -143,11 +141,8 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    // emitted message_complete via stream::set trigger
     expect(calls.some((c) => c.function_id === 'stream::set')).toBe(true);
-    // assistant persisted
     expect(appendSpy).toHaveBeenCalledOnce();
-    // routed to function_execute (NOT assistant_finished)
     expect(rec.state).toBe('function_execute');
     expect(rec.last_assistant).toEqual(finalMsg);
     expect(rec.function_results).toEqual([]);
@@ -164,7 +159,6 @@ describe('handleStreaming', () => {
 
     await handleStreaming(iii, rec);
 
-    // No-function-call turns finish inline (formerly the steering_check hop).
     expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(rec.last_assistant).toEqual(finalMsg);
@@ -232,7 +226,6 @@ describe('handleStreaming', () => {
         },
       ],
     });
-    // Simulate re-entry: messages already contain the assistant message
     let storedMessages: unknown[] = [finalMsg];
 
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };

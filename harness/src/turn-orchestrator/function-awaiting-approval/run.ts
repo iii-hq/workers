@@ -25,9 +25,6 @@ export function denialResultFromDecision(decision: ApprovalDecision): FunctionRe
       decision: decision.decision,
       reason,
     },
-    // A denial resumes the loop so the model can react; an abort is the user
-    // saying "stop" — it ends the turn (when every result in the batch
-    // terminates; mixed batches still resume).
     terminate: decision.decision === 'aborted',
   };
 }

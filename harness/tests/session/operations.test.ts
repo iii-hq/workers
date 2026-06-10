@@ -74,7 +74,6 @@ describe('session-tree operations', () => {
     const ids = await appendMessages(store, sid, null, [asstMsg('a'), userMsg('b'), asstMsg('c')]);
 
     expect(ids).toHaveLength(3);
-    // The batch chains onto the existing leaf and links each entry to the prior.
     const path = await activePath(store, sid);
     expect(path).toEqual([e0, ...ids]);
     const messages = await loadMessages(store, sid);
@@ -91,7 +90,6 @@ describe('session-tree operations', () => {
     const sid = await createSession(store);
     await appendMessage(store, sid, null, userMsg('seed'));
 
-    // loadEntries backs activePath; one call means the leaf was resolved once.
     const loadEntriesSpy = vi.spyOn(store, 'loadEntries');
     const appendManySpy = vi.spyOn(store, 'appendMany');
 
@@ -131,7 +129,6 @@ describe('session-tree operations', () => {
     const sid = await createSession(store);
     const now = vi.spyOn(Date, 'now');
 
-    // Batch lands at t=100 (all entries share the append timestamp).
     now.mockReturnValue(100);
     const batch = await appendMessages(store, sid, null, [
       asstMsg('a'),
@@ -139,9 +136,6 @@ describe('session-tree operations', () => {
       asstMsg('c'),
     ]);
 
-    // A later single append whose clock did NOT advance (or stepped back): its
-    // timestamp sorts before the batch tail. Pre-fix, the sort-max leaf
-    // heuristic orphaned it; the chain-tip leaf keeps it on the path.
     now.mockReturnValue(99);
     const tail = await appendMessage(store, sid, null, asstMsg('d'));
     now.mockRestore();

@@ -246,9 +246,6 @@ describe('createAgentEventTranslator — turn_state_changed', () => {
       },
       'sess-a',
     )
-    // The resolved call drops out of awaiting_approval — its prompt must be
-    // cleared explicitly. Relying on the matching function_execution_end is
-    // unsafe: parallel/approval-resolved ends arrive uncorrelated to the card.
     expect(
       translate(
         {

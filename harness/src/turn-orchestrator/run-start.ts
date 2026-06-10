@@ -30,16 +30,6 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
   const store = createTurnStore(iii);
   const { session_id, messages, max_turns, message_id: _message_id, ...run } = payload;
 
-  // Refuse to clobber a turn that is still running for this session. A second
-  // run::start (second tab, TUI/ACP client, or a double-submit) would otherwise
-  // reset the live turn_state record to a fresh `provisioning` and race the
-  // in-flight step's last-write-wins saveRecord, corrupting both turns. The
-  // read is STRICT (throws on a state-read failure) so a transient blip can't
-  // masquerade as "no record" and fail the guard open. Terminal turns
-  // (stopped/failed) and fresh sessions start normally; a record idle past the
-  // takeover window is treated as wedged (lost wake, DLQ'd step) and
-  // deliberately taken over — the recovery valve the old clobber provided by
-  // accident. No mutation happens on the busy path.
   const existing = await store.loadRecordStrict(session_id);
   if (existing && isTurnInFlight(existing)) {
     const idleMs = Date.now() - existing.updated_at_ms;
@@ -59,9 +49,6 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
     });
   }
 
-  // Single ensure for the whole run: this is the gateway that begins the turn
-  // loop, so every later loadMessages/appendMessages is guaranteed a live record
-  // without re-ensuring per call. Must precede the first tree write below.
   await store.ensureSession(session_id);
 
   await store.saveRunRequest(session_id, {

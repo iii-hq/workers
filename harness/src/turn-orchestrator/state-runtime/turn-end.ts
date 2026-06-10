@@ -30,7 +30,6 @@ export async function emitTurnEndOnce(
 ): Promise<void> {
   if (rec.turn_end_emitted) return;
   const last = message ?? rec.last_assistant ?? emptyAssistant();
-  // Thread the turn's resolved limit so compaction skips its own models::get.
   const model_limit = rec.model_meta ? limitFromModel(rec.model_meta) : undefined;
   await ports.emitTurnEnd(rec.session_id, last, function_results, model_limit);
   rec.turn_end_emitted = true;

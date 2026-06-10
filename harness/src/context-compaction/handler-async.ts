@@ -78,9 +78,6 @@ export async function resolveModelFromEvent(
   let providerID = ev.message.provider || null;
   let modelID = ev.message.model || null;
 
-  // Closed system: the orchestrator threads the turn's limit onto turn_end, so
-  // when ids and the limit are present we trust them and skip the models::get
-  // round-trip. Empty ids (synthetic/error turns) fall through to the scan.
   if (providerID && modelID && ev.model_limit) {
     return { providerID, modelID, modelLimit: ev.model_limit };
   }

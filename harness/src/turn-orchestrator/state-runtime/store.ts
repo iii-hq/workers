@@ -199,9 +199,6 @@ export function createTurnStore(iii: ISdk): TurnStore {
 
     async appendMessages(session_id, msgs) {
       if (msgs.length === 0) return;
-      // One batch trigger chains all messages and resolves the active leaf once,
-      // instead of a per-message session-tree::append (each of which re-read the
-      // whole session to find the leaf).
       await iii.trigger({
         function_id: 'session-tree::append_batch',
         payload: { session_id, messages: msgs, parent_id: null },

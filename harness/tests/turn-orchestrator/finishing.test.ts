@@ -37,7 +37,7 @@ describe('handleFinishing', () => {
     const rec: TurnStateRecord = { ...newRecord('s1'), state: 'finishing' };
 
     await handleFinishing(iii, rec);
-    rec.state = 'finishing'; // simulate redelivery against the pre-save record
+    rec.state = 'finishing';
     await handleFinishing(iii, rec);
 
     expect(rec.state).toBe('stopped');

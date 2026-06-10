@@ -233,9 +233,7 @@ export async function listSessions(
     let entries: SessionEntry[] = [];
     try {
       entries = await store.loadEntries(meta.session_id);
-    } catch {
-      // ignore
-    }
+    } catch {}
     sessions.push({
       session_id: meta.session_id,
       created_at: meta.created_at,
@@ -395,8 +393,6 @@ export async function appendSynthetic(
   session_id: string,
   opts: {
     text: string;
-    // metadata is not supported on message entries currently; accepted for
-    // forward-compat but discarded.
     metadata?: unknown;
     parent_id?: string | null;
   },
@@ -435,7 +431,6 @@ export type UpdatePartItem = {
   compacted_at: unknown;
 };
 
-// Loads entries once instead of O(N×M) reloads in the prune loop.
 export async function updateParts(
   store: SessionStore,
   session_id: string,
@@ -496,8 +491,6 @@ function buildNode(entry: SessionEntry, byParent: Map<string | null, SessionEntr
   return { entry, children: kids.map((c) => buildNode(c, byParent)) };
 }
 
-// ── HTML export ────────────────────────────────────────────────────────────
-
 export async function exportHtml(
   store: SessionStore,
   session_id: string,
@@ -548,7 +541,6 @@ function renderEntryHtml(entry: SessionEntry): string {
   if (entry.type === 'branch_summary') {
     return `<div class="entry summary"><div class="role">branch summary · from ${htmlEscape(entry.from_id)}</div><pre>${htmlEscape(entry.summary)}</pre></div>\n`;
   }
-  // compaction
   const read = (entry.details.read_files ?? []).map(htmlEscape).join(', ');
   const modified = (entry.details.modified_files ?? []).map(htmlEscape).join(', ');
   return `<div class="entry compaction"><div class="role">compaction · ${entry.tokens_before} tokens before</div><pre>${htmlEscape(entry.summary)}\n\nread: ${read}\nmodified: ${modified}</pre></div>\n`;
@@ -561,7 +553,6 @@ function renderMessageHtml(msg: AgentMessage): string {
     return `<div class="entry assistant"><div class="role">assistant · ${htmlEscape(msg.model)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
   if (msg.role === 'function_result')
     return `<div class="entry tool-result"><div class="role">function result · ${htmlEscape(msg.function_id)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
-  // custom
   const text = msg.display ?? JSON.stringify(msg.content);
   return `<div class="entry custom"><div class="role">custom · ${htmlEscape(msg.custom_type)}</div><pre>${htmlEscape(text)}</pre></div>\n`;
 }

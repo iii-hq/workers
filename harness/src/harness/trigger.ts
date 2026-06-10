@@ -47,11 +47,6 @@ export function register(iii: ISdk): void {
       payload: body.payload,
       timeoutMs: BRIDGE_TIMEOUT_MS,
     });
-    // A turn was already in flight: surface a 409 so the client can wait/retry
-    // instead of treating the ignored kickoff as a started turn. Only an
-    // EXPLICIT started:false means busy — a legacy run::start registration
-    // that predates the field returns {session_id} only, and its kickoffs are
-    // successes, not conflicts.
     return {
       status_code: result.started === false ? 409 : 200,
       headers: { 'content-type': 'application/json' },

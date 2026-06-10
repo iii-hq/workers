@@ -120,8 +120,6 @@ describe('handleExecute new flow', () => {
 
     mockFinalizePersistence();
     await handleExecute(iii, rec);
-    // Resumed inline for the next round-trip (formerly via the steering_check
-    // hop); the batch results travel on turn_end, the record is cleared.
     expect(rec.state).toBe('assistant_streaming');
     expect(rec.function_results).toEqual([]);
     const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
@@ -154,7 +152,6 @@ describe('handleExecute new flow', () => {
 
     await handleExecute(iii, rec);
 
-    // All-terminate routes to the finishing step (which emits agent_end + stops).
     expect(rec.state).toBe('finishing');
   });
 
@@ -255,7 +252,6 @@ describe('handleExecute new flow', () => {
 
     await expect(handleExecute(iii, rec)).resolves.toBeUndefined();
 
-    // Denial result travels on turn_end; the record resumes with cleared results.
     expect(rec.state).toBe('assistant_streaming');
     const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
       | { function_results: Array<{ is_error: boolean; details: Record<string, unknown> }> }

@@ -33,7 +33,6 @@ export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore
   } as MockTurnStore;
 }
 
-/** Mock `createTurnStore` and return the store instance for assertions. */
 export function installMockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore {
   const store = mockTurnStore(overrides);
   vi.spyOn(storeModule, 'createTurnStore').mockReturnValue(store);

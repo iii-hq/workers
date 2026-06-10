@@ -125,7 +125,6 @@ describe('handleAwaitingApproval', () => {
     expect(rec.awaiting_approval).toEqual([]);
     expect(rec.state).toBe('assistant_streaming');
     expect(rec.work).toBeUndefined();
-    // Results travel on turn_end; the inline resume clears the record.
     expect(rec.function_results).toEqual([]);
     const turnEnd = emitSpy.mock.calls.find((call) => call[2]?.type === 'turn_end')?.[2] as
       | { function_results: unknown[] }

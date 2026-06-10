@@ -20,9 +20,6 @@ describe('decide', () => {
 
   it('routes llamacpp when provider=llamacpp', () => {
     expect(decide({ provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' }).provider).toBe('llamacpp');
-    // No heuristic — bare model id without explicit provider does not
-    // route to llamacpp (same posture as lmstudio; user-controlled ids
-    // overlap with HF-style ids from other services).
     expect(decide({ model: 'Meta-Llama-3.1-8B' }).provider).toBe('anthropic');
   });
 
@@ -40,11 +37,6 @@ describe('decide', () => {
         model: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
       }).provider,
     ).toBe('lmstudio');
-    // No heuristic — a bare HF-style model id without an explicit
-    // provider MUST default to anthropic, not be magically routed to
-    // lmstudio because the namespace looks like a HF org/repo. This
-    // is the regression that the route's comment warns about
-    // ("model IDs are user-controlled … overlap with HF-style IDs").
     const ambiguousIds = [
       'qwen/qwen3-4b-2507',
       'google/gemma-2-9b-it',

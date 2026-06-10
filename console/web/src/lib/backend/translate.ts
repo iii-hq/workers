@@ -55,8 +55,6 @@ export function createAgentEventTranslator(): {
       functionCallId: entry.function_call_id,
       sessionId,
     }))
-    // A call that left awaiting_approval is no longer pending: clear its prompt.
-    // (A resolved+executed call also emits fcall-end; double-clearing is fine.)
     for (const entry of removed) {
       out.push({
         kind: 'fcall-approval-cleared',

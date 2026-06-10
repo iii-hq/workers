@@ -79,7 +79,6 @@ describe('saveRecord no-op suppression', () => {
     const { iii, emits } = fakeIii();
     const store = createTurnStore(iii);
     const rec = newRecord('sess-a');
-    // Same view; differs only in updated_at_ms (which toView drops).
     const previous = { ...rec, updated_at_ms: rec.updated_at_ms + 1000 };
 
     await store.saveRecord(rec, previous);
@@ -139,7 +138,6 @@ describe('session-tree call reduction', () => {
       timestamp: 1,
     };
     await createTurnStore(iii).appendMessages('sess-a', [msg]);
-    // One batch trigger for the whole call, not a per-message append.
     expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
     expect(calls).not.toContain('session-tree::append');
     expect(calls).not.toContain('session-tree::ensure');

@@ -34,7 +34,6 @@ function resolved(max_tokens: number | null) {
   };
 }
 
-/** Fake ISdk whose models::get returns the given catalog entry (or throws). */
 function iiiWithCatalog(entry: unknown, opts: { throws?: boolean } = {}): ISdk {
   const trigger = vi.fn().mockImplementation(async (req: { function_id: string }) => {
     if (req.function_id === 'models::get') {
@@ -46,7 +45,6 @@ function iiiWithCatalog(entry: unknown, opts: { throws?: boolean } = {}): ISdk {
   return { trigger } as unknown as ISdk;
 }
 
-/** Count models::get calls so we can prove the pre-resolved path skips the fetch. */
 function iiiCountingCatalog(entry: unknown): { iii: ISdk; modelsGetCalls: () => number } {
   let n = 0;
   const trigger = vi.fn().mockImplementation(async (req: { function_id: string }) => {
@@ -145,7 +143,7 @@ describe('buildConfig pre-resolved model threading', () => {
 
     expect(modelsGetCalls()).toBe(0);
     expect(cfg.catalog).toEqual(THINKING_MODEL);
-    expect(cfg.max_tokens).toBe(32_000); // min(64k, 32k cap)
+    expect(cfg.max_tokens).toBe(32_000);
   });
 
   it('fetches models::get when no pre-resolved model is threaded', async () => {
@@ -164,9 +162,7 @@ describe('buildConfig pre-resolved model threading', () => {
     'high',
     'xhigh',
   ])('produces a byte-identical thinking config (%s) with vs without the pre-resolved model', async (level) => {
-    // Fetch path: models::get returns the same Model.
     const fetched = await buildConfig(iiiWithCatalog(THINKING_MODEL), WORKER, 'claude-sonnet-4-6');
-    // Threaded path: the same Model passed in, models::get not consulted.
     const { iii } = iiiCountingCatalog({ id: 'nope' });
     const threaded = await buildConfig(iii, WORKER, 'claude-sonnet-4-6', THINKING_MODEL);
 
@@ -232,12 +228,10 @@ describe('buildConfig per-turn credential resolution cache', () => {
 
     it('a 401 stream drops the cache so the next turn re-resolves the credential', async () => {
       const iii = iiiWithCatalog({ id: 'claude-sonnet-4-6', max_output_tokens: 64_000 });
-      // Prime the cache for turn key 100.
       await buildConfig(iii, WORKER, 'claude-sonnet-4-6', undefined, 100);
       await buildConfig(iii, WORKER, 'claude-sonnet-4-6', undefined, 100);
       expect(resolveProviderMock).toHaveBeenCalledTimes(1);
 
-      // A stream hitting 401 must invalidate the cached resolution.
       vi.stubGlobal(
         'fetch',
         vi.fn(async () => new Response('unauthorized', { status: 401 })),
@@ -248,10 +242,8 @@ describe('buildConfig per-turn credential resolution cache', () => {
         messages: [],
         tools: [],
       })) {
-        // drain
       }
 
-      // Same turn key now re-resolves because the 401 cleared the cache.
       await buildConfig(iii, WORKER, 'claude-sonnet-4-6', undefined, 100);
       expect(resolveProviderMock).toHaveBeenCalledTimes(2);
     });
@@ -270,7 +262,6 @@ describe('buildConfig per-turn credential resolution cache', () => {
         messages: [],
         tools: [],
       })) {
-        // drain
       }
 
       await buildConfig(iii, WORKER, 'claude-sonnet-4-6', undefined, 100);

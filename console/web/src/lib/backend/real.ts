@@ -54,12 +54,6 @@ async function* realStream(
     r?.()
   }
 
-  // Subscribe directly to this session's `agent::events` stream via a scoped
-  // engine stream trigger (`group_id = sessionId`), replacing the harness
-  // fanout hop (`ui::subscribe` → per-browser `ui::session::event` push).
-  // Registered before the `harness::trigger` kickoff below — both travel the
-  // same ordered WS connection, so the trigger is in place before the turn's
-  // first event is written.
   const stopSubscription = startSessionEventsSubscription(
     client,
     sessionId,
@@ -121,9 +115,6 @@ async function* realStream(
         },
       )
       .then((res) => {
-        // run::start refused: a turn is still in flight for this session and
-        // the message was NOT appended. Surface it instead of waiting on
-        // events that may never come (e.g. a turn parked on an approval).
         if (res?.body?.started === false) {
           sessionBusy = true
           wake()
@@ -210,9 +201,6 @@ async function realCompactSession(
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
   try {
-    // Passing limit.context lets the server skip the models::get lookup.
-    // We don't know max_output here; 4096 is the same conservative default
-    // the server falls back to when models::get returns nothing.
     const DEFAULT_MAX_OUTPUT = 4_096
     const modelPayload: {
       id: string
@@ -242,10 +230,7 @@ async function realCompactSession(
     if (resp?.status === 'ok') {
       const tokensBefore =
         typeof resp.tokens_before === 'number' ? resp.tokens_before : 0
-      // Surface zero-token "ok" as semantic empty.
       if (tokensBefore === 0) return { status: 'empty' }
-      // Fallback placeholder for engines that predate summary_text on the
-      // wire; without it the marker has no <conversation-summary> to ship.
       const summaryText =
         typeof resp.summary_text === 'string' && resp.summary_text.length > 0
           ? resp.summary_text

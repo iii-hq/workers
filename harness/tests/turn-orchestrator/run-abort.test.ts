@@ -23,9 +23,7 @@ function parkedRecord(state: TurnStateRecord['state']): TurnStateRecord {
   return {
     ...newRecord('s1'),
     state,
-    awaiting_approval: [
-      { function_call_id: 'fc-1', function_id: 'shell::run', args: {} },
-    ],
+    awaiting_approval: [{ function_call_id: 'fc-1', function_id: 'shell::run', args: {} }],
   } as TurnStateRecord;
 }
 
@@ -46,14 +44,11 @@ describe('run::abort execute', () => {
     const events = streamSets(calls).map((e) => e.type);
     expect(events).toContain('message_complete');
     expect(events).toContain('turn_end');
-    // agent_end belongs to the finishing step, not the abort itself.
     expect(events).not.toContain('agent_end');
 
-    // The record persisted to finishing with parked approvals cleared.
     const turnStateSet = calls.find(
       (c) =>
-        c.function_id === 'state::set' &&
-        (c.payload as { scope?: string }).scope === 'turn_state',
+        c.function_id === 'state::set' && (c.payload as { scope?: string }).scope === 'turn_state',
     );
     const saved = (turnStateSet?.payload as { value: TurnStateRecord }).value;
     expect(saved.state).toBe('finishing');

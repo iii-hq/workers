@@ -66,7 +66,6 @@ describe('resolveModelFromEvent', () => {
     const iii = {
       trigger: vi.fn(async (req: { function_id: string }) => {
         calls.push(req.function_id);
-        // Stand-in for a models::get fallback result.
         return { context_window: 200_000, max_output_tokens: 8_096 };
       }),
     } as unknown as ISdk;
