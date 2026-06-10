@@ -90,10 +90,10 @@ describe('iii-lsp-vscode installer', () => {
   });
 
   test('pinned release url', () => {
-    expect(installer.SERVER_VERSION).toBe('0.1.0');
-    expect(installer.RELEASE_TAG).toBe('iii-lsp/v0.1.0');
+    expect(installer.SERVER_VERSION).toBe('0.1.2');
+    expect(installer.RELEASE_TAG).toBe('iii-lsp/v0.1.2');
     expect(installer.RELEASE_BASE_URL).toBe(
-      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.0'
+      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2'
     );
   });
 
@@ -102,7 +102,7 @@ describe('iii-lsp-vscode installer', () => {
       'iii-lsp-aarch64-apple-darwin.sha256'
     );
     expect(installer.getDownloadUrl('iii-lsp-aarch64-apple-darwin.tar.gz')).toBe(
-      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.0/iii-lsp-aarch64-apple-darwin.tar.gz'
+      'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2/iii-lsp-aarch64-apple-darwin.tar.gz'
     );
   });
 
@@ -181,7 +181,7 @@ describe('iii-lsp-vscode installer', () => {
         fileExists: async () => false,
         downloadText: async (url) => {
           expect(url).toBe(
-            'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.0/iii-lsp-aarch64-apple-darwin.sha256'
+            'https://github.com/iii-hq/workers/releases/download/iii-lsp/v0.1.2/iii-lsp-aarch64-apple-darwin.sha256'
           );
           return `${checksum}  iii-lsp-aarch64-apple-darwin.tar.gz\n`;
         },
