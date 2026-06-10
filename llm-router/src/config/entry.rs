@@ -2,12 +2,11 @@
 //! engine's `configuration::register/get/set` iii functions. Never passes
 //! initial_value, so operator-stored values survive every re-register.
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
+use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::{json, Value};
 
 use super::schema::compose_entry_schema;
-use crate::bus::{Bus, BusError};
 
 pub const ENTRY_ID: &str = "llm-router";
 
@@ -16,40 +15,47 @@ pub const ENTRY_ID: &str = "llm-router";
 pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
 
 pub async fn register_entry(
-    bus: &Arc<dyn Bus>,
+    iii: &III,
     provider_schemas: &BTreeMap<String, Value>,
-) -> Result<(), BusError> {
-    bus.trigger(
-        "configuration::register",
-        json!({
+) -> Result<(), IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "configuration::register".into(),
+        payload: json!({
             "id": ENTRY_ID,
             "name": "LLM Router",
             "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
             "schema": compose_entry_schema(provider_schemas),
         }),
-        None,
-    )
+        action: None,
+        timeout_ms: None,
+    })
     .await?;
     Ok(())
 }
 
 /// Null before the entry exists.
-pub async fn read_entry_value(bus: &Arc<dyn Bus>) -> Value {
-    match bus
-        .trigger("configuration::get", json!({ "id": ENTRY_ID }), None)
-        .await
-    {
+pub async fn read_entry_value(iii: &III) -> Value {
+    let res = iii
+        .trigger(TriggerRequest {
+            function_id: "configuration::get".into(),
+            payload: json!({ "id": ENTRY_ID }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
+    match res {
         Ok(v) => v.get("value").cloned().unwrap_or(Value::Null),
         Err(_) => Value::Null, // NOT_FOUND before first registration
     }
 }
 
-pub async fn write_entry_value(bus: &Arc<dyn Bus>, value: Value) -> Result<(), BusError> {
-    bus.trigger(
-        "configuration::set",
-        json!({ "id": ENTRY_ID, "value": value }),
-        None,
-    )
+pub async fn write_entry_value(iii: &III, value: Value) -> Result<(), IIIError> {
+    iii.trigger(TriggerRequest {
+        function_id: "configuration::set".into(),
+        payload: json!({ "id": ENTRY_ID, "value": value }),
+        action: None,
+        timeout_ms: None,
+    })
     .await?;
     Ok(())
 }

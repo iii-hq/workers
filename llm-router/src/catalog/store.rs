@@ -1,40 +1,32 @@
 //! Durable model catalog: one slice per provider, replaced wholesale on
 //! reconcile. Same serialized-writer pattern as the registry — persisted via
-//! the engine's `state::get`/`state::set` iii functions.
+//! the engine's `state::get`/`state::set` iii functions (src/state.rs).
+//!
+//! Engine-backed coverage: tests/integration.rs (reconcile, restart restore).
 use std::collections::HashMap;
-use std::sync::Arc;
 
+use crate::state::{state_get, state_set};
 use crate::types::model::Model;
-use serde_json::json;
+use iii_sdk::{IIIError, III};
 use tokio::sync::Mutex;
-
-use crate::bus::{Bus, BusError};
-use crate::registry::store::STATE_SCOPE;
 
 const CATALOG_KEY: &str = "catalog";
 
 pub struct CatalogStore {
-    bus: Arc<dyn Bus>,
+    iii: III,
     slices: Mutex<HashMap<String, Vec<Model>>>,
 }
 
 impl CatalogStore {
-    pub fn new(bus: Arc<dyn Bus>) -> Self {
+    pub fn new(iii: III) -> Self {
         Self {
-            bus,
+            iii,
             slices: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn load(&self) -> Result<(), BusError> {
-        let stored = self
-            .bus
-            .trigger(
-                "state::get",
-                json!({ "scope": STATE_SCOPE, "key": CATALOG_KEY }),
-                None,
-            )
-            .await?;
+    pub async fn load(&self) -> Result<(), IIIError> {
+        let stored = state_get(&self.iii, CATALOG_KEY).await?;
         *self.slices.lock().await = serde_json::from_value(stored).unwrap_or_default();
         Ok(())
     }
@@ -73,17 +65,10 @@ impl CatalogStore {
             .cloned()
     }
 
-    pub async fn set_slice(&self, provider: &str, models: Vec<Model>) -> Result<(), BusError> {
+    pub async fn set_slice(&self, provider: &str, models: Vec<Model>) -> Result<(), IIIError> {
         let mut slices = self.slices.lock().await; // serialized writer
         slices.insert(provider.to_string(), models);
         let value = serde_json::to_value(&*slices).unwrap_or_default();
-        self.bus
-            .trigger(
-                "state::set",
-                json!({ "scope": STATE_SCOPE, "key": CATALOG_KEY, "value": value }),
-                None,
-            )
-            .await?;
-        Ok(())
+        state_set(&self.iii, CATALOG_KEY, value).await
     }
 }

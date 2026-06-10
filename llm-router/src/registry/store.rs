@@ -1,22 +1,22 @@
 //! Durable provider registry. Single writer: the records Mutex is held across
 //! mutate + state::set (spec § Registration lifecycle, "Serialized merges").
-//! Persistence is iii state (`state::get`/`state::set` engine functions) under
-//! scope "llm-router"; the router is the only writer of its state keys
-//! (single-instance worker).
+//! Persistence is iii state (`state::get`/`state::set` engine functions via
+//! src/state.rs) under scope "llm-router"; the router is the only writer of
+//! its state keys (single-instance worker).
+//!
+//! Engine-backed coverage: tests/integration.rs (registration, token gate,
+//! restart restore).
 use std::collections::HashMap;
-use std::sync::Arc;
 
+use crate::state::{state_get, state_set};
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::ProviderDeclaration;
+use iii_sdk::{IIIError, III};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::bus::{Bus, BusError};
-
-pub const STATE_SCOPE: &str = "llm-router";
 const REGISTRY_KEY: &str = "registry";
 
 fn hash_token(token: &str) -> String {
@@ -40,42 +40,28 @@ pub struct ProviderRecord {
 }
 
 pub struct RegistryStore {
-    bus: Arc<dyn Bus>,
+    iii: III,
     records: Mutex<HashMap<String, ProviderRecord>>,
 }
 
 impl RegistryStore {
-    pub fn new(bus: Arc<dyn Bus>) -> Self {
+    pub fn new(iii: III) -> Self {
         Self {
-            bus,
+            iii,
             records: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn load(&self) -> Result<(), BusError> {
-        let stored = self
-            .bus
-            .trigger(
-                "state::get",
-                json!({ "scope": STATE_SCOPE, "key": REGISTRY_KEY }),
-                None,
-            )
-            .await?;
+    pub async fn load(&self) -> Result<(), IIIError> {
+        let stored = state_get(&self.iii, REGISTRY_KEY).await?;
         let mut records = self.records.lock().await;
         *records = serde_json::from_value(stored).unwrap_or_default();
         Ok(())
     }
 
-    async fn persist(&self, records: &HashMap<String, ProviderRecord>) -> Result<(), BusError> {
+    async fn persist(&self, records: &HashMap<String, ProviderRecord>) -> Result<(), IIIError> {
         let value = serde_json::to_value(records).unwrap_or_default();
-        self.bus
-            .trigger(
-                "state::set",
-                json!({ "scope": STATE_SCOPE, "key": REGISTRY_KEY, "value": value }),
-                None,
-            )
-            .await?;
-        Ok(())
+        state_set(&self.iii, REGISTRY_KEY, value).await
     }
 
     pub async fn get(&self, id: &str) -> Option<ProviderRecord> {
@@ -176,142 +162,5 @@ impl RegistryStore {
         drop(records);
         let _ = self.persist(&snapshot).await; // best-effort persist of a flag flip
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::testkit::fake_bus::FakeBus;
-    use crate::types::errors::RouterCode;
-    use crate::types::router::ProviderDeclaration;
-
-    fn decl(id: &str) -> ProviderDeclaration {
-        ProviderDeclaration {
-            id: id.into(),
-            display_name: Some(id.into()),
-            credential_env_var: None,
-            defaults: None,
-            config_schema: None,
-            supports_model_listing: Some(false),
-            models: None,
-            worker_id: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn mints_on_first_register_persists_hash_only_and_restores() {
-        let bus = FakeBus::new();
-        let store = RegistryStore::new(bus.clone());
-        store.load().await.unwrap();
-        let (record, token) = store
-            .upsert(decl("anthropic"), Some("w1".into()), None)
-            .await
-            .unwrap();
-        assert!(token.len() >= 16);
-        assert_ne!(record.token_hash, token);
-
-        // restart: a fresh store restores from state; raw token absent, still verifies
-        let store2 = RegistryStore::new(bus.clone());
-        store2.load().await.unwrap();
-        let restored = store2.get("anthropic").await.unwrap();
-        assert_eq!(restored.token_hash, record.token_hash);
-        assert!(!serde_json::to_string(&restored).unwrap().contains(&token));
-        assert!(store2.verify_token("anthropic", Some(&token)).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn reregister_requires_the_token_and_merges_the_declaration() {
-        let bus = FakeBus::new();
-        let store = RegistryStore::new(bus);
-        store.load().await.unwrap();
-        let (first, token) = store
-            .upsert(decl("a"), Some("w1".into()), None)
-            .await
-            .unwrap();
-
-        let mut renamed = decl("a");
-        renamed.display_name = Some("Anthropic".into());
-        let (second, token2) = store
-            .upsert(renamed, Some("w1".into()), Some(token.clone()))
-            .await
-            .unwrap();
-        assert_eq!(token2, token);
-        assert_eq!(second.token_hash, first.token_hash);
-        assert_eq!(
-            store
-                .get("a")
-                .await
-                .unwrap()
-                .declaration
-                .display_name
-                .as_deref(),
-            Some("Anthropic")
-        );
-
-        // takeover without / with wrong token is rejected
-        let err = store
-            .upsert(decl("a"), Some("evil".into()), None)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, RouterCode::RegistrationRejected);
-        let err = store
-            .upsert(decl("a"), Some("evil".into()), Some("wrong".into()))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, RouterCode::RegistrationRejected);
-    }
-
-    #[tokio::test]
-    async fn verify_token_gates_and_availability_flips_persist() {
-        let bus = FakeBus::new();
-        let store = RegistryStore::new(bus);
-        store.load().await.unwrap();
-        let (_, token) = store
-            .upsert(decl("a"), Some("w1".into()), None)
-            .await
-            .unwrap();
-        assert_eq!(
-            store
-                .verify_token("missing", Some("x"))
-                .await
-                .unwrap_err()
-                .code,
-            RouterCode::UnknownProvider
-        );
-        assert_eq!(
-            store
-                .verify_token("a", Some("nope"))
-                .await
-                .unwrap_err()
-                .code,
-            RouterCode::RegistrationRejected
-        );
-        assert_eq!(
-            store.verify_token("a", None).await.unwrap_err().code,
-            RouterCode::RegistrationRejected
-        );
-        assert!(store.verify_token("a", Some(&token)).await.is_ok());
-
-        assert!(store.set_availability("a", true).await); // changed
-        assert!(!store.set_availability("a", true).await); // no-op
-        assert_eq!(store.providers_for_worker("w1").await, vec!["a"]);
-    }
-
-    #[tokio::test]
-    async fn concurrent_registrations_of_different_ids_both_survive() {
-        let bus = FakeBus::new();
-        let store = std::sync::Arc::new(RegistryStore::new(bus));
-        store.load().await.unwrap();
-        let (s1, s2) = (store.clone(), store.clone());
-        let (a, b) = tokio::join!(
-            tokio::spawn(async move { s1.upsert(decl("a"), None, None).await }),
-            tokio::spawn(async move { s2.upsert(decl("b"), None, None).await }),
-        );
-        a.unwrap().unwrap();
-        b.unwrap().unwrap();
-        let mut ids = store.ids().await;
-        ids.sort();
-        assert_eq!(ids, vec!["a", "b"]);
     }
 }

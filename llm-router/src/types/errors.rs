@@ -45,6 +45,18 @@ impl RouterError {
     }
 }
 
+/// Typed pre-stream throws surface on the bus as `IIIError::Remote`
+/// (the engine's `{ code, message }` convention).
+impl From<RouterError> for iii_sdk::IIIError {
+    fn from(e: RouterError) -> Self {
+        iii_sdk::IIIError::Remote {
+            code: e.code.as_str().to_string(),
+            message: e.message,
+            stacktrace: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
