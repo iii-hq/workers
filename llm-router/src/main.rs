@@ -1,8 +1,4 @@
-use std::sync::Arc;
-
 use iii_sdk::{register_worker, InitOptions};
-use llm_router::bus_sdk::SdkBus;
-use llm_router::channels::SdkChannels;
 use llm_router::register::register_router;
 
 #[tokio::main]
@@ -19,9 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_WS_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string());
     let iii = register_worker(&url, InitOptions::default());
 
-    let bus = Arc::new(SdkBus { iii: iii.clone() });
-    let channels = Arc::new(SdkChannels { iii: iii.clone() });
-    register_router(bus, channels).await?;
+    register_router(iii.clone()).await?;
     println!("[llm-router] registered against {url}");
 
     tokio::signal::ctrl_c().await?;

@@ -2,27 +2,25 @@
 //! types → register iii functions → bind triggers → register the
 //! configuration entry → read settings → emit `router::ready`.
 //!
-//! iii functions registered here: router::chat, router::complete,
-//! router::abort, router::models::{list,get,supports,reconcile},
-//! router::provider::{list,register,resolve,update_credential}, plus the
-//! trigger-bound router::on_worker_available (subscribe topic
-//! engine::workers-available) and router::on_config_changed (configuration
-//! trigger on the llm-router entry).
+//! Every registration below is a direct `iii_sdk` call:
+//! `iii.register_function(id, RegisterFunction::new_async(...))` for the
+//! function surface, `iii.register_trigger(RegisterTriggerInput { .. })` for
+//! trigger bindings, and `iii.register_trigger_type` (inside
+//! `TriggerEmitter::install`) for the router-owned trigger types.
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use crate::types::errors::{RouterCode, RouterError};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
 use serde_json::{json, Value};
 
-use crate::bus::{handler, Bus, BusError};
 use crate::catalog::queries::{models_get, models_list, models_supports};
 use crate::catalog::reconcile::make_models_reconcile;
 use crate::catalog::store::CatalogStore;
+use crate::channels::open_sink;
 use crate::chat::abort::make_abort;
 use crate::chat::chat::{ChatCall, ChatPipeline};
-use crate::chat::complete::{make_complete, RunChat};
+use crate::chat::complete::make_complete;
 use crate::chat::inflight::InflightMap;
-use crate::chat::relay::ChannelFactory;
 use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::default_provider_schema;
@@ -32,6 +30,7 @@ use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::settings::{parse_settings, RouterSettings};
 use crate::triggers::TriggerEmitter;
+use crate::types::errors::{RouterCode, RouterError};
 
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
@@ -41,16 +40,13 @@ pub struct RouterRefs {
     pub settings: Arc<RwLock<RouterSettings>>,
 }
 
-pub async fn register_router(
-    bus: Arc<dyn Bus>,
-    channels: Arc<dyn ChannelFactory>,
-) -> Result<RouterRefs, BusError> {
+pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     // 1–2. restore durable stores; own trigger types (replays rebuild subscribers)
-    let registry = Arc::new(RegistryStore::new(bus.clone()));
-    let catalog = Arc::new(CatalogStore::new(bus.clone()));
+    let registry = Arc::new(RegistryStore::new(iii.clone()));
+    let catalog = Arc::new(CatalogStore::new(iii.clone()));
     registry.load().await?;
     catalog.load().await?;
-    let emitter = TriggerEmitter::install(bus.clone(), &*bus);
+    let emitter = TriggerEmitter::install(&iii);
 
     // 3. shared settings + inflight
     let settings = Arc::new(RwLock::new(RouterSettings::default()));
@@ -58,36 +54,35 @@ pub async fn register_router(
     let entry_lock = EntryWriteLock::default();
 
     let pipeline = Arc::new(ChatPipeline {
-        bus: bus.clone(),
+        iii: iii.clone(),
         registry: registry.clone(),
         catalog: catalog.clone(),
         emitter: emitter.clone(),
         inflight: inflight.clone(),
         settings: settings.clone(),
-        channels: channels.clone(),
     });
 
     // 4. function surface
     {
-        let (pipeline, channels) = (pipeline.clone(), channels.clone());
-        bus.register_function(
+        let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
+        iii.register_function(
             "router::chat",
-            handler(move |raw: Value| {
-                let (pipeline, channels) = (pipeline.clone(), channels.clone());
+            RegisterFunction::new_async(move |raw: Value| {
+                let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
                 async move {
                     let writer_ref = serde_json::from_value(
                         raw.get("writer_ref").cloned().unwrap_or(Value::Null),
                     )
                     .map_err(|_| {
-                        BusError::from(RouterError::new(
+                        IIIError::from(RouterError::new(
                             RouterCode::InvalidRequest,
                             "writer_ref (direction write) is required",
                         ))
                     })?;
                     let call: ChatCall = serde_json::from_value(raw).map_err(|e| {
-                        BusError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
+                        IIIError::from(RouterError::new(RouterCode::InvalidRequest, e.to_string()))
                     })?;
-                    let sink = channels.open_sink(&writer_ref).await?;
+                    let sink = open_sink(&iii, &writer_ref).await?;
                     let result = pipeline.run(call, sink.clone()).await;
                     sink.close(); // the handler owns closing the caller's channel
                     result.map(|r| serde_json::to_value(r).expect("serializable response"))
@@ -95,27 +90,19 @@ pub async fn register_router(
             }),
         );
     }
-    {
-        let pipeline = pipeline.clone();
-        let run_chat: RunChat = Arc::new(move |call, sink| {
-            let pipeline = pipeline.clone();
-            Box::pin(async move {
-                let result = pipeline.run(call, sink.clone()).await;
-                sink.close(); // complete's internal channel must EOF for the drain
-                result
-            })
-        });
-        bus.register_function(
-            "router::complete",
-            make_complete(run_chat, channels.clone()),
-        );
-    }
-    bus.register_function("router::abort", make_abort(inflight.clone()));
+    iii.register_function(
+        "router::complete",
+        RegisterFunction::new_async(make_complete(iii.clone(), pipeline.clone())),
+    );
+    iii.register_function(
+        "router::abort",
+        RegisterFunction::new_async(make_abort(inflight.clone())),
+    );
     {
         let catalog = catalog.clone();
-        bus.register_function(
+        iii.register_function(
             "router::models::list",
-            handler(move |raw: Value| {
+            RegisterFunction::new_async(move |raw: Value| {
                 let catalog = catalog.clone();
                 async move {
                     let models = models_list(
@@ -124,16 +111,16 @@ pub async fn register_router(
                         raw.get("capability").and_then(Value::as_str),
                     )
                     .await;
-                    Ok(json!({ "models": models }))
+                    Ok::<Value, IIIError>(json!({ "models": models }))
                 }
             }),
         );
     }
     {
         let catalog = catalog.clone();
-        bus.register_function(
+        iii.register_function(
             "router::models::get",
-            handler(move |raw: Value| {
+            RegisterFunction::new_async(move |raw: Value| {
                 let catalog = catalog.clone();
                 async move {
                     let model = models_get(
@@ -142,7 +129,7 @@ pub async fn register_router(
                         raw.get("id").and_then(Value::as_str).unwrap_or(""),
                     )
                     .await;
-                    Ok(match model {
+                    Ok::<Value, IIIError>(match model {
                         Some(m) => json!({ "model": m }),
                         None => Value::Null, // null when unregistered (the cold-window signal)
                     })
@@ -152,9 +139,9 @@ pub async fn register_router(
     }
     {
         let catalog = catalog.clone();
-        bus.register_function(
+        iii.register_function(
             "router::models::supports",
-            handler(move |raw: Value| {
+            RegisterFunction::new_async(move |raw: Value| {
                 let catalog = catalog.clone();
                 async move {
                     let supported = models_supports(
@@ -164,48 +151,57 @@ pub async fn register_router(
                         raw.get("capability").and_then(Value::as_str).unwrap_or(""),
                     )
                     .await;
-                    Ok(json!({ "supported": supported }))
+                    Ok::<Value, IIIError>(json!({ "supported": supported }))
                 }
             }),
         );
     }
-    bus.register_function(
+    iii.register_function(
         "router::provider::list",
-        make_provider_list(bus.clone(), registry.clone()),
+        RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone())),
     );
-    bus.register_function(
+    iii.register_function(
         "router::provider::register",
-        make_provider_register(
-            bus.clone(),
+        RegisterFunction::new_async(make_provider_register(
+            iii.clone(),
             registry.clone(),
             catalog.clone(),
             emitter.clone(),
             entry_lock.clone(),
-        ),
+        )),
     );
-    bus.register_function(
+    iii.register_function(
         "router::provider::resolve",
-        make_provider_resolve(bus.clone(), registry.clone()),
+        RegisterFunction::new_async(make_provider_resolve(iii.clone(), registry.clone())),
     );
-    bus.register_function(
+    iii.register_function(
         "router::provider::update_credential",
-        make_update_credential(bus.clone(), registry.clone(), entry_lock),
+        RegisterFunction::new_async(make_update_credential(
+            iii.clone(),
+            registry.clone(),
+            entry_lock,
+        )),
     );
-    bus.register_function(
+    iii.register_function(
         "router::models::reconcile",
-        make_models_reconcile(registry.clone(), catalog.clone(), emitter.clone()),
+        RegisterFunction::new_async(make_models_reconcile(
+            registry.clone(),
+            catalog.clone(),
+            emitter.clone(),
+        )),
     );
 
     // 5. bound triggers: topology + configuration change (paste-a-key)
-    bus.register_function(
+    iii.register_function(
         "router::on_worker_available",
-        make_on_worker_available(registry.clone(), emitter.clone()),
+        RegisterFunction::new_async(make_on_worker_available(registry.clone(), emitter.clone())),
     );
-    bus.register_trigger(
-        "subscribe",
-        "router::on_worker_available",
-        json!({ "topic": "engine::workers-available" }),
-    );
+    let _ = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "subscribe".into(),
+        function_id: "router::on_worker_available".into(),
+        config: json!({ "topic": "engine::workers-available" }),
+        metadata: None,
+    });
     {
         let registry_for_listing = registry.clone();
         let lookup: crate::config::on_changed::ListingLookup = Arc::new(move |id: &str| {
@@ -219,16 +215,22 @@ pub async fn register_router(
                     .unwrap_or(false)
             })
         });
-        bus.register_function(
+        iii.register_function(
             "router::on_config_changed",
-            make_on_config_changed(bus.clone(), lookup, settings.clone(), 2000),
+            RegisterFunction::new_async(make_on_config_changed(
+                iii.clone(),
+                lookup,
+                settings.clone(),
+                2000,
+            )),
         );
     }
-    bus.register_trigger(
-        "configuration",
-        "router::on_config_changed",
-        json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
-    );
+    let _ = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "configuration".into(),
+        function_id: "router::on_config_changed".into(),
+        config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
+        metadata: None,
+    });
 
     // 6. (re)register the entry from the restored registry, then read settings
     let mut provider_schemas = BTreeMap::new();
@@ -240,8 +242,8 @@ pub async fn register_router(
         });
         provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
-    register_entry(&bus, &provider_schemas).await?;
-    *settings.write().unwrap() = parse_settings(&read_entry_value(&bus).await);
+    register_entry(&iii, &provider_schemas).await?;
+    *settings.write().unwrap() = parse_settings(&read_entry_value(&iii).await);
 
     // 7. ready — providers re-declare on this
     emitter.emit("router::ready", json!({})).await;

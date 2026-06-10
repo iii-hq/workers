@@ -1,8 +1,8 @@
 //! Engine-faithful fake of iii streaming channels (semantics copied from
 //! engine/src/workers/worker/channels.rs): single reader, writes fail after
 //! the reader closes, reader sees EOF after the writer closes, in-order
-//! delivery.
-use std::collections::{HashMap, VecDeque};
+//! delivery. Used by the relay-loop unit tests in chat/relay.rs.
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,10 +10,7 @@ use crate::types::channel::{ChannelDirection, StreamChannelRef};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::bus::BusError;
-use crate::chat::relay::{
-    CallerGone, ChannelFactory, FrameSink, ReadEvent, RelayRead, RouterChannel,
-};
+use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead};
 
 #[derive(Default)]
 struct Inner {
@@ -122,52 +119,6 @@ impl FakeChannel {
     }
 }
 
-/// Registry of live fake channels: a scripted provider receives a forwarded
-/// writer_ref and looks up the live writer here (no hydration in fakes).
-#[derive(Default)]
-pub struct ChannelHub {
-    writers: Mutex<HashMap<String, FakeWriter>>,
-}
-
-impl ChannelHub {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-    pub fn writer_for(&self, r: &StreamChannelRef) -> Option<FakeWriter> {
-        self.writers.lock().unwrap().get(&r.channel_id).cloned()
-    }
-    /// Register an externally created fake channel so its writer_ref resolves
-    /// (test consumers handing the router their own channel).
-    pub fn adopt(&self, ch: &FakeChannel) {
-        self.writers
-            .lock()
-            .unwrap()
-            .insert(ch.channel_id.clone(), ch.writer.clone());
-    }
-}
-
-#[async_trait::async_trait]
-impl ChannelFactory for ChannelHub {
-    async fn create(&self) -> Result<RouterChannel, BusError> {
-        let ch = FakeChannel::new();
-        self.writers
-            .lock()
-            .unwrap()
-            .insert(ch.channel_id.clone(), ch.writer.clone());
-        Ok(RouterChannel {
-            writer_ref: ch.writer_ref,
-            reader: Box::new(ch.reader),
-            writer: Arc::new(ch.writer),
-        })
-    }
-
-    async fn open_sink(&self, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, BusError> {
-        self.writer_for(r)
-            .map(|w| Arc::new(w) as Arc<dyn FrameSink>)
-            .ok_or_else(|| BusError::Transport(format!("unknown channel {}", r.channel_id)))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,19 +174,6 @@ mod tests {
         let mut reader = ch.reader;
         assert!(
             matches!(reader.next(Duration::from_millis(1000)).await, ReadEvent::Msg(m) if m == "late")
-        );
-    }
-
-    #[tokio::test]
-    async fn hub_resolves_writers_from_forwarded_refs_and_acts_as_factory() {
-        use crate::chat::relay::ChannelFactory;
-        let hub = ChannelHub::new();
-        let router_ch = hub.create().await.unwrap();
-        let writer = hub.writer_for(&router_ch.writer_ref).unwrap();
-        writer.send("via-ref").unwrap();
-        let mut reader = router_ch.reader;
-        assert!(
-            matches!(reader.next(Duration::from_millis(100)).await, ReadEvent::Msg(m) if m == "via-ref")
         );
     }
 }

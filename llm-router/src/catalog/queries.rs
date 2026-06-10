@@ -54,8 +54,6 @@ pub async fn models_supports(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::store::CatalogStore;
-    use crate::testkit::fake_bus::FakeBus;
     use crate::types::model::Model;
 
     fn sonnet() -> Model {
@@ -77,48 +75,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn slices_replace_wholesale_and_survive_restart() {
-        let bus = FakeBus::new();
-        let store = CatalogStore::new(bus.clone());
-        store.load().await.unwrap();
-        store.set_slice("anthropic", vec![sonnet()]).await.unwrap();
-        store.set_slice("anthropic", vec![]).await.unwrap(); // reconcile-to-empty = eviction
-        let store2 = CatalogStore::new(bus);
-        store2.load().await.unwrap();
-        assert!(store2.slice("anthropic").await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn queries_filter_and_map_capability_strings() {
-        let bus = FakeBus::new();
-        let store = CatalogStore::new(bus);
-        store.load().await.unwrap();
-        store.set_slice("anthropic", vec![sonnet()]).await.unwrap();
-
-        assert_eq!(models_list(&store, Some("anthropic"), None).await.len(), 1);
-        assert_eq!(models_list(&store, None, Some("tools")).await.len(), 1);
-        assert_eq!(
-            models_list(&store, None, Some("structured_output"))
-                .await
-                .len(),
-            0
-        );
-        assert!(models_get(&store, "anthropic", "claude-sonnet-4")
-            .await
-            .is_some());
-        assert!(models_get(&store, "anthropic", "nope").await.is_none()); // the cold-window signal
-
-        let sup = |cap: &str| {
-            let store = &store;
-            let cap = cap.to_string();
-            async move { models_supports(store, "anthropic", "claude-sonnet-4", &cap).await }
-        };
-        assert!(sup("tools").await);
-        assert!(sup("thinking:medium").await);
-        assert!(!sup("thinking:xhigh").await);
-        assert!(!sup("cache").await); // absent flag on a known model reads as false
-        assert!(!sup("bogus").await); // unknown capability strings match nothing
-        assert!(!models_supports(&store, "anthropic", "nope", "tools").await); // unknown model
+    // Store-backed list/get/supports flows are exercised against a real engine
+    // in tests/integration.rs; the capability mapping is pure and pinned here.
+    #[test]
+    fn capability_strings_map_to_model_flags() {
+        let m = sonnet();
+        assert!(model_supports(&m, "tools"));
+        assert!(model_supports(&m, "vision"));
+        assert!(model_supports(&m, "thinking"));
+        assert!(model_supports(&m, "thinking:medium"));
+        assert!(!model_supports(&m, "thinking:xhigh"));
+        assert!(!model_supports(&m, "cache")); // absent flag reads as false
+        assert!(!model_supports(&m, "structured_output"));
+        assert!(!model_supports(&m, "bogus")); // unknown capability strings match nothing
     }
 }

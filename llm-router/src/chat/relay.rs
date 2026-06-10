@@ -7,8 +7,6 @@ use std::time::Duration;
 
 use crate::types::channel::StreamChannelRef;
 
-use crate::bus::BusError;
-
 #[derive(Debug)]
 pub enum ReadEvent {
     Msg(String),
@@ -40,18 +38,12 @@ pub trait FrameSink: Send + Sync {
 }
 
 /// A router-owned channel, fresh per provider attempt (relay topology).
+/// Minted by `channels::create_router_channel` (real iii channel) or
+/// `testkit::fake_channels` (relay-loop tests).
 pub struct RouterChannel {
     pub writer_ref: StreamChannelRef,
     pub reader: Box<dyn RelayRead>,
     pub writer: Arc<dyn FrameSink>, // used by router::complete's internal channel
-}
-
-#[async_trait::async_trait]
-pub trait ChannelFactory: Send + Sync {
-    async fn create(&self) -> Result<RouterChannel, BusError>;
-    /// Build a sink for a caller-supplied writer_ref (Rust SDK does not
-    /// hydrate refs in payloads — the handler does it explicitly).
-    async fn open_sink(&self, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, BusError>;
 }
 
 use crate::types::events::{AssistantMessageEvent, Usage};
