@@ -212,7 +212,9 @@ async fn end_to_end_relay_over_a_live_engine() {
 
     // consumer on a third connection
     let consumer = register_worker(&engine.url, InitOptions::default());
-    let channel = consumer.create_channel(None).await.expect("channel");
+    let channel = iii_sdk::helpers::create_channel(&consumer, None)
+        .await
+        .expect("channel");
     let frames = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let f2 = frames.clone();
     channel
@@ -264,7 +266,9 @@ async fn consumer_cancellation_propagates_to_the_provider() {
     let (_provider_iii, write_failed, fail_at_ms) = start_live_provider(&engine.url, true).await;
 
     let consumer = register_worker(&engine.url, InitOptions::default());
-    let channel = consumer.create_channel(None).await.expect("channel");
+    let channel = iii_sdk::helpers::create_channel(&consumer, None)
+        .await
+        .expect("channel");
     let reader = channel.reader;
     let pump = tokio::spawn(async move {
         // start reading, then drop the reader after 300ms = consumer walks away

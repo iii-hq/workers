@@ -113,9 +113,7 @@ impl RelayRead for SdkReader {
 #[async_trait::async_trait]
 impl ChannelFactory for SdkChannels {
     async fn create(&self) -> Result<RouterChannel, BusError> {
-        let channel = self
-            .iii
-            .create_channel(None)
+        let channel = iii_sdk::helpers::create_channel(&self.iii, None)
             .await
             .map_err(|e| BusError::Transport(e.to_string()))?;
 
