@@ -2,5 +2,6 @@
 //! failure contract — spec: tech-specs/2026-06-agentic/llm-router.md.
 
 pub mod bus;
+pub mod chat;
 pub mod testkit;
 pub mod types;
