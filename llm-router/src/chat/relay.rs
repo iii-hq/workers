@@ -49,6 +49,9 @@ pub struct RouterChannel {
 #[async_trait::async_trait]
 pub trait ChannelFactory: Send + Sync {
     async fn create(&self) -> Result<RouterChannel, BusError>;
+    /// Build a sink for a caller-supplied writer_ref (Rust SDK does not
+    /// hydrate refs in payloads — the handler does it explicitly).
+    async fn open_sink(&self, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, BusError>;
 }
 
 use crate::types::events::{AssistantMessageEvent, Usage};

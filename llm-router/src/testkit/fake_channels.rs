@@ -136,6 +136,14 @@ impl ChannelHub {
     pub fn writer_for(&self, r: &StreamChannelRef) -> Option<FakeWriter> {
         self.writers.lock().unwrap().get(&r.channel_id).cloned()
     }
+    /// Register an externally created fake channel so its writer_ref resolves
+    /// (test consumers handing the router their own channel).
+    pub fn adopt(&self, ch: &FakeChannel) {
+        self.writers
+            .lock()
+            .unwrap()
+            .insert(ch.channel_id.clone(), ch.writer.clone());
+    }
 }
 
 #[async_trait::async_trait]
@@ -151,6 +159,12 @@ impl ChannelFactory for ChannelHub {
             reader: Box::new(ch.reader),
             writer: Arc::new(ch.writer),
         })
+    }
+
+    async fn open_sink(&self, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, BusError> {
+        self.writer_for(r)
+            .map(|w| Arc::new(w) as Arc<dyn FrameSink>)
+            .ok_or_else(|| BusError::Transport(format!("unknown channel {}", r.channel_id)))
     }
 }
 
