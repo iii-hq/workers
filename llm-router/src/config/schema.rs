@@ -40,10 +40,12 @@ pub fn validate_custom_schema(schema: &Value) -> Result<(), RouterError> {
     Ok(())
 }
 
-/// Router-owned fields + per-provider slices.
+/// Router-owned fields + per-provider slices. `null` is admitted because a
+/// freshly registered entry holds null until the operator first writes —
+/// the engine validates the existing value against the schema on re-register.
 pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value {
     json!({
-        "type": "object",
+        "type": ["object", "null"],
         "additionalProperties": false,
         "properties": {
             "default_provider": { "type": "string" },
