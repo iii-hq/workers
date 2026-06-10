@@ -4,6 +4,10 @@ version = "0.1.1"
 edition = "2021"
 publish = false
 
+[lib]
+name = "iii_lsp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-lsp"
 path = "src/main.rs"
