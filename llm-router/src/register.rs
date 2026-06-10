@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
 use serde_json::{json, Value};
 
-use crate::catalog::queries::{models_get, models_list, models_supports};
+use crate::catalog::handlers::{make_models_get, make_models_list, make_models_supports};
 use crate::catalog::reconcile::make_models_reconcile;
 use crate::catalog::store::CatalogStore;
 use crate::channels::open_sink;
@@ -98,64 +98,18 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         "router::abort",
         RegisterFunction::new_async(make_abort(inflight.clone())),
     );
-    {
-        let catalog = catalog.clone();
-        iii.register_function(
-            "router::models::list",
-            RegisterFunction::new_async(move |raw: Value| {
-                let catalog = catalog.clone();
-                async move {
-                    let models = models_list(
-                        &catalog,
-                        raw.get("provider").and_then(Value::as_str),
-                        raw.get("capability").and_then(Value::as_str),
-                    )
-                    .await;
-                    Ok::<Value, IIIError>(json!({ "models": models }))
-                }
-            }),
-        );
-    }
-    {
-        let catalog = catalog.clone();
-        iii.register_function(
-            "router::models::get",
-            RegisterFunction::new_async(move |raw: Value| {
-                let catalog = catalog.clone();
-                async move {
-                    let model = models_get(
-                        &catalog,
-                        raw.get("provider").and_then(Value::as_str).unwrap_or(""),
-                        raw.get("id").and_then(Value::as_str).unwrap_or(""),
-                    )
-                    .await;
-                    Ok::<Value, IIIError>(match model {
-                        Some(m) => json!({ "model": m }),
-                        None => Value::Null, // null when unregistered (the cold-window signal)
-                    })
-                }
-            }),
-        );
-    }
-    {
-        let catalog = catalog.clone();
-        iii.register_function(
-            "router::models::supports",
-            RegisterFunction::new_async(move |raw: Value| {
-                let catalog = catalog.clone();
-                async move {
-                    let supported = models_supports(
-                        &catalog,
-                        raw.get("provider").and_then(Value::as_str).unwrap_or(""),
-                        raw.get("id").and_then(Value::as_str).unwrap_or(""),
-                        raw.get("capability").and_then(Value::as_str).unwrap_or(""),
-                    )
-                    .await;
-                    Ok::<Value, IIIError>(json!({ "supported": supported }))
-                }
-            }),
-        );
-    }
+    iii.register_function(
+        "router::models::list",
+        RegisterFunction::new_async(make_models_list(catalog.clone())),
+    );
+    iii.register_function(
+        "router::models::get",
+        RegisterFunction::new_async(make_models_get(catalog.clone())),
+    );
+    iii.register_function(
+        "router::models::supports",
+        RegisterFunction::new_async(make_models_supports(catalog.clone())),
+    );
     iii.register_function(
         "router::provider::list",
         RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone())),
