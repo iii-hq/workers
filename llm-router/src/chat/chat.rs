@@ -418,3 +418,27 @@ fn rand_unit() -> f64 {
     // uuid-derived cheap jitter: avoids pulling the rand crate for one knob
     (Uuid::new_v4().as_u128() % 1000) as f64 / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote(code: &str) -> IIIError {
+        IIIError::Remote {
+            code: code.into(),
+            message: "m".into(),
+            stacktrace: None,
+        }
+    }
+
+    #[test]
+    fn unknown_function_maps_only_the_engines_function_not_found_code() {
+        assert!(is_function_not_found(&remote("function_not_found")));
+        assert!(is_function_not_found(&remote("FUNCTION_NOT_FOUND")));
+        // the configuration worker's missing-entry code must NOT flip availability
+        assert!(!is_function_not_found(&remote("NOT_FOUND")));
+        assert!(!is_function_not_found(&IIIError::Timeout));
+        assert!(is_router_coded(&remote("router/not_configured")));
+        assert!(!is_router_coded(&remote("function_not_found")));
+    }
+}
