@@ -3,7 +3,7 @@ import { Cell } from '@/components/schematic/Cell'
 import { Prompt } from '@/components/schematic/Prompt'
 import { StatusDot } from '@/components/schematic/StatusDot'
 import { Terminal, TerminalRow } from '@/components/schematic/Terminal'
-import { STATS } from '@/data/workers'
+import { STATS } from '@/content/workers'
 
 const CLAIMS = [
   {

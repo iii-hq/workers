@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Prompt } from '@/components/schematic/Prompt'
 import { FnChip } from '@/components/schematic/FnChip'
 import { StatusDot } from '@/components/schematic/StatusDot'
-import { WORKERS } from '@/data/workers'
+import { WORKERS } from '@/content/workers'
 import { cn } from '@/lib/utils'
 
 type NodeKind = 'core' | 'consumer' | 'sibling'
