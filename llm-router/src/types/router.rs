@@ -189,16 +189,16 @@ pub struct ProviderStreamInput {
     pub resolution_key: Option<String>,
 }
 
-// ── trigger payloads ────────────────────────────────────────────────────────
+// ── event payloads ──────────────────────────────────────────────────────────
 
-/// Payload of the `router::models::changed` custom iii trigger.
+/// Payload published on the `router::models::changed` pubsub topic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelsChangedPayload {
     pub provider: String,
     pub count: usize,
 }
 
-/// Payload of the `router::provider::changed` custom iii trigger.
+/// Payload published on the `router::provider::changed` pubsub topic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderChangedPayload {
     pub provider: String,
