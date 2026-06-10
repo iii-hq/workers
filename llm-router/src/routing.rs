@@ -2,7 +2,7 @@
 //! candidates[0]; the list shape is the future fallback seam.
 use crate::types::errors::{RouterCode, RouterError};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Heuristic {
     pub pattern: String,
     pub provider: String,
