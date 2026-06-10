@@ -4,6 +4,7 @@
 pub mod bus;
 pub mod chat;
 pub mod config;
+pub mod registry;
 pub mod routing;
 pub mod settings;
 pub mod testkit;
