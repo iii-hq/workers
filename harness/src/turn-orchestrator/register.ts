@@ -7,7 +7,6 @@ import { register as registerGetState } from './get-state.js';
 import { register as registerRunAbort } from './run-abort.js';
 import { register as registerRunStart } from './run-start.js';
 import { register as registerProvisioning } from './provisioning/process.js';
-import { register as registerSteeringCheck } from './steering-check/process.js';
 
 export async function register(iii: ISdk, _ctx: { configPath: string }): Promise<void> {
   registerRunStart(iii);
@@ -16,7 +15,6 @@ export async function register(iii: ISdk, _ctx: { configPath: string }): Promise
   registerAssistantStreaming(iii);
   registerFunctionExecute(iii);
   registerFunctionAwaitingApproval(iii);
-  registerSteeringCheck(iii);
   registerFinishing(iii);
   registerGetState(iii);
 }

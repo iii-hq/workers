@@ -44,7 +44,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'turn-orchestrator',
     description:
-      'Durable run::start state machine driving each agent turn through provisioning, assistant, function-execute, and steering.',
+      'Durable run::start state machine driving each agent turn through provisioning, assistant, and function-execute.',
     register: (iii, ctx) => registerTurnOrchestrator(iii, ctx),
   },
   {

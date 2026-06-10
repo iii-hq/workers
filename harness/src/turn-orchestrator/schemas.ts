@@ -14,7 +14,6 @@ import {
   type AssistantStreamingTurnRecord,
   type AwaitingApprovalEntry,
   type FunctionBatchTurnRecord,
-  type SteeringCheckTurnRecord,
   type TurnState,
   type TurnStateRecord,
 } from './state.js';
@@ -134,30 +133,6 @@ export function parseAssistantStreamingRecord(rec: TurnStateRecord): AssistantSt
     );
   }
   return rec as AssistantStreamingTurnRecord;
-}
-
-/** Fields required before steering_check handlers run. */
-export const SteeringCheckTurnRecordSchema = z
-  .object({
-    session_id: z.string().min(1),
-    state: z.literal('steering_check'),
-    turn_count: z.number(),
-    function_results: z.array(z.unknown()),
-    turn_end_emitted: z.boolean(),
-    started_at_ms: z.number(),
-    updated_at_ms: z.number(),
-  })
-  .passthrough();
-
-/** Validate persisted turn_state for steering_check; throws {@link TurnStateInvariantError}. */
-export function parseSteeringCheckRecord(rec: TurnStateRecord): SteeringCheckTurnRecord {
-  const result = SteeringCheckTurnRecordSchema.safeParse(rec);
-  if (!result.success) {
-    throw new TurnStateInvariantError(
-      `invalid steering_check turn record: ${formatZodIssues(result.error)}`,
-    );
-  }
-  return rec as SteeringCheckTurnRecord;
 }
 
 export const GetStatePayloadSchema = SessionIdPayloadSchema;

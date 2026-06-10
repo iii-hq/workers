@@ -20,7 +20,6 @@ export type TurnState =
   | 'assistant_streaming'
   | 'function_execute'
   | 'function_awaiting_approval'
-  | 'steering_check'
   | 'finishing'
   | 'stopped'
   | 'failed';
@@ -77,23 +76,11 @@ export type AssistantStreamingTurnRecord = TurnStateRecordCore & {
   awaiting_approval?: AwaitingApprovalEntry[];
 };
 
-/** Persisted shape while in steering_check (work cleared on entry from function batch). */
-export type SteeringCheckTurnRecord = TurnStateRecordCore & {
-  state: 'steering_check';
-  last_assistant?: AssistantMessage | null;
-  work?: TurnWork;
-  awaiting_approval?: AwaitingApprovalEntry[];
-};
-
-type OtherTurnState = Exclude<
-  TurnState,
-  FunctionBatchState | 'assistant_streaming' | 'steering_check'
->;
+type OtherTurnState = Exclude<TurnState, FunctionBatchState | 'assistant_streaming'>;
 
 export type TurnStateRecord =
   | FunctionBatchTurnRecord
   | AssistantStreamingTurnRecord
-  | SteeringCheckTurnRecord
   | (TurnStateRecordCore & {
       state: OtherTurnState;
       last_assistant?: AssistantMessage | null;
@@ -106,7 +93,6 @@ const TURN_STATES = [
   'assistant_streaming',
   'function_execute',
   'function_awaiting_approval',
-  'steering_check',
   'finishing',
   'stopped',
   'failed',

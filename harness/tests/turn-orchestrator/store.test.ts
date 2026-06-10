@@ -179,7 +179,7 @@ describe('shouldWakeStep', () => {
   });
 
   it('rejects terminal state (stopped)', () => {
-    expect(shouldWakeStep('steering_check', 'stopped')).toBe(false);
+    expect(shouldWakeStep('function_execute', 'stopped')).toBe(false);
   });
 
   it('rejects function_awaiting_approval (orchestrator parks here)', () => {
