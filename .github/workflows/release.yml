@@ -50,6 +50,7 @@ jobs:
       dry_run: ${{ steps.meta.outputs.dry_run }}
       targets: ${{ steps.meta.outputs.targets }}
       web_bundle: ${{ steps.web.outputs.needed }}
+      interface_smoke: ${{ steps.smoke.outputs.interface_smoke }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,6 +90,24 @@ jobs:
             echo "::notice::$WORKER has web/package.json; will pre-build SPA bundle"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A worker may declare `interface_smoke: false` in iii.worker.yaml when
+      # it can't be booted for interface collection (e.g. iii-lsp is a stdio
+      # language server that exits on stdin EOF and registers no functions).
+      # Such workers still build + ship their binary, but skip the registry
+      # publish job below. Default (key absent) is to publish as usual.
+      - name: Detect interface-smoke opt-out
+        id: smoke
+        env:
+          WORKER: ${{ steps.meta.outputs.worker }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          val=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("false" if m.raw.get("interface_smoke") is False else "true")')
+          echo "interface_smoke=$val" >> "$GITHUB_OUTPUT"
+          if [[ "$val" == "false" ]]; then
+            echo "::notice::$WORKER opts out of interface collection; registry publish will be skipped"
           fi
 
   # ──────────────────────────────────────────────────────────────
@@ -169,7 +188,7 @@ jobs:
   publish:
     name: Publish to registry
     needs: [setup, binary-build, container-build, bundle-build]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' }}
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.dry_run != 'true' && needs.setup.outputs.interface_smoke != 'false' }}
     uses: ./.github/workflows/_publish-registry.yml
     with:
       worker: ${{ needs.setup.outputs.worker }}
