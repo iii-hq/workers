@@ -3,6 +3,7 @@
 
 pub mod bus;
 pub mod chat;
+pub mod config;
 pub mod routing;
 pub mod testkit;
 pub mod types;
