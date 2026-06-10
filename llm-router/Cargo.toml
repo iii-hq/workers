@@ -26,3 +26,6 @@ futures = "0.3"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
