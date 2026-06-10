@@ -14,8 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::types::channel::StreamChannelRef;
-use iii_sdk::{IIIError, III};
+use iii_sdk::{IIIError, StreamChannelRef, III};
 use tokio::sync::{mpsc, Notify};
 
 use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead, RouterChannel};
@@ -141,13 +140,8 @@ pub async fn create_router_channel(iii: &III) -> Result<RouterChannel, IIIError>
         }
     });
 
-    let writer_ref: StreamChannelRef = serde_json::from_value(
-        serde_json::to_value(&channel.writer_ref).map_err(|e| IIIError::Serde(e.to_string()))?,
-    )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
-
     Ok(RouterChannel {
-        writer_ref,
+        writer_ref: channel.writer_ref,
         reader: Box::new(SdkReader {
             rx,
             close_flag: Arc::new(AtomicBool::new(false)),
@@ -159,10 +153,6 @@ pub async fn create_router_channel(iii: &III) -> Result<RouterChannel, IIIError>
 
 /// Build a sink for a caller-supplied writer_ref; same forwarder-task bridge.
 pub async fn open_sink(iii: &III, r: &StreamChannelRef) -> Result<Arc<dyn FrameSink>, IIIError> {
-    let sdk_ref: iii_sdk::StreamChannelRef = serde_json::from_value(
-        serde_json::to_value(r).map_err(|e| IIIError::Serde(e.to_string()))?,
-    )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
-    let writer = iii_sdk::ChannelWriter::new(iii.address(), &sdk_ref);
+    let writer = iii_sdk::ChannelWriter::new(iii.address(), r);
     Ok(spawn_writer_forwarder(writer))
 }
