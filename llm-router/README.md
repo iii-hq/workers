@@ -80,16 +80,27 @@ Only the provider credentials/settings move to this `llm-router` entry — the
 permissions block stays in the harness's own entry. Neither may be silently
 dropped during migration.
 
-## Custom trigger types
+## Events
 
-The router owns three custom iii trigger types; bind an iii function to them
-to react:
+The router publishes three events over the engine's `iii-pubsub` worker; bind
+an iii function to a topic with the engine's `subscribe` trigger type to
+react. The handler receives the payload verbatim (no envelope).
 
-| Trigger type | Fires when | Payload |
+| Topic | Fires when | Payload |
 |---|---|---|
 | `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
 | `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
 | `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
+
+```rust
+iii.register_function("my-worker::on_models_changed", handler);
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "subscribe".into(),
+    function_id: "my-worker::on_models_changed".into(),
+    config: json!({ "topic": "router::models::changed" }),
+    metadata: None,
+});
+```
 
 ## Function surface
 
