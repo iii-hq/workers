@@ -251,8 +251,10 @@ type AssistantMessage = {
   role: "assistant";
   content: ContentBlock[];
   stop_reason: StopReason;
+  native_stop_reason?: string;     // provider's raw finish reason, passed through untouched
   error_message?: string | null;
   error_kind?: ErrorKind | null;
+  warnings?: string[];             // report-and-continue notices (e.g. dropped unsupported param)
   usage?: Usage | null;
   model: string;
   provider: string;
@@ -328,7 +330,8 @@ type StopReason = "end" | "length" | "function_call" | "aborted" | "error";
 type ErrorKind  = "auth_expired" | "rate_limited" | "context_overflow" | "transient" | "permanent";
 type Usage = {
   input?: number; output?: number;
-  cache_read?: number; cache_write?: number;
+  cache_read?: number; cache_write?: number;   // prompt-cache splits (cache reads bill ≈10% of input)
+  reasoning?: number;  // thinking/reasoning tokens, when the provider reports them separately
   cost_usd?: number;   // filled by llm-router from catalog pricing; providers leave it unset
 };
 
@@ -435,7 +438,8 @@ surfaces (see [llm-router.md § Security](llm-router.md#security)).
 ```typescript
 type Credential =
   | { type: "api_key"; key: string }
-  | { type: "oauth";   access_token: string; refresh_token?: string; expires_at?: number };
+  | { type: "oauth";   access_token: string; refresh_token?: string; expires_at?: number;
+      scopes?: string[]; provider_extra?: unknown };
 ```
 
 ## Cross-cutting conventions
