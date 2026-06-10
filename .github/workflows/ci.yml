@@ -193,12 +193,32 @@ jobs:
 
       - run: pip install --quiet pyyaml
 
+      # Some workers can't be interface-smoked: stdio servers (e.g. iii-lsp)
+      # exit on stdin EOF while backgrounded, and pure discovery consumers
+      # register no interface to collect. They opt out with
+      # `interface_smoke: false` in iii.worker.yaml; every downstream step is
+      # gated on this so the rest of the matrix is unaffected.
+      - name: Check interface-smoke opt-out
+        id: optout
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: |
+          set -euo pipefail
+          skip=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("true" if m.raw.get("interface_smoke") is False else "false")')
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          if [[ "$skip" == "true" ]]; then
+            echo "::notice::$WORKER opts out of interface boot smoke (interface_smoke: false in iii.worker.yaml)"
+          fi
+
       - name: Rewrite SSH to HTTPS for public deps
+        if: steps.optout.outputs.skip != 'true'
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.optout.outputs.skip != 'true'
 
       - uses: Swatinem/rust-cache@v2
+        if: steps.optout.outputs.skip != 'true'
         with:
           workspaces: ${{ matrix.worker }} -> target
 
@@ -229,10 +249,12 @@ jobs:
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (`_rust-binary.yml` builds default features).
       - name: Build worker binary
+        if: steps.optout.outputs.skip != 'true'
         working-directory: ${{ matrix.worker }}
         run: cargo build
 
       - name: Install iii CLI + engine
+        if: steps.optout.outputs.skip != 'true'
         env:
           VERSION: '0.17.0'
         run: |
@@ -247,6 +269,7 @@ jobs:
           iii --version
 
       - name: Start III engine
+        if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
           printf 'workers: []\n' > config.yaml
@@ -270,6 +293,7 @@ jobs:
           exit 1
 
       - name: Snapshot engine baselines
+        if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
           iii trigger 'engine::triggers::list' --json '{"include_internal": false}' \
@@ -277,6 +301,7 @@ jobs:
           iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
 
       - name: Start worker from source
+        if: steps.optout.outputs.skip != 'true'
         env:
           WORKER: ${{ matrix.worker }}
         run: |
@@ -316,6 +341,7 @@ jobs:
           fi
 
       - name: Collect worker interface
+        if: steps.optout.outputs.skip != 'true'
         env:
           WORKER: ${{ matrix.worker }}
         run: |
@@ -328,6 +354,7 @@ jobs:
             --workers-baseline workers-baseline.json
 
       - name: Assert worker interface was collected
+        if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
           python3 .github/scripts/collect_worker_interface.py \
