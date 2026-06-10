@@ -18,7 +18,7 @@ use crate::catalog::store::CatalogStore;
 use crate::config::entry::{register_entry, EntryWriteLock};
 use crate::config::schema::{default_provider_schema, validate_custom_schema};
 use crate::registry::store::RegistryStore;
-use crate::triggers::TriggerEmitter;
+use crate::triggers;
 
 #[derive(Deserialize)]
 struct RegisterInput {
@@ -39,15 +39,13 @@ pub fn make_provider_register(
     iii: III,
     registry: Arc<RegistryStore>,
     catalog: Arc<CatalogStore>,
-    emitter: TriggerEmitter,
     entry_lock: EntryWriteLock,
 ) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
     move |raw: Value| {
-        let (iii, registry, catalog, emitter, entry_lock) = (
+        let (iii, registry, catalog, entry_lock) = (
             iii.clone(),
             registry.clone(),
             catalog.clone(),
-            emitter.clone(),
             entry_lock.clone(),
         );
         Box::pin(async move {
@@ -106,24 +104,24 @@ pub fn make_provider_register(
                 register_entry(&iii, &provider_schemas).await?;
             }
 
-            emitter
-                .emit(
-                    "router::provider::changed",
-                    json!({ "provider": id, "op": "register" }),
-                )
-                .await;
+            triggers::publish(
+                &iii,
+                triggers::PROVIDER_CHANGED,
+                json!({ "provider": id, "op": "register" }),
+            )
+            .await;
 
             // Static catalog slice: reconciled at registration (spec § register).
             if let Some(models) = static_models {
                 if !models.is_empty() {
                     let count = models.len();
                     catalog.set_slice(&id, models).await?;
-                    emitter
-                        .emit(
-                            "router::models::changed",
-                            json!({ "provider": id, "count": count }),
-                        )
-                        .await;
+                    triggers::publish(
+                        &iii,
+                        triggers::MODELS_CHANGED,
+                        json!({ "provider": id, "count": count }),
+                    )
+                    .await;
                 }
             }
 
