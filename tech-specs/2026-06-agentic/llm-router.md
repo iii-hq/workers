@@ -736,7 +736,9 @@ catalog.
 - `configuration` — the `llm-router` entry (credentials/settings) and its change trigger (the
   paste-a-key discovery binding).
 - `iii-state` — model catalog and provider registry (both durable across router restarts).
-- `iii-stream` / channels — `router::chat` streaming.
+- Engine channels (`engine::channels::create`, `StreamChannelRef`) — `router::chat` streaming.
+  Not `iii-stream` (the durable `stream::*` store): the router uses only ephemeral
+  point-to-point channels.
 - Provider workers — one per upstream; discovered at runtime, not a build dependency.
 
 ## Boundaries
