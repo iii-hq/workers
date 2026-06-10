@@ -22,7 +22,12 @@ pub struct SdkBus {
 fn to_bus_error(err: IIIError) -> BusError {
     match err {
         IIIError::Timeout => BusError::Timeout,
-        IIIError::Remote { code, message, .. } if code.contains("FUNCTION_NOT_FOUND") => {
+        // engine/src/engine/mod.rs sends "function_not_found" (lowercase) for a
+        // missing function; NOT a bare "NOT_FOUND", which the configuration
+        // worker uses for missing entries and must stay Coded.
+        IIIError::Remote { code, message, .. }
+            if code.eq_ignore_ascii_case("function_not_found") =>
+        {
             BusError::FunctionNotFound(message)
         }
         IIIError::Remote { code, message, .. } => BusError::Coded { code, message },
@@ -116,5 +121,28 @@ impl Bus for SdkBus {
         let _ = self
             .iii
             .register_trigger_type(RegisterTriggerType::new(id, description, handler));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_function_maps_only_the_engines_function_not_found_code() {
+        let missing_fn = to_bus_error(IIIError::Remote {
+            code: "function_not_found".into(),
+            message: "provider::x::stream".into(),
+            stacktrace: None,
+        });
+        assert!(matches!(missing_fn, BusError::FunctionNotFound(_)));
+
+        // the configuration worker's missing-entry code must stay Coded
+        let missing_entry = to_bus_error(IIIError::Remote {
+            code: "NOT_FOUND".into(),
+            message: "configuration llm-router".into(),
+            stacktrace: None,
+        });
+        assert!(matches!(missing_entry, BusError::Coded { code, .. } if code == "NOT_FOUND"));
     }
 }
