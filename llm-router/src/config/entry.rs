@@ -11,6 +11,10 @@ use crate::bus::{Bus, BusError};
 
 pub const ENTRY_ID: &str = "llm-router";
 
+/// Serializes every llm-router entry mutation (register's schema re-compose,
+/// update_credential's read-merge-write) — spec § "Serialized merges".
+pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
+
 pub async fn register_entry(
     bus: &Arc<dyn Bus>,
     provider_schemas: &BTreeMap<String, Value>,
