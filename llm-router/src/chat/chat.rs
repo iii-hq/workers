@@ -23,7 +23,7 @@ use crate::config::entry::read_entry_value;
 use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
 use crate::settings::{provider_slices, RouterSettings};
-use crate::triggers::TriggerEmitter;
+use crate::triggers;
 
 use super::inflight::InflightMap;
 use super::output_tokens::resolve_max_output_tokens;
@@ -53,7 +53,6 @@ pub struct ChatPipeline {
     pub iii: III,
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
-    pub emitter: TriggerEmitter,
     pub inflight: Arc<InflightMap>,
     pub settings: Arc<RwLock<RouterSettings>>,
 }
@@ -334,12 +333,12 @@ impl ChatPipeline {
                             }
                             if is_function_not_found(&err) {
                                 if self.registry.set_availability(provider, false).await {
-                                    self.emitter
-                                        .emit(
-                                            "router::provider::changed",
-                                            json!({ "provider": provider, "op": "unavailable" }),
-                                        )
-                                        .await;
+                                    triggers::publish(
+                                        &self.iii,
+                                        triggers::PROVIDER_CHANGED,
+                                        json!({ "provider": provider, "op": "unavailable" }),
+                                    )
+                                    .await;
                                 }
                                 return Err(RouterError::new(
                                     RouterCode::ProviderUnavailable,

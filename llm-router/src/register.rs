@@ -1,12 +1,12 @@
-//! Wiring: boot order per the design doc — load stores → install trigger
-//! types → register iii functions → bind triggers → register the
-//! configuration entry → read settings → emit `router::ready`.
+//! Wiring: boot order per the design doc — load stores → register iii
+//! functions → bind triggers → register the configuration entry → read
+//! settings → publish `router::ready`.
 //!
 //! Every registration below is a direct `iii_sdk` call:
 //! `iii.register_function(id, RegisterFunction::new_async(...))` for the
-//! function surface, `iii.register_trigger(RegisterTriggerInput { .. })` for
-//! trigger bindings, and `iii.register_trigger_type` (inside
-//! `TriggerEmitter::install`) for the router-owned trigger types.
+//! function surface and `iii.register_trigger(RegisterTriggerInput { .. })`
+//! for trigger bindings. Router events go out over the engine's `iii-pubsub`
+//! worker (`triggers::publish`).
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -29,24 +29,22 @@ use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
 use crate::registry::store::RegistryStore;
 use crate::settings::{parse_settings, RouterSettings};
-use crate::triggers::TriggerEmitter;
+use crate::triggers;
 use crate::types::errors::{RouterCode, RouterError};
 
 pub struct RouterRefs {
     pub registry: Arc<RegistryStore>,
     pub catalog: Arc<CatalogStore>,
-    pub emitter: TriggerEmitter,
     pub inflight: Arc<InflightMap>,
     pub settings: Arc<RwLock<RouterSettings>>,
 }
 
 pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
-    // 1–2. restore durable stores; own trigger types (replays rebuild subscribers)
+    // 1–2. restore durable stores
     let registry = Arc::new(RegistryStore::new(iii.clone()));
     let catalog = Arc::new(CatalogStore::new(iii.clone()));
     registry.load().await?;
     catalog.load().await?;
-    let emitter = TriggerEmitter::install(&iii);
 
     // 3. shared settings + inflight
     let settings = Arc::new(RwLock::new(RouterSettings::default()));
@@ -57,7 +55,6 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         iii: iii.clone(),
         registry: registry.clone(),
         catalog: catalog.clone(),
-        emitter: emitter.clone(),
         inflight: inflight.clone(),
         settings: settings.clone(),
     });
@@ -120,7 +117,6 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
             iii.clone(),
             registry.clone(),
             catalog.clone(),
-            emitter.clone(),
             entry_lock.clone(),
         )),
     );
@@ -139,16 +135,16 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     iii.register_function(
         "router::models::reconcile",
         RegisterFunction::new_async(make_models_reconcile(
+            iii.clone(),
             registry.clone(),
             catalog.clone(),
-            emitter.clone(),
         )),
     );
 
     // 5. bound triggers: topology + configuration change (paste-a-key)
     iii.register_function(
         "router::on_worker_available",
-        RegisterFunction::new_async(make_on_worker_available(registry.clone(), emitter.clone())),
+        RegisterFunction::new_async(make_on_worker_available(iii.clone(), registry.clone())),
     );
     let _ = iii.register_trigger(RegisterTriggerInput {
         trigger_type: "subscribe".into(),
@@ -200,12 +196,11 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
     *settings.write().unwrap() = parse_settings(&read_entry_value(&iii).await);
 
     // 7. ready — providers re-declare on this
-    emitter.emit("router::ready", json!({})).await;
+    triggers::publish(&iii, triggers::READY, json!({})).await;
 
     Ok(RouterRefs {
         registry,
         catalog,
-        emitter,
         inflight,
         settings,
     })

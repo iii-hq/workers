@@ -761,3 +761,68 @@ async fn update_credential_persists_and_resolves_back() {
 
     router_iii.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_changed_event_reaches_a_pubsub_subscriber() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    // Probe worker bound to the topic through the engine's pubsub trigger type
+    // (README § Events): the handler must receive the raw payload, no envelope.
+    let probe = register_worker(&engine.url, InitOptions::default());
+    let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let sink = received.clone();
+    probe.register_function(
+        "probe::on_models_changed",
+        RegisterFunction::new_async(move |input: Value| {
+            let sink = sink.clone();
+            async move {
+                sink.lock().unwrap().push(input);
+                Ok::<Value, iii_sdk::IIIError>(json!({}))
+            }
+        }),
+    );
+    probe
+        .register_trigger(iii_sdk::RegisterTriggerInput {
+            trigger_type: "subscribe".into(),
+            function_id: "probe::on_models_changed".into(),
+            config: json!({ "topic": "router::models::changed" }),
+            metadata: None,
+        })
+        .expect("subscribe trigger registered");
+
+    // Declare already emits count=1 from the static model; reconcile two
+    // models so the explicit-reconcile emission is unambiguous.
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    call(
+        &provider.iii,
+        "router::models::reconcile",
+        json!({ "provider": "real", "token": provider.token, "models": [
+            { "id": "m-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 },
+            { "id": "m-2", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }
+        ]}),
+    )
+    .await
+    .expect("reconcile accepted");
+
+    let want = json!({ "provider": "real", "count": 2 });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if received.lock().unwrap().iter().any(|p| p == &want) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "router::models::changed never reached the pubsub subscriber; got {:?}",
+            received.lock().unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    probe.shutdown();
+    router_iii.shutdown();
+}
