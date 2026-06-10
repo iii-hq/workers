@@ -9,7 +9,7 @@ name = "iii-lsp"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.16.0-next.2"
+iii-sdk = "=0.19.2"
 tower-lsp-server = "0.23"
 tree-sitter = "0.24"
 tree-sitter-typescript = "0.23"
