@@ -22,7 +22,7 @@ pub struct TriggerInfo {
     pub metadata: Option<Value>,
 }
 
-/// Trigger type information returned by `engine::trigger-types::list`.
+/// Trigger type information returned by `engine::triggers::list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerTypeInfo {
     pub id: String,
@@ -105,14 +105,14 @@ pub async fn list_trigger_types(
 ) -> Result<Vec<TriggerTypeInfo>, IIIError> {
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "engine::trigger-types::list".into(),
+            function_id: "engine::triggers::list".into(),
             payload: serde_json::json!({ "include_internal": include_internal }),
             action: None,
             timeout_ms: None,
         })
         .await?;
     Ok(result
-        .get("trigger_types")
+        .get("triggers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default())
 }
