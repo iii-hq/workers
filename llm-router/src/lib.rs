@@ -2,9 +2,13 @@
 //! failure contract — spec: tech-specs/2026-06-agentic/llm-router.md.
 
 pub mod bus;
+pub mod bus_sdk;
 pub mod catalog;
+pub mod channels;
 pub mod chat;
 pub mod config;
+pub mod manifest;
+pub mod register;
 pub mod registry;
 pub mod routing;
 pub mod settings;
