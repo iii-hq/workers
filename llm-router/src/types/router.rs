@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::types::channel::StreamChannelRef;
 use crate::types::credential::Credential;
 use crate::types::events::{StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
+use iii_sdk::StreamChannelRef;
 
 // ── consumer surface ────────────────────────────────────────────────────────
 
@@ -18,7 +18,8 @@ pub struct ResponseFormat {
 }
 
 /// Input of the `router::chat` iii function.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// (No `PartialEq`: `iii_sdk::StreamChannelRef` doesn't implement it.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub writer_ref: StreamChannelRef, // direction "write"; the caller's channel
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,7 +167,8 @@ pub struct ModelsReconcileResponse {
 
 /// Input of a provider worker's `provider::<id>::stream` iii function —
 /// what the router forwards per attempt.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// (No `PartialEq`: `iii_sdk::StreamChannelRef` doesn't implement it.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderStreamInput {
     pub writer_ref: StreamChannelRef, // direction "write" (router-owned in relay mode)
     #[serde(skip_serializing_if = "Option::is_none")]

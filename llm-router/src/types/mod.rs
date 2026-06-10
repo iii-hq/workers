@@ -1,7 +1,7 @@
 //! Wire contracts from tech-specs/2026-06-agentic/README.md § Cross-cutting
-//! contracts. Types only — no logic, no SDK dependency.
+//! contracts. Types only — no logic. Channel refs are `iii_sdk`'s own
+//! `StreamChannelRef`; everything else is defined here.
 
-pub mod channel;
 pub mod content;
 pub mod credential;
 pub mod errors;
@@ -10,7 +10,6 @@ pub mod messages;
 pub mod model;
 pub mod router;
 
-pub use self::channel::*;
 pub use self::content::*;
 pub use self::credential::*;
 pub use self::errors::*;
