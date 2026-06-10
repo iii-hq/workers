@@ -54,12 +54,6 @@ async function* realStream(
     r?.()
   }
 
-  // Subscribe directly to this session's `agent::events` stream via a scoped
-  // engine stream trigger (`group_id = sessionId`), replacing the harness
-  // fanout hop (`ui::subscribe` → per-browser `ui::session::event` push).
-  // Registered before the `harness::trigger` kickoff below — both travel the
-  // same ordered WS connection, so the trigger is in place before the turn's
-  // first event is written.
   const stopSubscription = startSessionEventsSubscription(
     client,
     sessionId,
@@ -97,24 +91,34 @@ async function* realStream(
     const { provider, model: modelId } = resolveRunParams(model)
 
     let kickoffError: Error | null = null
+    let sessionBusy = false
     client
-      .call('harness::trigger', {
-        session_id: sessionId,
-        message_id: messageId,
-        payload: {
+      .call<{ status_code?: number; body?: { started?: boolean } }>(
+        'harness::trigger',
+        {
           session_id: sessionId,
           message_id: messageId,
-          provider,
-          model: modelId,
-          mode,
-          messages: [
-            {
-              role: 'user',
-              content: [{ type: 'text', text: prompt }],
-              timestamp: Date.now(),
-            },
-          ],
+          payload: {
+            session_id: sessionId,
+            message_id: messageId,
+            provider,
+            model: modelId,
+            mode,
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'text', text: prompt }],
+                timestamp: Date.now(),
+              },
+            ],
+          },
         },
+      )
+      .then((res) => {
+        if (res?.body?.started === false) {
+          sessionBusy = true
+          wake()
+        }
       })
       .catch((err) => {
         kickoffError = err instanceof Error ? err : new Error(String(err))
@@ -126,6 +130,16 @@ async function* realStream(
 
     while (true) {
       if (signal?.aborted) return
+      if (sessionBusy) {
+        yield {
+          kind: 'stop-reason',
+          reason: 'error',
+          message:
+            'A turn is still running in this session — your message was not sent. Stop the current turn (or answer its pending approval), then resend.',
+        }
+        yield { kind: 'assistant-end' }
+        return
+      }
       if (kickoffError) {
         const err = kickoffError as Error
         yield {
@@ -135,13 +149,18 @@ async function* realStream(
         yield { kind: 'assistant-end' }
         return
       }
-      while (queue.length === 0 && !kickoffError && !signal?.aborted) {
+      while (
+        queue.length === 0 &&
+        !kickoffError &&
+        !sessionBusy &&
+        !signal?.aborted
+      ) {
         await new Promise<void>((resolve) => {
           resolveNext = resolve
         })
       }
       if (signal?.aborted) return
-      if (kickoffError) continue
+      if (kickoffError || sessionBusy) continue
       const event = queue.shift()
       if (!event) continue
       const streamEvents = translate(event, sessionId)
@@ -169,6 +188,11 @@ async function realResolveApproval(
   })
 }
 
+async function realAbortRun(sessionId: string): Promise<void> {
+  const client = await getIiiClient()
+  await client.call('run::abort', { session_id: sessionId })
+}
+
 async function realCompactSession(
   sessionId: string,
   model: ModelId,
@@ -177,9 +201,6 @@ async function realCompactSession(
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
   try {
-    // Passing limit.context lets the server skip the models::get lookup.
-    // We don't know max_output here; 4096 is the same conservative default
-    // the server falls back to when models::get returns nothing.
     const DEFAULT_MAX_OUTPUT = 4_096
     const modelPayload: {
       id: string
@@ -209,10 +230,7 @@ async function realCompactSession(
     if (resp?.status === 'ok') {
       const tokensBefore =
         typeof resp.tokens_before === 'number' ? resp.tokens_before : 0
-      // Surface zero-token "ok" as semantic empty.
       if (tokensBefore === 0) return { status: 'empty' }
-      // Fallback placeholder for engines that predate summary_text on the
-      // wire; without it the marker has no <conversation-summary> to ship.
       const summaryText =
         typeof resp.summary_text === 'string' && resp.summary_text.length > 0
           ? resp.summary_text
@@ -249,5 +267,6 @@ export const realBackend: ChatBackend = {
   id: 'real',
   stream: realStream,
   resolveApproval: realResolveApproval,
+  abortRun: realAbortRun,
   compactSession: realCompactSession,
 }

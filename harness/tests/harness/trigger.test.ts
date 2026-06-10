@@ -45,7 +45,7 @@ describe('harness::trigger', () => {
   });
 
   it('forwards payload to run::start', async () => {
-    const { sdk, registered, trigger } = makeFakeSdk({ session_id: 'sess' });
+    const { sdk, registered, trigger } = makeFakeSdk({ session_id: 'sess', started: true });
     register(sdk);
     const handler = registered.get('harness::trigger')?.handler;
     if (!handler) throw new Error('handler not registered');
@@ -64,7 +64,26 @@ describe('harness::trigger', () => {
       system_prompt: '',
     });
     expect(result.status_code).toBe(200);
-    expect(result.body).toEqual({ session_id: 'sess' });
+    expect(result.body).toEqual({ session_id: 'sess', started: true });
+  });
+
+  it('returns 409 when run::start reports the session is busy', async () => {
+    const { sdk, registered } = makeFakeSdk({
+      session_id: 'sess',
+      started: false,
+      reason: 'session_busy',
+    });
+    register(sdk);
+    const handler = registered.get('harness::trigger')?.handler;
+    if (!handler) throw new Error('handler not registered');
+
+    const result = (await handler({
+      session_id: 'sess-1',
+      payload: runStartPayload,
+    })) as Record<string, unknown>;
+
+    expect(result.status_code).toBe(409);
+    expect(result.body).toEqual({ session_id: 'sess', started: false, reason: 'session_busy' });
   });
 
   it('rejects invalid run::start payload', async () => {

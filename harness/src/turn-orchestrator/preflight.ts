@@ -8,8 +8,9 @@
  *   the in-flight compaction releases the lease instead of failing the run.
  */
 
-import { fetchModelLimit } from '../context-compaction/model-resolver.js';
+import { fetchModelLimit, limitFromModel } from '../context-compaction/model-resolver.js';
 import { usable as computeUsable } from '../context-compaction/overflow.js';
+import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentMessage } from '../types/agent-message.js';
@@ -39,8 +40,11 @@ export async function runPreflight(
   messages: AgentMessage[],
   providerID: string,
   modelID: string,
+  modelMeta?: Model,
 ): Promise<'ok' | 'compacted'> {
-  const model = await fetchModelLimit(iii, providerID, modelID);
+  const model = modelMeta
+    ? { providerID, modelID, modelLimit: limitFromModel(modelMeta) }
+    : await fetchModelLimit(iii, providerID, modelID);
   if (!model || model.modelLimit.context === 0) {
     if (model && model.modelLimit.context === 0) {
       logger.debug('preflight: model has no context_window; skipping pre-flight check', {
@@ -99,9 +103,6 @@ export async function runPreflight(
     throw new CompactionBusyError('compaction already in progress');
   }
   if (res?.status !== 'ok') {
-    // 'empty' (nothing eligible to compact) or an unknown/drifted status:
-    // no compaction ran, so do NOT claim 'compacted' — the caller would
-    // reload messages and proceed as if the context shrank.
     logger.warn('preflight: compact_now returned non-ok status; proceeding without reload', {
       session_id,
       status: res?.status,

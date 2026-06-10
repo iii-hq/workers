@@ -30,6 +30,26 @@ describe('ProviderStreamInputSchema', () => {
     expect(JSON.stringify(schema)).toContain('writer_ref');
     expect(JSON.stringify(schema)).toContain('model');
   });
+
+  it('passes a sparse model_meta through instead of failing the stream', () => {
+    const sparse = ProviderStreamInputSchema.parse({
+      writer_ref: { channel_id: 'c', access_key: 'k', direction: 'write' },
+      model: 'm',
+      messages: [],
+      model_meta: { id: 'm', provider: 'anthropic' },
+    });
+    expect(sparse.model_meta).toEqual({ id: 'm', provider: 'anthropic' });
+  });
+
+  it('coerces a non-object model_meta to absent', () => {
+    const parsed = ProviderStreamInputSchema.parse({
+      writer_ref: { channel_id: 'c', access_key: 'k', direction: 'write' },
+      model: 'm',
+      messages: [],
+      model_meta: 'garbage',
+    });
+    expect(parsed.model_meta).toBeUndefined();
+  });
 });
 
 describe('ProviderStreamOutputSchema', () => {

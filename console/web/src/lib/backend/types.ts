@@ -27,7 +27,28 @@ export type StreamEvent =
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
     }
-  | { kind: 'fcall-end'; output: unknown; durationMs: number }
+  | {
+      kind: 'fcall-end'
+      output: unknown
+      durationMs: number
+      /**
+       * iii function_call_id of the call that ended. Parallel tool calls (and
+       * approval-resolved calls, which emit no fcall-start) finish out of
+       * order, so the consumer MUST match the end to its card by this id, not
+       * by "the most recently started call".
+       */
+      functionCallId?: string
+    }
+  | {
+      /**
+       * A call left the pending-approval set without executing (aborted, or
+       * resolved out-of-band): clear its card's approval prompt so it doesn't
+       * hang on "approving…". A resolved-and-executed call also emits
+       * `fcall-end`; both patching to non-pending is idempotent.
+       */
+      kind: 'fcall-approval-cleared'
+      functionCallId: string
+    }
   | { kind: 'assistant-token'; token: string }
   | { kind: 'assistant-end' }
   | {
@@ -114,6 +135,12 @@ export interface ChatBackend {
     functionCallId: string,
     decision: 'allow' | 'deny',
   ): Promise<void>
+  /**
+   * Server-side cancel of the session's in-flight turn (`run::abort`).
+   * The client-side AbortSignal only stops rendering; without this the
+   * server keeps running and `run::start` rejects new messages as busy.
+   */
+  abortRun?(sessionId: string): Promise<void>
   /**
    * Powers `/compact`. Compacts the session-tree (the single source of
    * truth) directly. `contextWindow` skips the server's `models::get`

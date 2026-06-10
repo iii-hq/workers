@@ -10,12 +10,22 @@ import type { AgentMessage, FunctionResultMessage } from './agent-message.js';
 import type { FunctionResult } from './function.js';
 import type { AssistantMessageEvent } from './stream-event.js';
 
+/** A model's context limits, in tokens. Produced once per turn by the orchestrator. */
+export type ModelContextLimit = { context: number; input: number; output: number };
+
 export type AgentEvent =
   | { type: 'agent_end'; messages: AgentMessage[] }
   | {
       type: 'turn_end';
       message: AgentMessage;
       function_results: FunctionResultMessage[];
+      /**
+       * Turn's model context limit, threaded from the orchestrator so the
+       * compaction worker reads it inline instead of re-fetching `models::get`.
+       * Optional: absent only when the catalog had no entry to resolve at turn
+       * start, where compaction falls back to resolving the model itself.
+       */
+      model_limit?: ModelContextLimit;
     }
   | {
       type: 'message_update';

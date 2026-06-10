@@ -18,7 +18,7 @@ describe('TurnStatePorts.finishSession', () => {
     } as unknown as ISdk;
 
     const rec = newRecord('s1');
-    rec.state = 'steering_check';
+    rec.state = 'finishing';
     await createTurnStatePorts(iii).finishSession(rec);
 
     expect(rec.state).toBe('stopped');

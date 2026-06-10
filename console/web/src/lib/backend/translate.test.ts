@@ -231,7 +231,7 @@ describe('createAgentEventTranslator — turn_state_changed', () => {
     ).toEqual([])
   })
 
-  it('emits nothing when state leaves function_awaiting_approval (the orchestrator emits the matching function_execution_end)', () => {
+  it('clears the pending prompt when a call leaves function_awaiting_approval', () => {
     const { translate } = createAgentEventTranslator()
     translate(
       {
@@ -265,7 +265,30 @@ describe('createAgentEventTranslator — turn_state_changed', () => {
         },
         'sess-a',
       ),
-    ).toEqual([])
+    ).toEqual([{ kind: 'fcall-approval-cleared', functionCallId: 'fc-1' }])
+  })
+
+  it('threads function_call_id onto fcall-end so the consumer can correlate', () => {
+    const { translate } = createAgentEventTranslator()
+    const out = translate(
+      {
+        type: 'function_execution_end',
+        function_call_id: 'fc-7',
+        function_id: 'shell::fs::ls',
+        result: { content: [], details: {} },
+        is_error: false,
+        duration_ms: 30,
+      },
+      'sess-a',
+    )
+    expect(out).toEqual([
+      {
+        kind: 'fcall-end',
+        output: { content: [], details: {} },
+        durationMs: 30,
+        functionCallId: 'fc-7',
+      },
+    ])
   })
 
   it('partitions mirrors by sessionId so two chats do not interfere', () => {

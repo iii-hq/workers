@@ -86,6 +86,71 @@ export async function appendMessage(
   return id;
 }
 
+/**
+ * Append several messages as one linear chain in a single store round-trip.
+ * Equivalent to calling {@link appendMessage} for each message in order, but
+ * resolves the active leaf once (not once per message) and writes through
+ * {@link SessionStore.appendMany} so meta is refreshed once.
+ *
+ * Entries share a single append timestamp; their order is carried by the
+ * parent chain, not the clock, and {@link activePath} resolves the leaf by
+ * chain tip — so a later append with an equal-or-earlier wall-clock timestamp
+ * still chains onto this batch's tail instead of being orphaned.
+ */
+export async function appendMessages(
+  store: SessionStore,
+  session_id: string,
+  parent_id: string | null,
+  messages: AgentMessage[],
+): Promise<string[]> {
+  if (messages.length === 0) return [];
+
+  let parent = parent_id;
+  if (parent === null) {
+    const path = await activePath(store, session_id);
+    parent = path.at(-1) ?? null;
+  }
+
+  const timestamp = Date.now();
+  const entries: SessionEntry[] = messages.map((message) => {
+    const id = randomUUID();
+    const entry: SessionEntry = {
+      type: 'message',
+      id,
+      parent_id: parent,
+      message,
+      timestamp,
+    };
+    parent = id;
+    return entry;
+  });
+
+  await store.appendMany(session_id, entries);
+  return entries.map((e) => e.id);
+}
+
+/**
+ * The active leaf is the tip of the newest chain: the most-recent entry that is
+ * not the parent of any other entry. `entries` is sorted ascending by
+ * (timestamp, id), so we scan from the end and take the first tip. Resolving by
+ * chain tip rather than raw sort-max keeps a freshly appended child as the leaf
+ * even when its wall-clock timestamp ties or precedes a sibling's — the case a
+ * batch append (shared timestamp) or a clock that did not advance would
+ * otherwise mis-resolve. Falls back to the most-recent entry only if every
+ * entry is some entry's parent (a cycle — should not occur).
+ */
+function resolveActiveLeaf(entries: SessionEntry[]): string | null {
+  const parentIds = new Set<string>();
+  for (const e of entries) {
+    if (e.parent_id) parentIds.add(e.parent_id);
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry && !parentIds.has(entry.id)) return entry.id;
+  }
+  return entries.at(-1)?.id ?? null;
+}
+
 export async function activePath(
   store: SessionStore,
   session_id: string,
@@ -94,9 +159,8 @@ export async function activePath(
   const entries = await store.loadEntries(session_id);
   if (entries.length === 0) return [];
   const byId = new Map(entries.map((e) => [e.id, e] as const));
-  const last = entries.at(-1);
-  if (!last) return [];
-  const start = leaf ?? last.id;
+  const start = leaf ?? resolveActiveLeaf(entries);
+  if (start === null) return [];
   const path: string[] = [];
   let cursor: string | null = start;
   while (cursor !== null) {
@@ -169,9 +233,7 @@ export async function listSessions(
     let entries: SessionEntry[] = [];
     try {
       entries = await store.loadEntries(meta.session_id);
-    } catch {
-      // ignore
-    }
+    } catch {}
     sessions.push({
       session_id: meta.session_id,
       created_at: meta.created_at,
@@ -331,8 +393,6 @@ export async function appendSynthetic(
   session_id: string,
   opts: {
     text: string;
-    // metadata is not supported on message entries currently; accepted for
-    // forward-compat but discarded.
     metadata?: unknown;
     parent_id?: string | null;
   },
@@ -371,7 +431,6 @@ export type UpdatePartItem = {
   compacted_at: unknown;
 };
 
-// Loads entries once instead of O(N×M) reloads in the prune loop.
 export async function updateParts(
   store: SessionStore,
   session_id: string,
@@ -432,8 +491,6 @@ function buildNode(entry: SessionEntry, byParent: Map<string | null, SessionEntr
   return { entry, children: kids.map((c) => buildNode(c, byParent)) };
 }
 
-// ── HTML export ────────────────────────────────────────────────────────────
-
 export async function exportHtml(
   store: SessionStore,
   session_id: string,
@@ -484,7 +541,6 @@ function renderEntryHtml(entry: SessionEntry): string {
   if (entry.type === 'branch_summary') {
     return `<div class="entry summary"><div class="role">branch summary · from ${htmlEscape(entry.from_id)}</div><pre>${htmlEscape(entry.summary)}</pre></div>\n`;
   }
-  // compaction
   const read = (entry.details.read_files ?? []).map(htmlEscape).join(', ');
   const modified = (entry.details.modified_files ?? []).map(htmlEscape).join(', ');
   return `<div class="entry compaction"><div class="role">compaction · ${entry.tokens_before} tokens before</div><pre>${htmlEscape(entry.summary)}\n\nread: ${read}\nmodified: ${modified}</pre></div>\n`;
@@ -497,7 +553,6 @@ function renderMessageHtml(msg: AgentMessage): string {
     return `<div class="entry assistant"><div class="role">assistant · ${htmlEscape(msg.model)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
   if (msg.role === 'function_result')
     return `<div class="entry tool-result"><div class="role">function result · ${htmlEscape(msg.function_id)}</div>${renderBlocksHtml(msg.content)}</div>\n`;
-  // custom
   const text = msg.display ?? JSON.stringify(msg.content);
   return `<div class="entry custom"><div class="role">custom · ${htmlEscape(msg.custom_type)}</div><pre>${htmlEscape(text)}</pre></div>\n`;
 }

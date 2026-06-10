@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import type { Model } from '../models-catalog/types.js';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
 
@@ -19,7 +20,7 @@ export type TurnState =
   | 'assistant_streaming'
   | 'function_execute'
   | 'function_awaiting_approval'
-  | 'steering_check'
+  | 'finishing'
   | 'stopped'
   | 'failed';
 
@@ -47,6 +48,15 @@ type TurnStateRecordCore = {
   updated_at_ms: number;
   /** Set during assistant_streaming when message_update deltas were emitted. */
   assistant_body_streamed?: boolean;
+  /**
+   * Full catalog entry for this turn's model, resolved once at `provisioning`
+   * and read by preflight, provider streaming, and turn-end compaction instead
+   * of each re-fetching `models::get`. Optional: absent on records persisted
+   * before this field existed (and on a cold catalog) — every reader falls back
+   * to a live fetch. The model is fixed for a turn, so no invalidation is
+   * needed. Excluded from {@link toView}, so it never bloats turn_state events.
+   */
+  model_meta?: Model;
   error?: { kind: string; message: string };
 };
 
@@ -66,23 +76,11 @@ export type AssistantStreamingTurnRecord = TurnStateRecordCore & {
   awaiting_approval?: AwaitingApprovalEntry[];
 };
 
-/** Persisted shape while in steering_check (work cleared on entry from function batch). */
-export type SteeringCheckTurnRecord = TurnStateRecordCore & {
-  state: 'steering_check';
-  last_assistant?: AssistantMessage | null;
-  work?: TurnWork;
-  awaiting_approval?: AwaitingApprovalEntry[];
-};
-
-type OtherTurnState = Exclude<
-  TurnState,
-  FunctionBatchState | 'assistant_streaming' | 'steering_check'
->;
+type OtherTurnState = Exclude<TurnState, FunctionBatchState | 'assistant_streaming'>;
 
 export type TurnStateRecord =
   | FunctionBatchTurnRecord
   | AssistantStreamingTurnRecord
-  | SteeringCheckTurnRecord
   | (TurnStateRecordCore & {
       state: OtherTurnState;
       last_assistant?: AssistantMessage | null;
@@ -95,7 +93,7 @@ const TURN_STATES = [
   'assistant_streaming',
   'function_execute',
   'function_awaiting_approval',
-  'steering_check',
+  'finishing',
   'stopped',
   'failed',
 ] as const satisfies readonly TurnState[];
@@ -136,4 +134,11 @@ export function newRecord(session_id: string, max_turns?: number): TurnStateReco
 export function transitionTo(rec: TurnStateRecord, next: TurnState): void {
   rec.state = next;
   rec.updated_at_ms = Date.now();
+}
+
+/** A turn is done once it reaches a terminal state; otherwise it is in flight. */
+const TERMINAL_TURN_STATES = new Set<TurnState>(['stopped', 'failed']);
+
+export function isTurnInFlight(rec: TurnStateRecord): boolean {
+  return !TERMINAL_TURN_STATES.has(rec.state);
 }

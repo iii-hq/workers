@@ -64,7 +64,6 @@ describe('runPreflight', () => {
   });
 
   it('calls compact_now and returns compacted when projected >= usable', async () => {
-    // Tiny context window so even a small message overflows
     const { iii, calls } = makeIii({
       modelsGetResult: { context_window: 10, max_output_tokens: 0 },
       compactNowResult: { status: 'ok' },
@@ -118,6 +117,44 @@ describe('runPreflight', () => {
     const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
 
     expect(result).toBe('ok');
+  });
+
+  it('uses the pre-resolved model and skips models::get', async () => {
+    const { iii, calls } = makeIii({
+      modelsGetResult: { context_window: 1, max_output_tokens: 0 },
+    });
+    const modelMeta = {
+      id: 'claude-3',
+      provider: 'anthropic',
+      api: 'anthropic-messages',
+      display_name: 'Claude 3',
+      context_window: 200_000,
+      max_output_tokens: 8_096,
+    };
+
+    const result = await runPreflight(
+      iii,
+      'session-1',
+      [smallMessage],
+      'anthropic',
+      'claude-3',
+      modelMeta,
+    );
+
+    expect(result).toBe('ok');
+    expect(calls.some((c) => c.function_id === 'models::get')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'context-compaction::compact_now')).toBe(false);
+  });
+
+  it('fetches models::get when no pre-resolved model is threaded', async () => {
+    const { iii, calls } = makeIii({
+      modelsGetResult: { context_window: 200_000, max_output_tokens: 8_096 },
+    });
+
+    const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
+
+    expect(result).toBe('ok');
+    expect(calls.some((c) => c.function_id === 'models::get')).toBe(true);
   });
 
   it('passes session_id and model info to compact_now', async () => {

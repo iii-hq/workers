@@ -8,6 +8,7 @@ import { logger } from '../runtime/otel.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
 import type { AgentFunction } from '../types/function.js';
 import type { AssistantMessageEvent } from '../types/stream-event.js';
+import { invalidateProviderResolveCache } from './auth.js';
 import { applyMessagesCacheAnchor, applyToolsCacheControl, buildSystemField } from './cache.js';
 import {
   buildFinal,
@@ -41,7 +42,6 @@ export async function* streamAnthropic({
   applyMessagesCacheAnchor(wire_messages);
   const wire_tools = functionsToWire(tools) as Record<string, unknown>[];
   applyToolsCacheControl(wire_tools);
-  // No `temperature`: the API default applies (required when thinking is on).
   const body = {
     model: cfg.model,
     max_tokens: cfg.max_tokens,
@@ -58,7 +58,6 @@ export async function* streamAnthropic({
     'content-type': 'application/json',
   };
   if (thinking) {
-    // Lets thinking interleave with tool calls.
     headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
   }
 
@@ -79,6 +78,7 @@ export async function* streamAnthropic({
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const kind = classifyAnthropicError(text, resp.status);
+    if (kind === 'auth_expired') invalidateProviderResolveCache();
     yield syntheticErrorEvent(text || `anthropic http ${resp.status}`, cfg.model, kind);
     return;
   }

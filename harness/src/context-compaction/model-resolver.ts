@@ -9,6 +9,20 @@ export type ResolvedModel = {
   modelLimit: ModelLimit;
 } | null;
 
+/**
+ * Derive a {@link ModelLimit} from a catalog entry (a full {@link Model} or a
+ * `models::get` result). The single mapping used by both the threaded
+ * `model_meta` path and a fresh fetch, so they yield the exact same limit.
+ */
+export function limitFromModel(m: {
+  context_window?: number;
+  max_output_tokens?: number;
+}): ModelLimit {
+  const context = typeof m.context_window === 'number' ? m.context_window : 0;
+  const output = typeof m.max_output_tokens === 'number' ? m.max_output_tokens : 0;
+  return { context, input: context, output };
+}
+
 export async function fetchModelLimit(
   iii: ISdk,
   providerID: string,
@@ -34,13 +48,10 @@ export async function fetchModelLimit(
       return null;
     }
 
-    const context = typeof entry.context_window === 'number' ? entry.context_window : 0;
-    const output = typeof entry.max_output_tokens === 'number' ? entry.max_output_tokens : 0;
-
     return {
       providerID,
       modelID,
-      modelLimit: { context, input: context, output },
+      modelLimit: limitFromModel(entry),
     };
   } catch (err) {
     logger.debug('model-resolver: models::get failed', {
@@ -87,9 +98,6 @@ export async function resolveModelFromSession(
   }
 }
 
-// Fallback when no assistant message carries provider/model yet (first-turn
-// sessions, error-only sessions). The orchestrator writes run_request at
-// `run_request` scope during run::start.
 export async function resolveModelFromRunRequest(
   iii: ISdk,
   session_id: string,

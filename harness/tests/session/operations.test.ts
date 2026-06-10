@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   activePath,
   appendMessage,
+  appendMessages,
   cloneSession,
   createSession,
   exportHtml,
@@ -11,7 +12,24 @@ import {
   tree,
 } from '../../src/session/tree/operations.js';
 import { InMemoryStore } from '../../src/session/tree/store.js';
+import { entryTimestamp } from '../../src/session/tree/types.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
+
+/**
+ * InMemoryStore returns entries in insertion order, but the production
+ * IiiStateSessionStore sorts loadEntries by (timestamp, id). Leaf-resolution
+ * bugs only surface under that sort, so this double reproduces it.
+ */
+class SortingStore extends InMemoryStore {
+  async loadEntries(session_id: string) {
+    const entries = await super.loadEntries(session_id);
+    return entries.sort((a, b) => {
+      const t = entryTimestamp(a) - entryTimestamp(b);
+      if (t !== 0) return t;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  }
+}
 
 const userMsg = (text: string): AgentMessage => ({
   role: 'user',
@@ -46,6 +64,87 @@ describe('session-tree operations', () => {
     const e3 = await appendMessage(store, sid, null, userMsg('c'));
     const path = await activePath(store, sid);
     expect(path).toEqual([e1, e2, e3]);
+  });
+
+  it('appendMessages chains a batch and is equivalent to serial appends', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const e0 = await appendMessage(store, sid, null, userMsg('seed'));
+
+    const ids = await appendMessages(store, sid, null, [asstMsg('a'), userMsg('b'), asstMsg('c')]);
+
+    expect(ids).toHaveLength(3);
+    const path = await activePath(store, sid);
+    expect(path).toEqual([e0, ...ids]);
+    const messages = await loadMessages(store, sid);
+    expect(messages.map((m) => (m.content[0] as { text: string }).text)).toEqual([
+      'seed',
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  it('appendMessages resolves the active leaf once for the whole batch', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    await appendMessage(store, sid, null, userMsg('seed'));
+
+    const loadEntriesSpy = vi.spyOn(store, 'loadEntries');
+    const appendManySpy = vi.spyOn(store, 'appendMany');
+
+    await appendMessages(store, sid, null, [asstMsg('a'), userMsg('b'), asstMsg('c')]);
+
+    expect(loadEntriesSpy).toHaveBeenCalledTimes(1);
+    expect(appendManySpy).toHaveBeenCalledTimes(1);
+    expect(appendManySpy.mock.calls[0]?.[1]).toHaveLength(3);
+  });
+
+  it('appendMessages with an explicit parent skips leaf resolution', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const e0 = await appendMessage(store, sid, null, userMsg('seed'));
+    const loadEntriesSpy = vi.spyOn(store, 'loadEntries');
+
+    const ids = await appendMessages(store, sid, e0, [asstMsg('a')]);
+
+    expect(loadEntriesSpy).not.toHaveBeenCalled();
+    const path = await activePath(store, sid);
+    expect(path).toEqual([e0, ...ids]);
+  });
+
+  it('appendMessages on an empty list is a no-op', async () => {
+    const store = new InMemoryStore();
+    const sid = await createSession(store);
+    const appendManySpy = vi.spyOn(store, 'appendMany');
+
+    const ids = await appendMessages(store, sid, null, []);
+
+    expect(ids).toEqual([]);
+    expect(appendManySpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps a later append on the active path when its timestamp ties or precedes the batch (sorted store, leaf = chain tip)', async () => {
+    const store = new SortingStore();
+    const sid = await createSession(store);
+    const now = vi.spyOn(Date, 'now');
+
+    now.mockReturnValue(100);
+    const batch = await appendMessages(store, sid, null, [
+      asstMsg('a'),
+      userMsg('b'),
+      asstMsg('c'),
+    ]);
+
+    now.mockReturnValue(99);
+    const tail = await appendMessage(store, sid, null, asstMsg('d'));
+    now.mockRestore();
+
+    expect(await activePath(store, sid)).toEqual([...batch, tail]);
+    const texts = (await loadMessages(store, sid)).map(
+      (m) => (m.content[0] as { text: string }).text,
+    );
+    expect(texts).toEqual(['a', 'b', 'c', 'd']);
   });
 
   it('loadMessages filters non-message entries from active path', async () => {

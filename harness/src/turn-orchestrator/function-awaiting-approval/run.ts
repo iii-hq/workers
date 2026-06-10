@@ -25,7 +25,7 @@ export function denialResultFromDecision(decision: ApprovalDecision): FunctionRe
       decision: decision.decision,
       reason,
     },
-    terminate: false,
+    terminate: decision.decision === 'aborted',
   };
 }
 

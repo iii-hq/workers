@@ -8,10 +8,14 @@ import {
   finalizeBatch,
   runOneCall,
 } from '../../src/turn-orchestrator/function-execute/run.js';
-import { withRoutingEnvelope } from '../../src/turn-orchestrator/function-execute/ports.js';
+import {
+  createPorts,
+  withRoutingEnvelope,
+} from '../../src/turn-orchestrator/function-execute/ports.js';
 import type { FunctionExecutePorts } from '../../src/turn-orchestrator/function-execute/ports.js';
 import type { ExecutedCall } from '../../src/turn-orchestrator/function-execute/types.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import type { ISdk } from '../../src/runtime/iii.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 function makeAssistant(
@@ -39,6 +43,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
   return {
     emitStart: vi.fn(async () => {}),
     emitEnd: vi.fn(async () => {}),
+    emit: vi.fn(async () => {}),
     checkpoint: vi.fn(async () => {}),
     dispatch: vi.fn(async () => ({
       kind: 'result' as const,
@@ -49,6 +54,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
       details: {},
     })),
     loadMessages: vi.fn(async () => []),
+    loadTrailingResultIds: vi.fn(async () => new Set<string>()),
     appendMessages: vi.fn(async () => {}),
     emitTurnEnd: vi.fn(async () => {}),
     finishSession: vi.fn(async (rec) => {
@@ -176,25 +182,15 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(rec.state).toBe('stopped');
-    expect(ports.finishSession).toHaveBeenCalledOnce();
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
   });
 
   it('skips duplicate function_result ids on re-entry', async () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const appendMessages = vi.fn(async () => {});
     const ports = stubPorts({
-      loadMessages: vi.fn(async () => [
-        {
-          role: 'function_result' as const,
-          function_call_id: 'fc-1',
-          function_id: 'shell::run',
-          content: [{ type: 'text' as const, text: 'existing' }],
-          details: {},
-          is_error: false,
-          timestamp: 1,
-        },
-      ]),
+      loadTrailingResultIds: vi.fn(async () => new Set(['fc-1'])),
       appendMessages,
     });
     const rec = newRecord('s1');
@@ -215,6 +211,152 @@ describe('finalizeBatch', () => {
     await finalizeBatch(ports, rec);
 
     expect(appendMessages).not.toHaveBeenCalled();
-    expect(rec.state).toBe('steering_check');
+    expect(rec.state).toBe('assistant_streaming');
+  });
+
+  it('resumes to assistant_streaming with cleared results when a result continues', async () => {
+    const ports = stubPorts();
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const rec = newRecord('s1');
+    enterFunctionExecute(rec, makeAssistant([fc]));
+    rec.state = 'function_execute';
+    rec.work = {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
+          is_error: false,
+          duration_ms: 1,
+        },
+      },
+    };
+
+    await finalizeBatch(ports, rec);
+
+    expect(rec.state).toBe('assistant_streaming');
+    expect(rec.function_results).toEqual([]);
+    expect(rec.turn_end_emitted).toBe(true);
+    expect(ports.finishSession).not.toHaveBeenCalled();
+  });
+
+  it('ends the loop inline at the max_turns cap instead of resuming', async () => {
+    const appendMessages = vi.fn(async () => {});
+    const emit = vi.fn(async () => {});
+    const ports = stubPorts({ appendMessages, emit });
+    const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
+    const rec = { ...newRecord('s1', 2), turn_count: 2 };
+    enterFunctionExecute(rec, makeAssistant([fc]));
+    rec.state = 'function_execute';
+    rec.work = {
+      prepared: [{ route: 'dispatch', call: fc }],
+      executed: {
+        'fc-1': {
+          call: fc,
+          result: { content: [{ type: 'text' as const, text: 'ok' }], details: {} },
+          is_error: false,
+          duration_ms: 1,
+        },
+      },
+    };
+
+    await finalizeBatch(ports, rec);
+
+    expect(rec.state).toBe('finishing');
+    expect(ports.finishSession).not.toHaveBeenCalled();
+    expect(appendMessages).toHaveBeenCalledTimes(2);
+    const appended = appendMessages.mock.calls[1]?.[1] as Array<{ content: unknown[] }>;
+    expect(JSON.stringify(appended)).toContain('max_turns (2) reached');
+    expect(
+      emit.mock.calls.some((call) => (call[1] as { type: string })?.type === 'message_complete'),
+    ).toBe(true);
+  });
+});
+
+describe('createPorts().loadTrailingResultIds', () => {
+  function trackingIii(messages: Array<{ message: unknown }>): {
+    iii: ISdk;
+    calls: Array<{ function_id: string; payload: unknown }>;
+  } {
+    const calls: Array<{ function_id: string; payload: unknown }> = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
+        calls.push({ function_id: req.function_id, payload: req.payload });
+        if (req.function_id === 'session-tree::messages') return { messages };
+        return null;
+      }),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  const resultMsg = (id: string) => ({
+    message: {
+      role: 'function_result' as const,
+      function_call_id: id,
+      function_id: 'shell::run',
+      content: [],
+      details: {},
+      is_error: false,
+      timestamp: 1,
+    },
+  });
+  /** Assistant that requested tool calls — the turn boundary. */
+  const requestingAssistant = (id: string) => ({
+    message: {
+      role: 'assistant' as const,
+      content: [{ type: 'function_call' as const, id, function_id: 'shell::run', arguments: {} }],
+      stop_reason: 'function_call' as const,
+      model: 'm',
+      provider: 'p',
+      timestamp: 1,
+    },
+  });
+  /** Synthetic assistant with no calls (e.g. the max_turns "loop stopped" notice). */
+  const noticeAssistant = () => ({
+    message: {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'loop stopped' }],
+      stop_reason: 'end' as const,
+      model: 'm',
+      provider: 'p',
+      timestamp: 1,
+    },
+  });
+
+  it('reads only session-tree::messages (no compactions) on the default leaf', async () => {
+    const { iii, calls } = trackingIii([resultMsg('fc-1'), resultMsg('fc-2')]);
+
+    const ids = await createPorts(iii).loadTrailingResultIds('s1');
+
+    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
+    expect(calls.map((c) => c.function_id)).toEqual(['session-tree::messages']);
+    expect(calls.some((c) => c.function_id === 'session-tree::compactions')).toBe(false);
+    expect(calls[0]?.payload).toEqual({ session_id: 's1' });
+  });
+
+  it('stops at the requesting assistant, not collecting a prior turn run', async () => {
+    const { iii } = trackingIii([
+      resultMsg('old'),
+      requestingAssistant('req'),
+      resultMsg('fc-1'),
+      resultMsg('fc-2'),
+    ]);
+
+    const ids = await createPorts(iii).loadTrailingResultIds('s1');
+
+    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
+  });
+
+  it('skips a trailing no-call notice so the results behind it stay deduped (max_turns replay)', async () => {
+    const { iii } = trackingIii([
+      requestingAssistant('req'),
+      resultMsg('fc-1'),
+      resultMsg('fc-2'),
+      noticeAssistant(),
+    ]);
+
+    const ids = await createPorts(iii).loadTrailingResultIds('s1');
+
+    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
   });
 });

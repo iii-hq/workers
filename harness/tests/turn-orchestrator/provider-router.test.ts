@@ -20,9 +20,6 @@ describe('decide', () => {
 
   it('routes llamacpp when provider=llamacpp', () => {
     expect(decide({ provider: 'llamacpp', model: 'Meta-Llama-3.1-8B' }).provider).toBe('llamacpp');
-    // No heuristic — bare model id without explicit provider does not
-    // route to llamacpp (same posture as lmstudio; user-controlled ids
-    // overlap with HF-style ids from other services).
     expect(decide({ model: 'Meta-Llama-3.1-8B' }).provider).toBe('anthropic');
   });
 
@@ -40,11 +37,6 @@ describe('decide', () => {
         model: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
       }).provider,
     ).toBe('lmstudio');
-    // No heuristic — a bare HF-style model id without an explicit
-    // provider MUST default to anthropic, not be magically routed to
-    // lmstudio because the namespace looks like a HF org/repo. This
-    // is the regression that the route's comment warns about
-    // ("model IDs are user-controlled … overlap with HF-style IDs").
     const ambiguousIds = [
       'qwen/qwen3-4b-2507',
       'google/gemma-2-9b-it',
@@ -105,5 +97,40 @@ describe('buildInput', () => {
     expect(withLevel.thinking_level).toBe('high');
     const withoutLevel = buildInput(decision, writer, 'sys', [], []);
     expect(withoutLevel).not.toHaveProperty('thinking_level');
+  });
+
+  it('carries model_meta when provided and omits it when absent', () => {
+    const decision = { provider: 'anthropic', model: 'claude-sonnet-4-6' } as const;
+    const writer = { channel_id: 'c', access_key: 'k', direction: 'write' } as const;
+    const model_meta = {
+      id: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      api: 'anthropic-messages',
+      display_name: 'Claude Sonnet 4.6',
+      context_window: 1_000_000,
+      max_output_tokens: 64_000,
+    };
+    const withMeta = buildInput(decision, writer, 'sys', [], [], undefined, model_meta);
+    expect(withMeta.model_meta).toEqual(model_meta);
+    const withoutMeta = buildInput(decision, writer, 'sys', [], []);
+    expect(withoutMeta).not.toHaveProperty('model_meta');
+  });
+
+  it('carries resolution_key when provided and omits it when absent', () => {
+    const decision = { provider: 'anthropic', model: 'claude' } as const;
+    const writer = { channel_id: 'c', access_key: 'k', direction: 'write' } as const;
+    const withKey = buildInput(
+      decision,
+      writer,
+      'sys',
+      [],
+      [],
+      undefined,
+      undefined,
+      1738000000000,
+    );
+    expect(withKey.resolution_key).toBe(1738000000000);
+    const withoutKey = buildInput(decision, writer, 'sys', [], []);
+    expect(withoutKey).not.toHaveProperty('resolution_key');
   });
 });

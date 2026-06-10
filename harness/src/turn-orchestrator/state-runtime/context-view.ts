@@ -40,24 +40,39 @@ export function buildContextView(
   ];
 }
 
-type MessagesResponse = {
-  messages?: Array<{ entry_id: string; message: AgentMessage }>;
-};
-
 type CompactionsResponse = {
   entries?: CompactionEntryRow[];
 };
 
+export type SessionMessageRow = { entry_id: string; message: AgentMessage };
+
+/**
+ * Raw active-path messages (entry_id + message), oldest first. The single
+ * `session-tree::messages` reader — shared by {@link loadContextView} (which
+ * also folds in compactions) and the orchestrator's trailing-result dedup — so
+ * the fetch shape and timeout live in one place.
+ */
+export async function loadSessionMessages(
+  iii: ISdk,
+  session_id: string,
+): Promise<SessionMessageRow[]> {
+  const resp = await iii.trigger<unknown, { messages?: SessionMessageRow[] }>({
+    function_id: 'session-tree::messages',
+    payload: { session_id },
+    timeoutMs: 30_000,
+  });
+  return resp?.messages ?? [];
+}
+
 export async function loadContextView(iii: ISdk, session_id: string): Promise<AgentMessage[]> {
-  const [messagesResp, compactionsResp] = await Promise.all([
-    iii.trigger({ function_id: 'session-tree::messages', payload: { session_id } }),
+  const [messages, compactionsResp] = await Promise.all([
+    loadSessionMessages(iii, session_id),
     iii.trigger({ function_id: 'session-tree::compactions', payload: { session_id } }),
   ]);
 
-  const messagesPayload = messagesResp as MessagesResponse | null;
   const compactionsPayload = compactionsResp as CompactionsResponse | null;
 
-  const entries: MessageWithEntryId[] = (messagesPayload?.messages ?? []).map((e) => ({
+  const entries: MessageWithEntryId[] = messages.map((e) => ({
     entry_id: e.entry_id,
     message: e.message,
   }));

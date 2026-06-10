@@ -48,7 +48,7 @@ export function register(iii: ISdk): void {
       timeoutMs: BRIDGE_TIMEOUT_MS,
     });
     return {
-      status_code: 200,
+      status_code: result.started === false ? 409 : 200,
       headers: { 'content-type': 'application/json' },
       body: result,
     };

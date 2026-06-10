@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { extractEventPayload, turnEndUsage } from '../../src/context-compaction/handler-async.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  extractEventPayload,
+  resolveModelFromEvent,
+  turnEndUsage,
+} from '../../src/context-compaction/handler-async.js';
+import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('extractEventPayload', () => {
   it('handles camelCase envelope (event.data shape)', () => {
@@ -52,5 +57,48 @@ describe('turnEndUsage', () => {
   it('returns null when usage is missing', () => {
     expect(turnEndUsage({ type: 'TurnEnd', message: {} })).toBeNull();
     expect(turnEndUsage({ type: 'TurnEnd' })).toBeNull();
+  });
+});
+
+describe('resolveModelFromEvent', () => {
+  function trackingIii(): { iii: ISdk; calls: string[] } {
+    const calls: string[] = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        calls.push(req.function_id);
+        return { context_window: 200_000, max_output_tokens: 8_096 };
+      }),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  it('uses the inline limit and skips models::get', async () => {
+    const { iii, calls } = trackingIii();
+    const event = {
+      type: 'turn_end',
+      message: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+      model_limit: { context: 1_000_000, input: 1_000_000, output: 64_000 },
+    };
+
+    const resolved = await resolveModelFromEvent(iii, 'sess-1', event);
+
+    expect(calls).not.toContain('models::get');
+    expect(resolved).toEqual({
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet-4-6',
+      modelLimit: { context: 1_000_000, input: 1_000_000, output: 64_000 },
+    });
+  });
+
+  it('falls back to models::get when no inline limit is present', async () => {
+    const { iii, calls } = trackingIii();
+    const event = {
+      type: 'turn_end',
+      message: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+    };
+
+    await resolveModelFromEvent(iii, 'sess-1', event);
+
+    expect(calls).toContain('models::get');
   });
 });
