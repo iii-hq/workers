@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::events::{AssistantMessageEvent, StopReason};
+use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::router::{ChatResponse, ErrorShape};
 use iii_sdk::{IIIError, TriggerRequest, III};
 use serde::Deserialize;
@@ -81,7 +81,11 @@ impl ChatPipeline {
         // reader budget and `router::chat` consumers never see a terminal.
         // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
         let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> IIIError {
-            let frame = synthesize_error(None, &call.model, provider, &message, None, now_ms());
+            // Pre-stream failures are permanent: a bad model or an unrouted
+            // request won't succeed on retry. Mark the frame Permanent so a
+            // streaming consumer inspecting error_kind doesn't retry it.
+            let frame =
+                synthesize_error(None, &call.model, provider, &message, ErrorKind::Permanent, None, now_ms());
             let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
             RouterError::new(code, message).into()
         };
@@ -388,6 +392,7 @@ impl ChatPipeline {
                         &call.model,
                         provider,
                         &message,
+                        ErrorKind::Transient, // mid-stream no-terminal/idle: retryable
                         usage,
                         now_ms(),
                     );
@@ -501,9 +506,16 @@ mod tests {
             panic!("expected a terminal error frame on the channel, got {first:?}");
         };
         let ev: AssistantMessageEvent = serde_json::from_str(&m).unwrap();
-        assert!(
-            matches!(ev, AssistantMessageEvent::Error { .. }),
-            "frame must be a terminal error, got {ev:?}"
+        let AssistantMessageEvent::Error { error } = &ev else {
+            panic!("frame must be a terminal error, got {ev:?}");
+        };
+        // A pre-stream failure is permanent — retrying won't fix a bad model or
+        // an unrouted request. A `transient` kind would mislead a streaming
+        // consumer that inspects error_kind into retrying.
+        assert_eq!(
+            error.error_kind,
+            Some(crate::types::events::ErrorKind::Permanent),
+            "pre-stream error frames must be permanent, not retryable"
         );
         let second = reader.next(Duration::from_millis(50)).await;
         assert!(
