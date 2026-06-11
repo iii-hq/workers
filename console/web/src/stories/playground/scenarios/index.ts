@@ -60,7 +60,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'coder-mutate',
     label: 'coder · mutate',
     description:
-      'one coder::create-file call writing workers/iii/skills/SKILL.md with Pierre diff.',
+      'coder::tree scout, then coder::create-file writing workers/iii/skills/SKILL.md.',
     group: 'happy paths',
     preferredMode: 'agent',
     backend: coderMutate,
@@ -69,7 +69,7 @@ export const SCENARIOS: PlaygroundScenario[] = [
     id: 'coder-update',
     label: 'coder · update',
     description:
-      'coder::update-file on workers/iii/skills/SKILL.md with before/after Pierre diff.',
+      'coder::search → numbered coder::read-file window → coder::update-file with post-apply echoes.',
     group: 'happy paths',
     preferredMode: 'agent',
     backend: coderUpdate,

@@ -1,0 +1,138 @@
+{
+  "description": "Move or rename one or more paths inside the jail. Request shape: {\"files\": [{\"from\": \"...\", \"to\": \"...\"}]}. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*. Per-entry `overwrite` and `parents` flags. Same-root moves use a per-file-atomic rename; cross-root moves use copy+delete (files only — cross-root directory moves are unsupported, move files individually). Copy+delete is rollback-safe: if source deletion fails after a successful copy the copy is removed and the error names the failure; if rollback also fails the error names both states for manual cleanup.",
+  "function_id": "coder::move",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MoveFileSpec": {
+        "properties": {
+          "from": {
+            "description": "Source path: relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "When false (the default), refuse to overwrite an existing destination. Pass `overwrite: true` to replace an existing file at `to`.",
+            "type": "boolean"
+          },
+          "parents": {
+            "default": true,
+            "description": "Create missing parent directories of the destination. Defaults to true.",
+            "type": "boolean"
+          },
+          "to": {
+            "description": "Destination path: relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      }
+    },
+    "examples": [
+      {
+        "files": [
+          {
+            "from": "src/old_name.rs",
+            "to": "src/new_name.rs"
+          },
+          {
+            "from": "build/output.bin",
+            "overwrite": true,
+            "to": "/tmp/coder-cache/output.bin"
+          }
+        ]
+      }
+    ],
+    "properties": {
+      "files": {
+        "description": "Entries to move. Each entry is processed independently so a single failure never aborts the rest.",
+        "items": {
+          "$ref": "#/definitions/MoveFileSpec"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "files"
+    ],
+    "title": "MoveFileInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "MoveFileResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WireError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C217\"` means destination exists; pass `overwrite=true` to replace; `\"C210\"` for disallowed operations such as cross-root directory moves, moving a root itself, or a destination that is a directory — the message then names the corrected target path). `message` carries the corrective action an LLM agent needs to make a successful second call."
+          },
+          "from": {
+            "description": "Canonical absolute path of the source (resolved through the jail); the caller's input verbatim when resolution failed.",
+            "type": "string"
+          },
+          "moved": {
+            "description": "True only when the move fully completed; false for a no-op self-move (`from` and `to` resolve to the same file).",
+            "type": "boolean"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "to": {
+            "description": "Canonical absolute path of the destination (resolved through the jail); the caller's input verbatim when resolution failed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "moved",
+          "success",
+          "to"
+        ],
+        "type": "object"
+      },
+      "WireError": {
+        "description": "Structured per-entry error as it appears on the wire.\n\nUse `code` for stable programmatic branching (e.g. `\"C211\"` for not-found-or-denied). `message` carries the human/LLM-readable problem description plus the corrective next call.",
+        "properties": {
+          "code": {
+            "description": "Stable error code, e.g. \"C211\". See the README error table.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human/LLM-readable message: problem + actual values + corrective next call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "results": {
+        "items": {
+          "$ref": "#/definitions/MoveFileResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "MoveFileOutput",
+    "type": "object"
+  }
+}

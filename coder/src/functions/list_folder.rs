@@ -12,9 +12,15 @@ use crate::config::CoderConfig;
 use crate::error::{err_to_string, CoderError};
 use crate::path::PathResolver;
 
+// examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "example_list_folder_input")]
 pub struct ListFolderInput {
-    /// Folder, relative to `base_path`. Defaults to `.` (the base itself).
+    /// Folder to list. Relative to the primary allowed root, or an absolute
+    /// path inside any allowed root. Defaults to `.` (the primary root
+    /// itself). Call `coder::info` to see the allowed roots. Paths outside
+    /// every allowed root are rejected — use the shell worker's
+    /// `shell::fs::*` for host paths outside the jail.
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default = "default_page")]
@@ -32,8 +38,21 @@ fn default_page() -> u32 {
     1
 }
 
+// examples are wire-contract; goldens pin them.
+fn example_list_folder_input() -> serde_json::Value {
+    serde_json::json!({
+        "path": "src",
+        "page": 1,
+        "page_size": 50
+    })
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListFolderOutput {
+    /// Canonical absolute path of the listed folder (resolved through the
+    /// jail). Entries carry only `name`; derive an entry's absolute path
+    /// by joining: entry path = this path + "/" + name. Operations on
+    /// derived paths re-validate through the jail.
     pub path: String,
     pub entries: Vec<DirEntry>,
     pub total: u64,
@@ -44,6 +63,8 @@ pub struct ListFolderOutput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DirEntry {
+    /// Entry basename. The absolute path is derivable from the response's
+    /// `path`: entry path = folder path + "/" + name.
     pub name: String,
     pub kind: EntryKind,
     pub size: u64,
@@ -79,7 +100,10 @@ fn inner(
     // list a directory that contains non-accessible *children* even if the
     // directory itself happened to match a glob.
     let abs = resolver.resolve(&req.path)?;
-    let md = std::fs::metadata(&abs)?;
+    // NotFound is intercepted with the wire path in scope so the C211
+    // message names the path the caller supplied (standardized wording —
+    // REDACTION INVARIANT: identical to the glob-denied message).
+    let md = std::fs::metadata(&abs).map_err(|e| CoderError::io_for_path(e, &req.path))?;
     if !md.is_dir() {
         return Err(CoderError::BadInput(format!(
             "not a directory: {}",
@@ -95,7 +119,8 @@ fn inner(
     let page = req.page.max(1);
 
     let mut all: Vec<DirEntry> = Vec::new();
-    for entry in std::fs::read_dir(&abs)? {
+    let read_dir = std::fs::read_dir(&abs).map_err(|e| CoderError::io_for_path(e, &req.path))?;
+    for entry in read_dir {
         let e = entry?;
         let name = e.file_name().to_string_lossy().into_owned();
         let entry_md = match e.metadata() {
@@ -124,7 +149,7 @@ fn inner(
     let has_more = (end as u64) < total;
 
     Ok(ListFolderOutput {
-        path: req.path,
+        path: abs.display().to_string(),
         entries,
         total,
         page,
@@ -179,7 +204,7 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             non_accessible_globs: vec!["**/.env".to_string()],
             list_default_page_size: 100,
             list_max_page_size: 1000,
@@ -210,6 +235,14 @@ mod tests {
         assert_eq!(names, vec!["a.txt", "b.txt", "dir"]);
         assert_eq!(out.total, 3);
         assert!(!out.has_more);
+        // The folder path is canonical-absolute (decision D2-eng);
+        // entries carry only names.
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(out.path, base.display().to_string());
+        // WIRE-CONTRACT PIN: the documented derivation rule (entry path =
+        // folder path + "/" + name) must reproduce the real fs path.
+        let derived = format!("{}/{}", out.path, out.entries[0].name);
+        assert_eq!(derived, base.join("a.txt").display().to_string());
     }
 
     #[tokio::test]
@@ -240,7 +273,7 @@ mod tests {
         let (tmp, r, _c) = setup();
         std::fs::write(tmp.path().join("x.txt"), "x").unwrap();
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             list_default_page_size: 50,
             list_max_page_size: 5,
             ..CoderConfig::default()

@@ -229,9 +229,16 @@ async fn full_lifecycle_via_iii_sdk() {
     let content_matches = search["content_matches"]
         .as_array()
         .expect("content matches");
+    // Response paths are canonical-absolute (decision D2-eng); the worker
+    // canonicalized its root, so anchor the expectation the same way.
+    let expected_match_path = std::fs::canonicalize(h.base.path())
+        .expect("canonicalize harness base")
+        .join("hello.txt")
+        .display()
+        .to_string();
     assert!(content_matches
         .iter()
-        .any(|m| m["path"] == "hello.txt" && m["line"] == 2));
+        .any(|m| m["path"] == expected_match_path.as_str() && m["line"] == 2));
 
     // 7. Non-accessible glob blocks reads even though list-folder shows it.
     std::fs::write(h.base.path().join(".env"), "API_KEY=secret\n").unwrap();

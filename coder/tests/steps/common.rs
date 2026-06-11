@@ -116,9 +116,11 @@ fn result_failed_with_code(world: &mut CoderWorld, path: String, code: String) {
         entry["success"], false,
         "expected failure for {path:?}; got: {entry:?}"
     );
-    let err = entry["error"].as_str().unwrap_or("");
-    assert!(
-        err.contains(&code),
-        "expected error for {path:?} to contain {code:?}; got: {err:?}"
+    // `error` is now a structured object `{"code":"C2xx","message":"..."}`;
+    // extract the `code` field for stable programmatic assertions.
+    let err_code = entry["error"]["code"].as_str().unwrap_or("");
+    assert_eq!(
+        err_code, code,
+        "expected error code {code:?} for {path:?}; got entry: {entry:?}"
     );
 }

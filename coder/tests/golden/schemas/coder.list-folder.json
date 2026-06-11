@@ -1,0 +1,125 @@
+{
+  "description": "Paginated single-folder listing, sorted by name. Entries carry only `name`; derive an entry's absolute path as the response's `path` + '/' + name. Non-accessible entries are still listed with a `non_accessible: true` flag. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::list-folder",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "page": 1,
+        "page_size": 50,
+        "path": "src"
+      }
+    ],
+    "properties": {
+      "page": {
+        "default": 1,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page_size": {
+        "default": null,
+        "description": "Capped by `config.list_max_page_size`; falls back to `config.list_default_page_size` when omitted.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": ".",
+        "description": "Folder to list. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "type": "string"
+      }
+    },
+    "title": "ListFolderInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DirEntry": {
+        "properties": {
+          "kind": {
+            "$ref": "#/definitions/EntryKind"
+          },
+          "mtime": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Entry basename. The absolute path is derivable from the response's `path`: entry path = folder path + \"/\" + name.",
+            "type": "string"
+          },
+          "non_accessible": {
+            "description": "True if this entry matches `non_accessible_globs` — caller cannot read/write/delete it via `coder::*` even though it shows up here.",
+            "type": "boolean"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "mtime",
+          "name",
+          "non_accessible",
+          "size"
+        ],
+        "type": "object"
+      },
+      "EntryKind": {
+        "enum": [
+          "file",
+          "dir",
+          "symlink",
+          "other"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "entries": {
+        "items": {
+          "$ref": "#/definitions/DirEntry"
+        },
+        "type": "array"
+      },
+      "has_more": {
+        "type": "boolean"
+      },
+      "page": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page_size": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Canonical absolute path of the listed folder (resolved through the jail). Entries carry only `name`; derive an entry's absolute path by joining: entry path = this path + \"/\" + name. Operations on derived paths re-validate through the jail.",
+        "type": "string"
+      },
+      "total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "entries",
+      "has_more",
+      "page",
+      "page_size",
+      "path",
+      "total"
+    ],
+    "title": "ListFolderOutput",
+    "type": "object"
+  }
+}

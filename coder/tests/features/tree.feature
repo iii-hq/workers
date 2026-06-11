@@ -93,6 +93,38 @@ Feature: coder::tree
     Then the tree has a node at "inside.txt"
     And the tree has no node at "outside.txt"
 
+  Scenario: default-excluded directories appear as childless stubs
+    Given a file at "node_modules/pkg/index.js" with content:
+      """
+      x
+      """
+    And a file at "src/main.rs" with content:
+      """
+      fn main() {}
+      """
+    When I call coder::tree with payload:
+      """
+      {"path": "."}
+      """
+    Then the call succeeded
+    And the tree has a node at "node_modules"
+    And the tree node at "node_modules" is truncated with reason "default_exclude"
+    And the tree node at "node_modules" hint mentions "use_default_excludes"
+    And the tree has no node at "node_modules/pkg"
+    And the tree has a node at "src/main.rs"
+
+  Scenario: use_default_excludes false descends into excluded directories
+    Given a file at "node_modules/pkg/index.js" with content:
+      """
+      x
+      """
+    When I call coder::tree with payload:
+      """
+      {"path": ".", "use_default_excludes": false}
+      """
+    Then the call succeeded
+    And the tree has a node at "node_modules/pkg/index.js"
+
   Scenario: tree on a missing folder fails with C211
     When I call coder::tree with payload:
       """
