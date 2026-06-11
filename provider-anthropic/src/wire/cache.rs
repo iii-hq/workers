@@ -202,4 +202,36 @@ mod tests {
         apply_messages_cache_anchor(&mut wire, false);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
     }
+
+    #[test]
+    fn partially_resolved_assistant_is_unstable() {
+        // two tool_uses, only one resolved downstream → not a stable anchor
+        let mut wire = vec![
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "old" }] }),
+            json!({ "role": "assistant", "content": [
+                { "type": "tool_use", "id": "t1", "name": "f", "input": {} },
+                { "type": "tool_use", "id": "t2", "name": "g", "input": {} },
+            ] }),
+            json!({ "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": "ok" },
+            ] }),
+        ];
+        apply_messages_cache_anchor(&mut wire, true);
+        // falls back to the earlier fully-stable assistant
+        assert_eq!(wire[0]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(wire[1]["content"][0].get("cache_control").is_none());
+        assert!(wire[1]["content"][1].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn all_thinking_assistant_gets_no_marker() {
+        // a stable assistant whose only blocks are thinking → no eligible block
+        let mut wire = vec![json!({ "role": "assistant", "content": [
+            { "type": "thinking", "thinking": "t", "signature": "s" },
+            { "type": "redacted_thinking" },
+        ] })];
+        apply_messages_cache_anchor(&mut wire, true);
+        assert!(wire[0]["content"][0].get("cache_control").is_none());
+        assert!(wire[0]["content"][1].get("cache_control").is_none());
+    }
 }

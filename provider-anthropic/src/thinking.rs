@@ -20,6 +20,8 @@ pub const MIN_THINKING_BUDGET: u64 = 1024;
 /// request budget and silently return an empty completion.
 pub const OUTPUT_RESERVE_TOKENS: u64 = 1024;
 
+/// Unlike the TS port (whose `ThinkingBudgets` had no xhigh field), an
+/// `Xhigh` catalog entry is honored when present.
 fn budget_from_catalog(
     level: ThinkingLevel,
     budgets: Option<&BTreeMap<ThinkingLevel, u64>>,
@@ -165,5 +167,26 @@ mod tests {
             build_thinking_config(Some(ThinkingLevel::High), 64_000, None),
             None
         );
+    }
+
+    #[test]
+    fn xhigh_catalog_entry_is_honored_when_supported() {
+        let budgets = BTreeMap::from([(ThinkingLevel::Xhigh, 20_000u64)]);
+        // supports_xhigh unset (None) → not degraded; catalog value beats the formula
+        let cfg = build_thinking_config(
+            Some(ThinkingLevel::Xhigh),
+            64_000,
+            Some(&model(Some(budgets), None)),
+        )
+        .unwrap();
+        assert_eq!(cfg.budget_tokens, 20_000);
+    }
+
+    #[test]
+    fn budget_exactly_at_minimum_is_kept() {
+        let m = model(None, None);
+        // max_tokens 2048 → formula high = 16000, clamped to 2048-1024 = 1024 == MIN → kept
+        let cfg = build_thinking_config(Some(ThinkingLevel::High), 2_048, Some(&m)).unwrap();
+        assert_eq!(cfg.budget_tokens, MIN_THINKING_BUDGET);
     }
 }
