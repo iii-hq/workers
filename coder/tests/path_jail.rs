@@ -2,7 +2,8 @@
 //! per-module unit tests already exercise most branches; these scenarios
 //! re-verify the cross-cutting invariants from outside the module:
 //!
-//! - `..` escapes and absolute paths must never resolve outside `base_root`.
+//! - `..` escapes must never resolve outside the allowed roots.
+//! - Absolute paths are accepted only inside an allowed root.
 //! - Symlinks to outside the base must be rejected.
 //! - Non-accessible globs must block reading too (not just writing).
 
@@ -16,7 +17,7 @@ use tempfile::tempdir;
 
 fn make_resolver(base: PathBuf, globs: Vec<&str>) -> (Arc<PathResolver>, Arc<CoderConfig>) {
     let cfg = Arc::new(CoderConfig {
-        base_path: base,
+        base_paths: vec![base],
         non_accessible_globs: globs.into_iter().map(String::from).collect(),
         ..CoderConfig::default()
     });
@@ -33,11 +34,21 @@ fn dotdot_in_path_cannot_escape_base_root() {
 }
 
 #[test]
-fn absolute_path_input_rejected_with_c210() {
+fn absolute_path_outside_all_roots_rejected_with_c215() {
     let tmp = tempdir().unwrap();
     let (r, _) = make_resolver(tmp.path().to_path_buf(), vec![]);
     let err = r.resolve("/etc/passwd").unwrap_err();
-    assert_eq!(err.code(), "C210");
+    assert_eq!(err.code(), "C215");
+}
+
+#[test]
+fn absolute_path_inside_a_root_accepted() {
+    let tmp = tempdir().unwrap();
+    std::fs::write(tmp.path().join("ok.txt"), b"x").unwrap();
+    let (r, _) = make_resolver(tmp.path().to_path_buf(), vec![]);
+    let abs_input = tmp.path().join("ok.txt").display().to_string();
+    let resolved = r.resolve(&abs_input).expect("absolute inside root");
+    assert!(resolved.starts_with(r.base_root()));
 }
 
 #[test]
@@ -73,7 +84,8 @@ fn non_accessible_glob_blocks_read() {
         r,
         c,
         ReadFileInput {
-            path: ".env".into(),
+            path: Some(".env".into()),
+            ..ReadFileInput::default()
         },
     ))
     .unwrap_err();

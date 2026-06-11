@@ -77,6 +77,99 @@ export const workerListRunning = base(
   { running: true },
 )
 
+/* ---------------- worker::status ---------------- */
+
+/** Healthy managed OCI worker: running, real pid, version, both tails populated. */
+export const workerStatusRunning = base(
+  'worker-status-running',
+  'worker::status',
+  { name: 'pdfkit' },
+  wrapHarness({
+    name: 'pdfkit',
+    installed: true,
+    worker_type: 'oci',
+    running: true,
+    pid: 28943,
+    version: '1.0.0',
+    logs_dir: '/Users/anderson/.iii/logs/pdfkit',
+    stderr_tail: [],
+    stdout_tail: [
+      '[pdfkit] booting render pool',
+      '[pdfkit] listening on :4101',
+    ],
+    hint: 'worker is healthy; trigger it with `pdfkit::render`.',
+  }),
+)
+
+/** Crashed worker: installed, not running, failure captured in stderr_tail. */
+export const workerStatusStopped = base(
+  'worker-status-stopped',
+  'worker::status',
+  { name: 'pdfkit' },
+  {
+    name: 'pdfkit',
+    installed: true,
+    worker_type: 'local',
+    running: false,
+    pid: null,
+    version: '1.0.0',
+    logs_dir: '/Users/anderson/.iii/logs/pdfkit',
+    stderr_tail: [
+      'npm ERR! code ELIFECYCLE',
+      'npm ERR! pdfkit@1.0.0 start: `node server.js`',
+      'npm ERR! Exit status 1',
+    ],
+    stdout_tail: [],
+    hint: 'worker crashed on boot; inspect stderr then `worker::start pdfkit`.',
+  },
+)
+
+/** Mid-boot worker: installed, not running, both tails empty (still provisioning). */
+export const workerStatusProvisioning = base(
+  'worker-status-provisioning',
+  'worker::status',
+  { name: 'pdfkit' },
+  {
+    name: 'pdfkit',
+    installed: true,
+    worker_type: 'oci',
+    running: false,
+    pid: null,
+    version: null,
+    logs_dir: null,
+    stderr_tail: [],
+    stdout_tail: [],
+    hint: 'worker is provisioning; re-check `worker::status pdfkit` shortly.',
+  },
+)
+
+/** Unknown worker: not declared in config.yaml. */
+export const workerStatusNotInstalled = base(
+  'worker-status-not-installed',
+  'worker::status',
+  { name: 'ghost' },
+  {
+    name: 'ghost',
+    installed: false,
+    worker_type: 'not-installed',
+    running: false,
+    pid: null,
+    version: null,
+    logs_dir: null,
+    stderr_tail: [],
+    stdout_tail: [],
+    hint: 'not declared in config.yaml; run `worker::add` first.',
+  },
+)
+
+export const workerStatusRunningLoading = base(
+  'worker-status-loading',
+  'worker::status',
+  { name: 'pdfkit' },
+  undefined,
+  { running: true },
+)
+
 /* ---------------- worker::start ---------------- */
 
 export const workerStartDone = base(
@@ -247,6 +340,11 @@ export const workerFixtures = [
   workerListRunningOnly,
   workerListEmpty,
   workerListRunning,
+  workerStatusRunning,
+  workerStatusStopped,
+  workerStatusProvisioning,
+  workerStatusNotInstalled,
+  workerStatusRunningLoading,
   workerStartDone,
   workerStartNoPid,
   workerStopDone,

@@ -3,6 +3,13 @@
 //! a `truncated` block pointing the caller at `coder::list-folder` for
 //! pagination — matching the user's "if folder contains thousands of
 //! files, it should show an indication it loaded only 50" requirement.
+//!
+//! Noise folders matching `default_exclude_globs` (.git, node_modules, …)
+//! surface as childless stub nodes flagged `truncated` with reason
+//! `default_exclude` — never silently hidden; opt out per call with
+//! `use_default_excludes: false`. Nodes carry only `name`; absolute paths
+//! derive from the response's top-level `path` (child = parent + "/" +
+//! name), which cuts thousands of redundant tokens from large snapshots.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,9 +21,15 @@ use crate::config::CoderConfig;
 use crate::error::{err_to_string, CoderError};
 use crate::path::PathResolver;
 
+// examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "example_tree_input")]
 pub struct TreeInput {
-    /// Base folder relative to `base_path`. Defaults to `.`.
+    /// Base folder for the snapshot. Relative to the primary allowed root,
+    /// or an absolute path inside any allowed root. Defaults to `.` (the
+    /// primary root itself). Call `coder::info` to see the allowed roots.
+    /// Paths outside every allowed root are rejected — use the shell
+    /// worker's `shell::fs::*` for host paths outside the jail.
     #[serde(default = "default_path")]
     pub path: String,
     /// Maximum depth to descend; the root node is depth 0.
@@ -26,21 +39,49 @@ pub struct TreeInput {
     /// flagged `truncated` and callers should switch to `coder::list-folder`.
     #[serde(default)]
     pub per_folder_limit: Option<u32>,
+    /// Apply the worker's `default_exclude_globs` config (noise folders
+    /// like .git/node_modules/target — call `coder::info` for the active
+    /// list). Excluded directories still appear as childless nodes
+    /// flagged `truncated` with reason "default_exclude"; excluded files
+    /// are omitted. Pass `false` to list everything.
+    #[serde(default = "default_true")]
+    pub use_default_excludes: bool,
 }
 
 fn default_path() -> String {
     ".".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+// examples are wire-contract; goldens pin them.
+fn example_tree_input() -> serde_json::Value {
+    serde_json::json!({
+        "path": ".",
+        "max_depth": 3
+    })
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TreeOutput {
+    /// Canonical absolute path of the requested folder (resolved through
+    /// the jail). Nodes carry only `name`, and the root node's path IS
+    /// this `path` — do not join the root's `name` onto it; derive
+    /// children by joining from here: child path = parent path + "/" +
+    /// name. Operations on derived paths re-validate through the jail.
+    pub path: String,
+    /// Root node of the snapshot; its `name` is the folder's basename.
     pub root: TreeNode,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TreeNode {
+    /// Entry basename. The ROOT node's path is the response's top-level
+    /// `path` itself; every other node's path derives by joining from
+    /// there: child path = parent path + "/" + name.
     pub name: String,
-    pub path: String,
     pub kind: NodeKind,
     pub size: u64,
     pub mtime: i64,
@@ -48,8 +89,9 @@ pub struct TreeNode {
     pub non_accessible: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<TreeNode>>,
-    /// Set on directories whose `children` was capped at `per_folder_limit`
-    /// or whose subtree was cut off by `max_depth`.
+    /// Set on directories whose `children` was capped at
+    /// `per_folder_limit`, whose subtree was cut off by `max_depth`, or
+    /// which matched `default_exclude_globs` (reason "default_exclude").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<TruncationInfo>,
 }
@@ -65,12 +107,14 @@ pub enum NodeKind {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TruncationInfo {
-    /// Reason this folder was truncated: hit `per_folder_limit` or
-    /// `max_depth`.
+    /// Reason this folder was truncated: hit `per_folder_limit`, cut off
+    /// by `max_depth`, or matched `default_exclude_globs`
+    /// (`default_exclude`).
     pub reason: String,
     /// Number of children actually returned.
     pub shown: u32,
-    /// Total number of children in the folder (only populated when
+    /// Total number of children eligible for listing in the folder,
+    /// counted after default-exclude filtering (only populated when
     /// `reason == "per_folder_limit"`; for depth truncation we don't
     /// peek into the folder).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,32 +136,53 @@ fn inner(
     req: TreeInput,
 ) -> Result<TreeOutput, CoderError> {
     let abs = resolver.resolve(&req.path)?;
-    let md = std::fs::metadata(&abs)?;
+    // NotFound is intercepted with the wire path in scope so the C211
+    // message names the path the caller supplied (standardized wording —
+    // REDACTION INVARIANT: identical to the glob-denied message).
+    let md = std::fs::metadata(&abs).map_err(|e| CoderError::io_for_path(e, &req.path))?;
     if !md.is_dir() {
         return Err(CoderError::BadInput(format!(
             "not a directory: {}",
             req.path
         )));
     }
-    let max_depth = req.max_depth.unwrap_or(cfg.tree_default_depth);
-    let per_folder_limit = req
-        .per_folder_limit
-        .unwrap_or(cfg.tree_per_folder_limit)
-        .max(1);
+    // Explicitly naming an excluded folder as the walk root expresses
+    // the caller's intent to see inside it: the default-exclude filter is
+    // disabled for that ENTIRE walk. Anything less returns an
+    // affirmatively false "empty" listing — direct file children omitted,
+    // subdirectories stubbed one level down.
+    let use_default_excludes = req.use_default_excludes && !resolver.is_default_excluded_dir(&abs);
+    let opts = WalkOpts {
+        max_depth: req.max_depth.unwrap_or(cfg.tree_default_depth),
+        per_folder_limit: req
+            .per_folder_limit
+            .unwrap_or(cfg.tree_per_folder_limit)
+            .max(1),
+        use_default_excludes,
+    };
 
-    let root_rel = resolver.relative(&abs).unwrap_or_default();
-    let root = walk_dir(resolver, &abs, root_rel, 0, max_depth, per_folder_limit)?;
-    Ok(TreeOutput { root })
+    let root = walk_dir(resolver, &abs, 0, &opts)?;
+    Ok(TreeOutput {
+        path: abs.display().to_string(),
+        root,
+    })
+}
+
+struct WalkOpts {
+    max_depth: u32,
+    per_folder_limit: u32,
+    use_default_excludes: bool,
 }
 
 fn walk_dir(
     resolver: &PathResolver,
     abs: &Path,
-    rel: String,
     depth: u32,
-    max_depth: u32,
-    per_folder_limit: u32,
+    opts: &WalkOpts,
 ) -> Result<TreeNode, CoderError> {
+    // Deliberately bare `?` (generic From fallback, no path in the message):
+    // `abs` here can be a DISCOVERED child during the walk — naming it would
+    // violate the REDACTION INVARIANT. Do not "fix" this to io_for_path.
     let md = std::fs::metadata(abs)?;
     let name = abs
         .file_name()
@@ -126,7 +191,6 @@ fn walk_dir(
 
     let mut node = TreeNode {
         name,
-        path: rel.clone(),
         kind: NodeKind::Dir,
         size: md.len(),
         mtime: unix_mtime(&md),
@@ -135,7 +199,23 @@ fn walk_dir(
         truncated: None,
     };
 
-    if depth >= max_depth {
+    // `abs` is always a directory here (the walk only recurses into
+    // dirs), so the dir-boundary check applies. The excluded node still
+    // appears — never silently hidden. The root can't trip this: inner()
+    // disables the filter when the requested root is itself excluded.
+    if opts.use_default_excludes && resolver.is_default_excluded_dir(abs) {
+        node.truncated = Some(TruncationInfo {
+            reason: "default_exclude".to_string(),
+            shown: 0,
+            total: None,
+            hint: "folder matches default_exclude_globs (coder::info lists them); \
+                   re-call coder::tree with use_default_excludes: false to descend"
+                .into(),
+        });
+        return Ok(node);
+    }
+
+    if depth >= opts.max_depth {
         node.truncated = Some(TruncationInfo {
             reason: "max_depth".to_string(),
             shown: 0,
@@ -158,10 +238,21 @@ fn walk_dir(
             return Ok(node);
         }
     };
+    if opts.use_default_excludes {
+        // Excluded non-directory entries are omitted outright — matched
+        // against the configured globs ONLY (no dir companions), so a
+        // file or symlink merely NAMED like an excluded directory is
+        // kept. Directories stay regardless; excluded ones surface as
+        // childless stubs in the recursive call.
+        entries.retain(|e| {
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            is_dir || !resolver.is_default_excluded(&e.path())
+        });
+    }
     entries.sort_by_key(|a| a.file_name());
 
     let total = entries.len() as u32;
-    let cap = per_folder_limit as usize;
+    let cap = opts.per_folder_limit as usize;
     let truncated_here = total as usize > cap;
     let visible = if truncated_here {
         &entries[..cap]
@@ -172,21 +263,9 @@ fn walk_dir(
     let mut children = Vec::with_capacity(visible.len());
     for e in visible {
         let child_abs = e.path();
-        let child_rel = if rel.is_empty() {
-            e.file_name().to_string_lossy().into_owned()
-        } else {
-            format!("{}/{}", rel, e.file_name().to_string_lossy())
-        };
         let ft = e.file_type().ok();
         if ft.as_ref().is_some_and(|t| t.is_dir()) {
-            let sub = walk_dir(
-                resolver,
-                &child_abs,
-                child_rel,
-                depth + 1,
-                max_depth,
-                per_folder_limit,
-            )?;
+            let sub = walk_dir(resolver, &child_abs, depth + 1, opts)?;
             children.push(sub);
         } else {
             let cmd = match e.metadata() {
@@ -195,7 +274,6 @@ fn walk_dir(
             };
             children.push(TreeNode {
                 name: e.file_name().to_string_lossy().into_owned(),
-                path: child_rel,
                 kind: classify(&cmd),
                 size: cmd.len(),
                 mtime: unix_mtime(&cmd),
@@ -246,7 +324,7 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             non_accessible_globs: vec!["**/.env".to_string()],
             tree_default_depth: 4,
             tree_per_folder_limit: 50,
@@ -256,6 +334,15 @@ mod tests {
         (tmp, resolver, cfg)
     }
 
+    fn input(path: &str) -> TreeInput {
+        TreeInput {
+            path: path.into(),
+            max_depth: None,
+            per_folder_limit: None,
+            use_default_excludes: true,
+        }
+    }
+
     #[tokio::test]
     async fn tree_with_nested_dirs() {
         let (tmp, r, c) = setup();
@@ -263,20 +350,10 @@ mod tests {
         std::fs::write(tmp.path().join("a/b/c.txt"), "hi").unwrap();
         std::fs::write(tmp.path().join("z.txt"), "x").unwrap();
 
-        let out = handle(
-            r,
-            c,
-            TreeInput {
-                path: ".".into(),
-                max_depth: None,
-                per_folder_limit: None,
-            },
-        )
-        .await
-        .unwrap();
-        let root = out.root;
+        let out = handle(r, c, input(".")).await.unwrap();
+        let root = &out.root;
         assert!(matches!(root.kind, NodeKind::Dir));
-        let children = root.children.unwrap();
+        let children = root.children.as_ref().unwrap();
         let names: Vec<_> = children.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["a", "z.txt"]);
         let a = &children[0];
@@ -284,6 +361,17 @@ mod tests {
         assert_eq!(a_children[0].name, "b");
         let b_children = a_children[0].children.as_ref().unwrap();
         assert_eq!(b_children[0].name, "c.txt");
+        // The response's top-level path is canonical-absolute (decision
+        // D2-eng); nodes carry only names.
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(out.path, base.display().to_string());
+        // WIRE-CONTRACT PIN: the documented derivation rule (child path =
+        // parent path + "/" + name) must reproduce the real fs path.
+        let derived = format!(
+            "{}/{}/{}/{}",
+            out.path, a.name, a_children[0].name, b_children[0].name
+        );
+        assert_eq!(derived, base.join("a/b/c.txt").display().to_string());
     }
 
     #[tokio::test]
@@ -292,22 +380,12 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("a/b/c")).unwrap();
         std::fs::write(tmp.path().join("a/b/c/x.txt"), "x").unwrap();
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             tree_default_depth: 1,
             tree_per_folder_limit: 50,
             ..CoderConfig::default()
         });
-        let out = handle(
-            r,
-            cfg,
-            TreeInput {
-                path: ".".into(),
-                max_depth: None,
-                per_folder_limit: None,
-            },
-        )
-        .await
-        .unwrap();
+        let out = handle(r, cfg, input(".")).await.unwrap();
         let a = &out.root.children.unwrap()[0];
         // a is depth 1, which equals max_depth → should be truncated, no children loaded.
         assert!(a.children.is_none());
@@ -322,22 +400,12 @@ mod tests {
             std::fs::write(tmp.path().join(format!("f{i:02}.txt")), "x").unwrap();
         }
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             tree_default_depth: 4,
             tree_per_folder_limit: 3,
             ..CoderConfig::default()
         });
-        let out = handle(
-            r,
-            cfg,
-            TreeInput {
-                path: ".".into(),
-                max_depth: None,
-                per_folder_limit: None,
-            },
-        )
-        .await
-        .unwrap();
+        let out = handle(r, cfg, input(".")).await.unwrap();
         let kids = out.root.children.as_ref().unwrap();
         assert_eq!(kids.len(), 3);
         let trunc = out.root.truncated.as_ref().unwrap();
@@ -352,21 +420,138 @@ mod tests {
         let (tmp, r, c) = setup();
         std::fs::write(tmp.path().join(".env"), "x").unwrap();
         std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
-        let out = handle(
-            r,
-            c,
-            TreeInput {
-                path: ".".into(),
-                max_depth: None,
-                per_folder_limit: None,
-            },
-        )
-        .await
-        .unwrap();
+        let out = handle(r, c, input(".")).await.unwrap();
         let kids = out.root.children.unwrap();
         let env = kids.iter().find(|k| k.name == ".env").unwrap();
         assert!(env.non_accessible);
         let a = kids.iter().find(|k| k.name == "a.txt").unwrap();
         assert!(!a.non_accessible);
+    }
+
+    #[tokio::test]
+    async fn default_excluded_dir_appears_as_childless_stub() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(tmp.path().join("node_modules/pkg/index.js"), "x").unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "x").unwrap();
+
+        let out = handle(r, c, input(".")).await.unwrap();
+        let kids = out.root.children.unwrap();
+        let nm = kids
+            .iter()
+            .find(|k| k.name == "node_modules")
+            .expect("excluded dir must still appear, never silently hidden");
+        assert!(matches!(nm.kind, NodeKind::Dir));
+        assert!(nm.children.is_none(), "descent must be suppressed");
+        let trunc = nm.truncated.as_ref().unwrap();
+        assert_eq!(trunc.reason, "default_exclude");
+        assert_eq!(trunc.shown, 0);
+        assert_eq!(trunc.total, None);
+        assert!(
+            trunc.hint.contains("use_default_excludes"),
+            "hint must teach the opt-out: {}",
+            trunc.hint
+        );
+    }
+
+    #[tokio::test]
+    async fn use_default_excludes_false_descends_into_excluded_dirs() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(tmp.path().join("node_modules/pkg/index.js"), "x").unwrap();
+
+        let out = handle(
+            r,
+            c,
+            TreeInput {
+                use_default_excludes: false,
+                ..input(".")
+            },
+        )
+        .await
+        .unwrap();
+        let kids = out.root.children.unwrap();
+        let nm = kids.iter().find(|k| k.name == "node_modules").unwrap();
+        assert!(nm.truncated.is_none());
+        let nm_kids = nm.children.as_ref().expect("opt-out must descend");
+        assert_eq!(nm_kids[0].name, "pkg");
+    }
+
+    #[tokio::test]
+    async fn default_excluded_file_omitted_from_listing() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("debug.log"), "x").unwrap();
+        std::fs::write(tmp.path().join("keep.txt"), "x").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            default_exclude_globs: vec!["**/*.log".to_string()],
+            ..CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        let out = handle(r, cfg, input(".")).await.unwrap();
+        let kids = out.root.children.unwrap();
+        let names: Vec<_> = kids.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["keep.txt"]);
+        assert!(
+            out.root.truncated.is_none(),
+            "omitted files must not count toward per_folder_limit truncation"
+        );
+    }
+
+    fn assert_no_default_exclude_stubs(node: &TreeNode) {
+        if let Some(t) = &node.truncated {
+            assert_ne!(
+                t.reason, "default_exclude",
+                "unexpected default_exclude stub at node {:?}",
+                node.name
+            );
+        }
+        for child in node.children.iter().flatten() {
+            assert_no_default_exclude_stubs(child);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicitly_requested_excluded_root_disables_filter_for_whole_walk() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(tmp.path().join("node_modules/.package-lock.json"), "x").unwrap();
+        std::fs::write(tmp.path().join("node_modules/pkg/index.js"), "x").unwrap();
+
+        let out = handle(r, c, input("node_modules")).await.unwrap();
+        assert!(out.root.truncated.is_none());
+        let kids = out.root.children.as_ref().expect("explicit root must list");
+        let names: Vec<_> = kids.iter().map(|k| k.name.as_str()).collect();
+        // File children directly inside the excluded root must be visible…
+        assert_eq!(names, vec![".package-lock.json", "pkg"]);
+        // …and subdirectories must actually descend, not stub one level down.
+        let pkg = kids.iter().find(|k| k.name == "pkg").unwrap();
+        assert!(pkg.truncated.is_none());
+        assert_eq!(pkg.children.as_ref().unwrap()[0].name, "index.js");
+        assert_no_default_exclude_stubs(&out.root);
+    }
+
+    #[tokio::test]
+    async fn entries_merely_named_like_excluded_dirs_are_kept_as_leaves() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir(tmp.path().join("real")).unwrap();
+        std::fs::write(tmp.path().join("dist"), "not a dir").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real"), tmp.path().join("node_modules"))
+            .unwrap();
+
+        let out = handle(r, c, input(".")).await.unwrap();
+        let kids = out.root.children.unwrap();
+        let dist = kids
+            .iter()
+            .find(|k| k.name == "dist")
+            .expect("a FILE named dist must not be dropped by the dir companion");
+        assert!(matches!(dist.kind, NodeKind::File));
+        assert!(dist.truncated.is_none());
+        let nm = kids
+            .iter()
+            .find(|k| k.name == "node_modules")
+            .expect("a SYMLINK named node_modules must not be dropped");
+        assert!(matches!(nm.kind, NodeKind::Symlink));
+        assert!(nm.truncated.is_none());
     }
 }

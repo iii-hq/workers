@@ -1,7 +1,7 @@
 //! `coder::delete-file` — remove one or more paths. Per-path errors are
 //! reported in the result array rather than failing the whole batch.
 //! Directories require `recursive: true`. Non-accessible paths return
-//! `C211`. Trying to delete `base_path` itself is rejected.
+//! `C211`. Trying to delete an allowed root itself is rejected.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,15 +9,30 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{err_to_string, CoderError};
+use crate::error::{err_to_string, CoderError, WireError};
 use crate::path::PathResolver;
 
+// examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "example_delete_file_input")]
 pub struct DeleteFileInput {
+    /// Paths to remove. Each entry is relative to the primary allowed root,
+    /// or an absolute path inside any allowed root. Call `coder::info` to
+    /// see the allowed roots. Paths outside every allowed root are rejected
+    /// — use the shell worker's `shell::fs::*` for host paths outside the
+    /// jail.
     pub paths: Vec<String>,
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
+}
+
+// examples are wire-contract; goldens pin them.
+fn example_delete_file_input() -> serde_json::Value {
+    serde_json::json!({
+        "paths": ["src/old_module.rs", "build/artifacts"],
+        "recursive": true
+    })
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -27,11 +42,17 @@ pub struct DeleteFileOutput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DeleteFileResult {
+    /// Canonical absolute path (resolved through the jail); the caller's
+    /// input verbatim when resolution failed.
     pub path: String,
     pub success: bool,
     pub removed: bool,
+    /// Structured error for this entry. `code` is stable for programmatic
+    /// branching (e.g. `"C211"` for not-found-or-denied; `"C210"` for
+    /// refusing to delete an allowed root). `message` carries the
+    /// corrective action an LLM agent needs to make a successful second call.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<WireError>,
 }
 
 pub async fn handle(
@@ -51,30 +72,49 @@ pub async fn handle(
 }
 
 fn delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> DeleteFileResult {
-    match try_delete_one(resolver, rel, recursive) {
+    // Resolve up front: deletion operates ONLY on the resolver-returned
+    // path, and the result echoes that canonical absolute path. When
+    // resolution fails there is no canonical path, so the caller's input
+    // is echoed verbatim.
+    let abs = match resolver.require_writable(rel) {
+        Ok(abs) => abs,
+        Err(e) => {
+            return DeleteFileResult {
+                path: rel.to_string(),
+                success: false,
+                removed: false,
+                error: Some((&e).into()),
+            }
+        }
+    };
+    let wire_path = abs.display().to_string();
+    match try_delete_one(resolver, &abs, recursive) {
         Ok(removed) => DeleteFileResult {
-            path: rel.to_string(),
+            path: wire_path,
             success: true,
             removed,
             error: None,
         },
         Err(e) => DeleteFileResult {
-            path: rel.to_string(),
+            path: wire_path,
             success: false,
             removed: false,
-            error: Some(e.to_wire_string()),
+            error: Some((&e).into()),
         },
     }
 }
 
-fn try_delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> Result<bool, CoderError> {
-    let abs = resolver.require_writable(rel)?;
-    if abs == resolver.base_root() {
+fn try_delete_one(
+    resolver: &PathResolver,
+    abs: &Path,
+    recursive: bool,
+) -> Result<bool, CoderError> {
+    if resolver.is_root(abs) {
         return Err(CoderError::BadInput(
-            "refusing to delete base_path itself".into(),
+            "refusing to delete an allowed root itself".into(),
         ));
     }
-    let md = match std::fs::symlink_metadata(&abs) {
+    let md = match std::fs::symlink_metadata(abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Idempotent: missing target counts as "not removed, no error".
@@ -84,19 +124,19 @@ fn try_delete_one(resolver: &PathResolver, rel: &str, recursive: bool) -> Result
     };
     if md.file_type().is_dir() {
         if recursive {
-            remove_dir_all_safe(&abs, resolver)?;
+            remove_dir_all_safe(abs, resolver)?;
         } else {
-            std::fs::remove_dir(&abs).map_err(CoderError::from)?;
+            std::fs::remove_dir(abs).map_err(CoderError::from)?;
         }
     } else {
-        std::fs::remove_file(&abs).map_err(CoderError::from)?;
+        std::fs::remove_file(abs).map_err(CoderError::from)?;
     }
     Ok(true)
 }
 
 /// `std::fs::remove_dir_all` plus a guard rail: refuse to descend through
 /// non-accessible entries. The resolver canonicalised `abs` already so
-/// it's known to be inside `base_root`.
+/// it's known to be inside an allowed root.
 fn remove_dir_all_safe(abs: &Path, resolver: &PathResolver) -> Result<(), CoderError> {
     for entry in walkdir::WalkDir::new(abs)
         .min_depth(1)
@@ -105,11 +145,13 @@ fn remove_dir_all_safe(abs: &Path, resolver: &PathResolver) -> Result<(), CoderE
         .filter_map(|e| e.ok())
     {
         if resolver.is_non_accessible(entry.path()) {
-            return Err(CoderError::NotFoundOrDenied(format!(
-                "recursive delete blocked: {} contains non-accessible {}",
-                abs.display(),
-                entry.path().display()
-            )));
+            // REDACTION INVARIANT: do NOT name the discovered child path.
+            // Naming it would allow callers to enumerate protected entries
+            // by probing recursive deletes. The sanctioned constructor
+            // references only the caller-supplied `abs`.
+            return Err(CoderError::not_found_or_denied_subtree(
+                &abs.display().to_string(),
+            ));
         }
     }
     std::fs::remove_dir_all(abs).map_err(CoderError::from)
@@ -123,7 +165,7 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(crate::config::CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             non_accessible_globs: vec!["**/.env".to_string()],
             ..crate::config::CoderConfig::default()
         });
@@ -179,7 +221,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C211"));
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
         assert!(tmp.path().join(".env").exists());
     }
 
@@ -233,8 +275,45 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C211"));
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
         assert!(tmp.path().join("d/.env").exists());
+    }
+
+    // REDACTION INVARIANT: the error message for a recursive-delete blocked
+    // by a non-accessible child MUST NOT contain the child's filename. The
+    // caller supplied "d", so only "d" (its canonical absolute form) may
+    // appear — the child ".env" must be invisible to the caller.
+    #[tokio::test]
+    async fn recursive_blocked_error_does_not_leak_child_path() {
+        let (tmp, r) = setup();
+        std::fs::create_dir(tmp.path().join("secrets")).unwrap();
+        std::fs::write(tmp.path().join("secrets/.env"), "API_KEY=secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["secrets".into()],
+                recursive: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        let err = out.results[0].error.as_ref().unwrap();
+        // Code must be C211.
+        assert_eq!(err.code, "C211", "expected C211, got: {:?}", err.code);
+        // The discovered child name must NOT appear in the error.
+        assert!(
+            !err.message.contains(".env"),
+            "REDACTION INVARIANT violated: error leaks child '.env': {}",
+            err.message
+        );
+        // The caller-supplied directory name IS allowed to appear (it was
+        // the input they gave us).
+        assert!(
+            err.message.contains("secrets"),
+            "expected caller path 'secrets' in error, got: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
@@ -250,6 +329,6 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C210"));
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
     }
 }

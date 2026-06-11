@@ -26,6 +26,7 @@ export const WORKER_FUNCTION_IDS = [
   'worker::start',
   'worker::stop',
   'worker::list',
+  'worker::status',
   'worker::clear',
   'worker::schema',
 ] as const
@@ -78,6 +79,63 @@ export const workerListResponseSchema = z.object({
   workers: z.array(workerEntrySchema),
 })
 export type WorkerListResponse = z.infer<typeof workerListResponseSchema>
+
+/* ---------------- worker::status ---------------- */
+
+export const workerStatusRequestSchema = z.object({
+  name: z.string(),
+})
+export type WorkerStatusRequest = z.infer<typeof workerStatusRequestSchema>
+
+/**
+ * StatusOutcome (flat, post-`unwrapEnvelope`). Rust `Option<T>` =>
+ * `.nullable().optional()` to mirror `workerEntrySchema` (pid/version).
+ * `stderr_tail` / `stdout_tail` default to `[]` so an absent key never
+ * collapses the log panes — the host always sends arrays, but the worker
+ * namespace has shipped omitted-tail payloads before.
+ */
+export const workerStatusResponseSchema = z.object({
+  name: z.string(),
+  installed: z.boolean(),
+  worker_type: z.string(),
+  running: z.boolean(),
+  pid: z.number().nullable().optional(),
+  version: z.string().nullable().optional(),
+  logs_dir: z.string().nullable().optional(),
+  stderr_tail: z.array(z.string()).optional().default([]),
+  stdout_tail: z.array(z.string()).optional().default([]),
+  hint: z.string(),
+})
+export type WorkerStatusResponse = z.infer<typeof workerStatusResponseSchema>
+
+/**
+ * The four-way status derived from a StatusOutcome. The Rust contract
+ * (`StatusOutcome.running`) is explicit: running=false covers BOTH
+ * install/boot AND a crash, and `stderr_tail` is the documented
+ * discriminator ("check stderr_tail to tell which"). So a down worker with
+ * a log tail is a `stopped` failure (stderr carries npm/boot errors), while
+ * a down worker with NO tail is the daemon's own "installed but not running
+ * and no logs yet — likely still provisioning" branch (worker_manager_daemon
+ * build_status). We label that no-tail case `provisioning` to match the
+ * daemon hint rendered on the same screen, but keep it on the neutral
+ * `default` pill variant (never the reassuring accent/ok families): empty
+ * tails can also be rotated/omitted (the host has shipped omitted-tail
+ * payloads — see the StatusResponse schema comment), so the neutral variant
+ * avoids over-promising a healthy boot while the label stays truthful to the
+ * hint. Pure + unit-tested here rather than in the component.
+ */
+export type WorkerStatusState =
+  | 'not-installed'
+  | 'running'
+  | 'stopped'
+  | 'provisioning'
+
+export function statusState(resp: WorkerStatusResponse): WorkerStatusState {
+  if (!resp.installed) return 'not-installed'
+  if (resp.running) return 'running'
+  const hasTail = resp.stderr_tail.length > 0 || resp.stdout_tail.length > 0
+  return hasTail ? 'stopped' : 'provisioning'
+}
 
 /* ---------------- worker::add ---------------- */
 

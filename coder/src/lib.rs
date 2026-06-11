@@ -3,6 +3,7 @@
 //! share source files via Cargo's two-target compile.
 
 pub mod config;
+pub mod configuration;
 pub mod error;
 pub mod functions;
 pub mod manifest;

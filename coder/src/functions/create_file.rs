@@ -9,16 +9,22 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CoderConfig;
-use crate::error::{err_to_string, CoderError};
+use crate::error::{err_to_string, CoderError, WireError};
 use crate::path::PathResolver;
 
+// examples are wire-contract; goldens pin them.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateFileSpec {
+    /// Path relative to the primary allowed root, or an absolute path inside
+    /// any allowed root. Call `coder::info` to see the allowed roots. Paths
+    /// outside every allowed root are rejected — use the shell worker's
+    /// `shell::fs::*` for host paths outside the jail.
     pub path: String,
     pub content: String,
     /// Octal permission bits as a string, e.g. "0644". Defaults to "0644".
@@ -40,6 +46,24 @@ fn default_true() -> bool {
     true
 }
 
+// examples are wire-contract; goldens pin them.
+fn example_create_file_input() -> serde_json::Value {
+    serde_json::json!({
+        "files": [
+            {
+                "path": "src/lib.rs",
+                "content": "pub mod utils;\n",
+                "overwrite": false
+            },
+            {
+                "path": "/tmp/scratch/notes.md",
+                "content": "# scratch notes\n",
+                "overwrite": true
+            }
+        ]
+    })
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CreateFileOutput {
     pub results: Vec<CreateFileResult>,
@@ -47,11 +71,17 @@ pub struct CreateFileOutput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CreateFileResult {
+    /// Canonical absolute path (resolved through the jail); the caller's
+    /// input verbatim when resolution failed.
     pub path: String,
     pub success: bool,
     pub bytes_written: u64,
+    /// Structured error for this entry. `code` is stable for programmatic
+    /// branching (e.g. `"C217"` means already-exists; pass `overwrite=true`
+    /// to replace). `message` carries the corrective action an LLM agent
+    /// needs to make a successful second call.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<WireError>,
 }
 
 pub async fn handle(
@@ -76,33 +106,46 @@ fn create_one(
     cfg: &CoderConfig,
     spec: CreateFileSpec,
 ) -> CreateFileResult {
-    let path = spec.path.clone();
-    match try_create_one(resolver, cfg, spec) {
+    // Resolve up front: from here on every filesystem operation uses ONLY
+    // the resolver-returned path (never re-derived from the raw request),
+    // and the result echoes that canonical absolute path. When resolution
+    // fails there is no canonical path, so the input is echoed verbatim.
+    let abs = match resolver.require_writable(&spec.path) {
+        Ok(abs) => abs,
+        Err(e) => {
+            return CreateFileResult {
+                path: spec.path,
+                success: false,
+                bytes_written: 0,
+                error: Some((&e).into()),
+            }
+        }
+    };
+    let wire_path = abs.display().to_string();
+    match try_create_one(cfg, &abs, spec) {
         Ok(bytes) => CreateFileResult {
-            path,
+            path: wire_path,
             success: true,
             bytes_written: bytes,
             error: None,
         },
         Err(e) => CreateFileResult {
-            path,
+            path: wire_path,
             success: false,
             bytes_written: 0,
-            error: Some(e.to_wire_string()),
+            error: Some((&e).into()),
         },
     }
 }
 
-fn try_create_one(
-    resolver: &PathResolver,
-    cfg: &CoderConfig,
-    spec: CreateFileSpec,
-) -> Result<u64, CoderError> {
-    let abs = resolver.require_writable(&spec.path)?;
+fn try_create_one(cfg: &CoderConfig, abs: &Path, spec: CreateFileSpec) -> Result<u64, CoderError> {
     let bytes = spec.content.as_bytes();
     if (bytes.len() as u64) > cfg.max_write_bytes {
         return Err(CoderError::TooLarge(format!(
-            "{} bytes exceeds max_write_bytes {}",
+            "{} is {} bytes, which exceeds max_write_bytes ({}). \
+             Split the content into smaller files or raise \
+             max_write_bytes in coder config.",
+            spec.path,
             bytes.len(),
             cfg.max_write_bytes
         )));
@@ -115,11 +158,13 @@ fn try_create_one(
     }
     if spec.parents {
         if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).map_err(CoderError::from)?;
+            // io_for_path names spec.path (caller-supplied, redaction-safe)
+            // rather than the derived parent directory.
+            std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
         }
     }
-    std::fs::write(&abs, bytes).map_err(CoderError::from)?;
-    apply_mode(&abs, &spec.mode)?;
+    std::fs::write(abs, bytes).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
+    apply_mode(abs, &spec.mode)?;
     Ok(bytes.len() as u64)
 }
 
@@ -145,7 +190,7 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
         let tmp = tempdir().unwrap();
         let cfg = Arc::new(CoderConfig {
-            base_path: tmp.path().to_path_buf(),
+            base_paths: vec![tmp.path().to_path_buf()],
             non_accessible_globs: vec!["**/.env".to_string()],
             max_read_bytes: 1024 * 1024,
             max_write_bytes: 1024 * 1024,
@@ -175,6 +220,15 @@ mod tests {
         .unwrap();
         assert!(out.results[0].success);
         assert_eq!(out.results[0].bytes_written, 5);
+        // Successful entries echo the canonical absolute path.
+        assert_eq!(
+            out.results[0].path,
+            std::fs::canonicalize(tmp.path())
+                .unwrap()
+                .join("a.txt")
+                .display()
+                .to_string()
+        );
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "hello"
@@ -223,7 +277,8 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C217"));
+        let err = out.results[0].error.as_ref().unwrap();
+        assert_eq!(err.code, "C217");
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
             "old"
@@ -275,14 +330,14 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C211"));
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
     }
 
     #[tokio::test]
     async fn refuses_oversize() {
         let (_tmp, r, _c) = setup();
         let small_cfg = Arc::new(CoderConfig {
-            base_path: _tmp.path().to_path_buf(),
+            base_paths: vec![_tmp.path().to_path_buf()],
             non_accessible_globs: vec![],
             max_write_bytes: 4,
             ..CoderConfig::default()
@@ -303,7 +358,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!out.results[0].success);
-        assert!(out.results[0].error.as_deref().unwrap().contains("C213"));
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C213");
     }
 
     #[tokio::test]
@@ -337,5 +392,40 @@ mod tests {
         assert!(!out.results[0].success);
         assert!(out.results[1].success);
         assert!(tmp.path().join("ok.txt").exists());
+    }
+
+    /// The per-entry `error` field must serialize as a raw JSON object —
+    /// NOT a JSON string containing escaped JSON. An LLM agent reading
+    /// `"code":"C2` directly as an object key requires no mental
+    /// unescaping; the old wire shape `\"code\":\"C2` was a double-encode.
+    #[tokio::test]
+    async fn error_field_serializes_as_structured_object_not_escaped_string() {
+        let (_tmp, r, c) = setup();
+        let out = handle(
+            r,
+            c,
+            CreateFileInput {
+                files: vec![CreateFileSpec {
+                    path: ".env".into(),
+                    content: "x".into(),
+                    mode: "0644".into(),
+                    parents: true,
+                    overwrite: false,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let serialized = serde_json::to_string(&out.results[0]).unwrap();
+        // Structured object key must appear raw.
+        assert!(
+            serialized.contains(r#""code":"C2"#),
+            "expected raw object key; got: {serialized}"
+        );
+        // Double-encoded form must NOT appear.
+        assert!(
+            !serialized.contains(r#"\"code\""#),
+            "double-encoded JSON detected; got: {serialized}"
+        );
     }
 }

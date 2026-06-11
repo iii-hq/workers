@@ -1,9 +1,11 @@
 /**
  * `coder::create-file` — input-derived diffs via @pierre/diffs.
  *
- * UI-only: overwrite shows new content only (previous version unknown on wire).
- * When the Rust handler later adds optional `before`/`after` snapshots, this
- * view can switch to `CoderFileDiff` when those fields are present.
+ * UI-only: overwrite shows new content only (previous version unknown on
+ * wire). Entries are independent — one failure never aborts the batch, so
+ * each row gets its own success/error state. Per-entry errors are
+ * structured WireError {code, message}; the message names the corrective
+ * next call (e.g. C217 → retry with overwrite: true) and is shown verbatim.
  */
 import { TriangleAlert } from 'lucide-react'
 import { formatBytes } from '@/components/chat/sandbox/format'
@@ -59,21 +61,28 @@ export function CreateFileView({
       {req.files.map((file, i) => {
         const result = resp?.results[i]
         if (result && !result.success) {
+          // Result path is canonical absolute (jail-resolved) unless
+          // resolution itself failed — then it's the caller's input
+          // verbatim, never absolute. Flag that so it reads as raw input.
+          const unresolved = !result.path.startsWith('/')
           return (
             <div
               key={file.path}
-              className="border-b border-rule-2 last:border-b-0 px-3 py-2 flex items-center gap-2 font-mono text-[12px]"
+              className="border-b border-rule-2 last:border-b-0 px-3 py-2 flex flex-wrap items-center gap-2 font-mono text-[12px]"
             >
-              <span className="text-ink">{file.path}</span>
+              <span className="text-ink">{result.path}</span>
+              {unresolved ? (
+                <span className="text-ink-ghost text-[11px]">· unresolved</span>
+              ) : null}
               {result.error ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="inline-flex items-center gap-1 text-warn cursor-help">
                       <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
-                      err
+                      {result.error.code}
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent>{result.error}</TooltipContent>
+                  <TooltipContent>{result.error.message}</TooltipContent>
                 </Tooltip>
               ) : (
                 <span className="text-warn">err</span>

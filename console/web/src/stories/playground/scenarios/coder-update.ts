@@ -1,4 +1,8 @@
-import { coderUpdateSkillDiscovery } from '@/stories/fixtures/coder-fixtures'
+import {
+  coderReadWindowNumbered,
+  coderSearchContext,
+  coderUpdateSkillDiscovery,
+} from '@/stories/fixtures/coder-fixtures'
 import {
   makeBackend,
   streamAssistant,
@@ -10,7 +14,21 @@ export const coderUpdate = makeBackend(
   'coder-update',
   async function* (_prompt, _mode, _model, opts) {
     const signal = opts?.signal
-    yield* streamThought('expanding the discovery section in SKILL.md…', {
+    yield* streamThought('locating the discovery section in SKILL.md…', {
+      signal,
+    })
+    yield* streamFcall({
+      functionId: 'coder::search',
+      input: coderSearchContext.input,
+      output: coderSearchContext.output,
+      waitMs: 500,
+      signal,
+    })
+    yield* streamFcall({
+      functionId: 'coder::read-file',
+      input: coderReadWindowNumbered.input,
+      output: coderReadWindowNumbered.output,
+      waitMs: 500,
       signal,
     })
     yield* streamFcall({

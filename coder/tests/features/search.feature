@@ -1,10 +1,14 @@
 @engine @search
 Feature: coder::search
-  Combined path + content search under `base_path`. Supports literal
+  Combined path + content search under the allowed roots. Supports literal
   and regex queries with include / exclude globs, returns content and
   path matches in separate arrays, and refuses to read non-accessible
   files. Binary files (NUL byte heuristic) and oversize files are
-  skipped silently.
+  skipped silently. Noise paths matching default_exclude_globs are
+  skipped by default (use_default_excludes: false searches inside);
+  optional context lines (max 10 each way) ride along with content
+  matches, and the response is bounded by a byte budget that flags
+  truncated instead of erroring.
 
   Background:
     Given the iii engine is reachable
@@ -167,3 +171,52 @@ Feature: coder::search
       {"query": "x", "search_content": false, "search_paths": false}
       """
     Then the call failed with code "C210"
+
+  Scenario: context_lines_before above the cap is rejected with C210
+    When I call coder::search with payload:
+      """
+      {"query": "x", "context_lines_before": 11}
+      """
+    Then the call failed with code "C210"
+
+  Scenario: context lines within the cap still succeed
+    Given a file at "ctx.txt" with content:
+      """
+      one
+      two needle
+      three
+      """
+    When I call coder::search with payload:
+      """
+      {"query": "needle", "context_lines_before": 1, "context_lines_after": 1}
+      """
+    Then the call succeeded
+    And the search has a content match for "ctx.txt" at line 2
+
+  Scenario: default excludes hide node_modules from content and path results
+    Given a file at "node_modules/pkg/dep.js" with content:
+      """
+      banana
+      """
+    And a file at "src/ok.txt" with content:
+      """
+      banana
+      """
+    When I call coder::search with payload:
+      """
+      {"query": "banana"}
+      """
+    Then the search has a content match for "src/ok.txt"
+    And the search has no content match for "node_modules/pkg/dep.js"
+    And the search has no path match for "node_modules/pkg/dep.js"
+
+  Scenario: use_default_excludes false searches inside excluded folders
+    Given a file at "node_modules/pkg/dep.js" with content:
+      """
+      banana
+      """
+    When I call coder::search with payload:
+      """
+      {"query": "banana", "use_default_excludes": false}
+      """
+    Then the search has a content match for "node_modules/pkg/dep.js"

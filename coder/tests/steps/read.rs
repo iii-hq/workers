@@ -54,6 +54,15 @@ fn read_path_equals(world: &mut CoderWorld, expected: String) {
     if world.iii.is_none() {
         return;
     }
+    // Responses carry canonical absolute paths; features speak
+    // base-relative, so anchor the expectation at the scenario base.
+    let expected = world
+        .base_path
+        .as_ref()
+        .expect("base_path set")
+        .join(&expected)
+        .display()
+        .to_string();
     let v = last_ok(world);
     let got = v["path"].as_str().unwrap_or("");
     assert_eq!(got, expected, "path echo mismatch; got: {v}");

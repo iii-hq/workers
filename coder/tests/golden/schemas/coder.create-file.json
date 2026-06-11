@@ -1,0 +1,138 @@
+{
+  "description": "Create one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` flags; non-accessible paths return C211. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::create-file",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CreateFileSpec": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "mode": {
+            "default": "0644",
+            "description": "Octal permission bits as a string, e.g. \"0644\". Defaults to \"0644\".",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "When false (the default), refuse to write if `path` already exists.",
+            "type": "boolean"
+          },
+          "parents": {
+            "default": true,
+            "description": "Create missing parent directories. Defaults to true so a single `coder::create-file` call can scaffold a fresh subtree.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Path relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "examples": [
+      {
+        "files": [
+          {
+            "content": "pub mod utils;\n",
+            "overwrite": false,
+            "path": "src/lib.rs"
+          },
+          {
+            "content": "# scratch notes\n",
+            "overwrite": true,
+            "path": "/tmp/scratch/notes.md"
+          }
+        ]
+      }
+    ],
+    "properties": {
+      "files": {
+        "items": {
+          "$ref": "#/definitions/CreateFileSpec"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "files"
+    ],
+    "title": "CreateFileInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CreateFileResult": {
+        "properties": {
+          "bytes_written": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WireError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C217\"` means already-exists; pass `overwrite=true` to replace). `message` carries the corrective action an LLM agent needs to make a successful second call."
+          },
+          "path": {
+            "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bytes_written",
+          "path",
+          "success"
+        ],
+        "type": "object"
+      },
+      "WireError": {
+        "description": "Structured per-entry error as it appears on the wire.\n\nUse `code` for stable programmatic branching (e.g. `\"C211\"` for not-found-or-denied). `message` carries the human/LLM-readable problem description plus the corrective next call.",
+        "properties": {
+          "code": {
+            "description": "Stable error code, e.g. \"C211\". See the README error table.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human/LLM-readable message: problem + actual values + corrective next call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "results": {
+        "items": {
+          "$ref": "#/definitions/CreateFileResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "CreateFileOutput",
+    "type": "object"
+  }
+}

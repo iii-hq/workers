@@ -14,12 +14,6 @@ function usePierreDiffOptions() {
   }
 }
 
-interface CoderFileDiffProps {
-  path: string
-  oldContents: string
-  newContents: string
-}
-
 /** Input-derived diff: empty old side for new files. */
 export function CoderNewFilePreview({
   path,
@@ -59,23 +53,6 @@ export function CoderOverwritePreview({
         </Chip>
       </div>
       <File file={file} options={options} />
-    </div>
-  )
-}
-
-export function CoderFileDiff({
-  path,
-  oldContents,
-  newContents,
-}: CoderFileDiffProps) {
-  const options = usePierreDiffOptions()
-  return (
-    <div className="border-b border-rule-2 last:border-b-0">
-      <MultiFileDiff
-        oldFile={{ name: path, contents: oldContents }}
-        newFile={{ name: path, contents: newContents }}
-        options={options}
-      />
     </div>
   )
 }
