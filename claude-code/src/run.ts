@@ -1,0 +1,296 @@
+/**
+ * claude::* function registrations. `claude::run` accepts either a bare
+ * `prompt` string or the canonical brain-contract shape (`messages` array of
+ * role/content-block messages), so anything that can drive
+ * `run::start_and_wait` — the acp worker, the console, another worker — can
+ * drive Claude Code unchanged.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { query, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type { ISdk } from 'iii-sdk';
+import { z } from 'zod';
+import { makeIiiBridge } from './bridge.js';
+import type { Config } from './config.js';
+import type { Emit } from './events.js';
+import {
+  lastAssistant,
+  makeAssistantMessage,
+  makeFunctionResult,
+  mapAssistantContent,
+  mapToolResultContent,
+  mapUsage,
+  type ToolCallIndex,
+} from './map.js';
+import { listSessions, loadSession, saveSession } from './state.js';
+import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
+
+const ContentBlockSchema = z.object({ type: z.string() }).passthrough();
+const MessageSchema = z.object({
+  role: z.string(),
+  content: z.union([z.string(), z.array(ContentBlockSchema)]),
+});
+
+const RunPayloadSchema = z.object({
+  session_id: z.string().optional(),
+  prompt: z.string().optional(),
+  messages: z.array(MessageSchema).optional(),
+  model: z.string().optional(),
+  cwd: z.string().optional(),
+  system_prompt: z.string().optional(),
+  append_system_prompt: z.string().optional(),
+  permission_mode: z.enum(['default', 'acceptEdits', 'plan', 'bypassPermissions']).optional(),
+  allowed_tools: z.array(z.string()).optional(),
+  disallowed_tools: z.array(z.string()).optional(),
+  max_turns: z.number().int().positive().optional(),
+  timeout_ms: z.number().int().positive().optional(),
+});
+
+export type RunPayload = z.infer<typeof RunPayloadSchema>;
+export { RunPayloadSchema };
+
+type LiveRun = { interrupt: () => Promise<void> };
+const live = new Map<string, LiveRun>();
+
+export function extractPrompt(payload: RunPayload): string {
+  if (payload.prompt) return payload.prompt;
+  const users = (payload.messages ?? []).filter((m) => m.role === 'user');
+  const last = users[users.length - 1];
+  if (!last) throw new Error('claude::run requires `prompt` or a user message in `messages`');
+  if (typeof last.content === 'string') return last.content;
+  return last.content
+    .map((b) => ('text' in b && typeof b.text === 'string' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function gatedCanUseTool(iii: ISdk, session_id: string) {
+  return async (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
+    try {
+      const res = await iii.trigger<unknown, { decision?: string; behavior?: string }>({
+        function_id: 'policy::check_permissions',
+        payload: { session_id, function_id: `claude-code::${toolName}`, args: input },
+        timeoutMs: 5_000,
+      });
+      const decision = res?.decision ?? res?.behavior ?? 'deny';
+      if (decision === 'allow') return { behavior: 'allow', updatedInput: input };
+      return { behavior: 'deny', message: `denied by approval gate (${decision})` };
+    } catch {
+      return { behavior: 'deny', message: 'approval gate unreachable (fail-closed)' };
+    }
+  };
+}
+
+export async function executeRun(
+  iii: ISdk,
+  cfg: Config,
+  emit: Emit,
+  payload: RunPayload,
+): Promise<Record<string, unknown>> {
+  const session_id = payload.session_id ?? randomUUID();
+  const prompt = extractPrompt(payload);
+  const prior = await loadSession(iii, session_id);
+  const d = cfg.defaults;
+
+  const record: SessionRecord = prior ?? {
+    session_id,
+    claude_session_id: null,
+    cwd: payload.cwd ?? d.cwd,
+    model: payload.model ?? d.model,
+    status: 'working',
+    turns: 0,
+    total_cost_usd: 0,
+    usage: null,
+    updated_at_ms: Date.now(),
+  };
+  record.status = 'working';
+  record.updated_at_ms = Date.now();
+  await saveSession(iii, record);
+
+  const append = payload.append_system_prompt ?? d.append_system_prompt;
+  const options: Options = {
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.cwd ? { cwd: record.cwd } : {}),
+    ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
+    maxTurns: payload.max_turns ?? d.max_turns,
+    permissionMode: payload.permission_mode ?? d.permission_mode,
+    allowedTools: payload.allowed_tools ?? d.allowed_tools,
+    disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
+    systemPrompt: payload.system_prompt
+      ? payload.system_prompt
+      : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
+    settingSources: [],
+    ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+    ...(cfg.expose_iii_bridge ? { mcpServers: { iii: makeIiiBridge(iii) } } : {}),
+    ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
+  };
+
+  const q = query({ prompt, options });
+  live.set(session_id, { interrupt: () => q.interrupt() });
+
+  const transcript: AgentMessage[] = [];
+  const pendingResults: FunctionResultMessage[] = [];
+  const calls: ToolCallIndex = new Map();
+  let resultText = '';
+  let stopReason = 'end';
+  let isError = false;
+
+  try {
+    for await (const msg of q) {
+      if (msg.type === 'system' && msg.subtype === 'init') {
+        record.claude_session_id = msg.session_id;
+        await saveSession(iii, record);
+      } else if (msg.type === 'assistant') {
+        const usage = mapUsage(msg.message.usage);
+        const content = mapAssistantContent(msg.message.content as never, calls);
+        const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
+        transcript.push(assistant);
+        await emit(session_id, { type: 'message_complete', message: assistant });
+        for (const block of content) {
+          if (block.type === 'function_call') {
+            await emit(session_id, {
+              type: 'function_execution_start',
+              function_call_id: block.id,
+              function_id: block.function_id,
+              args: block.arguments,
+            });
+          }
+        }
+      } else if (msg.type === 'user') {
+        const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
+        for (const b of blocks as unknown as Array<Record<string, unknown>>) {
+          if (b.type !== 'tool_result') continue;
+          const callId = String(b.tool_use_id ?? '');
+          const call = calls.get(callId);
+          const content = mapToolResultContent(b.content);
+          const fr = makeFunctionResult(
+            callId,
+            call?.function_id ?? 'claude-code::unknown',
+            content,
+            b.is_error === true,
+          );
+          transcript.push(fr);
+          pendingResults.push(fr);
+          await emit(session_id, {
+            type: 'function_execution_end',
+            function_call_id: callId,
+            function_id: fr.function_id,
+            result: { content, details: null },
+            is_error: fr.is_error,
+            duration_ms: call ? Date.now() - call.started_at : 0,
+          });
+        }
+      } else if (msg.type === 'result') {
+        record.claude_session_id = msg.session_id ?? record.claude_session_id;
+        record.turns += msg.num_turns ?? 1;
+        record.total_cost_usd += msg.total_cost_usd ?? 0;
+        record.usage = mapUsage(msg.usage);
+        isError = msg.is_error === true;
+        stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
+        resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
+      }
+    }
+  } catch (err) {
+    isError = true;
+    stopReason = 'error';
+    resultText = String(err);
+  } finally {
+    live.delete(session_id);
+  }
+
+  record.status = isError ? 'error' : 'done';
+  record.updated_at_ms = Date.now();
+  await saveSession(iii, record);
+
+  if (transcript.length === 0) {
+    transcript.push(
+      makeAssistantMessage(
+        [{ type: 'text', text: resultText }],
+        record.model,
+        record.usage,
+        stopReason,
+      ),
+    );
+  }
+  await emit(session_id, {
+    type: 'turn_end',
+    message: lastAssistant(transcript),
+    function_results: pendingResults,
+  });
+  await emit(session_id, { type: 'agent_end', messages: transcript });
+
+  return {
+    session_id,
+    claude_session_id: record.claude_session_id,
+    result: resultText,
+    stop_reason: stopReason,
+    is_error: isError,
+    num_turns: record.turns,
+    total_cost_usd: record.total_cost_usd,
+    usage: record.usage,
+  };
+}
+
+export function register(iii: ISdk, cfg: Config, emit: Emit): void {
+  iii.registerFunction(
+    'claude::run',
+    async (payload: unknown) => executeRun(iii, cfg, emit, RunPayloadSchema.parse(payload ?? {})),
+    {
+      description:
+        'Run one Claude Code turn and wait for the result. Accepts `prompt` or brain-contract `messages`; streams AgentEvent frames onto agent::events and returns {session_id, result, usage, total_cost_usd}.',
+    },
+  );
+
+  iii.registerFunction(
+    'claude::start',
+    async (payload: unknown) => {
+      const parsed = RunPayloadSchema.parse(payload ?? {});
+      const session_id = parsed.session_id ?? randomUUID();
+      void executeRun(iii, cfg, emit, { ...parsed, session_id }).catch((err) =>
+        console.error(`claude::start background run failed for ${session_id}: ${String(err)}`),
+      );
+      return { session_id, started: true };
+    },
+    {
+      description:
+        'Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
+    },
+  );
+
+  iii.registerFunction(
+    'claude::stop',
+    async (payload: unknown) => {
+      const { session_id } = z.object({ session_id: z.string() }).parse(payload ?? {});
+      const run = live.get(session_id);
+      if (!run) return { session_id, stopped: false, reason: 'no live run' };
+      await run.interrupt();
+      return { session_id, stopped: true };
+    },
+    { description: 'Interrupt a live Claude Code run for a session.' },
+  );
+
+  iii.registerFunction(
+    'claude::status',
+    async (payload: unknown) => {
+      const { session_id } = z.object({ session_id: z.string() }).parse(payload ?? {});
+      const record = await loadSession(iii, session_id);
+      return { session_id, live: live.has(session_id), record };
+    },
+    { description: 'Point-in-time status of a Claude Code session.' },
+  );
+
+  iii.registerFunction(
+    'claude::sessions::list',
+    async () => ({ sessions: await listSessions(iii) }),
+    { description: 'List every Claude Code session this worker has run.' },
+  );
+
+  iii.registerFunction(
+    'run::start_and_wait',
+    async (payload: unknown) => executeRun(iii, cfg, emit, RunPayloadSchema.parse(payload ?? {})),
+    {
+      description:
+        'Canonical iii brain entrypoint backed by Claude Code: run a turn for {session_id, messages} and return when it ends.',
+    },
+  );
+}

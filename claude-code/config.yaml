@@ -1,0 +1,27 @@
+engine_url: ws://127.0.0.1:49134
+
+defaults:
+  model: ""
+  permission_mode: acceptEdits
+  max_turns: 50
+  cwd: ""
+  append_system_prompt: ""
+  allowed_tools: []
+  disallowed_tools: []
+
+# Expose the iii bus to Claude Code as in-process MCP tools
+# (mcp__iii__trigger / mcp__iii__functions_list / mcp__iii__functions_info).
+expose_iii_bridge: true
+
+# Route Claude Code permission prompts through policy::check_permissions
+# (harness approval gate). Fail-closed when the gate is unreachable.
+# Requires the harness worker; leave false for standalone use.
+approval_gate: false
+
+# Stream AgentEvent frames here, grouped by session_id. The console and
+# acp worker both read this stream.
+events_stream: agent::events
+
+# Path to the Claude Code CLI binary. Empty = Agent SDK default resolution;
+# set to an absolute path (or "claude") when running the single-file bundle.
+claude_executable: ""

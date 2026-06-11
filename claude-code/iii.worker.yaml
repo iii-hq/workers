@@ -1,0 +1,17 @@
+iii: v1
+name: claude-code
+language: javascript
+deploy: bundle
+manifest: package.json
+description: Claude Code as an iii worker — claude::* functions run headless Claude Code turns, stream AgentEvent frames onto agent::events, and expose the live engine catalog back to Claude through an in-process MCP bridge.
+
+runtime:
+  kind: javascript
+
+scripts:
+  install: npm install && npm run build
+  start: node dist/index.js
+
+dependencies:
+  iii-state: "^0.17.0"
+  iii-stream: "^0.17.0"
