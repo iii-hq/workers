@@ -70,4 +70,16 @@ mod tests {
         // 5xx wins over message sniffing
         assert_eq!(classify(Some(500), "context blah"), ErrorKind::Transient);
     }
+
+    #[test]
+    fn bus_error_codes_are_worker_prefixed() {
+        match invalid_request("x") {
+            IIIError::Remote { code, .. } => assert_eq!(code, "provider/invalid_request"),
+            other => panic!("want Remote, got {other:?}"),
+        }
+        match upstream_unavailable("x") {
+            IIIError::Remote { code, .. } => assert_eq!(code, "provider/upstream_unavailable"),
+            other => panic!("want Remote, got {other:?}"),
+        }
+    }
 }
