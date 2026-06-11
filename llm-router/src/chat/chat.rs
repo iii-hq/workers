@@ -490,7 +490,10 @@ mod tests {
         .unwrap();
 
         let result = pipeline.run(call, sink).await;
-        assert!(result.is_err(), "routing failure still surfaces an error to the caller");
+        assert!(
+            result.is_err(),
+            "routing failure still surfaces an error to the caller"
+        );
 
         let mut reader = ch.reader;
         let first = reader.next(Duration::from_millis(50)).await;
