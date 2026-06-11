@@ -10,13 +10,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use iii_sdk::III;
+use iii_sdk::{TriggerRequest, III};
 use tokio::sync::OnceCell;
 
 use session_manager::config::WorkerConfig;
 use session_manager::events::{
-    register_store_events_type, register_trigger_types, Emitter, EventSink, IiiDeliverer,
+    register_store_events_type, register_trigger_types, BridgeSubscribers, Emitter, EventSink,
+    IiiDeliverer,
 };
 use session_manager::functions::{self, store_protocol, Deps};
 use session_manager::service::SessionService;
@@ -26,6 +28,10 @@ pub struct Shared {
     /// The main (fs-mode) instance's data directory; steps read the
     /// per-session JSONL files from here.
     pub data_dir: PathBuf,
+    /// The main emitter's live relay registry (`session::store::events`
+    /// subscribers); bridge stacks poll it to confirm their relay
+    /// binding round-tripped (see `common::bridge`).
+    pub bridges: BridgeSubscribers,
 }
 
 static SHARED: OnceCell<Arc<Shared>> = OnceCell::const_new();
@@ -46,7 +52,7 @@ pub async fn register_all(iii: &Arc<III>) -> Arc<Shared> {
             let emitter = Arc::new(Emitter::with_bridges(
                 sets,
                 Arc::new(IiiDeliverer::new(iii.clone())),
-                bridges,
+                bridges.clone(),
             ));
 
             let store: Arc<dyn SessionStore> =
@@ -58,11 +64,13 @@ pub async fn register_all(iii: &Arc<III>) -> Arc<Shared> {
             let deps = Arc::new(Deps { service, sink });
             functions::register_all(iii, &deps);
 
-            // Give the SDK a beat to publish the registrations before
-            // scenarios start triggering them.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Block until the engine can route to the surface registered
+            // above: registrations flow over one connection in boot
+            // order, so the *last* one being routable means the batch
+            // landed. No fixed sleep — slow runners just poll longer.
+            wait_until_routable(iii, "session::set_active_leaf").await;
 
-            Arc::new(Shared { data_dir })
+            Arc::new(Shared { data_dir, bridges })
         })
         .await
         .clone()
@@ -70,4 +78,35 @@ pub async fn register_all(iii: &Arc<III>) -> Arc<Shared> {
 
 pub fn shared() -> Option<Arc<Shared>> {
     SHARED.get().cloned()
+}
+
+/// Poll the engine until `function_id` is routable, panicking after a
+/// deadline. An `Err` carrying a `session/` code also counts as
+/// routable — it proves the call reached the production handler.
+async fn wait_until_routable(iii: &Arc<III>, function_id: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let res = iii
+            .trigger(TriggerRequest {
+                function_id: function_id.to_string(),
+                payload: serde_json::json!({
+                    "session_id": "bdd-readiness-probe",
+                    "entry_id": "none",
+                }),
+                action: None,
+                timeout_ms: Some(1_000),
+            })
+            .await;
+        match res {
+            Ok(_) => return,
+            Err(e) if e.to_string().contains("session/") => return,
+            Err(e) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{function_id} did not become routable within 10s: {e}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
 }

@@ -278,9 +278,13 @@ impl SessionStore for FsStore {
     }
 
     async fn put_meta(&self, meta: &SessionMeta) -> Result<(), StoreError> {
+        // Disk first, cache second: a failed append must never leave the
+        // cache claiming state the file doesn't have (it would silently
+        // revert on restart). Cold-cache replay after the append already
+        // contains the record, so the closure is idempotent.
         let record = Record::Meta { meta: meta.clone() };
-        self.with_loaded(&meta.session_id, |s| s.meta = Some(meta.clone()))?;
-        self.append_record(&meta.session_id, &record)
+        self.append_record(&meta.session_id, &record)?;
+        self.with_loaded(&meta.session_id, |s| s.meta = Some(meta.clone()))
     }
 
     async fn delete_meta(&self, session_id: &str) -> Result<(), StoreError> {
@@ -316,10 +320,10 @@ impl SessionStore for FsStore {
         let record = Record::Entry {
             entry: entry.clone(),
         };
+        self.append_record(session_id, &record)?;
         self.with_loaded(session_id, |s| {
             s.entries.insert(entry.id().to_string(), entry.clone());
-        })?;
-        self.append_record(session_id, &record)
+        })
     }
 
     async fn list_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, StoreError> {
@@ -345,8 +349,8 @@ impl SessionStore for FsStore {
         let record = Record::Leaf {
             entry_id: Some(entry_id.to_string()),
         };
-        self.with_loaded(session_id, |s| s.leaf = Some(entry_id.to_string()))?;
-        self.append_record(session_id, &record)
+        self.append_record(session_id, &record)?;
+        self.with_loaded(session_id, |s| s.leaf = Some(entry_id.to_string()))
     }
 
     async fn delete_active_leaf(&self, session_id: &str) -> Result<(), StoreError> {
@@ -521,6 +525,37 @@ mod tests {
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].session_id, id);
         assert_eq!(metas[0].title, "hostile");
+    }
+
+    #[tokio::test]
+    async fn failed_append_leaves_cache_consistent_with_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "before")).await.unwrap();
+
+        // Force the next append to fail: swap the session file for a
+        // directory so the append open errors deterministically.
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(store.put_meta(&meta("s_1", "after")).await.is_err());
+        assert!(store
+            .put_entry("s_1", &entry("e_1", None, "one", 0))
+            .await
+            .is_err());
+        assert!(store.set_active_leaf("s_1", "e_1").await.is_err());
+
+        // The cache still reflects the last durable state — a failed
+        // write must not leave phantom in-memory state.
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().title,
+            "before"
+        );
+        assert!(store.list_entries("s_1").await.unwrap().is_empty());
+        assert!(store.get_active_leaf("s_1").await.unwrap().is_none());
     }
 
     #[tokio::test]

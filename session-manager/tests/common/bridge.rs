@@ -7,7 +7,7 @@
 //! a recorder so scenarios can assert what local subscribers received.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iii_sdk::III;
 
@@ -49,9 +49,23 @@ pub async fn build_bridge_stack(engine: &Arc<III>) -> BridgeStack {
     let sink: Arc<dyn EventSink> =
         Arc::new(RemotePublisher::new(engine.clone(), BRIDGE_TIMEOUT_MS));
 
-    // Give the relay function + trigger registration a beat to
-    // round-trip before scenarios mutate.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The relay only delivers once its STORE_EVENTS binding has
+    // round-tripped through the engine to the main's handler. The main
+    // stack runs in-process (common::workers), so poll its live relay
+    // registry until this stack's relay id appears — no fixed sleep.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let attached = super::workers::shared()
+            .is_some_and(|shared| shared.bridges.function_ids().contains(&relay_fn));
+        if attached {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bridge relay {relay_fn} did not attach to the main's event feed within 10s"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     BridgeStack {
         deps: Arc::new(Deps { service, sink }),

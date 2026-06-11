@@ -39,7 +39,11 @@ pub enum BackendKind {
     Bridge,
 }
 
+/// Root config shape. Unknown keys are rejected so a typo'd field
+/// (e.g. `backnd: bridge`) fails loudly instead of silently running
+/// the default backend.
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Storage backend selector. Default `fs`.
     #[serde(default = "default_backend")]
@@ -248,6 +252,12 @@ mod tests {
     #[test]
     fn unknown_backend_kind_is_rejected_at_parse() {
         assert!(serde_yaml::from_str::<WorkerConfig>("backend: cloud").is_err());
+    }
+
+    #[test]
+    fn unknown_root_key_is_rejected_at_parse() {
+        let err = serde_yaml::from_str::<WorkerConfig>("backnd: bridge").unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 
     #[test]

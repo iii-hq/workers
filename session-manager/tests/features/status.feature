@@ -51,8 +51,13 @@ Feature: session::set_status — the coarse lifecycle status
     And function "ui::status" received 1 "session::status_changed" delivery
 
   # Prevents: spec-strict regression — same status with a DIFFERENT
-  # reason is still a no-op; the stored reason must not silently change.
+  # reason is still a no-op; the stored reason must not silently change
+  # and the second call must not emit a duplicate status_changed.
   Scenario: same status with a different reason is still a no-op
+    Given a binding "b1" on "session::status_changed" delivering to "ui::status" with config:
+      """
+      {}
+      """
     Given I call "session::set_status" with:
       """
       { "session_id": "s_001", "status": "error", "reason": "rate limited" }
@@ -66,6 +71,7 @@ Feature: session::set_status — the coarse lifecycle status
       { "session_id": "s_001" }
       """
     Then the response field "meta.status_reason" is "rate limited"
+    And function "ui::status" received 1 "session::status_changed" delivery
 
   # Prevents: failures without a cause — error status must carry the
   # short reason for standalone UIs.

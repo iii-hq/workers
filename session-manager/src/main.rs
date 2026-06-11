@@ -1,10 +1,11 @@
 //! `session-manager` binary entry.
 //!
 //! Boot sequence:
-//!   1. Parse CLI / load YAML config (with fallback to defaults), then
-//!      resolve the storage backend — an invalid `backend_config` is
-//!      **fatal** (a misconfigured bridge must never silently fall back
-//!      to a local fs store).
+//!   1. Parse CLI / load YAML config (a missing file falls back to
+//!      defaults), then resolve the storage backend — a malformed
+//!      config file or invalid `backend_config` is **fatal** (a
+//!      misconfigured bridge must never silently fall back to a local
+//!      fs store).
 //!   2. Connect to the local iii engine over WebSocket.
 //!   3. Register the six public trigger types (`session::created`, ...)
 //!      — first, because the function handlers capture the subscriber
@@ -83,9 +84,18 @@ async fn main() -> Result<()> {
 
     let cfg = match config::load_config(&cli.config) {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "failed to load config, using defaults");
+        // A missing file is fine (run on defaults); a file that exists
+        // but doesn't parse is fatal — a typo'd config must never
+        // silently run the default backend.
+        Err(e)
+            if e.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            tracing::warn!(path = %cli.config, "config file not found, using defaults");
             config::WorkerConfig::default()
+        }
+        Err(e) => {
+            return Err(e.context(format!("invalid config {} — refusing to start", cli.config)));
         }
     };
     let backend = cfg
@@ -134,11 +144,16 @@ async fn main() -> Result<()> {
             Arc::new(Deps { service, sink })
         }
         Backend::Bridge(bridge_cfg) => {
+            // Exact match is unambiguous misconfiguration: the bridge
+            // would defer storage to itself and hang on the first call.
+            // (Aliased URLs of the same engine can still slip through —
+            // this is a best-effort guard.)
             if bridge_cfg.url == cli.url {
-                tracing::warn!(
-                    url = %bridge_cfg.url,
-                    "bridge url equals the local engine url — this instance would defer to \
-                     itself; check backend_config.url"
+                anyhow::bail!(
+                    "bridge url {} equals the local engine url {} — this instance would defer \
+                     to itself; fix backend_config.url",
+                    bridge_cfg.url,
+                    cli.url
                 );
             }
             let remote = Arc::new(register_worker(

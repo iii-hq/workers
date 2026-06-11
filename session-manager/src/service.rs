@@ -74,10 +74,12 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now_ms(&self) -> i64 {
+        // Fail fast on a pre-1970 system clock: a 0 fallback would
+        // persist bogus epoch timestamps into a durable store.
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+            .expect("system clock is before UNIX_EPOCH")
+            .as_millis() as i64
     }
 }
 

@@ -80,7 +80,8 @@ Feature: bridge backend — storage deferral and event propagation
     Then the response field "meta.message_count" is 1
     When via bridged instance "B1" I call "session::append" with:
       """
-      { "session_id": "ghost-session" }
+      { "session_id": "ghost-session",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "into the void" }], "timestamp": 3 } }
       """
     Then the call fails with code "session/not_found"
 
