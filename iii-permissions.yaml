@@ -64,3 +64,18 @@ rules:
   - engine::registered-triggers::list
   - engine::registered-triggers::info
   - worker::list
+  # Public worker-registry catalogue reads — the system prompt's
+  # search-before-build ladder starts here. worker::add stays approval-gated.
+  - directory::registry::workers::list
+  - directory::registry::workers::info
+  # Read-only coder surface. Mutating ops (create/update/move/delete-file)
+  # stay approval-gated.
+  - coder::info
+  - coder::read-file
+  - coder::search
+  - coder::list-folder
+  - coder::tree
+  # web::fetch is load-bearing for the system prompt's SDK-reference gate and
+  # HTTP-trigger verification; it enforces size/timeout caps and server-side
+  # SSRF protection, so it is allowed by default.
+  - web::fetch
