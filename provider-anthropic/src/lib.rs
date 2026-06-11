@@ -4,7 +4,7 @@
 // pub mod config;
 // pub mod curated;
 // pub mod discovery;
-// pub mod errors;
+pub mod errors;
 pub mod manifest;
 // pub mod register;
 // pub mod request;
