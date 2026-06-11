@@ -13,6 +13,9 @@ use std::collections::HashSet;
 const ORPHAN_TOOL_PLACEHOLDER: &str =
     "Tool call was interrupted before completing. Continue without its output.";
 
+/// One transcript content block → its Anthropic wire shape, or `None` to drop
+/// it. The `Image` arm is intentionally added vs the TS port (plan Task 5 #6):
+/// the TS dropped top-level user images; we map them to a base64 `source`.
 pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
     match b {
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
