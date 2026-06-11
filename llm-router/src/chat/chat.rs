@@ -76,14 +76,30 @@ impl ChatPipeline {
         call: ChatCall,
         sink: Arc<dyn FrameSink>,
     ) -> Result<ChatResponse, IIIError> {
+        // A pre-stream failure must still leave exactly one terminal frame on
+        // the sink. Without it, `router::complete`'s drain blocks for its full
+        // reader budget and `router::chat` consumers never see a terminal.
+        // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
+        let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> IIIError {
+            let frame = synthesize_error(None, &call.model, provider, &message, None, now_ms());
+            let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
+            RouterError::new(code, message).into()
+        };
+
         // ── validate (pre-stream typed throws) ──
         if call.model.is_empty() {
-            return Err(RouterError::new(RouterCode::InvalidRequest, "model is required").into());
+            return Err(fail_pre_stream(
+                "",
+                RouterCode::InvalidRequest,
+                "model is required".into(),
+            ));
         }
         if !call.messages.is_array() {
-            return Err(
-                RouterError::new(RouterCode::InvalidRequest, "messages must be an array").into(),
-            );
+            return Err(fail_pre_stream(
+                "",
+                RouterCode::InvalidRequest,
+                "messages must be an array".into(),
+            ));
         }
 
         let settings = self.settings.read().unwrap().clone();
@@ -95,14 +111,18 @@ impl ChatPipeline {
             heuristics: settings.routing_heuristics.clone(),
             default_provider: settings.default_provider.clone(),
         })
-        .map_err(IIIError::from)?;
+        .map_err(|e| fail_pre_stream("", e.code, e.message))?;
         let provider = candidates[0].clone(); // MVP consumes candidates[0]
-        let record = self.registry.get(&provider).await.ok_or_else(|| {
-            IIIError::from(RouterError::new(
-                RouterCode::UnknownProvider,
-                format!("unknown provider {provider}"),
-            ))
-        })?;
+        let record = match self.registry.get(&provider).await {
+            Some(record) => record,
+            None => {
+                return Err(fail_pre_stream(
+                    &provider,
+                    RouterCode::UnknownProvider,
+                    format!("unknown provider {provider}"),
+                ))
+            }
+        };
 
         // Structured-output gate: known model without the flag throws; unknown
         // model fails open — the provider is the final arbiter.
@@ -110,11 +130,11 @@ impl ChatPipeline {
         if call.response_format.is_some() {
             if let Some(meta) = &model_meta {
                 if !model_supports(meta, "structured_output") {
-                    return Err(RouterError::new(
+                    return Err(fail_pre_stream(
+                        &provider,
                         RouterCode::StructuredOutputUnsupported,
                         format!("structured output unsupported for model {}", call.model),
-                    )
-                    .into());
+                    ));
                 }
             }
         }
@@ -434,5 +454,58 @@ mod tests {
         assert!(!is_function_not_found(&IIIError::Timeout));
         assert!(is_router_coded(&remote("router/not_configured")));
         assert!(!is_router_coded(&remote("function_not_found")));
+    }
+
+    /// A pre-stream failure (here: a model that routes to no provider) must
+    /// still emit exactly one terminal error frame to the sink. Without it,
+    /// `router::complete`'s drain blocks for the full reader budget and
+    /// `router::chat` streaming consumers never see a terminal.
+    #[tokio::test]
+    async fn pre_stream_routing_failure_emits_one_error_terminal_frame() {
+        use crate::catalog::store::CatalogStore;
+        use crate::chat::inflight::InflightMap;
+        use crate::chat::relay::{ReadEvent, RelayRead};
+        use crate::registry::store::RegistryStore;
+        use crate::settings::RouterSettings;
+        use crate::testkit::fake_channels::FakeChannel;
+        use std::sync::RwLock;
+        use std::time::Duration;
+
+        // empty registry + empty catalog → nothing routes "ghost-model".
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:0", iii_sdk::InitOptions::default());
+        let pipeline = ChatPipeline {
+            iii: iii.clone(),
+            registry: Arc::new(RegistryStore::new(iii.clone())),
+            catalog: Arc::new(CatalogStore::new(iii.clone())),
+            inflight: Arc::new(InflightMap::default()),
+            settings: Arc::new(RwLock::new(RouterSettings::default())),
+        };
+
+        let ch = FakeChannel::new();
+        let sink: Arc<dyn FrameSink> = Arc::new(ch.writer.clone());
+        let call: ChatCall = serde_json::from_value(json!({
+            "model": "ghost-model-routes-nowhere",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
+        }))
+        .unwrap();
+
+        let result = pipeline.run(call, sink).await;
+        assert!(result.is_err(), "routing failure still surfaces an error to the caller");
+
+        let mut reader = ch.reader;
+        let first = reader.next(Duration::from_millis(50)).await;
+        let ReadEvent::Msg(m) = first else {
+            panic!("expected a terminal error frame on the channel, got {first:?}");
+        };
+        let ev: AssistantMessageEvent = serde_json::from_str(&m).unwrap();
+        assert!(
+            matches!(ev, AssistantMessageEvent::Error { .. }),
+            "frame must be a terminal error, got {ev:?}"
+        );
+        let second = reader.next(Duration::from_millis(50)).await;
+        assert!(
+            matches!(second, ReadEvent::Eof | ReadEvent::Timeout),
+            "exactly one frame expected, got a second: {second:?}"
+        );
     }
 }
