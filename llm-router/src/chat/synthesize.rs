@@ -23,6 +23,7 @@ pub fn synthesize_error(
     model: &str,
     provider: &str,
     message: &str,
+    error_kind: ErrorKind,
     usage: Option<Usage>,
     now_ms: i64,
 ) -> AssistantMessageEvent {
@@ -30,7 +31,7 @@ pub fn synthesize_error(
         .cloned()
         .unwrap_or_else(|| empty_partial(model, provider, now_ms));
     base.stop_reason = StopReason::Error;
-    base.error_kind = Some(ErrorKind::Transient);
+    base.error_kind = Some(error_kind);
     base.error_message = Some(message.to_string());
     base.usage = usage.or(base.usage); // partial usage survives a synthesized terminal
     base.timestamp = now_ms;
@@ -66,6 +67,7 @@ mod tests {
             "m",
             "p",
             "provider p died",
+            ErrorKind::Transient,
             Some(Usage {
                 input: Some(5),
                 ..Default::default()
