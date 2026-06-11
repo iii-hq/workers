@@ -52,10 +52,7 @@ fn free_port() -> u16 {
 async fn spawn_engine() -> Option<Engine> {
     let bin = engine_bin()?;
     let port = free_port();
-    let dir = std::env::temp_dir().join(format!(
-        "provider-anthropic-it-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let dir = std::env::temp_dir().join(format!("provider-anthropic-it-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("temp dir");
 
     let config = format!(
@@ -243,9 +240,9 @@ async fn boot_stack(engine_url: &str) -> (III, III) {
         let list = call(&router_iii, "router::provider::list", json!({}))
             .await
             .unwrap();
-        let registered = list["providers"].as_array().is_some_and(|p| {
-            p.iter().any(|x| x["id"] == "anthropic")
-        });
+        let registered = list["providers"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|x| x["id"] == "anthropic"));
         if registered {
             break;
         }
@@ -472,9 +469,9 @@ async fn provider_redeclares_on_router_ready() {
         let list = call(&router2, "router::provider::list", json!({}))
             .await
             .unwrap();
-        let listed = list["providers"].as_array().is_some_and(|p| {
-            p.iter().any(|x| x["id"] == "anthropic")
-        });
+        let listed = list["providers"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|x| x["id"] == "anthropic"));
         if listed {
             break;
         }

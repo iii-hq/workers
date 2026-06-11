@@ -154,6 +154,10 @@ A provider worker must:
    frames. Transport retries (429 / 5xx / connect) are the router's job, not
    the provider's.
 
+The first real provider implementing this protocol is
+[`provider-anthropic/`](../provider-anthropic/) — useful as a reference
+implementation alongside the scripted provider in the integration tests.
+
 ## Local development & testing
 
 ```bash
