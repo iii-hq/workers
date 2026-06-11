@@ -72,7 +72,7 @@ A turn from the CLI and the session record it leaves behind:
 
 ![iii trigger claude::status showing the stored session record](assets/cli-status.png)
 
-![iii trigger claude::run --help querying the engine for the function description](assets/cli-help.png)
+![iii trigger claude::run --help printing the published request schema as a parameter table](assets/cli-help.png)
 
 Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
 
