@@ -44,6 +44,15 @@ pub struct RegistryStore {
     records: Mutex<HashMap<String, ProviderRecord>>,
 }
 
+/// Outcome of `upsert`: the stored record, the raw registration token (it
+/// exists nowhere else), and whether this registration recovered a previously
+/// down provider — the caller emits `op:"available"` when it did.
+pub struct Upserted {
+    pub record: ProviderRecord,
+    pub token: String,
+    pub availability_recovered: bool,
+}
+
 /// Pure record assembly for upsert (no I/O — persistence is the caller's job).
 /// Token hash and registered_at are preserved across a re-register; the rest
 /// is recomposed from the new declaration.
@@ -67,6 +76,15 @@ fn build_record(
         registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
         declaration,
     }
+}
+
+/// Whether this registration brings a previously-down provider back up. A fresh
+/// register is not a recovery (the `op:"register"` event already signals
+/// presence); only a known provider whose `available` flag was false
+/// transitioning to true is — and that transition needs its own `op:"available"`
+/// event so availability subscribers don't stay stuck on the prior "unavailable".
+fn availability_recovered(existing: Option<&ProviderRecord>) -> bool {
+    matches!(existing.map(|e| e.available), Some(false))
 }
 
 impl RegistryStore {
@@ -126,7 +144,7 @@ impl RegistryStore {
         declaration: ProviderDeclaration,
         worker_id: Option<String>,
         token: Option<String>,
-    ) -> Result<(ProviderRecord, String), RouterError> {
+    ) -> Result<Upserted, RouterError> {
         let mut records = self.records.lock().await; // serialized writer
         let existing = records.get(&declaration.id);
         if let Some(existing) = existing {
@@ -142,6 +160,7 @@ impl RegistryStore {
             }
         }
         let raw_token = token.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let recovered = availability_recovered(existing);
         let record = build_record(existing, declaration, worker_id, &raw_token);
         records.insert(record.declaration.id.clone(), record.clone());
         self.persist(&records).await.map_err(|e| {
@@ -150,7 +169,11 @@ impl RegistryStore {
                 format!("registry persist failed: {e}"),
             )
         })?;
-        Ok((record, raw_token))
+        Ok(Upserted {
+            record,
+            token: raw_token,
+            availability_recovered: recovered,
+        })
     }
 
     /// Token gate for resolve / reconcile / update_credential (and re-register).
@@ -228,5 +251,27 @@ mod tests {
             back.available,
             "re-registering brings a downed provider back up"
         );
+    }
+
+    // A down→up transition on re-register must be reported so the register
+    // handler can emit op:"available"; a fresh or already-up register must not.
+    #[test]
+    fn down_to_up_reregistration_is_a_recovery() {
+        let down = ProviderRecord {
+            available: false,
+            ..build_record(None, decl("anthropic"), Some("w-1".into()), "tok")
+        };
+        assert!(availability_recovered(Some(&down)));
+    }
+
+    #[test]
+    fn fresh_registration_is_not_a_recovery() {
+        assert!(!availability_recovered(None));
+    }
+
+    #[test]
+    fn reregistering_an_up_provider_is_not_a_recovery() {
+        let up = build_record(None, decl("anthropic"), Some("w-1".into()), "tok"); // available: true
+        assert!(!availability_recovered(Some(&up)));
     }
 }

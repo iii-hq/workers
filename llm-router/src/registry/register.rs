@@ -82,10 +82,12 @@ pub fn make_provider_register(
             let worker_id = declaration.worker_id.clone();
             let static_models = declaration.models.clone();
             let id = declaration.id.clone();
-            let (_, token) = registry
+            let upserted = registry
                 .upsert(declaration, worker_id, input.token)
                 .await
                 .map_err(IIIError::from)?;
+            let token = upserted.token;
+            let availability_recovered = upserted.availability_recovered;
 
             // Re-compose the entry schema from every registered declaration —
             // under the entry write lock so concurrent boots compose.
@@ -110,6 +112,18 @@ pub fn make_provider_register(
                 json!({ "provider": id, "op": "register" }),
             )
             .await;
+
+            // A down provider coming back up via re-registration is an
+            // availability transition; emit it explicitly so subscribers tracking
+            // op:"available"/"unavailable" don't stay stuck on the prior down state.
+            if availability_recovered {
+                triggers::publish(
+                    &iii,
+                    triggers::PROVIDER_CHANGED,
+                    json!({ "provider": id, "op": "available" }),
+                )
+                .await;
+            }
 
             // Static catalog slice: reconciled at registration (spec § register).
             if let Some(models) = static_models {
