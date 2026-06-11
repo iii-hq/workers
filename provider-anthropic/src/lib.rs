@@ -1,13 +1,13 @@
 //! provider-anthropic: Anthropic Messages API provider behind llm-router.
 //! Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
-// pub mod config;
+pub mod config;
 // pub mod curated;
 // pub mod discovery;
 pub mod errors;
 pub mod manifest;
 // pub mod register;
-// pub mod request;
+pub mod request;
 // pub mod router_client;
 pub mod sse;
 // pub mod state;
