@@ -32,8 +32,11 @@ register(iii, cfg, emit, emitRaw);
 console.log(`claude-code worker connected to ${url}`);
 
 const shutdown = async () => {
-  await iii.shutdown?.();
-  process.exit(0);
+  try {
+    await iii.shutdown?.();
+  } finally {
+    process.exit(0);
+  }
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

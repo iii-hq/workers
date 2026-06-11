@@ -85,7 +85,7 @@ type LiveRun = { interrupt: () => Promise<void> };
 const live = new Map<string, LiveRun>();
 
 export function extractPrompt(payload: RunPayload): string {
-  if (payload.prompt) return payload.prompt;
+  if (typeof payload.prompt === 'string') return payload.prompt;
   const users = (payload.messages ?? []).filter((m) => m.role === 'user');
   const last = users[users.length - 1];
   if (!last) throw new Error('claude::run requires `prompt` or a user message in `messages`');
@@ -113,6 +113,16 @@ function gatedCanUseTool(iii: ISdk, session_id: string) {
   };
 }
 
+function callerOptions(payload: RunPayload, cfg: Config): Partial<Options> {
+  const opts = { ...(payload.options as Partial<Options> | undefined) };
+  if (cfg.approval_gate) {
+    // enforcement keys must not shadow the gate
+    delete (opts as Record<string, unknown>).canUseTool;
+    delete (opts as Record<string, unknown>).permissionMode;
+  }
+  return opts;
+}
+
 export async function executeRun(
   iii: ISdk,
   cfg: Config,
@@ -136,6 +146,8 @@ export async function executeRun(
     usage: null,
     updated_at_ms: Date.now(),
   };
+  if (payload.cwd) record.cwd = payload.cwd;
+  if (payload.model) record.model = payload.model;
   record.status = 'working';
   record.updated_at_ms = Date.now();
   await saveSession(iii, record);
@@ -154,12 +166,13 @@ export async function executeRun(
       : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
     settingSources: [],
     ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+    ...callerOptions(payload, cfg),
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
-    ...(payload.options as Partial<Options> | undefined),
   };
 
   const q = query({ prompt, options });
-  live.set(session_id, { interrupt: () => q.interrupt() });
+  const handle: LiveRun = { interrupt: () => q.interrupt() };
+  live.set(session_id, handle);
 
   const transcript: AgentMessage[] = [];
   const pendingResults: FunctionResultMessage[] = [];
@@ -229,7 +242,7 @@ export async function executeRun(
     stopReason = 'error';
     resultText = String(err);
   } finally {
-    live.delete(session_id);
+    if (live.get(session_id) === handle) live.delete(session_id);
   }
 
   record.status = isError ? 'error' : 'done';

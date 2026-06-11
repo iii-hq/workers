@@ -55,12 +55,16 @@ export function mapAssistantContent(
 export function mapToolResultContent(raw: unknown): ContentBlock[] {
   if (typeof raw === 'string') return [{ type: 'text', text: raw }];
   if (Array.isArray(raw)) {
-    return raw
-      .filter((b): b is SdkContentBlock => typeof b === 'object' && b !== null)
-      .map((b) => ({
-        type: 'text' as const,
-        text: b.type === 'text' ? (b.text ?? '') : JSON.stringify(b),
-      }));
+    return raw.map((b) => {
+      if (typeof b === 'object' && b !== null) {
+        const blk = b as SdkContentBlock;
+        return {
+          type: 'text' as const,
+          text: blk.type === 'text' ? (blk.text ?? '') : JSON.stringify(blk),
+        };
+      }
+      return { type: 'text' as const, text: JSON.stringify(b ?? null) };
+    });
   }
   return [{ type: 'text', text: JSON.stringify(raw ?? null) }];
 }
@@ -112,6 +116,7 @@ export function mapUsage(raw: unknown): Usage | null {
 }
 
 export function lastAssistant(messages: AgentMessage[]): AgentMessage {
+  if (messages.length === 0) return makeAssistantMessage([], '', null);
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'assistant') return messages[i];
   }

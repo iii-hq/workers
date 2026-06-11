@@ -63,6 +63,14 @@ describe('mapToolResultContent', () => {
     ]);
   });
 
+  it('preserves scalar array entries instead of dropping them', () => {
+    expect(mapToolResultContent(['plain', 42, null])).toEqual([
+      { type: 'text', text: '"plain"' },
+      { type: 'text', text: '42' },
+      { type: 'text', text: 'null' },
+    ]);
+  });
+
   it('stringifies anything else', () => {
     expect(mapToolResultContent({ ok: true })).toEqual([{ type: 'text', text: '{"ok":true}' }]);
     expect(mapToolResultContent(undefined)).toEqual([{ type: 'text', text: 'null' }]);
@@ -125,5 +133,10 @@ describe('lastAssistant', () => {
   it('falls back to the final message when no assistant exists', () => {
     const fr = makeFunctionResult('id', 'fn', [], false);
     expect(lastAssistant([fr])).toBe(fr);
+  });
+
+  it('returns a synthetic assistant message for an empty transcript', () => {
+    const msg = lastAssistant([]);
+    expect(msg).toMatchObject({ role: 'assistant', content: [] });
   });
 });

@@ -29,8 +29,10 @@ export async function loadConfig(path: string): Promise<Config> {
   let raw: unknown = {};
   try {
     raw = parse(await readFile(path, 'utf8')) ?? {};
-  } catch {
-    // missing config file falls back to defaults
+  } catch (err) {
+    // a missing config file falls back to defaults; anything else
+    // (YAML parse error, permissions) must fail the worker fast
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   return ConfigSchema.parse(raw);
 }

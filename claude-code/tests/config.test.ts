@@ -35,6 +35,13 @@ describe('loadConfig', () => {
     expect(cfg.approval_gate).toBe(true);
   });
 
+  it('rethrows YAML parse errors instead of silently using defaults', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-code-config-'));
+    const path = join(dir, 'config.yaml');
+    await writeFile(path, 'defaults: [unclosed\n  bad: {');
+    await expect(loadConfig(path)).rejects.toThrow();
+  });
+
   it('rejects an invalid permission mode', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-code-config-'));
     const path = join(dir, 'config.yaml');

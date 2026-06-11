@@ -2,7 +2,7 @@
   "name": "claude-code",
   "version": "0.1.0",
   "private": true,
-  "description": "Claude Code as an iii worker: headless turns over the iii bus, AgentEvent frames on agent::events, and an MCP bridge back into the engine catalog.",
+  "description": "Claude Code as an iii worker: headless turns over the iii bus, raw messages on claude::events, AgentEvent frames on agent::events.",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

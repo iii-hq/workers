@@ -155,6 +155,42 @@ describe('executeRun', () => {
     expect(result.num_turns).toBe(3);
   });
 
+  it('honors per-turn cwd and model overrides on a resumed session', async () => {
+    const fake = fakeIii();
+    fake.state.set('claude_sessions/s1', {
+      session_id: 's1',
+      claude_session_id: 'cs-prior',
+      cwd: '/old/repo',
+      model: 'old-model',
+      status: 'done',
+      turns: 1,
+      total_cost_usd: 0,
+      usage: null,
+      updated_at_ms: 1,
+    });
+    const cfg = await baseConfig();
+    const capture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
+    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({
+        prompt: 'x',
+        session_id: 's1',
+        cwd: '/new/repo',
+        model: 'new-model',
+      }),
+    );
+    expect(capture.options).toMatchObject({
+      cwd: '/new/repo',
+      model: 'new-model',
+      resume: 'cs-prior',
+    });
+  });
+
   it('extracts the prompt from the last user message of a messages payload', async () => {
     const { capture } = await runTurn({
       session_id: 's1',
@@ -268,5 +304,26 @@ describe('approval gate', () => {
   it('does not install canUseTool when the gate is off', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
     expect(capture.options).not.toHaveProperty('canUseTool');
+  });
+
+  it('caller options cannot shadow the gate', async () => {
+    const fake = fakeIii();
+    const cfg = { ...(await baseConfig()), approval_gate: true };
+    const capture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
+    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({
+        prompt: 'x',
+        session_id: 's1',
+        options: { canUseTool: 'overridden', permissionMode: 'bypassPermissions' },
+      }),
+    );
+    expect(capture.options?.canUseTool).toBeTypeOf('function');
+    expect(capture.options?.permissionMode).not.toBe('bypassPermissions');
   });
 });
