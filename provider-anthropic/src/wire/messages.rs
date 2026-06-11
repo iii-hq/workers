@@ -39,6 +39,9 @@ pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
         ContentBlock::Thinking { text, signature } => signature
             .as_ref()
             .map(|sig| json!({ "type": "thinking", "thinking": text, "signature": sig })),
+        ContentBlock::RedactedThinking { data } => {
+            Some(json!({ "type": "redacted_thinking", "data": data }))
+        }
         // Only valid inside a FunctionResultMessage, handled there.
         ContentBlock::FunctionResult { .. } => None,
     }
@@ -115,6 +118,17 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
             _ => None,
         })
         .collect();
+    // Assistant turns that actually emitted a tool_use on the wire.
+    let mut emitted_call_ids: HashSet<String> = HashSet::new();
+    for m in messages {
+        if let AgentMessage::Assistant(a) = m {
+            for block in &a.content {
+                if let ContentBlock::FunctionCall { id, .. } = block {
+                    emitted_call_ids.insert(id.clone());
+                }
+            }
+        }
+    }
 
     for m in messages {
         match m {
@@ -132,7 +146,10 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
                 }
                 let content: Vec<Value> =
                     a.content.iter().filter_map(content_block_to_wire).collect();
-                out.push(json!({ "role": "assistant", "content": content }));
+                // Anthropic rejects assistant turns with empty content arrays.
+                if !content.is_empty() {
+                    out.push(json!({ "role": "assistant", "content": content }));
+                }
                 // Placeholders for orphans land in `pending` → flushed into
                 // the NEXT user message, exactly where Anthropic expects them.
                 for block in &a.content {
@@ -150,6 +167,9 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
                 }
             }
             AgentMessage::FunctionResult(r) => {
+                if !emitted_call_ids.contains(&r.function_call_id) {
+                    continue;
+                }
                 // Latest-wins dedup: Anthropic rejects multiple tool_result
                 // blocks with one id and the whole turn fails.
                 let block = function_result_to_wire(r);
@@ -350,6 +370,31 @@ mod tests {
         }])]);
         assert_eq!(wire[0]["content"][0]["type"], "image");
         assert_eq!(wire[0]["content"][0]["source"]["type"], "base64");
+    }
+
+    #[test]
+    fn empty_assistant_turn_is_omitted_from_wire() {
+        let wire = to_wire_messages(&[assistant(vec![ContentBlock::Thinking {
+            text: "unsigned".into(),
+            signature: None,
+        }])]);
+        assert!(wire.is_empty());
+    }
+
+    #[test]
+    fn redacted_thinking_replays_on_the_wire() {
+        let wire = to_wire_messages(&[assistant(vec![ContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        }])]);
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["content"][0]["type"], "redacted_thinking");
+        assert_eq!(wire[0]["content"][0]["data"], "opaque");
+    }
+
+    #[test]
+    fn orphan_tool_result_for_compacted_call_is_dropped() {
+        let wire = to_wire_messages(&[result("missing", "stale", json!({}))]);
+        assert!(wire.is_empty());
     }
 
     #[test]

@@ -136,6 +136,10 @@ pub fn merge_with_live(live: &[LiveStub]) -> Vec<Model> {
                     m.display_name = stub.display_name.clone();
                 }
                 out.push(m);
+                // Keep the undated alias so exact-id routing still works after discovery.
+                if base != stub.id && base == c.id && !out.iter().any(|m| m.id == base) {
+                    out.push(c.clone());
+                }
             }
             None => out.push(unknown_model(stub)),
         }
@@ -227,8 +231,9 @@ mod tests {
         // curated entries not in the live list are kept (opus, haiku)
         assert!(merged.iter().any(|m| m.id == "claude-opus-4-7"));
         assert!(merged.iter().any(|m| m.id == "claude-haiku-4-5"));
-        // the covered base id is NOT duplicated
-        assert!(!merged.iter().any(|m| m.id == "claude-sonnet-4-6"));
+        // the undated alias stays alongside the live dated id
+        assert!(merged.iter().any(|m| m.id == "claude-sonnet-4-6"));
+        assert!(merged.iter().any(|m| m.id == "claude-sonnet-4-6-20260115"));
     }
 
     #[test]

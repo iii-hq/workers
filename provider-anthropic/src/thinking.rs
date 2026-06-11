@@ -34,24 +34,45 @@ fn budget_from_catalog(
 fn budget_from_formula(level: ThinkingLevel, output: u64) -> u64 {
     match level {
         ThinkingLevel::Xhigh => 31_999.min(output.saturating_sub(1)),
-        ThinkingLevel::High => 16_000.min((output / 2).saturating_sub(1)),
+        ThinkingLevel::High => 16_384.min((output / 2).saturating_sub(1)),
         ThinkingLevel::Medium => 8_000.min(output / 4),
         ThinkingLevel::Low | ThinkingLevel::Minimal => 4_000.min(output / 8),
     }
+}
+
+pub struct ThinkingBuild {
+    pub config: Option<ThinkingConfig>,
+    pub warnings: Vec<String>,
 }
 
 pub fn build_thinking_config(
     level: Option<ThinkingLevel>,
     max_tokens: u64,
     model: Option<&Model>,
-) -> Option<ThinkingConfig> {
-    let level = level?;
+) -> ThinkingBuild {
+    let mut warnings = Vec::new();
+    let Some(level) = level else {
+        return ThinkingBuild {
+            config: None,
+            warnings,
+        };
+    };
     // An explicit `supports_thinking: false` would 400; unknown stays permissive.
     if model.and_then(|m| m.supports_thinking) == Some(false) {
-        return None;
+        warnings.push(format!(
+            "thinking_level {level:?} dropped: model does not support thinking"
+        ));
+        return ThinkingBuild {
+            config: None,
+            warnings,
+        };
     }
+    let requested = level;
     let effective =
         if level == ThinkingLevel::Xhigh && model.and_then(|m| m.supports_xhigh) == Some(false) {
+            warnings.push(format!(
+                "thinking_level {requested:?} degraded to High: model does not support xhigh"
+            ));
             ThinkingLevel::High
         } else {
             level
@@ -61,20 +82,45 @@ pub fn build_thinking_config(
         budget_from_catalog(effective, model.and_then(|m| m.thinking_budgets.as_ref()));
     if budget.is_none_or(|b| b == 0) {
         // The formula needs the model's output ceiling; unknown model → no thinking.
-        let output = model.map(|m| m.max_output_tokens).filter(|&o| o > 0)?;
+        let Some(output) = model.map(|m| m.max_output_tokens).filter(|&o| o > 0) else {
+            warnings.push(format!(
+                "thinking_level {requested:?} dropped: unknown model (no output ceiling for budget formula)"
+            ));
+            return ThinkingBuild {
+                config: None,
+                warnings,
+            };
+        };
         budget = Some(budget_from_formula(effective, output));
     }
-    let budget = budget.filter(|&b| b > 0)?;
+    let Some(budget) = budget.filter(|&b| b > 0) else {
+        warnings.push(format!(
+            "thinking_level {requested:?} dropped: could not derive a positive budget"
+        ));
+        return ThinkingBuild {
+            config: None,
+            warnings,
+        };
+    };
 
     // Keep the budget below max_tokens with room for the visible answer.
     let budget = budget.min(max_tokens.saturating_sub(OUTPUT_RESERVE_TOKENS));
     if budget < MIN_THINKING_BUDGET {
-        return None;
+        warnings.push(format!(
+            "thinking_level {requested:?} dropped: budget {budget} below minimum {MIN_THINKING_BUDGET}"
+        ));
+        return ThinkingBuild {
+            config: None,
+            warnings,
+        };
     }
-    Some(ThinkingConfig {
-        mode: "enabled",
-        budget_tokens: budget,
-    })
+    ThinkingBuild {
+        config: Some(ThinkingConfig {
+            mode: "enabled",
+            budget_tokens: budget,
+        }),
+        warnings,
+    }
 }
 
 #[cfg(test)]
@@ -103,7 +149,7 @@ mod tests {
     #[test]
     fn absent_level_means_off() {
         assert_eq!(
-            build_thinking_config(None, 32_000, Some(&model(None, None))),
+            build_thinking_config(None, 32_000, Some(&model(None, None))).config,
             None
         );
     }
@@ -111,12 +157,12 @@ mod tests {
     #[test]
     fn catalog_budget_wins_over_formula() {
         let budgets = BTreeMap::from([(ThinkingLevel::High, 12_345u64)]);
-        let cfg = build_thinking_config(
+        let built = build_thinking_config(
             Some(ThinkingLevel::High),
             32_000,
             Some(&model(Some(budgets), None)),
-        )
-        .unwrap();
+        );
+        let cfg = built.config.unwrap();
         assert_eq!(cfg.budget_tokens, 12_345);
         assert_eq!(cfg.mode, "enabled");
     }
@@ -124,29 +170,37 @@ mod tests {
     #[test]
     fn formula_fallback_per_tier() {
         let m = model(None, None); // max_output_tokens 64k
-        let high = build_thinking_config(Some(ThinkingLevel::High), 64_000, Some(&m)).unwrap();
-        assert_eq!(high.budget_tokens, 16_000); // min(16k, 64k/2-1)
-        let med = build_thinking_config(Some(ThinkingLevel::Medium), 64_000, Some(&m)).unwrap();
+        let high = build_thinking_config(Some(ThinkingLevel::High), 64_000, Some(&m))
+            .config
+            .unwrap();
+        assert_eq!(high.budget_tokens, 16_384);
+        let med = build_thinking_config(Some(ThinkingLevel::Medium), 64_000, Some(&m))
+            .config
+            .unwrap();
         assert_eq!(med.budget_tokens, 8_000);
-        let low = build_thinking_config(Some(ThinkingLevel::Low), 64_000, Some(&m)).unwrap();
+        let low = build_thinking_config(Some(ThinkingLevel::Low), 64_000, Some(&m))
+            .config
+            .unwrap();
         assert_eq!(low.budget_tokens, 4_000);
-        let xhigh = build_thinking_config(Some(ThinkingLevel::Xhigh), 64_000, Some(&m)).unwrap();
+        let xhigh = build_thinking_config(Some(ThinkingLevel::Xhigh), 64_000, Some(&m))
+            .config
+            .unwrap();
         assert_eq!(xhigh.budget_tokens, 31_999);
     }
 
     #[test]
     fn xhigh_degrades_to_high_when_unsupported() {
         let m = model(None, Some(false));
-        let cfg = build_thinking_config(Some(ThinkingLevel::Xhigh), 64_000, Some(&m)).unwrap();
-        assert_eq!(cfg.budget_tokens, 16_000); // the high tier
+        let built = build_thinking_config(Some(ThinkingLevel::Xhigh), 64_000, Some(&m));
+        assert_eq!(built.config.unwrap().budget_tokens, 16_384);
+        assert!(built.warnings.iter().any(|w| w.contains("degraded")));
     }
 
     #[test]
     fn clamped_below_minimum_drops_thinking() {
         let m = model(None, None);
-        // max_tokens 2000 → budget clamp to 2000-1024=976 < 1024 → dropped
         assert_eq!(
-            build_thinking_config(Some(ThinkingLevel::High), 2_000, Some(&m)),
+            build_thinking_config(Some(ThinkingLevel::High), 2_000, Some(&m)).config,
             None
         );
     }
@@ -156,7 +210,7 @@ mod tests {
         let mut m = model(None, None);
         m.supports_thinking = Some(false);
         assert_eq!(
-            build_thinking_config(Some(ThinkingLevel::High), 64_000, Some(&m)),
+            build_thinking_config(Some(ThinkingLevel::High), 64_000, Some(&m)).config,
             None
         );
     }
@@ -164,7 +218,7 @@ mod tests {
     #[test]
     fn unknown_model_drops_thinking() {
         assert_eq!(
-            build_thinking_config(Some(ThinkingLevel::High), 64_000, None),
+            build_thinking_config(Some(ThinkingLevel::High), 64_000, None).config,
             None
         );
     }
@@ -172,12 +226,12 @@ mod tests {
     #[test]
     fn xhigh_catalog_entry_is_honored_when_supported() {
         let budgets = BTreeMap::from([(ThinkingLevel::Xhigh, 20_000u64)]);
-        // supports_xhigh unset (None) → not degraded; catalog value beats the formula
         let cfg = build_thinking_config(
             Some(ThinkingLevel::Xhigh),
             64_000,
             Some(&model(Some(budgets), None)),
         )
+        .config
         .unwrap();
         assert_eq!(cfg.budget_tokens, 20_000);
     }
@@ -185,8 +239,9 @@ mod tests {
     #[test]
     fn budget_exactly_at_minimum_is_kept() {
         let m = model(None, None);
-        // max_tokens 2048 → formula high = 16000, clamped to 2048-1024 = 1024 == MIN → kept
-        let cfg = build_thinking_config(Some(ThinkingLevel::High), 2_048, Some(&m)).unwrap();
+        let cfg = build_thinking_config(Some(ThinkingLevel::High), 2_048, Some(&m))
+            .config
+            .unwrap();
         assert_eq!(cfg.budget_tokens, MIN_THINKING_BUDGET);
     }
 }

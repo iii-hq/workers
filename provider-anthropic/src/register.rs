@@ -41,10 +41,28 @@ pub async fn declare_once(iii: &III) -> Result<(), IIIError> {
     let resp = router_client::register(iii, payload).await?;
     if let Some(t) = resp.get("registration_token").and_then(Value::as_str) {
         if token.as_deref() != Some(t) {
-            state::store_token(iii, t).await?;
+            persist_registration_token(iii, t).await?;
         }
     }
     Ok(())
+}
+
+async fn persist_registration_token(iii: &III, token: &str) -> Result<(), IIIError> {
+    let mut delay = Duration::from_millis(200);
+    for attempt in 0..5 {
+        match state::store_token(iii, token).await {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 4 => {
+                eprintln!(
+                    "[provider-anthropic] store registration_token failed ({e}); retrying in {delay:?}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("persist_registration_token loop always returns");
 }
 
 /// Retry until acknowledged: covers provider-before-router boot order.

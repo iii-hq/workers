@@ -2,24 +2,79 @@
 //! rule 5: five providers MUST NOT invent five taxonomies).
 use iii_sdk::IIIError;
 use llm_router::types::events::ErrorKind;
+use serde_json::Value;
 
 /// Map an Anthropic HTTP status + error body to the shared taxonomy.
 /// `None` status = the request never got a response (connect/read failure).
 pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
+    if let Ok(v) = serde_json::from_str::<Value>(message) {
+        if let Some(kind) = classify_anthropic_value(&v, status) {
+            return kind;
+        }
+    }
     match status {
         Some(401) | Some(403) => ErrorKind::AuthExpired,
         Some(429) => ErrorKind::RateLimited,
         Some(413) => ErrorKind::ContextOverflow,
         Some(s) if s >= 500 => ErrorKind::Transient,
-        Some(_) if is_context_overflow(message) => ErrorKind::ContextOverflow,
+        Some(_) if is_context_overflow_message(message) => ErrorKind::ContextOverflow,
         Some(_) => ErrorKind::Permanent,
         None => ErrorKind::Transient,
     }
 }
 
-fn is_context_overflow(message: &str) -> bool {
+/// Classify a mid-stream SSE `error` event or other JSON-only failure.
+pub fn classify_sse_error(message: &str) -> ErrorKind {
+    if let Ok(v) = serde_json::from_str::<Value>(message) {
+        if let Some(kind) = classify_anthropic_value(&v, None) {
+            return kind;
+        }
+    }
+    classify(None, message)
+}
+
+/// Map router bus errors surfaced through `router::provider::resolve`.
+pub fn classify_bus_error(err: &IIIError) -> ErrorKind {
+    match err {
+        IIIError::Remote { code, .. } if code == "router/registration_rejected" => {
+            ErrorKind::Permanent
+        }
+        _ => ErrorKind::Transient,
+    }
+}
+
+fn classify_anthropic_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
+    let err_type = v
+        .pointer("/error/type")
+        .and_then(Value::as_str)
+        .or_else(|| v.get("type").and_then(Value::as_str))?;
+    let msg = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match err_type {
+        "authentication_error" | "permission_error" => Some(ErrorKind::AuthExpired),
+        "rate_limit_error" => Some(ErrorKind::RateLimited),
+        "invalid_request_error" => {
+            if status == Some(413) || is_context_overflow_message(msg) {
+                Some(ErrorKind::ContextOverflow)
+            } else {
+                Some(ErrorKind::Permanent)
+            }
+        }
+        "overloaded_error" | "api_error" => Some(ErrorKind::Transient),
+        _ => None,
+    }
+}
+
+fn is_context_overflow_message(message: &str) -> bool {
     let m = message.to_lowercase();
-    m.contains("context") || m.contains("too large") || m.contains("too many tokens")
+    m.contains("too many tokens")
+        || m.contains("too large")
+        || m.contains("prompt is too long")
+        || m.contains("exceeds context")
+        || m.contains("context window")
+        || m.contains("context length")
 }
 
 /// Invalid handler input surfaced on the bus in the `{ code, message }`
@@ -67,8 +122,32 @@ mod tests {
             classify(Some(400), "too many tokens"),
             ErrorKind::ContextOverflow
         );
+        // generic "context" in tool validation must not false-positive
+        assert_eq!(
+            classify(Some(400), r#"tool_use_id "ctx-1" not found in context"#),
+            ErrorKind::Permanent
+        );
         // 5xx wins over message sniffing
         assert_eq!(classify(Some(500), "context blah"), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn anthropic_envelope_types_are_honored() {
+        let body =
+            r#"{"type":"error","error":{"type":"authentication_error","message":"invalid key"}}"#;
+        assert_eq!(classify(None, body), ErrorKind::AuthExpired);
+        let body = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        assert_eq!(classify_sse_error(body), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn registration_rejected_is_permanent_on_the_bus() {
+        let err = IIIError::Remote {
+            code: "router/registration_rejected".into(),
+            message: "bad token".into(),
+            stacktrace: None,
+        };
+        assert_eq!(classify_bus_error(&err), ErrorKind::Permanent);
     }
 
     #[test]

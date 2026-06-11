@@ -2,7 +2,7 @@
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
-use crate::errors::invalid_request;
+use crate::errors::{classify_bus_error, invalid_request};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
@@ -71,7 +71,7 @@ async fn run_stream_call(
                 &synthetic_error_event(
                     &format!("router::provider::resolve failed: {e}"),
                     &model,
-                    ErrorKind::Transient,
+                    classify_bus_error(&e),
                 ),
             );
             return;
@@ -101,7 +101,10 @@ async fn run_stream_call(
             None => curated::find(&model),
         },
     };
-    let thinking = build_thinking_config(input.thinking_level, cfg.max_tokens, model_meta.as_ref());
+    let thinking_build =
+        build_thinking_config(input.thinking_level, cfg.max_tokens, model_meta.as_ref());
+    warnings.extend(thinking_build.warnings);
+    let thinking = thinking_build.config;
 
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),

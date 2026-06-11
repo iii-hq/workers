@@ -16,6 +16,10 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// Opaque redacted thinking payload — replayed verbatim on the Anthropic wire.
+    RedactedThinking {
+        data: String,
+    },
     FunctionCall {
         id: String,          // unique per call, echoed by the result
         function_id: String, // the iii function id to invoke

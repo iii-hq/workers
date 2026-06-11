@@ -3,7 +3,8 @@
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
 use crate::sse::{
-    build_final, build_partial, handle_sse_event, synthetic_error_event, PartialState,
+    build_final, build_partial, handle_sse_event, synthetic_error_event,
+    synthetic_error_event_from_state, PartialState,
 };
 use futures::StreamExt;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -28,6 +29,74 @@ pub fn spawn_upstream(
         run_upstream(client, args, tx).await;
     });
     rx
+}
+
+/// Append chunk bytes to `text`, retaining any trailing incomplete UTF-8 sequence.
+fn append_utf8_chunk(byte_buf: &mut Vec<u8>, text: &mut String, chunk: &[u8]) {
+    byte_buf.extend_from_slice(chunk);
+    let mut consumed = 0usize;
+    loop {
+        match std::str::from_utf8(&byte_buf[consumed..]) {
+            Ok(s) => {
+                text.push_str(s);
+                byte_buf.clear();
+                return;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // SAFETY: valid_up_to guarantees valid UTF-8 in this prefix.
+                    text.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&byte_buf[consumed..consumed + valid])
+                    });
+                    consumed += valid;
+                }
+                match e.error_len() {
+                    Some(invalid) => {
+                        byte_buf.drain(..consumed + invalid);
+                        text.push('\u{FFFD}');
+                        consumed = 0;
+                    }
+                    None => {
+                        if consumed > 0 {
+                            byte_buf.drain(..consumed);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn normalize_crlf(text: &mut String) {
+    if text.contains("\r\n") {
+        *text = text.replace("\r\n", "\n");
+    }
+}
+
+/// Drain complete `\n\n`-delimited SSE blocks from `text`. Returns true when a
+/// terminal event was forwarded.
+async fn drain_sse_blocks(
+    text: &mut String,
+    state: &mut PartialState,
+    model: &str,
+    tx: &mpsc::Sender<AssistantMessageEvent>,
+) -> bool {
+    normalize_crlf(text);
+    while let Some(idx) = text.find("\n\n") {
+        let block: String = text.drain(..idx + 2).collect();
+        for ev in handle_sse_event(&block, state, model) {
+            let terminal = ev.is_terminal();
+            if tx.send(ev).await.is_err() {
+                return true;
+            }
+            if terminal {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 async fn run_upstream(
@@ -76,17 +145,19 @@ async fn run_upstream(
         .await
         .is_err()
     {
-        return; // receiver gone before the first frame
+        return;
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    let mut text = String::new();
+    let mut byte_buf = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
+                    .send(synthetic_error_event_from_state(
+                        &state,
                         &format!("stream read failed: {e}"),
                         &args.model,
                         ErrorKind::Transient,
@@ -95,25 +166,37 @@ async fn run_upstream(
                 return;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let block: String = buf.drain(..idx + 2).collect();
-            for ev in handle_sse_event(&block, &mut state, &args.model) {
-                let terminal = ev.is_terminal();
-                if tx.send(ev).await.is_err() {
-                    return; // receiver dropped → abort upstream
-                }
-                if terminal {
-                    return; // exactly one terminal event
-                }
-            }
+        append_utf8_chunk(&mut byte_buf, &mut text, &chunk);
+        if drain_sse_blocks(&mut text, &mut state, &args.model, &tx).await {
+            return;
         }
     }
-    let _ = tx
-        .send(AssistantMessageEvent::Done {
-            message: build_final(&state, &args.model),
-        })
-        .await;
+    // Flush any trailing bytes as UTF-8 (may be an incomplete SSE block).
+    if !byte_buf.is_empty() {
+        text.push_str(&String::from_utf8_lossy(&byte_buf));
+        byte_buf.clear();
+    }
+    if !text.trim().is_empty() {
+        let remainder = std::mem::take(&mut text);
+        let _ = drain_sse_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await;
+    }
+
+    if state.saw_message_stop {
+        let _ = tx
+            .send(AssistantMessageEvent::Done {
+                message: build_final(&state, &args.model),
+            })
+            .await;
+    } else {
+        let _ = tx
+            .send(synthetic_error_event_from_state(
+                &state,
+                "anthropic stream ended before message_stop",
+                &args.model,
+                ErrorKind::Transient,
+            ))
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +240,21 @@ mod tests {
 
     const HAPPY: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
+    const TRUNCATED: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
+
+    #[test]
+    fn utf8_split_across_chunks_is_preserved() {
+        let emoji = "Hello 🌍";
+        let bytes = emoji.as_bytes();
+        let split = "Hello ".len() + 1; // split inside the 4-byte emoji
+        let mut byte_buf = Vec::new();
+        let mut text = String::new();
+        append_utf8_chunk(&mut byte_buf, &mut text, &bytes[..split]);
+        assert_eq!(text, "Hello ");
+        append_utf8_chunk(&mut byte_buf, &mut text, &bytes[split..]);
+        assert_eq!(text, emoji);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn happy_stream_yields_start_through_done() {
         let url = stub(HAPPY).await;
@@ -172,8 +270,23 @@ mod tests {
             }
             other => panic!("want done, got {other:?}"),
         }
-        // exactly one terminal
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn truncated_stream_yields_error_not_done() {
+        let url = stub(TRUNCATED).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        match events.last() {
+            Some(AssistantMessageEvent::Error { error }) => {
+                assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+                assert!(error
+                    .error_message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("message_stop")));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -194,7 +307,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_failure_yields_transient_error_frame() {
-        // bind-then-drop guarantees a dead port
         let dead = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             format!("http://{}/v1/messages", l.local_addr().unwrap())

@@ -2,7 +2,7 @@
 //! `data: {…}` SSE block at a time, threads it through PartialState, returns
 //! 0+ events. Block arrival order is preserved (replayed turns must keep
 //! thinking blocks in their original position relative to tool_use).
-use crate::errors::classify;
+use crate::errors::classify_sse_error;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
 use llm_router::types::content::ContentBlock;
@@ -15,6 +15,16 @@ enum BlockKind {
     Text,
     ToolUse,
     Thinking,
+    RedactedThinking,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BlockSlot {
+    Text(usize),
+    ToolUse(usize),
+    Thinking(usize),
+    RedactedThinking,
+    Unknown,
 }
 
 #[derive(Debug, Default)]
@@ -33,9 +43,12 @@ struct PartialThinking {
 pub struct PartialState {
     text_blocks: Vec<String>,
     thinking_blocks: Vec<PartialThinking>,
+    redacted_blocks: Vec<String>,
     function_calls: Vec<PartialFunctionCall>,
     /// Wire arrival order of content blocks (kind, index-within-kind-array).
     block_order: Vec<(BlockKind, usize)>,
+    /// Anthropic wire `index` → active block slot.
+    block_slots: Vec<Option<BlockSlot>>,
     /// Kind of the currently open block so content_block_stop emits the
     /// matching end event.
     open_block: Option<BlockKind>,
@@ -44,6 +57,7 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    pub saw_message_stop: bool,
 }
 
 impl PartialState {
@@ -51,14 +65,17 @@ impl PartialState {
         PartialState {
             text_blocks: Vec::new(),
             thinking_blocks: Vec::new(),
+            redacted_blocks: Vec::new(),
             function_calls: Vec::new(),
             block_order: Vec::new(),
+            block_slots: Vec::new(),
             open_block: None,
             usage: Usage::default(),
             stop_reason: StopReason::End,
             native_stop_reason: None,
             error_message: None,
             warnings,
+            saw_message_stop: false,
         }
     }
 }
@@ -88,11 +105,18 @@ fn push_block_content(
     match kind {
         BlockKind::Thinking => {
             if let Some(th) = state.thinking_blocks.get(idx) {
-                if !th.text.is_empty() {
+                if !th.text.is_empty() || th.signature.is_some() {
                     out.push(ContentBlock::Thinking {
                         text: th.text.clone(),
                         signature: th.signature.clone(),
                     });
+                }
+            }
+        }
+        BlockKind::RedactedThinking => {
+            if let Some(data) = state.redacted_blocks.get(idx) {
+                if !data.is_empty() {
+                    out.push(ContentBlock::RedactedThinking { data: data.clone() });
                 }
             }
         }
@@ -125,11 +149,13 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     let mut seen_text = vec![false; state.text_blocks.len()];
     let mut seen_thinking = vec![false; state.thinking_blocks.len()];
     let mut seen_tool = vec![false; state.function_calls.len()];
+    let mut seen_redacted = vec![false; state.redacted_blocks.len()];
     for &(kind, idx) in &state.block_order {
         let seen = match kind {
             BlockKind::Text => &mut seen_text,
             BlockKind::Thinking => &mut seen_thinking,
             BlockKind::ToolUse => &mut seen_tool,
+            BlockKind::RedactedThinking => &mut seen_redacted,
         };
         if idx < seen.len() && !seen[idx] {
             seen[idx] = true;
@@ -141,6 +167,11 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     for (i, s) in seen_thinking.iter().enumerate() {
         if !s {
             push_block_content(&mut out, state, BlockKind::Thinking, i);
+        }
+    }
+    for (i, s) in seen_redacted.iter().enumerate() {
+        if !s {
+            push_block_content(&mut out, state, BlockKind::RedactedThinking, i);
         }
     }
     for (i, s) in seen_text.iter().enumerate() {
@@ -189,32 +220,62 @@ pub fn map_stop_reason(s: &str) -> StopReason {
     }
 }
 
-pub fn merge_usage(raw: &Value, into: &mut Usage) {
+pub fn merge_usage(raw: &Value, into: &mut Usage, cumulative: bool) {
+    let apply = |field: &mut Option<u64>, v: u64| {
+        if cumulative {
+            *field = Some(v);
+        } else {
+            *field = Some(field.unwrap_or(0) + v);
+        }
+    };
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
     if let Some(v) = num("input_tokens") {
-        into.input = Some(into.input.unwrap_or(0) + v);
+        apply(&mut into.input, v);
     }
     if let Some(v) = num("output_tokens") {
-        into.output = Some(into.output.unwrap_or(0) + v);
+        apply(&mut into.output, v);
     }
     if let Some(v) = num("cache_read_input_tokens") {
-        into.cache_read = Some(into.cache_read.unwrap_or(0) + v);
+        apply(&mut into.cache_read, v);
     }
     if let Some(v) = num("cache_creation_input_tokens") {
-        into.cache_write = Some(into.cache_write.unwrap_or(0) + v);
+        apply(&mut into.cache_write, v);
     }
 }
 
 /// Build a terminal error frame outside the SSE flow (fetch/HTTP failures).
 pub fn synthetic_error_event(message: &str, model: &str, kind: ErrorKind) -> AssistantMessageEvent {
-    let mut error = empty_assistant(model);
-    error.content = vec![ContentBlock::Text {
+    synthetic_error_event_from_state(&PartialState::new(vec![]), message, model, kind)
+}
+
+/// Terminal error frame preserving any partial stream state (usage, content).
+pub fn synthetic_error_event_from_state(
+    state: &PartialState,
+    message: &str,
+    model: &str,
+    kind: ErrorKind,
+) -> AssistantMessageEvent {
+    let mut error = build_final(state, model);
+    error.content.push(ContentBlock::Text {
         text: message.to_string(),
-    }];
+    });
     error.stop_reason = StopReason::Error;
     error.error_message = Some(message.to_string());
     error.error_kind = Some(kind);
     AssistantMessageEvent::Error { error }
+}
+
+fn wire_index(parsed: &Value) -> Option<usize> {
+    parsed
+        .get("index")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+}
+
+fn ensure_slot(state: &mut PartialState, index: usize) {
+    if state.block_slots.len() <= index {
+        state.block_slots.resize(index + 1, None);
+    }
 }
 
 /// Process a single SSE event block into 0+ AssistantMessageEvents.
@@ -240,7 +301,7 @@ pub fn handle_sse_event(
     match event_type {
         "message_start" => {
             if let Some(u) = parsed.pointer("/message/usage") {
-                merge_usage(u, &mut state.usage);
+                merge_usage(u, &mut state.usage, false);
                 // spec: usage SHOULD be emitted as soon as it is known
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
@@ -248,16 +309,20 @@ pub fn handle_sse_event(
             }
         }
         "content_block_start" => {
+            let Some(index) = wire_index(&parsed) else {
+                return events;
+            };
+            ensure_slot(state, index);
             let block_type = parsed
                 .pointer("/content_block/type")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             match block_type {
                 "text" => {
-                    state
-                        .block_order
-                        .push((BlockKind::Text, state.text_blocks.len()));
+                    let idx = state.text_blocks.len();
+                    state.block_order.push((BlockKind::Text, idx));
                     state.text_blocks.push(String::new());
+                    state.block_slots[index] = Some(BlockSlot::Text(idx));
                     state.open_block = Some(BlockKind::Text);
                     events.push(AssistantMessageEvent::TextStart {
                         partial: build_partial(state, model),
@@ -274,92 +339,105 @@ pub fn handle_sse_event(
                         .and_then(Value::as_str)
                         .map(decode_tool_name)
                         .unwrap_or_default();
-                    state
-                        .block_order
-                        .push((BlockKind::ToolUse, state.function_calls.len()));
+                    let idx = state.function_calls.len();
+                    state.block_order.push((BlockKind::ToolUse, idx));
                     state.function_calls.push(PartialFunctionCall {
                         id,
                         function_id: name,
                         args_json: String::new(),
                     });
+                    state.block_slots[index] = Some(BlockSlot::ToolUse(idx));
                     state.open_block = Some(BlockKind::ToolUse);
                     events.push(AssistantMessageEvent::FunctioncallStart {
                         partial: build_partial(state, model),
                     });
                 }
-                "thinking" | "redacted_thinking" => {
-                    // Redacted thinking is opaque and not persisted/round-tripped
-                    // (needs a ContentBlock extension — follow-up); logged because
-                    // the API expects it back during tool use.
-                    if block_type == "redacted_thinking" {
-                        eprintln!(
-                            "[provider-anthropic] redacted_thinking block received; not persisted (model {model})"
-                        );
-                    }
-                    state
-                        .block_order
-                        .push((BlockKind::Thinking, state.thinking_blocks.len()));
+                "thinking" => {
+                    let idx = state.thinking_blocks.len();
+                    state.block_order.push((BlockKind::Thinking, idx));
                     state.thinking_blocks.push(PartialThinking::default());
+                    state.block_slots[index] = Some(BlockSlot::Thinking(idx));
                     state.open_block = Some(BlockKind::Thinking);
                     events.push(AssistantMessageEvent::ThinkingStart {
                         partial: build_partial(state, model),
                     });
                 }
-                _ => {}
+                "redacted_thinking" => {
+                    let data = parsed
+                        .pointer("/content_block/data")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let idx = state.redacted_blocks.len();
+                    state.block_order.push((BlockKind::RedactedThinking, idx));
+                    state.redacted_blocks.push(data);
+                    state.block_slots[index] = Some(BlockSlot::RedactedThinking);
+                    state.open_block = Some(BlockKind::RedactedThinking);
+                    events.push(AssistantMessageEvent::ThinkingStart {
+                        partial: build_partial(state, model),
+                    });
+                }
+                _ => {
+                    state.block_slots[index] = Some(BlockSlot::Unknown);
+                }
             }
         }
         "content_block_delta" => {
+            let Some(index) = wire_index(&parsed) else {
+                return events;
+            };
             let delta_type = parsed
                 .pointer("/delta/type")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            match delta_type {
-                "text_delta" => {
+            match state.block_slots.get(index).and_then(|s| s.as_ref()) {
+                Some(BlockSlot::Text(_)) if delta_type == "text_delta" => {
                     let text = parsed
                         .pointer("/delta/text")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if let Some(last) = state.text_blocks.last_mut() {
-                        last.push_str(text);
+                    if let Some(BlockSlot::Text(idx)) = state.block_slots[index] {
+                        state.text_blocks[idx].push_str(text);
                     }
                     events.push(AssistantMessageEvent::TextDelta {
                         partial: build_partial(state, model),
                         delta: text.to_string(),
                     });
                 }
-                "input_json_delta" => {
+                Some(BlockSlot::ToolUse(_)) if delta_type == "input_json_delta" => {
                     let json = parsed
                         .pointer("/delta/partial_json")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if let Some(last) = state.function_calls.last_mut() {
-                        last.args_json.push_str(json);
+                    if let Some(BlockSlot::ToolUse(idx)) = state.block_slots[index] {
+                        state.function_calls[idx].args_json.push_str(json);
                     }
                     events.push(AssistantMessageEvent::FunctioncallDelta {
                         partial: build_partial(state, model),
                         delta: json.to_string(),
                     });
                 }
-                "thinking_delta" => {
+                Some(BlockSlot::Thinking(_)) if delta_type == "thinking_delta" => {
                     let text = parsed
                         .pointer("/delta/thinking")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if let Some(last) = state.thinking_blocks.last_mut() {
-                        last.text.push_str(text);
+                    if let Some(BlockSlot::Thinking(idx)) = state.block_slots[index] {
+                        state.thinking_blocks[idx].text.push_str(text);
                     }
                     events.push(AssistantMessageEvent::ThinkingDelta {
                         partial: build_partial(state, model),
                         delta: text.to_string(),
                     });
                 }
-                "signature_delta" => {
+                Some(BlockSlot::Thinking(_)) if delta_type == "signature_delta" => {
                     let sig = parsed
                         .pointer("/delta/signature")
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     if !sig.is_empty() {
-                        if let Some(last) = state.thinking_blocks.last_mut() {
+                        if let Some(BlockSlot::Thinking(idx)) = state.block_slots[index] {
+                            let last = &mut state.thinking_blocks[idx];
                             last.signature = Some(match last.signature.take() {
                                 Some(mut s) => {
                                     s.push_str(sig);
@@ -374,20 +452,28 @@ pub fn handle_sse_event(
             }
         }
         "content_block_stop" => {
-            // Emit the end event matching the open block; default to text_end
-            // for unknown/untracked blocks (preserves pre-thinking behavior).
-            let kind = state.open_block.take();
-            events.push(match kind {
-                Some(BlockKind::Thinking) => AssistantMessageEvent::ThinkingEnd {
+            let Some(index) = wire_index(&parsed) else {
+                return events;
+            };
+            let end_event = match state.block_slots.get(index).and_then(|s| s.as_ref()) {
+                Some(BlockSlot::Thinking(_)) | Some(BlockSlot::RedactedThinking) => {
+                    Some(AssistantMessageEvent::ThinkingEnd {
+                        partial: build_partial(state, model),
+                    })
+                }
+                Some(BlockSlot::ToolUse(_)) => Some(AssistantMessageEvent::FunctioncallEnd {
                     partial: build_partial(state, model),
-                },
-                Some(BlockKind::ToolUse) => AssistantMessageEvent::FunctioncallEnd {
+                }),
+                Some(BlockSlot::Text(_)) => Some(AssistantMessageEvent::TextEnd {
                     partial: build_partial(state, model),
-                },
-                _ => AssistantMessageEvent::TextEnd {
-                    partial: build_partial(state, model),
-                },
-            });
+                }),
+                Some(BlockSlot::Unknown) | None => None,
+            };
+            state.block_slots[index] = None;
+            state.open_block = None;
+            if let Some(ev) = end_event {
+                events.push(ev);
+            }
         }
         "message_delta" => {
             if let Some(sr) = parsed.pointer("/delta/stop_reason").and_then(Value::as_str) {
@@ -395,13 +481,14 @@ pub fn handle_sse_event(
                 state.native_stop_reason = Some(sr.to_string());
             }
             if let Some(u) = parsed.get("usage") {
-                merge_usage(u, &mut state.usage);
+                merge_usage(u, &mut state.usage, true);
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
                 });
             }
         }
         "message_stop" => {
+            state.saw_message_stop = true;
             events.push(AssistantMessageEvent::Stop {
                 stop_reason: state.stop_reason,
                 error_message: state.error_message.clone(),
@@ -419,7 +506,7 @@ pub fn handle_sse_event(
             state.stop_reason = StopReason::Error;
             state.error_message = Some(msg.clone());
             let mut error = build_final(state, model);
-            error.error_kind = Some(classify(None, &msg));
+            error.error_kind = Some(classify_sse_error(data_line));
             events.push(AssistantMessageEvent::Error { error });
         }
         // ping and unknown event types: ignored
@@ -568,6 +655,41 @@ mod tests {
             }
             other => panic!("want error frame, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn message_delta_usage_replaces_instead_of_adding() {
+        let (state, _) = run(&[
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":312}}",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}",
+        ]);
+        let usage = build_final(&state, "claude-test").usage.unwrap();
+        assert_eq!(usage.input, Some(25));
+        assert_eq!(usage.output, Some(312));
+    }
+
+    #[test]
+    fn unknown_block_type_does_not_corrupt_prior_tool_use() {
+        let (state, events) = run(&[
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell__exec\"}}",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_1\",\"name\":\"web_search\"}}",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}",
+        ]);
+        let final_msg = build_final(&state, "claude-test");
+        assert_eq!(final_msg.content.len(), 1);
+        match &final_msg.content[0] {
+            ContentBlock::FunctionCall { arguments, .. } => {
+                assert_eq!(arguments["cmd"], "ls");
+            }
+            other => panic!("want function_call, got {other:?}"),
+        }
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
     }
 
     #[test]
