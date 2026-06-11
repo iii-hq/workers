@@ -47,7 +47,28 @@ const res = await iii.trigger({
 // { session_id, claude_session_id, result, stop_reason, usage, total_cost_usd }
 ```
 
+Or straight from the terminal with the `iii trigger` CLI:
+
+```bash
+# one full turn (raise the timeout; the default 30s is too short for agent turns)
+iii trigger claude::run --timeout-ms 600000 \
+  --json '{"prompt":"add a /health endpoint and run the tests","cwd":"/path/to/repo"}'
+
+# quick reads use key=value syntax
+iii trigger claude::sessions::list
+iii trigger claude::status session_id=<session_id>
+
+# background turn + control
+iii trigger claude::start --json '{"prompt":"...","cwd":"/path/to/repo"}'
+iii trigger claude::stop session_id=<session_id>
+
+# ask the running engine for a function's description
+iii trigger claude::run --help
+```
+
 Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
+
+Two ids come back from every run. `session_id` is the iii session id: the key for `claude::status`, `claude::stop`, resume, and the stream group. `claude_session_id` is Claude Code's internal session id (what the worker passes to the CLI's resume under the hood) — returned for reference, not a lookup key.
 
 Long turns: use `claude::start` to return immediately, then watch `agent::events` (group_id = your session_id) for `message_complete`, `function_execution_start/end`, and `turn_end` frames. `claude::stop` interrupts a live run, `claude::status` reads a point-in-time view, `claude::sessions::list` enumerates past sessions.
 
