@@ -1,16 +1,16 @@
 ---
 name: claude-code
 description: >-
-  Run headless Claude Code turns over the iii bus — file edits, shell, web,
-  and MCP tools against any host directory — with raw message streaming,
-  AgentEvent translation, and session resume.
+  Run headless Claude Code turns over the iii bus — file edits, shell, and
+  web against any host directory — with raw message streaming, AgentEvent
+  translation, and session resume.
 ---
 
 # claude-code
 
 The claude-code worker turns Claude Code into an iii brain. `claude::run`
 executes one headless Claude Code turn (the full agent: file edits, shell
-commands, web fetch, MCP tools) in a configured working directory and returns
+commands, web fetch) in a configured working directory and returns
 the final result, token usage, and cost over the bus. Every turn streams
 AgentEvent frames onto `agent::events` keyed by session id, so the iii console
 and the acp worker render Claude Code turns like any native harness turn. The
@@ -18,9 +18,10 @@ worker also registers `run::start_and_wait`, so anything built to drive the
 canonical brain contract can drive Claude Code unchanged.
 
 The worker is a pure pass-through: named payload fields cover the common
-path, the `options` field forwards any Agent SDK option verbatim (including
-`mcpServers`), and the raw Claude Code messages mirror onto `claude::events`
-untouched. Requires the `claude` CLI on the host with an existing login or
+path, the `options` field forwards any Agent SDK option verbatim, and the
+raw Claude Code messages mirror onto `claude::events` untouched. When a turn
+needs a capability beyond Claude Code itself, add another iii worker to the
+bus instead of bolting anything onto this one. Requires the `claude` CLI on the host with an existing login or
 `ANTHROPIC_API_KEY` in the worker environment.
 
 ## When to Use

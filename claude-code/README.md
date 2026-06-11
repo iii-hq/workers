@@ -1,6 +1,6 @@
 # claude-code
 
-Claude Code as an iii worker: the Claude Code API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web, MCP). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages mirror verbatim onto the `claude::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the canonical brain entrypoint, so anything built to drive an iii brain can drive Claude Code with no changes.
+Claude Code as an iii worker: the Claude Code API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages mirror verbatim onto the `claude::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the canonical brain entrypoint, so anything built to drive an iii brain can drive Claude Code with no changes.
 
 ## Install
 
@@ -112,4 +112,4 @@ With `approval_gate: true` and the harness worker installed, every Claude Code t
 | final result | `turn_end` + `agent_end` frames, function return value |
 | session resume | engine state scope `claude_sessions`, keyed by iii session_id |
 | permission prompt | `canUseTool` -> `policy::check_permissions` (optional) |
-| MCP servers | `options.mcpServers` pass-through, exactly as in the SDK |
+| extra capability | another iii worker on the bus (`shell`, `database`, `storage`, ...) |
