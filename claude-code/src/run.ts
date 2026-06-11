@@ -44,6 +44,11 @@ const RunPayloadSchema = z.object({
   disallowed_tools: z.array(z.string()).optional(),
   max_turns: z.number().int().positive().optional(),
   timeout_ms: z.number().int().positive().optional(),
+  /** Raw Agent SDK options, spread over everything the worker derives.
+   *  This is the pure pass-through: any Options field the SDK accepts
+   *  (fork_session, include_partial_messages, betas, add dirs, mcp
+   *  servers, ...) goes through untouched, camelCase as in the SDK. */
+  options: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type RunPayload = z.infer<typeof RunPayloadSchema>;
@@ -85,6 +90,7 @@ export async function executeRun(
   iii: ISdk,
   cfg: Config,
   emit: Emit,
+  emitRaw: Emit,
   payload: RunPayload,
 ): Promise<Record<string, unknown>> {
   const session_id = payload.session_id ?? randomUUID();
@@ -121,8 +127,16 @@ export async function executeRun(
       : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
     settingSources: [],
     ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
-    ...(cfg.expose_iii_bridge ? { mcpServers: { iii: makeIiiBridge(iii) } } : {}),
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
+    ...(payload.options as Partial<Options> | undefined),
+    ...(cfg.expose_iii_bridge
+      ? {
+          mcpServers: {
+            ...((payload.options as Partial<Options> | undefined)?.mcpServers ?? {}),
+            iii: makeIiiBridge(iii),
+          },
+        }
+      : {}),
   };
 
   const q = query({ prompt, options });
@@ -137,6 +151,7 @@ export async function executeRun(
 
   try {
     for await (const msg of q) {
+      await emitRaw(session_id, msg);
       if (msg.type === 'system' && msg.subtype === 'init') {
         record.claude_session_id = msg.session_id;
         await saveSession(iii, record);
@@ -231,13 +246,14 @@ export async function executeRun(
   };
 }
 
-export function register(iii: ISdk, cfg: Config, emit: Emit): void {
+export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): void {
   iii.registerFunction(
     'claude::run',
-    async (payload: unknown) => executeRun(iii, cfg, emit, RunPayloadSchema.parse(payload ?? {})),
+    async (payload: unknown) =>
+      executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one Claude Code turn and wait for the result. Accepts `prompt` or brain-contract `messages`; streams AgentEvent frames onto agent::events and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Claude Code turn and wait for the result. Accepts `prompt` or brain-contract `messages` plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
     },
   );
 
@@ -246,7 +262,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit): void {
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
-      void executeRun(iii, cfg, emit, { ...parsed, session_id }).catch((err) =>
+      void executeRun(iii, cfg, emit, emitRaw, { ...parsed, session_id }).catch((err) =>
         console.error(`claude::start background run failed for ${session_id}: ${String(err)}`),
       );
       return { session_id, started: true };
@@ -287,7 +303,8 @@ export function register(iii: ISdk, cfg: Config, emit: Emit): void {
 
   iii.registerFunction(
     'run::start_and_wait',
-    async (payload: unknown) => executeRun(iii, cfg, emit, RunPayloadSchema.parse(payload ?? {})),
+    async (payload: unknown) =>
+      executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
         'Canonical iii brain entrypoint backed by Claude Code: run a turn for {session_id, messages} and return when it ends.',

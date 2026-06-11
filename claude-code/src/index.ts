@@ -26,7 +26,8 @@ const url = values.url ? String(values.url) : cfg.engine_url;
 
 const iii = registerWorker(url, { workerName: 'claude-code' });
 const emit = makeEmitter(iii, cfg.events_stream);
-register(iii, cfg, emit);
+const emitRaw = makeEmitter(iii, cfg.raw_events_stream);
+register(iii, cfg, emit, emitRaw);
 
 console.log(`claude-code worker connected to ${url}`);
 

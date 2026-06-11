@@ -6,13 +6,11 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ISdk } from 'iii-sdk';
-import type { AgentEvent } from './types.js';
-
 const PROCESS_EPOCH = randomUUID();
 const seqBySession = new Map<string, number>();
 
 export function makeEmitter(iii: ISdk, streamName: string) {
-  return async function emit(session_id: string, event: AgentEvent): Promise<void> {
+  return async function emit(session_id: string, event: unknown): Promise<void> {
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
     const item_id = `${session_id}-${PROCESS_EPOCH}-${seq.toString().padStart(8, '0')}`;

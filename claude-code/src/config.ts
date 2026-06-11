@@ -17,9 +17,10 @@ const ConfigSchema = z.object({
       disallowed_tools: z.array(z.string()).default([]),
     })
     .prefault({}),
-  expose_iii_bridge: z.boolean().default(true),
+  expose_iii_bridge: z.boolean().default(false),
   approval_gate: z.boolean().default(false),
   events_stream: z.string().default('agent::events'),
+  raw_events_stream: z.string().default('claude::events'),
   claude_executable: z.string().default(''),
 });
 
