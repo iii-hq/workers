@@ -66,6 +66,12 @@ iii trigger codex::stop session_id=<session_id>
 iii trigger codex::run --help
 ```
 
+A turn from the CLI and the published schema:
+
+![iii trigger codex::run returning the result with usage and reasoning tokens](assets/cli-run.png)
+
+![iii trigger codex::run --help printing the published request schema as a parameter table](assets/cli-help.png)
+
 Call `codex::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Codex thread ids in engine state and resumes automatically (threads persist in `~/.codex/sessions`).
 
 Two ids come back from every run. `session_id` is the iii session id: the key for `codex::status`, `codex::stop`, resume, and the stream group. `codex_thread_id` is Codex's internal thread id (what the worker passes to `resumeThread` under the hood) — returned for reference, not a lookup key.
@@ -122,6 +128,8 @@ Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows e
 ## Observability
 
 Every `codex::run` is an ordinary traced invocation on the engine: the trace carries the full input payload and the output (result, usage) as span events, with per-function p50/p95/p99 in the console's trace explorer — no extra instrumentation in the worker.
+
+![codex::run invocations in the iii console trace explorer, with input and output payloads](assets/console-traces.png)
 
 ## How it maps
 
