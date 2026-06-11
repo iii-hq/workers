@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
+use crate::types::errors::is_function_not_found;
 use crate::types::model::Model;
 use iii_sdk::{IIIError, III};
 use tokio::sync::Mutex;
@@ -26,7 +27,17 @@ impl CatalogStore {
     }
 
     pub async fn load(&self) -> Result<(), IIIError> {
-        let stored = state_get(&self.iii, CATALOG_KEY).await?;
+        // No iii-state worker on this engine (the registry-publish flow boots
+        // against a bare `workers: []` engine to collect the interface):
+        // start empty. Safe to tolerate exactly this error class — with no
+        // state worker, persists can't overwrite the stored snapshot either.
+        let stored = match state_get(&self.iii, CATALOG_KEY).await {
+            Err(e) if is_function_not_found(&e) => {
+                eprintln!("[llm-router] no iii-state worker; catalog starts empty");
+                return Ok(());
+            }
+            other => other?,
+        };
         *self.slices.lock().await = serde_json::from_value(stored).unwrap_or_default();
         Ok(())
     }

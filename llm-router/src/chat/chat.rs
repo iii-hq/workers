@@ -64,12 +64,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// The engine's invocation path reports a missing function as
-/// `function_not_found` (engine/src/engine/mod.rs); bare `NOT_FOUND` is the
-/// configuration worker's missing-entry code and must not match here.
-fn is_function_not_found(err: &IIIError) -> bool {
-    matches!(err, IIIError::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
-}
+use crate::types::errors::is_function_not_found;
 
 fn is_router_coded(err: &IIIError) -> bool {
     matches!(err, IIIError::Remote { code, .. } if code.starts_with("router/"))

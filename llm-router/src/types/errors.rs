@@ -57,6 +57,13 @@ impl From<RouterError> for iii_sdk::IIIError {
     }
 }
 
+/// The engine's invocation path reports a missing function as
+/// `function_not_found` (engine/src/engine/mod.rs); bare `NOT_FOUND` is the
+/// configuration worker's missing-entry code and must not match here.
+pub fn is_function_not_found(err: &iii_sdk::IIIError) -> bool {
+    matches!(err, iii_sdk::IIIError::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
