@@ -31,27 +31,55 @@ const MessageSchema = z.object({
 });
 
 const RunPayloadSchema = z.object({
-  session_id: z.string().optional(),
-  prompt: z.string().optional(),
-  messages: z.array(MessageSchema).optional(),
-  model: z.string().optional(),
-  cwd: z.string().optional(),
-  system_prompt: z.string().optional(),
-  append_system_prompt: z.string().optional(),
-  permission_mode: z.enum(['default', 'acceptEdits', 'plan', 'bypassPermissions']).optional(),
-  allowed_tools: z.array(z.string()).optional(),
-  disallowed_tools: z.array(z.string()).optional(),
-  max_turns: z.number().int().positive().optional(),
-  timeout_ms: z.number().int().positive().optional(),
+  session_id: z
+    .string()
+    .optional()
+    .describe('iii session id; reuse to resume the same Claude Code conversation'),
+  prompt: z.string().optional().describe('The user prompt for this turn'),
+  messages: z
+    .array(MessageSchema)
+    .optional()
+    .describe(
+      'Alternative to prompt: role/content messages; the last user entry becomes the prompt',
+    ),
+  model: z.string().optional().describe('Model id or alias; empty = Claude Code default'),
+  cwd: z.string().optional().describe('Working directory the turn runs in'),
+  system_prompt: z.string().optional().describe('Replace the Claude Code system prompt'),
+  append_system_prompt: z.string().optional().describe('Append to the default system prompt'),
+  permission_mode: z
+    .enum(['default', 'acceptEdits', 'plan', 'bypassPermissions'])
+    .optional()
+    .describe('Claude Code permission mode for this turn'),
+  allowed_tools: z.array(z.string()).optional().describe('Allow rules, e.g. "Bash(git *)"'),
+  disallowed_tools: z.array(z.string()).optional().describe('Deny rules'),
+  max_turns: z.number().int().positive().optional().describe('Cap on agentic turns'),
+  timeout_ms: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Reserved for callers; not forwarded'),
   /** Raw Agent SDK options, spread over everything the worker derives.
    *  This is the pure pass-through: any Options field the SDK accepts
    *  (fork_session, include_partial_messages, betas, add dirs, mcp
    *  servers, ...) goes through untouched, camelCase as in the SDK. */
-  options: z.record(z.string(), z.unknown()).optional(),
+  options: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'Raw Agent SDK options forwarded verbatim (camelCase), e.g. forkSession, includePartialMessages',
+    ),
 });
 
 export type RunPayload = z.infer<typeof RunPayloadSchema>;
 export { RunPayloadSchema };
+
+const SessionIdSchema = z.object({
+  session_id: z.string().describe('iii session id returned by claude::run / claude::start'),
+});
+
+const RUN_REQUEST_FORMAT = z.toJSONSchema(RunPayloadSchema);
+const SESSION_ID_FORMAT = z.toJSONSchema(SessionIdSchema);
 
 type LiveRun = { interrupt: () => Promise<void> };
 const live = new Map<string, LiveRun>();
@@ -245,6 +273,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
     {
       description:
         'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
+      request_format: RUN_REQUEST_FORMAT,
     },
   );
 
@@ -261,35 +290,45 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
     {
       description:
         'Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
+      request_format: RUN_REQUEST_FORMAT,
     },
   );
 
   iii.registerFunction(
     'claude::stop',
     async (payload: unknown) => {
-      const { session_id } = z.object({ session_id: z.string() }).parse(payload ?? {});
+      const { session_id } = SessionIdSchema.parse(payload ?? {});
       const run = live.get(session_id);
       if (!run) return { session_id, stopped: false, reason: 'no live run' };
       await run.interrupt();
       return { session_id, stopped: true };
     },
-    { description: 'Interrupt a live Claude Code run for a session.' },
+    {
+      description: 'Interrupt a live Claude Code run for a session.',
+      request_format: SESSION_ID_FORMAT,
+    },
   );
 
   iii.registerFunction(
     'claude::status',
     async (payload: unknown) => {
-      const { session_id } = z.object({ session_id: z.string() }).parse(payload ?? {});
+      const { session_id } = SessionIdSchema.parse(payload ?? {});
       const record = await loadSession(iii, session_id);
       return { session_id, live: live.has(session_id), record };
     },
-    { description: 'Point-in-time status of a Claude Code session.' },
+    {
+      description: 'Point-in-time status of a Claude Code session.',
+      request_format: SESSION_ID_FORMAT,
+    },
   );
 
   iii.registerFunction(
     'claude::sessions::list',
     async () => ({ sessions: await listSessions(iii) }),
-    { description: 'List every Claude Code session this worker has run.' },
+    {
+      description: 'List every Claude Code session this worker has run.',
+      request_format: { type: 'object', properties: {} },
+    },
   );
 
   iii.registerFunction(
@@ -299,6 +338,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
     {
       description:
         'Alias for claude::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
+      request_format: RUN_REQUEST_FORMAT,
     },
   );
 }
