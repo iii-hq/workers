@@ -1,0 +1,22 @@
+# session-manager runtime configuration.
+
+# Storage backend: fs | bridge
+backend: fs
+backend_config:
+  # fs: one <session_id>.jsonl per session ("~/" expands to $HOME)
+  data_dir: ~/.iii/data/session-manager
+
+# Bridge example: defer storage + event fan-out to a main instance
+# running its own session-manager (backend: fs).
+#
+# backend: bridge
+# backend_config:
+#   url: ws://127.0.0.1:49134   # main engine WebSocket URL
+#   timeout_ms: 5000            # per store/publish call timeout
+
+# Default page size for session::list / session::messages when the
+# request omits `limit`.
+default_list_limit: 50
+
+# Hard cap applied to any requested `limit` (items per page).
+max_list_limit: 500
