@@ -6,7 +6,7 @@ pub mod curated;
 pub mod discovery;
 pub mod errors;
 pub mod manifest;
-// pub mod register;
+pub mod register;
 pub mod request;
 pub mod router_client;
 pub mod sse;

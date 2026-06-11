@@ -1,0 +1,111 @@
+//! Boot wiring: function surface, the router::ready rebind, and the
+//! declare-with-backoff loop (spec § Registration lifecycle).
+use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
+use crate::discovery::make_refresh_models;
+use crate::stream_fn::make_stream;
+use crate::{curated, router_client, state, PROVIDER_ID};
+use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
+use llm_router::types::router::{ProviderDeclaration, ProviderDefaults};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+pub fn declaration() -> ProviderDeclaration {
+    ProviderDeclaration {
+        id: PROVIDER_ID.into(),
+        display_name: Some("Anthropic".into()),
+        credential_env_var: Some("ANTHROPIC_API_KEY".into()),
+        defaults: Some(ProviderDefaults {
+            api_url: Some(DEFAULT_API_URL.into()),
+            max_tokens: Some(DEFAULT_MAX_TOKENS),
+            extra: BTreeMap::new(),
+        }),
+        config_schema: None, // the router's default {api_key, api_url, max_tokens}
+        supports_model_listing: Some(true),
+        // Static slice mirrors the curated snapshot: no cold catalog hole
+        // before first discovery (spec § register).
+        models: Some(curated::static_models()),
+        // Self-reported; availability mapping only, never authorization.
+        worker_id: Some("provider-anthropic".into()),
+    }
+}
+
+/// One registration attempt: declare (with the persisted token when present)
+/// and persist the token the router returns.
+pub async fn declare_once(iii: &III) -> Result<(), IIIError> {
+    let token = state::load_token(iii).await;
+    let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
+    if let Some(t) = &token {
+        payload["token"] = json!(t);
+    }
+    let resp = router_client::register(iii, payload).await?;
+    if let Some(t) = resp.get("registration_token").and_then(Value::as_str) {
+        if token.as_deref() != Some(t) {
+            state::store_token(iii, t).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Retry until acknowledged: covers provider-before-router boot order.
+/// A token mismatch also lands here — it never resolves on its own and
+/// needs the operator to clear the binding (logged every attempt).
+pub async fn declare_with_backoff(iii: III) {
+    let mut delay = Duration::from_millis(500);
+    loop {
+        match declare_once(&iii).await {
+            Ok(()) => {
+                println!("[provider-anthropic] registered with llm-router");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[provider-anthropic] register failed ({e}); retrying in {delay:?}");
+            }
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(10));
+    }
+}
+
+pub async fn register_provider(iii: III) -> Result<(), IIIError> {
+    // Streaming uses no total timeout (the router owns stream budgets);
+    // connect failures surface fast.
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("reqwest client");
+
+    iii.register_function(
+        "provider::anthropic::stream",
+        RegisterFunction::new_async(make_stream(iii.clone(), http.clone())),
+    );
+    iii.register_function(
+        "provider::anthropic::refresh_models",
+        RegisterFunction::new_async(make_refresh_models(iii.clone(), http)),
+    );
+
+    // Re-declare when the router restarts: router::ready rides iii-pubsub.
+    {
+        let iii_ready = iii.clone();
+        iii.register_function(
+            "provider::anthropic::on_router_ready",
+            RegisterFunction::new_async(move |_raw: Value| {
+                let iii = iii_ready.clone();
+                async move {
+                    tokio::spawn(declare_with_backoff(iii));
+                    Ok(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+    let _ = iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "subscribe".into(),
+        function_id: "provider::anthropic::on_router_ready".into(),
+        config: json!({ "topic": "router::ready" }),
+        metadata: None,
+    });
+
+    // Boot declare, off the boot path (a missing router must not block boot).
+    tokio::spawn(declare_with_backoff(iii));
+    Ok(())
+}

@@ -6,7 +6,7 @@ use crate::errors::upstream_unavailable;
 use crate::request::ANTHROPIC_VERSION;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::{III, IIIError};
+use iii_sdk::{IIIError, III};
 use llm_router::types::credential::Credential;
 use serde_json::{json, Value};
 
@@ -25,7 +25,10 @@ pub fn parse_live_models(json: &Value) -> Vec<LiveStub> {
         .map(|rows| {
             rows.iter()
                 .filter_map(|raw| {
-                    let id = raw.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+                    let id = raw
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())?;
                     Some(LiveStub {
                         id: id.to_string(),
                         display_name: raw

@@ -10,7 +10,7 @@ use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::wire::cache::cache_enabled;
 use crate::{curated, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::{III, IIIError};
+use iii_sdk::{IIIError, III};
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -191,11 +191,10 @@ mod tests {
 
         let mut frames = Vec::new();
         let mut reader = ch.reader;
-        loop {
-            match reader.next(Duration::from_millis(100)).await {
-                llm_router::chat::relay::ReadEvent::Msg(m) => frames.push(m),
-                _ => break,
-            }
+        while let llm_router::chat::relay::ReadEvent::Msg(m) =
+            reader.next(Duration::from_millis(100)).await
+        {
+            frames.push(m);
         }
         assert_eq!(frames.len(), 2);
         let last: Value = serde_json::from_str(&frames[1]).unwrap();
@@ -219,17 +218,19 @@ mod tests {
 
         let mut frames = Vec::new();
         let mut reader = ch.reader;
-        loop {
-            match reader.next(Duration::from_millis(100)).await {
-                llm_router::chat::relay::ReadEvent::Msg(m) => frames.push(m),
-                _ => break,
-            }
+        while let llm_router::chat::relay::ReadEvent::Msg(m) =
+            reader.next(Duration::from_millis(100)).await
+        {
+            frames.push(m);
         }
         let pings = frames
             .iter()
             .filter(|f| serde_json::from_str::<Value>(f).unwrap()["type"] == "ping")
             .count();
-        assert!(pings >= 2, "want >=2 pings through 140ms of silence, got {pings}");
+        assert!(
+            pings >= 2,
+            "want >=2 pings through 140ms of silence, got {pings}"
+        );
         assert_eq!(
             serde_json::from_str::<Value>(frames.last().unwrap()).unwrap()["type"],
             "done"
@@ -247,7 +248,7 @@ mod tests {
         .await
         .unwrap();
         pump(rx, &ch.writer, Duration::from_secs(30)).await; // returns immediately
-        // the receiver was consumed and dropped by pump → upstream send fails
+                                                             // the receiver was consumed and dropped by pump → upstream send fails
         assert!(tx.send(done_event()).await.is_err());
     }
 }

@@ -1,7 +1,7 @@
 //! Thin wrappers over the router's provider-protocol functions. All calls
 //! carry the registration token (identity binding, spec adaptation #1).
 use crate::PROVIDER_ID;
-use iii_sdk::{IIIError, III, TriggerRequest};
+use iii_sdk::{IIIError, TriggerRequest, III};
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;
 use serde_json::{json, Value};

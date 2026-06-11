@@ -1,7 +1,7 @@
 //! Registration-token persistence in iii-state (engine `state::*` functions,
 //! binary-worker.md § 7). The raw token lives here, under the provider's own
 //! scope; the router persists only its sha256 hash.
-use iii_sdk::{IIIError, III, TriggerRequest};
+use iii_sdk::{IIIError, TriggerRequest, III};
 use serde_json::{json, Value};
 
 pub const STATE_SCOPE: &str = "provider-anthropic";

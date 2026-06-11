@@ -58,7 +58,10 @@ mod tests {
     use super::*;
     use llm_router::types::router::CredentialSource;
 
-    fn resolved(credential: Option<Credential>, max_tokens: Option<u64>) -> ProviderResolveResponse {
+    fn resolved(
+        credential: Option<Credential>,
+        max_tokens: Option<u64>,
+    ) -> ProviderResolveResponse {
         ProviderResolveResponse {
             configured: credential.is_some(),
             source: CredentialSource::Config,

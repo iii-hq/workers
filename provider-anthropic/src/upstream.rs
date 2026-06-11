@@ -62,7 +62,9 @@ async fn run_upstream(
         } else {
             text
         };
-        let _ = tx.send(synthetic_error_event(&msg, &args.model, kind)).await;
+        let _ = tx
+            .send(synthetic_error_event(&msg, &args.model, kind))
+            .await;
         return;
     }
 

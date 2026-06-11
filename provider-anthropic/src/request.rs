@@ -52,9 +52,7 @@ pub fn build_headers(cfg: &AnthropicConfig, thinking: bool) -> Vec<(&'static str
     let mut headers = vec![
         match cfg.auth_mode {
             AuthMode::ApiKey => ("x-api-key", cfg.credential_value.clone()),
-            AuthMode::OauthBearer => {
-                ("authorization", format!("Bearer {}", cfg.credential_value))
-            }
+            AuthMode::OauthBearer => ("authorization", format!("Bearer {}", cfg.credential_value)),
         },
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
         ("content-type", "application/json".to_string()),
@@ -137,9 +135,6 @@ mod tests {
 
         let h = build_headers(&cfg(AuthMode::OauthBearer), true);
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
-        assert!(h.contains(&(
-            "anthropic-beta",
-            INTERLEAVED_THINKING_BETA.to_string()
-        )));
+        assert!(h.contains(&("anthropic-beta", INTERLEAVED_THINKING_BETA.to_string())));
     }
 }
