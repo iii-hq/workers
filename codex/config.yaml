@@ -1,0 +1,22 @@
+engine_url: ws://127.0.0.1:49134
+
+defaults:
+  model: ""
+  sandbox_mode: workspace-write   # read-only | workspace-write | danger-full-access
+  approval_policy: never          # never | on-request | on-failure | untrusted
+  reasoning_effort: ""            # empty = Codex default; minimal|low|medium|high|xhigh
+  cwd: ""
+  skip_git_repo_check: true
+
+# Stream AgentEvent frames here, grouped by session_id. The console and
+# acp worker both read this stream.
+events_stream: agent::events
+
+# Raw Codex thread events (exact SDK shapes: thread.started, turn.started,
+# item.started/updated/completed, turn.completed, turn.failed, error)
+# mirrored verbatim here, grouped by session_id.
+raw_events_stream: codex::events
+
+# Path to the Codex CLI binary. Empty = SDK default resolution; the worker
+# falls back to the `codex` binary on PATH (needed for the bundled build).
+codex_executable: ""
