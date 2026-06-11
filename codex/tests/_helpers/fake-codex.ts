@@ -5,6 +5,7 @@
 
 export type CodexCapture = {
   codexOptions?: Record<string, unknown>;
+  input?: unknown;
   threadOptions?: Record<string, unknown>;
   resumedFrom?: string;
   prompt?: string;
@@ -39,8 +40,9 @@ function makeThread(
     | undefined;
   return {
     id: id ?? threadIdFromScript?.thread_id ?? null,
-    runStreamed: async (prompt: string, turnOptions?: Record<string, unknown>) => {
-      capture.prompt = prompt;
+    runStreamed: async (prompt: string | unknown[], turnOptions?: Record<string, unknown>) => {
+      capture.prompt = typeof prompt === 'string' ? prompt : undefined;
+      capture.input = prompt;
       capture.turnOptions = turnOptions;
       const signal = turnOptions?.signal as AbortSignal | undefined;
       return {

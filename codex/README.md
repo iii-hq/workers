@@ -86,7 +86,7 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 | `codex::status` | Session state, live flag, usage |
 | `codex::sessions::list` | All sessions this worker has run |
 
-`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, and `output_schema` overrides.
+`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, `output_schema`, `images` (local image paths attached to the prompt), and `codex_config` (per-turn `config.toml` overrides: MCP servers, model providers, profiles — anything the CLI accepts as `--config key=value`).
 
 ### Raw API pass-through
 

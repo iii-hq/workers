@@ -136,6 +136,25 @@ describe('executeRun', () => {
     expect(capture.turnOptions?.outputSchema).toEqual(schema);
   });
 
+  it('forwards codex_config as SDK config overrides', async () => {
+    const codex_config = { mcp_servers: { github: { command: 'gh-mcp' } } };
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1', codex_config });
+    expect(capture.codexOptions?.config).toEqual(codex_config);
+  });
+
+  it('attaches local images to the prompt input', async () => {
+    const { capture } = await runTurn({
+      prompt: 'describe these',
+      session_id: 's1',
+      images: ['/tmp/a.png', '/tmp/b.png'],
+    });
+    expect(capture.input).toEqual([
+      { type: 'text', text: 'describe these' },
+      { type: 'local_image', path: '/tmp/a.png' },
+      { type: 'local_image', path: '/tmp/b.png' },
+    ]);
+  });
+
   it('resumes the prior thread for a known session_id', async () => {
     const fake = fakeIii();
     fake.state.set('codex_sessions/s1', {

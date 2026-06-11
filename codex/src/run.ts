@@ -64,6 +64,13 @@ const RunPayloadSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe('JSON schema for structured final output'),
+  images: z.array(z.string()).optional().describe('Paths to local images attached to the prompt'),
+  codex_config: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'Codex config.toml overrides for this turn (flattened to --config key=value), e.g. mcp_servers, model_providers, profiles',
+    ),
   /** Raw Codex SDK ThreadOptions, spread over everything the worker
    *  derives — the pure pass-through (camelCase as in the SDK). */
   options: z
@@ -140,6 +147,8 @@ export async function executeRun(
 
   const codex = new Codex({
     ...(cfg.codex_executable ? { codexPathOverride: cfg.codex_executable } : {}),
+    ...(cfg.base_url ? { baseUrl: cfg.base_url } : {}),
+    ...(payload.codex_config ? { config: payload.codex_config as never } : {}),
   });
   const thread = prior?.codex_thread_id
     ? codex.resumeThread(prior.codex_thread_id, threadOptions)
@@ -158,7 +167,13 @@ export async function executeRun(
   let isError = false;
 
   try {
-    const { events } = await thread.runStreamed(prompt, {
+    const input = payload.images?.length
+      ? [
+          { type: 'text' as const, text: prompt },
+          ...payload.images.map((path) => ({ type: 'local_image' as const, path })),
+        ]
+      : prompt;
+    const { events } = await thread.runStreamed(input, {
       signal: abort.signal,
       ...(payload.output_schema ? { outputSchema: payload.output_schema } : {}),
     });

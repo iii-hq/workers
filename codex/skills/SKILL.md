@@ -36,6 +36,11 @@ anything onto this one.
   interrupt with `codex::stop`.
 - Get structured final output: pass `output_schema` (JSON schema) and the
   final agent message is JSON matching it.
+- Attach screenshots or diagrams: `images: ["/path/a.png"]` adds local
+  images to the prompt.
+- Wire MCP servers or model providers into one turn: `codex_config`
+  forwards any `config.toml` override, e.g.
+  `{"codex_config": {"mcp_servers": {"github": {"command": "gh-mcp"}}}}`.
 - Reach past the named payload fields: anything the SDK ThreadOptions
   accept goes through `options` unchanged, e.g.
   `{"options": {"networkAccessEnabled": true, "webSearchMode": "live"}}`.

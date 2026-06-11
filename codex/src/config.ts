@@ -19,6 +19,7 @@ const ConfigSchema = z.object({
   events_stream: z.string().default('agent::events'),
   raw_events_stream: z.string().default('codex::events'),
   codex_executable: z.string().default(''),
+  base_url: z.string().default(''),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

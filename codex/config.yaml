@@ -20,3 +20,6 @@ raw_events_stream: codex::events
 # Path to the Codex CLI binary. Empty = SDK default resolution; the worker
 # falls back to the `codex` binary on PATH (needed for the bundled build).
 codex_executable: ""
+
+# Override the API base URL (passed to the SDK as baseUrl). Empty = default.
+base_url: ""
