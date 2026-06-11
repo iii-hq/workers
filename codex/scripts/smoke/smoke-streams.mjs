@@ -1,6 +1,7 @@
 import { registerWorker } from 'iii-sdk';
 const iii = registerWorker('ws://127.0.0.1:49134', { workerName: 'smoke-codex' });
 await new Promise((r) => setTimeout(r, 1500));
+let exitCode = 0;
 const res = await iii.trigger({
   function_id: 'codex::run',
   payload: {
@@ -11,6 +12,7 @@ const res = await iii.trigger({
   timeoutMs: 240_000,
 });
 console.log('result ->', res.result, '| error:', res.is_error);
+if (res.is_error) exitCode = 1;
 const raw = await iii.trigger({
   function_id: 'stream::list',
   payload: { stream_name: 'codex::events', group_id: res.session_id },
@@ -23,4 +25,6 @@ const agent = await iii.trigger({
 console.log('agent::events types ->', JSON.stringify(agent.map((f) => f.type)));
 const exec = agent.find((f) => f.type === 'function_execution_start');
 console.log('exec frame ->', JSON.stringify(exec ?? null).slice(0, 200));
-process.exit(0);
+if (!exec || !raw.some((f) => f.type === 'turn.completed')) exitCode = 1;
+console.log(exitCode === 0 ? 'smoke passed' : 'smoke FAILED');
+process.exit(exitCode);

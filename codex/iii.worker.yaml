@@ -9,7 +9,7 @@ runtime:
   kind: javascript
 
 scripts:
-  install: npm install && npm run build
+  install: pnpm install && pnpm run build
   start: node dist/index.js
 
 dependencies:

@@ -55,6 +55,12 @@ describe('argsForItem / resultContentForItem', () => {
     expect(resultContentForItem(item)).toEqual([{ type: 'text', text: JSON.stringify(changes) }]);
   });
 
+  it('carries the web search query as args and content (the SDK item has no result field)', () => {
+    const item = { id: 'i', type: 'web_search', query: 'zig allocators' };
+    expect(argsForItem(item)).toEqual({ query: 'zig allocators' });
+    expect(resultContentForItem(item)).toEqual([{ type: 'text', text: 'zig allocators' }]);
+  });
+
   it('prefers the MCP error message over the result payload', () => {
     const item = {
       id: 'i',
