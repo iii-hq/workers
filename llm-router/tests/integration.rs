@@ -888,3 +888,53 @@ async fn router_boots_its_interface_against_a_bare_engine() {
 
     router_iii.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn complete_fails_fast_when_the_provider_worker_is_gone() {
+    // Regression for the boundary hang: a registered provider whose worker is
+    // gone makes the dispatch fail with function_not_found; `run` returns a
+    // typed Err without ever writing a frame, and `router::complete`'s drain
+    // must not block on a channel that will never EOF.
+    let engine = engine_or_skip!();
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    // Declaration only — no live worker serves provider::ghost::stream.
+    call(
+        &router_iii,
+        "router::provider::register",
+        json!({ "id": "ghost" }),
+    )
+    .await
+    .expect("declaration accepted");
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+    let started = Instant::now();
+    let err = call(
+        &consumer,
+        "router::complete",
+        json!({
+            "provider": "ghost",
+            "model": "ghost-model",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
+        }),
+    )
+    .await
+    .expect_err("typed error, not a hang");
+    assert_eq!(
+        remote_code(&err),
+        "router/provider_unavailable",
+        "got {err:?} after {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "must answer well before any drain budget, took {:?}",
+        started.elapsed()
+    );
+
+    consumer.shutdown();
+    router_iii.shutdown();
+}

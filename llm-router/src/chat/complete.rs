@@ -29,7 +29,7 @@ pub fn make_complete(
             })?;
             let channel = create_router_channel(&iii).await?;
             let mut reader = channel.reader;
-            let chat_task = {
+            let mut chat_task = {
                 let sink = channel.writer.clone();
                 tokio::spawn(async move {
                     let result = pipeline.run(call, sink.clone()).await;
@@ -38,18 +38,40 @@ pub fn make_complete(
                 })
             };
 
+            // Drain the channel and drive the pipeline concurrently. The
+            // boundary must not depend on the channel EOF-ing: a pipeline Err
+            // that never wrote a frame leaves the channel without an EOF (a
+            // zero-write close does not propagate), so a sequential
+            // drain-then-await blocks for the full reader budget. Racing the
+            // two surfaces any pipeline Err immediately — for every current
+            // and future error path.
             let mut terminal: Option<AssistantMessageEvent> = None;
-            // outer ≥ inner budget, always
-            while let ReadEvent::Msg(m) = reader.next(Duration::from_secs(600)).await {
-                if let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(&m) {
+            let collect = |terminal: &mut Option<AssistantMessageEvent>, m: &str| {
+                if let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(m) {
                     if ev.is_terminal() {
-                        terminal = Some(ev);
+                        *terminal = Some(ev);
                     }
                 }
-            }
-            let response = chat_task
-                .await
-                .map_err(|e| IIIError::Handler(e.to_string()))??;
+            };
+            let response = loop {
+                tokio::select! {
+                    // outer ≥ inner budget, always
+                    ev = reader.next(Duration::from_secs(600)) => match ev {
+                        ReadEvent::Msg(m) => collect(&mut terminal, &m),
+                        _ => break chat_task.await.map_err(|e| IIIError::Handler(e.to_string()))??,
+                    },
+                    res = &mut chat_task => {
+                        let response = res.map_err(|e| IIIError::Handler(e.to_string()))??;
+                        // The pipeline is done; remaining frames are in-flight
+                        // engine hops, not a live stream — finish the drain on
+                        // a short budget instead of the streaming one.
+                        while let ReadEvent::Msg(m) = reader.next(Duration::from_secs(5)).await {
+                            collect(&mut terminal, &m);
+                        }
+                        break response;
+                    }
+                }
+            };
             let message = match terminal {
                 Some(AssistantMessageEvent::Done { message }) => message,
                 Some(AssistantMessageEvent::Error { error }) => error,
