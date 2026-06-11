@@ -9,12 +9,6 @@ defaults:
   allowed_tools: []
   disallowed_tools: []
 
-# Optional: expose the iii bus to Claude Code as in-process MCP tools
-# (mcp__iii__trigger / mcp__iii__functions_list / mcp__iii__functions_info).
-# Off by default: the worker is a pure Claude Code API surface unless the
-# operator opts in. Bring-your-own MCP servers pass through options.mcpServers.
-expose_iii_bridge: false
-
 # Route Claude Code permission prompts through policy::check_permissions
 # (harness approval gate). Fail-closed when the gate is unreachable.
 # Requires the harness worker; leave false for standalone use.

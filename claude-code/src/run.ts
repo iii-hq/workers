@@ -10,7 +10,6 @@ import { randomUUID } from 'node:crypto';
 import { query, type Options, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { ISdk } from 'iii-sdk';
 import { z } from 'zod';
-import { makeIiiBridge } from './bridge.js';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
 import {
@@ -129,14 +128,6 @@ export async function executeRun(
     ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
     ...(payload.options as Partial<Options> | undefined),
-    ...(cfg.expose_iii_bridge
-      ? {
-          mcpServers: {
-            ...((payload.options as Partial<Options> | undefined)?.mcpServers ?? {}),
-            iii: makeIiiBridge(iii),
-          },
-        }
-      : {}),
   };
 
   const q = query({ prompt, options });

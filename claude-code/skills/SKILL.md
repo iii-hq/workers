@@ -2,8 +2,8 @@
 name: claude-code
 description: >-
   Run headless Claude Code turns over the iii bus — file edits, shell, web,
-  and MCP tools against any host directory — with AgentEvent streaming,
-  session resume, and an MCP bridge that lets Claude call any iii function.
+  and MCP tools against any host directory — with raw message streaming,
+  AgentEvent translation, and session resume.
 ---
 
 # claude-code
@@ -17,13 +17,11 @@ and the acp worker render Claude Code turns like any native harness turn. The
 worker also registers `run::start_and_wait`, so anything built to drive the
 canonical brain contract can drive Claude Code unchanged.
 
-With `expose_iii_bridge: true` the integration runs bidirectional: each turn
-carries an in-process MCP bridge exposing `mcp__iii__functions_list`,
-`mcp__iii__functions_info`, and `mcp__iii__trigger`, so the running Claude
-turn can discover and invoke any function registered on the engine — shell,
-database, storage, or your own workers. Off by default. Requires the `claude`
-CLI on the host with an existing login or `ANTHROPIC_API_KEY` in the worker
-environment.
+The worker is a pure pass-through: named payload fields cover the common
+path, the `options` field forwards any Agent SDK option verbatim (including
+`mcpServers`), and the raw Claude Code messages mirror onto `claude::events`
+untouched. Requires the `claude` CLI on the host with an existing login or
+`ANTHROPIC_API_KEY` in the worker environment.
 
 ## When to Use
 
@@ -35,9 +33,6 @@ environment.
 - Run long agentic jobs in the background with `claude::start` and watch
   `agent::events` for `message_complete`, `function_execution_start/end`,
   and `turn_end` frames; interrupt with `claude::stop`.
-- Let an LLM turn reach the rest of your backend: with
-  `expose_iii_bridge: true`, Claude calls `mcp__iii__trigger` to hit any bus
-  function mid-turn.
 
 ## Boundaries
 

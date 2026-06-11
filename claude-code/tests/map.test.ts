@@ -17,9 +17,9 @@ describe('toolFunctionId', () => {
     expect(toolFunctionId('Edit')).toBe('claude-code::Edit');
   });
 
-  it('maps MCP tool names back to bus-style ids', () => {
-    expect(toolFunctionId('mcp__iii__trigger')).toBe('iii::trigger');
-    expect(toolFunctionId('mcp__iii__functions_list')).toBe('iii::functions_list');
+  it('maps MCP tool names to bus-style ids', () => {
+    expect(toolFunctionId('mcp__github__create_issue')).toBe('github::create_issue');
+    expect(toolFunctionId('mcp__filesystem__read_file')).toBe('filesystem::read_file');
   });
 });
 

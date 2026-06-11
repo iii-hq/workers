@@ -10,7 +10,6 @@ describe('loadConfig', () => {
     expect(cfg.engine_url).toBe('ws://127.0.0.1:49134');
     expect(cfg.defaults.permission_mode).toBe('acceptEdits');
     expect(cfg.defaults.max_turns).toBe(50);
-    expect(cfg.expose_iii_bridge).toBe(false);
     expect(cfg.approval_gate).toBe(false);
     expect(cfg.events_stream).toBe('agent::events');
     expect(cfg.raw_events_stream).toBe('claude::events');
