@@ -51,16 +51,28 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Bare engine mirroring CI's interface-boot smoke (`workers: []`): builtin
+/// daemons only — no `iii-state`, no `iii-pubsub`. Port pinned through
+/// iii-worker-manager so parallel tests don't collide on the default port.
+async fn spawn_bare_engine() -> Option<Engine> {
+    let config_for = |port: u16, _dir: &std::path::Path| {
+        format!(
+            r#"workers:
+  - name: iii-worker-manager
+    config:
+      port: {port}
+"#
+        )
+    };
+    spawn_engine_with(config_for).await
+}
+
 /// Spawn a minimal engine in a temp dir; poll until WS-reachable.
 /// None = no engine available on this host → the caller self-skips.
 async fn spawn_engine() -> Option<Engine> {
-    let bin = engine_bin()?;
-    let port = free_port();
-    let dir = std::env::temp_dir().join(format!("llm-router-it-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-
-    let config = format!(
-        r#"workers:
+    let config_for = |port: u16, dir: &std::path::Path| {
+        format!(
+            r#"workers:
   - name: iii-worker-manager
     config:
       port: {port}
@@ -83,9 +95,24 @@ async fn spawn_engine() -> Option<Engine> {
           file_path: {dir}/state_store.db
           store_method: file_based
 "#,
-        port = port,
-        dir = dir.display(),
-    );
+            port = port,
+            dir = dir.display(),
+        )
+    };
+    spawn_engine_with(config_for).await
+}
+
+/// Shared engine bootstrap: pick a port + temp dir, write the config the
+/// caller composes for them, spawn, poll until WS-reachable.
+async fn spawn_engine_with(
+    config_for: impl FnOnce(u16, &std::path::Path) -> String,
+) -> Option<Engine> {
+    let bin = engine_bin()?;
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("llm-router-it-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let config = config_for(port, &dir);
     let config_path = dir.join("config.yaml");
     std::fs::File::create(&config_path)
         .and_then(|mut f| f.write_all(config.as_bytes()))
@@ -132,6 +159,19 @@ async fn spawn_engine() -> Option<Engine> {
 macro_rules! engine_or_skip {
     () => {
         match spawn_engine().await {
+            Some(e) => e,
+            None => {
+                eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
+                return;
+            }
+        }
+    };
+}
+
+/// Same self-skip, for the bare (no iii-state / no iii-pubsub) engine.
+macro_rules! bare_engine_or_skip {
+    () => {
+        match spawn_bare_engine().await {
             Some(e) => e,
             None => {
                 eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
@@ -824,5 +864,27 @@ async fn models_changed_event_reaches_a_pubsub_subscriber() {
     }
 
     probe.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn router_boots_its_interface_against_a_bare_engine() {
+    // Mirrors CI's interface-boot smoke: the registry-publish flow boots the
+    // worker against an engine configured with `workers: []` — builtin
+    // daemons only, no `iii-state`. Interface collection needs the router to
+    // connect and register its functions; boot must tolerate the missing
+    // state worker and come up with an empty registry/catalog.
+    let engine = bare_engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots without iii-state");
+
+    let list = call(&router_iii, "router::models::list", json!({}))
+        .await
+        .expect("interface answers");
+    assert_eq!(list["models"], json!([]));
+
     router_iii.shutdown();
 }

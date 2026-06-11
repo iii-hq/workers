@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
-use crate::types::errors::{RouterCode, RouterError};
+use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
 use crate::types::router::ProviderDeclaration;
 use iii_sdk::{IIIError, III};
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,17 @@ impl RegistryStore {
     }
 
     pub async fn load(&self) -> Result<(), IIIError> {
-        let stored = state_get(&self.iii, REGISTRY_KEY).await?;
+        // No iii-state worker on this engine (the registry-publish flow boots
+        // against a bare `workers: []` engine to collect the interface):
+        // start empty. Safe to tolerate exactly this error class — with no
+        // state worker, persists can't overwrite the stored snapshot either.
+        let stored = match state_get(&self.iii, REGISTRY_KEY).await {
+            Err(e) if is_function_not_found(&e) => {
+                eprintln!("[llm-router] no iii-state worker; registry starts empty");
+                return Ok(());
+            }
+            other => other?,
+        };
         let mut records = self.records.lock().await;
         *records = serde_json::from_value(stored).unwrap_or_default();
         Ok(())
