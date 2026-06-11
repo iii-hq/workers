@@ -12,7 +12,7 @@ pub mod manifest;
 // pub mod sse;
 // pub mod state;
 // pub mod stream_fn;
-// pub mod thinking;
+pub mod thinking;
 // pub mod upstream;
 pub mod wire;
 
