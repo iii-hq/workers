@@ -130,6 +130,12 @@ claude_executable: ""          # path to the claude CLI; empty = SDK default res
 
 With `approval_gate: true` and the harness worker installed, every Claude Code tool call is checked against `policy::check_permissions` before it executes, fail-closed when the gate is unreachable, so the same YAML permission rules and console approval flow that govern native harness turns govern Claude Code.
 
+## Observability
+
+Every `claude::run` is an ordinary traced invocation on the engine: the trace carries the full input payload (prompt, cwd, caller worker id) and the output (result, stop reason, token usage, cost) as span events, with per-function p50/p95/p99 in the console's trace explorer — no extra instrumentation in the worker.
+
+![claude::run invocations in the iii console trace explorer, with input and output payloads](assets/console-traces.png)
+
 ## How it maps
 
 | Claude Code | iii |
