@@ -3,6 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Central configuration (v0.4.0+): the engine launches the shell worker with
+# --config <temp.yaml> derived from the `shell` config block in config.yaml.
+# The shell worker registers that as the SEED with the built-in `configuration`
+# worker (configuration::register) and then reads it back (configuration::get).
+# The configuration worker is fresh per engine process, so the config.yaml block
+# is authoritative each run — no separate seed step is needed.
+
 # Path overrides (defaults assume the harness lives at shell/tests/e2e/ inside
 # the workers repo and the iii engine is on $PATH or at $HOME/.local/bin/iii —
 # which is where the install script

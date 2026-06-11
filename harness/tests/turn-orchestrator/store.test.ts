@@ -79,7 +79,6 @@ describe('saveRecord no-op suppression', () => {
     const { iii, emits } = fakeIii();
     const store = createTurnStore(iii);
     const rec = newRecord('sess-a');
-    // Same view; differs only in updated_at_ms (which toView drops).
     const previous = { ...rec, updated_at_ms: rec.updated_at_ms + 1000 };
 
     await store.saveRecord(rec, previous);
@@ -139,8 +138,27 @@ describe('session-tree call reduction', () => {
       timestamp: 1,
     };
     await createTurnStore(iii).appendMessages('sess-a', [msg]);
-    expect(calls.filter((c) => c === 'session-tree::append')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
+    expect(calls).not.toContain('session-tree::append');
     expect(calls).not.toContain('session-tree::ensure');
+  });
+
+  it('appendMessages batches a multi-message call into one trigger', async () => {
+    const { iii, calls } = recordingIii();
+    const mk = (text: string) => ({
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text }],
+      timestamp: 1,
+    });
+    await createTurnStore(iii).appendMessages('sess-a', [mk('a'), mk('b'), mk('c')]);
+    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
+  });
+
+  it('appendMessages on an empty list triggers nothing', async () => {
+    const { iii, calls } = recordingIii();
+    await createTurnStore(iii).appendMessages('sess-a', []);
+    expect(calls).not.toContain('session-tree::append_batch');
+    expect(calls).not.toContain('session-tree::append');
   });
 
   it('ensureSession is the sole trigger of session-tree::ensure', async () => {
@@ -161,7 +179,7 @@ describe('shouldWakeStep', () => {
   });
 
   it('rejects terminal state (stopped)', () => {
-    expect(shouldWakeStep('steering_check', 'stopped')).toBe(false);
+    expect(shouldWakeStep('function_execute', 'stopped')).toBe(false);
   });
 
   it('rejects function_awaiting_approval (orchestrator parks here)', () => {

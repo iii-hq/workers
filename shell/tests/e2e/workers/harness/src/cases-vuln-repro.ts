@@ -97,7 +97,10 @@ export const VULN_REPRO_CASES: TestCase[] = [
         });
       } catch (e: any) {
         rejected = true;
-        observed = e?.message ?? String(e);
+        // S-code is in the structured `code` field (v0.4.0+); include it so the
+        // S212 assertion below matches the code, not just the message text.
+        const code = e && typeof e === 'object' && 'code' in e ? String(e.code) : '';
+        observed = `${code ? code + ': ' : ''}${e?.message ?? String(e)}`;
       }
       expect(
         rejected,

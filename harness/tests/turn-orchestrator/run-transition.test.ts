@@ -82,7 +82,7 @@ describe('runTransition', () => {
   });
 
   it('routes an unexpected handler throw to failed without re-throwing', async () => {
-    const rec: TurnStateRecord = { ...newRecord('s1'), state: 'steering_check' };
+    const rec: TurnStateRecord = { ...newRecord('s1'), state: 'assistant_streaming' };
     const store = installMockTurnStore({
       loadRecord: vi.fn(async () => rec),
     });
@@ -90,7 +90,9 @@ describe('runTransition', () => {
       throw new Error('boom');
     });
 
-    const result = await runTransition({} as ISdk, 'steering_check', handle, { session_id: 's1' });
+    const result = await runTransition({} as ISdk, 'assistant_streaming', handle, {
+      session_id: 's1',
+    });
     expect(result).toMatchObject({ ok: true, to_state: 'failed' });
     expect(store.saveRecord).toHaveBeenCalled();
   });

@@ -12,10 +12,21 @@ export const SAFETY_CASES: TestCase[] = [
     },
   },
   {
-    name: 'allowlist permits via basename match',
-    async run({ call }) {
-      const r = await call('shell::exec', { command: '/bin/ls', args: ['-d', '.'] });
-      expectEqual(r.exit_code, 0, 'exit_code');
+    // This suite runs UNJAILED (config.yaml host_root: null). In that mode a
+    // command path (anything with '/') is rejected outright: the whole host FS
+    // is writable via shell::fs::write, so a path could execute agent-planted
+    // bytes and bypass the read-only allowlist. Bare PATH-resolved names work.
+    // (In jailed mode an absolute path OUTSIDE host_root is still permitted by
+    // basename — exercised by the jailed suite / Rust unit tests.)
+    name: 'unjailed mode rejects command paths (RCE guard)',
+    async run({ call, expectError }) {
+      await expectError(
+        () => call('shell::exec', { command: '/bin/ls', args: ['-d', '.'] }),
+        'unjailed',
+      );
+      // The bare name still resolves via PATH and runs.
+      const r = await call('shell::exec', { command: 'ls', args: ['-d', '.'] });
+      expectEqual(r.exit_code, 0, 'bare command name still permitted');
     },
   },
   {

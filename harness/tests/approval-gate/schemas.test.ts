@@ -26,6 +26,15 @@ describe('ResolvePayloadSchema — id normalization & validation', () => {
     expect(parsed.function_call_id).toBe('fc-1');
   });
 
+  it('accepts the aborted decision on the wire (user cancel of a parked call)', () => {
+    const parsed = ResolvePayloadSchema.parse({
+      session_id: 's',
+      function_call_id: 'fc-1',
+      decision: 'aborted',
+    });
+    expect(parsed.decision).toBe('aborted');
+  });
+
   it.each([
     ['function_call_id missing', { session_id: 's', decision: 'allow' }],
     ['tool_call_id only (legacy)', { session_id: 's', tool_call_id: 'legacy', decision: 'allow' }],

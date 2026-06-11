@@ -95,16 +95,20 @@ pub async fn apply_config(state: &AppState, cfg: WorkerConfig) -> Result<(), Str
 /// Register the internal config-change handler and bind a `configuration` trigger.
 pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIError> {
     let st = state.clone();
+    let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |payload: Value| {
+        RegisterFunction::new_async(move |_payload: Value| {
             let st = st.clone();
+            let engine = engine.clone();
             async move {
-                on_config_change(&st, payload).await;
+                on_config_change(&engine, &st).await;
                 Ok::<Value, IIIError>(json!({ "ok": true }))
             }
         })
-        .description("Internal: reload connection pools when the database configuration changes."),
+        .description(
+            "Internal: reload connection pools from the authoritative configuration when it changes.",
+        ),
     );
 
     iii.register_trigger(RegisterTriggerInput {
@@ -119,25 +123,29 @@ pub fn register_config_trigger(iii: &III, state: AppState) -> Result<(), IIIErro
     Ok(())
 }
 
-async fn on_config_change(state: &AppState, payload: Value) {
-    let new_value = match payload.get("new_value") {
-        Some(v) if !v.is_null() => v.clone(),
-        _ => {
-            tracing::warn!("configuration event missing new_value; skipping pool reload");
+/// Reload pools from the AUTHORITATIVE configuration.
+///
+/// The caller-supplied trigger payload is intentionally ignored:
+/// `database::on-config-change` is a discoverable bus function, so trusting
+/// `payload.new_value` would let any caller replace the live connection pools
+/// (e.g. point them at an attacker-controlled database) without updating
+/// persisted state. Re-fetch the stored value via `configuration::get` instead.
+async fn on_config_change(iii: &III, state: &AppState) {
+    let cfg = match fetch_config(iii).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "config-change: failed to fetch authoritative configuration; keeping previous pools"
+            );
             return;
         }
     };
-    match WorkerConfig::from_json(&new_value) {
-        Ok(cfg) => match apply_config(state, cfg).await {
-            Ok(()) => tracing::info!("database pools reloaded after configuration change"),
-            Err(e) => tracing::error!(
-                error = %e,
-                "failed to rebuild pools after configuration change; keeping previous pools"
-            ),
-        },
+    match apply_config(state, cfg).await {
+        Ok(()) => tracing::info!("database pools reloaded after configuration change"),
         Err(e) => tracing::error!(
             error = %e,
-            "invalid configuration payload; keeping previous pools"
+            "failed to rebuild pools after configuration change; keeping previous pools"
         ),
     }
 }

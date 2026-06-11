@@ -20,6 +20,11 @@ import { type SessionEntry, SessionError, type SessionMeta, entryTimestamp } fro
 export interface SessionStore {
   create(meta: SessionMeta): Promise<void>;
   append(session_id: string, entry: SessionEntry): Promise<void>;
+  /**
+   * Append several pre-chained entries, refreshing session meta once for the
+   * whole batch (vs once per {@link append}). Entries are written in order.
+   */
+  appendMany(session_id: string, entries: SessionEntry[]): Promise<void>;
   loadEntries(session_id: string): Promise<SessionEntry[]>;
   loadMeta(session_id: string): Promise<SessionMeta>;
   list(): Promise<SessionMeta[]>;
@@ -40,6 +45,14 @@ export class InMemoryStore implements SessionStore {
     const list = this.entries.get(session_id);
     if (!list) throw new SessionError('not_found', `session not found: ${session_id}`);
     list.push(entry);
+    const m = this.meta.get(session_id);
+    if (m) m.updated_at = Date.now();
+  }
+
+  async appendMany(session_id: string, entries: SessionEntry[]): Promise<void> {
+    const list = this.entries.get(session_id);
+    if (!list) throw new SessionError('not_found', `session not found: ${session_id}`);
+    list.push(...entries);
     const m = this.meta.get(session_id);
     if (m) m.updated_at = Date.now();
   }
@@ -90,25 +103,34 @@ export class IiiStateSessionStore implements SessionStore {
     }
   }
 
-  async append(session_id: string, entry: SessionEntry): Promise<void> {
+  /** Write one entry under its own key. Throws on storage failure. */
+  private async writeEntry(session_id: string, key: string, entry: SessionEntry): Promise<void> {
     try {
-      await this.state.set({
-        scope: entriesScope(session_id),
-        key: entry.id,
-        value: entry,
-      });
+      await this.state.set({ scope: entriesScope(session_id), key, value: entry });
     } catch (e) {
       throw new SessionError('storage', `state::set entry: ${String(e)}`);
     }
-    // Best-effort meta refresh — failures here log only.
+  }
+
+  /** Bump meta.updated_at; best-effort, failures log only. */
+  private async bestEffortMetaRefresh(session_id: string): Promise<void> {
     try {
       await this.refreshMetaUpdatedAt(session_id);
     } catch (e) {
-      logger.warn('meta updated_at refresh failed', {
-        session_id,
-        err: String(e),
-      });
+      logger.warn('meta updated_at refresh failed', { session_id, err: String(e) });
     }
+  }
+
+  async append(session_id: string, entry: SessionEntry): Promise<void> {
+    await this.writeEntry(session_id, entry.id, entry);
+    await this.bestEffortMetaRefresh(session_id);
+  }
+
+  async appendMany(session_id: string, entries: SessionEntry[]): Promise<void> {
+    for (const entry of entries) {
+      await this.writeEntry(session_id, entry.id, entry);
+    }
+    await this.bestEffortMetaRefresh(session_id);
   }
 
   async loadEntries(session_id: string): Promise<SessionEntry[]> {
@@ -118,9 +140,6 @@ export class IiiStateSessionStore implements SessionStore {
     } catch (e) {
       throw new SessionError('storage', `state::list entries: ${String(e)}`);
     }
-    // PR #150: sort by (timestamp, id) so resumed approval replies that
-    // arrive after the session paused appear in correct transcript order
-    // even when their entry ids are non-monotonic.
     entries.sort((a, b) => {
       const t = entryTimestamp(a) - entryTimestamp(b);
       if (t !== 0) return t;
@@ -151,24 +170,8 @@ export class IiiStateSessionStore implements SessionStore {
   }
 
   async updateEntry(session_id: string, entry_id: string, updated: SessionEntry): Promise<void> {
-    try {
-      await this.state.set({
-        scope: entriesScope(session_id),
-        key: entry_id,
-        value: updated,
-      });
-    } catch (e) {
-      throw new SessionError('storage', `state::set updateEntry: ${String(e)}`);
-    }
-    // Best-effort meta refresh — failures here log only.
-    try {
-      await this.refreshMetaUpdatedAt(session_id);
-    } catch (e) {
-      logger.warn('meta updated_at refresh failed', {
-        session_id,
-        err: String(e),
-      });
-    }
+    await this.writeEntry(session_id, entry_id, updated);
+    await this.bestEffortMetaRefresh(session_id);
   }
 
   private async refreshMetaUpdatedAt(session_id: string): Promise<void> {

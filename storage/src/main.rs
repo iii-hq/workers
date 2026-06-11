@@ -1,25 +1,30 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, RegisterTriggerType, WorkerMetadata};
+use iii_sdk::{
+    register_worker, IIIError, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use storage::backend::factory::{self, LocalBackendCtx};
+use storage::backend::factory::LocalBackendCtx;
 use storage::backend::local;
 use storage::config::{redact_url, BucketConfig as CfgBucket, WorkerConfig};
-use storage::handlers::AppState;
+use storage::configuration;
+use storage::handlers::{delete_object, get_object, presign_url, put_object, AppState};
 use storage::rustfs::{health, spawn};
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
 use storage::triggers::pollers::{cf_queue, pubsub, rustfs_webhook, sqs};
 use storage::triggers::registry::TriggerRegistry;
+use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
 #[command(name = "storage", about = "storage worker")]
 struct Cli {
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    /// Optional seed config.yaml used to populate `initial_value` on first register.
+    #[arg(long)]
+    config: Option<String>,
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
     /// Print the registry publish manifest as JSON and exit. No engine connection.
@@ -49,22 +54,54 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         name = storage::worker_name(),
-        config = %cli.config,
+        seed_config = cli.config.as_deref().unwrap_or("(none)"),
         url = %redact_url(&cli.url),
         "starting"
     );
 
-    let cfg = match WorkerConfig::from_file(&cli.config) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                path = %cli.config,
-                "failed to load config, using defaults"
-            );
-            WorkerConfig::default()
-        }
+    let iii = register_worker(
+        &cli.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                name: storage::worker_name().to_string(),
+                os: std::env::consts::OS.to_string(),
+                pid: Some(std::process::id()),
+                telemetry: None,
+                ..WorkerMetadata::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    let seed = match &cli.config {
+        Some(path) => match WorkerConfig::from_file(path) {
+            Ok(cfg) => {
+                tracing::info!(path = %path, "loaded seed config for initial registration");
+                Some(cfg)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to load seed config; relying on existing configuration entry"
+                );
+                None
+            }
+        },
+        None => None,
     };
+
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("registering storage configuration schema")?;
+
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("loading storage configuration")?;
 
     // Pre-compute which buckets have a notifications source. Trigger
     // registrations targeting any other bucket fail fast in the handler.
@@ -145,35 +182,15 @@ async fn main() -> Result<()> {
         tracing::info!(port, "rustfs sidecar ready");
     }
 
-    let mut backends = HashMap::new();
-    for (name, bucket_cfg) in &cfg.buckets {
-        let b = factory::build(name, bucket_cfg, &cfg.providers, local_ctx.as_ref())
-            .await
-            .map_err(|e| anyhow::anyhow!(format!("{e}")))
-            .with_context(|| format!("building backend `{name}`"))?;
-        tracing::info!(bucket = %name, provider = b.provider(), "backend ready");
-        backends.insert(name.clone(), b);
-    }
+    let backends = configuration::build_backends(&cfg, local_ctx.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("building initial storage backends")?;
 
     let state = AppState {
-        backends: Arc::new(backends),
+        backends: Arc::new(RwLock::new(backends)),
+        local_ctx: local_ctx.clone(),
     };
-
-    let iii = register_worker(
-        &cli.url,
-        InitOptions {
-            metadata: Some(WorkerMetadata {
-                runtime: "rust".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                name: storage::worker_name().to_string(),
-                os: std::env::consts::OS.to_string(),
-                pid: Some(std::process::id()),
-                telemetry: None,
-                ..WorkerMetadata::default()
-            }),
-            ..Default::default()
-        },
-    );
 
     let registry = Arc::new(TriggerRegistry::new());
     let dispatcher = Arc::new(EngineDispatcher::new(iii.clone(), registry.clone()));
@@ -368,7 +385,59 @@ async fn main() -> Result<()> {
         tracing::info!(queue_id = %queue_id, "cf-queue poller started");
     }
 
-    storage::handlers::register_all(&iii, &state);
+    // Register the four storage::* RPC functions inline.
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::putObject",
+            RegisterFunction::new_async(move |req: put_object::PutReq| {
+                let st = st.clone();
+                async move { put_object::handle(&st, req).await.map_err(IIIError::from) }
+            })
+            .description(
+                "Write an object to a configured bucket. Body is base64; max 10MB inline.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::getObject",
+            RegisterFunction::new_async(move |req: get_object::GetReq| {
+                let st = st.clone();
+                async move { get_object::handle(&st, req).await.map_err(IIIError::from) }
+            })
+            .description("Read an object. Body is base64; for large objects use presignUrl."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::deleteObject",
+            RegisterFunction::new_async(move |req: delete_object::DeleteReq| {
+                let st = st.clone();
+                async move {
+                    delete_object::handle(&st, req)
+                        .await
+                        .map_err(IIIError::from)
+                }
+            })
+            .description("Delete an object. No-op when the object does not exist."),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::presignUrl",
+            RegisterFunction::new_async(move |req: presign_url::PresignReq| {
+                let st = st.clone();
+                async move { presign_url::handle(&st, req).await.map_err(IIIError::from) }
+            })
+            .description(
+                "Issue a short-lived URL the browser can hit directly to PUT or GET an object.",
+            ),
+        );
+    }
 
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         "storage::object-created",
@@ -386,6 +455,9 @@ async fn main() -> Result<()> {
             wired_buckets: wired_buckets.clone(),
         },
     ));
+
+    configuration::register_config_trigger(&iii, state.clone(), cfg.topology())
+        .context("registering configuration change trigger")?;
 
     tracing::info!("storage registered 4 functions and 2 trigger types, waiting for invocations");
     wait_for_shutdown_signal().await?;

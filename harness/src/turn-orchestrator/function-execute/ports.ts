@@ -7,8 +7,10 @@ import type { DispatchResult } from '../agent-trigger.js';
 import { dispatchWithHook, triggerFunctionCall } from '../agent-trigger.js';
 import { emit } from '../events.js';
 import type { ISdk } from '../../runtime/iii.js';
+import type { AgentEvent } from '../../types/agent-event.js';
 import type { FunctionCall, FunctionResult } from '../../types/function.js';
 import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
+import { createTurnStore } from '../state-runtime/store.js';
 import type { ExecutedCall } from './types.js';
 
 const RoutingEnvelopeSchema = z
@@ -49,8 +51,17 @@ export function withRoutingEnvelope(call: FunctionCall, session_id: string): Fun
 export type FunctionExecutePorts = TurnStatePorts & {
   emitStart(session_id: string, call: FunctionCall): Promise<void>;
   emitEnd(session_id: string, executed: ExecutedCall): Promise<void>;
+  /** Generic agent-event emit, for the inline max_turns end (message_complete). */
+  emit(session_id: string, event: AgentEvent): Promise<void>;
   dispatch(call: FunctionCall, session_id: string): Promise<DispatchResult>;
   triggerPreApproved(call: FunctionCall): Promise<FunctionResult>;
+  /**
+   * Function_call_ids already persisted in the trailing result run, for batch
+   * dedup on re-entry. Reads the raw message list (not the compaction-rebuilt
+   * window): the trailing results live in the preserved tail, so this drops the
+   * paired `session-tree::compactions` read that `loadMessages` would do.
+   */
+  loadTrailingResultIds(session_id: string): Promise<Set<string>>;
 };
 
 function buildFunctionExecutionEnd(executed: ExecutedCall) {
@@ -65,10 +76,15 @@ function buildFunctionExecutionEnd(executed: ExecutedCall) {
 }
 
 export function createPorts(iii: ISdk): FunctionExecutePorts {
-  const base = createTurnStatePorts(iii);
+  const store = createTurnStore(iii);
+  const base = createTurnStatePorts(iii, store);
 
   return {
     ...base,
+
+    loadTrailingResultIds(session_id) {
+      return store.loadTrailingResultIds(session_id);
+    },
 
     async emitStart(session_id, call) {
       await emit(iii, session_id, {
@@ -83,10 +99,11 @@ export function createPorts(iii: ISdk): FunctionExecutePorts {
       await emit(iii, session_id, buildFunctionExecutionEnd(executed));
     },
 
+    emit(session_id, event) {
+      return emit(iii, session_id, event);
+    },
+
     async dispatch(call, session_id) {
-      // Hook/policy see the routing envelope; the target function gets the
-      // caller's untouched args so a payload `function_id` (e.g. for
-      // engine::functions::info) is never clobbered by the routing `function_id`.
       return dispatchWithHook(iii, withRoutingEnvelope(call, session_id), call);
     },
 

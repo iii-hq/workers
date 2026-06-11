@@ -120,7 +120,7 @@ describe('parallel approval e2e', () => {
     await h.resolveApproval('sess-order', 'fc-1', 'allow');
     rec = h.loadTurnRecord('sess-order');
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
     expect(rec?.work).toBeUndefined();
   });
 
@@ -190,12 +190,6 @@ describe('parallel approval e2e', () => {
       ['fc-1', 'fc-2'],
     );
 
-    // Both prompts approved concurrently: two approval::resolve writes whose
-    // wakes interleave on the shared turn_state record. The sequential tests
-    // never exercise this. runTransition has no optimistic-concurrency guard
-    // (saveRecord is an unconditional overwrite), so both wakes load the same
-    // parked record, each executes EVERY call, and each finalizes the batch —
-    // duplicating side effects and emitting turn_end multiple times.
     await Promise.all([
       h.resolveApproval('sess-par', 'fc-1', 'allow'),
       h.resolveApproval('sess-par', 'fc-2', 'allow'),
@@ -209,16 +203,9 @@ describe('parallel approval e2e', () => {
 
   it('drains a sibling approved mid-execution even when its own wake is dropped', async () => {
     const h = createParallelApprovalHarness();
-    // Both calls park for approval during execute.
     vi.spyOn(agentTriggerModule, 'dispatchWithHook')
-      .mockResolvedValueOnce({ kind: 'pending' }) // execute fc-late → parks
-      .mockResolvedValueOnce({ kind: 'pending' }); // execute fc-driver → parks
-    // Approved calls execute via triggerPreApproved → triggerFunctionCall.
-    // Executing fc-driver approves fc-late as a side effect but writes the
-    // decision WITHOUT firing fc-late's wake — modeling a sibling approval whose
-    // own turn-step wake was dropped (retries exhausted against the lease the
-    // driving wake holds). fc-late was read first and skipped, so only a re-scan
-    // within the same wake can pick it up.
+      .mockResolvedValueOnce({ kind: 'pending' })
+      .mockResolvedValueOnce({ kind: 'pending' });
     vi.spyOn(agentTriggerModule, 'triggerFunctionCall').mockImplementation(async (_iii, call) => {
       if (call.id === 'fc-driver') {
         h.stateStore.set('approvals/sess-drain/fc-late', {
@@ -247,14 +234,11 @@ describe('parallel approval e2e', () => {
 
     await h.resolveApproval('sess-drain', 'fc-driver', 'allow');
 
-    // fc-late is drained in the same wake instead of being orphaned: it runs to
-    // completion and the batch finalizes (work cleared, state advances) rather
-    // than staying parked on fc-late forever.
     const rec = h.loadTurnRecord('sess-drain');
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-driver')).toHaveLength(1);
     expect(executionEvents(h.emitted, 'function_execution_end', 'fc-late')).toHaveLength(1);
     expect(rec?.awaiting_approval).toEqual([]);
-    expect(rec?.state).toBe('steering_check');
+    expect(rec?.state).toBe('assistant_streaming');
   });
 
   it('re-enqueues a follow-up wake when a resolved call leaves siblings pending', async () => {
@@ -277,9 +261,6 @@ describe('parallel approval e2e', () => {
 
     const rec = h.loadTurnRecord('sess-reenqueue');
     expect(rec?.awaiting_approval?.map((e) => e.function_call_id)).toEqual(['fc-2']);
-    // The wake that resolved fc-1 must kick a fresh, uncontended wake so a
-    // dropped fc-2 contender can't orphan it: the approval::resolve write
-    // accounts for one wake, the follow-up kick for a second.
     expect(wakeEnqueues(h, 'sess-reenqueue')).toBeGreaterThanOrEqual(before + 2);
   });
 
@@ -298,7 +279,7 @@ describe('parallel approval e2e', () => {
       decision: 'allow',
       reason: null,
     });
-    expect(h.loadTurnRecord('sess-wake')?.state).toBe('steering_check');
+    expect(h.loadTurnRecord('sess-wake')?.state).toBe('assistant_streaming');
     expect(h.loadTurnRecord('sess-wake')?.work).toBeUndefined();
   });
 });

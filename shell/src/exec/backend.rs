@@ -1,11 +1,13 @@
 //! Backend trait for exec — host and sandbox impls live in sibling
-//! modules. The trait takes `argv` and a resolved `timeout_ms`; the
-//! handler is responsible for argv parsing, allowlist checking, and
-//! timeout resolution before calling `run`.
+//! modules. The trait takes `argv`, a resolved `timeout_ms`, and the
+//! validated per-call `overrides` (cwd/env); the handler is responsible
+//! for argv parsing, allowlist checking, timeout resolution, and the
+//! cwd/env gating before calling `run`.
 
 use async_trait::async_trait;
 
 use super::error::ExecError;
+use super::policy::ExecOverrides;
 
 pub type ExecCallResult<T> = Result<T, ExecError>;
 
@@ -22,7 +24,15 @@ pub struct ExecOutcome {
 
 #[async_trait]
 pub trait ExecBackend: Send + Sync {
-    async fn run(&self, argv: &[String], timeout_ms: u64) -> ExecCallResult<ExecOutcome>;
+    /// Run `argv` to completion. `overrides` carries the validated per-call
+    /// cwd/env (host-only — the sandbox backend rejects a populated override
+    /// with S210 since the in-VM exec protocol does not yet forward them).
+    async fn run(
+        &self,
+        argv: &[String],
+        timeout_ms: u64,
+        overrides: &ExecOverrides,
+    ) -> ExecCallResult<ExecOutcome>;
 }
 
 #[cfg(test)]

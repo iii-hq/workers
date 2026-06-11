@@ -2,6 +2,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod configuration;
 pub mod error;
 pub mod handlers;
 pub mod manifest;

@@ -5,7 +5,7 @@
 import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
 import { decide } from '../provider-router.js';
 import { syntheticAssistant } from '../synthetic-assistant.js';
-import { emitTurnEndOnce } from '../state-runtime/turn-end.js';
+import { emitTurnEndOnce, transitionToFinishing } from '../state-runtime/turn-end.js';
 import { enterFunctionExecute } from '../function-execute/run.js';
 import { transitionTo, type AssistantStreamingTurnRecord } from '../state.js';
 import { createDeltaCoalescer } from './coalesce-deltas.js';
@@ -34,9 +34,11 @@ export async function prepareStreamContext(
   const { provider, model, system_prompt, function_schemas, thinking_level } = request;
   const decision = decide({ provider, model });
   const tools = parseFunctionSchemas(function_schemas);
+  const model_meta = rec.model_meta;
 
   if (
-    (await ports.runPreflight(rec.session_id, messages, decision.provider, model)) === 'compacted'
+    (await ports.runPreflight(rec.session_id, messages, decision.provider, model, model_meta)) ===
+    'compacted'
   ) {
     messages = await ports.loadMessages(rec.session_id);
   }
@@ -48,6 +50,8 @@ export async function prepareStreamContext(
     tools,
     messages,
     ...(thinking_level ? { thinking_level } : {}),
+    ...(model_meta ? { model_meta } : {}),
+    resolution_key: rec.started_at_ms,
   };
 }
 
@@ -58,9 +62,6 @@ export async function runStreamTurn(
 ): Promise<StreamTurnOutcome> {
   let body_streamed = false;
 
-  // Coalesce consecutive same-type provider deltas into one message_update to
-  // cut the per-token span/RPC explosion on the streaming path. Discrete
-  // events flush through 1:1; the final flush below guarantees the tail.
   const coalescer = createDeltaCoalescer((partial, event) =>
     ports.emitMessageUpdate(session_id, partial, event),
   );
@@ -107,7 +108,7 @@ export function routeAssistantTurn(asst: AssistantMessage): AssistantRoute {
   if (hasFunctionCalls(asst)) {
     return { kind: 'function_execute' };
   }
-  return { kind: 'steering_check' };
+  return { kind: 'end_turn' };
 }
 
 export async function finalizeAssistantTurn(
@@ -122,7 +123,7 @@ export async function finalizeAssistantTurn(
 
   if (route.kind === 'stopped') {
     await emitTurnEndOnce(ports, rec, asst);
-    await ports.finishSession(rec);
+    transitionToFinishing(rec);
     return;
   }
 
@@ -135,7 +136,8 @@ export async function finalizeAssistantTurn(
     return;
   }
 
-  transitionTo(rec, 'steering_check');
+  await emitTurnEndOnce(ports, rec, asst);
+  transitionToFinishing(rec);
 }
 
 export async function runAssistantStreaming(

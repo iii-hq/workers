@@ -130,7 +130,8 @@ export const FS_HOST_CASES: TestCase[] = [
         mode: '0600',
         recursive: false,
       });
-      expectEqual(c.updated, 1, 'chmod.updated');
+      expectEqual(c.entries_changed, 1, 'chmod.entries_changed');
+      expectEqual(c.path, f, 'chmod.path');
       const s = await ctx.call('shell::fs::stat', { path: f });
       expectEqual(s.mode, '0600', 'stat.mode after chmod');
     },

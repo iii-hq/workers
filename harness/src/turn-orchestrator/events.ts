@@ -27,9 +27,9 @@ export const EVENTS_STREAM = 'agent::events';
 
 /**
  * Out-of-band compactor woken once per turn. The turn-orchestrator enqueues a
- * typed `{ session_id, usage, provider, model }` payload here at `turn_end`
- * instead of mirroring the event onto a dedicated stream — a 1:1 channel is a
- * queue message, not pub/sub.
+ * typed `{ session_id, usage, provider, model, model_limit? }` payload here at
+ * `turn_end` instead of mirroring the event onto a dedicated stream — a 1:1
+ * channel is a queue message, not pub/sub.
  */
 const COMPACTION_ON_TURN_END = 'context-compaction::on_turn_end';
 const COMPACTION_QUEUE = 'default';
@@ -91,8 +91,11 @@ async function setStream(
  * rather than making the compactor re-derive them from a stream frame.
  */
 async function enqueueCompaction(iii: ISdk, session_id: string, event: AgentEvent): Promise<void> {
-  const message = (event as { message?: { usage?: unknown; provider?: unknown; model?: unknown } })
-    .message;
+  const ev = event as {
+    message?: { usage?: unknown; provider?: unknown; model?: unknown };
+    model_limit?: unknown;
+  };
+  const message = ev.message;
   try {
     await iii.trigger({
       function_id: COMPACTION_ON_TURN_END,
@@ -101,6 +104,9 @@ async function enqueueCompaction(iii: ISdk, session_id: string, event: AgentEven
         usage: message?.usage ?? null,
         provider: typeof message?.provider === 'string' ? message.provider : '',
         model: typeof message?.model === 'string' ? message.model : '',
+        ...(ev.model_limit && typeof ev.model_limit === 'object'
+          ? { model_limit: ev.model_limit }
+          : {}),
       },
       action: TriggerAction.Enqueue({ queue: COMPACTION_QUEUE }),
     });

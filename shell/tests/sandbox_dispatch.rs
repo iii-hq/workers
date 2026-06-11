@@ -126,7 +126,7 @@ async fn chmod_forwards_uid_gid_recursive() {
         })
         .await
         .unwrap();
-    assert_eq!(resp.updated, 7);
+    assert_eq!(resp.entries_changed, 7);
     let (_, payload) = stub.last_call();
     assert_eq!(payload["uid"], 1000);
     assert_eq!(payload["gid"], 1000);
@@ -241,7 +241,7 @@ async fn write_forwards_content_ref_verbatim() {
             path: "/sb/x".into(),
             mode: "0600".into(),
             parents: false,
-            content: content_ref.clone(),
+            content: shell::fs::WriteContent::Stream(content_ref.clone()),
         })
         .await
         .unwrap();

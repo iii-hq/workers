@@ -3,6 +3,7 @@
  * orchestrator imports it directly; there is no `router::*` bus surface.
  */
 
+import type { Model } from '../models-catalog/types.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import type { AgentFunction } from '../types/function.js';
 import type { ProviderStreamInput, StreamChannelRef } from '../types/provider.js';
@@ -26,11 +27,6 @@ export function decide(req: RouteRequest): RouteDecision {
   if (p === 'kimi') return { provider: 'kimi', model: req.model };
   if (p === 'lmstudio') return { provider: 'lmstudio', model: req.model };
   if (p === 'llamacpp') return { provider: 'llamacpp', model: req.model };
-  // Heuristic for missing provider: model name disambiguates.
-  // Local runtimes (LM Studio, llama.cpp) are intentionally excluded —
-  // their model IDs are user-controlled (e.g. `qwen/qwen3-4b-2507`,
-  // `Meta-Llama-3.1-8B`) and overlap with HF-style IDs from other
-  // services; require explicit provider='lmstudio' / 'llamacpp'.
   if (!p && /^gpt-|^o\d-/i.test(req.model)) {
     return { provider: 'openai', model: req.model };
   }
@@ -62,6 +58,8 @@ export function buildInput(
   messages: AgentMessage[],
   tools: AgentFunction[],
   thinking_level?: string,
+  model_meta?: Model,
+  resolution_key?: number,
 ): ProviderStreamInput {
   return {
     writer_ref,
@@ -70,5 +68,7 @@ export function buildInput(
     messages: messages as unknown[],
     tools,
     ...(thinking_level ? { thinking_level } : {}),
+    ...(model_meta ? { model_meta } : {}),
+    ...(resolution_key !== undefined ? { resolution_key } : {}),
   };
 }

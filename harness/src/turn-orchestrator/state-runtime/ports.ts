@@ -5,9 +5,10 @@
 import { emit } from '../events.js';
 import type { RunRequest } from '../run-request.js';
 import type { ISdk } from '../../runtime/iii.js';
+import type { ModelContextLimit } from '../../types/agent-event.js';
 import type { AgentMessage, FunctionResultMessage } from '../../types/agent-message.js';
 import { transitionTo, type TurnStateRecord } from '../state.js';
-import { createTurnStore } from './store.js';
+import { createTurnStore, type TurnStore } from './store.js';
 
 export type TurnStatePorts = {
   loadMessages(session_id: string): Promise<AgentMessage[]>;
@@ -19,12 +20,13 @@ export type TurnStatePorts = {
     session_id: string,
     message: AgentMessage,
     function_results: FunctionResultMessage[],
+    model_limit?: ModelContextLimit,
   ): Promise<void>;
   finishSession(rec: TurnStateRecord): Promise<void>;
 };
 
-export function createTurnStatePorts(iii: ISdk): TurnStatePorts {
-  const s = createTurnStore(iii);
+export function createTurnStatePorts(iii: ISdk, store?: TurnStore): TurnStatePorts {
+  const s = store ?? createTurnStore(iii);
 
   return {
     loadMessages(session_id) {
@@ -47,15 +49,16 @@ export function createTurnStatePorts(iii: ISdk): TurnStatePorts {
       return s.saveRunRequest(session_id, request);
     },
 
-    async emitTurnEnd(session_id, message, function_results) {
-      await emit(iii, session_id, { type: 'turn_end', message, function_results });
+    async emitTurnEnd(session_id, message, function_results, model_limit) {
+      await emit(iii, session_id, {
+        type: 'turn_end',
+        message,
+        function_results,
+        ...(model_limit ? { model_limit } : {}),
+      });
     },
 
     async finishSession(rec) {
-      // agent_end is a turn-end SIGNAL only. The transcript reaches the UI
-      // incrementally via message_update/message_complete and is re-read from
-      // session-tree on reload, so no consumer reads agent_end.messages. Emit it
-      // empty instead of reloading the whole session to fill an unused field.
       await emit(iii, rec.session_id, { type: 'agent_end', messages: [] });
       transitionTo(rec, 'stopped');
     },

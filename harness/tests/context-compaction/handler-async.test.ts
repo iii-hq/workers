@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { parseOnTurnEnd } from '../../src/context-compaction/handler-async.js';
+import { describe, expect, it, vi } from 'vitest';
+import { parseOnTurnEnd, resolveModel } from '../../src/context-compaction/handler-async.js';
+import type { ISdk } from '../../src/runtime/iii.js';
 
 describe('parseOnTurnEnd', () => {
   it('parses a well-formed turn_end payload', () => {
@@ -32,5 +33,53 @@ describe('parseOnTurnEnd', () => {
     expect(parseOnTurnEnd({ session_id: '' })).toBeNull();
     expect(parseOnTurnEnd(null)).toBeNull();
     expect(parseOnTurnEnd(42)).toBeNull();
+  });
+
+  it('passes a threaded model_limit through and drops a malformed one', () => {
+    const limit = { context: 200_000, input: 200_000, output: 64_000 };
+    expect(parseOnTurnEnd({ session_id: 'sess-4', model_limit: limit })?.model_limit).toEqual(
+      limit,
+    );
+    expect(parseOnTurnEnd({ session_id: 'sess-4', model_limit: 'nope' })).not.toHaveProperty(
+      'model_limit',
+    );
+  });
+});
+
+describe('resolveModel', () => {
+  function trackingIii(): { iii: ISdk; calls: string[] } {
+    const calls: string[] = [];
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        calls.push(req.function_id);
+        return { context_window: 200_000, max_output_tokens: 8_096 };
+      }),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  it('uses the threaded limit and skips models::get', async () => {
+    const { iii, calls } = trackingIii();
+
+    const resolved = await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6', {
+      context: 1_000_000,
+      input: 1_000_000,
+      output: 64_000,
+    });
+
+    expect(calls).not.toContain('models::get');
+    expect(resolved).toEqual({
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet-4-6',
+      modelLimit: { context: 1_000_000, input: 1_000_000, output: 64_000 },
+    });
+  });
+
+  it('falls back to models::get when no threaded limit is present', async () => {
+    const { iii, calls } = trackingIii();
+
+    await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6');
+
+    expect(calls).toContain('models::get');
   });
 });

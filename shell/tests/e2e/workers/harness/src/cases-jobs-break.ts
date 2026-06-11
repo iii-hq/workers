@@ -32,6 +32,17 @@ export const JOB_BREAK_CASES: TestCase[] = [
     },
   },
   {
+    // shell::list is a no-arg call and MUST tolerate extra fields: the engine
+    // injects a `_caller_worker_id` into every payload, so a strict no-arg
+    // request type (`deny_unknown_fields`) would reject every call. This pins
+    // that contract — an extra caller-supplied key is ignored, not rejected.
+    name: 'job_list_tolerates_extra_fields',
+    async run({ call }) {
+      const r = await call('shell::list', { limt: 10 });
+      expect(Array.isArray(r.jobs), 'shell::list ignores unknown fields and returns jobs');
+    },
+  },
+  {
     name: 'job_kill_twice_second_is_idempotent_no_op',
     async run({ call, sleep }) {
       const spawned = await call('shell::exec_bg', { command: 'sleep', args: ['5'] });

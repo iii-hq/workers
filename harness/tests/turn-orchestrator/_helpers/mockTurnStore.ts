@@ -20,10 +20,12 @@ export type MockTurnStore = {
 export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore {
   return {
     loadRecord: vi.fn(async () => null),
+    loadRecordStrict: vi.fn(async () => null),
     saveRecord: vi.fn(async () => {}),
     writeRecord: vi.fn(async () => {}),
     ensureSession: vi.fn(async () => {}),
     loadMessages: vi.fn(async () => []),
+    loadTrailingResultIds: vi.fn(async () => new Set<string>()),
     appendMessages: vi.fn(async () => {}),
     loadRunRequest: vi.fn(async () => defaultRunRequest),
     saveRunRequest: vi.fn(async () => {}),
@@ -31,7 +33,6 @@ export function mockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore
   } as MockTurnStore;
 }
 
-/** Mock `createTurnStore` and return the store instance for assertions. */
 export function installMockTurnStore(overrides: Partial<TurnStore> = {}): MockTurnStore {
   const store = mockTurnStore(overrides);
   vi.spyOn(storeModule, 'createTurnStore').mockReturnValue(store);

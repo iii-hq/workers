@@ -125,8 +125,8 @@ describe('routeAssistantTurn', () => {
     ).toBe('function_execute');
   });
 
-  it('routes text-only assistants to steering_check', () => {
-    expect(routeAssistantTurn(assistant()).kind).toBe('steering_check');
+  it('routes text-only assistants to end_turn', () => {
+    expect(routeAssistantTurn(assistant()).kind).toBe('end_turn');
   });
 });
 
@@ -139,7 +139,7 @@ describe('finalizeAssistantTurn', () => {
 
     await finalizeAssistantTurn(ports, rec, asst, []);
 
-    expect(rec.state).toBe('stopped');
+    expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
     expect(ports.persistAssistantIfNew).not.toHaveBeenCalled();
   });

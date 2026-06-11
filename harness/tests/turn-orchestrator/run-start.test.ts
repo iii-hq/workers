@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TriggerAction, type ISdk } from '../../src/runtime/iii.js';
-import { execute, register } from '../../src/turn-orchestrator/run-start.js';
+import {
+  STALE_TURN_TAKEOVER_MS,
+  execute,
+  register,
+} from '../../src/turn-orchestrator/run-start.js';
 import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import { TURN_STEP_QUEUE } from '../../src/turn-orchestrator/state-runtime/store.js';
 
@@ -22,7 +26,6 @@ function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
   return { iii, calls };
 }
 
-/** Shape console/web sends inside harness::trigger payload (real.ts). */
 const consoleRunStartPayload = {
   session_id: 'sess-1',
   message_id: 'msg-1',
@@ -38,7 +41,6 @@ const consoleRunStartPayload = {
   ],
 };
 
-/** Minimal shape harness/trigger.test.ts forwards to run::start. */
 const harnessRunStartPayload = {
   session_id: 'sess-1',
   provider: 'anthropic',
@@ -121,7 +123,7 @@ describe('register', () => {
     expect(handler).toBeDefined();
 
     const result = await handler!(harnessRunStartPayload);
-    expect(result).toEqual({ session_id: 'sess-1' });
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
   });
 
   it('rejects invalid payloads at register boundary', async () => {
@@ -147,7 +149,7 @@ describe('execute', () => {
 
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    expect(result).toEqual({ session_id: 'sess-1' });
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
 
     const turnStateSet = calls.find(
       (c) =>
@@ -171,15 +173,104 @@ describe('execute', () => {
 
     await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    // Single ensure per run — later loadMessages/appendMessages no longer re-ensure.
     const ensureCalls = calls.filter((c) => c.function_id === 'session-tree::ensure');
     expect(ensureCalls).toHaveLength(1);
     expect(ensureCalls[0]?.payload).toEqual({ session_id: 'sess-1' });
 
-    // The single ensure must precede the run's first tree write (append).
     const ensureIdx = calls.findIndex((c) => c.function_id === 'session-tree::ensure');
-    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append_batch');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
+  });
+
+  function fakeIiiWithRecord(record: unknown): { iii: ISdk; calls: TriggerCall[] } {
+    const calls: TriggerCall[] = [];
+    const iii = {
+      trigger: async <T, R>(req: { function_id: string; payload: T }): Promise<R> => {
+        calls.push({ function_id: req.function_id, payload: req.payload });
+        if (req.function_id === 'state::get') return record as R;
+        return null as R;
+      },
+      registerFunction: vi.fn(),
+    } as unknown as ISdk;
+    return { iii, calls };
+  }
+
+  const inFlightRecord = (state: string, updated_at_ms = Date.now()) => ({
+    session_id: 'sess-1',
+    state,
+    turn_count: 1,
+    function_results: [],
+    turn_end_emitted: false,
+    started_at_ms: 1,
+    updated_at_ms,
+  });
+
+  it('refuses to clobber a turn already in flight and makes no writes', async () => {
+    const { iii, calls } = fakeIiiWithRecord(inFlightRecord('assistant_streaming'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: false, reason: 'session_busy' });
+    expect(calls.some((c) => c.function_id === 'session-tree::ensure')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'state::set')).toBe(false);
+  });
+
+  it('treats a parked function_awaiting_approval turn as in flight', async () => {
+    const { iii } = fakeIiiWithRecord(inFlightRecord('function_awaiting_approval'));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result.started).toBe(false);
+  });
+
+  it('starts a fresh turn when the prior turn is terminal (stopped)', async () => {
+    const { iii, calls } = fakeIiiWithRecord({
+      ...inFlightRecord('stopped'),
+      turn_end_emitted: true,
+    });
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
+    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(true);
+  });
+
+  it('takes over an in-flight record idle past the stale window (wedge recovery)', async () => {
+    const stale = Date.now() - STALE_TURN_TAKEOVER_MS - 1_000;
+    const { iii, calls } = fakeIiiWithRecord(inFlightRecord('finishing', stale));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result).toEqual({ session_id: 'sess-1', started: true });
+    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(true);
+  });
+
+  it('never stale-takes-over a parked approval (user-paced; abort is its escape)', async () => {
+    const stale = Date.now() - STALE_TURN_TAKEOVER_MS - 1_000;
+    const { iii } = fakeIiiWithRecord(inFlightRecord('function_awaiting_approval', stale));
+
+    const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    expect(result.started).toBe(false);
+  });
+
+  it('fails closed when the guard read fails (no clobber on a state blip)', async () => {
+    const iii = {
+      trigger: vi.fn(async (req: { function_id: string }) => {
+        if (req.function_id === 'state::get') throw new Error('state worker unavailable');
+        return null;
+      }),
+      registerFunction: vi.fn(),
+    } as unknown as ISdk;
+
+    await expect(execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload))).rejects.toThrow(
+      /state worker unavailable/,
+    );
+    const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls as Array<
+      [{ function_id: string }]
+    >;
+    expect(calls.some(([req]) => req.function_id === 'state::set')).toBe(false);
   });
 });

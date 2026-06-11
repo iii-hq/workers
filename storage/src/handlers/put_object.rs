@@ -37,7 +37,7 @@ pub async fn handle(state: &AppState, req: PutReq) -> Result<PutResp, String> {
             message: "key must not be empty".into(),
         }));
     }
-    let backend = state.backend(&req.bucket).map_err(err_to_str)?;
+    let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     // Reject before allocating: a base64 string of length L decodes to at
     // most (L*3)/4 bytes. If even the upper bound exceeds the cap, refuse
     // without ever allocating the decode buffer.
@@ -93,6 +93,7 @@ mod tests {
     use crate::backend::Backend;
     use serde_json::json;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     /// Returns `(AppState, Arc<MockBackend>)` — keep the typed Arc for
     /// inspection alongside the trait-object stored in AppState.
@@ -102,7 +103,8 @@ mod tests {
         map.insert("uploads".to_string(), m.clone() as Arc<dyn Backend>);
         (
             AppState {
-                backends: Arc::new(map),
+                backends: Arc::new(RwLock::new(map)),
+                local_ctx: None,
             },
             m,
         )

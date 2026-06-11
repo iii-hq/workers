@@ -11,7 +11,7 @@ const { pipeline } = require('node:stream/promises');
 const extractZip = require('extract-zip');
 const tar = require('tar');
 
-const SERVER_VERSION = '0.1.0';
+const SERVER_VERSION = '0.1.2';
 const RELEASE_TAG = `iii-lsp/v${SERVER_VERSION}`;
 const RELEASE_BASE_URL = `https://github.com/iii-hq/workers/releases/download/${RELEASE_TAG}`;
 

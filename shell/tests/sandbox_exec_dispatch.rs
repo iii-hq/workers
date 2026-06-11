@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use shell::exec::sandbox::SandboxExecBackend;
-use shell::exec::ExecBackend;
+use shell::exec::{ExecBackend, ExecOverrides};
 use shell::triggers::TriggerFwd;
 
 struct StubFwd {
@@ -57,7 +57,11 @@ async fn sandbox_backend_emits_sandbox_exec_payload() {
     let b = SandboxExecBackend::new(stub.clone(), true, id);
 
     let out = b
-        .run(&["echo".into(), "ok".into()], 5000)
+        .run(
+            &["echo".into(), "ok".into()],
+            5000,
+            &ExecOverrides::default(),
+        )
         .await
         .expect("ok");
     assert_eq!(out.stdout, "ok\n");

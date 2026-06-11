@@ -24,13 +24,7 @@ export type AlwaysAllowEntry = z.infer<typeof allowEntrySchema>;
 
 export const ApprovalSettingsSchema = z.object({
   mode: PermissionModeSchema,
-  // Auto-mode allowlist: curated on the Configuration screen, consulted
-  // ONLY in auto mode.
   always_allow: z.array(allowEntrySchema),
-  // Per-session "approve always" grants made from an approval prompt.
-  // Consulted in EVERY mode (it's a remembered human decision, not an
-  // auto-policy). `.default([])` keeps records written before this field
-  // existed parseable.
   approved_always: z.array(allowEntrySchema).default([]),
   mode_set_at: z.number().int().nonnegative(),
 });
@@ -43,7 +37,7 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   mode_set_at: 0,
 };
 
-const wireDecisionSchema = z.enum(['allow', 'deny']);
+const wireDecisionSchema = z.enum(['allow', 'deny', 'aborted']);
 
 const deniedBySchema = z.enum(['permissions', 'user', 'gate_unavailable']);
 

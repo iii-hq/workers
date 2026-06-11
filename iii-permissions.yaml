@@ -28,10 +28,24 @@ rules:
   - '!configuration::get'
   - '!configuration::set'
   - '!configuration::register'
+  # Internal hot-reload trigger handler — must not be agent-callable; it is
+  # invoked only by the engine's `configuration:updated` trigger dispatch.
+  - '!shell::on-config-change'
+  # Operator/automation health signal, not an agent tool: it can surface a
+  # build-error string (e.g. a host_root path). Operators/console reach it via
+  # the privileged dispatch path that bypasses this agent gate.
+  - '!shell::config-status'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
   - '!router::stream_assistant'
+  # Internal lifecycle hooks — agents must never force a config reload directly.
+  # The handlers already re-fetch from configuration::get (ignoring the event
+  # payload), so a direct call cannot inject config. These denies are
+  # defense-in-depth: they close the agent-callable surface so a future handler
+  # change cannot inadvertently re-open the injection path.
+  - '!storage::on-config-change'
+  - '!database::on-config-change'
 
   # Read-only / introspection (extend below for your tools).
   - state::get

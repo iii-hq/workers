@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Runtime context for the local backend, supplied by main once the rustfs
 /// sidecar has been spawned. S3/GCS/R2 arms ignore this.
+#[derive(Clone)]
 pub struct LocalBackendCtx {
     pub port: u16,
     pub access_key_id: String,
