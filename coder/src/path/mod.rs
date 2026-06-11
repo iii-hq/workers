@@ -858,7 +858,7 @@ mod tests {
         // The first root is everything up to the first ", " (or the whole
         // string if there is only one root).
         let first_root = roots_list
-            .splitn(2, ", ")
+            .split(", ")
             .next()
             .expect("at least one root")
             .trim()

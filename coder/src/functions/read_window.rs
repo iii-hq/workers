@@ -35,11 +35,9 @@ fn line_prefix(numbered: bool, n: u64) -> String {
 /// materialized before numbering.
 pub fn number_lines(content: &str, start: u64) -> String {
     let mut out = String::with_capacity(content.len() + content.len() / 4);
-    let mut n = start;
-    for segment in content.split_inclusive('\n') {
+    for (n, segment) in (start..).zip(content.split_inclusive('\n')) {
         out.push_str(&line_prefix(true, n));
         out.push_str(segment);
-        n += 1;
     }
     out
 }

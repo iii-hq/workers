@@ -16,11 +16,9 @@
 //! Case matrix:
 //!   1. relative resolve            -> Ok, inside primary root
 //!   2. `.` resolve                 -> Ok, equals canonical primary root
-//!   3. nonexistent inside base     -> Ok via longest-existing-ancestor
-//!                                     fallback (path need not exist)
+//!   3. nonexistent inside base     -> Ok via longest-existing-ancestor fallback
 //!   4. relative `..` escape        -> C215
-//!   5. symlink escape              -> C215 (canonicalized BEFORE the
-//!                                     containment check)
+//!   5. symlink escape              -> C215 (canonicalized BEFORE containment)
 //!   6. dangling symlink in tail    -> C215
 //!   7. absolute inside a root      -> Ok, canonical absolute
 //!   8. absolute outside all roots  -> C215

@@ -361,10 +361,7 @@ async fn error_message_formats_match_golden() {
     // errors, so pinning it pins the C216 wire shape: the io error text
     // passes through verbatim under code C216.
     {
-        let e = CoderError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "synthetic io failure",
-        ));
+        let e = CoderError::from(std::io::Error::other("synthetic io failure"));
         put("C216_io_passthrough", from_coder_error(&e), &jail);
     }
 

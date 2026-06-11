@@ -408,7 +408,7 @@ fn record_line_op_events(
         .enumerate()
         .filter(|(_, op)| is_line_op(op))
         .collect();
-    line_ops.sort_by(|a, b| anchor(b.1).cmp(&anchor(a.1)));
+    line_ops.sort_by_key(|b| std::cmp::Reverse(anchor(b.1)));
 
     for (op_index, op) in line_ops {
         let (pos, delta, first, last) = match op {
