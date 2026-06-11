@@ -1,8 +1,10 @@
 /**
  * System-prompt assembly: picks the per-model identity prompt (prompt/*) for
  * the run's provider/model and prepends the mode paragraph. Every variant is
- * self-sufficient — the agent discovers everything else from the live engine
- * (`engine::*` / `worker::*`).
+ * engine-grounded — the agent discovers capabilities from the live engine
+ * (`engine::*` / `worker::*` / `directory::registry::workers::*`), installs
+ * registry workers when nothing fits, routes code-file work through
+ * `coder::*`, and fetches the iii.dev SDK reference before authoring workers.
  */
 
 import { selectIdentityPrompt } from './prompt/index.js';

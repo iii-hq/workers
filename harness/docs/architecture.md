@@ -236,9 +236,15 @@ Bare-string allow rules: `state::get`, `state::list`,
 `oauth::anthropic::status`, `oauth::openai-codex::status`, the
 read-only `engine::*` introspection surface (`engine::functions::*`,
 `engine::triggers::*`, `engine::workers::*`,
-`engine::registered-triggers::*`), and `worker::list`. Mutating
-`worker::*` ops (`add`, `start`, `stop`, `remove`, `clear`) stay
-approval-gated.
+`engine::registered-triggers::*`), `worker::list`, the registry
+catalogue reads (`directory::registry::workers::list` / `::info`),
+the read-only `coder::*` surface (`info`, `read-file`, `search`,
+`list-folder`, `tree`), and `web::fetch` (size/timeout caps and
+server-side SSRF protection make it allowable; it is load-bearing
+for the system prompt's SDK-reference gate and HTTP-trigger
+verification). Mutating `worker::*` ops (`add`, `start`, `stop`,
+`remove`, `clear`) and mutating `coder::*` ops (`create-file`,
+`update-file`, `move`, `delete-file`) stay approval-gated.
 
 A function pattern may use `*` to match any substring
 (`compileFunctionMatcher` in

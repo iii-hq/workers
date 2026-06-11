@@ -56,7 +56,7 @@ The 7 states from [state.ts](harness/src/turn-orchestrator/state.ts):
 
 | State | Handler file | Role |
 |---|---|---|
-| `provisioning` | [provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | Build the system prompt (self-sufficient engine-only preamble), write enriched `run_request` (with `function_schemas: [agentTriggerTool()]`), → `assistant_streaming`. |
+| `provisioning` | [provisioning/process.ts](harness/src/turn-orchestrator/provisioning/process.ts) | Build the system prompt (engine-grounded preamble), write enriched `run_request` (with `function_schemas: [agentTriggerTool()]`), → `assistant_streaming`. |
 | `assistant_streaming` | [assistant-streaming/process.ts](harness/src/turn-orchestrator/assistant-streaming/process.ts) | Increment `turn_count`; create channel; trigger provider stream; relay `message_update` deltas; on completion call `finalizeAssistantTurn` which emits `message_complete`, persists the assistant message (dup-guarded), then routes → `function_execute` (has calls) / `steering_check` (no calls) / `stopped` via `finishSession` (error/aborted). |
 | `function_execute` | [function-execute/process.ts](harness/src/turn-orchestrator/function-execute/process.ts) | Build batch from `rec.last_assistant` (or reuse existing `rec.work`); for each call: emit `function_execution_start`, skip if already executed or awaiting approval, dispatch via `dispatchWithHook`; if `pending` → append to `awaiting_approval` and continue other calls; park to `function_awaiting_approval` when any call awaits; otherwise commit result (silent `writeRecord` checkpoint) + emit `function_execution_end`; after batch: fold results into messages + emit `turn_end` → `steering_check` / `stopped` via `finishSession`. |
 | `function_awaiting_approval` | [function-awaiting-approval/process.ts](harness/src/turn-orchestrator/function-awaiting-approval/process.ts) | On each wake: for each `awaiting_approval[]` entry with a decision, execute immediately (`allow` → pre-approved dispatch; `deny`/`aborted` → synthetic denial); remove resolved entries; stay parked while any remain; when none remain → `finalizeBatch` if complete else `function_execute`. |
@@ -122,8 +122,11 @@ decision to scope `approvals`, which fires `turn::on_approval` to enqueue `turn:
 ## Configuration
 
 The worker reads no `turn-orchestrator` config keys. The system prompt is
-self-sufficient: the agent discovers everything from the live engine
-(`engine::*` / `worker::*`) at run time.
+engine-grounded: the agent discovers capabilities from the live engine
+(`engine::*` / `worker::*` / `directory::registry::workers::*`) at run time,
+installs missing workers from the public registry via `worker::add`, routes
+code-file work through `coder::*`, and fetches the iii.dev SDK reference via
+`web::fetch` before authoring a worker.
 
 ## Dependencies
 
@@ -158,5 +161,5 @@ From
 | [src/turn-orchestrator/events.ts](harness/src/turn-orchestrator/events.ts) | `emit(iii, sid, event)` — appends a sequenced `AgentEvent` to the `agent::events` stream. |
 | [src/turn-orchestrator/preflight.ts](harness/src/turn-orchestrator/preflight.ts) | `runPreflight` — context-compaction check before each provider call. |
 | [src/turn-orchestrator/provider-router.ts](harness/src/turn-orchestrator/provider-router.ts) | `decide` + `targetFunctionId` — pick `provider::<name>::stream` for the run's `provider` field. |
-| [src/turn-orchestrator/system-prompt.ts](harness/src/turn-orchestrator/system-prompt.ts) | `buildSystemPrompt` — assembles the system prompt (mode paragraph + engine-only identity preamble). |
+| [src/turn-orchestrator/system-prompt.ts](harness/src/turn-orchestrator/system-prompt.ts) | `buildSystemPrompt` — assembles the system prompt (mode paragraph + engine-grounded identity preamble). |
 | [src/turn-orchestrator/iii.worker.yaml](harness/src/turn-orchestrator/iii.worker.yaml) | Worker manifest. |
