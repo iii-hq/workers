@@ -9,7 +9,7 @@ pub mod manifest;
 // pub mod register;
 // pub mod request;
 // pub mod router_client;
-// pub mod sse;
+pub mod sse;
 // pub mod state;
 // pub mod stream_fn;
 pub mod thinking;
@@ -21,7 +21,6 @@ pub mod wire;
 pub const PROVIDER_ID: &str = "anthropic";
 
 /// Millisecond timestamps for AssistantMessage frames.
-#[allow(dead_code)]
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
