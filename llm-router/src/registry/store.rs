@@ -44,6 +44,31 @@ pub struct RegistryStore {
     records: Mutex<HashMap<String, ProviderRecord>>,
 }
 
+/// Pure record assembly for upsert (no I/O — persistence is the caller's job).
+/// Token hash and registered_at are preserved across a re-register; the rest
+/// is recomposed from the new declaration.
+fn build_record(
+    existing: Option<&ProviderRecord>,
+    declaration: ProviderDeclaration,
+    worker_id: Option<String>,
+    raw_token: &str,
+) -> ProviderRecord {
+    ProviderRecord {
+        token_hash: existing
+            .map(|e| e.token_hash.clone())
+            .unwrap_or_else(|| hash_token(raw_token)),
+        worker_id: worker_id.or_else(|| existing.and_then(|e| e.worker_id.clone())),
+        // A (re)registering provider is connected and serving. Registration is
+        // the source of truth for "up"; the engine's topology events key
+        // workers by a per-connection UUID that never matches the declared
+        // worker_id, so they can't be relied on (see availability.rs). A
+        // dispatch-time function_not_found flips this back down (chat.rs).
+        available: true,
+        registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
+        declaration,
+    }
+}
+
 impl RegistryStore {
     pub fn new(iii: III) -> Self {
         Self {
@@ -117,15 +142,7 @@ impl RegistryStore {
             }
         }
         let raw_token = token.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let record = ProviderRecord {
-            token_hash: existing
-                .map(|e| e.token_hash.clone())
-                .unwrap_or_else(|| hash_token(&raw_token)),
-            worker_id: worker_id.or_else(|| existing.and_then(|e| e.worker_id.clone())),
-            available: existing.map(|e| e.available).unwrap_or(false),
-            registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
-            declaration,
-        };
+        let record = build_record(existing, declaration, worker_id, &raw_token);
         records.insert(record.declaration.id.clone(), record.clone());
         self.persist(&records).await.map_err(|e| {
             RouterError::new(
@@ -172,5 +189,44 @@ impl RegistryStore {
         drop(records);
         let _ = self.persist(&snapshot).await; // best-effort persist of a flag flip
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn decl(id: &str) -> ProviderDeclaration {
+        serde_json::from_value(json!({ "id": id })).expect("minimal declaration")
+    }
+
+    // F9: the engine keys topology events by a per-connection UUID while the
+    // registry stores the provider's self-declared name, so the availability
+    // handler can never resolve an event to a provider. A provider that just
+    // (re)registered is, by definition, connected and serving — registration
+    // is the source of truth for "up"; dispatch-time function_not_found is the
+    // source of truth for "down".
+    #[test]
+    fn fresh_registration_is_available() {
+        let record = build_record(None, decl("anthropic"), Some("w-1".into()), "tok");
+        assert!(
+            record.available,
+            "a provider that just registered must be marked available"
+        );
+    }
+
+    #[test]
+    fn reregistration_restores_a_downed_provider() {
+        let down = build_record(None, decl("anthropic"), Some("w-1".into()), "tok");
+        let down = ProviderRecord {
+            available: false, // a prior dispatch failure flipped it down
+            ..down
+        };
+        let back = build_record(Some(&down), decl("anthropic"), Some("w-1".into()), "tok");
+        assert!(
+            back.available,
+            "re-registering brings a downed provider back up"
+        );
     }
 }
