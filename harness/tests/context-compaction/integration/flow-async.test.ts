@@ -131,7 +131,7 @@ function buildAsyncMock(opts: {
 }
 
 /**
- * Build a TurnEnd frame that handleAsync can process.
+ * Build an on_turn_end queue payload that handleAsync can process.
  *
  * @param sessionId - the session identifier
  * @param totalTokens - total token usage to report (drives overflow check)
@@ -139,23 +139,10 @@ function buildAsyncMock(opts: {
  */
 function makeTurnEndFrame(sessionId: string, totalTokens: number, modelId = 'claude-haiku-4-5') {
   return {
-    groupId: sessionId,
-    event: {
-      data: {
-        type: 'TurnEnd',
-        message: {
-          role: 'assistant',
-          model: modelId,
-          provider: 'anthropic',
-          usage: {
-            input: totalTokens,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-          },
-        },
-      },
-    },
+    session_id: sessionId,
+    provider: 'anthropic',
+    model: modelId,
+    usage: { input: totalTokens, output: 0, cache_read: 0, cache_write: 0 },
   };
 }
 

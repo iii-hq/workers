@@ -5,12 +5,17 @@ import { addAlwaysAllow } from '../../src/approval-gate/settings/add-always-allo
 import { approveAlways } from '../../src/approval-gate/settings/approve-always.js';
 import { removeAlwaysAllow } from '../../src/approval-gate/settings/remove-always-allow.js';
 import { setMode } from '../../src/approval-gate/settings/set-mode.js';
-import { readSettings } from '../../src/approval-gate/settings/store.js';
+import { clearSettings, readSettings } from '../../src/approval-gate/settings/store.js';
 import { SETTINGS_STATE_SCOPE } from '../../src/approval-gate/schemas.js';
 
 interface TriggerCall {
   function_id: string;
-  payload: { scope: string; key: string; value?: unknown };
+  payload: {
+    scope: string;
+    key: string;
+    value?: unknown;
+    ops?: Array<{ type: string; path?: string; value?: unknown }>;
+  };
 }
 
 function makeIii(initial: unknown = null) {
@@ -27,6 +32,30 @@ function makeIii(initial: unknown = null) {
       else store.set(req.payload.key, req.payload.value);
       return null;
     }
+    if (req.function_id === 'state::delete') {
+      const old_value = store.get(req.payload.key) ?? null;
+      store.delete(req.payload.key);
+      return { old_value };
+    }
+    // Atomic field-scoped update (synchronous read-modify-write) modelling the
+    // `set` and `append` ops the settings mutations use.
+    if (req.function_id === 'state::update') {
+      const old_value = store.get(req.payload.key) ?? null;
+      const rec: Record<string, unknown> =
+        old_value && typeof old_value === 'object' && !Array.isArray(old_value)
+          ? { ...(old_value as Record<string, unknown>) }
+          : {};
+      for (const op of req.payload.ops ?? []) {
+        const path = op.path ?? '';
+        if (op.type === 'set') rec[path] = op.value;
+        else if (op.type === 'append') {
+          const arr = Array.isArray(rec[path]) ? (rec[path] as unknown[]) : [];
+          rec[path] = [...arr, op.value];
+        }
+      }
+      store.set(req.payload.key, rec);
+      return { old_value, new_value: rec };
+    }
     throw new Error(`unexpected trigger ${req.function_id}`);
   });
   return { iii: { trigger } as unknown as ISdk, calls, store };
@@ -39,6 +68,19 @@ describe('approval-gate settings', () => {
     expect(s.mode).toBe('manual');
     expect(s.always_allow).toEqual([]);
     expect(s.mode_set_at).toBe(0);
+  });
+
+  it('clearSettings deletes the key (no null tombstone) and reverts to defaults', async () => {
+    const { iii, store, calls } = makeIii();
+    await setMode(iii, 'sess-1', 'auto');
+    expect(store.has('sess-1')).toBe(true);
+
+    await clearSettings(iii, 'sess-1');
+
+    expect(store.has('sess-1')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'state::delete')).toBe(true);
+    const s = await readSettings(iii, 'sess-1');
+    expect(s.mode).toBe('manual');
   });
 
   it('setMode persists with mode_set_at > 0', async () => {
@@ -87,9 +129,58 @@ describe('approval-gate settings', () => {
   it('writes go to the SETTINGS_STATE_SCOPE keyed by session_id', async () => {
     const { iii, calls } = makeIii();
     await setMode(iii, 'sess-1', 'full');
-    const write = calls.find((c) => c.function_id === 'state::set');
+    const write = calls.find(
+      (c) => c.function_id === 'state::set' || c.function_id === 'state::update',
+    );
     expect(write?.payload.scope).toBe(SETTINGS_STATE_SCOPE);
     expect(write?.payload.key).toBe('sess-1');
+  });
+
+  // --- Atomic field-scoped mutations: disjoint fields must not clobber. ---
+
+  it('concurrent setMode and addAlwaysAllow both persist (no lost update)', async () => {
+    const { iii } = makeIii();
+    await Promise.all([
+      setMode(iii, 'sess-1', 'auto'),
+      addAlwaysAllow(iii, 'sess-1', 'shell::exec'),
+    ]);
+    const s = await readSettings(iii, 'sess-1');
+    expect(s.mode).toBe('auto');
+    expect(s.always_allow.map((e) => e.function_id)).toEqual(['shell::exec']);
+  });
+
+  it('concurrent setMode and approveAlways both persist (no lost update)', async () => {
+    const { iii } = makeIii();
+    await Promise.all([
+      setMode(iii, 'sess-1', 'full'),
+      approveAlways(iii, 'sess-1', 'shell::exec'),
+    ]);
+    const s = await readSettings(iii, 'sess-1');
+    expect(s.mode).toBe('full');
+    expect(s.approved_always.map((e) => e.function_id)).toEqual(['shell::exec']);
+  });
+
+  it('concurrent adds of different ids both land (append composition)', async () => {
+    const { iii } = makeIii();
+    await Promise.all([
+      addAlwaysAllow(iii, 'sess-1', 'a::one'),
+      addAlwaysAllow(iii, 'sess-1', 'b::two'),
+    ]);
+    const s = await readSettings(iii, 'sess-1');
+    expect(s.always_allow.map((e) => e.function_id).sort()).toEqual(['a::one', 'b::two']);
+  });
+
+  it('readSettings backfills a partial record and keeps the configured default mode', async () => {
+    // A field-scoped append can persist only { always_allow }; the read must
+    // still produce a complete, valid record (not fall back to all-defaults).
+    const { iii } = makeIii({
+      always_allow: [{ function_id: 'shell::exec', granted_at: 1, granted_by: 'user_click' }],
+    });
+    const s = await readSettings(iii, 'sess-1');
+    expect(s.always_allow.map((e) => e.function_id)).toEqual(['shell::exec']);
+    expect(s.mode).toBe('manual');
+    expect(s.approved_always).toEqual([]);
+    expect(s.mode_set_at).toBe(0);
   });
 
   it('isHumanOnlyApprovalFunction catches every settings handler id', () => {

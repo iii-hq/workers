@@ -156,25 +156,12 @@ describe('backward-compat: prior compaction (anchored update path)', () => {
       compactPayloads,
     });
 
-    // Fire a TurnEnd that triggers overflow
+    // Fire a turn_end that triggers overflow
     const frame = {
-      groupId: `${largeFixture.session_id}-compat`,
-      event: {
-        data: {
-          type: 'TurnEnd',
-          message: {
-            role: 'assistant',
-            model: 'claude-haiku-4-5',
-            provider: 'anthropic',
-            usage: {
-              input: 185_000,
-              output: 0,
-              cache_read: 0,
-              cache_write: 0,
-            },
-          },
-        },
-      },
+      session_id: `${largeFixture.session_id}-compat`,
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      usage: { input: 185_000, output: 0, cache_read: 0, cache_write: 0 },
     };
 
     await handleAsync(iii, frame);
@@ -203,23 +190,10 @@ describe('backward-compat: prior compaction (anchored update path)', () => {
     });
 
     const frame = {
-      groupId: `${largeFixture.session_id}-compat2`,
-      event: {
-        data: {
-          type: 'TurnEnd',
-          message: {
-            role: 'assistant',
-            model: 'claude-haiku-4-5',
-            provider: 'anthropic',
-            usage: {
-              input: 185_000,
-              output: 0,
-              cache_read: 0,
-              cache_write: 0,
-            },
-          },
-        },
-      },
+      session_id: `${largeFixture.session_id}-compat2`,
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      usage: { input: 185_000, output: 0, cache_read: 0, cache_write: 0 },
     };
 
     await handleAsync(iii, frame);

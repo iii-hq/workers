@@ -5,7 +5,7 @@ import type { ApprovalSettings } from '../schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { type MutationReply, functionIdField, sessionIdField } from './types.js';
 import { mutationError, ok } from './reply.js';
-import { readSettings, writeSettings } from './store.js';
+import { readSettings, updateSettings } from './store.js';
 
 const PayloadSchema = z.object({
   session_id: sessionIdField,
@@ -23,12 +23,12 @@ export async function removeAlwaysAllow(
   function_id: string,
 ): Promise<ApprovalSettings> {
   const current = await readSettings(iii, session_id);
-  const next: ApprovalSettings = {
-    ...current,
-    always_allow: current.always_allow.filter((entry) => entry.function_id !== function_id),
-  };
-  await writeSettings(iii, session_id, next);
-  return next;
+  const always_allow = current.always_allow.filter((entry) => entry.function_id !== function_id);
+  // No array-element-remove op, so set just the always_allow field (not the whole
+  // record). Known race: concurrent add/remove on this field is last-writer-wins.
+  return updateSettings(iii, session_id, [
+    { type: 'set', path: 'always_allow', value: always_allow },
+  ]);
 }
 
 export function registerRemoveAlwaysAllow(iii: ISdk): void {

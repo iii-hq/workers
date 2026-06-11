@@ -1,66 +1,52 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  extractEventPayload,
-  resolveModelFromEvent,
-  turnEndUsage,
-} from '../../src/context-compaction/handler-async.js';
+import { parseOnTurnEnd, resolveModel } from '../../src/context-compaction/handler-async.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 
-describe('extractEventPayload', () => {
-  it('handles camelCase envelope (event.data shape)', () => {
-    const env = {
-      groupId: 'sess-1',
-      event: { data: { type: 'TurnEnd', message: {} } },
-    };
-    const out = extractEventPayload(env);
-    expect(out?.session_id).toBe('sess-1');
-    expect((out?.event as { type: string }).type).toBe('TurnEnd');
+describe('parseOnTurnEnd', () => {
+  it('parses a well-formed turn_end payload', () => {
+    const out = parseOnTurnEnd({
+      session_id: 'sess-1',
+      usage: { input: 100, output: 50, cache_read: 800 },
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+    });
+    expect(out).toEqual({
+      session_id: 'sess-1',
+      usage: { input: 100, output: 50, cache_read: 800 },
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+    });
   });
 
-  it('handles snake_case envelope (top-level data shape)', () => {
-    const env = { group_id: 'sess-2', data: { type: 'TurnEnd' } };
-    const out = extractEventPayload(env);
-    expect(out?.session_id).toBe('sess-2');
-    expect((out?.event as { type: string }).type).toBe('TurnEnd');
+  it('defaults provider/model to empty strings when absent (handler falls back to session-tree)', () => {
+    const out = parseOnTurnEnd({ session_id: 'sess-2', usage: { input: 10 } });
+    expect(out).toEqual({ session_id: 'sess-2', usage: { input: 10 }, provider: '', model: '' });
   });
 
-  it('returns null when session id is missing', () => {
-    expect(extractEventPayload({ data: { type: 'TurnEnd' } })).toBeNull();
-    expect(extractEventPayload(null)).toBeNull();
-    expect(extractEventPayload(42)).toBeNull();
-  });
-});
-
-describe('turnEndUsage', () => {
-  it('extracts usage on TurnEnd', () => {
-    const event = {
-      type: 'TurnEnd',
-      message: { usage: { input: 100, output: 50, cache_read: 800 } },
-    };
-    expect(turnEndUsage(event)).toEqual({ input: 100, output: 50, cache_read: 800 });
+  it('returns null usage when usage is missing or malformed', () => {
+    expect(parseOnTurnEnd({ session_id: 'sess-3' })?.usage).toBeNull();
+    expect(parseOnTurnEnd({ session_id: 'sess-3', usage: 'nope' })?.usage).toBeNull();
   });
 
-  it('extracts usage on turn_end (snake_case variant)', () => {
-    const event = {
-      type: 'turn_end',
-      message: { usage: { input: 200, output: 30 } },
-    };
-    expect(turnEndUsage(event)).toEqual({ input: 200, output: 30 });
+  it('returns null when session_id is missing', () => {
+    expect(parseOnTurnEnd({ usage: { input: 1 } })).toBeNull();
+    expect(parseOnTurnEnd({ session_id: '' })).toBeNull();
+    expect(parseOnTurnEnd(null)).toBeNull();
+    expect(parseOnTurnEnd(42)).toBeNull();
   });
 
-  it('returns null for non-TurnEnd events', () => {
-    for (const kind of ['TurnStart', 'MessageStart', 'AgentStart']) {
-      expect(turnEndUsage({ type: kind, message: { usage: { input: 9999 } } })).toBeNull();
-    }
-  });
-
-  it('returns null when usage is missing', () => {
-    expect(turnEndUsage({ type: 'TurnEnd', message: {} })).toBeNull();
-    expect(turnEndUsage({ type: 'TurnEnd' })).toBeNull();
+  it('passes a threaded model_limit through and drops a malformed one', () => {
+    const limit = { context: 200_000, input: 200_000, output: 64_000 };
+    expect(parseOnTurnEnd({ session_id: 'sess-4', model_limit: limit })?.model_limit).toEqual(
+      limit,
+    );
+    expect(parseOnTurnEnd({ session_id: 'sess-4', model_limit: 'nope' })).not.toHaveProperty(
+      'model_limit',
+    );
   });
 });
 
-describe('resolveModelFromEvent', () => {
+describe('resolveModel', () => {
   function trackingIii(): { iii: ISdk; calls: string[] } {
     const calls: string[] = [];
     const iii = {
@@ -72,15 +58,14 @@ describe('resolveModelFromEvent', () => {
     return { iii, calls };
   }
 
-  it('uses the inline limit and skips models::get', async () => {
+  it('uses the threaded limit and skips models::get', async () => {
     const { iii, calls } = trackingIii();
-    const event = {
-      type: 'turn_end',
-      message: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-      model_limit: { context: 1_000_000, input: 1_000_000, output: 64_000 },
-    };
 
-    const resolved = await resolveModelFromEvent(iii, 'sess-1', event);
+    const resolved = await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6', {
+      context: 1_000_000,
+      input: 1_000_000,
+      output: 64_000,
+    });
 
     expect(calls).not.toContain('models::get');
     expect(resolved).toEqual({
@@ -90,14 +75,10 @@ describe('resolveModelFromEvent', () => {
     });
   });
 
-  it('falls back to models::get when no inline limit is present', async () => {
+  it('falls back to models::get when no threaded limit is present', async () => {
     const { iii, calls } = trackingIii();
-    const event = {
-      type: 'turn_end',
-      message: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-    };
 
-    await resolveModelFromEvent(iii, 'sess-1', event);
+    await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6');
 
     expect(calls).toContain('models::get');
   });

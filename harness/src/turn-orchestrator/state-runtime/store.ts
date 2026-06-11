@@ -9,9 +9,9 @@ import { logger } from '../../runtime/otel.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import { RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
 import { emit } from '../events.js';
-import { type RunRequest, parseRunRequest } from '../run-request.js';
+import { type RunRequest, defaultRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
-import { type TurnState, type TurnStateRecord, parseTurnStateRecord } from '../state.js';
+import { type TurnState, type TurnStateRecord } from '../state.js';
 import { loadContextView, loadSessionMessages } from './context-view.js';
 import { persistedTrailingResultIds } from './transcript.js';
 
@@ -93,11 +93,6 @@ export type TurnStore = {
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
 };
 
-const scopedGet = (iii: ISdk, scope: string, session_id: string) =>
-  stateGet(iii, scope, session_id);
-const scopedSet = (iii: ISdk, scope: string, session_id: string, value: unknown) =>
-  stateSet(iii, scope, session_id, value);
-
 /**
  * Create the session-tree record if absent. Idempotent, but invoked exactly
  * once per run (at `run::start`) rather than wrapping every read/write — the
@@ -139,8 +134,8 @@ async function persistRecord(
   rec: TurnStateRecord,
   previous?: TurnStateRecord | null,
 ): Promise<TurnStateRecord | null> {
-  const result = await scopedSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
-  const prev = previous !== undefined ? previous : parseTurnStateRecord(result?.old_value ?? null);
+  const result = await stateSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
+  const prev = previous !== undefined ? previous : (result?.old_value ?? null);
 
   const nextView = toView(rec);
   const prevView = prev != null ? toView(prev) : undefined;
@@ -165,16 +160,17 @@ export function createTurnStore(iii: ISdk): TurnStore {
 
   return {
     async loadRecord(session_id) {
-      return parseTurnStateRecord(await scopedGet(iii, TURN_STATE_SCOPE, session_id));
+      // null = absent (no session); otherwise a record this version wrote.
+      return stateGet<TurnStateRecord>(iii, TURN_STATE_SCOPE, session_id);
     },
 
     async loadRecordStrict(session_id) {
-      const raw = await strictState.get({ scope: TURN_STATE_SCOPE, key: session_id });
-      return parseTurnStateRecord(raw);
+      // null = absent (no session); otherwise a record this version wrote.
+      return strictState.get<TurnStateRecord>({ scope: TURN_STATE_SCOPE, key: session_id });
     },
 
     async writeRecord(rec) {
-      await scopedSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
+      await stateSet(iii, TURN_STATE_SCOPE, rec.session_id, rec);
     },
 
     async saveRecord(rec, previous) {
@@ -207,11 +203,13 @@ export function createTurnStore(iii: ISdk): TurnStore {
     },
 
     async saveRunRequest(session_id, request) {
-      await scopedSet(iii, RUN_REQUEST_SCOPE, session_id, request);
+      await stateSet(iii, RUN_REQUEST_SCOPE, session_id, request);
     },
 
     async loadRunRequest(session_id) {
-      return parseRunRequest(await scopedGet(iii, RUN_REQUEST_SCOPE, session_id));
+      return (
+        (await stateGet<RunRequest>(iii, RUN_REQUEST_SCOPE, session_id)) ?? defaultRunRequest()
+      );
     },
   };
 }
