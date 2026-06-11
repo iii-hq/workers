@@ -66,6 +66,14 @@ iii trigger claude::stop session_id=<session_id>
 iii trigger claude::run --help
 ```
 
+A turn from the CLI and the session record it leaves behind:
+
+![iii trigger claude::run returning the result with usage and cost](assets/cli-run.png)
+
+![iii trigger claude::status showing the stored session record](assets/cli-status.png)
+
+![iii trigger claude::run --help querying the engine for the function description](assets/cli-help.png)
+
 Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
 
 Two ids come back from every run. `session_id` is the iii session id: the key for `claude::status`, `claude::stop`, resume, and the stream group. `claude_session_id` is Claude Code's internal session id (what the worker passes to the CLI's resume under the hood) — returned for reference, not a lookup key.
