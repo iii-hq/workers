@@ -1,6 +1,6 @@
 /**
  * claude::* function registrations. `claude::run` accepts either a bare
- * `prompt` string or the canonical brain-contract shape (`messages` array of
+ * `prompt` string or the shared agent entrypoint shape (`messages` array of
  * role/content-block messages), so anything that can drive
  * `run::start_and_wait` — the acp worker, the console, another worker — can
  * drive Claude Code unchanged.
@@ -244,7 +244,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
       executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one Claude Code turn and wait for the result. Accepts `prompt` or brain-contract `messages` plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
     },
   );
 
@@ -298,7 +298,7 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
       executeRun(iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Canonical iii brain entrypoint backed by Claude Code: run a turn for {session_id, messages} and return when it ends.',
+        'Alias for claude::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
     },
   );
 }

@@ -1,6 +1,6 @@
 # claude-code
 
-Claude Code as an iii worker: the Claude Code API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages mirror verbatim onto the `claude::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the canonical brain entrypoint, so anything built to drive an iii brain can drive Claude Code with no changes.
+Claude Code as an iii worker: the Claude Code API exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages mirror verbatim onto the `claude::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Claude Code with no changes.
 
 ## Install
 
@@ -60,9 +60,9 @@ Long turns: use `claude::start` to return immediately, then watch `agent::events
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
 | `claude::sessions::list` | All sessions this worker has run |
-| `run::start_and_wait` | Canonical brain contract alias for `claude::run` |
+| `run::start_and_wait` | Alias for `claude::run` under the entrypoint the console and acp worker drive |
 
-`claude::run` accepts either a bare `prompt` string or the brain-contract `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), plus `model`, `cwd`, `system_prompt`, `append_system_prompt`, `permission_mode`, `allowed_tools`, `disallowed_tools`, and `max_turns` overrides.
+`claude::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), plus `model`, `cwd`, `system_prompt`, `append_system_prompt`, `permission_mode`, `allowed_tools`, `disallowed_tools`, and `max_turns` overrides.
 
 ### Raw API pass-through
 

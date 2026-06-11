@@ -7,7 +7,7 @@ describe('RunPayloadSchema', () => {
     expect(p.prompt).toBe('hi');
   });
 
-  it('accepts the brain-contract messages shape', () => {
+  it('accepts the messages array shape', () => {
     const p = RunPayloadSchema.parse({
       session_id: 's1',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
