@@ -16,7 +16,7 @@
  * embedded `lmstudio-local` placeholder remains usable as a fallback.
  */
 
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { ISdk } from '../runtime/iii.js';
 import { reconcileModels } from '../runtime/models-discovery.js';
 import { logger } from '../runtime/otel.js';

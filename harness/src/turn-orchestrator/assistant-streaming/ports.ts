@@ -13,7 +13,7 @@ import { emit } from '../events.js';
 import { runPreflight } from '../preflight.js';
 import { streamProviderTurn } from '../provider-stream.js';
 import type { RunRequest } from '../run-request.js';
-import type { Model } from '../../models-catalog/types.js';
+import type { Model } from '../../types/model.js';
 import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 import { isDuplicateAssistant } from '../state-runtime/transcript.js';
 

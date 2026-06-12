@@ -4,7 +4,7 @@
  * AnthropicConfig.
  */
 
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { ISdk } from '../runtime/iii.js';
 import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js';
 import {

@@ -11,7 +11,7 @@
  */
 
 import { logger } from '../runtime/otel.js';
-import type { Model, ThinkingBudgets } from '../models-catalog/types.js';
+import type { Model, ThinkingBudgets } from '../types/model.js';
 
 export type ThinkingConfig = { type: 'enabled'; budget_tokens: number };
 

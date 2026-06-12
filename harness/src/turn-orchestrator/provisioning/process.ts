@@ -2,7 +2,7 @@
  * Load run request, build the provisioned RunRequest, and register the FSM step.
  */
 
-import type { Model } from '../../models-catalog/types.js';
+import type { Model } from '../../types/model.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { agentTriggerTool } from '../agent-trigger.js';
 import { runTransition } from '../run-transition.js';
