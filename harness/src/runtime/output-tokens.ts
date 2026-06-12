@@ -7,7 +7,7 @@
  * model's hard ceiling (never raised) to avoid upstream 400s.
  */
 
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { ISdk } from './iii.js';
 import { logger } from './otel.js';
 
@@ -41,7 +41,7 @@ export function _resetOutputTokenCapForTests(): void {
 export type ClampArgs = {
   /** Catalog `max_output_tokens` for the model (undefined/0 = unknown). */
   modelMaxOutput: number | null | undefined;
-  /** Explicit registry override (`harness::provider::resolve` max_tokens). */
+  /** Explicit registry override (`router::provider::resolve` max_tokens). */
   userOverride: number | null;
   /** Provider worker default (`default_max_tokens`, 8192). */
   workerDefault: number;

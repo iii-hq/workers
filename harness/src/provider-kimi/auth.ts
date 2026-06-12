@@ -1,6 +1,6 @@
 /**
  * Resolve the Kimi (Moonshot) credential + runtime settings from the llm-router
- * provider registry (`harness::provider::resolve`) and build a
+ * registry (token-gated `router::provider::resolve`) and build a
  * ChatCompletionsConfig. The provider id is `kimi`; the registry's env-var
  * fallback maps it to MOONSHOT_API_KEY.
  */

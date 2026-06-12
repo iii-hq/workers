@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
 

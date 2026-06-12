@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from './model.js';
 
 /**
  * Lax `StreamChannelRef` — the SDK's canonical type lives in `iii-sdk`,

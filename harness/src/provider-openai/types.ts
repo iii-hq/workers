@@ -1,4 +1,4 @@
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { Credential } from '../runtime/provider-resolve.js';
 
 export type ChatCompletionsConfig = {

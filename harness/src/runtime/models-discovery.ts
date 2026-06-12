@@ -9,7 +9,7 @@
  * model dropdown reads the cached result via `router::models::list`.
  */
 
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { ISdk } from './iii.js';
 import type { ModelsDevModel } from './modelsdev.js';
 import { logger } from './otel.js';

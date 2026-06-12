@@ -5,7 +5,7 @@
  * addition with no Rust counterpart (never serialized).
  */
 
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { Credential } from '../runtime/provider-resolve.js';
 import { DEFAULT_API_URL } from './config.js';
 
