@@ -1,7 +1,10 @@
 /**
  * Emit AgentEvent frames on `agent::events`, one per call with a per-session
- * monotonic sequence number. `turn_end` frames are additionally mirrored onto
- * the dedicated `agent::turn_end` stream (see TURN_END_STREAM).
+ * monotonic sequence number. `turn_end` frames additionally enqueue a
+ * compaction wake (`context-compaction::on_turn_end`) on the default queue, so
+ * the out-of-band compactor runs once per turn instead of consuming the full
+ * `agent::events` firehose. The enqueue is best-effort: a failure (e.g. the
+ * compactor isn't deployed) is logged, never fatal.
  *
  * The sequence number is kept IN-PROCESS (not persisted): the old per-event
  * `state::update` increment cost one engine state write — and thus one
@@ -16,17 +19,20 @@
  */
 
 import { uuidLike } from '../runtime/ids.js';
-import type { ISdk } from '../runtime/iii.js';
+import { TriggerAction, type ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import type { AgentEvent } from '../types/agent-event.js';
 
 export const EVENTS_STREAM = 'agent::events';
+
 /**
- * Dedicated stream carrying only `turn_end` frames. Compaction subscribes here
- * instead of the full `agent::events` firehose so it wakes once per turn rather
- * than on every event (token updates, function lifecycle, …).
+ * Out-of-band compactor woken once per turn. The turn-orchestrator enqueues a
+ * typed `{ session_id, usage, provider, model, model_limit? }` payload here at
+ * `turn_end` instead of mirroring the event onto a dedicated stream — a 1:1
+ * channel is a queue message, not pub/sub.
  */
-export const TURN_END_STREAM = 'agent::turn_end';
+const COMPACTION_ON_TURN_END = 'context-compaction::on_turn_end';
+const COMPACTION_QUEUE = 'default';
 
 /** Unique per process run; prefixes every item_id so a restart can't collide. */
 const PROCESS_EPOCH = uuidLike();
@@ -78,11 +84,42 @@ async function setStream(
   }
 }
 
+/**
+ * Enqueue an out-of-band compaction wake from a `turn_end` event. The assistant
+ * message carries everything the compactor needs to decide overflow — token
+ * usage plus the provider/model it ran on — so we pass them as a typed payload
+ * rather than making the compactor re-derive them from a stream frame.
+ */
+async function enqueueCompaction(iii: ISdk, session_id: string, event: AgentEvent): Promise<void> {
+  const ev = event as {
+    message?: { usage?: unknown; provider?: unknown; model?: unknown };
+    model_limit?: unknown;
+  };
+  const message = ev.message;
+  try {
+    await iii.trigger({
+      function_id: COMPACTION_ON_TURN_END,
+      payload: {
+        session_id,
+        usage: message?.usage ?? null,
+        provider: typeof message?.provider === 'string' ? message.provider : '',
+        model: typeof message?.model === 'string' ? message.model : '',
+        ...(ev.model_limit && typeof ev.model_limit === 'object'
+          ? { model_limit: ev.model_limit }
+          : {}),
+      },
+      action: TriggerAction.Enqueue({ queue: COMPACTION_QUEUE }),
+    });
+  } catch (err) {
+    logger.warn('compaction on_turn_end enqueue failed', { session_id, err: String(err) });
+  }
+}
+
 export async function emit(iii: ISdk, session_id: string, event: AgentEvent): Promise<void> {
   const seq = nextSeq(session_id);
   const item_id = formatItemId(session_id, seq);
   await setStream(iii, EVENTS_STREAM, session_id, item_id, event);
   if (isTurnEnd(event)) {
-    await setStream(iii, TURN_END_STREAM, session_id, item_id, event);
+    await enqueueCompaction(iii, session_id, event);
   }
 }

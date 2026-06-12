@@ -15,7 +15,7 @@ use tempfile::tempdir;
 
 fn make(base: PathBuf, globs: Vec<&str>) -> (Arc<PathResolver>, Arc<CoderConfig>) {
     let cfg = Arc::new(CoderConfig {
-        base_path: base,
+        base_paths: vec![base],
         non_accessible_globs: globs.into_iter().map(String::from).collect(),
         max_read_bytes: 1024 * 1024,
         max_write_bytes: 1024 * 1024,
@@ -114,9 +114,9 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
     assert_eq!(out.results.len(), 3);
     assert!(out.results[0].success, "ok.txt should succeed");
     assert!(!out.results[1].success, "bad.txt overlap must be rejected");
-    assert!(out.results[1].error.as_deref().unwrap().contains("C210"));
+    assert_eq!(out.results[1].error.as_ref().unwrap().code, "C210");
     assert!(!out.results[2].success, ".env must be denied");
-    assert!(out.results[2].error.as_deref().unwrap().contains("C211"));
+    assert_eq!(out.results[2].error.as_ref().unwrap().code, "C211");
 
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("ok.txt")).unwrap(),
@@ -172,6 +172,8 @@ async fn regex_replace_e2e() {
                     pattern: "foo".into(),
                     replacement: "baz".into(),
                     ignore_case: false,
+                    dot_matches_newline: false,
+                    expect_matches: None,
                 }],
             }],
         },

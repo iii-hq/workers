@@ -118,9 +118,9 @@ Takes only a `session_id`; resolves the model and last user message internally.
   provider/model fields exists in the session, or `models::get` fails.
 
 **Sequence:**
-1. Resolves the model: explicit `payload.model.limit` → session-tree scan
-   → orchestrator `run_request` → conservative fallback. Avoids forcing
-   `models::get` when the UI already knows the context window.
+1. Resolves the model: explicit `payload.model.limit` → session-manager
+   assistant scan → orchestrator `run_request` → conservative fallback.
+   Avoids forcing `models::get` when the UI already knows the context window.
 2. Calls `handleSync` with `projected_tokens: 999_999` and
    `last_user_message_id: ''` to force compaction unconditionally and
    skip the replay / auto-continue branch. `/compact` runs against a
@@ -170,14 +170,16 @@ scratch, so the summary converges rather than growing without bound.
 
 `prune_tool_outputs` is separate from summarisation. It:
 
-1. Loads `session-tree::messages`.
+1. Loads the active path via `session::messages` (paginated).
 2. Walks `function_result` entries from newest to oldest, skipping the two
    most-recent user turns.
 3. Accumulates token estimates. Any output whose cumulative total exceeds
    `COMPACT_PRUNE_PROTECT` goes into the prune queue.
 4. If the queue would free fewer than `COMPACT_PRUNE_MIN_FREE` tokens, it
    skips entirely (no-op).
-5. Calls `session-tree::update_parts` to null out each pruned output (batched, one load).
+5. Calls `session::update_message` per pruned entry, replacing the content
+   with `[output pruned]` and merging `{ compacted_at }` into the existing
+   details (one path load, one update per entry).
 
 Tools listed in `COMPACT_PRUNE_PROTECTED_TOOLS` are never pruned.
 
@@ -195,17 +197,19 @@ When `compact_now` runs:
    parent, so it needs no reinjection — `context-view.ts` reconstructs the
    window as `[summary, ...tail]`, which already ends with it.
 3. A synthetic user prompt ("Continue if you have next steps, or stop and
-   ask for clarification.") is appended via `session-tree::append_synthetic`
-   as a child of the compaction so the model picks up where it left off.
+   ask for clarification.") is appended via `session::append` (entry id
+   `<compaction_entry_id>-continue`, origin `{ synthetic: true }`) as a child
+   of the compaction so the model picks up where it left off.
 4. `CompactNowResult.auto_continued` is `true` when a replay target existed.
 
 ## Backward compatibility
 
 Pre-v2 deployments may have free-form summaries (not Markdown-templated).
-`session-tree::compactions` returns all existing Compaction entries. The last
-entry's `summary` field is used as the `previousSummary` anchor regardless of
-its format, so old summaries are updated into the structured template on the
-next compaction cycle.
+Compaction records are read back as `custom_type: "compaction"` entries on
+the active path (`session::messages { include_custom: true }`). The last
+record's `summary` field is used as the `previousSummary` anchor regardless
+of its format, so old summaries are updated into the structured template on
+the next compaction cycle.
 
 ## Configuration
 
@@ -236,7 +240,7 @@ Compaction-related keys use dedicated scopes (key = `session_id`):
 | `prune_lease` | Same nonce-and-readback pattern, separate scope so the prune path does not block async compaction. |
 | `last_compaction_at` | Wall-clock ms of the most recent successful compaction. Stamped by `stampLastCompaction`. |
 
-Compaction appends a `Compaction` entry to `session-tree` (and optionally replay + synthetic continue). The turn FSM reconstructs the compacted provider window at read time via [context-view.ts](harness/src/turn-orchestrator/state-runtime/context-view.ts); there is no separate flat `messages` scope.
+Compaction appends a `custom_type: "compaction"` custom entry to session-manager (and optionally replay + synthetic continue). The turn FSM reconstructs the compacted provider window at read time via [context-view.ts](harness/src/turn-orchestrator/state-runtime/context-view.ts); there is no separate flat `messages` scope.
 
 ## Observability
 
@@ -255,19 +259,17 @@ outer `instrumentHandler` wrapper.
 
 ## Dependencies
 
-`session-tree` endpoints used:
+session-manager endpoints used (via [runtime/session.ts](harness/src/runtime/session.ts)):
 
 | Endpoint | Purpose |
 |---|---|
-| `session-tree::messages` | Load active path with entry IDs. |
-| `session-tree::compact` | Append a Compaction entry (summary + `tail_start_id` + `tokens_before`). |
-| `session-tree::compactions` | Load existing Compaction entries for prior-summary anchor. |
-| `session-tree::append_synthetic` | Append the "Continue…" prompt after sync compaction. |
-| `session-tree::update_parts` | Null out pruned tool outputs in-place (batched). |
+| `session::messages` | Load active path with entry IDs (paginated; `include_custom: true` for compaction records). |
+| `session::append` | Append the compaction custom entry (`custom_type: "compaction"`, data `{ summary, tokens_before, tail_start_id, details, timestamp }`) and the synthetic "Continue…" prompt. |
+| `session::update_message` | Replace pruned tool outputs in-place (`[output pruned]` + `details.compacted_at`). |
 | `models::get` | Resolve `context_window` / `max_output_tokens` for model-adaptive threshold. |
 
 Worker manifest deps (`iii.worker.yaml`):
-`session ^0.2.0`, `provider-anthropic ^0.2.0`, `provider-openai ^0.2.0`.
+`session-manager ^0.1.0`, `provider-anthropic ^0.2.0`, `provider-openai ^0.2.0`.
 
 ## Source layout
 

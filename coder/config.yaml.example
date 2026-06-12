@@ -1,0 +1,64 @@
+# Optional seed file for first-time registration (--config ./config.yaml.example).
+# When omitted, the worker seeds the built-in default jail:
+#
+#   base_paths: ["./", "/tmp"]   # effective default — empty in CoderConfig,
+#                                # materialized by the PathResolver
+#   (no non_accessible_globs, no default_exclude_globs, and the numeric
+#    budget/limit defaults baked into the binary)
+#
+# NOTE: the built-in default has NO non_accessible_globs, so a default-seeded
+# coder gives NO secret-file protection. Seed the shipped config.yaml (which
+# lists .env / *.pem / *.key / secrets/**) to keep that posture.
+#
+# After the first boot, the runtime source of truth is the `configuration`
+# worker entry `coder`, persisted at ./data/configuration/coder.yaml. Edit
+# that file directly or call `configuration::set id=coder` — both propagate
+# without re-reading this seed file. Re-running with `--config` does NOT
+# overwrite an already-stored value.
+#
+# Env placeholders (${VAR}) in THIS seed file are expanded once, when the
+# file is read for registration. Values returned by `configuration::get` are
+# already env-expanded by the configuration worker, so they are never
+# expanded twice.
+#
+# RELOAD POLICY (see README "Configuration"):
+#   - JAIL fields (base_paths / base_path, non_accessible_globs,
+#     default_exclude_globs) are RESTART-REQUIRED. A live change that alters
+#     any of them is refused; the running jail is kept (log: "restart coder
+#     to apply"). The PathResolver is built once at boot and never swapped.
+#   - The numeric budgets/limits HOT-RELOAD on `configuration:updated`.
+
+# Allowed roots. First entry is the primary root (relative wire paths resolve
+# against it). RESTART-REQUIRED.
+base_paths: ["./", "/tmp"]
+
+# Listable but unreadable/unwritable. RESTART-REQUIRED.
+non_accessible_globs:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/secrets/**"
+
+# Hide-only noise filter for tree/search (no access protection).
+# RESTART-REQUIRED.
+default_exclude_globs:
+  - "**/.git/**"
+  - "**/node_modules/**"
+  - "**/target/**"
+  - "**/dist/**"
+  - "**/.venv/**"
+  - "**/__pycache__/**"
+
+# Numeric tuning knobs below — these HOT-RELOAD on configuration:updated.
+max_read_bytes: 10485760              # per-file read cap (10 MiB)
+max_write_bytes: 10485760             # per-file create/update cap (10 MiB)
+tree_default_depth: 4                 # coder::tree depth when unset
+tree_per_folder_limit: 50             # children before tree truncates a folder
+list_default_page_size: 100           # coder::list-folder default page size
+list_max_page_size: 1000              # hard cap on coder::list-folder page_size
+search_default_max_matches: 1000      # coder::search match cap
+search_default_max_line_bytes: 4096   # per-line cap when scanning content
+search_response_budget_bytes: 262144  # byte budget per search response (256 KiB)
+batch_read_budget_bytes: 1048576      # aggregate cap for paths[] batch reads (1 MiB)
+max_output_bytes: 131072              # budget for single-path FULL reads (128 KiB)

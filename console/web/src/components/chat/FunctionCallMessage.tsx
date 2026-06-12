@@ -112,7 +112,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (WebToolView.isWebFunction(functionId)) {
     return <WebFunctionIdLabel functionId={functionId} />
   }
-  if (CoderToolView.isCoderMutateFunction(functionId)) {
+  if (CoderToolView.isCoderFunction(functionId)) {
     return <CoderFunctionIdLabel functionId={functionId} />
   }
   if (SandboxToolView.isSandboxFunction(functionId)) {

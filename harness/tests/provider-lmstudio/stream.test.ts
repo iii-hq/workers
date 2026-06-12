@@ -500,7 +500,7 @@ describe('streamLmstudio — auto-load retry on load-failure error', () => {
           'data: {"error":{"message":"The model has crashed without additional information. (Exit code: null)"}}\n\n',
         ]);
       }
-      throw new Error('unexpected url ' + u);
+      throw new Error(`unexpected url ${u}`);
     }) as typeof globalThis.fetch;
 
     const final = await collect(

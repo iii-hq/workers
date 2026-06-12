@@ -1,5 +1,13 @@
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import {
+  COMPACTION_CUSTOM_TYPE,
+  type CompactionData,
+  compactionRowsFromPath,
+  messageItemsFromPath,
+  readActivePath,
+  sessionAppendCustom,
+} from '../runtime/session.js';
 import { decide, targetFunctionId } from '../turn-orchestrator/provider-router.js';
 import type { AgentMessage, AssistantMessage } from '../types/agent-message.js';
 import { compactionConfig } from './config.js';
@@ -77,35 +85,20 @@ export function estimateTokenCount(messages: AgentMessage[]): number {
 }
 
 async function loadActiveWithIds(iii: ISdk, session_id: string): Promise<MessageWithEntryId[]> {
-  const resp = await iii.trigger<
-    unknown,
-    { messages?: Array<{ entry_id?: string; message?: AgentMessage }> }
-  >({
-    function_id: 'session-tree::messages',
-    payload: { session_id },
-    timeoutMs: 10_000,
-  });
-  const arr = resp?.messages;
-  if (!Array.isArray(arr)) throw new Error('session-tree::messages returned non-array');
-  return arr
-    .filter(
-      (e): e is { entry_id: string; message: AgentMessage } =>
-        typeof e?.entry_id === 'string' && Boolean(e?.message),
-    )
-    .map((e) => ({ entry_id: e.entry_id, message: e.message }));
+  return messageItemsFromPath(await readActivePath(iii, session_id));
 }
 
 async function loadCompactionEntries(
   iii: ISdk,
   session_id: string,
 ): Promise<CompactionEntryLike[]> {
-  const resp = await iii.trigger<unknown, { entries?: CompactionEntryLike[] }>({
-    function_id: 'session-tree::compactions',
-    payload: { session_id },
-    timeoutMs: 10_000,
-  });
-  const entries = resp?.entries;
-  return Array.isArray(entries) ? entries : [];
+  const items = await readActivePath(iii, session_id, { include_custom: true });
+  return compactionRowsFromPath(items).map((row) => ({
+    id: row.entry_id,
+    summary: row.summary,
+    tokens_before: row.tokens_before,
+    timestamp: row.timestamp,
+  }));
 }
 
 async function appendCompaction(
@@ -115,18 +108,19 @@ async function appendCompaction(
   tokens_before: number,
   tail_start_id: string | null,
 ): Promise<string> {
-  const resp = await iii.trigger<unknown, { entry_id?: string }>({
-    function_id: 'session-tree::compact',
-    payload: {
-      session_id,
-      summary,
-      tokens_before,
-      tail_start_id,
-      details: { read_files: [], modified_files: [] },
-    },
-    timeoutMs: 30_000,
+  const data: CompactionData = {
+    summary,
+    tokens_before,
+    tail_start_id,
+    details: { read_files: [], modified_files: [] },
+    timestamp: Date.now(),
+  };
+  const resp = await sessionAppendCustom(iii, {
+    session_id,
+    custom_type: COMPACTION_CUSTOM_TYPE,
+    data,
   });
-  return resp?.entry_id ?? '';
+  return resp.entry_id;
 }
 
 export async function summarizeAndAppend(

@@ -1,5 +1,5 @@
 /**
- * Shared turn-end and FSM resume helpers for step outcome application.
+ * Shared turn-end helper for step outcome application.
  */
 
 import { limitFromModel } from '../../context-compaction/model-resolver.js';

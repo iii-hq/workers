@@ -2,31 +2,25 @@
  * End-to-end compaction flow test.
  *
  * Drives the sync-compaction path through `runPreflight` against an
- * overflowing 30-turn fixture, with the REAL session-tree handlers wired
- * up to an InMemoryStore. Verifies the three structural guarantees that
- * the unit/integration tests cannot observe in isolation:
+ * overflowing 30-turn fixture, with the in-memory session-manager fake
+ * wired up behind `session::*`. Verifies the three structural guarantees
+ * that the unit/integration tests cannot observe in isolation:
  *
- * 1. The reconstructed provider window (from session-tree + compactions)
- *    is reduced to: [summary-as-asst-msg, ...tail, continue-nudge].
- * 2. The session tree's active path stays connected — the Compaction
- *    entry and continue-prompt are chained via parent_id back to the
- *    pre-compaction tail.
+ * 1. The reconstructed provider window (active path + compaction custom
+ *    entries) is reduced to: [summary-as-asst-msg, ...tail, continue-nudge].
+ * 2. The session's active path stays connected — the compaction entry and
+ *    continue-prompt are chained via parent_id back to the pre-compaction
+ *    tail.
  * 3. The downstream provider input (what would land in `buildInput`)
  *    no longer exceeds the model's usable token budget.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import { payloadStoreKey } from '../../_helpers/stateStoreKey.js';
+import { FakeSessionManager } from '../../_helpers/fakeSessionManager.js';
 import { handleSync } from '../../../src/context-compaction/handler-sync.js';
 import type { ISdk } from '../../../src/runtime/iii.js';
-import {
-  compactionEntries,
-  loadMessagesWithEntryIds,
-} from '../../../src/session/tree/operations.js';
-import { registerTree } from '../../../src/session/tree/register.js';
-import { InMemoryStore } from '../../../src/session/tree/store.js';
-import type { SessionEntry } from '../../../src/session/tree/types.js';
-import { buildContextView } from '../../../src/turn-orchestrator/state-runtime/context-view.js';
+import { loadContextView } from '../../../src/turn-orchestrator/state-runtime/context-view.js';
 import { runPreflight } from '../../../src/turn-orchestrator/preflight.js';
 import type { AgentMessage } from '../../../src/types/agent-message.js';
 
@@ -71,19 +65,10 @@ function buildOverflowingMessages(turns: number): AgentMessage[] {
   return out;
 }
 
-async function loadProviderWindow(
-  store: InMemoryStore,
-  session_id: string,
-): Promise<AgentMessage[]> {
-  const messages = await loadMessagesWithEntryIds(store, session_id);
-  const compactions = await compactionEntries(store, session_id);
-  return buildContextView(messages, compactions);
-}
-
 // ---------------------------------------------------------------------------
-// Test ISdk: wires the real session-tree handlers to an InMemoryStore,
-// plus a stub `models::get`, a stub provider stream (returns a known
-// summary), and an in-memory `state::*` so leases work without the network.
+// Test ISdk: routes session::* into the FakeSessionManager, plus a stub
+// `models::get`, a stub provider stream (returns a known summary), and an
+// in-memory `state::*` so leases work without the network.
 // ---------------------------------------------------------------------------
 
 type FunctionHandler = (payload: unknown) => Promise<unknown>;
@@ -93,10 +78,10 @@ function buildTestSdk(opts: {
   /** Capture every provider stream invocation's `messages` payload. */
   providerInvocations: AgentMessage[][];
   session_id: string;
-}): { iii: ISdk; store: InMemoryStore; stateStore: Map<string, unknown> } {
+}): { iii: ISdk; sessions: FakeSessionManager; stateStore: Map<string, unknown> } {
   const stateStore = new Map<string, unknown>();
   const handlers = new Map<string, FunctionHandler>();
-  const store = new InMemoryStore();
+  const sessions = new FakeSessionManager();
 
   // Stub channel writer so streamAndCollect can deliver a synthetic done event.
   let channelCb: ((raw: string) => void) | null = null;
@@ -174,7 +159,10 @@ function buildTestSdk(opts: {
       return undefined;
     }
 
-    // 4) session-tree::* — delegate to the registered handler.
+    // 4) session::* — the in-memory session-manager fake.
+    const handled = await sessions.handle(fn, payload);
+    if (handled !== undefined) return handled;
+
     const handler = handlers.get(fn);
     if (handler) return handler(payload);
 
@@ -197,9 +185,6 @@ function buildTestSdk(opts: {
     enqueue: vi.fn(),
   } as unknown as ISdk;
 
-  // Wire the real session-tree handlers.
-  registerTree(iii, store);
-
   // Wire compact_now to call handleSync directly (mirrors register.ts).
   handlers.set('context-compaction::compact_now', async (payload: unknown) => {
     const obj = (payload ?? {}) as Record<string, unknown>;
@@ -212,47 +197,44 @@ function buildTestSdk(opts: {
     });
   });
 
-  return { iii, store, stateStore };
+  return { iii, sessions, stateStore };
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for tree introspection.
+// Helpers for path introspection.
 // ---------------------------------------------------------------------------
 
-async function activePathIds(store: InMemoryStore, session_id: string): Promise<string[]> {
-  const entries = await store.loadEntries(session_id);
+function activePathIds(sessions: FakeSessionManager, session_id: string): string[] {
+  const entries = sessions.session(session_id).entries;
   const last = entries[entries.length - 1];
   if (!last) return [];
-  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const byId = new Map(entries.map((e) => [e.entry_id, e] as const));
   const path: string[] = [];
-  let cursor: string | null = last.id;
+  let cursor: string | null = last.entry_id;
   while (cursor !== null) {
     path.push(cursor);
-    cursor = (byId.get(cursor)?.parent_id ?? null) as string | null;
+    cursor = byId.get(cursor)?.parent_id ?? null;
   }
   return path.reverse();
 }
 
-async function seedSessionTreeFrom(
+async function seedSessionFrom(
   iii: ISdk,
   session_id: string,
   messages: AgentMessage[],
 ): Promise<string[]> {
   // Ensure the session exists.
   await iii.trigger<unknown, unknown>({
-    function_id: 'session-tree::ensure',
+    function_id: 'session::ensure',
     payload: { session_id },
   });
   const ids: string[] = [];
-  let parent: string | null = null;
   for (const m of messages) {
     const resp = (await iii.trigger<unknown, { entry_id?: string }>({
-      function_id: 'session-tree::append',
-      payload: { session_id, parent_id: parent, message: m },
+      function_id: 'session::append',
+      payload: { session_id, message: m },
     })) as { entry_id?: string } | null;
-    const id = resp?.entry_id ?? '';
-    ids.push(id);
-    parent = id;
+    ids.push(resp?.entry_id ?? '');
   }
   return ids;
 }
@@ -262,22 +244,22 @@ async function seedSessionTreeFrom(
 // ---------------------------------------------------------------------------
 
 describe('e2e full-session compaction', () => {
-  it('preflight + sync compaction reduces provider window AND keeps tree connected', async () => {
+  it('preflight + sync compaction reduces provider window AND keeps the path connected', async () => {
     const SUMMARY = 'EARLIER TURNS SUMMARY: discussed lorem and friends.';
     const overflowing = buildOverflowingMessages(30);
     const providerInvocations: AgentMessage[][] = [];
 
-    const { iii, store } = buildTestSdk({
+    const { iii, sessions } = buildTestSdk({
       session_id: SESSION_ID,
       summaryText: SUMMARY,
       providerInvocations,
     });
 
-    // Seed the session tree with the transcript so replay extraction works.
-    const entryIds = await seedSessionTreeFrom(iii, SESSION_ID, overflowing);
+    // Seed the session with the transcript so replay extraction works.
+    const entryIds = await seedSessionFrom(iii, SESSION_ID, overflowing);
     const lastUserId = entryIds[entryIds.length - 1] ?? ''; // the final user msg
 
-    const beforeView = await loadProviderWindow(store, SESSION_ID);
+    const beforeView = await loadContextView(iii, SESSION_ID);
     expect(beforeView.length).toBe(overflowing.length);
 
     // Run preflight. The 30-turn fixture should overflow the 8k usable budget.
@@ -285,7 +267,7 @@ describe('e2e full-session compaction', () => {
     expect(result).toBe('compacted');
 
     // --- Assertion 1: reconstructed window is reduced and shaped correctly. ---
-    const afterView = await loadProviderWindow(store, SESSION_ID);
+    const afterView = await loadContextView(iii, SESSION_ID);
     expect(afterView.length).toBeLessThan(overflowing.length);
 
     // First message must be the summary-as-assistant-msg containing SUMMARY.
@@ -315,18 +297,18 @@ describe('e2e full-session compaction', () => {
       }
     }
 
-    // --- Assertion 2: session tree active path is connected, no orphans. ---
-    const path = await activePathIds(store, SESSION_ID);
+    // --- Assertion 2: the active path is connected, no orphans. ---
+    const path = activePathIds(sessions, SESSION_ID);
     expect(path.length).toBeGreaterThan(2);
 
-    const entries = (await store.loadEntries(SESSION_ID)) as SessionEntry[];
-    const byId = new Map(entries.map((e) => [e.id, e] as const));
+    const entries = sessions.session(SESSION_ID).entries;
+    const byId = new Map(entries.map((e) => [e.entry_id, e] as const));
 
     // The just-appended continue nudge should be the active leaf.
     const leafId = path[path.length - 1];
     const leaf = leafId ? byId.get(leafId) : undefined;
-    expect(leaf?.type).toBe('message');
-    if (leaf?.type === 'message') {
+    expect(leaf?.kind).toBe('message');
+    if (leaf?.kind === 'message' && leaf.message) {
       const m = leaf.message;
       expect(m.role).toBe('user');
       if (m.role === 'user') {
@@ -337,17 +319,18 @@ describe('e2e full-session compaction', () => {
       }
     }
 
-    // Walking back from the leaf must hit a `compaction` entry.
-    const hasCompactionOnPath = path.some((id) => byId.get(id)?.type === 'compaction');
+    // Walking back from the leaf must hit a compaction custom entry.
+    const hasCompactionOnPath = path.some(
+      (id) => byId.get(id)?.custom?.custom_type === 'compaction',
+    );
     expect(hasCompactionOnPath).toBe(true);
 
     // The final user message remains on the active path as the compaction's
-    // parent (no reinjection needed in the tree-only model).
+    // parent (no reinjection needed in the chain-only model).
     const userReplayOnPath = path
       .map((id) => byId.get(id))
-      .filter((e): e is Extract<SessionEntry, { type: 'message' }> => e?.type === 'message')
       .some((e) => {
-        if (e.message.role !== 'user') return false;
+        if (e?.kind !== 'message' || e.message?.role !== 'user') return false;
         const block = e.message.content[0];
         return block?.type === 'text' && block.text.includes('final user message');
       });
@@ -366,12 +349,12 @@ describe('e2e full-session compaction', () => {
     const tinyMessages: AgentMessage[] = [userMsg('hi'), asstMsg('hello'), userMsg('what is 2+2?')];
     const providerInvocations: AgentMessage[][] = [];
     const SID = `${SESSION_ID}-small`;
-    const { iii, store } = buildTestSdk({
+    const { iii } = buildTestSdk({
       session_id: SID,
       summaryText: SUMMARY,
       providerInvocations,
     });
-    await seedSessionTreeFrom(iii, SID, tinyMessages);
+    await seedSessionFrom(iii, SID, tinyMessages);
 
     // The default COMPACT_RESERVED_TOKENS (20_000) would zero out the 8k
     // model's usable budget and force compaction; shrink reservation for
@@ -387,7 +370,7 @@ describe('e2e full-session compaction', () => {
     }
 
     // Provider window is untouched (no compaction entry).
-    const after = await loadProviderWindow(store, SID);
+    const after = await loadContextView(iii, SID);
     expect(after.length).toBe(tinyMessages.length);
 
     // Summariser was never invoked.

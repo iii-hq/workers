@@ -11,11 +11,6 @@ import {
 } from './model-resolver.js';
 import { prune } from './prune.js';
 
-// Compaction only acts on turn_end, so it subscribes to the dedicated
-// turn_end stream (mirrored by the producer) rather than the full
-// agent::events firehose — one wake per turn instead of per event.
-const TURN_END_STREAM = 'agent::turn_end';
-
 // Sized so preserveRecentBudget clamps to its 2k minimum when the real
 // model is unknown — compaction is best-effort, not fatal.
 const FALLBACK_MODEL_LIMIT = {
@@ -57,14 +52,14 @@ async function resolveExplicitModel(
 
 export async function register(iii: ISdk): Promise<void> {
   iii.registerFunction(
-    'context-compaction::on_agent_event',
-    async (frame: unknown) => {
-      await handleAsync(iii, frame);
+    'context-compaction::on_turn_end',
+    async (payload: unknown) => {
+      await handleAsync(iii, payload);
       return null;
     },
     {
       description:
-        'Internal: subscribes to agent::turn_end; triggers async compaction on TurnEnd when running tokens exceed usable(model).',
+        'Internal: woken by a turn-orchestrator queue message at turn_end; triggers async compaction when running tokens exceed usable(model).',
     },
   );
 
@@ -180,13 +175,7 @@ export async function register(iii: ISdk): Promise<void> {
     },
     {
       description:
-        'User-initiated synchronous compaction of a session. Required: session_id. Optional: model { id, providerID, limit? } to skip auto-resolution. If model is omitted, falls back to (1) most recent assistant message in session-tree, (2) orchestrator run_request.',
+        'User-initiated synchronous compaction of a session. Required: session_id. Optional: model { id, providerID, limit? } to skip auto-resolution. If model is omitted, falls back to (1) most recent assistant message in session-manager, (2) orchestrator run_request.',
     },
   );
-
-  iii.registerTrigger({
-    type: 'stream',
-    function_id: 'context-compaction::on_agent_event',
-    config: { stream_name: TURN_END_STREAM },
-  });
 }

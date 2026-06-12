@@ -1,32 +1,24 @@
 /**
- * Pure translator from iii `AgentEvent` (the wire shape on
- * `agent::events`) to console/web's `StreamEvent` contract documented in
- * `PLAYGROUND.md`.
+ * Pure translator from iii `AgentEvent` (the wire shape on `agent::events`)
+ * to console/web's `StreamEvent` contract.
  *
- * Use `createAgentEventTranslator()` for a stateful translator that handles
- * the full event surface, including `turn_state_changed` pending-approval
- * mirroring.
+ * Since the session-manager integration, transcript CONTENT (thought/text
+ * tokens, full message snapshots) renders from `session::message_added` /
+ * `session::message_updated` events reconciled by the conversations layer —
+ * NOT from this translator. `agent::events` remains the channel for
+ * ephemeral turn state only:
  *
- * Wire mapping:
- *   - `text_delta`     → `assistant-token { token: delta }`
- *   - `thinking_start` → `thought-start`
- *   - `thinking_delta` → `thought-token { token: delta }`
- *   - `thinking_end`   → `thought-end { durationMs: 0 }`
- *   - other LLM events (text_start/text_end, functioncall_*, usage,
- *     stop, done, error) → no UI signal.
- *
- * Other events:
- *   - `function_execution_start` → `fcall-start` (with args).
- *   - `function_execution_end`   → `fcall-end` (with result).
- *   - `agent_end` → `assistant-end`.
  *   - `turn_state_changed` → pending-approval `fcall-start` (stateful).
- *   - `turn_end` → not translated (async compaction listens on raw wire).
+ *   - `function_execution_start` → `fcall-start` (running, with args).
+ *   - `function_execution_end`   → `fcall-end` (result + duration).
+ *   - `message_complete` with a non-`end` stop_reason → `stop-reason`.
+ *   - `agent_end` → `assistant-end` (turn-over signal).
+ *   - `message_update` / `compaction_done` / `turn_end` → no UI signal
+ *     (tokens and compaction markers arrive via session events).
  */
 
 import type {
   AgentEvent,
-  AgentMessage,
-  AssistantMessageEvent,
   ContentBlock,
   FunctionResult,
 } from '@/types/iii-agent-event'
@@ -70,13 +62,11 @@ export function createAgentEventTranslator(): {
         return sessionId ? translateTurnStateChanged(event, sessionId) : []
 
       case 'message_complete':
-        return translateMessageComplete(
-          event.message,
-          event.body_streamed === true,
-        )
+        return translateMessageComplete(event.message)
 
       case 'message_update':
-        return translateMessageUpdate(event.llm_event)
+        // Transcript content arrives via session::message_updated snapshots.
+        return []
 
       case 'function_execution_start':
         return [
@@ -108,53 +98,22 @@ export function createAgentEventTranslator(): {
         return []
 
       case 'compaction_done':
-        return [
-          {
-            kind: 'compaction',
-            mode: event.mode,
-            summaryText: event.summary_text,
-            tokensBefore: event.tokens_before,
-            compactionEntryId: event.compaction_entry_id,
-            tailStartId: event.tail_start_id,
-          },
-        ]
+        // The compaction marker renders from the session's custom entry
+        // (session::message_added); no separate UI signal needed here.
+        return []
     }
   }
 
   return { translate }
 }
 
-function translateMessageUpdate(llm: AssistantMessageEvent): StreamEvent[] {
-  switch (llm.type) {
-    case 'text_delta':
-      if (llm.delta.length === 0) return []
-      return [{ kind: 'assistant-token', token: llm.delta }]
-    case 'thinking_start':
-      return [{ kind: 'thought-start' }]
-    case 'thinking_delta':
-      if (llm.delta.length === 0) return []
-      return [{ kind: 'thought-token', token: llm.delta }]
-    case 'thinking_end':
-      return [{ kind: 'thought-end', durationMs: 0 }]
-    default:
-      return []
-  }
-}
-
 function translateMessageComplete(
-  message: AgentMessage,
-  bodyStreamed: boolean,
+  message: Extract<AgentEvent, { type: 'message_complete' }>['message'],
 ): StreamEvent[] {
   if (message.role !== 'assistant') {
     return []
   }
   const out: StreamEvent[] = []
-  if (!bodyStreamed) {
-    for (const block of message.content) {
-      appendBlock(block, out)
-    }
-  }
-  out.push({ kind: 'assistant-end' })
   const stop = message.stop_reason as
     | 'end'
     | 'length'
@@ -174,27 +133,6 @@ function translateMessageComplete(
     })
   }
   return out
-}
-
-function appendBlock(block: ContentBlock, out: StreamEvent[]): void {
-  switch (block.type) {
-    case 'thinking':
-      out.push({ kind: 'thought-start' })
-      if (block.text.length > 0) {
-        out.push({ kind: 'thought-token', token: block.text })
-      }
-      out.push({ kind: 'thought-end', durationMs: 0 })
-      return
-    case 'text':
-      if (block.text.length > 0) {
-        out.push({ kind: 'assistant-token', token: block.text })
-      }
-      return
-    case 'functionCall':
-    case 'functionResult':
-    case 'image':
-      return
-  }
 }
 
 function wrapErrorOutput(result: FunctionResult): {

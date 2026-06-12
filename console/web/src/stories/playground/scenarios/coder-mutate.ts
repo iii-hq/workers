@@ -1,4 +1,7 @@
-import { coderCreateSkillDoc } from '@/stories/fixtures/coder-fixtures'
+import {
+  coderCreateSkillDoc,
+  coderTreeSnapshot,
+} from '@/stories/fixtures/coder-fixtures'
 import {
   makeBackend,
   streamAssistant,
@@ -10,7 +13,16 @@ export const coderMutate = makeBackend(
   'coder-mutate',
   async function* (_prompt, _mode, _model, opts) {
     const signal = opts?.signal
-    yield* streamThought('scaffolding the iii skill doc…', { signal })
+    yield* streamThought('scouting the workers tree, then scaffolding…', {
+      signal,
+    })
+    yield* streamFcall({
+      functionId: 'coder::tree',
+      input: coderTreeSnapshot.input,
+      output: coderTreeSnapshot.output,
+      waitMs: 500,
+      signal,
+    })
     yield* streamFcall({
       functionId: 'coder::create-file',
       input: coderCreateSkillDoc.input,

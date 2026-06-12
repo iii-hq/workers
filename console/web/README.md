@@ -59,9 +59,14 @@ Then open the printed `Local:` URL (Vite picks the first free port from
 - **File attachments** via a hidden file input. Previewable text/image
   files store a data URL; binaries store metadata only. Attachments are
   cleared after the next outgoing message.
-- **Sidebar** listing conversations, persisted to `localStorage` under
-  `iii-chat-conversations`. Double-click a row to rename inline; hover to
-  reveal the delete affordance.
+- **Sidebar** listing conversations backed by the
+  [session-manager](../../session-manager/architecture/integration.md)
+  worker (`session::list`; live via the `session::*` trigger types).
+  Transcripts hydrate from `session::messages` and stream live from
+  `session::message_added` / `session::message_updated` snapshots —
+  localStorage keeps only UI affordances (active id, last model).
+  Double-click a row to rename inline (writes through `session::set_meta`);
+  hover to reveal the delete affordance (`session::delete`).
 - **Light / dark theme** toggle, persisted under `iii-theme` and applied
   pre-paint to avoid a flash.
 
@@ -74,16 +79,20 @@ src/
   index.css              # Tailwind v4 + iii Schematic tokens + utilities
   lib/
     utils.ts             # cn = twMerge(clsx(...))
-    storage.ts           # localStorage CRUD
+    storage.ts           # localStorage for UI affordances (active id, last model)
     markdown.tsx         # iii-styled react-markdown wrapper
+    sessions/            # session-manager integration
+      api.ts             #     session::* calls (list/ensure/set_meta/delete/messages)
+      events.ts          #     bindings for the six session::* trigger types
+      entry-mapper.ts    #     SessionEntry → UI Message segments + reconcile
+      types.ts           #     wire types (SessionMeta, TranscriptItem, events)
     backend/             # ← the seam. ChatBackend interface + impls
       types.ts           #     StreamEvent, ChatBackend, ChatStreamOptions
-      mock.ts            #     dev-only mock; tree-shaken in prod
-      real.ts            #     ← swap this stub for your provider
-      index.ts           #     getDefaultBackend() = mock in dev, real in prod
+      real.ts            #     harness::trigger kickoff + agent::events (approvals)
+      index.ts           #     getDefaultBackend()
   types/chat.ts          # Conversation, Message, Mode, ModelId, Attachment
   hooks/
-    use-conversations.ts # state + persistence
+    use-conversations.ts # server-backed conversation store (session-manager)
     use-hash-route.ts    # #/traces #/configuration
     use-theme.ts         # theme + persistence
   components/

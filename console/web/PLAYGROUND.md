@@ -505,11 +505,16 @@ Four steps. Average size is 30–60 lines.
 
 ## Out of scope
 
-- **Implementing the real backend.** [`real.ts`](src/lib/backend/real.ts) is
-  a stub that throws. Replace its body when you wire your provider; respect
-  the contract and nothing else changes.
-- **Persisting playground conversations.** They're ephemeral by design; the
-  `localStorage` path in [`lib/storage.ts`](src/lib/storage.ts) is reserved
-  for the real chat surface.
+- **The real backend's transcript path.** [`real.ts`](src/lib/backend/real.ts)
+  no longer streams transcript content through `StreamEvent`s — text/thought
+  tokens render from session-manager events (`session::message_updated`
+  snapshots) reconciled by `use-conversations` + `lib/sessions/entry-mapper`.
+  The real backend's stream carries only ephemeral turn state (approvals,
+  function-call lifecycle, stop-reason notices, agent_end). Mock scenario
+  backends still exercise the full `StreamEvent` surface below, and ChatView
+  keeps rendering all of it — that is exactly what these stories pin.
+- **Persisting playground conversations.** They're ephemeral by design;
+  the real chat surface persists conversations in the session-manager
+  worker (not localStorage).
 - **CI assertions on the prod bundle.** Documented above as a manual step;
   not enforced automatically.

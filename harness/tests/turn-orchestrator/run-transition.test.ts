@@ -99,20 +99,17 @@ describe('runTransition', () => {
 });
 
 function fakeIii(record: unknown) {
-  const writes: Array<{ function_id: string; payload: any }> = [];
+  const writes: Array<{ function_id: string; payload: unknown }> = [];
   const iii = {
-    trigger: vi.fn(async ({ function_id, payload }: any) => {
+    trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
       writes.push({ function_id, payload });
-      if (
-        function_id === 'state::get' &&
-        payload.scope === TURN_STATE_SCOPE &&
-        payload.key === 's1'
-      ) {
+      const p = payload as Record<string, unknown>;
+      if (function_id === 'state::get' && p.scope === TURN_STATE_SCOPE && p.key === 's1') {
         return record;
       }
       return null;
     }),
-  } as any;
+  } as unknown as ISdk;
   return { iii, writes };
 }
 

@@ -1,0 +1,102 @@
+{
+  "description": "Remove one or more paths. Request shape: {\"paths\": [\"...\"]}. Directories need `recursive: true`; missing paths are idempotent successes; recursive removal refuses to descend through non-accessible entries. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::delete-file",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "paths": [
+          "src/old_module.rs",
+          "build/artifacts"
+        ],
+        "recursive": true
+      }
+    ],
+    "properties": {
+      "paths": {
+        "description": "Paths to remove. Each entry is relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "recursive": {
+        "default": false,
+        "description": "Required for non-empty directories. Files and empty dirs ignore it.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "paths"
+    ],
+    "title": "DeleteFileInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DeleteFileResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WireError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C211\"` for not-found-or-denied; `\"C210\"` for refusing to delete an allowed root). `message` carries the corrective action an LLM agent needs to make a successful second call."
+          },
+          "path": {
+            "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "removed",
+          "success"
+        ],
+        "type": "object"
+      },
+      "WireError": {
+        "description": "Structured per-entry error as it appears on the wire.\n\nUse `code` for stable programmatic branching (e.g. `\"C211\"` for not-found-or-denied). `message` carries the human/LLM-readable problem description plus the corrective next call.",
+        "properties": {
+          "code": {
+            "description": "Stable error code, e.g. \"C211\". See the README error table.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human/LLM-readable message: problem + actual values + corrective next call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "results": {
+        "items": {
+          "$ref": "#/definitions/DeleteFileResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "DeleteFileOutput",
+    "type": "object"
+  }
+}

@@ -3,7 +3,7 @@ import { TURN_STATE_SCOPE } from '../../src/turn-orchestrator/state.js';
 import type { ISdk } from '../../src/runtime/iii.js';
 import { execute } from '../../src/turn-orchestrator/get-state.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
-import { GetStatePayloadSchema } from '../../src/turn-orchestrator/schemas.js';
+import { GetStatePayloadSchema, type GetStateResult } from '../../src/turn-orchestrator/schemas.js';
 
 describe('GetStatePayloadSchema', () => {
   it('accepts the flat shape the real backend sends', () => {
@@ -74,7 +74,9 @@ describe('turn::get_state execute', () => {
       }),
     } as unknown as ISdk;
 
-    const view: any = await execute(iii, { session_id: 'sess-abc' });
+    const view: GetStateResult = await execute(iii, { session_id: 'sess-abc' });
+    expect(view).not.toBeNull();
+    if (!view) return;
     expect(view.state).toBe('function_awaiting_approval');
     expect(view.awaiting_approval).toHaveLength(1);
     expect(view.session_id).toBe('sess-abc');

@@ -1,32 +1,17 @@
 /**
- * Session/message ID helpers.
+ * Message ID helper.
  *
- * Mirrors `workers/harness/web/src/App.tsx` `newSessionId()` and the
- * per-send `msg-${crypto.randomUUID()}` pattern: one stable session_id
- * per conversation, one fresh message_id per send. Both flow into the
- * engine via baggage so the traces UI can "Group by session" and
- * "Group by message" without exploding.
+ * One fresh `msg-<uuid>` per send. It flows into the engine via baggage so
+ * the traces UI can "Group by message", and the harness derives the user
+ * message's session-manager entry id from it (`<message_id>-user-0`) — which
+ * is also how the console's optimistic user row reconciles in place.
  *
- * We prefix conversation IDs with `console-` so the trace UI can tell
- * console-emitted sessions from harness CLI / cron / other producers
- * at a glance — same convention as `workers/harness/web` (which
- * prefixes its sessions with the `s` date stamp).
+ * (Conversation ids are minted with the `console-` prefix directly in
+ * use-conversations and double as the engine session_id, so there is no
+ * separate session-id mapper anymore.)
  */
 
-const SESSION_PREFIX = 'console-'
 const MESSAGE_PREFIX = 'msg-'
-
-/**
- * Derive the engine `session_id` from a conversation's stable id.
- * Idempotent: if the id is already prefixed, the prefix is not added
- * twice. Stored conversations whose id was minted before this helper
- * existed get the prefix tacked on at the boundary; the localStorage
- * value itself is left alone.
- */
-export function makeSessionId(conversationId: string): string {
-  if (conversationId.startsWith(SESSION_PREFIX)) return conversationId
-  return `${SESSION_PREFIX}${conversationId}`
-}
 
 /**
  * Mint a fresh message_id for a single turn. Called once per `send()`

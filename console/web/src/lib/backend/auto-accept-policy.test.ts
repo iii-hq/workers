@@ -9,7 +9,7 @@ describe('isAutoAcceptable (default policy)', () => {
   it('accepts plain read-style function ids', () => {
     expect(isAutoAcceptable('directory::skills::list')).toBe(true)
     expect(isAutoAcceptable('directory::skills::get')).toBe(true)
-    expect(isAutoAcceptable('session-tree::messages')).toBe(true)
+    expect(isAutoAcceptable('session::messages')).toBe(true)
     expect(isAutoAcceptable('state::list')).toBe(true)
     expect(isAutoAcceptable('fs::ls')).toBe(true)
     expect(isAutoAcceptable('models::info')).toBe(true)

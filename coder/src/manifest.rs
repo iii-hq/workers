@@ -23,7 +23,7 @@ pub fn build_manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: DESCRIPTION.to_string(),
         default_config: serde_json::json!({
-            "base_path": "./",
+            "base_paths": ["./", "/tmp"],
             "non_accessible_globs": [
                 "**/.env",
                 "**/.env.*",

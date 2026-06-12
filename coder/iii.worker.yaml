@@ -4,7 +4,7 @@ language: rust
 deploy: binary
 manifest: Cargo.toml
 bin: coder
-description: Path-jailed code worker — read/search/update/create/delete files plus paginated list-folder and tree, with non-accessible glob protection.
+description: Path-jailed code worker — info/read/search/update/create/delete/move files plus paginated list-folder and tree, with non-accessible glob protection, default noise excludes (.git, node_modules, … — hide-only, per-call opt-out), and token-bounded read/search response budgets.
 
 targets:
   - x86_64-apple-darwin

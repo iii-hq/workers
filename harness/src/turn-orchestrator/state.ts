@@ -2,8 +2,8 @@
  * TurnState + TurnStateRecord types and parsers.
  *
  * Persistence uses semantic iii scopes (`turn_state`, `run_request`, …). Conversation
- * history lives in `session-tree::*` and is reconstructed at read time.
- * keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
+ * history lives in the session-manager worker (`session::*`) and is reconstructed at
+ * read time, keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
  */
 
 import { z } from 'zod';
@@ -42,6 +42,11 @@ type TurnStateRecordCore = {
   session_id: string;
   turn_count: number;
   max_turns?: number;
+  /**
+   * Caller's per-send id (console `msg-<uuid>`). Seeds the deterministic
+   * session-manager entry ids for this run (see runtime/session.ts runKey).
+   */
+  message_id?: string;
   function_results: FunctionResultMessage[];
   turn_end_emitted: boolean;
   started_at_ms: number;
@@ -116,13 +121,18 @@ export function parseTurnStateRecord(raw: unknown): TurnStateRecord | null {
   return result.success ? (result.data as TurnStateRecord) : null;
 }
 
-export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
+export function newRecord(
+  session_id: string,
+  max_turns?: number,
+  message_id?: string,
+): TurnStateRecord {
   const now = Date.now();
   return {
     session_id,
     state: 'provisioning',
     turn_count: 0,
     max_turns,
+    ...(message_id ? { message_id } : {}),
     last_assistant: null,
     function_results: [],
     turn_end_emitted: false,

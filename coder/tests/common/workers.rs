@@ -2,7 +2,7 @@
 //! shared SDK handle. Re-uses the production entry point
 //! `coder::functions::register_all` so scenarios exercise identical
 //! code paths. Registration is idempotent (`OnceCell`); we wipe the
-//! per-test `base_path` between scenarios so leftover files from one
+//! per-test allowed root between scenarios so leftover files from one
 //! scenario don't pollute the next.
 
 use std::path::Path;
@@ -14,8 +14,10 @@ use iii_sdk::III;
 use tokio::sync::OnceCell;
 
 use coder::config::CoderConfig;
+use coder::configuration::ConfigCell;
 use coder::functions;
 use coder::path::PathResolver;
+use tokio::sync::RwLock;
 
 /// Caps used by the shared in-process worker. Small enough that a few
 /// kilobytes of fixture content triggers `C213` for oversize scenarios,
@@ -30,7 +32,7 @@ const TEST_LIST_MAX_PAGE_SIZE: u32 = 100;
 
 pub struct Shared {
     pub cfg: Arc<CoderConfig>,
-    /// Canonicalised `base_path` the worker reads + writes against.
+    /// Canonicalised primary allowed root the worker reads + writes against.
     /// Fixture writes from step defs go here.
     pub base_path: PathBuf,
 }
@@ -54,7 +56,7 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
     let base_path = std::fs::canonicalize(&base_path)?;
 
     let cfg = Arc::new(CoderConfig {
-        base_path: base_path.clone(),
+        base_paths: vec![base_path.clone()],
         non_accessible_globs: vec!["**/.env".to_string(), "**/*.pem".to_string()],
         max_read_bytes: TEST_MAX_READ_BYTES,
         max_write_bytes: TEST_MAX_WRITE_BYTES,
@@ -64,7 +66,10 @@ pub async fn register_all(iii: &Arc<III>) -> Result<Arc<Shared>> {
     });
     let resolver = Arc::new(PathResolver::new(&cfg)?);
 
-    functions::register_all(iii, resolver, cfg.clone());
+    // The production handlers read a hot-swappable snapshot cell; the BDD
+    // harness never hot-reloads, so the cell just wraps the boot cfg.
+    let cell: ConfigCell = Arc::new(RwLock::new(cfg.clone()));
+    functions::register_all(iii, resolver, cell);
 
     // Give the SDK a beat to publish the function registrations before
     // scenarios start triggering them.

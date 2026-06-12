@@ -39,8 +39,9 @@ npx skills add iii-hq/iii --all
 | Worker | Kind | Summary |
 |---|---|---|
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
-| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `approval-gate`, `session`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. See [`harness/README.md`](harness/README.md). |
+| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `approval-gate`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
 | [`codex`](codex/) | Node | OpenAI Codex as an iii worker — `codex::*` runs headless Codex turns, mirrors raw thread events onto `codex::events`, and streams AgentEvent frames onto `agent::events`. |
+| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
 | [`iii-lsp`](iii-lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |

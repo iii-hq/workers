@@ -21,11 +21,13 @@ import {
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentEvent } from '../../src/types/agent-event.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
 export type ParallelApprovalHarness = {
   iii: ISdk;
   stateStore: Map<string, unknown>;
   emitted: AgentEvent[];
+  sessions: FakeSessionManager;
   loadTurnRecord(session_id: string): TurnStateRecord | null;
   seedExecute(session_id: string, assistant: AssistantMessage): TurnStateRecord;
   runExecute(session_id: string): Promise<void>;
@@ -111,6 +113,7 @@ async function runTurnStepWithRetry(
 export function createParallelApprovalHarness(): ParallelApprovalHarness {
   const stateStore = new Map<string, unknown>();
   const emitted: AgentEvent[] = [];
+  const sessions = new FakeSessionManager();
 
   const iii = {
     trigger: vi.fn(
@@ -123,6 +126,10 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         payload: unknown;
         action?: unknown;
       }) => {
+        // Durable transcript writes (session::append for function results).
+        const sessionResult = await sessions.handle(function_id, payload);
+        if (sessionResult !== undefined) return sessionResult;
+
         if (function_id === 'state::get') {
           const p = payload as { scope: string; key: string };
           const v = stateStore.get(`${p.scope}/${p.key}`);
@@ -152,14 +159,12 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         }
 
         if (function_id === 'state::update') {
-          // Faithful atomic read-modify-write per (scope, key): the engine's
-          // kv adapter holds the store write-lock for the whole op, so
-          // increment returns the prior value (null/absent → treated as 0).
-          // Both the event counter and the per-session lease depend on this.
+          // Atomic read-modify-write returning the prior value. Models the
+          // `increment` op (event counter) and root-path `set` op (lease).
           const p = payload as {
             scope: string;
             key: string;
-            ops?: Array<{ type: string; path?: string; by?: number }>;
+            ops?: Array<{ type: string; path?: string; by?: number; value?: unknown }>;
           };
           const storeKey = `${p.scope}/${p.key}`;
           const old_value = stateStore.has(storeKey)
@@ -167,8 +172,11 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
             : null;
           let next: unknown = old_value;
           for (const op of p.ops ?? []) {
-            if (op.type === 'increment' && (op.path ?? '') === '') {
+            if ((op.path ?? '') !== '') continue;
+            if (op.type === 'increment') {
               next = (typeof next === 'number' ? next : 0) + (op.by ?? 1);
+            } else if (op.type === 'set') {
+              next = op.value;
             }
           }
           stateStore.set(storeKey, next);
@@ -177,10 +185,9 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
 
         if (function_id === 'stream::set') {
           const p = payload as { stream_name?: string; data: AgentEvent };
-          // events.ts mirrors every turn_end onto a second `agent::turn_end`
-          // stream for compaction. Record only the primary `agent::events`
-          // stream so `emitted` is a faithful one-entry-per-event log.
-          if (p.stream_name === 'agent::turn_end') return null;
+          // Only agent::events carries event frames; turn_end now enqueues a
+          // compaction wake (a separate function_id) rather than mirroring to a
+          // second stream, so `emitted` stays a faithful one-entry-per-event log.
           emitted.push(p.data);
           return null;
         }
@@ -216,6 +223,7 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
     iii,
     stateStore,
     emitted,
+    sessions,
 
     loadTurnRecord(session_id: string): TurnStateRecord | null {
       const raw = stateStore.get(`${TURN_STATE_SCOPE}/${session_id}`);

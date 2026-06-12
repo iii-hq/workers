@@ -3,7 +3,7 @@
  *
  * Tests:
  * 1. Large fixture with big tool output → pruned_tokens >= PRUNE_MIN_FREE (20_000).
- * 2. Pruned parts count matches session-tree::update_part calls captured.
+ * 2. Pruned parts count matches session::update_message calls captured.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { prune } from '../../../src/context-compaction/prune.js';
@@ -24,13 +24,12 @@ function buildPruneMock(entries: Array<{ entry_id: string; message: AgentMessage
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
 
-    if (function_id === 'session-tree::messages') {
+    if (function_id === 'session::messages') {
       return { messages: entries };
     }
-    if (function_id === 'session-tree::update_parts') {
-      const items = (payload as { items?: Array<{ entry_id: string }> }).items ?? [];
-      for (const it of items) updatePartCalls.push({ entry_id: it.entry_id });
-      return { updated: items.length };
+    if (function_id === 'session::update_message') {
+      updatePartCalls.push({ entry_id: (payload as { entry_id: string }).entry_id });
+      return { updated: true, revision: 1 };
     }
 
     return null;
@@ -67,7 +66,7 @@ describe('flow-prune: large fixture with big tool output', () => {
     expect(result.pruned_parts).toBeGreaterThan(0);
   });
 
-  it('pruned_parts count matches the number of session-tree::update_part calls', async () => {
+  it('pruned_parts count matches the number of session::update_message calls', async () => {
     const entries = largeFixture.entries.map((e) => ({
       entry_id: e.id,
       message: e.message as AgentMessage,

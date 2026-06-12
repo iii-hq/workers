@@ -12,6 +12,7 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { sessionSetStatus, userEntryId } from '../runtime/session.js';
 import { RunStartPayloadSchema, type RunStartPayload, type RunStartResult } from './schemas.js';
 import { createTurnStore } from './state-runtime/store.js';
 import { isTurnInFlight, newRecord } from './state.js';
@@ -28,7 +29,7 @@ export const STALE_TURN_TAKEOVER_MS = 30 * 60 * 1000;
 
 export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunStartResult> {
   const store = createTurnStore(iii);
-  const { session_id, messages, max_turns, message_id: _message_id, ...run } = payload;
+  const { session_id, messages, max_turns, message_id, ...run } = payload;
 
   const existing = await store.loadRecordStrict(session_id);
   if (existing && isTurnInFlight(existing)) {
@@ -49,16 +50,33 @@ export async function execute(iii: ISdk, payload: RunStartPayload): Promise<RunS
     });
   }
 
+  // Single ensure for the whole run: this is the gateway that begins the turn
+  // loop, so every later loadMessages/appendMessages is guaranteed a live record
+  // without re-ensuring per call. Must precede the first session write below.
   await store.ensureSession(session_id);
+
+  // The driver owns status: flip to working before the first append so
+  // consumers see the spinner as soon as the user message lands. Same-status
+  // calls are no-ops, so a blind set is safe.
+  await sessionSetStatus(iii, session_id, 'working');
 
   await store.saveRunRequest(session_id, {
     ...run,
     mode: run.mode ?? null,
     function_schemas: [],
   });
-  await store.appendMessages(session_id, messages);
+  // Deterministic per-send entry ids make redelivered run::start calls safe
+  // (idempotent append) and let the console predict its optimistic user id.
+  await store.appendMessages(session_id, messages, {
+    ...(message_id
+      ? {
+          entryIdFor: (_msg, i) => userEntryId(message_id, i),
+          origin: { message_id },
+        }
+      : {}),
+  });
 
-  const record = newRecord(session_id, max_turns);
+  const record = newRecord(session_id, max_turns, message_id);
   await store.saveRecord(record);
   return { session_id, started: true };
 }

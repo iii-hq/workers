@@ -11,6 +11,7 @@
 
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { sessionSetStatus } from '../runtime/session.js';
 import { TransientError } from './errors.js';
 import { emit } from './events.js';
 import { type TurnStepPayload, type TurnStepResult } from './schemas.js';
@@ -70,6 +71,9 @@ async function failTransition(
   // agent_end carries no transcript — consumers read it as a signal only (see
   // finishSession). Avoid reloading the session just to fill an unused field.
   await emit(iii, rec.session_id, { type: 'agent_end', messages: [] });
+  // Driver-owned status: surface the failure on the session itself so
+  // session-manager consumers (console sidebar/status dot) see error + reason.
+  await sessionSetStatus(iii, rec.session_id, 'error', rec.error.message);
   logger.error('transition failed; session marked failed', {
     session_id: rec.session_id,
     from_state,
@@ -88,8 +92,8 @@ export async function runTransition(
   if (!options?.serialize) {
     return runTransitionInner(iii, state, handle, payload);
   }
-  const acquired = await acquireSessionLease(iii, payload.session_id);
-  if (!acquired) {
+  const leaseNonce = await acquireSessionLease(iii, payload.session_id);
+  if (!leaseNonce) {
     // Another wake holds the session. Retry via the queue once it releases;
     // by then the persisted state has usually advanced and we stale-skip.
     throw new TransientError(
@@ -99,7 +103,7 @@ export async function runTransition(
   try {
     return await runTransitionInner(iii, state, handle, payload);
   } finally {
-    await releaseSessionLease(iii, payload.session_id);
+    await releaseSessionLease(iii, payload.session_id, leaseNonce);
   }
 }
 

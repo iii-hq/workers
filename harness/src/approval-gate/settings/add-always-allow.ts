@@ -5,7 +5,7 @@ import type { ApprovalSettings } from '../schemas.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { type MutationReply, functionIdField, sessionIdField } from './types.js';
 import { mutationError, ok } from './reply.js';
-import { readSettings, writeSettings } from './store.js';
+import { readSettings, updateSettings } from './store.js';
 
 const PayloadSchema = z.object({
   session_id: sessionIdField,
@@ -26,15 +26,15 @@ export async function addAlwaysAllow(
   if (current.always_allow.some((entry) => entry.function_id === function_id)) {
     return current;
   }
-  const next: ApprovalSettings = {
-    ...current,
-    always_allow: [
-      ...current.always_allow,
-      { function_id, granted_at: Date.now(), granted_by: 'user_click' },
-    ],
-  };
-  await writeSettings(iii, session_id, next);
-  return next;
+  // Known race: the pre-read only narrows the duplicate-entry window; concurrent
+  // adds of the same id can both append. Harmless — matched/removed set-wise.
+  return updateSettings(iii, session_id, [
+    {
+      type: 'append',
+      path: 'always_allow',
+      value: { function_id, granted_at: Date.now(), granted_by: 'user_click' },
+    },
+  ]);
 }
 
 export function registerAddAlwaysAllow(iii: ISdk): void {

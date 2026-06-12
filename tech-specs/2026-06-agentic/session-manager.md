@@ -514,12 +514,15 @@ type SetActiveLeafResponse = { active_leaf: string };
 The **parent chain is the order**: the active path is the walk from the active leaf to the root,
 reversed. `timestamp` is informational, never authoritative (an implementation on a key-less state
 listing may re-sort by `(timestamp, id)` internally while rebuilding the chain, but that is not part
-of the contract). Backends are pluggable: an iii-state backend (default) and an in-memory backend
-for tests; a future SQL/blob backend can implement the same interface.
+of the contract). Backends are pluggable: a filesystem backend (default; one append-only JSONL file
+per session, replayed last-wins) and a bridge backend that defers raw storage — and event fan-out —
+to a main session-manager on another iii instance via an internal `session::store::*` protocol; a
+future SQL/blob backend can implement the same interface.
 
 ## Dependencies
 
-- `iii-state` — entry / meta / active-leaf storage.
+- Storage backend (per deployment): filesystem `data_dir` (default), or a main session-manager
+  instance reached over the bus (bridge mode).
 - Registers six custom trigger types (`session::created`, `session::message_added`,
   `session::message_updated`, `session::status_changed`, `session::meta_updated`,
   `session::deleted`) and emits their events through the engine on every relevant mutation.
