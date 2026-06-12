@@ -8,7 +8,7 @@ use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::wire::cache::cache_enabled;
-use crate::{curated, router_client, state};
+use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
 use llm_router::channels::open_sink;
@@ -93,13 +93,11 @@ async fn run_stream_call(
     };
 
     // model_meta is a hint, never source of truth (spec): absent → the
-    // catalog is authoritative → curated snapshot as a last resort.
+    // catalog is authoritative. Adaptive thinking needs no budget data, so
+    // a missing record costs nothing on the request path.
     let model_meta = match input.model_meta {
         Some(m) => Some(m),
-        None => match router_client::models_get(iii, &model).await {
-            Some(m) => Some(m),
-            None => curated::find(&model),
-        },
+        None => router_client::models_get(iii, &model).await,
     };
     let thinking_build = build_thinking_config(input.thinking_level, model_meta.as_ref());
     warnings.extend(thinking_build.warnings);

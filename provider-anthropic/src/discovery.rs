@@ -1,48 +1,85 @@
-//! Live model discovery: GET /v1/models, merge curated capability metadata,
-//! reconcile the catalog slice through the router's single write path.
+//! Live model discovery: `GET /v1/models` is the source of truth for the
+//! catalog slice — ids, display names, context/output limits, and the
+//! capability tree all come from the API. Only pricing is filled locally
+//! (curated::pricing_for); the slice reconciles through the router's single
+//! write path.
 use crate::config::{credential_parts, AuthMode, DEFAULT_API_URL};
-use crate::curated::{merge_with_live, LiveStub};
+use crate::curated::pricing_for;
 use crate::errors::upstream_unavailable;
 use crate::request::{auth_header, ANTHROPIC_VERSION};
-use crate::{router_client, state};
+use crate::{router_client, state, PROVIDER_ID};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
+use llm_router::types::model::Model;
 use serde_json::{json, Value};
 
 /// Derive the models endpoint from the configured messages endpoint
-/// (`…/v1/messages` → `…/v1/models`).
+/// (`…/v1/messages` → `…/v1/models`). The page size covers Anthropic's
+/// full model list in one request.
 pub fn models_url(api_url: &str) -> String {
-    match api_url.strip_suffix("/messages") {
-        Some(base) => format!("{base}/models"),
-        None => "https://api.anthropic.com/v1/models".to_string(),
-    }
+    let base = match api_url.strip_suffix("/messages") {
+        Some(base) => base.to_string(),
+        None => "https://api.anthropic.com/v1".to_string(),
+    };
+    format!("{base}/models?limit=1000")
 }
 
-pub fn parse_live_models(json: &Value) -> Vec<LiveStub> {
+/// `capabilities.<path...>.supported` from a live row; absent stays None so
+/// downstream gating remains permissive-but-honest.
+fn cap_supported(row: &Value, path: &[&str]) -> Option<bool> {
+    let mut node = row.get("capabilities")?;
+    for key in path {
+        node = node.get(key)?;
+    }
+    node.get("supported").and_then(Value::as_bool)
+}
+
+/// One live row → catalog Model. Tolerant of missing fields: an API that
+/// stops sending limits or capabilities degrades to the same conservative
+/// defaults the old unknown-model path used, never to a parse failure.
+fn model_from_live(row: &Value) -> Option<Model> {
+    let id = row
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some(Model {
+        id: id.to_string(),
+        provider: PROVIDER_ID.into(),
+        display_name: row
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(String::from),
+        context_window: row
+            .get("max_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(200_000),
+        max_output_tokens: row
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(8192),
+        input_limit: None,
+        supports_thinking: cap_supported(row, &["thinking"]),
+        supports_xhigh: cap_supported(row, &["effort", "xhigh"]),
+        supports_tools: Some(true), // uniform across the Messages API
+        supports_vision: cap_supported(row, &["image_input"]),
+        supports_cache: Some(true),
+        // The provider has no response_format implementation, regardless of
+        // what the model itself supports.
+        supports_structured_output: Some(false),
+        thinking_budgets: None,
+        pricing: pricing_for(id),
+    })
+}
+
+pub fn parse_live_models(json: &Value) -> Vec<Model> {
     json.get("data")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|raw| {
-                    let id = raw
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())?;
-                    Some(LiveStub {
-                        id: id.to_string(),
-                        display_name: raw
-                            .get("display_name")
-                            .and_then(Value::as_str)
-                            .map(String::from),
-                    })
-                })
-                .collect()
-        })
+        .map(|rows| rows.iter().filter_map(model_from_live).collect())
         .unwrap_or_default()
 }
 
 enum FetchOutcome {
-    Ok(Vec<LiveStub>),
+    Ok(Vec<Model>),
     AuthFailed,
     Transient(String),
 }
@@ -90,8 +127,7 @@ pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, 
 
     let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
     match fetch_live_models(http, &url, credential_value, auth_mode).await {
-        FetchOutcome::Ok(stubs) => {
-            let models = merge_with_live(&stubs);
+        FetchOutcome::Ok(models) => {
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
             Ok(count)
@@ -127,34 +163,74 @@ mod tests {
     fn models_url_derives_from_messages_endpoint() {
         assert_eq!(
             models_url("https://api.anthropic.com/v1/messages"),
-            "https://api.anthropic.com/v1/models"
+            "https://api.anthropic.com/v1/models?limit=1000"
         );
         assert_eq!(
             models_url("http://127.0.0.1:9999/v1/messages"),
-            "http://127.0.0.1:9999/v1/models"
+            "http://127.0.0.1:9999/v1/models?limit=1000"
         );
         // unrecognized shape falls back to the public endpoint
         assert_eq!(
             models_url("https://proxy.example/custom"),
-            "https://api.anthropic.com/v1/models"
+            "https://api.anthropic.com/v1/models?limit=1000"
         );
     }
 
     #[test]
-    fn parses_ids_and_display_names_skipping_malformed_rows() {
+    fn parses_capabilities_limits_and_pricing() {
+        let json = serde_json::json!({
+            "data": [{
+                "id": "claude-opus-4-8",
+                "display_name": "Claude Opus 4.8",
+                "max_input_tokens": 1_000_000,
+                "max_tokens": 128_000,
+                "capabilities": {
+                    "image_input": { "supported": true },
+                    "thinking": {
+                        "supported": true,
+                        "types": { "adaptive": { "supported": true } }
+                    },
+                    "effort": {
+                        "supported": true,
+                        "xhigh": { "supported": true }
+                    },
+                    "structured_outputs": { "supported": true }
+                }
+            }]
+        });
+        let models = parse_live_models(&json);
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.id, "claude-opus-4-8");
+        assert_eq!(m.provider, "anthropic");
+        assert_eq!(m.display_name.as_deref(), Some("Claude Opus 4.8"));
+        assert_eq!(m.context_window, 1_000_000);
+        assert_eq!(m.max_output_tokens, 128_000);
+        assert_eq!(m.supports_thinking, Some(true));
+        assert_eq!(m.supports_xhigh, Some(true));
+        assert_eq!(m.supports_vision, Some(true));
+        // provider-local truth, not the model's: no response_format support
+        assert_eq!(m.supports_structured_output, Some(false));
+        assert_eq!(m.pricing.as_ref().unwrap().input, Some(5.0));
+    }
+
+    #[test]
+    fn missing_capabilities_degrade_to_conservative_defaults() {
         let json = serde_json::json!({
             "data": [
-                { "id": "claude-sonnet-4-6-20260115", "display_name": "Claude Sonnet 4.6" },
+                { "id": "claude-mystery-9", "display_name": "Mystery" },
                 { "id": "" },
                 { "display_name": "no id" },
-                { "id": "claude-haiku-4-5" },
             ]
         });
-        let stubs = parse_live_models(&json);
-        assert_eq!(stubs.len(), 2);
-        assert_eq!(stubs[0].id, "claude-sonnet-4-6-20260115");
-        assert_eq!(stubs[0].display_name.as_deref(), Some("Claude Sonnet 4.6"));
-        assert_eq!(stubs[1].display_name, None);
+        let models = parse_live_models(&json);
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.context_window, 200_000);
+        assert_eq!(m.max_output_tokens, 8192);
+        assert_eq!(m.supports_thinking, None);
+        assert_eq!(m.supports_xhigh, None);
+        assert!(m.pricing.is_none());
     }
 
     #[test]

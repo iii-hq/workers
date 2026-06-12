@@ -1,9 +1,9 @@
 //! Boot wiring: function surface, the router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
-use crate::discovery::make_refresh_models;
+use crate::discovery::{make_refresh_models, refresh_models};
 use crate::stream_fn::make_stream;
-use crate::{curated, router_client, state, PROVIDER_ID};
+use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput, III};
 use llm_router::types::router::{ProviderDeclaration, ProviderDefaults};
 use serde_json::{json, Value};
@@ -22,9 +22,10 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None, // the router's default {api_key, api_url, max_tokens}
         supports_model_listing: Some(true),
-        // Static slice mirrors the curated snapshot: no cold catalog hole
-        // before first discovery (spec § register).
-        models: Some(curated::static_models()),
+        // No static slice: GET /v1/models is the source of truth, and a
+        // refresh fires right after registration (see declare_and_refresh),
+        // so the catalog fills from the API within seconds of boot.
+        models: None,
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-anthropic".into()),
     }
@@ -85,6 +86,17 @@ pub async fn declare_with_backoff(iii: III) {
     }
 }
 
+/// Register, then populate the catalog from the live API. The declaration
+/// carries no models, so the slice is empty until this refresh lands;
+/// failures are logged and left to the next config-change refresh.
+pub async fn declare_and_refresh(iii: III, http: reqwest::Client) {
+    declare_with_backoff(iii.clone()).await;
+    match refresh_models(&iii, &http).await {
+        Ok(count) => println!("[provider-anthropic] catalog refreshed: {count} models"),
+        Err(e) => eprintln!("[provider-anthropic] post-register refresh failed ({e})"),
+    }
+}
+
 pub async fn register_provider(iii: III) -> Result<(), IIIError> {
     // Streaming uses no total timeout (the router owns stream budgets);
     // connect failures surface fast.
@@ -99,18 +111,19 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
     );
     iii.register_function(
         "provider::anthropic::refresh_models",
-        RegisterFunction::new_async(make_refresh_models(iii.clone(), http)),
+        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone())),
     );
 
     // Re-declare when the router restarts: router::ready rides iii-pubsub.
     {
         let iii_ready = iii.clone();
+        let http_ready = http.clone();
         iii.register_function(
             "provider::anthropic::on_router_ready",
             RegisterFunction::new_async(move |_raw: Value| {
-                let iii = iii_ready.clone();
+                let (iii, http) = (iii_ready.clone(), http_ready.clone());
                 async move {
-                    tokio::spawn(declare_with_backoff(iii));
+                    tokio::spawn(declare_and_refresh(iii, http));
                     Ok(json!({ "ok": true }))
                 }
             }),
@@ -124,6 +137,6 @@ pub async fn register_provider(iii: III) -> Result<(), IIIError> {
     });
 
     // Boot declare, off the boot path (a missing router must not block boot).
-    tokio::spawn(declare_with_backoff(iii));
+    tokio::spawn(declare_and_refresh(iii, http));
     Ok(())
 }

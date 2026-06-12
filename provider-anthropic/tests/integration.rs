@@ -191,7 +191,7 @@ const STUB_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nco
 
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"invalid x-api-key\"}}";
 
-const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"claude-sonnet-4-6-20260115\",\"display_name\":\"Claude Sonnet 4.6\"},{\"id\":\"claude-new-1\"}]}";
+const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"claude-sonnet-4-6\",\"display_name\":\"Claude Sonnet 4.6\",\"max_input_tokens\":200000,\"max_tokens\":64000,\"capabilities\":{\"thinking\":{\"supported\":true},\"effort\":{\"xhigh\":{\"supported\":false}},\"image_input\":{\"supported\":true}}},{\"id\":\"claude-sonnet-4-6-20260115\",\"display_name\":\"Claude Sonnet 4.6 (dated)\",\"max_input_tokens\":777000,\"max_tokens\":32000},{\"id\":\"claude-new-1\"}]}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -268,14 +268,50 @@ async fn configure_stub_key(router_iii: &III, stub_url: &str) {
     .expect("config set");
 }
 
+/// Pull the live (stubbed) list into the catalog and wait until routing can
+/// see it — the declaration carries no models, so tests that route by
+/// catalog ownership must refresh first.
+async fn refresh_and_wait(router_iii: &III, provider_iii: &III, expect_id: &str) {
+    let res = call(
+        provider_iii,
+        "provider::anthropic::refresh_models",
+        json!({}),
+    )
+    .await
+    .expect("refresh succeeds");
+    assert_eq!(res["ok"], true, "refresh response: {res}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let list = call(
+            router_iii,
+            "router::models::list",
+            json!({ "provider": "anthropic" }),
+        )
+        .await
+        .unwrap();
+        let present = list["models"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|m| m["id"] == expect_id));
+        if present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "catalog never gained {expect_id}: {list}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 // ── scenarios ───────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn provider_registers_with_static_catalog_and_persisted_token() {
+async fn provider_registers_with_persisted_token_and_live_only_catalog() {
     let engine = engine_or_skip!();
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 
-    // static slice landed at registration (no cold catalog hole)
+    // No static slice: with no key configured the catalog stays empty
+    // until live discovery can run (models come from GET /v1/models only).
     let list = call(
         &router_iii,
         "router::models::list",
@@ -288,22 +324,8 @@ async fn provider_registers_with_static_catalog_and_persisted_token() {
         .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
         .unwrap_or_default();
     assert!(
-        ids.contains(&"claude-sonnet-4-6"),
-        "curated ids in catalog, got {ids:?}"
-    );
-    assert!(ids.contains(&"claude-opus-4-7"));
-
-    // capability surface serves the snapshot
-    let supports = call(
-        &router_iii,
-        "router::models::supports",
-        json!({ "provider": "anthropic", "id": "claude-sonnet-4-6", "capability": "structured_output" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        supports["supported"], false,
-        "anthropic has no native JSON mode"
+        ids.is_empty(),
+        "catalog empty before discovery, got {ids:?}"
     );
 
     // the registration token was persisted to the provider's state scope
@@ -329,6 +351,8 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
+    // catalog-ownership routing needs the live slice in place
+    refresh_and_wait(&router_iii, &provider_iii, "claude-sonnet-4-6").await;
 
     let consumer = register_worker(&engine.url, InitOptions::default());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
@@ -377,12 +401,16 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
 
     let consumer = register_worker(&engine.url, InitOptions::default());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    // The 401 stub fails the models fetch too, so the catalog stays empty —
+    // pin the provider explicitly (the harness does the same after
+    // router::route) to keep this test on the upstream-auth path.
     let res = consumer
         .trigger(TriggerRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "claude-sonnet-4-6",
+                "provider": "anthropic",
                 "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
             }),
             action: None,
@@ -404,20 +432,12 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn refresh_models_reconciles_live_union_curated() {
+async fn refresh_models_reconciles_live_catalog() {
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
-
-    let res = call(
-        &provider_iii,
-        "provider::anthropic::refresh_models",
-        json!({}),
-    )
-    .await
-    .expect("refresh succeeds");
-    assert_eq!(res["ok"], true);
+    refresh_and_wait(&router_iii, &provider_iii, "claude-sonnet-4-6").await;
 
     let list = call(
         &router_iii,
@@ -426,25 +446,31 @@ async fn refresh_models_reconciles_live_union_curated() {
     )
     .await
     .unwrap();
-    let ids: Vec<&str> = list["models"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
-        .unwrap_or_default();
-    // live dated id enriched with curated caps, unknown live id kept,
-    // curated aliases not in the live list retained
-    assert!(ids.contains(&"claude-sonnet-4-6-20260115"), "got {ids:?}");
+    let models = list["models"].as_array().unwrap().clone();
+    let ids: Vec<&str> = models.iter().filter_map(|m| m["id"].as_str()).collect();
+    // exactly the live list — no curated union, no static aliases
+    assert!(ids.contains(&"claude-sonnet-4-6"), "got {ids:?}");
+    assert!(ids.contains(&"claude-sonnet-4-6-20260115"));
     assert!(ids.contains(&"claude-new-1"));
-    assert!(ids.contains(&"claude-opus-4-7"));
-    let dated = list["models"]
-        .as_array()
-        .unwrap()
+    assert!(
+        !ids.contains(&"claude-opus-4-7"),
+        "static slice gone, got {ids:?}"
+    );
+
+    // limits and capabilities come from the live rows
+    let dated = models
         .iter()
         .find(|m| m["id"] == "claude-sonnet-4-6-20260115")
         .unwrap();
-    assert_eq!(
-        dated["context_window"], 200_000,
-        "curated metadata applied to the live id"
-    );
+    assert_eq!(dated["context_window"], 777_000);
+    let sonnet = models
+        .iter()
+        .find(|m| m["id"] == "claude-sonnet-4-6")
+        .unwrap();
+    assert_eq!(sonnet["supports_thinking"], true);
+    assert_eq!(sonnet["supports_xhigh"], false);
+    // pricing is the one locally-filled field
+    assert!(sonnet["pricing"]["input"].as_f64().is_some_and(|p| p > 0.0));
 
     router_iii.shutdown();
     provider_iii.shutdown();
