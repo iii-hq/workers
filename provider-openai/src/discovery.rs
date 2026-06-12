@@ -1,13 +1,17 @@
-//! Live model discovery: GET /v1/models, filter to chat/reasoning families,
-//! merge curated capability metadata, reconcile the catalog slice through
-//! the router's single write path.
+//! Live model discovery: `GET /v1/models` is the source of truth for the
+//! catalog's id list — filtered to current-generation chat/reasoning
+//! families, deduplicated against dated snapshots, enriched with the local
+//! metadata table (OpenAI's API carries no capability data), and reconciled
+//! through the router's single write path.
 use crate::config::DEFAULT_API_URL;
-use crate::curated::{merge_with_live, LiveStub};
+use crate::curated::{base_id, enrich, is_legacy_generation};
 use crate::errors::upstream_unavailable;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
+use llm_router::types::model::Model;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// Derive the models endpoint from the configured completions endpoint
 /// (`…/v1/chat/completions` → `…/v1/models`).
@@ -48,8 +52,9 @@ pub fn is_chat_model(id: &str) -> bool {
     !NON_CHAT.iter().any(|term| lower.contains(term))
 }
 
-pub fn parse_live_models(json: &Value) -> Vec<LiveStub> {
-    json.get("data")
+pub fn parse_live_models(json: &Value) -> Vec<Model> {
+    let ids: Vec<String> = json
+        .get("data")
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
@@ -58,15 +63,27 @@ pub fn parse_live_models(json: &Value) -> Vec<LiveStub> {
                         .get("id")
                         .and_then(Value::as_str)
                         .filter(|s| !s.is_empty())?;
-                    is_chat_model(id).then(|| LiveStub { id: id.to_string() })
+                    (is_chat_model(id) && !is_legacy_generation(id)).then(|| id.to_string())
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // Dated snapshots are pinning artifacts: when the undated alias is also
+    // live (gpt-5.1 next to gpt-5.1-2025-11-13), keep only the alias so the
+    // picker carries one row per model.
+    let live: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    ids.iter()
+        .filter(|id| {
+            let base = base_id(id);
+            base == id.as_str() || !live.contains(base)
+        })
+        .map(|id| enrich(id))
+        .collect()
 }
 
 enum FetchOutcome {
-    Ok(Vec<LiveStub>),
+    Ok(Vec<Model>),
     AuthFailed,
     Transient(String),
 }
@@ -111,8 +128,7 @@ pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, 
 
     let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
     match fetch_live_models(http, &url, credential_value).await {
-        FetchOutcome::Ok(stubs) => {
-            let models = merge_with_live(&stubs);
+        FetchOutcome::Ok(models) => {
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
             Ok(count)
@@ -179,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_ids_skipping_malformed_and_non_chat_rows() {
+    fn parses_ids_skipping_malformed_non_chat_and_legacy_rows() {
         let json = serde_json::json!({
             "data": [
                 { "id": "gpt-5.1-2025-11-13", "object": "model" },
@@ -187,12 +203,29 @@ mod tests {
                 { "object": "model" },
                 { "id": "text-embedding-3-large", "object": "model" },
                 { "id": "o3-mini", "object": "model" },
+                { "id": "gpt-4o-mini", "object": "model" },
+                { "id": "gpt-3.5-turbo", "object": "model" },
             ]
         });
-        let stubs = parse_live_models(&json);
-        assert_eq!(stubs.len(), 2);
-        assert_eq!(stubs[0].id, "gpt-5.1-2025-11-13");
-        assert_eq!(stubs[1].id, "o3-mini");
+        let models = parse_live_models(&json);
+        // o-series, 4o, and 3.5 are legacy generations; the dated 5.1 stays
+        // (its undated alias is not in this list).
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5.1-2025-11-13");
+        assert_eq!(models[0].display_name.as_deref(), Some("GPT-5.1"));
+    }
+
+    #[test]
+    fn dated_snapshot_drops_when_undated_alias_is_live() {
+        let json = serde_json::json!({
+            "data": [
+                { "id": "gpt-5.1", "object": "model" },
+                { "id": "gpt-5.1-2025-11-13", "object": "model" },
+                { "id": "gpt-5.4-2026-03-05", "object": "model" },
+            ]
+        });
+        let ids: Vec<String> = parse_live_models(&json).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["gpt-5.1", "gpt-5.4-2026-03-05"]);
     }
 
     #[test]

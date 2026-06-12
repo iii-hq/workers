@@ -7,7 +7,7 @@ use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
-use crate::{curated, router_client, state};
+use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
 use llm_router::channels::open_sink;
@@ -87,10 +87,7 @@ async fn run_stream_call(
     // catalog is authoritative → curated snapshot as a last resort.
     let model_meta = match input.model_meta {
         Some(m) => Some(m),
-        None => match router_client::models_get(iii, &model).await {
-            Some(m) => Some(m),
-            None => curated::find(&model),
-        },
+        None => router_client::models_get(iii, &model).await,
     };
     let reasoning_effort = if is_reasoning_model(
         &model,

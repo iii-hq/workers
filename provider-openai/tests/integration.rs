@@ -191,7 +191,7 @@ const STUB_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nco
 
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
 
-const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"gpt-5.1-2025-11-13\",\"object\":\"model\"},{\"id\":\"o3-mini\",\"object\":\"model\"},{\"id\":\"text-embedding-3-large\",\"object\":\"model\"}]}";
+const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"gpt-5.2\",\"object\":\"model\"},{\"id\":\"gpt-5.2-2025-12-11\",\"object\":\"model\"},{\"id\":\"gpt-5.4-2026-03-05\",\"object\":\"model\"},{\"id\":\"o3-mini\",\"object\":\"model\"},{\"id\":\"text-embedding-3-large\",\"object\":\"model\"}]}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -268,14 +268,46 @@ async fn configure_stub_key(router_iii: &III, stub_url: &str) {
     .expect("config set");
 }
 
+/// Pull the live (stubbed) list into the catalog and wait until routing can
+/// see it — the declaration carries no models, so tests that route by
+/// catalog ownership must refresh first.
+async fn refresh_and_wait(router_iii: &III, provider_iii: &III, expect_id: &str) {
+    let res = call(provider_iii, "provider::openai::refresh_models", json!({}))
+        .await
+        .expect("refresh succeeds");
+    assert_eq!(res["ok"], true, "refresh response: {res}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let list = call(
+            router_iii,
+            "router::models::list",
+            json!({ "provider": "openai" }),
+        )
+        .await
+        .unwrap();
+        let present = list["models"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|m| m["id"] == expect_id));
+        if present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "catalog never gained {expect_id}: {list}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 // ── scenarios ───────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn provider_registers_with_static_catalog_and_persisted_token() {
+async fn provider_registers_with_persisted_token_and_live_only_catalog() {
     let engine = engine_or_skip!();
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 
-    // static slice landed at registration (no cold catalog hole)
+    // No static slice: with no key configured the catalog stays empty
+    // until live discovery can run (models come from GET /v1/models only).
     let list = call(
         &router_iii,
         "router::models::list",
@@ -288,22 +320,8 @@ async fn provider_registers_with_static_catalog_and_persisted_token() {
         .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
         .unwrap_or_default();
     assert!(
-        ids.contains(&"gpt-5.2"),
-        "curated ids in catalog, got {ids:?}"
-    );
-    assert!(ids.contains(&"gpt-5-mini"));
-
-    // capability surface: gpt-5.2 supports structured output
-    let supports = call(
-        &router_iii,
-        "router::models::supports",
-        json!({ "provider": "openai", "id": "gpt-5.2", "capability": "structured_output" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        supports["supported"], true,
-        "gpt-5.2 has native JSON schema mode"
+        ids.is_empty(),
+        "catalog empty before discovery, got {ids:?}"
     );
 
     // the registration token was persisted to the provider's state scope
@@ -329,6 +347,8 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
+    // catalog-ownership routing needs the live slice in place
+    refresh_and_wait(&router_iii, &provider_iii, "gpt-5.2").await;
 
     let consumer = register_worker(&engine.url, InitOptions::default());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
@@ -384,6 +404,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
             payload: json!({
                 "writer_ref": writer_ref,
                 "model": "gpt-5.2",
+                "provider": "openai",
                 "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
             }),
             action: None,
@@ -405,16 +426,12 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn refresh_models_reconciles_filtered_live_union_curated() {
+async fn refresh_models_reconciles_filtered_live_catalog() {
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
     configure_stub_key(&router_iii, &stub.url).await;
-
-    let res = call(&provider_iii, "provider::openai::refresh_models", json!({}))
-        .await
-        .expect("refresh succeeds");
-    assert_eq!(res["ok"], true);
+    refresh_and_wait(&router_iii, &provider_iii, "gpt-5.2").await;
 
     let list = call(
         &router_iii,
@@ -423,39 +440,37 @@ async fn refresh_models_reconciles_filtered_live_union_curated() {
     )
     .await
     .unwrap();
-    let ids: Vec<&str> = list["models"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
-        .unwrap_or_default();
+    let models = list["models"].as_array().unwrap().clone();
+    let ids: Vec<&str> = models.iter().filter_map(|m| m["id"].as_str()).collect();
 
-    // live dated id enriched with curated caps
-    assert!(ids.contains(&"gpt-5.1-2025-11-13"), "got {ids:?}");
-    // unknown live id kept (o3-mini — no curated record)
-    assert!(ids.contains(&"o3-mini"), "got {ids:?}");
-    // text-embedding-3-large filtered out (not a chat/reasoning model)
+    // exactly the filtered live list: the undated alias wins over its dated
+    // snapshot, a dated id with no live alias stays, legacy generations and
+    // non-chat ids are gone
+    assert!(ids.contains(&"gpt-5.2"), "got {ids:?}");
+    assert!(
+        !ids.contains(&"gpt-5.2-2025-12-11"),
+        "dated snapshot should fold into the live alias: {ids:?}"
+    );
+    assert!(ids.contains(&"gpt-5.4-2026-03-05"), "got {ids:?}");
+    assert!(
+        !ids.contains(&"o3-mini"),
+        "legacy generation should be filtered: {ids:?}"
+    );
     assert!(
         !ids.contains(&"text-embedding-3-large"),
         "embedding model should be filtered: {ids:?}"
     );
-    // curated aliases retained even if not in the live list
-    assert!(ids.contains(&"gpt-5.2"), "got {ids:?}");
-    // the covered base id is NOT duplicated
-    assert!(
-        !ids.contains(&"gpt-5.1"),
-        "base id should not be duplicated alongside dated id: {ids:?}"
-    );
 
-    // dated id carries curated context_window
-    let dated = list["models"]
-        .as_array()
-        .unwrap()
+    // known family carries the local metadata; unknown family stays default
+    let sonnet = models.iter().find(|m| m["id"] == "gpt-5.2").unwrap();
+    assert_eq!(sonnet["context_window"], 400_000);
+    assert_eq!(sonnet["supports_structured_output"], true);
+    assert!(sonnet["pricing"]["input"].as_f64().is_some_and(|p| p > 0.0));
+    let unknown = models
         .iter()
-        .find(|m| m["id"] == "gpt-5.1-2025-11-13")
+        .find(|m| m["id"] == "gpt-5.4-2026-03-05")
         .unwrap();
-    assert_eq!(
-        dated["context_window"], 400_000,
-        "curated metadata applied to the live id"
-    );
+    assert_eq!(unknown["context_window"], 128_000);
 
     router_iii.shutdown();
     provider_iii.shutdown();
