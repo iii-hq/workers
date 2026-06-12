@@ -203,8 +203,8 @@ describe('compact_session smoke', () => {
           const p = (payload ?? {}) as Record<string, unknown>;
           if (function_id === 'session-tree::messages') return { messages: [] };
           if (function_id === 'session-tree::compactions') return { entries: [] };
-          if (function_id === 'models::get') {
-            return { context_window: 200_000, max_output_tokens: 4_096 };
+          if (function_id === 'router::models::get') {
+            return { model: { context_window: 200_000, max_output_tokens: 4_096 } };
           }
           if (function_id === 'state::get') {
             const v = stateStore.get(p['key'] as string);
@@ -290,10 +290,10 @@ describe('compact_session smoke', () => {
       limit: { context: 200_000, input: 200_000, output: 4_096 },
     });
     expect(['ok', 'empty', 'overflow', 'busy']).toContain(result.status);
-    // Confirm models::get was NOT called (limits supplied inline).
+    // Confirm router::models::get was NOT called (limits supplied inline).
     expect(
       (iii.trigger as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (c) => (c[0] as { function_id: string }).function_id === 'models::get',
+        (c) => (c[0] as { function_id: string }).function_id === 'router::models::get',
       ).length,
     ).toBe(0);
   });

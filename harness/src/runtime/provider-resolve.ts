@@ -238,3 +238,8 @@ export function _resetRouterRegistrationForTests(): void {
   tokenWaiters.clear();
   registrationInFlight.clear();
 }
+
+/** Test seam: seed a registration token without a register round-trip. */
+export function _seedRouterRegistrationTokenForTests(provider: string, token: string): void {
+  setToken(provider, token);
+}

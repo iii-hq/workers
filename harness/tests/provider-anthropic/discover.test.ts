@@ -13,7 +13,8 @@ const { resolveProviderMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/runtime/provider-resolve.js', () => ({
-  resolveProvider: resolveProviderMock,
+  resolveProviderViaRouter: resolveProviderMock,
+  routerRegistrationToken: vi.fn(async () => 'tok-test'),
 }));
 
 function makeIii() {
@@ -48,9 +49,10 @@ describe('discoverAndRegister', () => {
 
     const out = await discoverAndRegister(iii, WORKER);
     expect(out).toEqual([]);
-    expect(byFn(trigger, 'models::reconcile')).toHaveLength(1);
-    expect(byFn(trigger, 'models::reconcile')[0][0].payload).toEqual({
+    expect(byFn(trigger, 'router::models::reconcile')).toHaveLength(1);
+    expect(byFn(trigger, 'router::models::reconcile')[0][0].payload).toEqual({
       provider: 'anthropic',
+      token: 'tok-test',
       models: [],
     });
   });
@@ -72,9 +74,10 @@ describe('discoverAndRegister', () => {
     const { iii, trigger } = makeIii();
     const out = await discoverAndRegister(iii, WORKER);
     expect(out).toEqual([]);
-    expect(byFn(trigger, 'models::reconcile')).toHaveLength(1);
-    expect(byFn(trigger, 'models::reconcile')[0][0].payload).toEqual({
+    expect(byFn(trigger, 'router::models::reconcile')).toHaveLength(1);
+    expect(byFn(trigger, 'router::models::reconcile')[0][0].payload).toEqual({
       provider: 'anthropic',
+      token: 'tok-test',
       models: [],
     });
   });
@@ -94,7 +97,7 @@ describe('discoverAndRegister', () => {
     const { iii, trigger } = makeIii();
     const out = await discoverAndRegister(iii, WORKER);
     expect(out).toEqual([]);
-    expect(byFn(trigger, 'models::reconcile')).toHaveLength(0);
+    expect(byFn(trigger, 'router::models::reconcile')).toHaveLength(0);
   });
 
   it('reconciles discovered models in one call on success', async () => {
@@ -117,7 +120,7 @@ describe('discoverAndRegister', () => {
     const { iii, trigger } = makeIii();
     const out = await discoverAndRegister(iii, WORKER);
     expect(out).toEqual(['claude-sonnet-4-20250514']);
-    const reconcile = byFn(trigger, 'models::reconcile');
+    const reconcile = byFn(trigger, 'router::models::reconcile');
     expect(reconcile).toHaveLength(1);
     const payload = reconcile[0][0].payload as { provider: string; models: unknown[] };
     expect(payload.provider).toBe('anthropic');

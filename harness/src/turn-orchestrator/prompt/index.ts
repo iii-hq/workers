@@ -27,6 +27,11 @@ export function promptFamily(provider: string): PromptFamily {
       return 'gpt';
     case 'kimi':
       return 'kimi';
+    // No routed provider (router unreachable during provisioning): mirror the
+    // router's seeded default_provider so the un-routed prompt matches what
+    // the routed turn would have served.
+    case '':
+      return 'anthropic';
     default:
       return 'default';
   }

@@ -24,8 +24,9 @@ function makeIii(overrides?: {
     trigger: async <_T, R>(req: { function_id: string; payload: unknown }): Promise<R> => {
       calls.push({ function_id: req.function_id, payload: req.payload });
 
-      if (req.function_id === 'models::get') {
-        return (overrides?.modelsGetResult ?? null) as R;
+      if (req.function_id === 'router::models::get') {
+        const m = overrides?.modelsGetResult ?? null;
+        return (m ? { model: m } : null) as R;
       }
       if (req.function_id === 'session-tree::messages') {
         return (overrides?.sessionTreeResult ?? { messages: [] }) as R;
@@ -54,7 +55,7 @@ describe('runPreflight', () => {
     expect(calls.some((c) => c.function_id === 'context-compaction::compact_now')).toBe(false);
   });
 
-  it('returns ok and skips compact_now when models::get returns null', async () => {
+  it('returns ok and skips compact_now when router::models::get returns null', async () => {
     const { iii, calls } = makeIii({ modelsGetResult: null });
 
     const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
@@ -119,7 +120,7 @@ describe('runPreflight', () => {
     expect(result).toBe('ok');
   });
 
-  it('uses the pre-resolved model and skips models::get', async () => {
+  it('uses the pre-resolved model and skips router::models::get', async () => {
     const { iii, calls } = makeIii({
       modelsGetResult: { context_window: 1, max_output_tokens: 0 },
     });
@@ -142,11 +143,11 @@ describe('runPreflight', () => {
     );
 
     expect(result).toBe('ok');
-    expect(calls.some((c) => c.function_id === 'models::get')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'router::models::get')).toBe(false);
     expect(calls.some((c) => c.function_id === 'context-compaction::compact_now')).toBe(false);
   });
 
-  it('fetches models::get when no pre-resolved model is threaded', async () => {
+  it('fetches router::models::get when no pre-resolved model is threaded', async () => {
     const { iii, calls } = makeIii({
       modelsGetResult: { context_window: 200_000, max_output_tokens: 8_096 },
     });
@@ -154,7 +155,7 @@ describe('runPreflight', () => {
     const result = await runPreflight(iii, 'session-1', [smallMessage], 'anthropic', 'claude-3');
 
     expect(result).toBe('ok');
-    expect(calls.some((c) => c.function_id === 'models::get')).toBe(true);
+    expect(calls.some((c) => c.function_id === 'router::models::get')).toBe(true);
   });
 
   it('passes session_id and model info to compact_now', async () => {

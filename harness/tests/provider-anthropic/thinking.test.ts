@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Model } from '../../src/models-catalog/types.js';
+import type { Model } from '../../src/types/model.js';
 import { buildThinkingConfig, MIN_THINKING_BUDGET } from '../../src/provider-anthropic/thinking.js';
 
 function model(max_output_tokens?: number, extra: Partial<Model> = {}): Model {

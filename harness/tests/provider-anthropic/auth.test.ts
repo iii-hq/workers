@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Model } from '../../src/models-catalog/types.js';
+import type { Model } from '../../src/types/model.js';
 import {
   _resetProviderResolveCacheForTests,
   buildConfig,
@@ -21,7 +21,8 @@ const { resolveProviderMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/runtime/provider-resolve.js', () => ({
-  resolveProvider: resolveProviderMock,
+  resolveProviderViaRouter: resolveProviderMock,
+  routerRegistrationToken: vi.fn(async () => 'tok-test'),
 }));
 
 function resolved(max_tokens: number | null) {
@@ -30,15 +31,15 @@ function resolved(max_tokens: number | null) {
     credential: { type: 'api_key', key: 'sk-test' },
     api_url: null,
     max_tokens,
-    source: 'stored',
+    source: 'config',
   };
 }
 
 function iiiWithCatalog(entry: unknown, opts: { throws?: boolean } = {}): ISdk {
   const trigger = vi.fn().mockImplementation(async (req: { function_id: string }) => {
-    if (req.function_id === 'models::get') {
+    if (req.function_id === 'router::models::get') {
       if (opts.throws) throw new Error('bus timeout');
-      return entry;
+      return entry ? { model: entry } : null;
     }
     return null;
   });
@@ -48,9 +49,9 @@ function iiiWithCatalog(entry: unknown, opts: { throws?: boolean } = {}): ISdk {
 function iiiCountingCatalog(entry: unknown): { iii: ISdk; modelsGetCalls: () => number } {
   let n = 0;
   const trigger = vi.fn().mockImplementation(async (req: { function_id: string }) => {
-    if (req.function_id === 'models::get') {
+    if (req.function_id === 'router::models::get') {
       n++;
-      return entry;
+      return entry ? { model: entry } : null;
     }
     return null;
   });

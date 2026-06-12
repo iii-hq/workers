@@ -43,29 +43,14 @@ function buildAsyncMock(opts: {
     stateStore = new Map<string, unknown>(),
   } = opts;
 
-  let channelCb: ((raw: string) => void) | null = null;
-
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
+  const doneSummaryMessage = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Async compaction summary.' }],
+    stop_reason: 'end',
+    model: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    timestamp: Date.now(),
   };
-
-  const doneSummaryEvent = JSON.stringify({
-    type: 'done',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'text', text: 'Async compaction summary.' }],
-      stop_reason: 'end',
-      model: 'claude-haiku-4-5',
-      provider: 'anthropic',
-      timestamp: Date.now(),
-    },
-  });
 
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
@@ -83,8 +68,8 @@ function buildAsyncMock(opts: {
     if (function_id === 'session-tree::update_part') {
       return { ok: true };
     }
-    if (function_id === 'models::get') {
-      return modelCatalog;
+    if (function_id === 'router::models::get') {
+      return modelCatalog ? { model: modelCatalog } : null;
     }
     if (function_id === 'state::get') {
       const v = stateStore.get((payload as { key: string }).key);
@@ -113,21 +98,16 @@ function buildAsyncMock(opts: {
       }
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
-    if (function_id.startsWith('provider::')) {
-      if (channelCb) {
-        channelCb(doneSummaryEvent);
-      }
-      return undefined;
+    if (function_id === 'router::complete') {
+      return { message: doneSummaryMessage };
     }
 
     return undefined;
   });
 
-  const createChannel = vi.fn(async () => channel);
+  const iii = { trigger } as unknown as import('../../../src/runtime/iii.js').ISdk;
 
-  const iii = { trigger, createChannel } as unknown as import('../../../src/runtime/iii.js').ISdk;
-
-  return { iii, trigger, createChannel, compactPayloads };
+  return { iii, trigger, compactPayloads };
 }
 
 /**

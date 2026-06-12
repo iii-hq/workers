@@ -28,17 +28,6 @@ function buildBackwardCompatMock(opts: {
   const { fixtureMessages, capturedSystemPrompts, compactPayloads } = opts;
 
   const stateStore = new Map<string, unknown>();
-  let channelCb: ((raw: string) => void) | null = null;
-
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
-  };
 
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
@@ -102,34 +91,31 @@ function buildBackwardCompatMock(opts: {
       }
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
-    if (function_id.startsWith('provider::')) {
+    if (function_id === 'router::models::get') {
+      return { model: { context_window: 200_000, max_output_tokens: 4_096 } };
+    }
+    if (function_id === 'router::complete') {
       // Capture the system_prompt sent to the summariser
       const systemPrompt = payload.system_prompt;
       if (typeof systemPrompt === 'string') {
         capturedSystemPrompts.push(systemPrompt);
       }
 
-      // Deliver a successful summary via the channel
-      if (channelCb) {
-        const msg: AssistantMessage = {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'Updated anchored summary.' }],
-          stop_reason: 'end',
-          model: 'claude-haiku-4-5',
-          provider: 'anthropic',
-          timestamp: Date.now(),
-        };
-        channelCb(JSON.stringify({ type: 'done', message: msg }));
-      }
-      return undefined;
+      const msg: AssistantMessage = {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Updated anchored summary.' }],
+        stop_reason: 'end',
+        model: 'claude-haiku-4-5',
+        provider: 'anthropic',
+        timestamp: Date.now(),
+      };
+      return { message: msg };
     }
 
     return undefined;
   });
 
-  const createChannel = vi.fn(async () => channel);
-
-  const iii = { trigger, createChannel } as unknown as import('../../../src/runtime/iii.js').ISdk;
+  const iii = { trigger } as unknown as import('../../../src/runtime/iii.js').ISdk;
 
   return { iii, trigger };
 }

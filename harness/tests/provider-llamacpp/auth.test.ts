@@ -7,18 +7,23 @@ import {
 } from '../../src/provider-llamacpp/auth.js';
 import type { WorkerConfig } from '../../src/provider-llamacpp/config.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { Credential } from '../../src/runtime/provider-resolve.js';
+import {
+  _seedRouterRegistrationTokenForTests,
+  type Credential,
+} from '../../src/runtime/provider-resolve.js';
+
+_seedRouterRegistrationTokenForTests('llamacpp', 'tok-test');
 
 const worker: WorkerConfig = {
   default_max_tokens: 8192,
   default_api_url: 'http://localhost:8080/v1/chat/completions',
 };
 
-/** Wrap a credential into the `harness::provider::resolve` result shape. */
+/** Wrap a credential into the `router::provider::resolve` result shape. */
 function resolveResult(cred: Credential | null) {
   return {
     configured: cred !== null,
-    source: cred ? 'stored' : null,
+    source: cred ? 'config' : 'none',
     credential: cred,
     api_url: null,
     max_tokens: null,
@@ -59,14 +64,14 @@ describe('buildConfig (llamacpp)', () => {
     expect(cfg.api_key).toBe('sk-real-key');
   });
 
-  it('resolves via harness::provider::resolve with provider="llamacpp"', async () => {
+  it('resolves via router::provider::resolve with provider="llamacpp"', async () => {
     const trigger = vi.fn().mockResolvedValue(resolveResult(null));
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     await buildConfig(sdk, worker, 'Meta-Llama-3-8B');
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'harness::provider::resolve',
-        payload: { provider: 'llamacpp' },
+        function_id: 'router::provider::resolve',
+        payload: { id: 'llamacpp', token: 'tok-test' },
       }),
     );
   });
