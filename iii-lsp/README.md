@@ -64,4 +64,4 @@ Configure the client to launch the `iii-lsp` binary over stdio for the supported
 ## See also
 
 - [iii-lsp-vscode/README.md](../iii-lsp-vscode/README.md) — VS Code extension that wraps this binary.
-- [AGENTS-NEW-WORKER.md](../AGENTS-NEW-WORKER.md) — monorepo conventions and release flow.
+- [docs/sops/new-worker.md](../docs/sops/new-worker.md) — monorepo conventions and release flow.

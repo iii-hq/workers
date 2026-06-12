@@ -209,7 +209,8 @@ laptops without a running engine still pass `@pure` scenarios.
 
 ### Verification before publishing
 
-The full preflight checklist for binary workers (`workers/binary-worker.md`):
+The full preflight checklist for binary workers
+([`docs/sops/binary-worker.md`](../docs/sops/binary-worker.md)):
 
 ```bash
 cargo fmt --all -- --check

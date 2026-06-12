@@ -1,18 +1,20 @@
 # Binary worker how-to
 
+Cross-cutting steps → [`new-worker.md`](new-worker.md). Shipping → [`release.md`](release.md).
+
 This document is the **single source of truth** for building a Rust **binary**
 iii worker: a single cross-compiled CLI that connects to the iii engine over
 WebSocket, registers functions and triggers, and runs until SIGTERM. Everything
 you need to scaffold one is **here**—layouts, contracts, and copy-paste snippets.
 
 For the cross-cutting checklist (folder names, registry, CI, release flow)
-see [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md). This document covers the
-**inside** of one such worker: the manifest, config, layout, function
-registration, trigger registration, end-to-end tests, and README contract.
+see [`new-worker.md`](new-worker.md). This document covers the **inside** of
+one such worker: the manifest, config, layout, function registration, trigger
+registration, end-to-end tests, and README contract.
 
 If your worker is not a Rust binary (`deploy: image`, or any Node/Python
-worker), stop here and read [`AGENTS-NEW-WORKER.md`](AGENTS-NEW-WORKER.md)
-instead — the inside of those workers looks different.
+worker), stop here and read [`new-worker.md`](new-worker.md) instead — the
+inside of those workers looks different.
 
 ## 1. When to use this doc
 
@@ -814,7 +816,7 @@ without `iii` can filter them out.
 the registry's `readme` field on `POST /publish`.
 
 **Consumer-facing structure** (section order, tone, what belongs in README vs
-reference tooling) is defined in [`worker-readme.md`](worker-readme.md). Follow
+reference tooling) is defined in [`worker-readme.md`](../../worker-readme.md). Follow
 that guide for headings like Install, Quickstart, and Configuration.
 
 Avoid front-loading huge function/schema tables: `iii worker info`, rustdoc,
@@ -1277,7 +1279,7 @@ async fn end_to_end_via_iii_sdk() {
 
 ### `<worker>/README.md`
 
-Use [`worker-readme.md`](worker-readme.md) for section order and consumer tone.
+Use [`worker-readme.md`](../../worker-readme.md) for section order and consumer tone.
 Minimum viable shape (use a four-backtick outer fence when the README embeds
 code blocks):
 

@@ -2,7 +2,7 @@
 //! `main.rs` calls `register_all` after `register_worker`; each
 //! `register_<verb>` below uses `RegisterFunction::new_async` with typed
 //! `JsonSchema` request/response structs so the SDK can emit schemas for
-//! tools and docs (binary-worker.md §7).
+//! tools and docs (docs/sops/binary-worker.md §7).
 //!
 //! WIRE-SURFACE CATALOG — `catalog()` below is the single source of truth
 //! for every function's id + registration description, plus the
