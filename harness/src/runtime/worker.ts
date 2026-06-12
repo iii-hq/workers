@@ -1,6 +1,6 @@
 /**
  * Common worker bootstrap. Ports the shape used by every Rust worker's
- * `main.rs` (`provider-anthropic/src/main.rs`, etc.):
+ * `main.rs` (`llm-router/src/main.rs`, etc.):
  *
  *   - parse CLI flags (`--config`, `--url`, `--manifest`)
  *   - call `registerWorker(url, { workerName, ... })`

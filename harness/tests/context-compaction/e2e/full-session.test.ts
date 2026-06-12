@@ -83,18 +83,6 @@ function buildTestSdk(opts: {
   const handlers = new Map<string, FunctionHandler>();
   const sessions = new FakeSessionManager();
 
-  // Stub channel writer so streamAndCollect can deliver a synthetic done event.
-  let channelCb: ((raw: string) => void) | null = null;
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
-  };
-
   const trigger = vi.fn(async (req: { function_id: string; payload?: unknown }) => {
     const fn = req.function_id;
     const payload = req.payload;
@@ -129,20 +117,24 @@ function buildTestSdk(opts: {
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
 
-    // 2) models::get — return a small-context model so the 30-turn fixture overflows.
-    if (fn === 'models::get') {
+    // 2) router::models::get — a small-context model so the 30-turn fixture overflows.
+    if (fn === 'router::models::get') {
       return {
-        id: MODEL_ID,
-        provider: PROVIDER_ID,
-        context_window: MODEL_LIMITS.input,
-        max_output_tokens: MODEL_LIMITS.output,
+        model: {
+          id: MODEL_ID,
+          provider: PROVIDER_ID,
+          context_window: MODEL_LIMITS.input,
+          max_output_tokens: MODEL_LIMITS.output,
+        },
       };
     }
 
-    // 3) Provider stream — emit a single 'done' event with the canned summary.
-    if (fn.startsWith('provider::')) {
-      const summaryDone = {
-        type: 'done',
+    // 3) Summariser — router::complete returns the canned summary message.
+    if (fn === 'router::complete') {
+      // Capture what the summariser was asked to look at.
+      const completeInput = (payload ?? {}) as { messages?: AgentMessage[] };
+      if (completeInput.messages) opts.providerInvocations.push(completeInput.messages);
+      return {
         message: {
           role: 'assistant',
           content: [{ type: 'text', text: opts.summaryText }],
@@ -152,11 +144,6 @@ function buildTestSdk(opts: {
           timestamp: Date.now(),
         },
       };
-      // Capture what the summariser was asked to look at.
-      const streamInput = (payload ?? {}) as { messages?: AgentMessage[] };
-      if (streamInput.messages) opts.providerInvocations.push(streamInput.messages);
-      if (channelCb) channelCb(JSON.stringify(summaryDone));
-      return undefined;
     }
 
     // 4) session::* — the in-memory session-manager fake.
@@ -169,15 +156,12 @@ function buildTestSdk(opts: {
     return null;
   });
 
-  const createChannel = vi.fn(async () => channel);
-
   const registerFunction = vi.fn((id: string, handler: FunctionHandler) => {
     handlers.set(id, handler);
   });
 
   const iii = {
     trigger,
-    createChannel,
     registerFunction,
     registerTrigger: vi.fn(),
     publish: vi.fn(),

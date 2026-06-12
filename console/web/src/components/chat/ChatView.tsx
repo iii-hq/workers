@@ -18,18 +18,20 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
-import type {
-  AssistantMessage,
-  Conversation,
-  FunctionCallMessage,
-  Message,
-  MessagePatch,
-  Mode,
-  ModelId,
-  ModelOption,
-  SystemMessage,
-  ThoughtMessage,
-  UserMessage,
+import {
+  type AssistantMessage,
+  type Conversation,
+  DEFAULT_THINKING_LEVEL,
+  type FunctionCallMessage,
+  type Message,
+  type MessagePatch,
+  type Mode,
+  type ModelId,
+  type ModelOption,
+  type SystemMessage,
+  type ThinkingLevel,
+  type ThoughtMessage,
+  type UserMessage,
 } from '@/types/chat'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
@@ -99,6 +101,9 @@ export function ChatView({
   onCompactConversation,
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
+    DEFAULT_THINKING_LEVEL,
+  )
   const abortRef = useRef<AbortController | null>(null)
   const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
@@ -303,7 +308,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           model,
-          { signal: controller.signal, sessionId, messageId },
+          { signal: controller.signal, sessionId, messageId, thinkingLevel },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -530,6 +535,7 @@ export function ChatView({
       conversation.id,
       conversation.mode,
       conversation.model,
+      thinkingLevel,
       sessionId,
       contextWindow,
       backend,
@@ -680,6 +686,8 @@ export function ChatView({
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}
+            thinkingLevel={thinkingLevel}
+            onThinkingLevelChange={setThinkingLevel}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             onPermissionModeChange={(next) =>

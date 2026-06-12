@@ -1,5 +1,5 @@
-/** Fired after `configuration::set` succeeds for the harness entry. */
-const HARNESS_CONFIG_ID = 'harness'
+/** Fired after `configuration::set` succeeds for the llm-router entry (provider credentials + settings). */
+const LLM_ROUTER_CONFIG_ID = 'llm-router'
 
 type Listener = () => void
 
@@ -13,7 +13,7 @@ export function onHarnessConfigSaved(listener: Listener): () => void {
 }
 
 export function notifyHarnessConfigSaved(configId: string): void {
-  if (configId !== HARNESS_CONFIG_ID) return
+  if (configId !== LLM_ROUTER_CONFIG_ID) return
   for (const listener of listeners) {
     listener()
   }

@@ -1,7 +1,7 @@
 /**
  * Client-side validation helpers + error normalization shared by provider
  * surfaces. Credentials and per-provider settings are now edited through the
- * schema-driven `configuration` form (harness entry), so the former
+ * schema-driven `configuration` form (llm-router entry), so the former
  * `auth::*` / `provider_config::*` bus wrappers were removed — the
  * `configuration::*` calls in `WorkersTab/api.ts` cover that path.
  */

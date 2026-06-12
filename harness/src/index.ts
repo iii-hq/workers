@@ -15,12 +15,6 @@ import { register as registerContextCompaction } from './context-compaction/regi
 import { register as registerHarness } from './harness/register.js';
 import { register as registerHookFanout } from './hook-fanout/register.js';
 import { register as registerLlmBudget } from './llm-budget/register.js';
-import { register as registerModelsCatalog } from './models-catalog/register.js';
-import { register as registerProviderAnthropic } from './provider-anthropic/register.js';
-import { register as registerProviderKimi } from './provider-kimi/register.js';
-import { register as registerProviderLlamacpp } from './provider-llamacpp/register.js';
-import { register as registerProviderLmstudio } from './provider-lmstudio/register.js';
-import { register as registerProviderOpenai } from './provider-openai/register.js';
 import { logger } from './runtime/otel.js';
 import {
   DEFAULT_CONFIG_PATH,
@@ -61,41 +55,6 @@ const WORKERS: readonly WorkerDefinition[] = [
     description:
       'Generic publish-collect primitive: publishes a topic via iii::durable::publish, collects subscriber replies on agent::hook_reply, applies a merge rule, returns the merged result.',
     register: (iii, ctx) => registerHookFanout(iii, ctx),
-  },
-  {
-    name: 'models-catalog',
-    description: 'Model capabilities catalog on the iii bus (models::list/get/supports/register).',
-    register: async (iii) => registerModelsCatalog(iii),
-  },
-  {
-    name: 'provider-anthropic',
-    description:
-      'Anthropic Messages API streaming provider on the iii bus (provider::anthropic::stream + ::complete).',
-    register: (iii, ctx) => registerProviderAnthropic(iii, ctx),
-  },
-  {
-    name: 'provider-openai',
-    description:
-      'OpenAI Chat Completions streaming provider on the iii bus (provider::openai::stream + ::complete).',
-    register: (iii, ctx) => registerProviderOpenai(iii, ctx),
-  },
-  {
-    name: 'provider-kimi',
-    description:
-      'Kimi (Moonshot) Chat Completions streaming provider on the iii bus (provider::kimi::stream + ::complete).',
-    register: (iii, ctx) => registerProviderKimi(iii, ctx),
-  },
-  {
-    name: 'provider-lmstudio',
-    description:
-      'LM Studio (localhost) Chat Completions streaming provider on the iii bus (provider::lmstudio::stream + ::complete).',
-    register: (iii, ctx) => registerProviderLmstudio(iii, ctx),
-  },
-  {
-    name: 'provider-llamacpp',
-    description:
-      'llama.cpp llama-server (localhost) Chat Completions streaming provider on the iii bus (provider::llamacpp::stream + ::complete).',
-    register: (iii, ctx) => registerProviderLlamacpp(iii, ctx),
   },
   {
     name: 'llm-budget',

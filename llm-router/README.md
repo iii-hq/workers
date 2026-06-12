@@ -53,6 +53,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::chat` | Stream a turn into the caller's channel; returns the turn summary. |
 | `router::complete` | Non-streaming convenience over the same pipeline; returns the final message. |
 | `router::abort` | Cancel an in-flight turn by `request_id`. |
+| `router::route` | Read-only routing preview: `{model, provider?}` → `{provider, candidates}`, same rules and error codes as `router::chat`. Pin the result as the explicit `provider` on the chat call when you need the provider before streaming. |
 | `router::models::list` | List catalog models, filterable by `provider` / `capability`. |
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
@@ -110,6 +111,19 @@ router diffs the changed slice, debounces ~2 s, and kicks that provider's
 `provider::<id>::refresh_models` discovery; discovered models land in the
 catalog via `router::models::reconcile` and show up in `router::models::list`
 within seconds — no restart.
+
+### Operational notes
+
+- **Env-var credential fallback resolves in the router's process.** A
+  provider's `credential_env_var` (e.g. `ANTHROPIC_API_KEY`) is read by the
+  llm-router binary, not by the provider worker — launch the router with
+  those variables set, or put keys in the entry. A key present only in
+  another worker's environment shows up as `configured: false`.
+- **Registration-token recovery.** Re-registering a provider id without its
+  original token is rejected (anti-takeover). If a provider durably lost its
+  token, delete the router's registry state (iii-state scope `llm-router`,
+  key `registry`) and restart the affected providers to re-bind; pasted
+  credentials in the configuration entry are unaffected.
 
 ## Events
 

@@ -4,7 +4,15 @@ import { PermissionModePicker } from '@/components/permissions/PermissionModePic
 import { Button } from '@/components/ui/Button'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FunctionEntry } from '@/lib/functions'
-import type { Attachment, Mode, ModelId, ModelOption } from '@/types/chat'
+import { Select } from '@/components/ui/Select'
+import {
+  type Attachment,
+  type Mode,
+  type ModelId,
+  type ModelOption,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { LexicalShell } from './LexicalShell'
@@ -28,8 +36,10 @@ interface ComposerProps {
    */
   permissionMode: PermissionMode
   permissionModeLoading?: boolean
+  thinkingLevel: ThinkingLevel
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
+  onThinkingLevelChange: (next: ThinkingLevel) => void
   onPermissionModeChange: (next: PermissionMode) => void
   onSubmit: (payload: ComposerSubmitPayload) => void
   onStop?: () => void
@@ -52,8 +62,10 @@ export function Composer({
   catalogLoading,
   permissionMode,
   permissionModeLoading,
+  thinkingLevel,
   onModeChange,
   onModelChange,
+  onThinkingLevelChange,
   onPermissionModeChange,
   onSubmit,
   onStop,
@@ -133,6 +145,16 @@ export function Composer({
           disabled={inputDisabled || !!permissionModeLoading}
         />
         <div className="flex-1 min-w-0" />
+        <Select<ThinkingLevel>
+          value={thinkingLevel}
+          options={THINKING_LEVELS.map((l) => ({
+            value: l,
+            label: l === 'off' ? 'thinking off' : `thinking ${l}`,
+          }))}
+          onChange={onThinkingLevelChange}
+          disabled={inputDisabled}
+          aria-label="thinking level"
+        />
         <ModelPicker
           value={model}
           options={modelOptions}

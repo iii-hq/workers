@@ -10,7 +10,7 @@
 
 import { fetchModelLimit, limitFromModel } from '../context-compaction/model-resolver.js';
 import { usable as computeUsable } from '../context-compaction/overflow.js';
-import type { Model } from '../models-catalog/types.js';
+import type { Model } from '../types/model.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 import { readActivePath } from '../runtime/session.js';

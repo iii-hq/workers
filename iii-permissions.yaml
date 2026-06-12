@@ -19,12 +19,22 @@ rules:
   - '!state::delete'
   - '!stream::set'
   - '!iii::durable::publish'
-  # Provider credentials live in the `harness` configuration entry. Agents
-  # must never resolve a secret, self-register a provider, or read/rewrite
-  # the configuration value (which carries plaintext api keys). The console
-  # edits these as a user-initiated SDK call, which bypasses this gate.
-  - '!harness::provider::resolve'
-  - '!harness::provider::register'
+  # Provider credentials live in the `llm-router` configuration entry. Agents
+  # must never resolve a secret, self-register a provider, poison the model
+  # catalog, or read/rewrite the configuration value (which carries plaintext
+  # api keys). Direct router spend (chat/complete) bypasses the harness
+  # loop's accounting; the routing preview is orchestrator-internal. The
+  # console edits config as a user-initiated SDK call, which bypasses this gate.
+  - '!router::provider::resolve'
+  - '!router::provider::register'
+  - '!router::provider::update_credential'
+  - '!router::models::reconcile'
+  - '!router::chat'
+  - '!router::complete'
+  - '!router::abort'
+  - '!router::route'
+  - '!router::on_worker_available'
+  - '!router::on_config_changed'
   - '!configuration::get'
   - '!configuration::set'
   - '!configuration::register'
@@ -38,7 +48,6 @@ rules:
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
-  - '!router::stream_assistant'
   # session-manager: deny-by-default for in-run agents (integration.md §2).
   # An agent that can write here can rewrite its own transcript; the raw
   # store protocol (session::store::*) bypasses every invariant. Reads stay
@@ -65,9 +74,10 @@ rules:
   # Read-only / introspection (extend below for your tools).
   - state::get
   - state::list
-  - models::list
-  - models::get
-  - models::supports
+  - router::models::list
+  - router::models::get
+  - router::models::supports
+  - router::provider::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
