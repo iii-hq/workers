@@ -375,4 +375,25 @@ describe('approval gate', () => {
     expect(capture.options?.canUseTool).toBeTypeOf('function');
     expect(capture.options?.permissionMode).not.toBe('bypassPermissions');
   });
+
+  it('the named permission_mode field cannot bypass the gate either', async () => {
+    const fake = fakeIii();
+    const cfg = { ...(await baseConfig()), approval_gate: true };
+    const capture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
+    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({
+        prompt: 'x',
+        session_id: 's1',
+        permission_mode: 'bypassPermissions',
+      }),
+    );
+    expect(capture.options?.permissionMode).toBe('default');
+    expect(capture.options?.canUseTool).toBeTypeOf('function');
+  });
 });

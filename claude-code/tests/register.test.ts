@@ -87,6 +87,26 @@ describe('register', () => {
     });
   });
 
+  it('marks the session error when a background run throws mid-stream', async () => {
+    const fake = await registeredWorker();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system', subtype: 'init', session_id: 'cs-1' };
+        throw new Error('stream died');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const res = (await fake.registered.get('claude::start')?.({
+      prompt: 'bg',
+      session_id: 'bg-1',
+    })) as Record<string, unknown>;
+    expect(res.started).toBe(true);
+    await vi.waitFor(() => {
+      const record = fake.state.get('claude_sessions/bg-1') as { status: string } | undefined;
+      expect(record?.status).toBe('error');
+    });
+  });
+
   it('claude::stop without a live run reports stopped: false', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('claude::stop')?.({ session_id: 'ghost' })) as Record<

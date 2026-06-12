@@ -110,8 +110,8 @@ export function mapUsage(raw: unknown): Usage | null {
   return {
     input_tokens: u.input_tokens ?? 0,
     output_tokens: u.output_tokens ?? 0,
-    cache_read_tokens: u.cache_read_input_tokens,
-    cache_write_tokens: u.cache_creation_input_tokens,
+    cache_read_tokens: u.cache_read_input_tokens ?? 0,
+    cache_write_tokens: u.cache_creation_input_tokens ?? 0,
   };
 }
 

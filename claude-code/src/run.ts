@@ -89,6 +89,21 @@ const SESSION_ID_FORMAT = z.toJSONSchema(SessionIdSchema);
 type LiveRun = { interrupt: () => Promise<void> };
 const live = new Map<string, LiveRun>();
 
+/** Best-effort: flip a session record to `error` so a failed background run
+ *  never leaves it stuck in `working`. Swallows its own failure. */
+async function markSessionError(iii: ISdk, session_id: string): Promise<void> {
+  try {
+    const record = await loadSession(iii, session_id);
+    if (record && record.status === 'working') {
+      record.status = 'error';
+      record.updated_at_ms = Date.now();
+      await saveSession(iii, record);
+    }
+  } catch (err) {
+    console.error(`failed to mark session ${session_id} error: ${String(err)}`);
+  }
+}
+
 export function extractPrompt(payload: RunPayload): string {
   if (typeof payload.prompt === 'string') return payload.prompt;
   const users = (payload.messages ?? []).filter((m) => m.role === 'user');
@@ -165,7 +180,10 @@ export async function executeRun(
     ...(record.cwd ? { cwd: record.cwd } : {}),
     ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
     maxTurns: payload.max_turns ?? d.max_turns,
-    permissionMode: payload.permission_mode ?? d.permission_mode,
+    // with the approval gate on, the operator wants every tool call routed
+    // through canUseTool; bypassPermissions skips it, so the gate forces a
+    // mode that keeps canUseTool authoritative regardless of the caller
+    permissionMode: cfg.approval_gate ? 'default' : (payload.permission_mode ?? d.permission_mode),
     allowedTools: [
       ...(payload.allowed_tools ?? d.allowed_tools),
       // the iii context teaches discovery through the CLI; the matching
@@ -307,9 +325,12 @@ export function register(iii: ISdk, cfg: Config, emit: Emit, emitRaw: Emit): voi
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
-      void executeRun(iii, cfg, emit, emitRaw, { ...parsed, session_id }).catch((err) =>
-        console.error(`claude::start background run failed for ${session_id}: ${String(err)}`),
-      );
+      void executeRun(iii, cfg, emit, emitRaw, { ...parsed, session_id }).catch(async (err) => {
+        console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
+        // never leave the record stuck in `working`: a failure inside the
+        // turn's own terminal save lands here, so mark it error best-effort
+        await markSessionError(iii, session_id);
+      });
       return { session_id, started: true };
     },
     {
