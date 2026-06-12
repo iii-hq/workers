@@ -5,7 +5,6 @@
 import type { Model } from '../../models-catalog/types.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { agentTriggerTool } from '../agent-trigger.js';
-import { decide } from '../provider-router.js';
 import { runTransition } from '../run-transition.js';
 import type { RunRequest } from '../run-request.js';
 import { TurnStepPayloadSchema, type TurnStepPayload } from '../schemas.js';
@@ -26,23 +25,27 @@ export async function processProvisioning(
 ): Promise<ProvisioningOutcome> {
   const request = await ports.loadRunRequest(rec.session_id);
 
+  // The router is the single routing authority: one `router::route` preview
+  // serves both prompt-family selection and model-metadata resolution, and
+  // the routed provider is pinned on the run request so the chat call
+  // executes on exactly the previewed provider.
+  const routed = request.model ? await ports.route(request.provider, request.model) : null;
+
   const override = request.system_prompt.length > 0 ? request.system_prompt : null;
   const prompt = buildSystemPrompt({
     override,
     mode: request.mode,
-    provider: request.provider,
-    model: request.model,
+    provider: routed ?? '',
   });
 
-  const decision = decide({ provider: request.provider, model: request.model });
-  const model_meta = request.model
-    ? await ports.resolveModel(decision.provider, request.model)
-    : null;
+  const model_meta =
+    request.model && routed ? await ports.resolveModel(routed, request.model) : null;
 
   return {
     kind: 'ready',
     runRequest: {
       ...request,
+      routed_provider: routed ?? '',
       system_prompt: prompt,
       function_schemas: [agentTriggerTool()],
     },

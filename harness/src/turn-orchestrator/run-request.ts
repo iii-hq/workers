@@ -14,6 +14,12 @@ export type RunRequest = {
   function_schemas: unknown[];
   /** Optional reasoning/thinking level ('off'|'minimal'|'low'|'medium'|'high'|'xhigh'). */
   thinking_level?: string;
+  /**
+   * Provider resolved by `router::route` during provisioning, pinned as the
+   * explicit provider on `router::chat` so preview and execution can never
+   * diverge. Empty when routing failed (the router re-decides server-side).
+   */
+  routed_provider?: string;
 };
 
 /** Empty run request used as the absent-record fallback in `loadRunRequest`. */

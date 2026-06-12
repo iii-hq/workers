@@ -3,7 +3,6 @@
  */
 
 import { z } from 'zod';
-import type { Model } from '../../models-catalog/types.js';
 import { logger } from '../../runtime/otel.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { sessionAppendMessage, sessionUpdateMessage } from '../../runtime/session.js';
@@ -18,23 +17,28 @@ import type { AssistantMessageEvent } from '../../types/stream-event.js';
 import { AgentFunctionSchema } from '../../types/provider.js';
 import { emit } from '../events.js';
 import { runPreflight } from '../preflight.js';
-import { buildInput, targetFunctionId, type RouteDecision } from '../provider-router.js';
 import { streamProviderTurn } from '../provider-stream.js';
 import type { RunRequest } from '../run-request.js';
+import type { Model } from '../../models-catalog/types.js';
 import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
 
 export type StreamContext = {
   session_id: string;
-  decision: RouteDecision;
+  /** Routed provider from provisioning; '' lets the router decide server-side. */
+  provider: string;
+  model: string;
   system_prompt: string;
   tools: AgentFunction[];
   messages: AgentMessage[];
-  /** Optional reasoning/thinking level from the run request. Absent = off. */
+  /** Optional reasoning/thinking level from the run request. Absent or 'off' = off. */
   thinking_level?: string;
-  /** Turn's pre-resolved catalog entry, threaded to the provider. Absent = off. */
-  model_meta?: Model;
-  /** Turn's stable id (run start time), so the provider dedupes credential resolution. */
-  resolution_key?: number;
+  /**
+   * Deterministic id for this turn's router request
+   * (`${session_id}:${started_at_ms}`): `run::abort` recomputes it for
+   * `router::abort`, and the router threads it to providers as the
+   * credential-resolve dedup key.
+   */
+  request_id: string;
 };
 
 export type StreamTurnOutcome = {
@@ -98,7 +102,7 @@ export type AssistantStreamingPorts = TurnStatePorts & {
   appendAssistantPlaceholder(
     session_id: string,
     entry_id: string,
-    decision: RouteDecision,
+    route: Pick<StreamContext, 'provider' | 'model'>,
     origin: Record<string, unknown>,
   ): Promise<void>;
   /**
@@ -125,20 +129,23 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
     },
 
     async streamTurn(ctx, onDelta) {
+      // 'off' is a run-request convention, not a router thinking level —
+      // the documented contract is omission.
+      const thinking = ctx.thinking_level && ctx.thinking_level !== 'off';
       const { final, error } = await streamProviderTurn(iii, {
         session_id: ctx.session_id,
-        targetFn: targetFunctionId(ctx.decision),
-        buildInput: (writerRef) =>
-          buildInput(
-            ctx.decision,
-            writerRef,
-            ctx.system_prompt,
-            ctx.messages,
-            ctx.tools,
-            ctx.thinking_level,
-            ctx.model_meta,
-            ctx.resolution_key,
-          ),
+        targetFn: 'router::chat',
+        buildInput: (writerRef) => ({
+          writer_ref: writerRef,
+          request_id: ctx.request_id,
+          model: ctx.model,
+          ...(ctx.provider ? { provider: ctx.provider } : {}),
+          system_prompt: ctx.system_prompt,
+          messages: ctx.messages,
+          tools: ctx.tools,
+          ...(thinking ? { thinking_level: ctx.thinking_level } : {}),
+          metadata: { session_id: ctx.session_id },
+        }),
         onDelta,
       });
       return { final, error };
@@ -152,10 +159,10 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
       });
     },
 
-    async appendAssistantPlaceholder(session_id, entry_id, decision, origin) {
+    async appendAssistantPlaceholder(session_id, entry_id, route, origin) {
       await sessionAppendMessage(iii, {
         session_id,
-        message: emptyAssistant(decision.provider, decision.model),
+        message: emptyAssistant(route.provider, route.model),
         entry_id,
         origin,
       });
