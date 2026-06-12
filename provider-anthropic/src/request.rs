@@ -12,8 +12,6 @@ use llm_router::types::model::AgentFunction;
 use serde_json::{json, Value};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
-/// Lets thinking interleave with tool calls.
-pub const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
 pub struct BodyArgs {
     pub model: String,
@@ -22,6 +20,8 @@ pub struct BodyArgs {
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
     pub thinking: Option<ThinkingConfig>,
+    /// `output_config.effort` for the adaptive-thinking generation.
+    pub effort: Option<&'static str>,
     pub cache_enabled: bool,
 }
 
@@ -45,6 +45,9 @@ pub fn build_body(args: &BodyArgs) -> Value {
     if let Some(t) = &args.thinking {
         body["thinking"] = serde_json::to_value(t).expect("serializable thinking config");
     }
+    if let Some(effort) = args.effort {
+        body["output_config"] = json!({ "effort": effort });
+    }
     body
 }
 
@@ -56,16 +59,13 @@ pub fn auth_header(auth_mode: AuthMode, credential_value: &str) -> (&'static str
     }
 }
 
-pub fn build_headers(cfg: &AnthropicConfig, thinking: bool) -> Vec<(&'static str, String)> {
-    let mut headers = vec![
+/// No thinking beta header: adaptive thinking interleaves natively.
+pub fn build_headers(cfg: &AnthropicConfig) -> Vec<(&'static str, String)> {
+    vec![
         auth_header(cfg.auth_mode, &cfg.credential_value),
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
         ("content-type", "application/json".to_string()),
-    ];
-    if thinking {
-        headers.push(("anthropic-beta", INTERLEAVED_THINKING_BETA.to_string()));
-    }
-    headers
+    ]
 }
 
 #[cfg(test)]
@@ -86,6 +86,7 @@ mod tests {
             })],
             tools: vec![],
             thinking: None,
+            effort: None,
             cache_enabled: false,
         }
     }
@@ -120,26 +121,25 @@ mod tests {
     }
 
     #[test]
-    fn thinking_config_serializes_into_body() {
+    fn adaptive_thinking_and_effort_serialize_into_body() {
         let mut a = args();
-        a.thinking = Some(ThinkingConfig {
-            mode: "enabled",
-            budget_tokens: 2048,
-        });
+        a.thinking = Some(crate::thinking::ADAPTIVE);
+        a.effort = Some("xhigh");
         let body = build_body(&a);
-        assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["thinking"]["budget_tokens"], 2048);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert!(body["thinking"].get("budget_tokens").is_none());
+        assert_eq!(body["output_config"]["effort"], "xhigh");
     }
 
     #[test]
-    fn headers_per_auth_mode_and_beta_when_thinking() {
-        let h = build_headers(&cfg(AuthMode::ApiKey), false);
+    fn headers_per_auth_mode() {
+        let h = build_headers(&cfg(AuthMode::ApiKey));
         assert!(h.contains(&("x-api-key", "sk-test".to_string())));
         assert!(h.contains(&("anthropic-version", ANTHROPIC_VERSION.to_string())));
         assert!(!h.iter().any(|(k, _)| *k == "anthropic-beta"));
 
-        let h = build_headers(&cfg(AuthMode::OauthBearer), true);
+        let h = build_headers(&cfg(AuthMode::OauthBearer));
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
-        assert!(h.contains(&("anthropic-beta", INTERLEAVED_THINKING_BETA.to_string())));
     }
 }

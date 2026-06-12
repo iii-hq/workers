@@ -2,27 +2,14 @@
 //! live-discovery merge. The static slice doubles as the declaration's
 //! `models` so the catalog has no cold hole before first discovery.
 use crate::PROVIDER_ID;
-use llm_router::types::model::{Model, Pricing, ThinkingLevel};
-use std::collections::{BTreeMap, HashSet};
+use llm_router::types::model::{Model, Pricing};
+use std::collections::HashSet;
 
 /// One live `GET /v1/models` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveStub {
     pub id: String,
     pub display_name: Option<String>,
-}
-
-fn budgets(xhigh: bool) -> BTreeMap<ThinkingLevel, u64> {
-    let mut b = BTreeMap::from([
-        (ThinkingLevel::Minimal, 1024),
-        (ThinkingLevel::Low, 4096),
-        (ThinkingLevel::Medium, 8192),
-        (ThinkingLevel::High, 16_384),
-    ]);
-    if xhigh {
-        b.insert(ThinkingLevel::Xhigh, 31_999);
-    }
-    b
 }
 
 fn model(
@@ -47,7 +34,7 @@ fn model(
         supports_vision: Some(true),
         supports_cache: Some(true),
         supports_structured_output: Some(false), // no native JSON mode
-        thinking_budgets: thinking.then(|| budgets(xhigh)),
+        thinking_budgets: None,
         pricing: Some(pricing),
     }
 }
@@ -65,6 +52,15 @@ fn price(input: f64, output: f64) -> Pricing {
 /// before release; stale records degrade preflight sizing and cost fill.
 pub fn static_models() -> Vec<Model> {
     vec![
+        model(
+            "claude-opus-4-8",
+            "Claude Opus 4.8",
+            1_000_000,
+            32_000,
+            true,
+            true,
+            price(5.0, 25.0),
+        ),
         model(
             "claude-opus-4-7",
             "Claude Opus 4.7",
@@ -95,7 +91,7 @@ pub fn static_models() -> Vec<Model> {
     ]
 }
 
-/// Curated lookup for request shaping (thinking budgets) when the router
+/// Curated lookup for request shaping (capability flags) when the router
 /// forwarded no model_meta and the catalog has no record.
 pub fn find(model_id: &str) -> Option<Model> {
     let base = base_id(model_id);
@@ -181,15 +177,12 @@ mod tests {
     #[test]
     fn snapshot_is_well_formed() {
         let models = static_models();
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 4);
         for m in &models {
             assert_eq!(m.provider, "anthropic");
             assert_eq!(m.supports_structured_output, Some(false));
             assert!(m.pricing.as_ref().unwrap().input.is_some());
             assert!(m.context_window > 0 && m.max_output_tokens > 0);
-            if m.supports_thinking == Some(true) {
-                assert!(m.thinking_budgets.is_some());
-            }
         }
         assert!(models.iter().any(|m| m.supports_xhigh == Some(true)));
     }
@@ -238,6 +231,6 @@ mod tests {
 
     #[test]
     fn merge_with_empty_live_list_returns_full_snapshot() {
-        assert_eq!(merge_with_live(&[]).len(), 3);
+        assert_eq!(merge_with_live(&[]).len(), 4);
     }
 }

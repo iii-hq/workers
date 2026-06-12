@@ -101,10 +101,8 @@ async fn run_stream_call(
             None => curated::find(&model),
         },
     };
-    let thinking_build =
-        build_thinking_config(input.thinking_level, cfg.max_tokens, model_meta.as_ref());
+    let thinking_build = build_thinking_config(input.thinking_level, model_meta.as_ref());
     warnings.extend(thinking_build.warnings);
-    let thinking = thinking_build.config;
 
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),
@@ -112,10 +110,11 @@ async fn run_stream_call(
         system_prompt: input.system_prompt.unwrap_or_default(),
         messages: input.messages,
         tools: input.tools.unwrap_or_default(),
-        thinking: thinking.clone(),
+        thinking: thinking_build.config,
+        effort: thinking_build.effort,
         cache_enabled: cache_enabled(),
     });
-    let headers = build_headers(&cfg, thinking.is_some());
+    let headers = build_headers(&cfg);
 
     let rx = spawn_upstream(
         http,
