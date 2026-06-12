@@ -52,17 +52,6 @@ function buildSdk(opts: {
   const handlers = new Map<string, Handler>();
   const stateStore = new Map<string, unknown>();
 
-  let channelCb: ((raw: string) => void) | null = null;
-  const channel = {
-    reader: {
-      onMessage(cb: (raw: string) => void) {
-        channelCb = cb;
-      },
-      stream: { resume: () => {} },
-    },
-    writerRef: 'mock-writer-ref',
-  };
-
   const trigger = vi.fn(async (req: { function_id: string; payload?: unknown }) => {
     const fn = req.function_id;
     const payload = req.payload;
@@ -98,13 +87,12 @@ function buildSdk(opts: {
     if (fn === 'session::update_message') {
       return { updated: true, revision: 1 };
     }
-    if (fn === 'models::get') {
-      return { context_window: 200_000, max_output_tokens: 4_096 };
+    if (fn === 'router::models::get') {
+      return { model: { context_window: 200_000, max_output_tokens: 4_096 } };
     }
-    if (fn.startsWith('provider::')) {
+    if (fn === 'router::complete') {
       const summary = opts.summaryText ?? 'summary text here';
-      const event = JSON.stringify({
-        type: 'done',
+      return {
         message: {
           role: 'assistant',
           content: [{ type: 'text', text: summary }],
@@ -113,21 +101,17 @@ function buildSdk(opts: {
           provider: 'anthropic',
           timestamp: Date.now(),
         },
-      });
-      if (channelCb) channelCb(event);
-      return undefined;
+      };
     }
     return null;
   });
 
-  const createChannel = vi.fn(async () => channel);
   const registerFunction = vi.fn((id: string, h: Handler) => {
     handlers.set(id, h);
   });
 
   const iii = {
     trigger,
-    createChannel,
     registerFunction,
     registerTrigger: vi.fn(),
     publish: vi.fn(),

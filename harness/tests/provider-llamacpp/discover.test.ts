@@ -7,7 +7,10 @@ import {
   registerDiscovered,
 } from '../../src/provider-llamacpp/discover.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { Model } from '../../src/models-catalog/types.js';
+import { _seedRouterRegistrationTokenForTests } from '../../src/runtime/provider-resolve.js';
+
+_seedRouterRegistrationTokenForTests('llamacpp', 'tok-test');
+import type { Model } from '../../src/types/model.js';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -227,7 +230,7 @@ describe('registerDiscovered', () => {
     const out = await registerDiscovered(sdk, models);
     expect(out.sort()).toEqual(['a', 'b']);
     expect(trigger).toHaveBeenCalledWith(
-      expect.objectContaining({ function_id: 'models::reconcile' }),
+      expect.objectContaining({ function_id: 'router::models::reconcile' }),
     );
   });
 
@@ -277,7 +280,7 @@ describe('discoverAndRegister', () => {
     const out = await discoverAndRegister(sdk, 'http://localhost:8080/v1/chat/completions', {});
     expect(out).toEqual(['Meta-Llama-3.1-8B']);
     expect(trigger).toHaveBeenCalledWith(
-      expect.objectContaining({ function_id: 'models::reconcile' }),
+      expect.objectContaining({ function_id: 'router::models::reconcile' }),
     );
   });
 });

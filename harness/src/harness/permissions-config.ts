@@ -9,8 +9,16 @@
  * (`migrate-llm-router-config.ts`) copies it, it just stops being editable.
  */
 
-import { configurationGet, configurationRegister, type JsonValue } from '../runtime/configuration.js';
-import { DEFAULT_PERMISSION_MODE, HARNESS_CONFIG_ID, PERMISSION_MODES } from '../runtime/harness-config.js';
+import {
+  configurationGet,
+  configurationRegister,
+  type JsonValue,
+} from '../runtime/configuration.js';
+import {
+  DEFAULT_PERMISSION_MODE,
+  HARNESS_CONFIG_ID,
+  PERMISSION_MODES,
+} from '../runtime/harness-config.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
 

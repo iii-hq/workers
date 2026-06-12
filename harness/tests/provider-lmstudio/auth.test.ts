@@ -7,7 +7,12 @@ import {
 } from '../../src/provider-lmstudio/auth.js';
 import type { WorkerConfig } from '../../src/provider-lmstudio/config.js';
 import type { ISdk } from '../../src/runtime/iii.js';
-import type { Credential } from '../../src/runtime/provider-resolve.js';
+import {
+  _seedRouterRegistrationTokenForTests,
+  type Credential,
+} from '../../src/runtime/provider-resolve.js';
+
+_seedRouterRegistrationTokenForTests('lmstudio', 'tok-test');
 
 const worker: WorkerConfig = {
   default_max_tokens: 8192,
@@ -15,13 +20,13 @@ const worker: WorkerConfig = {
 };
 
 /**
- * Wrap a credential into the `harness::provider::resolve` result shape the
+ * Wrap a credential into the `router::provider::resolve` result shape the
  * provider now consumes (credential + non-secret settings in one call).
  */
 function resolveResult(cred: Credential | null) {
   return {
     configured: cred !== null,
-    source: cred ? 'stored' : null,
+    source: cred ? 'config' : 'none',
     credential: cred,
     api_url: null,
     max_tokens: null,
@@ -32,7 +37,7 @@ function resolveResult(cred: Credential | null) {
  * Narrow ISdk stub used only by `buildConfig` tests. By design this only
  * implements `trigger`/`registerFunction` — `buildConfig` doesn't touch
  * any other SDK surface. The trigger impl stands in for
- * `harness::provider::resolve`.
+ * `router::provider::resolve`.
  */
 function makeSdk(triggerImpl: (req: { function_id: string; payload: unknown }) => unknown): ISdk {
   return {
@@ -72,14 +77,14 @@ describe('buildConfig (lmstudio)', () => {
     expect(cfg.api_key).toBe('sk-real-key');
   });
 
-  it('resolves via harness::provider::resolve with provider="lmstudio"', async () => {
+  it('resolves via router::provider::resolve with provider="lmstudio"', async () => {
     const trigger = vi.fn().mockResolvedValue(resolveResult(null));
     const sdk = { trigger, registerFunction: vi.fn() } as unknown as ISdk;
     await buildConfig(sdk, worker, 'qwen/qwen3-4b-2507');
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'harness::provider::resolve',
-        payload: { provider: 'lmstudio' },
+        function_id: 'router::provider::resolve',
+        payload: { id: 'lmstudio', token: 'tok-test' },
       }),
     );
   });

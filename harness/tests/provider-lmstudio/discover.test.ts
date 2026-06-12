@@ -8,8 +8,11 @@ import {
   registerDiscovered,
   toCatalogModel,
 } from '../../src/provider-lmstudio/discover.js';
-import type { Model } from '../../src/models-catalog/types.js';
+import type { Model } from '../../src/types/model.js';
 import type { ISdk } from '../../src/runtime/iii.js';
+import { _seedRouterRegistrationTokenForTests } from '../../src/runtime/provider-resolve.js';
+
+_seedRouterRegistrationTokenForTests('lmstudio', 'tok-test');
 
 describe('nativeModelsUrl', () => {
   it('rewrites the OpenAI-compatible /v1/chat/completions path to /api/v0/models', () => {
@@ -229,7 +232,7 @@ describe('registerDiscovered', () => {
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'models::reconcile',
+        function_id: 'router::models::reconcile',
         payload: expect.objectContaining({
           provider: 'lmstudio',
           models: expect.arrayContaining([
@@ -382,7 +385,7 @@ describe('discoverAndRegister', () => {
 
     const calls = (iii.trigger as ReturnType<typeof vi.fn>).mock.calls;
     const reconcile = calls.filter(
-      (c) => (c[0] as { function_id: string }).function_id === 'models::reconcile',
+      (c) => (c[0] as { function_id: string }).function_id === 'router::models::reconcile',
     );
     expect(reconcile).toHaveLength(1);
     const payload = (reconcile[0][0] as { payload: { provider: string; models: { id: string }[] } })

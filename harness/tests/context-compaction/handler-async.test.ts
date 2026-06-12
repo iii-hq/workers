@@ -52,13 +52,13 @@ describe('resolveModel', () => {
     const iii = {
       trigger: vi.fn(async (req: { function_id: string }) => {
         calls.push(req.function_id);
-        return { context_window: 200_000, max_output_tokens: 8_096 };
+        return { model: { context_window: 200_000, max_output_tokens: 8_096 } };
       }),
     } as unknown as ISdk;
     return { iii, calls };
   }
 
-  it('uses the threaded limit and skips models::get', async () => {
+  it('uses the threaded limit and skips router::models::get', async () => {
     const { iii, calls } = trackingIii();
 
     const resolved = await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6', {
@@ -67,7 +67,7 @@ describe('resolveModel', () => {
       output: 64_000,
     });
 
-    expect(calls).not.toContain('models::get');
+    expect(calls).not.toContain('router::models::get');
     expect(resolved).toEqual({
       providerID: 'anthropic',
       modelID: 'claude-sonnet-4-6',
@@ -75,11 +75,11 @@ describe('resolveModel', () => {
     });
   });
 
-  it('falls back to models::get when no threaded limit is present', async () => {
+  it('falls back to router::models::get when no threaded limit is present', async () => {
     const { iii, calls } = trackingIii();
 
     await resolveModel(iii, 'sess-1', 'anthropic', 'claude-sonnet-4-6');
 
-    expect(calls).toContain('models::get');
+    expect(calls).toContain('router::models::get');
   });
 });

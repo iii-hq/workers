@@ -118,15 +118,15 @@ describe('getCatalogModel', () => {
     return { trigger } as unknown as ISdk;
   }
 
-  it('returns the catalog entry from models::get', async () => {
+  it('returns the catalog entry from router::models::get', async () => {
     const entry = { id: 'claude-sonnet-4-6', provider: 'anthropic', max_output_tokens: 64_000 };
-    const trigger = vi.fn().mockResolvedValue(entry);
+    const trigger = vi.fn().mockResolvedValue({ model: entry });
     const out = await getCatalogModel(fakeIii(trigger), 'anthropic', 'claude-sonnet-4-6');
     expect(out).toEqual(entry);
     expect(trigger).toHaveBeenCalledWith(
       expect.objectContaining({
-        function_id: 'models::get',
-        payload: { provider: 'anthropic', model_id: 'claude-sonnet-4-6' },
+        function_id: 'router::models::get',
+        payload: { provider: 'anthropic', id: 'claude-sonnet-4-6' },
       }),
     );
   });

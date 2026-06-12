@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Model } from '../../src/models-catalog/types.js';
+import type { Model } from '../../src/types/model.js';
 import { streamOpenai } from '../../src/provider-openai/stream.js';
 import type { ChatCompletionsConfig } from '../../src/provider-openai/types.js';
 
