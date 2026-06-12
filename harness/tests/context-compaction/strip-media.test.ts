@@ -29,16 +29,15 @@ function bigToolResult(): AgentMessage {
 describe('stripMedia', () => {
   it('replaces image content blocks with text placeholders', () => {
     const out = stripMedia([user()], { toolOutputMaxChars: 2000 });
-    const u = out[0]!;
-    expect(u.content).toEqual([
+    expect(out[0]?.content).toEqual([
       { type: 'text', text: 'hi' },
       { type: 'text', text: '[image stripped]' },
     ]);
   });
   it('truncates oversized tool outputs', () => {
     const out = stripMedia([bigToolResult()], { toolOutputMaxChars: 100 });
-    const r = out[0]!;
-    if (r.role !== 'function_result') throw new Error('role drift');
+    const r = out[0];
+    if (r?.role !== 'function_result') throw new Error('role drift');
     const block = r.content[0] as { type: 'text'; text: string };
     expect(block.text.length).toBeLessThanOrEqual(100 + 32);
     expect(block.text.endsWith('[truncated]')).toBe(true);
@@ -54,7 +53,7 @@ describe('stripMedia', () => {
       timestamp: 0,
     };
     const out = stripMedia([m], { toolOutputMaxChars: 2000 });
-    expect(out[0]!.content[0]).toEqual({ type: 'text', text: 'short' });
+    expect(out[0]?.content[0]).toEqual({ type: 'text', text: 'short' });
   });
   it('strips images inside function_result content', () => {
     const m: AgentMessage = {
@@ -70,7 +69,7 @@ describe('stripMedia', () => {
       timestamp: 0,
     };
     const out = stripMedia([m], { toolOutputMaxChars: 2000 });
-    expect(out[0]!.content).toEqual([
+    expect(out[0]?.content).toEqual([
       { type: 'text', text: 'capture' },
       { type: 'text', text: '[image stripped]' },
     ]);

@@ -130,7 +130,7 @@ describe('register', () => {
     const handler = registered.get('run::start');
     expect(handler).toBeDefined();
 
-    const result = await handler!(harnessRunStartPayload);
+    const result = await handler?.(harnessRunStartPayload);
     expect(result).toEqual({ session_id: 'sess-1', started: true });
   });
 
@@ -147,7 +147,7 @@ describe('register', () => {
     const handler = registered.get('run::start');
     expect(handler).toBeDefined();
 
-    await expect(handler!({ provider: 'openai' })).rejects.toThrow();
+    await expect(handler?.({ provider: 'openai' })).rejects.toThrow();
   });
 });
 
@@ -195,7 +195,11 @@ describe('execute', () => {
     const calls: TriggerCall[] = [];
     const sessions = new FakeSessionManager();
     const iii = {
-      trigger: async <T, R>(req: { function_id: string; payload: T; action?: unknown }): Promise<R> => {
+      trigger: async <T, R>(req: {
+        function_id: string;
+        payload: T;
+        action?: unknown;
+      }): Promise<R> => {
         calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
         if (req.function_id === 'state::get') return record as R;
         const handled = await sessions.handle(req.function_id, req.payload);

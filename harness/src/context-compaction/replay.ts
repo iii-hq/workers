@@ -9,7 +9,7 @@ export function extractReplayTarget(
   const idx = entries.findIndex((e) => e.entry_id === lastUserMessageId);
   if (idx === -1) return { truncatedMessages: entries };
   const entry = entries[idx];
-  if (!entry || entry.message.role !== 'user') return { truncatedMessages: entries };
+  if (entry?.message.role !== 'user') return { truncatedMessages: entries };
   return {
     replay: entry,
     truncatedMessages: entries.slice(0, idx),

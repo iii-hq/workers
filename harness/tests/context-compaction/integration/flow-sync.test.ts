@@ -155,7 +155,8 @@ describe('flow-sync: success path', () => {
       return msg.role === 'user';
     });
     // Pick a user entry that is NOT the very first so extractReplayTarget finds a truncated head
-    const lastUserEntry = userEntries[userEntries.length - 1]!;
+    const lastUserEntry = userEntries.at(-1);
+    expect(lastUserEntry).toBeDefined();
 
     const { iii, compactionAppends, messageAppends } = buildSyncMock({ fixtureMessages });
 

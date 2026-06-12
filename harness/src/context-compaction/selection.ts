@@ -61,11 +61,13 @@ export type SelectWithEntryIdsResult = {
 export function turns(messages: AgentMessage[]): Turn[] {
   const result: Turn[] = [];
   for (let i = 0; i < messages.length; i++) {
-    if (messages[i]!.role !== 'user') continue;
+    if (messages[i]?.role !== 'user') continue;
     result.push({ index: i, start: i, end: messages.length });
   }
   for (let i = 0; i < result.length - 1; i++) {
-    result[i]!.end = result[i + 1]!.start;
+    const current = result[i];
+    const nextStart = result[i + 1]?.start;
+    if (current && nextStart !== undefined) current.end = nextStart;
   }
   return result;
 }
@@ -96,8 +98,9 @@ export function select(input: SelectInput): SelectResult {
   let total = 0;
   let keep: Tail | undefined;
   for (let i = recent.length - 1; i >= 0; i--) {
-    const turn = recent[i]!;
-    const size = sizes[i]!;
+    const turn = recent[i];
+    const size = sizes[i];
+    if (turn === undefined || size === undefined) continue;
     if (total + size <= input.budget) {
       total += size;
       keep = { start: turn.start, index: turn.index };

@@ -34,21 +34,21 @@ function makeStubIii(triggerOverrides: Record<string, unknown> = {}): ISdk {
       const p = (payload ?? {}) as Record<string, unknown>;
 
       if (function_id === 'state::get') {
-        const v = stateStore.get(p['key'] as string);
+        const v = stateStore.get(p.key as string);
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
-        const v = p['value'];
+        const v = p.value;
         if (v === null || v === undefined) {
-          stateStore.delete(p['key'] as string);
+          stateStore.delete(p.key as string);
         } else {
-          stateStore.set(p['key'] as string, v);
+          stateStore.set(p.key as string, v);
         }
         return { ok: true };
       }
       if (function_id === 'state::update') {
-        const key = p['key'] as string;
-        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const key = p.key as string;
+        const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
         const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
         let newValue: unknown = oldValue;
         for (const op of ops) {
@@ -206,18 +206,18 @@ describe('compact_session smoke', () => {
             return { context_window: 200_000, max_output_tokens: 4_096 };
           }
           if (function_id === 'state::get') {
-            const v = stateStore.get(p['key'] as string);
+            const v = stateStore.get(p.key as string);
             return v !== undefined ? v : null;
           }
           if (function_id === 'state::set') {
-            const v = p['value'];
-            if (v === null || v === undefined) stateStore.delete(p['key'] as string);
-            else stateStore.set(p['key'] as string, v);
+            const v = p.value;
+            if (v === null || v === undefined) stateStore.delete(p.key as string);
+            else stateStore.set(p.key as string, v);
             return { ok: true };
           }
           if (function_id === 'state::update') {
-            const key = p['key'] as string;
-            const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+            const key = p.key as string;
+            const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
             const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
             let newValue: unknown = oldValue;
             for (const op of ops) {
@@ -251,18 +251,18 @@ describe('compact_session smoke', () => {
           const p = (payload ?? {}) as Record<string, unknown>;
           if (function_id === 'session::messages') return { messages: [] };
           if (function_id === 'state::get') {
-            const v = stateStore.get(p['key'] as string);
+            const v = stateStore.get(p.key as string);
             return v !== undefined ? v : null;
           }
           if (function_id === 'state::set') {
-            const v = p['value'];
-            if (v === null || v === undefined) stateStore.delete(p['key'] as string);
-            else stateStore.set(p['key'] as string, v);
+            const v = p.value;
+            if (v === null || v === undefined) stateStore.delete(p.key as string);
+            else stateStore.set(p.key as string, v);
             return { ok: true };
           }
           if (function_id === 'state::update') {
-            const key = p['key'] as string;
-            const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+            const key = p.key as string;
+            const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
             const oldValue = stateStore.has(key) ? stateStore.get(key) : null;
             let newValue: unknown = oldValue;
             for (const op of ops) {

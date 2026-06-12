@@ -8,13 +8,10 @@ import {
   finalizeBatch,
   runOneCall,
 } from '../../src/turn-orchestrator/function-execute/run.js';
-import {
-  withRoutingEnvelope,
-} from '../../src/turn-orchestrator/function-execute/ports.js';
+import { withRoutingEnvelope } from '../../src/turn-orchestrator/function-execute/ports.js';
 import type { FunctionExecutePorts } from '../../src/turn-orchestrator/function-execute/ports.js';
 import type { ExecutedCall } from '../../src/turn-orchestrator/function-execute/types.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
-import type { ISdk } from '../../src/runtime/iii.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 
 function makeAssistant(
@@ -65,7 +62,7 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
 function preparedFromAssistant(asst: AssistantMessage) {
   const rec = newRecord('s1');
   enterFunctionExecute(rec, asst);
-  return rec.work!.prepared;
+  return rec.work?.prepared;
 }
 
 describe('batch planning from assistant', () => {

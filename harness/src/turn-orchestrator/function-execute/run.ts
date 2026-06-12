@@ -190,7 +190,13 @@ function toFunctionResultMessage(
 
 /** Collect executed entries in batch order (caller must only invoke when batch is complete). */
 function executedInBatchOrder(work: FunctionBatchWork): ExecutedCall[] {
-  return work.prepared.map((item) => work.executed[preparedCallId(item)]!);
+  return work.prepared.map((item) => {
+    const entry = work.executed[preparedCallId(item)];
+    if (!entry) {
+      throw new Error(`missing executed entry for call ${preparedCallId(item)}`);
+    }
+    return entry;
+  });
 }
 
 export async function finalizeBatch(

@@ -103,7 +103,7 @@ export async function resolveModel(
 export async function handleAsync(iii: ISdk, payload: unknown): Promise<void> {
   return withSpan('compaction::async', {}, async () => {
     const parsed = parseOnTurnEnd(payload);
-    if (!parsed || !parsed.usage) return;
+    if (!parsed?.usage) return;
     const { session_id, usage } = parsed;
 
     setCurrentSpanAttribute('session_id', session_id);

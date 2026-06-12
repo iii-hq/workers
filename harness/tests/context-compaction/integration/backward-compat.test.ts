@@ -173,7 +173,8 @@ describe('backward-compat: prior compaction (anchored update path)', () => {
 
     // The system_prompt must contain the anchored <previous-summary> block
     expect(capturedSystemPrompts).toHaveLength(1);
-    const sysPrompt = capturedSystemPrompts[0]!;
+    const sysPrompt = capturedSystemPrompts[0];
+    expect(sysPrompt).toBeDefined();
     expect(sysPrompt).toContain('<previous-summary>');
     expect(sysPrompt).toContain(PRIOR_SUMMARY);
     expect(sysPrompt).toContain('</previous-summary>');
