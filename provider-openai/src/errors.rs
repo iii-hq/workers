@@ -122,7 +122,10 @@ mod tests {
     #[test]
     fn context_overflow_detected_from_message_on_4xx() {
         assert_eq!(
-            classify(Some(400), "This model's maximum context length is 128000 tokens"),
+            classify(
+                Some(400),
+                "This model's maximum context length is 128000 tokens"
+            ),
             ErrorKind::ContextOverflow
         );
         // generic "context" in tool validation must not false-positive
