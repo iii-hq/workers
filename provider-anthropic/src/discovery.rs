@@ -1,13 +1,12 @@
 //! Live model discovery: GET /v1/models, merge curated capability metadata,
 //! reconcile the catalog slice through the router's single write path.
-use crate::config::{AuthMode, DEFAULT_API_URL};
+use crate::config::{credential_parts, AuthMode, DEFAULT_API_URL};
 use crate::curated::{merge_with_live, LiveStub};
 use crate::errors::upstream_unavailable;
-use crate::request::ANTHROPIC_VERSION;
+use crate::request::{auth_header, ANTHROPIC_VERSION};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::{IIIError, III};
-use llm_router::types::credential::Credential;
 use serde_json::{json, Value};
 
 /// Derive the models endpoint from the configured messages endpoint
@@ -54,13 +53,11 @@ async fn fetch_live_models(
     credential_value: &str,
     auth_mode: AuthMode,
 ) -> FetchOutcome {
-    let req = match auth_mode {
-        AuthMode::ApiKey => http.get(url).header("x-api-key", credential_value),
-        AuthMode::OauthBearer => http
-            .get(url)
-            .header("authorization", format!("Bearer {credential_value}")),
-    }
-    .header("anthropic-version", ANTHROPIC_VERSION);
+    let (auth_name, auth_value) = auth_header(auth_mode, credential_value);
+    let req = http
+        .get(url)
+        .header(auth_name, auth_value)
+        .header("anthropic-version", ANTHROPIC_VERSION);
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
@@ -89,10 +86,7 @@ pub async fn refresh_models(iii: &III, http: &reqwest::Client) -> Result<usize, 
         router_client::reconcile(iii, vec![], token.as_deref()).await?;
         return Ok(0);
     };
-    let (credential_value, auth_mode) = match &credential {
-        Credential::ApiKey { key } => (key.as_str(), AuthMode::ApiKey),
-        Credential::Oauth { access_token, .. } => (access_token.as_str(), AuthMode::OauthBearer),
-    };
+    let (credential_value, auth_mode) = credential_parts(&credential);
 
     let url = models_url(resolved.api_url.as_deref().unwrap_or(DEFAULT_API_URL));
     match fetch_live_models(http, &url, credential_value, auth_mode).await {

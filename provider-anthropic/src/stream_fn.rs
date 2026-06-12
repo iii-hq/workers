@@ -165,9 +165,13 @@ pub async fn pump(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sse::empty_assistant;
     use llm_router::chat::relay::RelayRead;
     use llm_router::testkit::fake_channels::FakeChannel;
+    use llm_router::types::messages::AssistantMessage;
+
+    fn empty_assistant(model: &str) -> AssistantMessage {
+        llm_router::chat::synthesize::empty_partial(model, crate::PROVIDER_ID, crate::now_ms())
+    }
 
     fn done_event() -> AssistantMessageEvent {
         AssistantMessageEvent::Done {

@@ -48,12 +48,17 @@ pub fn build_body(args: &BodyArgs) -> Value {
     body
 }
 
+/// The auth header for a given mode; streaming and discovery share it.
+pub fn auth_header(auth_mode: AuthMode, credential_value: &str) -> (&'static str, String) {
+    match auth_mode {
+        AuthMode::ApiKey => ("x-api-key", credential_value.to_string()),
+        AuthMode::OauthBearer => ("authorization", format!("Bearer {credential_value}")),
+    }
+}
+
 pub fn build_headers(cfg: &AnthropicConfig, thinking: bool) -> Vec<(&'static str, String)> {
     let mut headers = vec![
-        match cfg.auth_mode {
-            AuthMode::ApiKey => ("x-api-key", cfg.credential_value.clone()),
-            AuthMode::OauthBearer => ("authorization", format!("Bearer {}", cfg.credential_value)),
-        },
+        auth_header(cfg.auth_mode, &cfg.credential_value),
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
         ("content-type", "application/json".to_string()),
     ];

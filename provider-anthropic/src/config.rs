@@ -27,18 +27,25 @@ pub struct AnthropicConfig {
 #[derive(Debug, PartialEq, Eq)]
 pub struct NotConfigured;
 
+/// The single Credential → (secret, auth mode) mapping; streaming and
+/// discovery must agree on it.
+pub fn credential_parts(credential: &Credential) -> (&str, AuthMode) {
+    match credential {
+        Credential::ApiKey { key } => (key, AuthMode::ApiKey),
+        Credential::Oauth { access_token, .. } => (access_token, AuthMode::OauthBearer),
+    }
+}
+
 pub fn config_from_resolve(
     model: &str,
     effective_max_tokens: Option<u64>,
     resolved: &ProviderResolveResponse,
 ) -> Result<AnthropicConfig, NotConfigured> {
     let (credential_value, auth_mode) = match &resolved.credential {
-        Some(Credential::ApiKey { key }) => (key.clone(), AuthMode::ApiKey),
-        Some(Credential::Oauth { access_token, .. }) => {
-            (access_token.clone(), AuthMode::OauthBearer)
-        }
+        Some(credential) => credential_parts(credential),
         None => return Err(NotConfigured),
     };
+    let credential_value = credential_value.to_string();
     Ok(AnthropicConfig {
         credential_value,
         auth_mode,

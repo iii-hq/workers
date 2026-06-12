@@ -23,16 +23,6 @@ pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
     }
 }
 
-/// Classify a mid-stream SSE `error` event or other JSON-only failure.
-pub fn classify_sse_error(message: &str) -> ErrorKind {
-    if let Ok(v) = serde_json::from_str::<Value>(message) {
-        if let Some(kind) = classify_anthropic_value(&v, None) {
-            return kind;
-        }
-    }
-    classify(None, message)
-}
-
 /// Map router bus errors surfaced through `router::provider::resolve`.
 pub fn classify_bus_error(err: &IIIError) -> ErrorKind {
     match err {
@@ -137,7 +127,7 @@ mod tests {
             r#"{"type":"error","error":{"type":"authentication_error","message":"invalid key"}}"#;
         assert_eq!(classify(None, body), ErrorKind::AuthExpired);
         let body = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        assert_eq!(classify_sse_error(body), ErrorKind::Transient);
+        assert_eq!(classify(None, body), ErrorKind::Transient);
     }
 
     #[test]

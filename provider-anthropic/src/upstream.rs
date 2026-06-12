@@ -3,8 +3,8 @@
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::errors::classify;
 use crate::sse::{
-    build_final, build_partial, handle_sse_event, synthetic_error_event,
-    synthetic_error_event_from_state, PartialState,
+    build_partial, handle_sse_event, synthetic_error_event, synthetic_error_event_from_state,
+    PartialState,
 };
 use futures::StreamExt;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
@@ -184,7 +184,7 @@ async fn run_upstream(
     if state.saw_message_stop {
         let _ = tx
             .send(AssistantMessageEvent::Done {
-                message: build_final(&state, &args.model),
+                message: build_partial(&state, &args.model),
             })
             .await;
     } else {
