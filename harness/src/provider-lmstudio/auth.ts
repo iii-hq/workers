@@ -5,7 +5,7 @@ import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js'
 import {
   type Credential,
   type ProviderResolveResult,
-  resolveProvider,
+  resolveProviderViaRouter,
 } from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
@@ -26,7 +26,7 @@ const FALLBACK_API_KEY = 'lm-studio';
 
 const EMPTY_RESOLVE: ProviderResolveResult = {
   configured: false,
-  source: null,
+  source: 'none',
   credential: null,
   api_url: null,
   max_tokens: null,
@@ -58,7 +58,7 @@ export function isLoopbackUrl(url: string): boolean {
 }
 
 /**
- * Resolve this provider's credential + settings via the harness registry.
+ * Resolve this provider's credential + settings via the llm-router registry.
  * Tolerant: LM Studio is a normal localhost-no-auth setup, so a missing
  * harness/registry yields an empty result rather than throwing. Logs at
  * WARN with a stable code so monitoring can alert on a sustained
@@ -66,7 +66,7 @@ export function isLoopbackUrl(url: string): boolean {
  */
 async function resolveTolerant(iii: ISdk): Promise<ProviderResolveResult> {
   try {
-    return await resolveProvider(iii, PROVIDER_ID);
+    return await resolveProviderViaRouter(iii, PROVIDER_ID);
   } catch (err) {
     logger.warn('lmstudio.auth: resolve failed; falling back to no-credential', {
       code: 'lmstudio_auth_fetch_failed',
@@ -117,6 +117,7 @@ export async function buildConfig(
   iii: ISdk,
   worker: WorkerConfig,
   model: string,
+  maxOutputOverride?: number,
 ): Promise<ChatCompletionsConfig> {
   const resolved = await resolveTolerant(iii);
   const cred = resolved.credential;
@@ -128,7 +129,7 @@ export async function buildConfig(
   const catalog = await getCatalogModel(iii, PROVIDER_ID, model);
   const maxTokens = clampOutputTokens({
     modelMaxOutput: catalog?.max_output_tokens,
-    userOverride: resolved.max_tokens,
+    userOverride: maxOutputOverride ?? resolved.max_tokens,
     workerDefault: worker.default_max_tokens,
   });
   const key = selectAuthKey(cred, apiUrl);

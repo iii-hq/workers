@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-provider-anthropic
-description: Anthropic Messages API streaming provider; exposes provider::anthropic::stream and provider::anthropic::complete on the iii bus.
+description: Anthropic Messages API streaming provider; exposes provider::anthropic::stream on the iii bus.
 
 runtime:
   kind: node

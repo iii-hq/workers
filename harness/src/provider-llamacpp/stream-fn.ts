@@ -20,7 +20,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
     async (raw: unknown) => {
       const input = ProviderStreamRuntimeInputSchema.parse(raw);
       const writer = input.writer_ref as ChannelWriter;
-      const cfg = await buildConfig(iii, worker, input.model);
+      const cfg = await buildConfig(iii, worker, input.model, input.max_output_tokens);
       try {
         const events = streamLlamacpp({
           cfg,

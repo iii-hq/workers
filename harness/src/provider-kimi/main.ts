@@ -5,6 +5,6 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'provider-kimi',
   description:
-    'Kimi (Moonshot) Chat Completions streaming provider on the iii bus (provider::kimi::stream + ::complete).',
+    'Kimi (Moonshot) Chat Completions streaming provider on the iii bus (provider::kimi::stream).',
   register: (iii, ctx) => register(iii, ctx),
 });

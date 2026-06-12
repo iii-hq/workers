@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-provider-llamacpp
-description: llama.cpp llama-server (localhost) Chat Completions streaming provider; exposes provider::llamacpp::stream and provider::llamacpp::complete on the iii bus.
+description: llama.cpp llama-server (localhost) Chat Completions streaming provider; exposes provider::llamacpp::stream on the iii bus.
 
 runtime:
   kind: node

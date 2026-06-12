@@ -4,7 +4,7 @@ language: node
 deploy: binary
 manifest: package.json
 bin: iii-provider-lmstudio
-description: LM Studio (localhost) Chat Completions streaming provider; exposes provider::lmstudio::stream and provider::lmstudio::complete on the iii bus.
+description: LM Studio (localhost) Chat Completions streaming provider; exposes provider::lmstudio::stream on the iii bus.
 
 runtime:
   kind: node
