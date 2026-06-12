@@ -40,10 +40,13 @@ fn cap_supported(row: &Value, path: &[&str]) -> Option<bool> {
 ///
 /// Generation filter: this provider only implements adaptive thinking, so a
 /// model the API marks as thinking-capable but NOT adaptive-capable (the
-/// pre-4.6 generation: Sonnet 4.5, Haiku 4.5, Opus 4.5 and older) would 400
-/// the moment a thinking_level arrives — those rows are excluded from the
-/// slice entirely. Rows with no capability data stay (permissive for future
-/// shapes); rows that cannot think at all stay with thinking gated off.
+/// pre-4.6 generation: Sonnet 4.5, Opus 4.5 and older) would 400 the moment
+/// a thinking_level arrives — those rows are excluded from the slice
+/// entirely. Exception: the haiku family is the cheap tier and has no
+/// adaptive-generation release yet, so it stays with thinking gated off
+/// (a thinking_level on it degrades with a warning instead of erroring).
+/// Rows with no capability data stay (permissive for future shapes); rows
+/// that cannot think at all stay with thinking gated off.
 fn model_from_live(row: &Value) -> Option<Model> {
     let id = row
         .get("id")
@@ -51,7 +54,8 @@ fn model_from_live(row: &Value) -> Option<Model> {
         .filter(|s| !s.is_empty())?;
     let thinking = cap_supported(row, &["thinking"]);
     let adaptive = cap_supported(row, &["thinking", "types", "adaptive"]);
-    if thinking == Some(true) && adaptive == Some(false) {
+    let legacy_thinking_only = thinking == Some(true) && adaptive == Some(false);
+    if legacy_thinking_only && !crate::curated::base_id(id).starts_with("claude-haiku-") {
         return None; // legacy-thinking-only generation
     }
     Some(Model {
@@ -195,15 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_thinking_only_rows_are_filtered_out() {
+    fn legacy_thinking_only_rows_are_filtered_except_haiku() {
+        let legacy_caps = serde_json::json!({
+            "thinking": { "supported": true, "types": { "adaptive": { "supported": false } } }
+        });
         let json = serde_json::json!({
             "data": [
-                {
-                    "id": "claude-haiku-4-5-20251001",
-                    "capabilities": {
-                        "thinking": { "supported": true, "types": { "adaptive": { "supported": false } } }
-                    }
-                },
+                { "id": "claude-opus-4-1-20250805", "capabilities": legacy_caps },
+                { "id": "claude-haiku-4-5-20251001", "capabilities": legacy_caps },
                 {
                     "id": "claude-image-x",
                     "capabilities": { "thinking": { "supported": false } }
@@ -211,10 +214,14 @@ mod tests {
             ]
         });
         let models = parse_live_models(&json);
-        // non-adaptive thinker dropped; a model that can't think at all stays
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "claude-image-x");
+        // non-adaptive thinker dropped; the haiku family (cheap tier, no
+        // adaptive release yet) and a can't-think-at-all model both stay
+        // with thinking gated off
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-haiku-4-5-20251001", "claude-image-x"]);
         assert_eq!(models[0].supports_thinking, Some(false));
+        assert_eq!(models[1].supports_thinking, Some(false));
+        assert_eq!(models[0].pricing.as_ref().unwrap().input, Some(1.0));
     }
 
     #[test]
