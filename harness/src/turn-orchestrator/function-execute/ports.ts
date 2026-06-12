@@ -55,13 +55,6 @@ export type FunctionExecutePorts = TurnStatePorts & {
   emit(session_id: string, event: AgentEvent): Promise<void>;
   dispatch(call: FunctionCall, session_id: string): Promise<DispatchResult>;
   triggerPreApproved(call: FunctionCall): Promise<FunctionResult>;
-  /**
-   * Function_call_ids already persisted in the trailing result run, for batch
-   * dedup on re-entry. Reads the raw message list (not the compaction-rebuilt
-   * window): the trailing results live in the preserved tail, so this drops the
-   * paired `session-tree::compactions` read that `loadMessages` would do.
-   */
-  loadTrailingResultIds(session_id: string): Promise<Set<string>>;
 };
 
 function buildFunctionExecutionEnd(executed: ExecutedCall) {
@@ -81,10 +74,6 @@ export function createPorts(iii: ISdk): FunctionExecutePorts {
 
   return {
     ...base,
-
-    loadTrailingResultIds(session_id) {
-      return store.loadTrailingResultIds(session_id);
-    },
 
     async emitStart(session_id, call) {
       await emit(iii, session_id, {

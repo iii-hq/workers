@@ -93,10 +93,9 @@ function makeStubIii(extra: Record<string, unknown> = {}): {
         else state.set(key, newValue);
         return { old_value: oldValue ?? null, new_value: newValue ?? null };
       }
-      if (function_id === 'session-tree::messages') return { messages: [] };
-      if (function_id === 'session-tree::compactions') return { entries: [] };
-      if (function_id === 'session-tree::compact') return { entry_id: 'entry-compact-1' };
-      if (function_id === 'session-tree::append_synthetic') return { entry_id: 'entry-syn-1' };
+      if (function_id === 'session::messages') return { messages: [] };
+      if (function_id === 'session::append')
+        return { entry_id: 'entry-appended-1', parent_id: null, timestamp: 0 };
       return null;
     },
   );

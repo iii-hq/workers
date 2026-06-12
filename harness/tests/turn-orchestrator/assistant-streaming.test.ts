@@ -4,13 +4,12 @@ import {
   prepareStreamContext,
   resolveAssistantMessage,
   routeAssistantTurn,
-  syntheticStreamReason,
+  turnAssistantEntryId,
 } from '../../src/turn-orchestrator/assistant-streaming/run.js';
 import {
   parseFunctionSchemas,
   type AssistantStreamingPorts,
 } from '../../src/turn-orchestrator/assistant-streaming/ports.js';
-import { isDuplicateAssistant } from '../../src/turn-orchestrator/state-runtime/transcript.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
 
@@ -49,9 +48,9 @@ function stubStreamingPorts(
     })),
     runPreflight: vi.fn(async () => 'ok' as const),
     streamTurn: vi.fn(async () => ({ final: null, error: null })),
-    emitMessageUpdate: vi.fn(async () => {}),
     emitMessageComplete: vi.fn(async () => {}),
-    persistAssistantIfNew: vi.fn(async () => {}),
+    appendAssistantPlaceholder: vi.fn(async () => {}),
+    updateAssistantContent: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -66,8 +65,24 @@ describe('parseFunctionSchemas', () => {
   });
 });
 
+describe('turnAssistantEntryId', () => {
+  it('derives a deterministic id from the per-send message_id and turn', () => {
+    const rec = newRecord('s1', undefined, 'msg-7');
+    rec.turn_count = 2;
+    expect(turnAssistantEntryId(rec)).toBe('msg-7-t2-assistant');
+    // Stable across recomputation (step re-entry).
+    expect(turnAssistantEntryId(rec)).toBe('msg-7-t2-assistant');
+  });
+
+  it('falls back to a per-run stamp when message_id is absent', () => {
+    const rec = newRecord('s1');
+    rec.turn_count = 1;
+    expect(turnAssistantEntryId(rec)).toBe(`s1-${rec.started_at_ms}-t1-assistant`);
+  });
+});
+
 describe('prepareStreamContext', () => {
-  it('reloads messages when preflight compacts', async () => {
+  it("reloads messages when preflight compacts, excluding this turn's entry", async () => {
     const loadMessages = vi
       .fn()
       .mockResolvedValueOnce([{ role: 'user', content: [], timestamp: 1 }])
@@ -79,9 +94,10 @@ describe('prepareStreamContext', () => {
     const rec = newRecord('s1');
     rec.state = 'assistant_streaming';
 
-    const ctx = await prepareStreamContext(ports, rec);
+    const ctx = await prepareStreamContext(ports, rec, 'asst-entry-1');
 
     expect(loadMessages).toHaveBeenCalledTimes(2);
+    expect(loadMessages).toHaveBeenCalledWith('s1', { excludeEntryIds: ['asst-entry-1'] });
     expect(ctx.messages).toEqual([{ role: 'user', content: [], timestamp: 2 }]);
     expect(ctx.tools[0]?.name).toBe('agent_trigger');
   });
@@ -95,7 +111,6 @@ describe('resolveAssistantMessage', () => {
       { provider: 'openai', model: 'gpt-4o' },
     );
     expect(msg).toEqual(final);
-    expect(syntheticStreamReason({ final, error: null, body_streamed: false })).toBeNull();
   });
 
   it('builds a synthetic error when the stream ends without a final', () => {
@@ -131,20 +146,21 @@ describe('routeAssistantTurn', () => {
 });
 
 describe('finalizeAssistantTurn', () => {
-  it('stops without persisting on error assistant', async () => {
+  it('stops after a strict final content update on error assistant', async () => {
     const ports = stubStreamingPorts();
     const rec = newRecord('s1');
     rec.state = 'assistant_streaming';
     const asst = assistant({ stop_reason: 'error', error_message: 'auth failed' });
 
-    await finalizeAssistantTurn(ports, rec, asst, []);
+    await finalizeAssistantTurn(ports, rec, asst, 'asst-entry-1');
 
     expect(rec.state).toBe('finishing');
     expect(rec.turn_end_emitted).toBe(true);
-    expect(ports.persistAssistantIfNew).not.toHaveBeenCalled();
+    // The (partial / synthetic-error) content still lands on the entry.
+    expect(ports.updateAssistantContent).toHaveBeenCalledWith('s1', 'asst-entry-1', asst.content);
   });
 
-  it('persists and routes to function_execute when calls exist', async () => {
+  it('updates the entry and routes to function_execute when calls exist', async () => {
     const ports = stubStreamingPorts();
     const rec = newRecord('s1');
     rec.state = 'assistant_streaming';
@@ -152,20 +168,12 @@ describe('finalizeAssistantTurn', () => {
       content: [{ type: 'function_call', id: 'fc-1', function_id: 'shell::run', arguments: {} }],
     });
 
-    await finalizeAssistantTurn(ports, rec, asst, []);
+    await finalizeAssistantTurn(ports, rec, asst, 'asst-entry-1');
 
-    expect(ports.persistAssistantIfNew).toHaveBeenCalledOnce();
-    expect(ports.persistAssistantIfNew).toHaveBeenCalledWith('s1', asst, []);
+    expect(ports.updateAssistantContent).toHaveBeenCalledOnce();
+    expect(ports.updateAssistantContent).toHaveBeenCalledWith('s1', 'asst-entry-1', asst.content);
     expect(rec.state).toBe('function_execute');
     expect(rec.work?.prepared).toHaveLength(1);
     expect(rec.function_results).toEqual([]);
-  });
-});
-
-describe('isDuplicateAssistant', () => {
-  it('detects trailing assistant dup for re-entry', () => {
-    const asst = assistant({ timestamp: 42, model: 'm', provider: 'p' });
-    expect(isDuplicateAssistant([asst], asst)).toBe(true);
-    expect(isDuplicateAssistant([], asst)).toBe(false);
   });
 });

@@ -16,7 +16,7 @@ import type { ChatBackend } from '@/lib/backend'
 import type { CompactResult } from '@/lib/backend/types'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import { makeSessionId } from '@/lib/session-id'
+import { newMessageId } from '@/lib/session-id'
 import { cn } from '@/lib/utils'
 import type {
   AssistantMessage,
@@ -109,10 +109,22 @@ export function ChatView({
   const harnessBlockedRef = useRef(harnessBlocked)
   harnessBlockedRef.current = harnessBlocked
 
-  const sessionId = useMemo(
-    () => makeSessionId(conversation.id),
-    [conversation.id],
-  )
+  // Live view of the transcript for the long-running stream loop: the
+  // session-events reconciler (use-conversations) may add/replace rows while
+  // a turn is in flight, and dedupe-by-functionCallId must see them.
+  const messagesRef = useRef(conversation.messages)
+  messagesRef.current = conversation.messages
+
+  // Driver-owned session status from session-manager (status_changed events);
+  // covers reloads and turns observed from another tab. Local isStreaming
+  // covers the gap before the first status event lands.
+  const serverWorking = conversation.status === 'working'
+  const streamingIndicator = isStreaming || serverWorking
+
+  // The conversation id IS the engine session_id (console-<uuid> for chats
+  // created here). Matches iii.session.id on every span so the traces UI can
+  // group by it.
+  const sessionId = conversation.id
 
   const contextWindow = useMemo(() => {
     const match = modelOptions.find((o) => o.id === conversation.model)
@@ -165,6 +177,8 @@ export function ChatView({
     })
   }, [sessionId])
 
+  const ensureSession = conversationsCtx?.ensureSession
+
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (harnessBlockedRef.current) return
@@ -178,8 +192,29 @@ export function ChatView({
         return
       }
 
+      // Materialise draft conversations in session-manager before the first
+      // write (no-op for existing sessions and mock backends).
+      if (backend.id === 'real' && ensureSession) {
+        try {
+          await ensureSession(conversationId, payload.text)
+        } catch (err) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not create the session — ${err instanceof Error ? err.message : String(err)}`,
+              'error',
+            ),
+          )
+          return
+        }
+      }
+
+      // The harness appends the user message with the deterministic entry id
+      // `<messageId>-user-0`; using the same id here lets the
+      // session::message_added snapshot reconcile this optimistic row in place.
+      const messageId = newMessageId()
       const userMsg: UserMessage = {
-        id: uid(),
+        id: `${messageId}-user-0`,
         role: 'user',
         content: payload.text,
         attachments:
@@ -215,7 +250,15 @@ export function ChatView({
             model,
             contextWindow,
           )
-          if (result.status === 'ok') {
+          if (result.status === 'ok' && backend.id === 'real') {
+            // Server-backed transcript: the compaction custom entry arrives
+            // via session::message_added and renders the marker (which the
+            // CTX estimator anchors on); just resolve the pending notice.
+            onPatchMessage(conversationId, pendingId, {
+              content: formatCompactResult(result),
+              tone: 'info',
+            })
+          } else if (result.status === 'ok') {
             const marker: SystemMessage = {
               id: uid(),
               role: 'system',
@@ -260,7 +303,7 @@ export function ChatView({
           payload.text || '(attachments only)',
           conversation.mode,
           model,
-          { signal: controller.signal, sessionId },
+          { signal: controller.signal, sessionId, messageId },
         )) {
           switch (event.kind) {
             case 'thought-start': {
@@ -295,9 +338,18 @@ export function ChatView({
             }
             case 'fcall-start': {
               if (event.functionCallId) {
-                const existing = [...fcallMap.entries()].find(
-                  ([, fcid]) => fcid === event.functionCallId,
-                )?.[0]
+                // Dedupe against rows created earlier in this stream AND
+                // rows the session-events reconciler derived from the
+                // assistant entry's function_call blocks.
+                const existing =
+                  [...fcallMap.entries()].find(
+                    ([, fcid]) => fcid === event.functionCallId,
+                  )?.[0] ??
+                  messagesRef.current.find(
+                    (m) =>
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
+                  )?.id
                 if (existing) {
                   onPatchMessage(conversationId, existing, {
                     pendingApproval: event.pendingApproval,
@@ -334,10 +386,18 @@ export function ChatView({
               break
             }
             case 'fcall-end': {
+              // Prefer targeting by functionCallId (parallel batches end out
+              // of order; the row may also be an entry-derived segment).
               const targetId: string | null = event.functionCallId
                 ? ([...fcallMap.entries()].find(
                     ([, fcid]) => fcid === event.functionCallId,
-                  )?.[0] ?? null)
+                  )?.[0] ??
+                  messagesRef.current.find(
+                    (m) =>
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
+                  )?.id ??
+                  null)
                 : fcallId
               if (!targetId) break
               onPatchMessage(conversationId, targetId, {
@@ -351,9 +411,15 @@ export function ChatView({
               break
             }
             case 'fcall-approval-cleared': {
-              const clearedId = [...fcallMap.entries()].find(
-                ([, fcid]) => fcid === event.functionCallId,
-              )?.[0]
+              const clearedId =
+                [...fcallMap.entries()].find(
+                  ([, fcid]) => fcid === event.functionCallId,
+                )?.[0] ??
+                messagesRef.current.find(
+                  (m) =>
+                    m.role === 'function-call' &&
+                    m.functionCallId === event.functionCallId,
+                )?.id
               if (clearedId) {
                 onPatchMessage(conversationId, clearedId, {
                   pendingApproval: false,
@@ -468,6 +534,7 @@ export function ChatView({
       contextWindow,
       backend,
       announcer,
+      ensureSession,
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
@@ -479,8 +546,10 @@ export function ChatView({
     void backend.abortRun?.(sessionId).catch(() => {})
   }, [backend, sessionId])
 
+  // Covers the gap between submit / fcall-end and the next streamed content,
+  // where the assistant/thought shimmer hasn't yet rendered.
   const isThinking =
-    isStreaming &&
+    streamingIndicator &&
     (() => {
       const last =
         conversation.messages[conversation.messages.length - 1] ?? null
@@ -559,11 +628,28 @@ export function ChatView({
           />
           <div className="flex items-center gap-2">
             <StatusDot
-              tone={isStreaming ? 'accent' : 'ink'}
-              pulse={isStreaming}
+              tone={
+                conversation.status === 'error'
+                  ? 'alert'
+                  : streamingIndicator
+                    ? 'accent'
+                    : 'ink'
+              }
+              pulse={streamingIndicator}
             />
-            <span className="text-ink-faint">
-              {isStreaming ? 'streaming' : 'ready'}
+            <span
+              className="text-ink-faint"
+              title={
+                conversation.status === 'error'
+                  ? conversation.statusReason
+                  : undefined
+              }
+            >
+              {streamingIndicator
+                ? 'working'
+                : conversation.status === 'error'
+                  ? 'error'
+                  : 'ready'}
             </span>
           </div>
         </div>
@@ -601,7 +687,7 @@ export function ChatView({
             }
             onSubmit={handleSubmit}
             onStop={handleStop}
-            isStreaming={isStreaming}
+            isStreaming={streamingIndicator}
             blocked={harnessBlocked}
             blockedPlaceholder={
               conversationsCtx

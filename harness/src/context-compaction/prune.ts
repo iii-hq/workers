@@ -1,6 +1,7 @@
 import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { messageItemsFromPath, readActivePath, sessionUpdateMessage } from '../runtime/session.js';
 import type { AgentMessage } from '../types/agent-message.js';
 
 export type PruneOptions = {
@@ -27,18 +28,7 @@ export async function prune(
   return withSpan('compaction.prune', {}, async () => {
     setCurrentSpanAttribute('session_id', session_id);
 
-    const resp = await iii.trigger<
-      unknown,
-      { messages?: Array<{ entry_id?: string; message?: AgentMessage }> }
-    >({
-      function_id: 'session-tree::messages',
-      payload: { session_id },
-      timeoutMs: 10_000,
-    });
-    const entries = (resp?.messages ?? []).filter(
-      (e): e is { entry_id: string; message: AgentMessage } =>
-        typeof e?.entry_id === 'string' && Boolean(e?.message),
-    );
+    const entries = messageItemsFromPath(await readActivePath(iii, session_id));
     if (entries.length === 0) {
       setCurrentSpanAttribute('pruned_tokens', 0);
       setCurrentSpanAttribute('pruned_parts', 0);
@@ -49,7 +39,7 @@ export async function prune(
     let total = 0;
     let scanned = 0;
     let userTurns = 0;
-    const queue: Array<{ entry_id: string; tokens: number }> = [];
+    const queue: Array<{ entry_id: string; tokens: number; message: AgentMessage }> = [];
 
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
@@ -71,7 +61,7 @@ export async function prune(
       scanned++;
       total += t;
       if (total <= opts.protectTokens) continue;
-      queue.push({ entry_id: e.entry_id, tokens: t });
+      queue.push({ entry_id: e.entry_id, tokens: t, message: e.message });
     }
 
     const pruned_tokens = queue.reduce((a, q) => a + q.tokens, 0);
@@ -84,14 +74,30 @@ export async function prune(
     }
 
     const compacted_at = Date.now();
-    await iii.trigger<unknown, { updated?: number }>({
-      function_id: 'session-tree::update_parts',
-      payload: {
-        session_id,
-        items: queue.map((q) => ({ entry_id: q.entry_id, output: null, compacted_at })),
-      },
-      timeoutMs: 10_000,
-    });
+    for (const q of queue) {
+      // update_message replaces `details` wholesale for function_result
+      // entries, so merge the existing details with the compaction stamp.
+      const existing =
+        q.message.role === 'function_result' &&
+        q.message.details &&
+        typeof q.message.details === 'object'
+          ? (q.message.details as Record<string, unknown>)
+          : {};
+      try {
+        await sessionUpdateMessage(iii, {
+          session_id,
+          entry_id: q.entry_id,
+          content: [{ type: 'text', text: '[output pruned]' }],
+          details: { ...existing, compacted_at },
+        });
+      } catch (err) {
+        logger.warn('prune: session::update_message failed; skipping entry', {
+          session_id,
+          entry_id: q.entry_id,
+          err: String(err),
+        });
+      }
+    }
 
     logger.info('pruned tool outputs', { session_id, pruned_tokens, pruned_parts: queue.length });
     setCurrentSpanAttribute('pruned_tokens', pruned_tokens);

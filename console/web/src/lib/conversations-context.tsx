@@ -72,7 +72,13 @@ export function ConversationsProvider({
     presentProviders,
     refresh,
   } = useModelPickerSource(backend.id, harnessAvailable)
-  const api = useConversations(catalogKeys, !catalogLoading)
+  // Conversations are backed by the session-manager worker on the real
+  // backend; mocks stay in-memory.
+  const api = useConversations(
+    catalogKeys,
+    !catalogLoading,
+    backend.id === 'real',
+  )
 
   const [refreshingModels, setRefreshingModels] = useState(false)
   const refreshModels = useCallback(async () => {

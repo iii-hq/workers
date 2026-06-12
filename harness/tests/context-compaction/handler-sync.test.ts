@@ -69,8 +69,7 @@ describe('handleSync smoke', () => {
   it('returns empty when session has no messages', async () => {
     const iii = makeStubIii({
       // No messages → selectWithEntryIds head will be empty → 'empty'
-      'session-tree::messages': { messages: [] },
-      'session-tree::compactions': { entries: [] },
+      'session::messages': { messages: [] },
     });
 
     const result = await handleSync(iii, {

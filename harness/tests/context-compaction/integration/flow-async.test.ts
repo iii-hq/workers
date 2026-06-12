@@ -3,7 +3,7 @@
  *
  * Tests:
  * 1. Below-threshold TurnEnd → no compaction.
- * 2. Above-threshold TurnEnd (large fixture) → compaction runs, session-tree::compact called.
+ * 2. Above-threshold TurnEnd (large fixture) → compaction runs, compaction custom entry appended.
  * 3. Two concurrent TurnEnds → only one compaction runs (lease serializes).
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -19,8 +19,8 @@ type MockTriggerReq = { function_id: string; payload: Record<string, unknown>; t
 /**
  * Build an ISdk-compatible mock for the async flow.
  *
- * @param fixtureMessages - entries to return from session-tree::messages
- * @param compactPayloads - collector array for session-tree::compact calls
+ * @param fixtureMessages - entries to return from session::messages
+ * @param compactPayloads - collector array for compaction custom-entry appends
  * @param modelCatalog - what models::get should return (null = not found)
  */
 function buildAsyncMock(opts: {
@@ -67,21 +67,19 @@ function buildAsyncMock(opts: {
     },
   });
 
+  let appendSeq = 0;
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
 
-    if (function_id === 'session-tree::messages') {
+    if (function_id === 'session::messages') {
       return { messages: fixtureMessages };
     }
-    if (function_id === 'session-tree::compactions') {
-      return { entries: [] };
+    if (function_id === 'session::append') {
+      if ((payload as { custom?: unknown }).custom) compactPayloads.push(payload);
+      return { entry_id: `appended-${++appendSeq}`, parent_id: null, timestamp: Date.now() };
     }
-    if (function_id === 'session-tree::compact') {
-      compactPayloads.push(payload);
-      return undefined;
-    }
-    if (function_id === 'session-tree::update_part') {
-      return { ok: true };
+    if (function_id === 'session::update_message') {
+      return { updated: true, revision: 1 };
     }
     if (function_id === 'models::get') {
       return modelCatalog;
@@ -154,7 +152,7 @@ const smallFixture = loadFixture('tiny');
 const largeFixture = loadFixture('large-with-media');
 
 describe('flow-async: below-threshold TurnEnd', () => {
-  it('does not call session-tree::compact when token usage is below overflow threshold', async () => {
+  it('does not append a compaction when token usage is below overflow threshold', async () => {
     const compactPayloads: unknown[] = [];
     const fixtureMessages = smallFixture.entries.map((e) => ({
       entry_id: e.id,
@@ -177,16 +175,14 @@ describe('flow-async: below-threshold TurnEnd', () => {
     // compact should NOT have been called
     expect(compactPayloads).toHaveLength(0);
 
-    // Also, session-tree::compact should not appear in trigger calls
-    const compactCalls = trigger.mock.calls.filter(
-      ([req]) => req.function_id === 'session-tree::compact',
-    );
-    expect(compactCalls).toHaveLength(0);
+    // Also, no session::append should appear in trigger calls at all
+    const appendCalls = trigger.mock.calls.filter(([req]) => req.function_id === 'session::append');
+    expect(appendCalls).toHaveLength(0);
   });
 });
 
 describe('flow-async: above-threshold TurnEnd with large fixture', () => {
-  it('runs compaction and calls session-tree::compact when tokens exceed overflow threshold', async () => {
+  it('runs compaction and appends the compaction custom entry when tokens exceed overflow threshold', async () => {
     const compactPayloads: unknown[] = [];
     const fixtureMessages = largeFixture.entries.map((e) => ({
       entry_id: e.id,
@@ -206,14 +202,18 @@ describe('flow-async: above-threshold TurnEnd with large fixture', () => {
     const frame = makeTurnEndFrame(largeFixture.session_id, 185_000);
     await handleAsync(iii, frame);
 
-    // session-tree::compact MUST have been called at least once
+    // The compaction custom entry MUST have been appended at least once
     expect(compactPayloads.length).toBeGreaterThan(0);
 
     // Verify the compact payload shape
-    const cp = compactPayloads[0] as Record<string, unknown>;
+    const cp = compactPayloads[0] as {
+      session_id: string;
+      custom: { custom_type: string; data: { summary: string } };
+    };
     expect(cp.session_id).toBe(largeFixture.session_id);
-    expect(typeof cp.summary).toBe('string');
-    expect((cp.summary as string).length).toBeGreaterThan(0);
+    expect(cp.custom.custom_type).toBe('compaction');
+    expect(typeof cp.custom.data.summary).toBe('string');
+    expect(cp.custom.data.summary.length).toBeGreaterThan(0);
   });
 });
 

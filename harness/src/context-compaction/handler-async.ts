@@ -7,6 +7,7 @@
 import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { readActivePath } from '../runtime/session.js';
 import type { ModelContextLimit } from '../types/agent-event.js';
 import type { Usage } from '../types/stream-event.js';
 import { compactionConfig } from './config.js';
@@ -75,18 +76,10 @@ export async function resolveModel(
 
   if (!providerID || !modelID) {
     try {
-      const resp = await iii.trigger<
-        unknown,
-        { messages?: Array<{ entry_id?: string; message?: Record<string, unknown> }> }
-      >({
-        function_id: 'session-tree::messages',
-        payload: { session_id },
-        timeoutMs: 10_000,
-      });
-      const messages = resp?.messages ?? [];
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]?.message;
-        if (m?.role !== 'assistant') continue;
+      const items = await readActivePath(iii, session_id, { roles: ['assistant'] });
+      for (let i = items.length - 1; i >= 0; i--) {
+        const m = items[i]?.message as Record<string, unknown> | undefined;
+        if (!m) continue;
         if (!providerID && typeof m.provider === 'string' && m.provider) {
           providerID = m.provider;
         }

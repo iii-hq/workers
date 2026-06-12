@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 
@@ -99,6 +100,15 @@ export function ConversationRow({
           </div>
         )}
       </div>
+      {conversation.status === 'working' ? (
+        <StatusDot tone="accent" pulse title="working" className="shrink-0" />
+      ) : conversation.status === 'error' ? (
+        <StatusDot
+          tone="alert"
+          title={conversation.statusReason ?? 'error'}
+          className="shrink-0"
+        />
+      ) : null}
       <span className="font-mono text-[11px] text-ink-ghost tabular-nums shrink-0">
         {formatRelative(conversation.updatedAt)}
       </span>

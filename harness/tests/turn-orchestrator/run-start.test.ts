@@ -7,11 +7,13 @@ import {
 } from '../../src/turn-orchestrator/run-start.js';
 import { RunStartPayloadSchema } from '../../src/turn-orchestrator/schemas.js';
 import { TURN_STEP_QUEUE } from '../../src/turn-orchestrator/state-runtime/store.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
 type TriggerCall = { function_id: string; payload: unknown; action?: unknown };
 
-function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
+function fakeIii(): { iii: ISdk; calls: TriggerCall[]; sessions: FakeSessionManager } {
   const calls: TriggerCall[] = [];
+  const sessions = new FakeSessionManager();
   const iii = {
     trigger: async <T, R>(req: {
       function_id: string;
@@ -19,11 +21,13 @@ function fakeIii(): { iii: ISdk; calls: TriggerCall[] } {
       action?: unknown;
     }): Promise<R> => {
       calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
+      const handled = await sessions.handle(req.function_id, req.payload);
+      if (handled !== undefined) return handled as R;
       return null as R;
     },
     registerFunction: vi.fn(),
   } as unknown as ISdk;
-  return { iii, calls };
+  return { iii, calls, sessions };
 }
 
 const consoleRunStartPayload = {
@@ -111,11 +115,15 @@ describe('RunStartPayloadSchema', () => {
 describe('register', () => {
   it('registers run::start and parses payload at the unknown boundary', async () => {
     const registered = new Map<string, (payload: unknown) => Promise<unknown>>();
+    const sessions = new FakeSessionManager();
     const iii = {
       registerFunction: (fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
         registered.set(fnId, handler);
       },
-      trigger: vi.fn(async () => null),
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) =>
+          (await sessions.handle(function_id, payload)) ?? null,
+      ),
     } as unknown as ISdk;
 
     register(iii);
@@ -168,27 +176,30 @@ describe('execute', () => {
     expect(wake?.action).toEqual(TriggerAction.Enqueue({ queue: TURN_STEP_QUEUE }));
   });
 
-  it('ensures the session tree exactly once, before the first append', async () => {
+  it('ensures the session exactly once, before the first append', async () => {
     const { iii, calls } = fakeIii();
 
     await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
-    const ensureCalls = calls.filter((c) => c.function_id === 'session-tree::ensure');
+    const ensureCalls = calls.filter((c) => c.function_id === 'session::ensure');
     expect(ensureCalls).toHaveLength(1);
     expect(ensureCalls[0]?.payload).toEqual({ session_id: 'sess-1' });
 
-    const ensureIdx = calls.findIndex((c) => c.function_id === 'session-tree::ensure');
-    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session-tree::append_batch');
+    const ensureIdx = calls.findIndex((c) => c.function_id === 'session::ensure');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session::append');
     expect(ensureIdx).toBeGreaterThanOrEqual(0);
     expect(firstAppendIdx).toBeGreaterThan(ensureIdx);
   });
 
   function fakeIiiWithRecord(record: unknown): { iii: ISdk; calls: TriggerCall[] } {
     const calls: TriggerCall[] = [];
+    const sessions = new FakeSessionManager();
     const iii = {
-      trigger: async <T, R>(req: { function_id: string; payload: T }): Promise<R> => {
-        calls.push({ function_id: req.function_id, payload: req.payload });
+      trigger: async <T, R>(req: { function_id: string; payload: T; action?: unknown }): Promise<R> => {
+        calls.push({ function_id: req.function_id, payload: req.payload, action: req.action });
         if (req.function_id === 'state::get') return record as R;
+        const handled = await sessions.handle(req.function_id, req.payload);
+        if (handled !== undefined) return handled as R;
         return null as R;
       },
       registerFunction: vi.fn(),
@@ -212,8 +223,8 @@ describe('execute', () => {
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
     expect(result).toEqual({ session_id: 'sess-1', started: false, reason: 'session_busy' });
-    expect(calls.some((c) => c.function_id === 'session-tree::ensure')).toBe(false);
-    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'session::ensure')).toBe(false);
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(false);
     expect(calls.some((c) => c.function_id === 'state::set')).toBe(false);
   });
 
@@ -234,7 +245,7 @@ describe('execute', () => {
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
     expect(result).toEqual({ session_id: 'sess-1', started: true });
-    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(true);
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(true);
   });
 
   it('takes over an in-flight record idle past the stale window (wedge recovery)', async () => {
@@ -244,7 +255,7 @@ describe('execute', () => {
     const result = await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
 
     expect(result).toEqual({ session_id: 'sess-1', started: true });
-    expect(calls.some((c) => c.function_id === 'session-tree::append_batch')).toBe(true);
+    expect(calls.some((c) => c.function_id === 'session::append')).toBe(true);
   });
 
   it('never stale-takes-over a parked approval (user-paced; abort is its escape)', async () => {
@@ -272,5 +283,41 @@ describe('execute', () => {
       [{ function_id: string }]
     >;
     expect(calls.some(([req]) => req.function_id === 'state::set')).toBe(false);
+  });
+
+  it('flips session status to working before the first append', async () => {
+    const { iii, calls } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+
+    const statusIdx = calls.findIndex((c) => c.function_id === 'session::set_status');
+    const firstAppendIdx = calls.findIndex((c) => c.function_id === 'session::append');
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect((calls[statusIdx]?.payload as { status: string }).status).toBe('working');
+    expect(firstAppendIdx).toBeGreaterThan(statusIdx);
+  });
+
+  it('appends user messages with deterministic per-send entry ids and origin', async () => {
+    const { iii, sessions } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+
+    const appended = sessions.messageEntries('sess-1');
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.entry_id).toBe('msg-1-user-0');
+    expect(appended[0]?.origin).toEqual({ message_id: 'msg-1' });
+
+    await execute(iii, RunStartPayloadSchema.parse(consoleRunStartPayload));
+    expect(sessions.messageEntries('sess-1')).toHaveLength(1);
+  });
+
+  it('appends without entry ids when the caller sent no message_id', async () => {
+    const { iii, sessions } = fakeIii();
+
+    await execute(iii, RunStartPayloadSchema.parse(harnessRunStartPayload));
+
+    const appended = sessions.messageEntries('sess-1');
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.entry_id).toMatch(/^e-/);
   });
 });

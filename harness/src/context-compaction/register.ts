@@ -175,7 +175,7 @@ export async function register(iii: ISdk): Promise<void> {
     },
     {
       description:
-        'User-initiated synchronous compaction of a session. Required: session_id. Optional: model { id, providerID, limit? } to skip auto-resolution. If model is omitted, falls back to (1) most recent assistant message in session-tree, (2) orchestrator run_request.',
+        'User-initiated synchronous compaction of a session. Required: session_id. Optional: model { id, providerID, limit? } to skip auto-resolution. If model is omitted, falls back to (1) most recent assistant message in session-manager, (2) orchestrator run_request.',
     },
   );
 }

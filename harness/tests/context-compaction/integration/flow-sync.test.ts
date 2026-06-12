@@ -3,8 +3,8 @@
  *
  * Tests:
  * 1. Success path: status === 'ok', no replay reinjection (the last user
- *    message stays on the path), session-tree::append_synthetic posts the
- *    continue nudge.
+ *    message stays on the path), a synthetic user append posts the
+ *    continue nudge under the compaction entry.
  * 2. Summariser stream returns error → status === 'overflow'.
  * 3. Lease held → status === 'busy'.
  */
@@ -29,7 +29,7 @@ const defaultModel = {
 /**
  * Build an ISdk-compatible mock for the sync flow.
  *
- * @param opts.fixtureMessages - entries returned by session-tree::messages
+ * @param opts.fixtureMessages - entries returned by session::messages
  * @param opts.providerError - if true, make createChannel reject to simulate summariser error
  * @param opts.stateStore - optional shared state store for lease simulation
  */
@@ -64,33 +64,25 @@ function buildSyncMock(opts: {
     },
   });
 
-  const appendCalls: unknown[] = [];
-  const appendSyntheticCalls: unknown[] = [];
-  const updatePartCalls: unknown[] = [];
+  const compactionAppends: unknown[] = [];
+  const messageAppends: unknown[] = [];
+  const updateMessageCalls: unknown[] = [];
+  let appendSeq = 0;
 
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
 
-    if (function_id === 'session-tree::messages') {
+    if (function_id === 'session::messages') {
       return { messages: fixtureMessages };
     }
-    if (function_id === 'session-tree::compactions') {
-      return { entries: [] };
+    if (function_id === 'session::append') {
+      if ((payload as { custom?: unknown }).custom) compactionAppends.push(payload);
+      else messageAppends.push(payload);
+      return { entry_id: `appended-${++appendSeq}`, parent_id: null, timestamp: Date.now() };
     }
-    if (function_id === 'session-tree::compact') {
-      return undefined;
-    }
-    if (function_id === 'session-tree::append') {
-      appendCalls.push(payload);
-      return undefined;
-    }
-    if (function_id === 'session-tree::append_synthetic') {
-      appendSyntheticCalls.push(payload);
-      return undefined;
-    }
-    if (function_id === 'session-tree::update_part') {
-      updatePartCalls.push(payload);
-      return { ok: true };
+    if (function_id === 'session::update_message') {
+      updateMessageCalls.push(payload);
+      return { updated: true, revision: 1 };
     }
     if (function_id === 'state::get') {
       const v = stateStore.get(payloadStoreKey(payload as { scope?: string; key?: string }));
@@ -141,7 +133,7 @@ function buildSyncMock(opts: {
 
   const iii = { trigger, createChannel } as unknown as ISdk;
 
-  return { iii, trigger, appendCalls, appendSyntheticCalls, updatePartCalls };
+  return { iii, trigger, compactionAppends, messageAppends, updateMessageCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +157,7 @@ describe('flow-sync: success path', () => {
     // Pick a user entry that is NOT the very first so extractReplayTarget finds a truncated head
     const lastUserEntry = userEntries[userEntries.length - 1]!;
 
-    const { iii, appendCalls, appendSyntheticCalls } = buildSyncMock({ fixtureMessages });
+    const { iii, compactionAppends, messageAppends } = buildSyncMock({ fixtureMessages });
 
     const result = await handleSync(iii, {
       session_id: mediumFixture.session_id,
@@ -176,15 +168,23 @@ describe('flow-sync: success path', () => {
 
     expect(result.status).toBe('ok');
 
-    // The last user message is already on the path as the compaction's
-    // parent; we no longer reinject it via session-tree::append.
-    expect(appendCalls).toHaveLength(0);
+    // The compaction record lands as one custom entry.
+    expect(compactionAppends).toHaveLength(1);
 
-    // append_synthetic posts the continue nudge as a child of the compaction.
-    expect(appendSyntheticCalls).toHaveLength(1);
-    const syntheticPayload = appendSyntheticCalls[0] as Record<string, unknown>;
-    expect(syntheticPayload.session_id).toBe(mediumFixture.session_id);
-    expect(String(syntheticPayload.text)).toContain('Continue');
+    // The last user message is already on the path as the compaction's
+    // parent; the ONLY message append is the synthetic continue nudge,
+    // chained under the compaction entry.
+    expect(messageAppends).toHaveLength(1);
+    const nudge = messageAppends[0] as {
+      session_id: string;
+      parent_id?: string;
+      origin?: Record<string, unknown>;
+      message: { role: string; content: Array<{ type: string; text?: string }> };
+    };
+    expect(nudge.session_id).toBe(mediumFixture.session_id);
+    expect(nudge.message.role).toBe('user');
+    expect(nudge.message.content[0]?.text).toContain('Continue');
+    expect(nudge.origin).toEqual({ synthetic: true });
   });
 });
 

@@ -9,7 +9,6 @@ import {
   runOneCall,
 } from '../../src/turn-orchestrator/function-execute/run.js';
 import {
-  createPorts,
   withRoutingEnvelope,
 } from '../../src/turn-orchestrator/function-execute/ports.js';
 import type { FunctionExecutePorts } from '../../src/turn-orchestrator/function-execute/ports.js';
@@ -54,7 +53,6 @@ function stubPorts(overrides: Partial<FunctionExecutePorts> = {}): FunctionExecu
       details: {},
     })),
     loadMessages: vi.fn(async () => []),
-    loadTrailingResultIds: vi.fn(async () => new Set<string>()),
     appendMessages: vi.fn(async () => {}),
     emitTurnEnd: vi.fn(async () => {}),
     finishSession: vi.fn(async (rec) => {
@@ -186,13 +184,11 @@ describe('finalizeBatch', () => {
     expect(ports.finishSession).not.toHaveBeenCalled();
   });
 
-  it('skips duplicate function_result ids on re-entry', async () => {
+  it('appends results in one idempotent batch (no transcript reload for dedup)', async () => {
     const fc = { id: 'fc-1', function_id: 'shell::run', arguments: {} };
     const appendMessages = vi.fn(async () => {});
-    const ports = stubPorts({
-      loadTrailingResultIds: vi.fn(async () => new Set(['fc-1'])),
-      appendMessages,
-    });
+    const loadMessages = vi.fn(async () => []);
+    const ports = stubPorts({ loadMessages, appendMessages });
     const rec = newRecord('s1');
     enterFunctionExecute(rec, makeAssistant([fc]));
     rec.state = 'function_execute';
@@ -210,7 +206,13 @@ describe('finalizeBatch', () => {
     };
     await finalizeBatch(ports, rec);
 
-    expect(appendMessages).not.toHaveBeenCalled();
+    expect(loadMessages).not.toHaveBeenCalled();
+    expect(appendMessages).toHaveBeenCalledTimes(1);
+    expect(appendMessages).toHaveBeenCalledWith(
+      's1',
+      [expect.objectContaining({ role: 'function_result', function_call_id: 'fc-1' })],
+      expect.objectContaining({ origin: { turn: rec.turn_count } }),
+    );
     expect(rec.state).toBe('assistant_streaming');
   });
 
@@ -270,93 +272,5 @@ describe('finalizeBatch', () => {
     expect(
       emit.mock.calls.some((call) => (call[1] as { type: string })?.type === 'message_complete'),
     ).toBe(true);
-  });
-});
-
-describe('createPorts().loadTrailingResultIds', () => {
-  function trackingIii(messages: Array<{ message: unknown }>): {
-    iii: ISdk;
-    calls: Array<{ function_id: string; payload: unknown }>;
-  } {
-    const calls: Array<{ function_id: string; payload: unknown }> = [];
-    const iii = {
-      trigger: vi.fn(async (req: { function_id: string; payload: unknown }) => {
-        calls.push({ function_id: req.function_id, payload: req.payload });
-        if (req.function_id === 'session-tree::messages') return { messages };
-        return null;
-      }),
-    } as unknown as ISdk;
-    return { iii, calls };
-  }
-
-  const resultMsg = (id: string) => ({
-    message: {
-      role: 'function_result' as const,
-      function_call_id: id,
-      function_id: 'shell::run',
-      content: [],
-      details: {},
-      is_error: false,
-      timestamp: 1,
-    },
-  });
-  /** Assistant that requested tool calls — the turn boundary. */
-  const requestingAssistant = (id: string) => ({
-    message: {
-      role: 'assistant' as const,
-      content: [{ type: 'function_call' as const, id, function_id: 'shell::run', arguments: {} }],
-      stop_reason: 'function_call' as const,
-      model: 'm',
-      provider: 'p',
-      timestamp: 1,
-    },
-  });
-  /** Synthetic assistant with no calls (e.g. the max_turns "loop stopped" notice). */
-  const noticeAssistant = () => ({
-    message: {
-      role: 'assistant' as const,
-      content: [{ type: 'text' as const, text: 'loop stopped' }],
-      stop_reason: 'end' as const,
-      model: 'm',
-      provider: 'p',
-      timestamp: 1,
-    },
-  });
-
-  it('reads only session-tree::messages (no compactions) on the default leaf', async () => {
-    const { iii, calls } = trackingIii([resultMsg('fc-1'), resultMsg('fc-2')]);
-
-    const ids = await createPorts(iii).loadTrailingResultIds('s1');
-
-    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
-    expect(calls.map((c) => c.function_id)).toEqual(['session-tree::messages']);
-    expect(calls.some((c) => c.function_id === 'session-tree::compactions')).toBe(false);
-    expect(calls[0]?.payload).toEqual({ session_id: 's1' });
-  });
-
-  it('stops at the requesting assistant, not collecting a prior turn run', async () => {
-    const { iii } = trackingIii([
-      resultMsg('old'),
-      requestingAssistant('req'),
-      resultMsg('fc-1'),
-      resultMsg('fc-2'),
-    ]);
-
-    const ids = await createPorts(iii).loadTrailingResultIds('s1');
-
-    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
-  });
-
-  it('skips a trailing no-call notice so the results behind it stay deduped (max_turns replay)', async () => {
-    const { iii } = trackingIii([
-      requestingAssistant('req'),
-      resultMsg('fc-1'),
-      resultMsg('fc-2'),
-      noticeAssistant(),
-    ]);
-
-    const ids = await createPorts(iii).loadTrailingResultIds('s1');
-
-    expect(ids).toEqual(new Set(['fc-1', 'fc-2']));
   });
 });

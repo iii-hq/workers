@@ -119,17 +119,14 @@ function buildMock(
       return extraHandlers[function_id](payload);
     }
 
-    // Default responses for session-tree ops
-    if (function_id === 'session-tree::messages') {
+    // Default responses for session-manager ops
+    if (function_id === 'session::messages') {
       return {
         messages: makeEntries().map((e) => ({ entry_id: e.entry_id, message: e.message })),
       };
     }
-    if (function_id === 'session-tree::compactions') {
-      return { entries: [] };
-    }
-    if (function_id === 'session-tree::compact') {
-      return undefined;
+    if (function_id === 'session::append') {
+      return { entry_id: 'appended-1', parent_id: null, timestamp: 0 };
     }
     // state::set / state::get used by stampLastCompaction / acquireLease
     if (function_id === 'state::set' || function_id === 'state::get') {
@@ -235,12 +232,12 @@ describe('summarizeAndAppend async mode', () => {
     const compactPayloads: unknown[] = [];
 
     const { iii, trigger } = buildMock(() => makeDoneEvent('my summary'), {
-      'session-tree::messages': () => ({
+      'session::messages': () => ({
         messages: makeEntries().map((e) => ({ entry_id: e.entry_id, message: e.message })),
       }),
-      'session-tree::compact': (p) => {
+      'session::append': (p) => {
         compactPayloads.push(p);
-        return undefined;
+        return { entry_id: 'comp-new', parent_id: null, timestamp: 0 };
       },
     });
 
@@ -258,12 +255,16 @@ describe('summarizeAndAppend async mode', () => {
     );
     expect(providerCall).toBeDefined();
 
-    // Compaction was appended with session_id and non-empty summary
+    // Compaction custom entry was appended with session_id and non-empty summary
     expect(compactPayloads).toHaveLength(1);
-    const cp = compactPayloads[0] as Record<string, unknown>;
+    const cp = compactPayloads[0] as {
+      session_id: string;
+      custom: { custom_type: string; data: { summary: string } };
+    };
     expect(cp.session_id).toBe('sess-1');
-    expect(typeof cp.summary).toBe('string');
-    expect((cp.summary as string).length).toBeGreaterThan(0);
+    expect(cp.custom.custom_type).toBe('compaction');
+    expect(typeof cp.custom.data.summary).toBe('string');
+    expect(cp.custom.data.summary.length).toBeGreaterThan(0);
   });
 
   it('returns "empty" when summariser produces no text content', async () => {
@@ -451,17 +452,28 @@ describe('summarizeAndAppend anchored prompt', () => {
         return makeDoneEvent('updated summary');
       },
       {
-        'session-tree::compactions': () => ({
-          entries: [
-            {
-              id: 'comp-1',
-              summary: PRIOR_SUMMARY,
-              tokens_before: 1000,
-              timestamp: Date.now() - 60_000,
-            },
+        'session::messages': (p) => ({
+          messages: [
+            ...(p.include_custom
+              ? [
+                  {
+                    entry_id: 'comp-1',
+                    custom: {
+                      custom_type: 'compaction',
+                      data: {
+                        summary: PRIOR_SUMMARY,
+                        tokens_before: 1000,
+                        tail_start_id: null,
+                        details: {},
+                        timestamp: Date.now() - 60_000,
+                      },
+                    },
+                  },
+                ]
+              : []),
+            ...makeEntries().map((e) => ({ entry_id: e.entry_id, message: e.message })),
           ],
         }),
-        'session-tree::compact': () => undefined,
       },
     );
 
@@ -479,18 +491,18 @@ describe('summarizeAndAppend anchored prompt', () => {
 // ---------------------------------------------------------------------------
 
 describe('summarizeAndAppend sync mode', () => {
-  it('uses caller-supplied truncatedEntries and does NOT call session-tree::messages', async () => {
-    const messagesCallCount = { n: 0 };
+  it('uses caller-supplied truncatedEntries and skips the transcript reload', async () => {
+    const messageReads: Array<Record<string, unknown>> = [];
     const compactPayloads: unknown[] = [];
 
     const { iii } = buildMock(() => makeDoneEvent('sync summary'), {
-      'session-tree::messages': () => {
-        messagesCallCount.n++;
+      'session::messages': (p) => {
+        messageReads.push(p);
         return { messages: [] };
       },
-      'session-tree::compact': (p) => {
+      'session::append': (p) => {
         compactPayloads.push(p);
-        return undefined;
+        return { entry_id: 'comp-new', parent_id: null, timestamp: 0 };
       },
     });
 
@@ -502,7 +514,9 @@ describe('summarizeAndAppend sync mode', () => {
       testModel,
     );
 
-    expect(messagesCallCount.n).toBe(0);
+    // Only the prior-compaction lookup (include_custom) reads the path; the
+    // message window itself comes from the caller-supplied truncated set.
+    expect(messageReads.filter((p) => p.include_custom !== true)).toHaveLength(0);
     expect(result).not.toBe('compact');
     expect(result).not.toBe('empty');
     expect(compactPayloads).toHaveLength(1);

@@ -181,13 +181,13 @@ describe('compact_session smoke', () => {
     // throw; it now degrades to a conservative fallback so /compact still
     // runs (with a small preserve-recent budget) rather than failing.
     const iii = makeStubIii({
-      'session-tree::messages': { messages: [] },
+      'session::messages': { messages: [] },
     });
     const result = await runCompactSession(iii, 'no-messages-session');
     expect(['ok', 'empty', 'overflow', 'busy']).toContain(result.status);
   });
 
-  it('falls back to run_request when session-tree has no assistant messages', async () => {
+  it('falls back to run_request when the session has no assistant messages', async () => {
     // This is the `/compact` UI scenario: the session hasn't yet mirrored
     // any assistant message into the tree, but run_request from run::start
     // carries provider/model.
@@ -201,8 +201,7 @@ describe('compact_session smoke', () => {
       trigger: vi.fn(
         async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
           const p = (payload ?? {}) as Record<string, unknown>;
-          if (function_id === 'session-tree::messages') return { messages: [] };
-          if (function_id === 'session-tree::compactions') return { entries: [] };
+          if (function_id === 'session::messages') return { messages: [] };
           if (function_id === 'models::get') {
             return { context_window: 200_000, max_output_tokens: 4_096 };
           }
@@ -243,15 +242,14 @@ describe('compact_session smoke', () => {
   });
 
   it('uses explicit payload.model when provided (skips session scan)', async () => {
-    // Even when session-tree returns no assistant messages AND no run_request
+    // Even when the session returns no assistant messages AND no run_request
     // exists, an explicit model in the payload takes precedence.
     const stateStore = new Map<string, unknown>();
     const iii = {
       trigger: vi.fn(
         async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
           const p = (payload ?? {}) as Record<string, unknown>;
-          if (function_id === 'session-tree::messages') return { messages: [] };
-          if (function_id === 'session-tree::compactions') return { entries: [] };
+          if (function_id === 'session::messages') return { messages: [] };
           if (function_id === 'state::get') {
             const v = stateStore.get(p['key'] as string);
             return v !== undefined ? v : null;
@@ -311,9 +309,8 @@ describe('compact_session smoke', () => {
     };
 
     const iii = makeStubIii({
-      'session-tree::messages': sessionMessages,
+      'session::messages': sessionMessages,
       'models::get': { context_window: 200_000, max_output_tokens: 4_096 },
-      'session-tree::compactions': { entries: [] },
     });
 
     const result = await runCompactSession(iii, 'happy-session');

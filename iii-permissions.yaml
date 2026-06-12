@@ -39,6 +39,21 @@ rules:
   - '!oauth::openai-codex::login'
   - '!run::start'
   - '!router::stream_assistant'
+  # session-manager: deny-by-default for in-run agents (integration.md §2).
+  # An agent that can write here can rewrite its own transcript; the raw
+  # store protocol (session::store::*) bypasses every invariant. Reads stay
+  # at the needs_approval default (tenancy-sensitive).
+  - '!session::store::*'
+  - '!session::create'
+  - '!session::ensure'
+  - '!session::set_meta'
+  - '!session::set_status'
+  - '!session::delete'
+  - '!session::append'
+  - '!session::append_many'
+  - '!session::update_message'
+  - '!session::fork'
+  - '!session::set_active_leaf'
   # Internal lifecycle hooks — agents must never force a config reload directly.
   # The handlers already re-fetch from configuration::get (ignoring the event
   # payload), so a direct call cannot inject config. These denies are

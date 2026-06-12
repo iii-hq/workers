@@ -21,11 +21,13 @@ import {
 import type { ISdk } from '../../src/runtime/iii.js';
 import type { AgentEvent } from '../../src/types/agent-event.js';
 import type { AssistantMessage } from '../../src/types/agent-message.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
 export type ParallelApprovalHarness = {
   iii: ISdk;
   stateStore: Map<string, unknown>;
   emitted: AgentEvent[];
+  sessions: FakeSessionManager;
   loadTurnRecord(session_id: string): TurnStateRecord | null;
   seedExecute(session_id: string, assistant: AssistantMessage): TurnStateRecord;
   runExecute(session_id: string): Promise<void>;
@@ -111,6 +113,7 @@ async function runTurnStepWithRetry(
 export function createParallelApprovalHarness(): ParallelApprovalHarness {
   const stateStore = new Map<string, unknown>();
   const emitted: AgentEvent[] = [];
+  const sessions = new FakeSessionManager();
 
   const iii = {
     trigger: vi.fn(
@@ -123,6 +126,10 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
         payload: unknown;
         action?: unknown;
       }) => {
+        // Durable transcript writes (session::append for function results).
+        const sessionResult = await sessions.handle(function_id, payload);
+        if (sessionResult !== undefined) return sessionResult;
+
         if (function_id === 'state::get') {
           const p = payload as { scope: string; key: string };
           const v = stateStore.get(`${p.scope}/${p.key}`);
@@ -216,6 +223,7 @@ export function createParallelApprovalHarness(): ParallelApprovalHarness {
     iii,
     stateStore,
     emitted,
+    sessions,
 
     loadTurnRecord(session_id: string): TurnStateRecord | null {
       const raw = stateStore.get(`${TURN_STATE_SCOPE}/${session_id}`);
