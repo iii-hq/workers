@@ -136,3 +136,12 @@ The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
 PATH) with `configuration` + `iii-state`, registers the production surface
 in-process, and fakes the not-yet-built siblings
 (`policy::check_permissions`, `harness::function::resolve`, `session::get`).
+
+## Architecture documentation
+
+Deep documentation lives in [architecture/](architecture/):
+[internals.md](architecture/internals.md) for maintainers (evaluation order,
+the emit-gate deletion mechanics, lazy seeding, engine facts the code
+depends on) and [integration.md](architecture/integration.md) for consumers
+(the full function/trigger contract, the harness handoff, deployment notes,
+what not to do).
