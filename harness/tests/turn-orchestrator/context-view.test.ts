@@ -70,10 +70,7 @@ describe('buildContextView', () => {
       { summary: 'latest', tail_start_id: 't2', timestamp: 20 },
     ];
 
-    expect(buildContextView(messages, compactions)).toEqual([
-      summary('latest'),
-      user('recent'),
-    ]);
+    expect(buildContextView(messages, compactions)).toEqual([summary('latest'), user('recent')]);
   });
 
   it('keeps the whole tail when tail_start_id is absent from the path', () => {
