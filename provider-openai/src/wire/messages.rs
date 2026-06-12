@@ -38,7 +38,9 @@ fn format_function_result_content(m: &FunctionResultMessage) -> String {
 /// User content: flat string when text-only; the content-part array form
 /// when images are present (`image_url` data URIs).
 fn user_content_to_wire(content: &[ContentBlock]) -> Value {
-    let has_images = content.iter().any(|c| matches!(c, ContentBlock::Image { .. }));
+    let has_images = content
+        .iter()
+        .any(|c| matches!(c, ContentBlock::Image { .. }));
     let text = content
         .iter()
         .filter_map(|c| match c {
@@ -72,7 +74,10 @@ fn tool_row(tool_call_id: &str, content: String) -> Value {
 /// Latest-wins dedup: replace an existing `role:"tool"` row with the same id
 /// (strict gateways reject duplicates; lenient ones silently overwrite).
 fn upsert_tool_row(out: &mut Vec<Value>, row: Value) {
-    let id = row.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+    let id = row
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let existing = out.iter().position(|e| {
         e.get("role").and_then(Value::as_str) == Some("tool")
             && e.get("tool_call_id").and_then(Value::as_str) == Some(id)
@@ -119,16 +124,18 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     .content
                     .iter()
                     .filter_map(|c| match c {
-                        ContentBlock::FunctionCall { id, function_id, arguments } => {
-                            Some(json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": encode_tool_name(function_id),
-                                    "arguments": arguments.to_string(),
-                                }
-                            }))
-                        }
+                        ContentBlock::FunctionCall {
+                            id,
+                            function_id,
+                            arguments,
+                        } => Some(json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {
+                                "name": encode_tool_name(function_id),
+                                "arguments": arguments.to_string(),
+                            }
+                        })),
                         // Thinking/RedactedThinking: no reasoning replay on
                         // Chat Completions; images never appear in assistant
                         // turns from this provider.
@@ -174,12 +181,16 @@ mod tests {
     use super::*;
     use llm_router::types::events::StopReason;
     use llm_router::types::messages::{
-        AssistantMessage, AssistantRoleTag, CustomMessage, CustomRoleTag,
-        FunctionResultMessage, FunctionResultRoleTag, UserMessage, UserRoleTag,
+        AssistantMessage, AssistantRoleTag, CustomMessage, CustomRoleTag, FunctionResultMessage,
+        FunctionResultRoleTag, UserMessage, UserRoleTag,
     };
 
     fn user(content: Vec<ContentBlock>) -> AgentMessage {
-        AgentMessage::User(UserMessage { role: UserRoleTag::User, content, timestamp: 1 })
+        AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content,
+            timestamp: 1,
+        })
     }
     fn assistant(content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::Assistant(AssistantMessage {
@@ -234,7 +245,12 @@ mod tests {
     fn assistant_function_calls_become_tool_calls_with_encoded_names() {
         let wire = to_wire_messages(
             &[
-                assistant(vec![ContentBlock::Text { text: "running".into() }, call("t1")]),
+                assistant(vec![
+                    ContentBlock::Text {
+                        text: "running".into(),
+                    },
+                    call("t1"),
+                ]),
                 result("t1", "ok", json!({})),
             ],
             "",
@@ -252,7 +268,10 @@ mod tests {
         assert_eq!(wire[1]["role"], "tool");
         assert_eq!(wire[1]["tool_call_id"], "t1");
         assert_eq!(wire[1]["content"], "ok");
-        assert!(wire[1].get("is_error").is_none(), "nonstandard field never shipped");
+        assert!(
+            wire[1].get("is_error").is_none(),
+            "nonstandard field never shipped"
+        );
     }
 
     #[test]
@@ -281,10 +300,7 @@ mod tests {
             ],
             "",
         );
-        let tool_rows: Vec<&Value> = wire
-            .iter()
-            .filter(|r| r["role"] == "tool")
-            .collect();
+        let tool_rows: Vec<&Value> = wire.iter().filter(|r| r["role"] == "tool").collect();
         assert_eq!(tool_rows.len(), 1);
         assert_eq!(tool_rows[0]["content"], "second");
     }
@@ -294,7 +310,11 @@ mod tests {
         let wire = to_wire_messages(
             &[
                 assistant(vec![call("t1")]),
-                result("t1", "nope", json!({ "status": "denied", "reason": "operator" })),
+                result(
+                    "t1",
+                    "nope",
+                    json!({ "status": "denied", "reason": "operator" }),
+                ),
             ],
             "",
         );
@@ -308,8 +328,13 @@ mod tests {
     fn user_images_use_the_content_part_array_with_data_uri() {
         let wire = to_wire_messages(
             &[user(vec![
-                ContentBlock::Text { text: "what is this".into() },
-                ContentBlock::Image { mime: "image/png".into(), data: "QUJD".into() },
+                ContentBlock::Text {
+                    text: "what is this".into(),
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "QUJD".into(),
+                },
             ])],
             "",
         );
@@ -326,8 +351,13 @@ mod tests {
     fn thinking_blocks_and_result_images_are_dropped() {
         let wire = to_wire_messages(
             &[assistant(vec![
-                ContentBlock::Thinking { text: "hmm".into(), signature: Some("sig".into()) },
-                ContentBlock::Text { text: "answer".into() },
+                ContentBlock::Thinking {
+                    text: "hmm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
             ])],
             "",
         );
@@ -339,8 +369,13 @@ mod tests {
             function_call_id: "t1".into(),
             function_id: "web::fetch".into(),
             content: vec![
-                ContentBlock::Text { text: "page".into() },
-                ContentBlock::Image { mime: "image/png".into(), data: "QUJD".into() },
+                ContentBlock::Text {
+                    text: "page".into(),
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "QUJD".into(),
+                },
             ],
             details: json!({}),
             is_error: false,

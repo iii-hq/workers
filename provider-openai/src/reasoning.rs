@@ -19,7 +19,11 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
 /// Efforts the model family accepts; empty = don't send the param.
 fn supported_efforts(model: &str) -> &'static [&'static str] {
     let id = model.to_ascii_lowercase();
-    if !(id.starts_with("gpt-5") || id.starts_with("o1") || id.starts_with("o3") || id.starts_with("o4")) {
+    if !(id.starts_with("gpt-5")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4"))
+    {
         return &[];
     }
     // The o1 family (o1, o1-mini, o1-preview, o1-pro) rejects reasoning_effort
@@ -72,10 +76,7 @@ fn level_str(level: ThinkingLevel) -> &'static str {
 /// Effort for a reasoning model: the requested level when the family
 /// supports it, else the nearest supported effort below (then above).
 /// `None` when the family takes no effort param or no level was requested.
-pub fn reasoning_effort_for(
-    level: Option<ThinkingLevel>,
-    model: &str,
-) -> Option<&'static str> {
+pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option<&'static str> {
     let ladder = supported_efforts(model);
     if ladder.is_empty() {
         return None;
@@ -85,17 +86,17 @@ pub fn reasoning_effort_for(
         return Some(want);
     }
     let want_idx = EFFORT_ORDER.iter().position(|e| *e == want)?;
-    for &candidate in EFFORT_ORDER[..want_idx].iter().rev() {
-        if ladder.contains(&candidate) {
-            return Some(candidate);
-        }
+    if let Some(&c) = EFFORT_ORDER[..want_idx]
+        .iter()
+        .rev()
+        .find(|&&c| ladder.contains(&c))
+    {
+        return Some(c);
     }
-    for &candidate in EFFORT_ORDER[want_idx + 1..].iter() {
-        if ladder.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
+    EFFORT_ORDER[want_idx + 1..]
+        .iter()
+        .find(|&&c| ladder.contains(&c))
+        .copied()
 }
 
 #[cfg(test)]
@@ -113,29 +114,62 @@ mod tests {
 
     #[test]
     fn exact_level_passes_through_per_family() {
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::High), "gpt-5.2"), Some("high"));
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-5.2"), Some("xhigh"));
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Medium), "o3-mini"), Some("medium"));
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-5-mini"), Some("minimal"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "gpt-5.2"),
+            Some("high")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-5.2"),
+            Some("xhigh")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Medium), "o3-mini"),
+            Some("medium")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-5-mini"),
+            Some("minimal")
+        );
     }
 
     #[test]
     fn unsupported_level_degrades_to_nearest_below_then_above() {
         // gpt-5.1 has no xhigh → nearest below is high
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-5.1"), Some("high"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "gpt-5.1"),
+            Some("high")
+        );
         // gpt-5.1 has no minimal → below is none
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-5.1"), Some("none"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "gpt-5.1"),
+            Some("none")
+        );
         // o3 has no minimal and no none below → above is low
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Minimal), "o3"), Some("low"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Minimal), "o3"),
+            Some("low")
+        );
         // pro: everything lands on high
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Low), "gpt-5-pro"), Some("high"));
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Low), "gpt-5-pro"),
+            Some("high")
+        );
     }
 
     #[test]
     fn families_that_reject_the_param_get_none() {
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::High), "o1-preview"), None);
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::High), "gpt-5-chat-latest"), None);
-        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::High), "gpt-4o"), None);
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "o1-preview"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "gpt-5-chat-latest"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::High), "gpt-4o"),
+            None
+        );
     }
 
     #[test]
