@@ -152,6 +152,11 @@ export async function executeRun(
 ): Promise<Record<string, unknown>> {
   const session_id = payload.session_id ?? randomUUID();
   const prompt = extractPrompt(payload);
+  // one live run per session: the in-process handle is what claude::stop
+  // targets, so a second concurrent run would clobber it and race the record
+  if (live.has(session_id)) {
+    return { session_id, busy: true, reason: 'a run is already active for this session' };
+  }
   const prior = await loadSession(iii, session_id);
   const d = cfg.defaults;
 
@@ -168,9 +173,6 @@ export async function executeRun(
   };
   if (payload.cwd) record.cwd = payload.cwd;
   if (payload.model) record.model = payload.model;
-  record.status = 'working';
-  record.updated_at_ms = Date.now();
-  await saveSession(iii, record);
 
   const userAppend = payload.append_system_prompt ?? d.append_system_prompt;
   const iiiContext = payload.iii_context ?? cfg.iii_context;
@@ -203,6 +205,12 @@ export async function executeRun(
   const q = query({ prompt, options });
   const handle: LiveRun = { interrupt: () => q.interrupt() };
   live.set(session_id, handle);
+
+  // persist `working` only once the query + live handle exist, so a throw
+  // during setup never leaves the record stuck in `working`
+  record.status = 'working';
+  record.updated_at_ms = Date.now();
+  await saveSession(iii, record);
 
   const transcript: AgentMessage[] = [];
   const pendingResults: FunctionResultMessage[] = [];

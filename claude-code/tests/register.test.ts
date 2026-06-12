@@ -151,6 +151,32 @@ describe('register', () => {
     expect(capture.interrupted).toBe(true);
   });
 
+  it('rejects a second run while one is already live for the session', async () => {
+    const fake = await registeredWorker();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system', subtype: 'init', session_id: 'cs-1' };
+        await gate;
+      },
+      interrupt: async () => release?.(),
+    })) as never);
+
+    await fake.registered.get('claude::start')?.({ prompt: 'first', session_id: 'busy-1' });
+    await vi.waitFor(() => {
+      expect(fake.state.has('claude_sessions/busy-1')).toBe(true);
+    });
+    const second = (await fake.registered.get('claude::run')?.({
+      prompt: 'second',
+      session_id: 'busy-1',
+    })) as Record<string, unknown>;
+    expect(second).toMatchObject({ session_id: 'busy-1', busy: true });
+    release?.();
+  });
+
   it('claude::status reflects the stored record and live flag', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('claude::status')?.({ session_id: 'none' })) as Record<
