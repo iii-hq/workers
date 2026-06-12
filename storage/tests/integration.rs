@@ -1,4 +1,4 @@
-//! End-to-end test (binary-worker.md §9 pattern A): spawn the `iii` engine
+//! End-to-end test (docs/sops/binary-worker.md §9 pattern A): spawn the `iii` engine
 //! and the `storage` worker as subprocesses, drive the worker through
 //! `iii-sdk` as a client, then tear both down. **Self-skips** when `iii` is
 //! not on `PATH` so CI hosts without the engine still pass.

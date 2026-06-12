@@ -285,7 +285,7 @@ is env-var-gated — see `tests/e2e/run-tests.sh` for the orchestrator.
 ### Verification before publishing
 
 The full preflight checklist for binary workers
-(`workers/binary-worker.md` §11):
+([`docs/sops/binary-worker.md`](../docs/sops/binary-worker.md) §11):
 
 ```bash
 cargo fmt --all -- --check

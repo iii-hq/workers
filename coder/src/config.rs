@@ -2,7 +2,7 @@
 //! attribute so an empty YAML object still produces a fully-populated
 //! struct; `impl Default` mirrors those functions so the binary can fall
 //! back to defaults when `--config` is missing or unparseable (see
-//! [`binary-worker.md`](../../binary-worker.md) §5).
+//! [`binary-worker.md`](../../docs/sops/binary-worker.md) §5).
 
 use std::path::PathBuf;
 

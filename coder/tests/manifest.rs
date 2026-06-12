@@ -1,5 +1,5 @@
 //! Validates the `--manifest` subcommand the registry publish pipeline
-//! relies on (binary-worker.md §11 / pattern A).
+//! relies on (docs/sops/binary-worker.md §11 / pattern A).
 
 use std::process::Command;
 

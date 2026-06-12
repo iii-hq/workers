@@ -1,3 +1,4 @@
+# Release SOP: docs/sops/release.md
 name: Create Tag
 
 on:
@@ -19,6 +20,7 @@ on:
           - iii-lsp-vscode
           - image-resize
           - mcp
+          - session-manager
           - shell
           - storage
       bump:

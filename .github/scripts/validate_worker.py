@@ -29,8 +29,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
 
 
-# Workers the harness materialises into ./data/skills/<name>/index.md on
-# boot via skills::download. Must match harness/src/skills.rs::BOOTSTRAP_NAMES.
+# Workers whose skills the harness stack requires at boot, making
+# skills/SKILL.md a hard PR gate. Keep in sync with what the harness
+# actually bootstraps.
 BOOTSTRAP_WORKERS = frozenset({
     "iii-directory",
     "shell",
@@ -162,17 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         if not skill_md.exists():
             hard(
                 f"{worker}/skills/SKILL.md is missing — bundled workers must ship one "
-                f"(see binary-worker.md)"
+                f"(see docs/sops/binary-worker.md)"
             )
         elif skill_md.stat().st_size == 0:
             hard(
                 f"{worker}/{skill_md.relative_to(root).as_posix()} is empty — "
-                f"must contain the H1 + summary (see binary-worker.md)"
+                f"must contain the H1 + summary (see docs/sops/binary-worker.md)"
             )
         elif skill_md.stat().st_size > SKILL_MD_SIZE_CAP:
             hard(
                 f"{worker}/{skill_md.relative_to(root).as_posix()} exceeds 256 KiB cap "
-                f"({skill_md.stat().st_size} bytes; see binary-worker.md)"
+                f"({skill_md.stat().st_size} bytes; see docs/sops/binary-worker.md)"
             )
 
     for e in errs:
