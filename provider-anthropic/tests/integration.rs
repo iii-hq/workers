@@ -191,7 +191,7 @@ const STUB_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nco
 
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"invalid x-api-key\"}}";
 
-const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"claude-sonnet-4-6\",\"display_name\":\"Claude Sonnet 4.6\",\"max_input_tokens\":200000,\"max_tokens\":64000,\"capabilities\":{\"thinking\":{\"supported\":true},\"effort\":{\"xhigh\":{\"supported\":false}},\"image_input\":{\"supported\":true}}},{\"id\":\"claude-sonnet-4-6-20260115\",\"display_name\":\"Claude Sonnet 4.6 (dated)\",\"max_input_tokens\":777000,\"max_tokens\":32000},{\"id\":\"claude-new-1\"}]}";
+const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"claude-sonnet-4-6\",\"display_name\":\"Claude Sonnet 4.6\",\"max_input_tokens\":200000,\"max_tokens\":64000,\"capabilities\":{\"thinking\":{\"supported\":true},\"effort\":{\"xhigh\":{\"supported\":false}},\"image_input\":{\"supported\":true}}},{\"id\":\"claude-sonnet-4-6-20260115\",\"display_name\":\"Claude Sonnet 4.6 (dated)\",\"max_input_tokens\":777000,\"max_tokens\":32000},{\"id\":\"claude-new-1\"},{\"id\":\"claude-legacy-1\",\"capabilities\":{\"thinking\":{\"supported\":true,\"types\":{\"adaptive\":{\"supported\":false}}}}}]}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

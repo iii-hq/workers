@@ -37,11 +37,23 @@ fn cap_supported(row: &Value, path: &[&str]) -> Option<bool> {
 /// One live row → catalog Model. Tolerant of missing fields: an API that
 /// stops sending limits or capabilities degrades to the same conservative
 /// defaults the old unknown-model path used, never to a parse failure.
+///
+/// Generation filter: this provider only implements adaptive thinking, so a
+/// model the API marks as thinking-capable but NOT adaptive-capable (the
+/// pre-4.6 generation: Sonnet 4.5, Haiku 4.5, Opus 4.5 and older) would 400
+/// the moment a thinking_level arrives — those rows are excluded from the
+/// slice entirely. Rows with no capability data stay (permissive for future
+/// shapes); rows that cannot think at all stay with thinking gated off.
 fn model_from_live(row: &Value) -> Option<Model> {
     let id = row
         .get("id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?;
+    let thinking = cap_supported(row, &["thinking"]);
+    let adaptive = cap_supported(row, &["thinking", "types", "adaptive"]);
+    if thinking == Some(true) && adaptive == Some(false) {
+        return None; // legacy-thinking-only generation
+    }
     Some(Model {
         id: id.to_string(),
         provider: PROVIDER_ID.into(),
@@ -58,7 +70,13 @@ fn model_from_live(row: &Value) -> Option<Model> {
             .and_then(Value::as_u64)
             .unwrap_or(8192),
         input_limit: None,
-        supports_thinking: cap_supported(row, &["thinking"]),
+        // Adaptive support is the operative flag for this provider; plain
+        // thinking-supported only matters when it is an explicit `false`.
+        supports_thinking: if thinking == Some(false) {
+            Some(false)
+        } else {
+            adaptive.or(thinking)
+        },
         supports_xhigh: cap_supported(row, &["effort", "xhigh"]),
         supports_tools: Some(true), // uniform across the Messages API
         supports_vision: cap_supported(row, &["image_input"]),
@@ -177,6 +195,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_thinking_only_rows_are_filtered_out() {
+        let json = serde_json::json!({
+            "data": [
+                {
+                    "id": "claude-haiku-4-5-20251001",
+                    "capabilities": {
+                        "thinking": { "supported": true, "types": { "adaptive": { "supported": false } } }
+                    }
+                },
+                {
+                    "id": "claude-image-x",
+                    "capabilities": { "thinking": { "supported": false } }
+                },
+            ]
+        });
+        let models = parse_live_models(&json);
+        // non-adaptive thinker dropped; a model that can't think at all stays
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "claude-image-x");
+        assert_eq!(models[0].supports_thinking, Some(false));
+    }
+
+    #[test]
     fn parses_capabilities_limits_and_pricing() {
         let json = serde_json::json!({
             "data": [{
@@ -196,9 +237,19 @@ mod tests {
                     },
                     "structured_outputs": { "supported": true }
                 }
+            },
+            {
+                "id": "claude-sonnet-4-5-20250929",
+                "capabilities": {
+                    "thinking": {
+                        "supported": true,
+                        "types": { "adaptive": { "supported": false } }
+                    }
+                }
             }]
         });
         let models = parse_live_models(&json);
+        // the legacy (non-adaptive) sonnet 4.5 row is filtered out
         assert_eq!(models.len(), 1);
         let m = &models[0];
         assert_eq!(m.id, "claude-opus-4-8");
