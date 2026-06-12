@@ -97,14 +97,15 @@ describe('executeRun', () => {
     expect(end).toMatchObject({ function_call_id: 'item-1', is_error: false });
   });
 
-  it('injects the iii runtime context into the first turn of a new thread', async () => {
+  it('delivers the iii runtime context as developer_instructions by default', async () => {
     const { capture } = await runTurn({ prompt: 'do it', session_id: 's1' });
-    expect(capture.input).toContain('# iii runtime');
-    expect(capture.input).toContain('iii trigger engine::functions::list');
-    expect(capture.input).toContain('# Task\n\ndo it');
+    const config = capture.codexOptions?.config as { developer_instructions?: string };
+    expect(config.developer_instructions).toContain('# iii runtime');
+    expect(config.developer_instructions).toContain('iii trigger engine::functions::list');
+    expect(capture.input).toBe('do it');
   });
 
-  it('does not re-inject the context on resumed threads', async () => {
+  it('keeps developer_instructions on resumed threads without touching the prompt', async () => {
     const fake = fakeIii();
     fake.state.set('codex_sessions/s1', {
       session_id: 's1',
@@ -127,18 +128,32 @@ describe('executeRun', () => {
       emit,
       RunPayloadSchema.parse({ prompt: 'again', session_id: 's1' }),
     );
+    const config = capture.codexOptions?.config as { developer_instructions?: string };
+    expect(config.developer_instructions).toContain('# iii runtime');
     expect(capture.input).toBe('again');
+  });
+
+  it('a caller-supplied developer_instructions wins over the iii block', async () => {
+    const { capture } = await runTurn({
+      prompt: 'x',
+      session_id: 's1',
+      codex_config: { developer_instructions: 'house rules' },
+    });
+    const config = capture.codexOptions?.config as { developer_instructions?: string };
+    expect(config.developer_instructions).toBe('house rules');
   });
 
   it('config-level iii_context: false disables the block for every turn', async () => {
     const { capture } = await runTurn({ prompt: 'plain', session_id: 's1' }, fullTurn, {
       iii_context: false,
     });
+    expect(capture.codexOptions?.config).toBeUndefined();
     expect(capture.input).toBe('plain');
   });
 
   it('omits the context when disabled per turn', async () => {
     const { capture } = await runTurn({ prompt: 'plain', session_id: 's1', iii_context: false });
+    expect(capture.codexOptions?.config).toBeUndefined();
     expect(capture.input).toBe('plain');
   });
 
@@ -182,10 +197,12 @@ describe('executeRun', () => {
     expect(capture.turnOptions?.outputSchema).toEqual(schema);
   });
 
-  it('forwards codex_config as SDK config overrides', async () => {
+  it('forwards codex_config as SDK config overrides alongside the iii block', async () => {
     const codex_config = { mcp_servers: { github: { command: 'gh-mcp' } } };
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1', codex_config });
-    expect(capture.codexOptions?.config).toEqual(codex_config);
+    expect(capture.codexOptions?.config).toMatchObject(codex_config);
+    const config = capture.codexOptions?.config as { developer_instructions?: string };
+    expect(config.developer_instructions).toContain('# iii runtime');
   });
 
   it('attaches local images to the prompt input', async () => {

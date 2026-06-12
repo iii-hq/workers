@@ -152,10 +152,20 @@ export async function executeRun(
     ...(payload.options as Partial<ThreadOptions> | undefined),
   };
 
+  const iiiContext = payload.iii_context ?? cfg.iii_context;
+  const callerConfig = (payload.codex_config ?? {}) as Record<string, unknown>;
+  const codexConfig = {
+    // developer_instructions is a per-turn developer message in Codex's
+    // turn context; a caller-supplied value wins over the iii block
+    ...(iiiContext && callerConfig.developer_instructions === undefined
+      ? { developer_instructions: III_CONTEXT_PROMPT }
+      : {}),
+    ...callerConfig,
+  };
   const codex = new Codex({
     ...(cfg.codex_executable ? { codexPathOverride: cfg.codex_executable } : {}),
     ...(cfg.base_url ? { baseUrl: cfg.base_url } : {}),
-    ...(payload.codex_config ? { config: payload.codex_config as never } : {}),
+    ...(Object.keys(codexConfig).length ? { config: codexConfig as never } : {}),
   });
   const thread = prior?.codex_thread_id
     ? codex.resumeThread(prior.codex_thread_id, threadOptions)
@@ -173,16 +183,13 @@ export async function executeRun(
   let stopReason = 'end';
   let isError = false;
 
-  const iiiContext = (payload.iii_context ?? cfg.iii_context) && !prior?.codex_thread_id;
-  const promptText = iiiContext ? `${III_CONTEXT_PROMPT}\n\n# Task\n\n${prompt}` : prompt;
-
   try {
     const input = payload.images?.length
       ? [
-          { type: 'text' as const, text: promptText },
+          { type: 'text' as const, text: prompt },
           ...payload.images.map((path) => ({ type: 'local_image' as const, path })),
         ]
-      : promptText;
+      : prompt;
     const { events } = await thread.runStreamed(input, {
       signal: abort.signal,
       ...(payload.output_schema ? { outputSchema: payload.output_schema } : {}),

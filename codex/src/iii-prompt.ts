@@ -1,11 +1,11 @@
 /**
- * iii runtime context injected into the first turn when `iii_context` is
+ * iii runtime context delivered as Codex `developer_instructions` (a
+ * developer-role message in the turn context) when `iii_context` is
  * enabled. Carries the same engine-grounded rules as the harness identity
  * prompts (harness/src/turn-orchestrator/prompt/*), retargeted from the
  * `agent_trigger` tool to the `iii` CLI, which this agent reaches through
- * its sandboxed shell. Codex has no system-prompt option, so the block is
- * prepended to the first turn of a NEW thread only -- the thread persists
- * it for every resumed turn.
+ * its sandboxed shell. A caller-supplied `developer_instructions` in
+ * `codex_config` wins over this block.
  */
 
 export const III_CONTEXT_PROMPT = `# iii runtime

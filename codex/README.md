@@ -127,7 +127,7 @@ Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows e
 
 ## The agent on the bus
 
-By default every new thread starts with the iii runtime context: a system-prompt block carrying the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its sandboxed shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Codex's native tools; backend actions go through registered functions.
+By default every turn carries the iii runtime context, delivered through Codex's native `developer_instructions` config (a developer-role message in the turn context, the channel Codex itself uses for standing instructions): the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its sandboxed shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Codex's native tools; backend actions go through registered functions.
 
 ```bash
 # the agent answers this by querying the live engine itself
@@ -135,7 +135,7 @@ iii trigger codex::run --timeout-ms 300000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
 
-The block is injected only on the first turn of a new thread (the thread persists it across resumes) and costs nothing on resumed turns. Turn it off per call with `"iii_context": false` or globally in `config.yaml`.
+The block rides the turn context on every call, resumes included, without touching your prompt or Codex's base instructions. Turn it off per call with `"iii_context": false` or globally in `config.yaml`; a caller-supplied `developer_instructions` in `codex_config` wins over it.
 
 ## Plan-then-execute with sandbox modes
 

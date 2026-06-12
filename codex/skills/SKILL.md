@@ -34,10 +34,11 @@ anything onto this one.
   `{session_id, started}` immediately; follow `codex::events` (group_id =
   session_id) for raw progress or `agent::events` for the rendered view;
   interrupt with `codex::stop`.
-- Act on the whole backend: new threads carry the iii runtime context by
-  default, so the agent discovers and calls any registered function through
-  the iii CLI (engine::functions::list, `iii trigger <fn> --help`); disable
-  per turn with `iii_context: false`.
+- Act on the whole backend: turns carry the iii runtime context by default
+  (delivered as Codex `developer_instructions`), so the agent discovers and
+  calls any registered function through the iii CLI
+  (engine::functions::list, `iii trigger <fn> --help`); disable per turn
+  with `iii_context: false`.
 - Plan before touching anything: run the planning prompt with
   `sandbox_mode: read-only` (writes physically fail), read the plan, then
   send "implement the plan" on the same `session_id` with
