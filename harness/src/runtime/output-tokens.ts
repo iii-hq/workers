@@ -76,7 +76,8 @@ export function clampOutputTokens(args: ClampArgs): number {
 }
 
 /**
- * Fetch the catalog entry for `(provider, model)` via `models::get`.
+ * Fetch the catalog entry for `(provider, model)` via `router::models::get`
+ * (payload key is `id`, the result is wrapped as `{ model }`, null on miss).
  * Best-effort: returns null on miss, timeout, or any bus error — callers fall
  * back to worker defaults so an empty catalog never breaks a request.
  */
@@ -86,14 +87,14 @@ export async function getCatalogModel(
   modelId: string,
 ): Promise<Model | null> {
   try {
-    const entry = await iii.trigger<unknown, Model | null>({
-      function_id: 'models::get',
-      payload: { provider, model_id: modelId },
+    const entry = await iii.trigger<unknown, { model?: Model | null } | null>({
+      function_id: 'router::models::get',
+      payload: { provider, id: modelId },
       timeoutMs: MODELS_GET_TIMEOUT_MS,
     });
-    return entry ?? null;
+    return entry?.model ?? null;
   } catch (err) {
-    logger.debug('output-tokens: models::get failed', {
+    logger.debug('output-tokens: router::models::get failed', {
       provider,
       model: modelId,
       err: String(err),

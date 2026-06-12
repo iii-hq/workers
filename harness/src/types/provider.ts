@@ -37,13 +37,36 @@ export const ProviderStreamInputSchema = z.object({
   model: z.string(),
   /** Pass-through; the providers serialize this themselves. */
   messages: z.array(z.unknown()),
-  tools: z.array(AgentFunctionSchema).default([]),
+  /** Nullish-tolerant: the router omits absent options, but null must not fail a stream. */
+  tools: z
+    .array(AgentFunctionSchema)
+    .nullish()
+    .transform((v) => v ?? []),
   /**
    * Optional reasoning/thinking level. Providers that support it map this
    * onto their native parameter (Anthropic `thinking`, OpenAI
    * `reasoning_effort`); others ignore it. Absent = off.
    */
-  thinking_level: z.string().optional(),
+  thinking_level: z
+    .string()
+    .nullish()
+    .transform((v) => v ?? undefined),
+  /**
+   * Effective output-token budget, resolved + clamped by the router
+   * (override > model ceiling > 32k soft cap). When present it is
+   * authoritative; providers feed it through their own model-ceiling clamp
+   * as the user override.
+   */
+  max_output_tokens: z
+    .number()
+    .int()
+    .positive()
+    .nullish()
+    .transform((v) => v ?? undefined),
+  /** Structured-output request, passed through to providers that support it. */
+  response_format: z.unknown().optional(),
+  /** This provider's namespaced options slice, verbatim from the caller. */
+  provider_options: z.unknown().optional(),
   /**
    * Optional pre-resolved catalog entry for `model`, threaded from the
    * orchestrator so the provider does not re-fetch `models::get` it already
@@ -57,11 +80,15 @@ export const ProviderStreamInputSchema = z.object({
     .optional()
     .transform((v) => (v && typeof v === 'object' ? (v as Model) : undefined)),
   /**
-   * Optional stable id for the turn (the run's start time). Providers may use
-   * it to dedupe per-stream credential resolution within a turn; a new turn
-   * carries a new key. Purely an optimization key — never a source of truth.
+   * Optional stable id for the turn (the router sends its request_id, stable
+   * across the retry attempts of one request). Providers may use it to dedupe
+   * per-stream credential resolution within a turn; a new turn carries a new
+   * key. Purely an optimization key — never a source of truth.
    */
-  resolution_key: z.number().optional(),
+  resolution_key: z
+    .union([z.string(), z.number()])
+    .nullish()
+    .transform((v) => v ?? undefined),
 });
 export type ProviderStreamInput = z.infer<typeof ProviderStreamInputSchema>;
 

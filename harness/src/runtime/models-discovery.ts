@@ -2,17 +2,18 @@
  * Shared helpers for cloud-provider model discovery. Cloud providers
  * (anthropic, openai, kimi) hit their upstream `/v1/models` endpoint, map
  * the result onto the catalog `Model` shape with sane per-provider defaults,
- * and register each into the iii models catalog via `models::reconcile`.
+ * and register each into the router catalog via `router::models::reconcile`.
  *
  * This mirrors the local-provider discovery in
  * `provider-lmstudio/discover.ts`, extended to remote APIs. The console
- * model dropdown reads the cached result via `models::list`.
+ * model dropdown reads the cached result via `router::models::list`.
  */
 
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from './iii.js';
 import type { ModelsDevModel } from './modelsdev.js';
 import { logger } from './otel.js';
+import { routerRegistrationToken } from './provider-resolve.js';
 
 const DISCOVERY_TIMEOUT_MS = 8_000;
 const REGISTER_TIMEOUT_MS = 5_000;
@@ -135,9 +136,11 @@ export function enrichModel(opts: {
 }
 
 /**
- * Replace the provider's catalog with `models` in one `models::reconcile` call
- * (single state write). Best-effort: failures are logged and swallowed so
- * discovery never throws across the bus boundary.
+ * Replace the provider's catalog slice with `models` in one token-gated
+ * `router::models::reconcile` call (single state write). Best-effort:
+ * failures (including a missing registration token while the router is
+ * still coming up) are logged and swallowed so discovery never throws
+ * across the bus boundary.
  */
 export async function reconcileModels(
   iii: ISdk,
@@ -145,12 +148,12 @@ export async function reconcileModels(
   models: readonly Model[],
 ): Promise<string[]> {
   try {
-    const res = await iii.trigger<unknown, { ids?: string[]; count?: number }>({
-      function_id: 'models::reconcile',
-      payload: { provider, models: [...models] },
+    const token = await routerRegistrationToken(provider);
+    await iii.trigger<unknown, { provider?: string; count?: number }>({
+      function_id: 'router::models::reconcile',
+      payload: { provider, token, models: [...models] },
       timeoutMs: REGISTER_TIMEOUT_MS,
     });
-    if (Array.isArray(res?.ids) && res.ids.length > 0) return res.ids;
     return models.map((m) => m.id);
   } catch (err) {
     logger.warn('model discovery: reconcile failed', { provider, err: String(err) });
