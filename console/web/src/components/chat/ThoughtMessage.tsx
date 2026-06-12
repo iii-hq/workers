@@ -15,8 +15,13 @@ function thoughtLabel(durationMs: number): string {
 
 export function ThoughtMessage({ message, defaultOpen }: ThoughtMessageProps) {
   const streaming = !!message.streaming
+  // Auto-open while the thought streams so reasoning is visible in real
+  // time; the flip back when streaming ends collapses it to its summary.
   return (
-    <details className="iii-details group/thought" open={defaultOpen}>
+    <details
+      className="iii-details group/thought"
+      open={defaultOpen || streaming}
+    >
       <summary
         className={cn(
           'inline-flex items-center gap-2 font-mono text-[12px] text-ink-faint hover:text-ink transition-colors lowercase select-none',

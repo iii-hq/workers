@@ -19,6 +19,20 @@ export const MODES: { id: Mode; label: string }[] = [
 
 export const DEFAULT_MODE: Mode = 'agent'
 
+/** Reasoning effort sent to run::start as `thinking_level`; 'off' is omitted. */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+export const THINKING_LEVELS: ThinkingLevel[] = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]
+
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'off'
+
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 
 export interface Attachment {

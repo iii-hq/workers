@@ -69,6 +69,8 @@ function ComposerHarness({
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
       permissionMode="manual"
+      thinkingLevel="off"
+      onThinkingLevelChange={fn()}
       onModeChange={setMode}
       onModelChange={setModel}
       onPermissionModeChange={fn()}

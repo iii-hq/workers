@@ -111,6 +111,9 @@ async function* realStream(
             provider,
             model: modelId,
             mode,
+            ...(opts?.thinkingLevel && opts.thinkingLevel !== 'off'
+              ? { thinking_level: opts.thinkingLevel }
+              : {}),
             messages: [
               {
                 role: 'user',

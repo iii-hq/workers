@@ -83,6 +83,12 @@ export type StreamEvent =
 
 export interface ChatStreamOptions {
   signal?: AbortSignal
+  /**
+   * Reasoning/thinking level for the turn. Sent to `run::start` as
+   * `thinking_level`; omitted when 'off' or absent. The provider degrades
+   * with a warning when the model can't honor it.
+   */
+  thinkingLevel?: import('@/types/chat').ThinkingLevel
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
