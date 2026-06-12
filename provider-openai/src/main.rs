@@ -1,4 +1,5 @@
 use iii_sdk::{register_worker, InitOptions};
+use provider_openai::register::register_provider;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,8 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_WS_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string());
     let iii = register_worker(&url, InitOptions::default());
 
-    // Task 14 replaces this with register::register_provider(iii.clone()).await?;
-    println!("[provider-openai] connected to {url}");
+    register_provider(iii.clone()).await?;
+    println!("[provider-openai] registered against {url}");
 
     tokio::signal::ctrl_c().await?;
     iii.shutdown();
