@@ -125,6 +125,22 @@ codex_executable: ""               # path to the codex CLI; empty = PATH resolut
 
 Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows edits inside `cwd`, `danger-full-access` disables the sandbox. Headless runs keep `approval_policy: never`; commands the sandbox blocks fail instead of prompting.
 
+## Plan-then-execute with sandbox modes
+
+Codex has no named plan mode; the equivalent is a planning prompt under the `read-only` sandbox. The guarantee is OS-level (Seatbelt on macOS, Landlock on Linux), so writes physically fail rather than being policy-declined. Because the worker resumes threads, plan-then-execute is two calls against the same `session_id`:
+
+```bash
+# 1. plan (OS-enforced read-only)
+iii trigger codex::run --timeout-ms 600000 \
+  --json '{"prompt":"Plan how to add rate limiting to the REST API. Do not implement.","cwd":"/path/to/repo","sandbox_mode":"read-only"}'
+
+# 2. execute the plan with full context, same thread
+iii trigger codex::run --timeout-ms 600000 \
+  --json '{"session_id":"<from-step-1>","prompt":"Implement the plan.","sandbox_mode":"workspace-write","cwd":"/path/to/repo"}'
+```
+
+The approval step is whatever sits between the two calls — a human reading the plan, another worker, or a trigger.
+
 ## Observability
 
 Every `codex::run` is an ordinary traced invocation on the engine: the trace carries the full input payload and the output (result, usage) as span events, with per-function p50/p95/p99 in the console's trace explorer — no extra instrumentation in the worker.

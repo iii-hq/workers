@@ -34,6 +34,10 @@ anything onto this one.
   `{session_id, started}` immediately; follow `codex::events` (group_id =
   session_id) for raw progress or `agent::events` for the rendered view;
   interrupt with `codex::stop`.
+- Plan before touching anything: run the planning prompt with
+  `sandbox_mode: read-only` (writes physically fail), read the plan, then
+  send "implement the plan" on the same `session_id` with
+  `sandbox_mode: workspace-write`.
 - Get structured final output: pass `output_schema` (JSON schema) and the
   final agent message is JSON matching it.
 - Attach screenshots or diagrams: `images: ["/path/a.png"]` adds local
