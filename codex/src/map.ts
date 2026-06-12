@@ -143,8 +143,8 @@ export function mapUsage(raw: unknown): Usage | null {
   return {
     input_tokens: u.input_tokens ?? 0,
     output_tokens: u.output_tokens ?? 0,
-    cache_read_tokens: u.cached_input_tokens,
-    reasoning_tokens: u.reasoning_output_tokens,
+    cache_read_tokens: u.cached_input_tokens ?? 0,
+    reasoning_tokens: u.reasoning_output_tokens ?? 0,
   };
 }
 

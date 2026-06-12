@@ -107,6 +107,15 @@ describe('mapUsage', () => {
     expect(mapUsage(null)).toBeNull();
     expect(mapUsage('x')).toBeNull();
   });
+
+  it('defaults absent cache/reasoning token fields to 0 instead of undefined', () => {
+    expect(mapUsage({ input_tokens: 3, output_tokens: 1 })).toEqual({
+      input_tokens: 3,
+      output_tokens: 1,
+      cache_read_tokens: 0,
+      reasoning_tokens: 0,
+    });
+  });
 });
 
 describe('message constructors', () => {

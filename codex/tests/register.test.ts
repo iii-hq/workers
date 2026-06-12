@@ -77,6 +77,31 @@ describe('register', () => {
     });
   });
 
+  it('marks the session error when a background run throws mid-stream', async () => {
+    const fake = await registeredWorker();
+    CodexMock.mockImplementation((() => {
+      const thread = {
+        id: 'th-1',
+        runStreamed: async () => ({
+          events: (async function* () {
+            yield { type: 'thread.started', thread_id: 'th-1' };
+            throw new Error('stream died');
+          })(),
+        }),
+      };
+      return { startThread: () => thread, resumeThread: () => thread };
+    }) as never);
+    const res = (await fake.registered.get('codex::start')?.({
+      prompt: 'bg',
+      session_id: 'bg-1',
+    })) as Record<string, unknown>;
+    expect(res.started).toBe(true);
+    await vi.waitFor(() => {
+      const record = fake.state.get('codex_sessions/bg-1') as { status: string } | undefined;
+      expect(record?.status).toBe('error');
+    });
+  });
+
   it('codex::stop without a live run reports stopped: false', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('codex::stop')?.({ session_id: 'ghost' })) as Record<
