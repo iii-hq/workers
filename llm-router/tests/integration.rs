@@ -406,6 +406,58 @@ async fn end_to_end_relay_over_a_live_engine() {
     router_iii.shutdown();
 }
 
+/// `router::route` must preview exactly the provider `router::chat` would
+/// execute on, and throw the same typed codes when nothing routes — consumers
+/// pin the preview as the explicit `provider` on the chat call.
+#[tokio::test(flavor = "multi_thread")]
+async fn route_previews_the_same_provider_chat_executes() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, InitOptions::default());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+    let _provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+
+    let consumer = register_worker(&engine.url, InitOptions::default());
+
+    // catalog-owner routing: live-1 sits in provider "real"'s static slice.
+    let route = call(&consumer, "router::route", json!({ "model": "live-1" }))
+        .await
+        .expect("route succeeds");
+    assert_eq!(route["provider"], "real");
+    assert_eq!(route["candidates"], json!(["real"]));
+
+    // pinning the preview as the explicit provider executes on that provider.
+    let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
+    let res = consumer
+        .trigger(TriggerRequest {
+            function_id: "router::chat".into(),
+            payload: json!({
+                "writer_ref": writer_ref,
+                "model": "live-1",
+                "provider": route["provider"],
+                "messages": []
+            }),
+            action: None,
+            timeout_ms: Some(30_000),
+        })
+        .await
+        .expect("chat succeeds");
+    assert_eq!(res["ok"], true, "chat response: {res}");
+    assert_eq!(res["provider"], route["provider"]);
+    let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
+
+    // an unrouteable model throws the same typed code the chat path throws.
+    let err = call(&consumer, "router::route", json!({ "model": "ghost" }))
+        .await
+        .expect_err("ghost model cannot route");
+    assert_eq!(remote_code(&err), "router/no_provider_for_model");
+
+    consumer.shutdown();
+    router_iii.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn consumer_cancellation_propagates_to_the_provider() {
     let engine = engine_or_skip!();

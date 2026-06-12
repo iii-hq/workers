@@ -112,6 +112,14 @@ pub async fn register_router(iii: III) -> Result<RouterRefs, IIIError> {
         RegisterFunction::new_async(make_provider_list(iii.clone(), registry.clone())),
     );
     iii.register_function(
+        "router::route",
+        RegisterFunction::new_async(crate::routing::make_route(
+            registry.clone(),
+            catalog.clone(),
+            settings.clone(),
+        )),
+    );
+    iii.register_function(
         "router::provider::register",
         RegisterFunction::new_async(make_provider_register(
             iii.clone(),

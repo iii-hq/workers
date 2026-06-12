@@ -1,5 +1,18 @@
 //! decide(): ordered candidate list (spec § Routing). MVP consumes
 //! candidates[0]; the list shape is the future fallback seam.
+//! `router::route` exposes the same decision as a read-only preview so
+//! consumers that need the provider before streaming (prompt selection,
+//! provisioning metadata) can pin it as the explicit `provider` on
+//! `router::chat` — preview and execution can never diverge.
+use std::sync::{Arc, RwLock};
+
+use futures::future::BoxFuture;
+use iii_sdk::IIIError;
+use serde_json::{json, Value};
+
+use crate::catalog::store::CatalogStore;
+use crate::registry::store::RegistryStore;
+use crate::settings::RouterSettings;
 use crate::types::errors::{RouterCode, RouterError};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +93,49 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         RouterCode::NoProviderForModel,
         format!("no provider registered for model {}", input.model),
     ))
+}
+
+/// The `router::route` iii function: `{model, provider?}` →
+/// `{provider, candidates}`. Same inputs, same `decide()`, same error codes
+/// as the chat pipeline's routing step — just without the stream.
+pub fn make_route(
+    registry: Arc<RegistryStore>,
+    catalog: Arc<CatalogStore>,
+    settings: Arc<RwLock<RouterSettings>>,
+) -> impl Fn(Value) -> BoxFuture<'static, Result<Value, IIIError>> + Send + Sync + 'static {
+    move |raw: Value| {
+        let (registry, catalog, settings) = (registry.clone(), catalog.clone(), settings.clone());
+        Box::pin(async move {
+            let model = raw
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if model.is_empty() {
+                return Err(
+                    RouterError::new(RouterCode::InvalidRequest, "model is required").into(),
+                );
+            }
+            let provider = raw
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(String::from);
+            let (heuristics, default_provider) = {
+                let s = settings.read().unwrap();
+                (s.routing_heuristics.clone(), s.default_provider.clone())
+            };
+            let candidates = decide(&DecideInput {
+                model,
+                provider,
+                registered_providers: registry.ids().await,
+                catalog: catalog.model_ids().await,
+                heuristics,
+                default_provider,
+            })
+            .map_err(IIIError::from)?;
+            Ok(json!({ "provider": candidates[0], "candidates": candidates }))
+        })
+    }
 }
 
 #[cfg(test)]
