@@ -1,4 +1,3 @@
-import { MODELS_SCOPE } from '../../models-catalog/types.js';
 import type { ISdk, Trigger } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
 import type { FanoutState } from '../ui-subscribe.js';
@@ -13,8 +12,8 @@ const DEBOUNCE_MS = 250;
 
 /**
  * Push `ui::models::changed::<browser_id>` to every subscribed browser.
- * Called explicitly after a config-driven refresh wave and by the debounced
- * state-trigger handler after catalog writes.
+ * Called by the debounced `router::models::changed` handler after catalog
+ * writes.
  */
 export function emitModelsCatalogChanged(iii: ISdk, state: FanoutState): void {
   for (const browser_id of state.modelSubscribers()) {
@@ -32,9 +31,10 @@ export function emitModelsCatalogChanged(iii: ISdk, state: FanoutState): void {
 }
 
 /**
- * The model catalog lives in iii state (scope `models`, one `Model[]` per
- * provider key). A `state` trigger notifies browsers after writes; trailing
- * debounce collapses overlapping provider reconciles into one push.
+ * The model catalog lives in the llm-router worker, which publishes
+ * `router::models::changed` on every reconcile. A subscribe trigger notifies
+ * browsers after writes; trailing debounce collapses overlapping provider
+ * reconciles into one push.
  */
 export function spawnModelsChanged(iii: ISdk, state: FanoutState): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -57,19 +57,19 @@ export function spawnModelsChanged(iii: ISdk, state: FanoutState): () => void {
     },
     {
       description:
-        'Internal: coalesces models-scope state changes into ui::models::changed::<browser_id> pushes.',
+        'Internal: coalesces router::models::changed events into ui::models::changed::<browser_id> pushes.',
     },
   );
 
   let trigger: Trigger | null = null;
   try {
     trigger = iii.registerTrigger({
-      type: 'state',
+      type: 'subscribe',
       function_id: MODELS_CHANGED_HANDLER_FN_ID,
-      config: { scope: MODELS_SCOPE },
+      config: { topic: 'router::models::changed' },
     });
   } catch (err) {
-    logger.warn('models state trigger registration failed', { err: String(err) });
+    logger.warn('router::models::changed trigger registration failed', { err: String(err) });
   }
 
   return () => {

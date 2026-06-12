@@ -2,7 +2,7 @@ import { makeCatalogModelKey } from '@/lib/catalog-model-key'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ModelOption } from '@/types/chat'
 
-/** Wire shape returned by `models::list` over the iii bus. */
+/** Wire shape returned by `router::models::list` over the iii bus. */
 export interface CatalogModelRow {
   id: string
   provider: string
@@ -12,7 +12,7 @@ export interface CatalogModelRow {
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   const client = await getIiiClient()
-  const res = await client.call<{ models?: unknown }>('models::list', {})
+  const res = await client.call<{ models?: unknown }>('router::models::list', {})
   const rows = res?.models
   if (!Array.isArray(rows)) return []
   const out: CatalogModelRow[] = []
@@ -50,7 +50,7 @@ export function catalogRowsToModelOptions(
  * Ask each provider to re-pull its upstream model list into the catalog via
  * `provider::<id>::refresh_models`. Best-effort and parallel — a provider
  * that's offline or has no credential simply registers nothing. Callers
- * re-read `models::list` afterwards to pick up the refreshed catalog.
+ * re-read `router::models::list` afterwards to pick up the refreshed catalog.
  */
 export async function refreshProviderModels(
   providers: readonly string[],
@@ -96,7 +96,7 @@ export async function subscribeModelChanges(
   }
 }
 
-/** A provider declared to the harness, from `harness::provider::list`. */
+/** A provider declared to the harness, from `router::provider::list`. */
 export interface ProviderListEntry {
   id: string
   display_name: string
@@ -111,7 +111,7 @@ export interface ProviderListEntry {
 export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   const client = await getIiiClient()
   const res = await client.call<{ providers?: unknown }>(
-    'harness::provider::list',
+    'router::provider::list',
     {},
   )
   const rows = res?.providers

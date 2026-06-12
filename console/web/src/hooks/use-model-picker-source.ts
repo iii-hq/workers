@@ -18,7 +18,7 @@ import type { ModelOption } from '@/types/chat'
  * shows present-but-unconfigured providers as gear groups). When the engine is
  * unreachable (catalog fetch throws) the list stays empty.
  *
- * `presentProviders` comes from `harness::provider::list` so the picker can
+ * `presentProviders` comes from `router::provider::list` so the picker can
  * surface providers that exist as workers but aren't configured yet.
  * `refresh()` re-reads both on demand (after a provider `refresh_models`).
  *
