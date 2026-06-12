@@ -154,6 +154,37 @@ describe('register', () => {
     expect(capture.aborted).toBe(true);
   });
 
+  it('rejects a second run while one is already live for the session', async () => {
+    const fake = await registeredWorker();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    CodexMock.mockImplementation((() => {
+      const thread = {
+        id: 'th-live',
+        runStreamed: async () => ({
+          events: (async function* () {
+            yield { type: 'thread.started', thread_id: 'th-live' };
+            await gate;
+          })(),
+        }),
+      };
+      return { startThread: () => thread, resumeThread: () => thread };
+    }) as never);
+
+    await fake.registered.get('codex::start')?.({ prompt: 'first', session_id: 'busy-1' });
+    await vi.waitFor(() => {
+      expect(fake.state.has('codex_sessions/busy-1')).toBe(true);
+    });
+    const second = (await fake.registered.get('codex::run')?.({
+      prompt: 'second',
+      session_id: 'busy-1',
+    })) as Record<string, unknown>;
+    expect(second).toMatchObject({ session_id: 'busy-1', busy: true });
+    release?.();
+  });
+
   it('codex::status reflects the stored record and live flag', async () => {
     const fake = await registeredWorker();
     const res = (await fake.registered.get('codex::status')?.({ session_id: 'none' })) as Record<

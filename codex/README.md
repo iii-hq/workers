@@ -123,7 +123,7 @@ raw_events_stream: codex::events   # verbatim Codex thread events
 codex_executable: ""               # path to the codex CLI; empty = PATH resolution
 ```
 
-Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows edits inside `cwd`, `danger-full-access` disables the sandbox. Headless runs keep `approval_policy: never`; commands the sandbox blocks fail instead of prompting.
+Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows edits inside `cwd`, `danger-full-access` disables the sandbox. `approval_policy` is forwarded to Codex per turn from the payload or the configured default; headless callers leave it at `never` so a command the sandbox blocks fails instead of prompting, but any other value is passed through and respected.
 
 ## The agent on the bus
 
