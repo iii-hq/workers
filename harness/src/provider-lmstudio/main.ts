@@ -5,6 +5,6 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'provider-lmstudio',
   description:
-    'LM Studio (localhost) Chat Completions streaming provider on the iii bus (provider::lmstudio::stream + ::complete).',
+    'LM Studio (localhost) Chat Completions streaming provider on the iii bus (provider::lmstudio::stream).',
   register: (iii, ctx) => register(iii, ctx),
 });

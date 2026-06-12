@@ -36,6 +36,7 @@ export function register(iii: ISdk, worker: WorkerConfig): void {
         input.model,
         input.model_meta,
         input.resolution_key,
+        input.max_output_tokens,
       );
       const thinking = buildThinkingConfig(input.thinking_level, cfg.max_tokens, cfg.catalog);
       try {

@@ -5,6 +5,6 @@ import { register } from './register.js';
 await bootstrapWorker({
   name: 'provider-openai',
   description:
-    'OpenAI Chat Completions streaming provider on the iii bus (provider::openai::stream + ::complete).',
+    'OpenAI Chat Completions streaming provider on the iii bus (provider::openai::stream).',
   register: (iii, ctx) => register(iii, ctx),
 });

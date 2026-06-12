@@ -5,7 +5,7 @@ import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js'
 import {
   type Credential,
   type ProviderResolveResult,
-  resolveProvider,
+  resolveProviderViaRouter,
 } from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type ChatCompletionsConfig, configFromCredential } from './types.js';
@@ -23,7 +23,7 @@ export const PROVIDER_ID = 'llamacpp';
 
 const EMPTY_RESOLVE: ProviderResolveResult = {
   configured: false,
-  source: null,
+  source: 'none',
   credential: null,
   api_url: null,
   max_tokens: null,
@@ -54,13 +54,13 @@ export function isLoopbackUrl(url: string): boolean {
 }
 
 /**
- * Resolve this provider's credential + settings via the harness registry.
+ * Resolve this provider's credential + settings via the llm-router registry.
  * Tolerant: llama-server commonly runs unauthenticated on loopback, so a
  * missing harness/registry yields an empty result rather than throwing.
  */
 async function resolveTolerant(iii: ISdk): Promise<ProviderResolveResult> {
   try {
-    return await resolveProvider(iii, PROVIDER_ID);
+    return await resolveProviderViaRouter(iii, PROVIDER_ID);
   } catch (err) {
     logger.warn('llamacpp.auth: resolve failed; falling back to no-credential', {
       code: 'llamacpp_auth_fetch_failed',
@@ -110,6 +110,7 @@ export async function buildConfig(
   iii: ISdk,
   worker: WorkerConfig,
   model: string,
+  maxOutputOverride?: number,
 ): Promise<ChatCompletionsConfig> {
   const resolved = await resolveTolerant(iii);
   const cred = resolved.credential;
@@ -121,7 +122,7 @@ export async function buildConfig(
   const catalog = await getCatalogModel(iii, PROVIDER_ID, model);
   const maxTokens = clampOutputTokens({
     modelMaxOutput: catalog?.max_output_tokens,
-    userOverride: resolved.max_tokens,
+    userOverride: maxOutputOverride ?? resolved.max_tokens,
     workerDefault: worker.default_max_tokens,
   });
   // Pass the credential through verbatim so configFromCredential can

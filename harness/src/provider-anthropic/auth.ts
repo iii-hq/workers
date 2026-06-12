@@ -1,14 +1,16 @@
 /**
- * Resolve the Anthropic credential + runtime settings from the harness
- * provider registry (`harness::provider::resolve`), then turn them into an
- * AnthropicConfig. Replaces the old `auth::get_token` + `provider_config::get`
- * pair with a single call.
+ * Resolve the Anthropic credential + runtime settings from the llm-router
+ * registry (token-gated `router::provider::resolve`), then turn them into an
+ * AnthropicConfig.
  */
 
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
 import { clampOutputTokens, getCatalogModel } from '../runtime/output-tokens.js';
-import { type ProviderResolveResult, resolveProvider } from '../runtime/provider-resolve.js';
+import {
+  type ProviderResolveResult,
+  resolveProviderViaRouter,
+} from '../runtime/provider-resolve.js';
 import type { WorkerConfig } from './config.js';
 import { type AnthropicConfig, configWithCredential } from './types.js';
 
@@ -16,17 +18,21 @@ export const PROVIDER_ID = 'anthropic';
 
 /**
  * Single-slot cache of the resolved provider credential, keyed by the turn's
- * stable id. The credential is global, so within a turn its 20+ stream calls
- * reuse one resolution; a new turn (new key) re-resolves, picking up a key
- * rotated between turns. {@link invalidateProviderResolveCache} drops it on a
- * mid-turn 401. With no key threaded, callers always resolve (no caching).
+ * stable id (the router's request_id). The credential is global, so within a
+ * turn its 20+ stream calls reuse one resolution; a new turn (new key)
+ * re-resolves, picking up a key rotated between turns.
+ * {@link invalidateProviderResolveCache} drops it on a mid-turn 401. With no
+ * key threaded, callers always resolve (no caching).
  */
-let resolveCache: { key: number; resolved: ProviderResolveResult } | null = null;
+let resolveCache: { key: string | number; resolved: ProviderResolveResult } | null = null;
 
-async function resolveProviderForTurn(iii: ISdk, key?: number): Promise<ProviderResolveResult> {
-  if (key === undefined) return resolveProvider(iii, PROVIDER_ID);
+async function resolveProviderForTurn(
+  iii: ISdk,
+  key?: string | number,
+): Promise<ProviderResolveResult> {
+  if (key === undefined) return resolveProviderViaRouter(iii, PROVIDER_ID);
   if (resolveCache?.key === key) return resolveCache.resolved;
-  const resolved = await resolveProvider(iii, PROVIDER_ID);
+  const resolved = await resolveProviderViaRouter(iii, PROVIDER_ID);
   resolveCache = { key, resolved };
   return resolved;
 }
@@ -46,20 +52,23 @@ export async function buildConfig(
   worker: WorkerConfig,
   model: string,
   preResolved?: Model,
-  resolutionKey?: number,
+  resolutionKey?: string | number,
+  maxOutputOverride?: number,
 ): Promise<AnthropicConfig> {
   const resolved = await resolveProviderForTurn(iii, resolutionKey);
   if (!resolved.credential) {
     throw new Error(
-      'harness::provider::resolve returned no credential for provider `anthropic` ' +
-        '(set an api key in the harness configuration or ANTHROPIC_API_KEY)',
+      'router::provider::resolve returned no credential for provider `anthropic` ' +
+        '(set an api key in the llm-router configuration or ANTHROPIC_API_KEY)',
     );
   }
   const apiUrl = resolved.api_url ?? worker.default_api_url;
   const catalog = preResolved ?? (await getCatalogModel(iii, PROVIDER_ID, model));
+  // The router's resolved budget (when threaded) is authoritative; it still
+  // runs through the model-ceiling clamp as the override, never raised.
   const maxTokens = clampOutputTokens({
     modelMaxOutput: catalog?.max_output_tokens,
-    userOverride: resolved.max_tokens,
+    userOverride: maxOutputOverride ?? resolved.max_tokens,
     workerDefault: worker.default_max_tokens,
   });
   const cfg = configWithCredential(model, resolved.credential, maxTokens, apiUrl);

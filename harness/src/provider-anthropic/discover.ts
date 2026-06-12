@@ -17,7 +17,7 @@ import {
 } from '../runtime/models-discovery.js';
 import { getModelsDevIndex, lookupModelsDev } from '../runtime/modelsdev.js';
 import { logger } from '../runtime/otel.js';
-import { resolveProvider } from '../runtime/provider-resolve.js';
+import { resolveProviderViaRouter } from '../runtime/provider-resolve.js';
 import { PROVIDER_ID } from './auth.js';
 import type { WorkerConfig } from './config.js';
 
@@ -42,7 +42,7 @@ function parseStubs(json: unknown): ModelStub[] {
 }
 
 export async function discoverAndRegister(iii: ISdk, worker: WorkerConfig): Promise<string[]> {
-  const resolved = await resolveProvider(iii, PROVIDER_ID).catch(() => null);
+  const resolved = await resolveProviderViaRouter(iii, PROVIDER_ID).catch(() => null);
   const cred = resolved?.credential ?? null;
   if (!cred) {
     // No credential: drop any models a previous run registered so the picker
