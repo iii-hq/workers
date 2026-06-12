@@ -118,7 +118,7 @@ By default every turn's system prompt carries the iii runtime context: the same 
 ```bash
 # the agent answers this by querying the live engine itself
 iii trigger claude::run --timeout-ms 300000 \
-  --json '{"prompt":"Which functions does the codex worker register? List the ids.","cwd":"/tmp"}'
+  --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
 
 Turn it off per call with `"iii_context": false` or globally in `config.yaml`; a caller-supplied `system_prompt` always wins verbatim and gets nothing appended.
