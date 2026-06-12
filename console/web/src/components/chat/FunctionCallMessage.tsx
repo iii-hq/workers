@@ -9,6 +9,7 @@ import {
   SandboxFunctionIdLabel,
   SandboxToolView,
 } from '@/components/chat/sandbox'
+import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
 import { AlwaysAllowButton } from '@/components/permissions/AlwaysAllowButton'
@@ -118,6 +119,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (SandboxToolView.isSandboxFunction(functionId)) {
     return <SandboxFunctionIdLabel functionId={functionId} />
   }
+  if (ShellToolView.isShellFunction(functionId)) {
+    return <ShellFunctionIdLabel functionId={functionId} />
+  }
   return <span className="text-ink">{functionId}</span>
 }
 
@@ -144,14 +148,16 @@ export function FunctionCallMessage({
     DirectoryToolView.tryRenderPreview(message) ??
     WorkerToolView.tryRenderPreview(message) ??
     WebToolView.tryRenderPreview(message) ??
-    CoderToolView.tryRenderPreview(message)
+    CoderToolView.tryRenderPreview(message) ??
+    ShellToolView.tryRenderPreview(message)
   const customTerminal = !pending
     ? (SandboxToolView.tryRender(message) ??
       EngineToolView.tryRender(message) ??
       DirectoryToolView.tryRender(message) ??
       WorkerToolView.tryRender(message) ??
       WebToolView.tryRender(message) ??
-      CoderToolView.tryRender(message))
+      CoderToolView.tryRender(message) ??
+      ShellToolView.tryRender(message))
     : null
   const hasCustomTerminal = customTerminal != null
   const showRequestPaneAbove =
