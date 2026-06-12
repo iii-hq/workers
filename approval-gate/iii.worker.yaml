@@ -1,0 +1,7 @@
+iii: v1
+name: approval-gate
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: approval-gate
+description: Policy and decision surface for human-held function calls — pre_dispatch gate, pending inbox, per-session permission settings, and two notification trigger types.
