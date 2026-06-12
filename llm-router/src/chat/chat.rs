@@ -84,8 +84,15 @@ impl ChatPipeline {
             // Pre-stream failures are permanent: a bad model or an unrouted
             // request won't succeed on retry. Mark the frame Permanent so a
             // streaming consumer inspecting error_kind doesn't retry it.
-            let frame =
-                synthesize_error(None, &call.model, provider, &message, ErrorKind::Permanent, None, now_ms());
+            let frame = synthesize_error(
+                None,
+                &call.model,
+                provider,
+                &message,
+                ErrorKind::Permanent,
+                None,
+                now_ms(),
+            );
             let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
             RouterError::new(code, message).into()
         };
