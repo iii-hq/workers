@@ -14,7 +14,7 @@ import {
 import type { ContentBlock } from '../../types/content.js';
 import type { AgentFunction } from '../../types/function.js';
 import type { AssistantMessageEvent } from '../../types/stream-event.js';
-import { AgentFunctionSchema } from '../../types/provider.js';
+import { AgentFunctionSchema } from '../../types/function.js';
 import { emit } from '../events.js';
 import { runPreflight } from '../preflight.js';
 import { streamProviderTurn } from '../provider-stream.js';

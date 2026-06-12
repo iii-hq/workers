@@ -5,7 +5,7 @@
 import type { Model } from '../../types/model.js';
 import type { ISdk } from '../../runtime/iii.js';
 import { logger } from '../../runtime/otel.js';
-import { getCatalogModel } from '../../runtime/output-tokens.js';
+import { getCatalogModel } from '../../runtime/catalog.js';
 import type { RunRequest } from '../run-request.js';
 import { createTurnStore } from '../state-runtime/store.js';
 
