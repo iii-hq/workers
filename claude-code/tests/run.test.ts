@@ -103,6 +103,29 @@ describe('executeRun', () => {
     expect(capture.options?.allowedTools).toContain('Bash(iii *)');
   });
 
+  it('stacks the iii context with a user append', async () => {
+    const { capture } = await runTurn({
+      prompt: 'x',
+      session_id: 's1',
+      append_system_prompt: 'house rules',
+    });
+    const sp = capture.options?.systemPrompt as { type: string; append?: string };
+    expect(sp.append).toContain('# iii runtime');
+    expect(sp.append).toContain('house rules');
+    expect(sp.append?.indexOf('# iii runtime')).toBeLessThan(
+      sp.append?.indexOf('house rules') ?? -1,
+    );
+  });
+
+  it('config-level iii_context: false disables the block for every turn', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' }, fullTurn, {
+      iii_context: false,
+    });
+    const sp = capture.options?.systemPrompt as { type: string; append?: string };
+    expect(sp.append).toBeUndefined();
+    expect(capture.options?.allowedTools).not.toContain('Bash(iii *)');
+  });
+
   it('omits the iii context when disabled per turn and keeps the user append', async () => {
     const { capture } = await runTurn({
       prompt: 'x',
