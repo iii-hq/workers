@@ -34,6 +34,10 @@ instead of bolting anything onto this one.
   `{session_id, started}` immediately; follow `claude::events` (group_id =
   session_id) for raw progress or `agent::events` for the rendered view;
   interrupt with `claude::stop`.
+- Plan before touching anything: `permission_mode: "plan"` runs Claude
+  Code's native plan mode (read-only, returns the plan as the result);
+  then send "implement the plan" on the same `session_id` with
+  `permission_mode: "acceptEdits"`.
 - Reach past the named payload fields: anything the Agent SDK accepts goes
   through `options` unchanged — `{"options": {"forkSession": true,
   "includePartialMessages": true}}` — and `includePartialMessages` puts
