@@ -34,6 +34,11 @@ instead of bolting anything onto this one.
   `{session_id, started}` immediately; follow `claude::events` (group_id =
   session_id) for raw progress or `agent::events` for the rendered view;
   interrupt with `claude::stop`.
+- Act on the whole backend: turns carry the iii runtime context by default,
+  so the agent discovers and calls any registered function through the iii
+  CLI (engine::functions::list, `iii trigger <fn> --help`) with the
+  matching Bash allow rule pre-set; disable per turn with
+  `iii_context: false`.
 - Plan before touching anything: `permission_mode: "plan"` runs Claude
   Code's native plan mode (read-only, returns the plan as the result);
   then send "implement the plan" on the same `session_id` with

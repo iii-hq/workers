@@ -13,6 +13,7 @@ describe('loadConfig', () => {
     expect(cfg.approval_gate).toBe(false);
     expect(cfg.events_stream).toBe('agent::events');
     expect(cfg.raw_events_stream).toBe('claude::events');
+    expect(cfg.iii_context).toBe(true);
     expect(cfg.claude_executable).toBe('');
   });
 

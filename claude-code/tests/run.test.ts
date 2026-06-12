@@ -94,6 +94,32 @@ describe('executeRun', () => {
     expect(end).toMatchObject({ function_call_id: 'toolu_1', is_error: false });
   });
 
+  it('appends the iii runtime context to the system prompt by default', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
+    const sp = capture.options?.systemPrompt as { type: string; append?: string };
+    expect(sp.type).toBe('preset');
+    expect(sp.append).toContain('# iii runtime');
+    expect(sp.append).toContain('iii trigger engine::functions::list');
+    expect(capture.options?.allowedTools).toContain('Bash(iii *)');
+  });
+
+  it('omits the iii context when disabled per turn and keeps the user append', async () => {
+    const { capture } = await runTurn({
+      prompt: 'x',
+      session_id: 's1',
+      iii_context: false,
+      append_system_prompt: 'house rules',
+    });
+    const sp = capture.options?.systemPrompt as { type: string; append?: string };
+    expect(sp.append).toBe('house rules');
+    expect(capture.options?.allowedTools).not.toContain('Bash(iii *)');
+  });
+
+  it('a caller-supplied system_prompt wins verbatim with nothing appended', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1', system_prompt: 'override' });
+    expect(capture.options?.systemPrompt).toBe('override');
+  });
+
   it('passes worker defaults and named fields to query options', async () => {
     const { capture } = await runTurn({
       prompt: 'x',

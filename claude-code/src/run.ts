@@ -12,6 +12,7 @@ import type { ISdk } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
+import { III_CONTEXT_PROMPT } from './iii-prompt.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -53,6 +54,10 @@ const RunPayloadSchema = z.object({
   allowed_tools: z.array(z.string()).optional().describe('Allow rules, e.g. "Bash(git *)"'),
   disallowed_tools: z.array(z.string()).optional().describe('Deny rules'),
   max_turns: z.number().int().positive().optional().describe('Cap on agentic turns'),
+  iii_context: z
+    .boolean()
+    .optional()
+    .describe('Append the iii runtime discovery prompt (engine catalog via the iii CLI)'),
   timeout_ms: z
     .number()
     .int()
@@ -152,14 +157,21 @@ export async function executeRun(
   record.updated_at_ms = Date.now();
   await saveSession(iii, record);
 
-  const append = payload.append_system_prompt ?? d.append_system_prompt;
+  const userAppend = payload.append_system_prompt ?? d.append_system_prompt;
+  const iiiContext = payload.iii_context ?? cfg.iii_context;
+  const append = [iiiContext ? III_CONTEXT_PROMPT : '', userAppend].filter(Boolean).join('\n\n');
   const options: Options = {
     ...(record.model ? { model: record.model } : {}),
     ...(record.cwd ? { cwd: record.cwd } : {}),
     ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
     maxTurns: payload.max_turns ?? d.max_turns,
     permissionMode: payload.permission_mode ?? d.permission_mode,
-    allowedTools: payload.allowed_tools ?? d.allowed_tools,
+    allowedTools: [
+      ...(payload.allowed_tools ?? d.allowed_tools),
+      // the iii context teaches discovery through the CLI; the matching
+      // allow rule is what lets those calls run headless
+      ...(iiiContext ? ['Bash(iii *)'] : []),
+    ],
     disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
     systemPrompt: payload.system_prompt
       ? payload.system_prompt

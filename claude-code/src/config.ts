@@ -20,6 +20,7 @@ const ConfigSchema = z.object({
   approval_gate: z.boolean().default(false),
   events_stream: z.string().default('agent::events'),
   raw_events_stream: z.string().default('claude::events'),
+  iii_context: z.boolean().default(true),
   claude_executable: z.string().default(''),
 });
 

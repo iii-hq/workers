@@ -22,6 +22,13 @@ events_stream: agent::events
 # user, result, stream_event) mirrored verbatim here, grouped by session_id.
 raw_events_stream: claude::events
 
+# Append the iii runtime context to the system prompt: teaches the agent
+# live discovery against the engine catalog through the iii CLI
+# (engine::functions::list, `iii trigger <fn> --help`). Per-turn override
+# via the iii_context payload field; a caller-supplied system_prompt
+# always wins and gets nothing appended.
+iii_context: true
+
 # Path to the Claude Code CLI binary. Empty = Agent SDK default resolution;
 # set to an absolute path (or "claude") when running the single-file bundle.
 claude_executable: ""

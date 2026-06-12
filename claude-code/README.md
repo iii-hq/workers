@@ -111,6 +111,18 @@ The named fields above cover the common path; everything else the Agent SDK acce
 
 And the full output side is available raw: every message Claude Code emits (`system/init`, `assistant`, `user`, `result`, and `stream_event` token deltas when `includePartialMessages` is set) is mirrored verbatim onto the `claude::events` stream, group_id = session_id. Consumers that want the exact Claude Code wire format read `claude::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
 
+## The agent on the bus
+
+By default every turn's system prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. The matching `Bash(iii *)` allow rule is added automatically so those calls run headless. Local file edits stay on Claude Code's native tools; backend actions go through registered functions.
+
+```bash
+# the agent answers this by querying the live engine itself
+iii trigger claude::run --timeout-ms 300000 \
+  --json '{"prompt":"Which functions does the codex worker register? List the ids.","cwd":"/tmp"}'
+```
+
+Turn it off per call with `"iii_context": false` or globally in `config.yaml`; a caller-supplied `system_prompt` always wins verbatim and gets nothing appended.
+
 ## Plan mode and permission modes
 
 `permission_mode` maps straight onto Claude Code's native modes, per turn:
