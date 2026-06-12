@@ -1,6 +1,13 @@
 /**
- * iii-browser-sdk + harness fanout. Permissions live in the harness's
+ * iii-browser-sdk + harness turn kickoff. Permissions live in the harness's
  * iii-permissions.yaml; the console only ships the mode.
+ *
+ * Transcript content (tokens, message snapshots) renders from
+ * session-manager events reconciled by the conversations layer
+ * (lib/sessions/*); this stream carries only the ephemeral turn surface
+ * from `agent::events`: approvals (turn_state_changed), function-call
+ * lifecycle (running + duration), stop-reason notices, and the agent_end
+ * turn-over signal.
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
@@ -44,7 +51,7 @@ async function* realStream(
   const signal = opts?.signal
   const client = await getIiiClient()
   const sessionId = opts?.sessionId ?? `console-${crypto.randomUUID()}`
-  const messageId = newMessageId()
+  const messageId = opts?.messageId ?? newMessageId()
 
   const queue: AgentEvent[] = []
   let resolveNext: (() => void) | null = null

@@ -22,18 +22,16 @@ export async function getProviderModels(iii: ISdk, provider: string): Promise<Mo
 }
 
 export async function listFromState(iii: ISdk, filter: ListFilter): Promise<Model[]> {
+  const { capability } = filter;
+
   if (filter.provider !== undefined) {
     const models = await getProviderModels(iii, filter.provider);
-    return filter.capability === undefined
-      ? models
-      : models.filter((m) => supportsModel(m, filter.capability!));
+    return capability === undefined ? models : models.filter((m) => supportsModel(m, capability));
   }
 
   // Each provider key stores one Model[]; flatten across providers.
   const out = (await stateListValues<Model[]>(iii, { scope: MODELS_SCOPE })).flat();
-  return filter.capability === undefined
-    ? out
-    : out.filter((m) => supportsModel(m, filter.capability!));
+  return capability === undefined ? out : out.filter((m) => supportsModel(m, capability));
 }
 
 export async function getFromState(iii: ISdk, provider: string, id: string): Promise<Model | null> {

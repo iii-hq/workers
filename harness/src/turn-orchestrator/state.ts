@@ -1,9 +1,12 @@
 /**
- * TurnState + TurnStateRecord types and constructors. Persisted under iii scope
- * `turn_state` keyed by session_id; conversation history lives in `session-tree::*`.
- * State is cleared on deploy, so records are read back typed (no re-parsing).
+ * TurnState + TurnStateRecord types and parsers.
+ *
+ * Persistence uses semantic iii scopes (`turn_state`, `run_request`, …). Conversation
+ * history lives in the session-manager worker (`session::*`) and is reconstructed at
+ * read time, keyed by `session_id`. Recovery lists scope `turn_state` via {@link parseTurnStateRecord}.
  */
 
+import { z } from 'zod';
 import type { Model } from '../models-catalog/types.js';
 import type { AssistantMessage, FunctionResultMessage } from '../types/agent-message.js';
 import type { ExecutedCall, FunctionBatchWork, PreparedCall } from './function-execute/types.js';
@@ -39,6 +42,11 @@ type TurnStateRecordCore = {
   session_id: string;
   turn_count: number;
   max_turns?: number;
+  /**
+   * Caller's per-send id (console `msg-<uuid>`). Seeds the deterministic
+   * session-manager entry ids for this run (see runtime/session.ts runKey).
+   */
+  message_id?: string;
   function_results: FunctionResultMessage[];
   turn_end_emitted: boolean;
   started_at_ms: number;
@@ -85,13 +93,46 @@ export type TurnStateRecord =
       awaiting_approval?: AwaitingApprovalEntry[];
     });
 
-export function newRecord(session_id: string, max_turns?: number): TurnStateRecord {
+const TURN_STATES = [
+  'provisioning',
+  'assistant_streaming',
+  'function_execute',
+  'function_awaiting_approval',
+  'finishing',
+  'stopped',
+  'failed',
+] as const satisfies readonly TurnState[];
+
+/** Minimal structural guard for persisted turn_state — nested fields pass through. */
+const TurnStateRecordSchema = z
+  .object({
+    session_id: z.string(),
+    state: z.enum(TURN_STATES),
+    turn_count: z.number().catch(0),
+    function_results: z.array(z.unknown()).catch([]),
+    turn_end_emitted: z.boolean().catch(false),
+    started_at_ms: z.number().catch(0),
+    updated_at_ms: z.number().catch(0),
+  })
+  .passthrough();
+
+export function parseTurnStateRecord(raw: unknown): TurnStateRecord | null {
+  const result = TurnStateRecordSchema.safeParse(raw);
+  return result.success ? (result.data as TurnStateRecord) : null;
+}
+
+export function newRecord(
+  session_id: string,
+  max_turns?: number,
+  message_id?: string,
+): TurnStateRecord {
   const now = Date.now();
   return {
     session_id,
     state: 'provisioning',
     turn_count: 0,
     max_turns,
+    ...(message_id ? { message_id } : {}),
     last_assistant: null,
     function_results: [],
     turn_end_emitted: false,

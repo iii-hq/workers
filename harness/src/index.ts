@@ -30,7 +30,6 @@ import {
   runWorker,
   waitForShutdown,
 } from './runtime/worker.js';
-import { register as registerSession } from './session/register.js';
 import { register as registerTurnOrchestrator } from './turn-orchestrator/register.js';
 import { register as registerWeb } from './web/register.js';
 
@@ -56,11 +55,6 @@ const WORKERS: readonly WorkerDefinition[] = [
       registerApprovalSettings(iii);
       await initDefaultMode(iii);
     },
-  },
-  {
-    name: 'session',
-    description: 'Session storage (parent-id tree under session-tree::*) backed by iii state.',
-    register: (iii, ctx) => registerSession(iii, ctx),
   },
   {
     name: 'hook-fanout',
@@ -111,7 +105,7 @@ const WORKERS: readonly WorkerDefinition[] = [
   {
     name: 'context-compaction',
     description:
-      'Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd and writes a session-tree Compaction entry when the running token count crosses the configured threshold.',
+      'Out-of-band session-history compactor. Subscribes to agent::events::TurnEnd and writes a session-manager compaction custom entry when the running token count crosses the configured threshold.',
     register: (iii) => registerContextCompaction(iii),
   },
   {

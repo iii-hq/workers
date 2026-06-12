@@ -37,9 +37,9 @@ describe('turns', () => {
   it('produces non-overlapping contiguous ranges', () => {
     const msgs = [user(), asst(), user(), asst(), user(), asst()];
     const ts = turns(msgs);
-    expect(ts[0]!.end).toBe(ts[1]!.start);
-    expect(ts[1]!.end).toBe(ts[2]!.start);
-    expect(ts[2]!.end).toBe(msgs.length);
+    expect(ts[0]?.end).toBe(ts[1]?.start);
+    expect(ts[1]?.end).toBe(ts[2]?.start);
+    expect(ts[2]?.end).toBe(msgs.length);
   });
 });
 

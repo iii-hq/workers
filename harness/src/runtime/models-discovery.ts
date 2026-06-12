@@ -30,7 +30,7 @@ export function deriveModelsUrl(apiUrl: string): string {
     const u = new URL(apiUrl);
     return `${u.protocol}//${u.host}/v1/models`;
   } catch {
-    return apiUrl.replace(/\/+$/, '') + '/models';
+    return `${apiUrl.replace(/\/+$/, '')}/models`;
   }
 }
 

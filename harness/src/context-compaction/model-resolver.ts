@@ -1,6 +1,7 @@
 import { RUN_REQUEST_SCOPE } from '../turn-orchestrator/state.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { readActivePath } from '../runtime/session.js';
 import type { ModelLimit } from './overflow.js';
 
 export type ResolvedModel = {
@@ -68,22 +69,13 @@ export async function resolveModelFromSession(
   session_id: string,
 ): Promise<ResolvedModel> {
   try {
-    const resp = await iii.trigger<
-      unknown,
-      { messages?: Array<{ entry_id?: string; message?: Record<string, unknown> }> }
-    >({
-      function_id: 'session-tree::messages',
-      payload: { session_id },
-      timeoutMs: 10_000,
-    });
-
-    const messages = resp?.messages ?? [];
+    const items = await readActivePath(iii, session_id, { roles: ['assistant'] });
     let providerID: string | null = null;
     let modelID: string | null = null;
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]?.message;
-      if (!m || m.role !== 'assistant') continue;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const m = items[i]?.message as Record<string, unknown> | undefined;
+      if (!m) continue;
       if (!providerID && typeof m.provider === 'string' && m.provider) providerID = m.provider;
       if (!modelID && typeof m.model === 'string' && m.model) modelID = m.model;
       if (providerID && modelID) break;

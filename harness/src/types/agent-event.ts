@@ -73,11 +73,11 @@ export type AgentEvent =
       type: 'compaction_done';
       /** 'async' = TurnEnd-driven background; 'sync' = pre-flight in-turn. */
       mode: 'async' | 'sync';
-      /** The summary written into the session-tree Compaction entry. */
+      /** The summary written into the session-manager compaction entry. */
       summary_text: string;
       /** Estimated tokens of the pre-compaction head (what got summarised). */
       tokens_before: number;
-      /** session-tree entry_id of the new Compaction node. */
+      /** session-manager entry_id of the new compaction custom entry. */
       compaction_entry_id: string;
       /** First entry_id of the preserved tail; null when nothing was kept. */
       tail_start_id: string | null;

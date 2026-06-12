@@ -58,4 +58,5 @@ docs/superpowers/
 
 # Local scratch (untracked, not part of any branch)
 harness-node/
+test-session-manager/
 .pnpm-store/

@@ -6,14 +6,18 @@
 import { TriggerAction, type ISdk } from '../../runtime/iii.js';
 import { createState, stateGet, stateSet } from '../../runtime/state.js';
 import { logger } from '../../runtime/otel.js';
+import {
+  functionResultEntryId,
+  sessionAppendMessage,
+  sessionEnsure,
+} from '../../runtime/session.js';
 import type { AgentMessage } from '../../types/agent-message.js';
 import { RUN_REQUEST_SCOPE, TURN_STATE_SCOPE } from '../state.js';
 import { emit } from '../events.js';
 import { type RunRequest, defaultRunRequest } from '../run-request.js';
 import { toView, type TurnStateView } from '../schemas.js';
 import { type TurnState, type TurnStateRecord } from '../state.js';
-import { loadContextView, loadSessionMessages } from './context-view.js';
-import { persistedTrailingResultIds } from './transcript.js';
+import { loadContextView } from './context-view.js';
 
 /**
  * Turn-step wakes go to the engine's `default` queue. NOTE: engine.config.yaml
@@ -67,6 +71,22 @@ async function enqueueTurnStep(iii: ISdk, session_id: string, state: TurnState):
   }
 }
 
+export type AppendOptions = {
+  /** Opaque correlation echoed on session events (e.g. `{ message_id }`). */
+  origin?: Record<string, unknown>;
+  /**
+   * Deterministic entry id per message — the session-manager idempotency
+   * key (§7 of integration.md). `function_result` messages default to
+   * `fr-<function_call_id>` even without this hook.
+   */
+  entryIdFor?: (msg: AgentMessage, index: number) => string | undefined;
+};
+
+export type LoadMessagesOptions = {
+  /** Entry ids dropped from the provider window (this turn's placeholder). */
+  excludeEntryIds?: string[];
+};
+
 export type TurnStore = {
   loadRecord(session_id: string): Promise<TurnStateRecord | null>;
   /**
@@ -79,32 +99,19 @@ export type TurnStore = {
   saveRecord(rec: TurnStateRecord, previous?: TurnStateRecord | null): Promise<void>;
   writeRecord(rec: TurnStateRecord): Promise<void>;
   ensureSession(session_id: string): Promise<void>;
-  loadMessages(session_id: string): Promise<AgentMessage[]>;
-  /**
-   * Function_call_ids in the trailing `function_result` run, for batch dedup.
-   * Reads the raw message list on the default leaf (not the compaction-rebuilt
-   * window {@link loadMessages} returns), so it skips the paired
-   * `session-tree::compactions` read — the trailing results live in the tail
-   * either way.
-   */
-  loadTrailingResultIds(session_id: string): Promise<Set<string>>;
-  appendMessages(session_id: string, msgs: AgentMessage[]): Promise<void>;
+  loadMessages(session_id: string, opts?: LoadMessagesOptions): Promise<AgentMessage[]>;
+  appendMessages(session_id: string, msgs: AgentMessage[], opts?: AppendOptions): Promise<void>;
   loadRunRequest(session_id: string): Promise<RunRequest>;
   saveRunRequest(session_id: string, request: RunRequest): Promise<void>;
 };
 
 /**
- * Create the session-tree record if absent. Idempotent, but invoked exactly
- * once per run (at `run::start`) rather than wrapping every read/write — the
- * `run::start` gateway always precedes any turn-store load/append for a session,
- * so re-ensuring on each call was pure RPC overhead.
+ * Default deterministic id: function results carry a globally unique
+ * function_call_id, so replayed batches dedupe without caller wiring.
  */
-async function ensureSessionTree(iii: ISdk, session_id: string): Promise<void> {
-  await iii.trigger({
-    function_id: 'session-tree::ensure',
-    payload: { session_id },
-    timeoutMs: 10_000,
-  });
+function defaultEntryId(msg: AgentMessage): string | undefined {
+  if (msg.role === 'function_result') return functionResultEntryId(msg.function_call_id);
+  return undefined;
 }
 
 async function emitTurnStateChanged(
@@ -180,26 +187,35 @@ export function createTurnStore(iii: ISdk): TurnStore {
       }
     },
 
+    /*
+     * Idempotent, but invoked exactly once per run (at `run::start`) rather
+     * than wrapping every read/write — the `run::start` gateway always
+     * precedes any turn-store load/append for a session, so re-ensuring on
+     * each call was pure RPC overhead.
+     */
     async ensureSession(session_id) {
-      await ensureSessionTree(iii, session_id);
+      await sessionEnsure(iii, session_id);
     },
 
-    async loadMessages(session_id) {
-      return loadContextView(iii, session_id);
+    async loadMessages(session_id, opts) {
+      return loadContextView(iii, session_id, opts);
     },
 
-    async loadTrailingResultIds(session_id) {
-      const rows = await loadSessionMessages(iii, session_id);
-      return persistedTrailingResultIds(rows.map((e) => e.message));
-    },
-
-    async appendMessages(session_id, msgs) {
-      if (msgs.length === 0) return;
-      await iii.trigger({
-        function_id: 'session-tree::append_batch',
-        payload: { session_id, messages: msgs, parent_id: null },
-        timeoutMs: 10_000,
-      });
+    /*
+     * Sequential appends without explicit parent_id: each append chains from
+     * the active leaf and moves it, preserving order. Deterministic entry ids
+     * make redelivered steps no-ops (existing entry returned, nothing fired).
+     */
+    async appendMessages(session_id, msgs, opts) {
+      for (const [index, message] of msgs.entries()) {
+        const entry_id = opts?.entryIdFor?.(message, index) ?? defaultEntryId(message);
+        await sessionAppendMessage(iii, {
+          session_id,
+          message,
+          ...(entry_id ? { entry_id } : {}),
+          ...(opts?.origin ? { origin: opts.origin } : {}),
+        });
+      }
     },
 
     async saveRunRequest(session_id, request) {

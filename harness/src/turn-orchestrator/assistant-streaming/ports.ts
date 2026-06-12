@@ -6,7 +6,13 @@ import { z } from 'zod';
 import type { Model } from '../../models-catalog/types.js';
 import { logger } from '../../runtime/otel.js';
 import type { ISdk } from '../../runtime/iii.js';
-import type { AgentMessage, AssistantMessage } from '../../types/agent-message.js';
+import { sessionAppendMessage, sessionUpdateMessage } from '../../runtime/session.js';
+import {
+  emptyAssistant,
+  type AgentMessage,
+  type AssistantMessage,
+} from '../../types/agent-message.js';
+import type { ContentBlock } from '../../types/content.js';
 import type { AgentFunction } from '../../types/function.js';
 import type { AssistantMessageEvent } from '../../types/stream-event.js';
 import { AgentFunctionSchema } from '../../types/provider.js';
@@ -16,7 +22,6 @@ import { buildInput, targetFunctionId, type RouteDecision } from '../provider-ro
 import { streamProviderTurn } from '../provider-stream.js';
 import type { RunRequest } from '../run-request.js';
 import { createTurnStatePorts, type TurnStatePorts } from '../state-runtime/ports.js';
-import { isDuplicateAssistant } from '../state-runtime/transcript.js';
 
 export type StreamContext = {
   session_id: string;
@@ -73,20 +78,39 @@ export type AssistantStreamingPorts = TurnStatePorts & {
     ctx: StreamContext,
     onDelta: DeltaHandler,
   ): Promise<{ final: AssistantMessage | null; error: string | null }>;
-  emitMessageUpdate(
-    session_id: string,
-    message: AssistantMessage,
-    event: AssistantMessageEvent,
-  ): Promise<void>;
+  /**
+   * Once per turn on `agent::events`. Consumers read the terminal
+   * `stop_reason` (length/error/aborted notices) from it — the stored entry
+   * can't carry it (update_message replaces content only). Streaming deltas
+   * are NOT mirrored to agent::events anymore; the durable
+   * `session::message_updated` feed is the live token surface.
+   */
   emitMessageComplete(
     session_id: string,
     message: AssistantMessage,
     body_streamed: boolean,
   ): Promise<void>;
-  persistAssistantIfNew(
+  /**
+   * Append this turn's empty assistant entry before the provider stream
+   * starts (integration.md §10). Idempotent on `entry_id`: a step re-entry
+   * reuses the existing entry and keeps streaming into it.
+   */
+  appendAssistantPlaceholder(
     session_id: string,
-    asst: AssistantMessage,
-    messages: AgentMessage[],
+    entry_id: string,
+    decision: RouteDecision,
+    origin: Record<string, unknown>,
+  ): Promise<void>;
+  /**
+   * Replace the assistant entry's content (full snapshot so far). Tolerant
+   * mode logs and continues — a dropped mid-stream batch only costs one
+   * `message_updated` revision; the final strict update restores parity.
+   */
+  updateAssistantContent(
+    session_id: string,
+    entry_id: string,
+    content: ContentBlock[],
+    opts?: { tolerant?: boolean; origin?: Record<string, unknown> },
   ): Promise<void>;
 };
 
@@ -120,14 +144,6 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
       return { final, error };
     },
 
-    async emitMessageUpdate(session_id, message, event) {
-      await emit(iii, session_id, {
-        type: 'message_update',
-        message,
-        llm_event: event,
-      });
-    },
-
     async emitMessageComplete(session_id, message, body_streamed) {
       await emit(iii, session_id, {
         type: 'message_complete',
@@ -136,15 +152,26 @@ export function createStreamingPorts(iii: ISdk): AssistantStreamingPorts {
       });
     },
 
-    async persistAssistantIfNew(session_id, asst, messages) {
-      if (isDuplicateAssistant(messages, asst)) {
-        logger.warn('finalizeAssistant: skipping duplicate assistant push (re-entry detected)', {
+    async appendAssistantPlaceholder(session_id, entry_id, decision, origin) {
+      await sessionAppendMessage(iii, {
+        session_id,
+        message: emptyAssistant(decision.provider, decision.model),
+        entry_id,
+        origin,
+      });
+    },
+
+    async updateAssistantContent(session_id, entry_id, content, opts) {
+      try {
+        await sessionUpdateMessage(iii, { session_id, entry_id, content, origin: opts?.origin });
+      } catch (err) {
+        if (!opts?.tolerant) throw err;
+        logger.warn('session::update_message failed mid-stream; continuing', {
           session_id,
-          timestamp: asst.timestamp,
+          entry_id,
+          err: String(err),
         });
-        return;
       }
-      await base.appendMessages(session_id, [asst]);
     },
   };
 }
