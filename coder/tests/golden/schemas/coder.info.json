@@ -1,0 +1,133 @@
+{
+  "description": "Report the coder jail: canonical allowed roots (primary first), per-file size caps, response budgets (max_output_bytes, batch_read_budget_bytes, search_response_budget_bytes), listing/search limits, the non-accessible glob patterns, and the default_exclude_globs noise filter applied by tree/search. Call this FIRST when unsure where coder may read or write, or when a path was rejected — paths outside every allowed root need the shell worker's shell::fs::* instead.",
+  "function_id": "coder::info",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No arguments — `coder::info` is a pure discovery call.",
+    "examples": [
+      {}
+    ],
+    "title": "InfoInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "base_paths": {
+        "description": "Canonical absolute paths of the allowed roots, in configuration order. The primary root (index 0) is where relative wire paths resolve; an absolute path is accepted when it canonicalises inside ANY of these. Paths outside every root are rejected — use `shell::fs::*` instead.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "batch_read_budget_bytes": {
+        "description": "Aggregate budget across a single `paths[]` batch call to `coder::read-file`, measured in bytes of returned content (after UTF-8 sanitization — invalid bytes expand to U+FFFD before being counted, so the cap bounds what the caller actually receives). Entries are collected in request order; each entry may consume up to `min(remaining_budget, max_read_bytes)`. An entry reached with zero remaining budget receives a per-entry C213 naming this key, its value, and the bytes already consumed, with recovery guidance. Budget topology: batch reads are governed by this key; single-path full reads by `max_output_bytes`; windowed reads by `max_read_bytes` applied per returned window — `max_read_bytes` is also the per-file IO ceiling for all of them.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "default_exclude_globs": {
+        "description": "Noise-exclusion globs (root-relative, same matching as `non_accessible_globs`): matching paths (node_modules, .git, …) are omitted from `coder::search` results and pruned from `coder::tree` descent — the directory surfaces as a childless `truncated` stub. Hide-only — no access protection. Pass `use_default_excludes: false` on those calls to look inside.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "list_default_page_size": {
+        "description": "Default `page_size` used by `coder::list-folder` when the caller omits it.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "list_max_page_size": {
+        "description": "Hard cap on `page_size` accepted by `coder::list-folder`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "max_output_bytes": {
+        "description": "Context budget for single-path FULL reads in `coder::read-file`, in bytes of returned content. Full reads larger than this return C213 with the file's size/line count and window/stat recovery guidance; a per-call `max_output_bytes` override is available on `coder::read-file` (clamped to `max_read_bytes`).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "max_read_bytes": {
+        "description": "Per-file IO ceiling for `coder::read-file`. Full reads of files larger than this are rejected with C213; windowed reads cap the returned window bytes instead, so larger files stay readable window by window. Also the ceiling for `coder::search` content scanning — larger files are silently skipped during search.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "max_write_bytes": {
+        "description": "Maximum bytes that `coder::create-file` or `coder::update-file` will accept for a single file write. Larger writes are rejected with C213.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "non_accessible_globs": {
+        "description": "Glob patterns matched per root (root-relative). Files whose root-relative path matches are listable but not readable/writable/deletable/creatable; they return C211.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "primary_root": {
+        "description": "Convenience duplicate of `base_paths[0]` — the primary allowed root. Relative paths resolve against this directory.",
+        "type": "string"
+      },
+      "search_default_max_line_bytes": {
+        "description": "Per-line byte cap in `coder::search`: matching considers at most this many bytes of each line, and matched/context lines are truncated to it.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "search_default_max_matches": {
+        "description": "Default `max_matches` used by `coder::search` when the caller omits it.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "search_response_budget_bytes": {
+        "description": "Aggregate byte budget for one `coder::search` response, measured in payload bytes (paths + matched text + context lines). When the budget is hit the response sets `truncated: true` — refine the query or add `include_globs`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "tree_default_depth": {
+        "description": "Default `max_depth` used by `coder::tree` when the caller omits it.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "tree_per_folder_limit": {
+        "description": "Maximum entries returned per folder node by `coder::tree`; folders that exceed this are flagged `truncated`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "version": {
+        "description": "Coder worker version (`CARGO_PKG_VERSION`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "base_paths",
+      "batch_read_budget_bytes",
+      "default_exclude_globs",
+      "list_default_page_size",
+      "list_max_page_size",
+      "max_output_bytes",
+      "max_read_bytes",
+      "max_write_bytes",
+      "non_accessible_globs",
+      "primary_root",
+      "search_default_max_line_bytes",
+      "search_default_max_matches",
+      "search_response_budget_bytes",
+      "tree_default_depth",
+      "tree_per_folder_limit",
+      "version"
+    ],
+    "title": "InfoOutput",
+    "type": "object"
+  }
+}

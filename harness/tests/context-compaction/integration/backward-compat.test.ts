@@ -1,11 +1,12 @@
 /**
  * Backward-compatibility integration test.
  *
- * Verifies that when session-tree::compactions returns a legacy entry with
- * a non-null summary string (anchored update path), the summariser receives
- * a system_prompt containing <previous-summary> with the prior summary text.
+ * Verifies that when the path carries a prior compaction custom entry whose
+ * data omits tail_start_id (old schema, anchored update path), the
+ * summariser receives a system_prompt containing <previous-summary> with the
+ * prior summary text.
  *
- * Also verifies that session-tree::compact is called for the second compaction.
+ * Also verifies that a second compaction custom entry is appended.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { handleAsync } from '../../../src/context-compaction/handler-async.js';
@@ -43,30 +44,34 @@ function buildBackwardCompatMock(opts: {
   const trigger = vi.fn(async (req: MockTriggerReq) => {
     const { function_id, payload } = req;
 
-    if (function_id === 'session-tree::messages') {
-      return { messages: fixtureMessages };
+    if (function_id === 'session::messages') {
+      // Prior compaction rides the path as a custom entry; its data omits
+      // tail_start_id (old schema) — the backward-compat scenario. Only
+      // include it on include_custom reads, like the real worker.
+      const prior = payload.include_custom
+        ? [
+            {
+              entry_id: 'comp-legacy-1',
+              custom: {
+                custom_type: 'compaction',
+                data: {
+                  summary: PRIOR_SUMMARY,
+                  tokens_before: 80_000,
+                  timestamp: Date.now() - 120_000,
+                  // Intentionally omitting tail_start_id (old schema)
+                },
+              },
+            },
+          ]
+        : [];
+      return { messages: [...prior, ...fixtureMessages] };
     }
-    if (function_id === 'session-tree::compactions') {
-      // Return a legacy-style entry: tail_start_id is absent (old schema)
-      // with a free-form summary string — this is the backward-compat scenario.
-      return {
-        entries: [
-          {
-            id: 'comp-legacy-1',
-            summary: PRIOR_SUMMARY,
-            tokens_before: 80_000,
-            timestamp: Date.now() - 120_000,
-            // Intentionally omitting tail_start_id (old schema)
-          },
-        ],
-      };
+    if (function_id === 'session::append') {
+      if ((payload as { custom?: unknown }).custom) compactPayloads.push(payload);
+      return { entry_id: `appended-${Date.now()}`, parent_id: null, timestamp: Date.now() };
     }
-    if (function_id === 'session-tree::compact') {
-      compactPayloads.push(payload);
-      return undefined;
-    }
-    if (function_id === 'session-tree::update_part') {
-      return { ok: true };
+    if (function_id === 'session::update_message') {
+      return { updated: true, revision: 1 };
     }
     if (function_id === 'models::get') {
       return {
@@ -156,38 +161,26 @@ describe('backward-compat: prior compaction (anchored update path)', () => {
       compactPayloads,
     });
 
-    // Fire a TurnEnd that triggers overflow
+    // Fire a turn_end that triggers overflow
     const frame = {
-      groupId: `${largeFixture.session_id}-compat`,
-      event: {
-        data: {
-          type: 'TurnEnd',
-          message: {
-            role: 'assistant',
-            model: 'claude-haiku-4-5',
-            provider: 'anthropic',
-            usage: {
-              input: 185_000,
-              output: 0,
-              cache_read: 0,
-              cache_write: 0,
-            },
-          },
-        },
-      },
+      session_id: `${largeFixture.session_id}-compat`,
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      usage: { input: 185_000, output: 0, cache_read: 0, cache_write: 0 },
     };
 
     await handleAsync(iii, frame);
 
     // The system_prompt must contain the anchored <previous-summary> block
     expect(capturedSystemPrompts).toHaveLength(1);
-    const sysPrompt = capturedSystemPrompts[0]!;
+    const sysPrompt = capturedSystemPrompts[0];
+    expect(sysPrompt).toBeDefined();
     expect(sysPrompt).toContain('<previous-summary>');
     expect(sysPrompt).toContain(PRIOR_SUMMARY);
     expect(sysPrompt).toContain('</previous-summary>');
   });
 
-  it('calls session-tree::compact for the second (updated) compaction', async () => {
+  it('appends a compaction custom entry for the second (updated) compaction', async () => {
     const capturedSystemPrompts: string[] = [];
     const compactPayloads: unknown[] = [];
 
@@ -203,31 +196,18 @@ describe('backward-compat: prior compaction (anchored update path)', () => {
     });
 
     const frame = {
-      groupId: `${largeFixture.session_id}-compat2`,
-      event: {
-        data: {
-          type: 'TurnEnd',
-          message: {
-            role: 'assistant',
-            model: 'claude-haiku-4-5',
-            provider: 'anthropic',
-            usage: {
-              input: 185_000,
-              output: 0,
-              cache_read: 0,
-              cache_write: 0,
-            },
-          },
-        },
-      },
+      session_id: `${largeFixture.session_id}-compat2`,
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      usage: { input: 185_000, output: 0, cache_read: 0, cache_write: 0 },
     };
 
     await handleAsync(iii, frame);
 
-    // Compact must be called to persist the second (updated) compaction entry
+    // The second (updated) compaction entry must be appended
     expect(compactPayloads.length).toBeGreaterThan(0);
-    const cp = compactPayloads[0] as Record<string, unknown>;
-    expect(typeof cp.summary).toBe('string');
-    expect((cp.summary as string).length).toBeGreaterThan(0);
+    const cp = compactPayloads[0] as { custom: { data: { summary: string } } };
+    expect(typeof cp.custom.data.summary).toBe('string');
+    expect(cp.custom.data.summary.length).toBeGreaterThan(0);
   });
 });

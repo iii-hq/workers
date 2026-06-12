@@ -1,0 +1,78 @@
+{
+  "C210_config_both_root_forms_set": {
+    "code": "C210",
+    "message": "both `base_path` and `base_paths` are set; set either `base_path` or `base_paths` in config.yaml, not both. Remove `base_path` and keep only `base_paths` (legacy `base_path` is honored as a one-entry list)."
+  },
+  "C210_create_bad_mode": {
+    "code": "C210",
+    "message": "bad mode \"9z9\": invalid digit found in string"
+  },
+  "C210_move_cross_root_dir": {
+    "code": "C210",
+    "message": "cross-root directory moves are unsupported; move files individually"
+  },
+  "C210_move_dst_is_directory": {
+    "code": "C210",
+    "message": "move-dst-dir: destination is a directory; name the target file inside it (e.g. move-dst-dir/move-dir-src.txt)"
+  },
+  "C210_replace_undefined_capture_ref": {
+    "code": "C210",
+    "message": "replacement references capture group `${name}` but pattern \"iii\\.registerFunction\\(.*\" defines 0 capture groups and no group named `name` — the regex engine expands undefined references to the EMPTY STRING, silently corrupting the file. Escape literal `$` as `$$` (write `$${name}` to output a literal `${name}` — common when the replacement contains JS/TS template literals), or add the capture group to the pattern"
+  },
+  "C211_delete_subtree_blocked": {
+    "code": "C211",
+    "message": "<ROOT0>/blocked-dir: subtree contains non-accessible entries; refusing recursive delete."
+  },
+  "C211_move_missing_src": {
+    "code": "C211",
+    "message": "no-such-move-src.txt: not found or not accessible. Verify the path with coder::list-folder or coder::tree."
+  },
+  "C211_read_glob_denied": {
+    "code": "C211",
+    "message": ".env: not found or not accessible. Verify the path with coder::list-folder or coder::tree."
+  },
+  "C211_read_missing": {
+    "code": "C211",
+    "message": "missing.txt: not found or not accessible. Verify the path with coder::list-folder or coder::tree."
+  },
+  "C213_batch_budget_exhausted": {
+    "code": "C213",
+    "message": "batch budget exhausted before reaching budget-b.txt: batch_read_budget_bytes is 5 and earlier entries already returned 5 bytes of content (after UTF-8 sanitization). To recover: request fewer or smaller entries, use per-entry line_from/line_to windows, or raise batch_read_budget_bytes in coder config."
+  },
+  "C213_full_read_output_budget_exceeded": {
+    "code": "C213",
+    "message": "over-output.txt: a full read would return 9 bytes of content (file is 9 bytes, 3 lines), which exceeds max_output_bytes (8). To recover: read a slice with line_from/line_to, probe metadata cheaply with stat: true, or re-call with a higher per-call max_output_bytes (values above max_read_bytes are clamped)."
+  },
+  "C213_read_cap_exceeded": {
+    "code": "C213",
+    "message": "big.txt is 16 bytes, which exceeds max_read_bytes (8). Read a smaller file, raise max_read_bytes in coder config, or read a slice with line_from/line_to."
+  },
+  "C213_write_cap_exceeded": {
+    "code": "C213",
+    "message": "big-create.txt is 16 bytes, which exceeds max_write_bytes (8). Split the content into smaller files or raise max_write_bytes in coder config."
+  },
+  "C215_absolute_outside_all_roots": {
+    "code": "C215",
+    "message": "path is outside every allowed root: /etc/passwd. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths."
+  },
+  "C215_dangling_symlink": {
+    "code": "C215",
+    "message": "dangle/child.txt: dangling symlink in path: <ROOT0>/dangle. Allowed roots: <ROOT0>, <ROOT1>. Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths."
+  },
+  "C215_relative_dotdot_escape": {
+    "code": "C215",
+    "message": "path escapes the primary allowed root <ROOT0>: ../escape.txt. Relative paths resolve against <ROOT0>; use an absolute path inside an allowed root instead."
+  },
+  "C216_io_passthrough": {
+    "code": "C216",
+    "message": "synthetic io failure"
+  },
+  "C217_create_exists_without_overwrite": {
+    "code": "C217",
+    "message": "exists.txt already exists; pass overwrite=true to replace"
+  },
+  "C217_move_dst_exists_without_overwrite": {
+    "code": "C217",
+    "message": "move-dst.txt already exists; pass overwrite=true to replace"
+  }
+}

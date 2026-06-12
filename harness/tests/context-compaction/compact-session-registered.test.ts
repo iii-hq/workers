@@ -1,7 +1,7 @@
 /**
  * End-to-end test for `context-compaction::compact_session` invoked via the
  * REGISTERED handler (not handleSync directly). Mirrors the UI `/compact`
- * slash-command path: provider/model in payload, session-tree mock that
+ * slash-command path: provider/model in payload, session-manager mock that
  * returns a realistic transcript.
  *
  * The bug we're chasing: the UI reports `compacted — 0 tokens summarised
@@ -89,23 +89,14 @@ function buildSdk(opts: {
       else stateStore.set(key, newValue);
       return { old_value: oldValue ?? null, new_value: newValue ?? null };
     }
-    if (fn === 'session-tree::messages') {
+    if (fn === 'session::messages') {
       return { messages: opts.sessionEntries };
     }
-    if (fn === 'session-tree::compactions') {
-      return { entries: [] };
+    if (fn === 'session::append') {
+      return { entry_id: `appended-${Date.now()}`, parent_id: null, timestamp: Date.now() };
     }
-    if (fn === 'session-tree::compact') {
-      return { entry_id: `compaction-${Date.now()}` };
-    }
-    if (fn === 'session-tree::append') {
-      return { entry_id: `appended-${Date.now()}` };
-    }
-    if (fn === 'session-tree::append_synthetic') {
-      return { entry_id: `synthetic-${Date.now()}` };
-    }
-    if (fn === 'session-tree::update_parts') {
-      return { updated: 0 };
+    if (fn === 'session::update_message') {
+      return { updated: true, revision: 1 };
     }
     if (fn === 'models::get') {
       return { context_window: 200_000, max_output_tokens: 4_096 };

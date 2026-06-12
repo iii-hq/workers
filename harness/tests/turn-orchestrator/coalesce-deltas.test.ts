@@ -150,56 +150,56 @@ describe('createDeltaCoalescer — flush triggers', () => {
 
 describe('runStreamTurn wires the coalescer', () => {
   function mkPorts(drive: (onDelta: DeltaHandler) => Promise<void>) {
-    const emits: AssistantMessageEvent[] = [];
+    const updates: Array<{ entry_id: string; content: unknown }> = [];
     const ports = {
       streamTurn: async (_ctx: StreamContext, onDelta: DeltaHandler) => {
         await drive(onDelta);
         return { final: emptyAssistant(), error: null };
       },
-      emitMessageUpdate: async (_sid: string, _msg: unknown, event: AssistantMessageEvent) => {
-        emits.push(event);
+      updateAssistantContent: async (_sid: string, entry_id: string, content: unknown) => {
+        updates.push({ entry_id, content });
       },
     } as unknown as AssistantStreamingPorts;
-    return { ports, emits };
+    return { ports, updates };
   }
 
-  it('collapses a run of same-type deltas into a single emitMessageUpdate (via the final flush)', async () => {
-    const { ports, emits } = mkPorts(async (onDelta) => {
+  it('collapses a run of same-type deltas into a single session::update_message (via the final flush)', async () => {
+    const { ports, updates } = mkPorts(async (onDelta) => {
       await onDelta(P, td('a'));
       await onDelta(P, td('b'));
       await onDelta(P, td('c'));
     });
 
-    const outcome = await runStreamTurn(ports, 'sid', {} as StreamContext);
+    const outcome = await runStreamTurn(ports, 'sid', 'asst-1', {} as StreamContext);
 
-    expect(emits).toHaveLength(1);
-    expect((emits[0] as { delta: string }).delta).toBe('abc');
     expect(outcome.body_streamed).toBe(true);
+    // One durable content snapshot per coalesced flush.
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.entry_id).toBe('asst-1');
   });
 
-  it('passes discrete events through 1:1, in order, around coalesced text', async () => {
-    const { ports, emits } = mkPorts(async (onDelta) => {
+  it('flushes one content snapshot per discrete event, in order, around coalesced text', async () => {
+    const { ports, updates } = mkPorts(async (onDelta) => {
       await onDelta(P, td('a'));
       await onDelta(P, td('b'));
       await onDelta(P, { type: 'text_end', partial: P });
       await onDelta(P, td('c'));
     });
 
-    await runStreamTurn(ports, 'sid', {} as StreamContext);
+    await runStreamTurn(ports, 'sid', 'asst-1', {} as StreamContext);
 
-    expect(emits.map((e) => e.type)).toEqual(['text_delta', 'text_end', 'text_delta']);
-    expect((emits[0] as { delta: string }).delta).toBe('ab');
-    expect((emits[2] as { delta: string }).delta).toBe('c');
+    // coalesced(ab) + text_end + final flush(c) = three snapshots.
+    expect(updates).toHaveLength(3);
+    expect(updates.every((u) => u.entry_id === 'asst-1')).toBe(true);
   });
 
   it('sets body_streamed=false when no text/thinking deltas were seen', async () => {
-    const { ports, emits } = mkPorts(async (onDelta) => {
+    const { ports } = mkPorts(async (onDelta) => {
       await onDelta(P, { type: 'usage', usage: { output: 1 } });
     });
 
-    const outcome = await runStreamTurn(ports, 'sid', {} as StreamContext);
+    const outcome = await runStreamTurn(ports, 'sid', 'asst-1', {} as StreamContext);
 
     expect(outcome.body_streamed).toBe(false);
-    expect(emits.map((e) => e.type)).toEqual(['usage']);
   });
 });

@@ -22,19 +22,32 @@ fn path_matches(v: &Value) -> &[Value] {
         .unwrap_or(&[])
 }
 
+/// Responses carry canonical absolute paths; features speak
+/// base-relative, so anchor expectations at the scenario base.
+fn abs_path(world: &CoderWorld, rel: &str) -> String {
+    world
+        .base_path
+        .as_ref()
+        .expect("base_path set")
+        .join(rel)
+        .display()
+        .to_string()
+}
+
 #[then(regex = r#"^the search has a content match for "([^"]+)" at line (\d+)$"#)]
 fn search_has_content_match(world: &mut CoderWorld, path: String, line: u64) {
     if world.iii.is_none() {
         return;
     }
+    let expected = abs_path(world, &path);
     let v = last_ok(world);
     let arr = content_matches(v);
     let found = arr
         .iter()
-        .any(|m| m["path"].as_str() == Some(path.as_str()) && m["line"].as_u64() == Some(line));
+        .any(|m| m["path"].as_str() == Some(expected.as_str()) && m["line"].as_u64() == Some(line));
     assert!(
         found,
-        "expected content match for {path:?} at line {line}; got: {arr:?}"
+        "expected content match for {expected:?} at line {line}; got: {arr:?}"
     );
 }
 
@@ -43,14 +56,15 @@ fn search_has_content_match_any_line(world: &mut CoderWorld, path: String) {
     if world.iii.is_none() {
         return;
     }
+    let expected = abs_path(world, &path);
     let v = last_ok(world);
     let arr = content_matches(v);
     let found = arr
         .iter()
-        .any(|m| m["path"].as_str() == Some(path.as_str()));
+        .any(|m| m["path"].as_str() == Some(expected.as_str()));
     assert!(
         found,
-        "expected at least one content match for {path:?}; got: {arr:?}"
+        "expected at least one content match for {expected:?}; got: {arr:?}"
     );
 }
 
@@ -59,14 +73,15 @@ fn search_lacks_content_match(world: &mut CoderWorld, path: String) {
     if world.iii.is_none() {
         return;
     }
+    let expected = abs_path(world, &path);
     let v = last_ok(world);
     let arr = content_matches(v);
     let found = arr
         .iter()
-        .any(|m| m["path"].as_str() == Some(path.as_str()));
+        .any(|m| m["path"].as_str() == Some(expected.as_str()));
     assert!(
         !found,
-        "unexpected content match for {path:?}; got: {arr:?}"
+        "unexpected content match for {expected:?}; got: {arr:?}"
     );
 }
 
@@ -75,12 +90,13 @@ fn search_has_path_match(world: &mut CoderWorld, path: String) {
     if world.iii.is_none() {
         return;
     }
+    let expected = abs_path(world, &path);
     let v = last_ok(world);
     let arr = path_matches(v);
     let found = arr
         .iter()
-        .any(|m| m["path"].as_str() == Some(path.as_str()));
-    assert!(found, "expected path match for {path:?}; got: {arr:?}");
+        .any(|m| m["path"].as_str() == Some(expected.as_str()));
+    assert!(found, "expected path match for {expected:?}; got: {arr:?}");
 }
 
 #[then(regex = r#"^the search has no path match for "([^"]+)"$"#)]
@@ -88,12 +104,16 @@ fn search_lacks_path_match(world: &mut CoderWorld, path: String) {
     if world.iii.is_none() {
         return;
     }
+    let expected = abs_path(world, &path);
     let v = last_ok(world);
     let arr = path_matches(v);
     let found = arr
         .iter()
-        .any(|m| m["path"].as_str() == Some(path.as_str()));
-    assert!(!found, "unexpected path match for {path:?}; got: {arr:?}");
+        .any(|m| m["path"].as_str() == Some(expected.as_str()));
+    assert!(
+        !found,
+        "unexpected path match for {expected:?}; got: {arr:?}"
+    );
 }
 
 #[then(regex = r#"^the search truncated is (true|false)$"#)]

@@ -86,6 +86,14 @@ export interface ChatStreamOptions {
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
+   * Per-send message id (`msg-<uuid>`). The harness derives the user
+   * message's session-manager entry id from it (`<message_id>-user-0`), so
+   * the console's optimistic user message reconciles in place when the
+   * `session::message_added` snapshot arrives. The real backend mints one
+   * when omitted.
+   */
+  messageId?: string
+  /**
    * Stable session_id for the chat conversation. All `stream()` calls
    * for the same conversation must pass the same value so the engine
    * groups every turn under one session in the traces UI.
@@ -142,9 +150,9 @@ export interface ChatBackend {
    */
   abortRun?(sessionId: string): Promise<void>
   /**
-   * Powers `/compact`. Compacts the session-tree (the single source of
-   * truth) directly. `contextWindow` skips the server's `models::get`
-   * lookup when known.
+   * Powers `/compact`. Compacts the session-manager transcript (the single
+   * source of truth) directly. `contextWindow` skips the server's
+   * `models::get` lookup when known.
    */
   compactSession?(
     sessionId: string,

@@ -52,7 +52,7 @@ function makeStateIii() {
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
-        const v = p['value'];
+        const v = p.value;
         const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
           store.delete(key);
@@ -63,7 +63,7 @@ function makeStateIii() {
       }
       if (function_id === 'state::update') {
         const key = payloadStoreKey(p as { scope?: string; key?: string });
-        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
         const oldValue = store.has(key) ? store.get(key) : null;
         let newValue: unknown = oldValue;
         for (const op of ops) {
@@ -131,7 +131,7 @@ function makeRacyStateIii(writeLatencyMs: number) {
       }
       if (function_id === 'state::set') {
         await new Promise((r) => setTimeout(r, writeLatencyMs));
-        const v = p['value'];
+        const v = p.value;
         const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
           store.delete(key);
@@ -143,7 +143,7 @@ function makeRacyStateIii(writeLatencyMs: number) {
       if (function_id === 'state::update') {
         await new Promise((r) => setTimeout(r, writeLatencyMs));
         const key = payloadStoreKey(p as { scope?: string; key?: string });
-        const ops = (p['ops'] ?? []) as Array<{ type: string; value?: unknown }>;
+        const ops = (p.ops ?? []) as Array<{ type: string; value?: unknown }>;
         const oldValue = store.has(key) ? store.get(key) : null;
         let newValue: unknown = oldValue;
         for (const op of ops) {
@@ -176,7 +176,7 @@ function makeFailingUpdateIii() {
         return v !== undefined ? v : null;
       }
       if (function_id === 'state::set') {
-        const v = p['value'];
+        const v = p.value;
         const key = payloadStoreKey(p as { scope?: string; key?: string });
         if (v === null || v === undefined) {
           store.delete(key);
@@ -209,7 +209,7 @@ describe('acquireLease wire shape', () => {
           const p = payload as Record<string, unknown>;
           if (function_id === 'state::get') return null;
           if (function_id === 'state::update') {
-            const ops = (p['ops'] ?? []) as Array<{
+            const ops = (p.ops ?? []) as Array<{
               type: string;
               path?: unknown;
               value?: unknown;

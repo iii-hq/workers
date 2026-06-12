@@ -3,7 +3,7 @@ Feature: coder::delete-file
   Per-path results in `results[]`. Missing paths are idempotent
   successes with `removed: false`. Directories need `recursive: true`;
   recursive deletes refuse to descend through non-accessible entries
-  and the worker refuses to delete `base_path` itself.
+  and the worker refuses to delete an allowed root itself.
 
   Background:
     Given the iii engine is reachable
@@ -84,7 +84,7 @@ Feature: coder::delete-file
       """
     Then the result for ".env" failed with code "C211"
 
-  Scenario: deleting base_path itself fails with C210
+  Scenario: deleting an allowed root itself fails with C210
     When I call coder::delete-file with payload:
       """
       {"paths": ["."]}

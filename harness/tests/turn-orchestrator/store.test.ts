@@ -5,6 +5,7 @@ import {
   shouldWakeStep,
 } from '../../src/turn-orchestrator/state-runtime/store.js';
 import { newRecord } from '../../src/turn-orchestrator/state.js';
+import { FakeSessionManager } from '../_helpers/fakeSessionManager.js';
 
 function fakeIii(): { iii: ISdk; emits: Array<{ session_id: string; event: unknown }> } {
   const emits: Array<{ session_id: string; event: unknown }> = [];
@@ -108,26 +109,28 @@ describe('saveRecord no-op suppression', () => {
   });
 });
 
-describe('session-tree call reduction', () => {
+describe('session-manager call reduction', () => {
   function recordingIii(): { iii: ISdk; calls: string[] } {
     const calls: string[] = [];
+    const sessions = new FakeSessionManager();
     const iii = {
-      trigger: vi.fn(async ({ function_id }: { function_id: string }) => {
-        calls.push(function_id);
-        if (function_id === 'session-tree::messages') return { messages: [] };
-        if (function_id === 'session-tree::compactions') return { entries: [] };
-        return null;
-      }),
+      trigger: vi.fn(
+        async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
+          calls.push(function_id);
+          const handled = await sessions.handle(function_id, payload);
+          if (handled !== undefined) return handled;
+          return null;
+        },
+      ),
     } as unknown as ISdk;
     return { iii, calls };
   }
 
-  it('loadMessages reads the window without re-ensuring the session', async () => {
+  it('loadMessages reads the window in one paginated read without re-ensuring', async () => {
     const { iii, calls } = recordingIii();
     await createTurnStore(iii).loadMessages('sess-a');
-    expect(calls).toContain('session-tree::messages');
-    expect(calls).toContain('session-tree::compactions');
-    expect(calls).not.toContain('session-tree::ensure');
+    expect(calls.filter((c) => c === 'session::messages')).toHaveLength(1);
+    expect(calls).not.toContain('session::ensure');
   });
 
   it('appendMessages writes without re-ensuring the session', async () => {
@@ -138,12 +141,11 @@ describe('session-tree call reduction', () => {
       timestamp: 1,
     };
     await createTurnStore(iii).appendMessages('sess-a', [msg]);
-    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
-    expect(calls).not.toContain('session-tree::append');
-    expect(calls).not.toContain('session-tree::ensure');
+    expect(calls.filter((c) => c === 'session::append')).toHaveLength(1);
+    expect(calls).not.toContain('session::ensure');
   });
 
-  it('appendMessages batches a multi-message call into one trigger', async () => {
+  it('appendMessages issues one session::append per message', async () => {
     const { iii, calls } = recordingIii();
     const mk = (text: string) => ({
       role: 'user' as const,
@@ -151,20 +153,19 @@ describe('session-tree call reduction', () => {
       timestamp: 1,
     });
     await createTurnStore(iii).appendMessages('sess-a', [mk('a'), mk('b'), mk('c')]);
-    expect(calls.filter((c) => c === 'session-tree::append_batch')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'session::append')).toHaveLength(3);
   });
 
   it('appendMessages on an empty list triggers nothing', async () => {
     const { iii, calls } = recordingIii();
     await createTurnStore(iii).appendMessages('sess-a', []);
-    expect(calls).not.toContain('session-tree::append_batch');
-    expect(calls).not.toContain('session-tree::append');
+    expect(calls).not.toContain('session::append');
   });
 
-  it('ensureSession is the sole trigger of session-tree::ensure', async () => {
+  it('ensureSession is the sole trigger of session::ensure', async () => {
     const { iii, calls } = recordingIii();
     await createTurnStore(iii).ensureSession('sess-a');
-    expect(calls.filter((c) => c === 'session-tree::ensure')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'session::ensure')).toHaveLength(1);
   });
 });
 

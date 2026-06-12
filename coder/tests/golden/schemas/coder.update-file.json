@@ -1,0 +1,338 @@
+{
+  "description": "Apply batched line-oriented and regex edits across one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"ops\": [...]}]}. Line ops: { op: 'insert', at_line, content } | { op: 'remove', from_line, to_line } | { op: 'update_lines', from_line, to_line, content } — 1-based, inclusive, applied bottom-up. Regex op: { op: 'replace', pattern, replacement, ignore_case?, dot_matches_newline?, expect_matches? } runs on the file body after line ops. Replace large regions WITHOUT quoting them: two short anchors joined by .*? with dot_matches_newline: true — always prefer wildcards over pasting the block into the pattern. expect_matches: 1 turns a silent multi-site clobber into a safe pre-write C210; expect_matches: 0 asserts absence. In `replacement`, $1/${name} are capture references and a literal $ must be written $$ (JS/TS template literals: `Hello, $${name}!`); undefined references fail pre-write with C210. Each file commits atomically via temp + rename. On success each applied line op returns a bounded post-apply echo (±2 context lines); regex replace ops return up to 5 per-match-site echoes (first + last line of each replaced region, inner lines elided) — verify from the echoes instead of re-reading the file. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "function_id": "coder::update-file",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "UpdateFileSpec": {
+        "properties": {
+          "ops": {
+            "items": {
+              "$ref": "#/definitions/UpdateOp"
+            },
+            "type": "array"
+          },
+          "path": {
+            "description": "Path relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ops",
+          "path"
+        ],
+        "type": "object"
+      },
+      "UpdateOp": {
+        "oneOf": [
+          {
+            "description": "Insert `content` before line `at_line` (1-based). `at_line = lines+1` appends to end of file.",
+            "properties": {
+              "at_line": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "content": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "insert"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "at_line",
+              "content",
+              "op"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Delete lines `from_line..=to_line` (1-based, inclusive).",
+            "properties": {
+              "from_line": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "op": {
+                "enum": [
+                  "remove"
+                ],
+                "type": "string"
+              },
+              "to_line": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "from_line",
+              "op",
+              "to_line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Overwrite lines `from_line..=to_line` with `content`.",
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "from_line": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "op": {
+                "enum": [
+                  "update_lines"
+                ],
+                "type": "string"
+              },
+              "to_line": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "content",
+              "from_line",
+              "op",
+              "to_line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Replace all regex matches in the file body (after line ops).",
+            "properties": {
+              "dot_matches_newline": {
+                "default": false,
+                "description": "When true, `.` in `pattern` also matches `\\n`, so a short anchored pattern like `\"fn parse_config\\\\(.*?\\\\n\\\\}\"` replaces a whole multi-line region without quoting it — prefer two short anchors joined by `.*?` over pasting the block into the pattern. Without this flag (the default), `.` does not cross newlines and a multi-line pattern silently matches nothing.",
+                "type": "boolean"
+              },
+              "expect_matches": {
+                "default": null,
+                "description": "Expected number of matches for this op. When set and the actual count differs, this FILE fails with C210 and nothing is written to it (other files in the batch still apply). Set `expect_matches: 1` to make a targeted read-free edit safe — a mismatch means the pattern is anchored too loosely or matches nothing. Set `expect_matches: 0` to assert ABSENCE: the op succeeds only when nothing matches (the replacement is unused). Omit to replace all matches unconditionally.",
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "ignore_case": {
+                "default": false,
+                "type": "boolean"
+              },
+              "op": {
+                "enum": [
+                  "replace"
+                ],
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              },
+              "replacement": {
+                "description": "Substitution text for each match. Capture references expand: `$1`/`${1}` by index (`$0` is the whole match) and `$name`/`${name}` by name. A literal `$` MUST be written `$$` — JS/TS template literals in a replacement are the classic collision: write `Hello, $${name}!` to output `Hello, ${name}!`. Unbraced references consume the longest `[0-9A-Za-z_]` run, so `$1a` means a group named \"1a\", NOT group 1 then \"a\" (use `${1}a`). A reference to a group the pattern does not define fails pre-write with C210 — nothing is written. References are validated even when the replacement goes unused (e.g. `expect_matches: 0`): the replacement must be well-formed even when unused.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pattern",
+              "replacement"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "examples": [
+      {
+        "files": [
+          {
+            "ops": [
+              {
+                "at_line": 1,
+                "content": "// generated by coder\n",
+                "op": "insert"
+              },
+              {
+                "content": "pub fn hello() {\n    println!(\"hello\");\n}\n",
+                "from_line": 5,
+                "op": "update_lines",
+                "to_line": 7
+              },
+              {
+                "dot_matches_newline": true,
+                "expect_matches": 1,
+                "op": "replace",
+                "pattern": "// BEGIN legacy.*?// END legacy",
+                "replacement": "// removed"
+              }
+            ],
+            "path": "src/lib.rs"
+          }
+        ]
+      }
+    ],
+    "properties": {
+      "files": {
+        "items": {
+          "$ref": "#/definitions/UpdateFileSpec"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "files"
+    ],
+    "title": "UpdateFileInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "OpEcho": {
+        "description": "Post-apply snapshot of the region affected by one op. Line ops echo the affected region with ±2 context lines; regex `replace` ops emit one echo per match site (up to 5, no context): the FIRST and LAST line of the post-replace region, with `elided` set to the inner line count when the region spans more than 2 lines (single-line replacements echo just that line). Each site carries `total_replacements`. Provides just enough context to verify the edit landed in the right place without flooding the LLM context with the full file body.",
+        "properties": {
+          "elided": {
+            "description": "Number of middle lines elided from a large region: for line ops, set when the affected region exceeded the per-echo cap; for replace sites, the count of inner lines between the region's echoed first and last line (set when the region spans >2 lines).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "from_line": {
+            "description": "1-based line number of the first echoed line (after all ops applied).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lines": {
+            "description": "The echoed lines, post-apply. When the region is large, middle lines are elided and `elided` is set to indicate how many were skipped.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op_index": {
+            "description": "Index of the op in the request's ops array (0-based).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total_replacements": {
+            "description": "Total number of replacements the regex op made across the whole file (set only on replace-op site echoes, duplicated on each site). Sites are capped at 5 — when more matched, this count is the only record of the extras.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from_line",
+          "lines",
+          "op_index"
+        ],
+        "type": "object"
+      },
+      "UpdateFileResult": {
+        "properties": {
+          "applied": {
+            "description": "Number of operations applied (only meaningful when `success`).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "echoes": {
+            "description": "Per-op bounded post-apply echoes for edit verification; each applied op returns a snapshot of the affected region (±2 context lines) so the caller can confirm the edit landed at the right position without receiving the full file body. See `OpEcho` for field semantics. Empty on failure. Always present on the wire.",
+            "items": {
+              "$ref": "#/definitions/OpEcho"
+            },
+            "type": "array"
+          },
+          "echoes_truncated": {
+            "description": "True when the total echo budget (~4 KiB) was exhausted before all op echoes could be emitted. Use `coder::read-file` to inspect the full result if needed. Always present on the wire.",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WireError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured error for this entry. `code` is stable for programmatic branching (e.g. `\"C211\"` for not-found-or-denied; `\"C210\"` for bad input such as overlapping ops). `message` carries the corrective action an LLM agent needs to make a successful second call."
+          },
+          "new_line_count": {
+            "description": "Final line count after applying (only meaningful when `success`).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Canonical absolute path (resolved through the jail); the caller's input verbatim when resolution failed.",
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "applied",
+          "echoes",
+          "echoes_truncated",
+          "new_line_count",
+          "path",
+          "success"
+        ],
+        "type": "object"
+      },
+      "WireError": {
+        "description": "Structured per-entry error as it appears on the wire.\n\nUse `code` for stable programmatic branching (e.g. `\"C211\"` for not-found-or-denied). `message` carries the human/LLM-readable problem description plus the corrective next call.",
+        "properties": {
+          "code": {
+            "description": "Stable error code, e.g. \"C211\". See the README error table.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human/LLM-readable message: problem + actual values + corrective next call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "results": {
+        "items": {
+          "$ref": "#/definitions/UpdateFileResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "results"
+    ],
+    "title": "UpdateFileOutput",
+    "type": "object"
+  }
+}

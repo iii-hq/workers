@@ -1,13 +1,15 @@
 /**
- * Async (TurnEnd-driven) compaction. Mirrors Rust lib.rs::handle_event.
- * Accepts both camelCase ({groupId, event:{data}}) and snake_case
- * ({group_id, data}) envelopes.
+ * Async (turn_end-driven) compaction. Woken by a turn-orchestrator queue
+ * message (`context-compaction::on_turn_end`) carrying a typed
+ * `{ session_id, usage, provider, model, model_limit? }` payload.
  */
 
 import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { readActivePath } from '../runtime/session.js';
 import type { ModelContextLimit } from '../types/agent-event.js';
+import type { Usage } from '../types/stream-event.js';
 import { compactionConfig } from './config.js';
 import {
   isSummarizeOk,
@@ -18,38 +20,32 @@ import { acquireLease, releaseLease } from './lease.js';
 import { fetchModelLimit } from './model-resolver.js';
 import { isOverflow } from './overflow.js';
 
-export function extractEventPayload(
-  payload: unknown,
-): { session_id: string; event: unknown } | null {
+export type OnTurnEndPayload = {
+  session_id: string;
+  usage: Usage | null;
+  provider: string;
+  model: string;
+  /**
+   * Threaded from the turn record's `model_meta` when the catalog resolved at
+   * turn start; lets the compactor skip its `models::get` fetch.
+   */
+  model_limit?: ModelContextLimit;
+};
+
+/** Parse the queue payload enqueued by turn-orchestrator at turn_end. */
+export function parseOnTurnEnd(payload: unknown): OnTurnEndPayload | null {
   if (!payload || typeof payload !== 'object') return null;
   const obj = payload as Record<string, unknown>;
-  const session_id =
-    (typeof obj.groupId === 'string' && obj.groupId) ||
-    (typeof obj.group_id === 'string' && obj.group_id) ||
-    null;
-  if (!session_id) return null;
-  let event: unknown = null;
-  if (
-    obj.event &&
-    typeof obj.event === 'object' &&
-    'data' in (obj.event as Record<string, unknown>)
-  ) {
-    event = (obj.event as Record<string, unknown>).data;
-  } else if ('data' in obj) {
-    event = obj.data;
-  }
-  return { session_id, event };
-}
-
-export function turnEndUsage(event: unknown): Record<string, unknown> | null {
-  if (!event || typeof event !== 'object') return null;
-  const obj = event as Record<string, unknown>;
-  const kind = typeof obj.type === 'string' ? obj.type : null;
-  if (kind !== 'TurnEnd' && kind !== 'turn_end') return null;
-  const msg = obj.message as Record<string, unknown> | undefined;
-  const usage = msg?.usage;
-  if (!usage || typeof usage !== 'object') return null;
-  return usage as Record<string, unknown>;
+  if (typeof obj.session_id !== 'string' || !obj.session_id) return null;
+  return {
+    session_id: obj.session_id,
+    usage: obj.usage && typeof obj.usage === 'object' ? (obj.usage as Usage) : null,
+    provider: typeof obj.provider === 'string' ? obj.provider : '',
+    model: typeof obj.model === 'string' ? obj.model : '',
+    ...(obj.model_limit && typeof obj.model_limit === 'object'
+      ? { model_limit: obj.model_limit as ModelContextLimit }
+      : {}),
+  };
 }
 
 type ResolvedModel = {
@@ -59,43 +55,31 @@ type ResolvedModel = {
 } | null;
 
 /**
- * The fields we read off the orchestrator-produced `turn_end` event. The
- * message is always an AssistantMessage, so provider/model are present (empty
- * strings on synthetic/error turns); model_limit is threaded when the catalog
- * resolved at turn start.
+ * Resolve the model limit from the payload's provider/model, falling back to
+ * the session's most recent assistant message when either is missing. When the
+ * payload carries a threaded `model_limit` (catalog resolved at turn start),
+ * the `models::get` fetch is skipped entirely.
  */
-type TurnEndEventView = {
-  message: { provider: string; model: string };
-  model_limit?: ModelContextLimit;
-};
-
-export async function resolveModelFromEvent(
+export async function resolveModel(
   iii: ISdk,
   session_id: string,
-  event: unknown,
+  provider: string,
+  model: string,
+  model_limit?: ModelContextLimit,
 ): Promise<ResolvedModel> {
-  const ev = event as TurnEndEventView;
-  let providerID = ev.message.provider || null;
-  let modelID = ev.message.model || null;
+  let providerID: string | null = provider || null;
+  let modelID: string | null = model || null;
 
-  if (providerID && modelID && ev.model_limit) {
-    return { providerID, modelID, modelLimit: ev.model_limit };
+  if (providerID && modelID && model_limit) {
+    return { providerID, modelID, modelLimit: model_limit };
   }
 
   if (!providerID || !modelID) {
     try {
-      const resp = await iii.trigger<
-        unknown,
-        { messages?: Array<{ entry_id?: string; message?: Record<string, unknown> }> }
-      >({
-        function_id: 'session-tree::messages',
-        payload: { session_id },
-        timeoutMs: 10_000,
-      });
-      const messages = resp?.messages ?? [];
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]?.message;
-        if (m?.role !== 'assistant') continue;
+      const items = await readActivePath(iii, session_id, { roles: ['assistant'] });
+      for (let i = items.length - 1; i >= 0; i--) {
+        const m = items[i]?.message as Record<string, unknown> | undefined;
+        if (!m) continue;
         if (!providerID && typeof m.provider === 'string' && m.provider) {
           providerID = m.provider;
         }
@@ -116,40 +100,35 @@ export async function resolveModelFromEvent(
   return fetchModelLimit(iii, providerID, modelID);
 }
 
-export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
+export async function handleAsync(iii: ISdk, payload: unknown): Promise<void> {
   return withSpan('compaction::async', {}, async () => {
-    const payload = extractEventPayload(frame);
-    if (!payload) return;
+    const parsed = parseOnTurnEnd(payload);
+    if (!parsed?.usage) return;
+    const { session_id, usage } = parsed;
 
-    const usage = turnEndUsage(payload.event);
-    if (!usage) return;
+    setCurrentSpanAttribute('session_id', session_id);
 
-    setCurrentSpanAttribute('session_id', payload.session_id);
-
-    const model = await resolveModelFromEvent(iii, payload.session_id, payload.event);
+    const model = await resolveModel(
+      iii,
+      session_id,
+      parsed.provider,
+      parsed.model,
+      parsed.model_limit,
+    );
     if (!model) {
       logger.debug('handler-async: could not resolve model; skipping overflow check', {
-        session_id: payload.session_id,
+        session_id,
       });
       return;
     }
 
-    const usageObj = usage as {
-      input?: number;
-      output?: number;
-      cache_read?: number;
-      cache_write?: number;
-    };
     const tokens_before =
-      (usageObj.input ?? 0) +
-      (usageObj.output ?? 0) +
-      (usageObj.cache_read ?? 0) +
-      (usageObj.cache_write ?? 0);
+      (usage.input ?? 0) + (usage.output ?? 0) + (usage.cache_read ?? 0) + (usage.cache_write ?? 0);
     setCurrentSpanAttribute('tokens_before', tokens_before);
 
     if (
       !isOverflow({
-        tokens: usageObj,
+        tokens: usage,
         model: { id: model.modelID, limit: model.modelLimit },
         reserved: compactionConfig().reservedTokens,
       })
@@ -157,33 +136,23 @@ export async function handleAsync(iii: ISdk, frame: unknown): Promise<void> {
       return;
     }
 
-    const nonce = await acquireLease(iii, payload.session_id, 'compaction');
+    const nonce = await acquireLease(iii, session_id, 'compaction');
     if (!nonce) {
-      logger.debug('handler-async: compaction lease held; skipping', {
-        session_id: payload.session_id,
-      });
+      logger.debug('handler-async: compaction lease held; skipping', { session_id });
       return;
     }
 
     try {
-      const result = await runSummarizeCompaction(
-        iii,
-        payload.session_id,
-        { mode: 'async' },
-        model,
-      );
+      const result = await runSummarizeCompaction(iii, session_id, { mode: 'async' }, model);
 
       setCurrentSpanAttribute('used_prior_summary', isSummarizeOk(result));
       if (isSummarizeOk(result)) {
-        await publishCompactionDone(iii, payload.session_id, 'async', result);
+        await publishCompactionDone(iii, session_id, 'async', result);
       }
     } catch (err) {
-      logger.warn('handler-async: compaction failed', {
-        session_id: payload.session_id,
-        err: String(err),
-      });
+      logger.warn('handler-async: compaction failed', { session_id, err: String(err) });
     } finally {
-      await releaseLease(iii, payload.session_id, nonce, 'compaction');
+      await releaseLease(iii, session_id, nonce, 'compaction');
     }
   });
 }

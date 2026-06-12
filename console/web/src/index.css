@@ -28,6 +28,9 @@
 
   --color-alert: #c43e1c;
   --color-warn: #a87a00;
+  /* Diff additions (coder update-file echoes) — the palette's only green.
+     Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
+  --color-ok: #356f3d;
 
   --radius-none: 0px;
   --radius-full: 9999px;
@@ -50,6 +53,7 @@
   --color-rule-2: #1f1e1c;
   --color-accent: #3ea8ff;
   --color-accent-fg: #111110;
+  --color-ok: #5fae6a;
 }
 
 @layer base {

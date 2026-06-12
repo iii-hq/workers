@@ -249,3 +249,61 @@ Feature: coder::update-file
       NEW
       NEW
       """
+
+  Scenario: dot_matches_newline lets a short anchored pattern span lines
+    Given a file at "doc.txt" with content:
+      """
+      before
+      start
+      middle
+      end
+      after
+      """
+    When I call coder::update-file with payload:
+      """
+      {"files": [
+        {"path": "doc.txt", "ops": [
+          {"op": "replace", "pattern": "start.*?end", "replacement": "ONE",
+           "dot_matches_newline": true}
+        ]}
+      ]}
+      """
+    Then the result for "doc.txt" succeeded
+    And the result for "doc.txt" has line count 3
+    When I call coder::read-file with payload:
+      """
+      {"path": "doc.txt"}
+      """
+    Then the read content equals:
+      """
+      before
+      ONE
+      after
+      """
+
+  Scenario: expect_matches mismatch fails the file and leaves it unchanged
+    Given a file at "doc.txt" with content:
+      """
+      foo
+      foo
+      foo
+      """
+    When I call coder::update-file with payload:
+      """
+      {"files": [
+        {"path": "doc.txt", "ops": [
+          {"op": "replace", "pattern": "foo", "replacement": "bar", "expect_matches": 1}
+        ]}
+      ]}
+      """
+    Then the result for "doc.txt" failed with code "C210"
+    When I call coder::read-file with payload:
+      """
+      {"path": "doc.txt"}
+      """
+    Then the read content equals:
+      """
+      foo
+      foo
+      foo
+      """

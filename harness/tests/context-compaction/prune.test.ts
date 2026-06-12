@@ -28,14 +28,14 @@ function tool(fn: string, output: string): AgentMessage {
 }
 
 function makeIii(entries: Array<{ entry_id: string; message: AgentMessage }>) {
-  const updates: Array<{ entry_id: string }> = [];
+  const updates: Array<{ entry_id: string; details?: unknown }> = [];
   const iii = {
     trigger: vi.fn(async ({ function_id, payload }: { function_id: string; payload: unknown }) => {
-      if (function_id === 'session-tree::messages') return { messages: entries };
-      if (function_id === 'session-tree::update_parts') {
-        const items = (payload as { items?: Array<{ entry_id: string }> }).items ?? [];
-        for (const it of items) updates.push({ entry_id: it.entry_id });
-        return { updated: items.length };
+      if (function_id === 'session::messages') return { messages: entries };
+      if (function_id === 'session::update_message') {
+        const p = payload as { entry_id: string; details?: unknown };
+        updates.push({ entry_id: p.entry_id, details: p.details });
+        return { updated: true, revision: 1 };
       }
       return null;
     }),

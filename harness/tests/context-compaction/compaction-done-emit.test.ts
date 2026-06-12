@@ -93,10 +93,9 @@ function makeStubIii(extra: Record<string, unknown> = {}): {
         else state.set(key, newValue);
         return { old_value: oldValue ?? null, new_value: newValue ?? null };
       }
-      if (function_id === 'session-tree::messages') return { messages: [] };
-      if (function_id === 'session-tree::compactions') return { entries: [] };
-      if (function_id === 'session-tree::compact') return { entry_id: 'entry-compact-1' };
-      if (function_id === 'session-tree::append_synthetic') return { entry_id: 'entry-syn-1' };
+      if (function_id === 'session::messages') return { messages: [] };
+      if (function_id === 'session::append')
+        return { entry_id: 'entry-appended-1', parent_id: null, timestamp: 0 };
       return null;
     },
   );
@@ -188,17 +187,10 @@ describe('handleAsync emits compaction_done', () => {
 
     try {
       await handleAsync(iii, {
-        groupId: 'sess-async-1',
-        event: {
-          data: {
-            type: 'TurnEnd',
-            message: {
-              provider: 'anthropic',
-              model: 'claude-haiku-4-5',
-              usage: { input: 200_000, output: 50_000 },
-            },
-          },
-        },
+        session_id: 'sess-async-1',
+        provider: 'anthropic',
+        model: 'claude-haiku-4-5',
+        usage: { input: 200_000, output: 50_000 },
       });
 
       const events = streamSetCalls.filter((c) => c.stream_name === 'agent::events');
@@ -217,17 +209,10 @@ describe('handleAsync emits compaction_done', () => {
     const { iii, streamSetCalls } = makeStubIii();
 
     await handleAsync(iii, {
-      groupId: 'sess-async-noop',
-      event: {
-        data: {
-          type: 'TurnEnd',
-          message: {
-            provider: 'anthropic',
-            model: 'claude-haiku-4-5',
-            usage: { input: 100, output: 50 },
-          },
-        },
-      },
+      session_id: 'sess-async-noop',
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      usage: { input: 100, output: 50 },
     });
 
     const events = streamSetCalls.filter((c) => c.stream_name === 'agent::events');

@@ -30,18 +30,17 @@ Read [The Harness Is the Backend](https://www.linkedin.com/pulse/harness-backend
 
 ## What ships here
 
-Fifteen workers in one TypeScript package, one folder per worker, one feature per file:
+Fourteen workers in one TypeScript package, one folder per worker, one feature per file:
 
 | Concern | Workers |
 | --- | --- |
 | Orchestration | `turn-orchestrator` (durable turn FSM), `hook-fanout` |
 | Governance | `harness` (permissions, provider registry, UI fanout), `approval-gate` |
-| Sessions | `session` (branching session tree + inbox queues) |
 | Context | `context-compaction` (keeps long sessions inside the model window) |
 | Models | `models-catalog`, `provider-anthropic`, `provider-openai`, `provider-kimi`, `provider-lmstudio`, `provider-llamacpp` |
 | Cost | `llm-budget` |
 
-Rust workers (`shell`, `iii-directory`) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
+Rust workers (`shell`, `iii-directory`, `session-manager` — the durable, reactive conversation store the harness drives through `session::*`) and engine builtins (`state::*`, `stream::*`, `iii::durable::*`) stay on the same bus; this package does not reimplement them.
 
 ---
 
@@ -49,7 +48,7 @@ Rust workers (`shell`, `iii-directory`) and engine builtins (`state::*`, `stream
 
 1. Install iii: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`
 2. Verify the install: `iii --version`
-3. Add the harness and console workers: `iii worker add harness console coder`
+3. Add the harness, session-manager, and console workers: `iii worker add harness session-manager console coder`
 4. Start the engine: `iii --config config.yaml`
 5. Open the [console](https://workers.iii.dev/workers/console) at `http://127.0.0.1:3113`
 

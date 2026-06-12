@@ -13,6 +13,7 @@ import { usable as computeUsable } from '../context-compaction/overflow.js';
 import type { Model } from '../models-catalog/types.js';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
+import { readActivePath } from '../runtime/session.js';
 import type { AgentMessage } from '../types/agent-message.js';
 import { CompactionBusyError, ContextOverflowError } from './errors.js';
 
@@ -21,17 +22,6 @@ function estimateMessages(messages: AgentMessage[]): number {
   let chars = 0;
   for (const m of messages) chars += JSON.stringify(m).length;
   return Math.floor(chars / 4);
-}
-
-function findLastUserEntryId(
-  entries: Array<{ entry_id?: string; message?: { role?: string } }>,
-): string {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]?.message?.role === 'user') {
-      return entries[i]?.entry_id ?? '';
-    }
-  }
-  return '';
 }
 
 export async function runPreflight(
@@ -69,17 +59,10 @@ export async function runPreflight(
 
   let lastUserEntryId = '';
   try {
-    const resp = await iii.trigger<
-      unknown,
-      { messages?: Array<{ entry_id?: string; message?: { role?: string } }> }
-    >({
-      function_id: 'session-tree::messages',
-      payload: { session_id },
-      timeoutMs: 10_000,
-    });
-    lastUserEntryId = findLastUserEntryId(resp?.messages ?? []);
+    const items = await readActivePath(iii, session_id, { roles: ['user'] });
+    lastUserEntryId = items.at(-1)?.entry_id ?? '';
   } catch (err) {
-    logger.debug('preflight: session-tree::messages failed; using empty last_user_entry_id', {
+    logger.debug('preflight: session::messages failed; using empty last_user_entry_id', {
       session_id,
       err: String(err),
     });

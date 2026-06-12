@@ -8,7 +8,7 @@
 import { setCurrentSpanAttribute, withSpan } from '@iii-dev/observability';
 import type { ISdk } from '../runtime/iii.js';
 import { logger } from '../runtime/otel.js';
-import type { AgentMessage } from '../types/agent-message.js';
+import { messageItemsFromPath, readActivePath, sessionAppendMessage } from '../runtime/session.js';
 import { compactionConfig } from './config.js';
 import { publishCompactionDone, runSummarizeCompaction } from './handler-pipeline.js';
 import { acquireLeaseWithWait, releaseLease } from './lease.js';
@@ -52,20 +52,9 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
     if (!nonce) return { status: 'busy' };
 
     try {
-      const resp = await iii.trigger<
-        unknown,
-        { messages?: Array<{ entry_id?: string; message?: AgentMessage }> }
-      >({
-        function_id: 'session-tree::messages',
-        payload: { session_id: input.session_id },
-        timeoutMs: 30_000,
-      });
-      const entries: MessageWithEntryId[] = (resp?.messages ?? [])
-        .filter(
-          (e): e is { entry_id: string; message: AgentMessage } =>
-            typeof e?.entry_id === 'string' && Boolean(e?.message),
-        )
-        .map((e) => ({ entry_id: e.entry_id, message: e.message }));
+      const entries: MessageWithEntryId[] = messageItemsFromPath(
+        await readActivePath(iii, input.session_id),
+      );
 
       const { replay, truncatedMessages } = extractReplayTarget(
         entries,
@@ -98,14 +87,27 @@ export async function handleSync(iii: ISdk, input: CompactNowInput): Promise<Com
       // The last user message is already on the path as the compaction's
       // parent; just nudge the agent to continue past the summary.
       if (replay) {
-        await iii.trigger<unknown, { entry_id?: string }>({
-          function_id: 'session-tree::append_synthetic',
-          payload: {
-            session_id: input.session_id,
-            text: 'Continue if you have next steps, or stop and ask for clarification.',
-            parent_id: result.compaction_entry_id || null,
+        await sessionAppendMessage(iii, {
+          session_id: input.session_id,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Continue if you have next steps, or stop and ask for clarification.',
+              },
+            ],
+            timestamp: Date.now(),
           },
-          timeoutMs: 10_000,
+          // Deterministic per compaction record: a redelivered handler call
+          // can't double-append the nudge.
+          ...(result.compaction_entry_id
+            ? {
+                entry_id: `${result.compaction_entry_id}-continue`,
+                parent_id: result.compaction_entry_id,
+              }
+            : {}),
+          origin: { synthetic: true },
         });
       }
 

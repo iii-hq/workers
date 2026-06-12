@@ -11,6 +11,7 @@ import {
   WorkerStopView,
   WorkerUpdateView,
 } from './WorkerOpView'
+import { WorkerStatusView } from './WorkerStatusView'
 
 export function WorkerFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('worker::')) {
@@ -43,6 +44,10 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   switch (message.functionId) {
     case 'worker::list':
       return <WorkerListView input={input} output={output} running={running} />
+    case 'worker::status':
+      return (
+        <WorkerStatusView input={input} output={output} running={running} />
+      )
     case 'worker::start':
       return <WorkerStartView input={input} output={output} running={running} />
     case 'worker::stop':

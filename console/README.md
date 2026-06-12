@@ -94,6 +94,14 @@ open http://127.0.0.1:3113
 
 The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocket — one origin, no CORS, no API base URL to configure.
 
+Chat needs two more workers on the engine: `harness` (turn orchestration)
+and `session-manager` (the durable conversation store the sidebar,
+transcripts, and live token rendering are backed by):
+
+```bash
+iii worker add harness session-manager
+```
+
 <details>
 <summary><strong>Programmatic check from the SDK</strong></summary>
 

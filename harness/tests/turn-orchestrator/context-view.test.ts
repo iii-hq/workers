@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildSummaryMessage } from '../../src/context-compaction/flat-state.js';
 import { buildContextView } from '../../src/turn-orchestrator/state-runtime/context-view.js';
+import type { MessageWithEntryId } from '../../src/runtime/session.js';
 import type { AgentMessage } from '../../src/types/agent-message.js';
-import type { MessageWithEntryId } from '../../src/session/tree/types.js';
 
 function user(text: string): AgentMessage {
   return { role: 'user', content: [{ type: 'text', text }], timestamp: 0 };
@@ -30,6 +30,12 @@ describe('buildContextView', () => {
   it('returns raw path when there is no compaction', () => {
     const messages = [entry('a', user('one')), entry('b', asst('two'))];
     expect(buildContextView(messages, [])).toEqual([user('one'), asst('two')]);
+  });
+
+  it('drops empty assistant placeholders from the provider window', () => {
+    const placeholder: AgentMessage = { ...asst(''), content: [] };
+    const messages = [entry('a', user('one')), entry('b', placeholder)];
+    expect(buildContextView(messages, [])).toEqual([user('one')]);
   });
 
   it('reconstructs summary + tail from tail_start_id', () => {

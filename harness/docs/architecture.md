@@ -1,7 +1,7 @@
 # harness architecture
 
 `harness` is the Node/TypeScript port of the iii harness stack. It ships
-as one pnpm package containing 15 workers (one folder per worker, one feature
+as one pnpm package containing 14 workers (one folder per worker, one feature
 per file) plus a shared `runtime/` SDK helper layer and a `types/` wire-type
 mirror of `harness/crates/harness-types`. Each worker is independently runnable
 as `pnpm dev:<worker>` (development) or `iii-<worker>` (production binary);
@@ -9,10 +9,17 @@ as `pnpm dev:<worker>` (development) or `iii-<worker>` (production binary);
 spins every worker up in a single process by reusing each worker's
 `register()` callback unchanged.
 
-The Rust workers `shell`, `iii-directory`, and the engine's `state::*` /
-`stream::*` / `iii::durable::*` primitives are NOT ported. `harness`
-talks to them over the iii bus exactly the same way it talks to its own
-workers.
+The Rust workers `shell`, `iii-directory`, `session-manager`, and the
+engine's `state::*` / `stream::*` / `iii::durable::*` primitives are NOT
+ported. `harness` talks to them over the iii bus exactly the same way it
+talks to its own workers. Conversation transcripts live in the external
+[session-manager](../../session-manager/architecture/integration.md) worker
+(`session::*` functions + six trigger types); the harness is the **driver**:
+it ensures sessions, appends user/assistant/function_result messages with
+deterministic idempotent entry ids, streams assistant content via
+`session::update_message`, writes compaction records as
+`custom_type: "compaction"` entries, and flips session status around runs
+(`working` → `done`/`error`).
 
 ## Worker catalogue
 
@@ -21,7 +28,6 @@ workers.
 | harness | [src/harness/](harness/src/harness/) | Meta-worker; loads `iii-permissions.yaml`, exposes `harness::trigger` (WS ingestion bridge — see [Telemetry & trace correlation](#telemetry--trace-correlation)) / `policy::check_permissions` / `ui::*` / `harness::provider::{register,resolve,list}`. Owns the provider registry + the `harness` entry in the `configuration` worker (credentials, settings, permissions — see [storage.md](harness/docs/storage.md)). | [workers/harness.md](harness/docs/workers/harness.md) |
 | turn-orchestrator | [src/turn-orchestrator/](harness/src/turn-orchestrator/) | Durable FSM driving each agent turn; `dispatchWithHook` approval chokepoint. | [workers/turn-orchestrator.md](harness/docs/workers/turn-orchestrator.md) |
 | approval-gate | [src/approval-gate/](harness/src/approval-gate/) | Registers `approval::resolve`; persists decisions to scope `approvals`. Wake via `turn::on_approval` state trigger. Default mode from `harness` config `permissions.default_mode`. | [workers/approval-gate.md](harness/docs/workers/approval-gate.md) |
-| session | [src/session/](harness/src/session/) | Branching session storage (`session-tree::*`). | [workers/session.md](harness/docs/workers/session.md) |
 | llm-budget | [src/llm-budget/](harness/src/llm-budget/) | Workspace + agent LLM spend caps with alerts, forecast, period rollover. | [workers/llm-budget.md](harness/docs/workers/llm-budget.md) |
 | hook-fanout | [src/hook-fanout/](harness/src/hook-fanout/) | Generic publish-and-collect primitive over a stream topic. | [workers/hook-fanout.md](harness/docs/workers/hook-fanout.md) |
 | models-catalog | [src/models-catalog/](harness/src/models-catalog/) | Model-capability catalogue in iii state (provider-registered only; no embedded seed or fallback), refreshed by `provider::<name>::refresh_models`. | [workers/models-catalog.md](harness/docs/workers/models-catalog.md) |
@@ -45,7 +51,6 @@ flowchart LR
     harness[harness]
     turnOrch[turn-orchestrator]
     approval[approval-gate]
-    session[session]
     budget[llm-budget]
     hook[hook-fanout]
     models[models-catalog]
@@ -64,6 +69,7 @@ flowchart LR
   subgraph external [External Rust workers + engine]
     shell[shell]
     directory[iii-directory]
+    sessionMgr["session-manager (session::*)"]
     state["iii engine state::* / stream::* / iii::durable::*"]
   end
 
@@ -76,7 +82,7 @@ flowchart LR
   turnOrch -- "provider::*::stream" --> provLms
   turnOrch -- "provider::*::stream" --> provLlama
   turnOrch -- "consultBefore: policy::check_permissions" --> harness
-  turnOrch -- "session-tree::* read/append" --> session
+  turnOrch -- "session::ensure/append/update_message/set_status" --> sessionMgr
   turnOrch -- "state::* persistence" --> state
 
   client -- "approval::resolve" --> approval
@@ -93,7 +99,8 @@ flowchart LR
 
   state -- "agent::events stream (scoped trigger)" --> client
   state -- "agent::events stream" --> compact
-  compact -- "session-tree::compact" --> session
+  compact -- "session::append (compaction custom entry)" --> sessionMgr
+  sessionMgr -- "session::message_added/updated, status_changed, ..." --> client
 ```
 
 ## Turn FSM
@@ -227,18 +234,28 @@ Deny shorthands (`!function_id` in the YAML): `approval::resolve`,
 `harness::provider::resolve`, `harness::provider::register`,
 `configuration::get`, `configuration::set`, `configuration::register`,
 `oauth::anthropic::login`, `oauth::openai-codex::login`, `run::start`,
-`router::stream_assistant`. The `harness::provider::resolve` and
-`configuration::*` denials keep an in-run agent from reading the plaintext
-api keys stored in the `harness` configuration entry.
+`router::stream_assistant`, every session-manager mutation
+(`session::create/ensure/set_meta/set_status/delete/append/append_many/update_message/fork/set_active_leaf`),
+and the raw store protocol `session::store::*`. The
+`harness::provider::resolve` and `configuration::*` denials keep an in-run
+agent from reading the plaintext api keys stored in the `harness`
+configuration entry; the `session::*` denials keep an in-run agent from
+rewriting its own transcript (integration.md §2: deny-by-default).
 
 Bare-string allow rules: `state::get`, `state::list`,
 `models::list`, `models::get`, `models::supports`,
 `oauth::anthropic::status`, `oauth::openai-codex::status`, the
 read-only `engine::*` introspection surface (`engine::functions::*`,
 `engine::triggers::*`, `engine::workers::*`,
-`engine::registered-triggers::*`), and `worker::list`. Mutating
-`worker::*` ops (`add`, `start`, `stop`, `remove`, `clear`) stay
-approval-gated.
+`engine::registered-triggers::*`), `worker::list`, the registry
+catalogue reads (`directory::registry::workers::list` / `::info`),
+the read-only `coder::*` surface (`info`, `read-file`, `search`,
+`list-folder`, `tree`), and `web::fetch` (size/timeout caps and
+server-side SSRF protection make it allowable; it is load-bearing
+for the system prompt's SDK-reference gate and HTTP-trigger
+verification). Mutating `worker::*` ops (`add`, `start`, `stop`,
+`remove`, `clear`) and mutating `coder::*` ops (`create-file`,
+`update-file`, `move`, `delete-file`) stay approval-gated.
 
 A function pattern may use `*` to match any substring
 (`compileFunctionMatcher` in
@@ -277,7 +294,7 @@ flowchart TD
   harness --> turnOrch
   harness --> approval
   models[models-catalog] --> turnOrch
-  session --> turnOrch
+  sessionMgr["session-manager (external)"] --> turnOrch
   harness --> provAnth[provider-anthropic]
   harness --> provOAI[provider-openai]
   harness --> provKimi[provider-kimi]
@@ -288,7 +305,7 @@ flowchart TD
   provKimi --> turnOrch
   provLms --> turnOrch
   provLlama --> turnOrch
-  session --> compact[context-compaction]
+  sessionMgr --> compact[context-compaction]
   provAnth --> compact
   provOAI --> compact
   provKimi --> compact

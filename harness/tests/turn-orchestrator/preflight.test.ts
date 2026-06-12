@@ -27,7 +27,7 @@ function makeIii(overrides?: {
       if (req.function_id === 'models::get') {
         return (overrides?.modelsGetResult ?? null) as R;
       }
-      if (req.function_id === 'session-tree::messages') {
+      if (req.function_id === 'session::messages') {
         return (overrides?.sessionTreeResult ?? { messages: [] }) as R;
       }
       if (req.function_id === 'context-compaction::compact_now') {
