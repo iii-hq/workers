@@ -171,6 +171,8 @@ A provider worker must:
 The first real provider implementing this protocol is
 [`provider-anthropic/`](../provider-anthropic/) — useful as a reference
 implementation alongside the scripted provider in the integration tests.
+[`provider-openai/`](../provider-openai/) follows the same structure for the
+OpenAI Chat Completions API (native structured output, reasoning_effort).
 
 ## Local development & testing
 
