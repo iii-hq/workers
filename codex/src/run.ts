@@ -12,6 +12,7 @@ import type { ISdk } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
+import { III_CONTEXT_PROMPT } from './iii-prompt.js';
 import {
   argsForItem,
   type CodexItem,
@@ -60,6 +61,12 @@ const RunPayloadSchema = z.object({
     .optional()
     .describe('Model reasoning effort'),
   skip_git_repo_check: z.boolean().optional().describe('Allow running outside a git repository'),
+  iii_context: z
+    .boolean()
+    .optional()
+    .describe(
+      'Inject the iii runtime discovery prompt (engine catalog via the iii CLI) on new threads',
+    ),
   output_schema: z
     .record(z.string(), z.unknown())
     .optional()
@@ -166,13 +173,16 @@ export async function executeRun(
   let stopReason = 'end';
   let isError = false;
 
+  const iiiContext = (payload.iii_context ?? cfg.iii_context) && !prior?.codex_thread_id;
+  const promptText = iiiContext ? `${III_CONTEXT_PROMPT}\n\n# Task\n\n${prompt}` : prompt;
+
   try {
     const input = payload.images?.length
       ? [
-          { type: 'text' as const, text: prompt },
+          { type: 'text' as const, text: promptText },
           ...payload.images.map((path) => ({ type: 'local_image' as const, path })),
         ]
-      : prompt;
+      : promptText;
     const { events } = await thread.runStreamed(input, {
       signal: abort.signal,
       ...(payload.output_schema ? { outputSchema: payload.output_schema } : {}),

@@ -18,6 +18,7 @@ const ConfigSchema = z.object({
     .prefault({}),
   events_stream: z.string().default('agent::events'),
   raw_events_stream: z.string().default('codex::events'),
+  iii_context: z.boolean().default(true),
   codex_executable: z.string().default(''),
   base_url: z.string().default(''),
 });

@@ -17,6 +17,12 @@ events_stream: agent::events
 # mirrored verbatim here, grouped by session_id.
 raw_events_stream: codex::events
 
+# Inject the iii runtime context into the first turn of each new thread:
+# teaches the agent live discovery against the engine catalog through the
+# iii CLI (a localhost engine is reachable under the default sandbox).
+# Per-turn override via the iii_context payload field.
+iii_context: true
+
 # Path to the Codex CLI binary. Empty = SDK default resolution; the worker
 # falls back to the `codex` binary on PATH (needed for the bundled build).
 codex_executable: ""

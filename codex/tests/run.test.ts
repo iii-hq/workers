@@ -97,10 +97,49 @@ describe('executeRun', () => {
     expect(end).toMatchObject({ function_call_id: 'item-1', is_error: false });
   });
 
+  it('injects the iii runtime context into the first turn of a new thread', async () => {
+    const { capture } = await runTurn({ prompt: 'do it', session_id: 's1' });
+    expect(capture.input).toContain('# iii runtime');
+    expect(capture.input).toContain('iii trigger engine::functions::list');
+    expect(capture.input).toContain('# Task\n\ndo it');
+  });
+
+  it('does not re-inject the context on resumed threads', async () => {
+    const fake = fakeIii();
+    fake.state.set('codex_sessions/s1', {
+      session_id: 's1',
+      codex_thread_id: 'th-prior',
+      cwd: '',
+      model: '',
+      status: 'done',
+      turns: 1,
+      usage: null,
+      updated_at_ms: 1,
+    });
+    const cfg = await baseConfig();
+    const capture: CodexCapture = { aborted: false };
+    CodexMock.mockImplementation(fakeCodexClass(fullTurn, capture) as never);
+    const emit = makeEmitter(fake.iii, cfg.events_stream);
+    await executeRun(
+      fake.iii,
+      cfg,
+      emit,
+      emit,
+      RunPayloadSchema.parse({ prompt: 'again', session_id: 's1' }),
+    );
+    expect(capture.input).toBe('again');
+  });
+
+  it('omits the context when disabled per turn', async () => {
+    const { capture } = await runTurn({ prompt: 'plain', session_id: 's1', iii_context: false });
+    expect(capture.input).toBe('plain');
+  });
+
   it('passes worker defaults and named fields to thread options', async () => {
     const { capture } = await runTurn({
       prompt: 'x',
       session_id: 's1',
+      iii_context: false,
       cwd: '/repo',
       model: 'gpt-5.2-codex',
       sandbox_mode: 'read-only',
@@ -146,6 +185,7 @@ describe('executeRun', () => {
     const { capture } = await runTurn({
       prompt: 'describe these',
       session_id: 's1',
+      iii_context: false,
       images: ['/tmp/a.png', '/tmp/b.png'],
     });
     expect(capture.input).toEqual([
@@ -219,6 +259,7 @@ describe('executeRun', () => {
   it('extracts the prompt from the last user message of a messages payload', async () => {
     const { capture } = await runTurn({
       session_id: 's1',
+      iii_context: false,
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'first' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },

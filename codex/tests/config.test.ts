@@ -13,6 +13,7 @@ describe('loadConfig', () => {
     expect(cfg.defaults.skip_git_repo_check).toBe(true);
     expect(cfg.events_stream).toBe('agent::events');
     expect(cfg.raw_events_stream).toBe('codex::events');
+    expect(cfg.iii_context).toBe(true);
     expect(cfg.codex_executable).toBe('');
     expect(cfg.base_url).toBe('');
   });

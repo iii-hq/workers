@@ -43,6 +43,7 @@ describe('register', () => {
     const res = (await fake.registered.get('codex::run')?.({
       prompt: 'hi',
       session_id: 's1',
+      iii_context: false,
     })) as Record<string, unknown>;
     expect(res.result).toBe('done');
     expect(capture.prompt).toBe('hi');

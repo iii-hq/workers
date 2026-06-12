@@ -125,6 +125,18 @@ codex_executable: ""               # path to the codex CLI; empty = PATH resolut
 
 Sandboxing is Codex's own: `read-only` blocks writes, `workspace-write` allows edits inside `cwd`, `danger-full-access` disables the sandbox. Headless runs keep `approval_policy: never`; commands the sandbox blocks fail instead of prompting.
 
+## The agent on the bus
+
+By default every new thread starts with the iii runtime context: a system-prompt block carrying the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its sandboxed shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Codex's native tools; backend actions go through registered functions.
+
+```bash
+# the agent answers this by querying the live engine itself
+iii trigger codex::run --timeout-ms 300000 \
+  --json '{"prompt":"Which functions does the claude-code worker register? List the ids.","cwd":"/tmp"}'
+```
+
+The block is injected only on the first turn of a new thread (the thread persists it across resumes) and costs nothing on resumed turns. Turn it off per call with `"iii_context": false` or globally in `config.yaml`.
+
 ## Plan-then-execute with sandbox modes
 
 Codex has no named plan mode; the equivalent is a planning prompt under the `read-only` sandbox. The guarantee is OS-level (Seatbelt on macOS, Landlock on Linux), so writes physically fail rather than being policy-declined. Because the worker resumes threads, plan-then-execute is two calls against the same `session_id`:
