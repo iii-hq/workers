@@ -111,6 +111,31 @@ The named fields above cover the common path; everything else the Agent SDK acce
 
 And the full output side is available raw: every message Claude Code emits (`system/init`, `assistant`, `user`, `result`, and `stream_event` token deltas when `includePartialMessages` is set) is mirrored verbatim onto the `claude::events` stream, group_id = session_id. Consumers that want the exact Claude Code wire format read `claude::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
 
+## Plan mode and permission modes
+
+`permission_mode` maps straight onto Claude Code's native modes, per turn:
+
+| Mode | Behavior |
+| --- | --- |
+| `default` | Claude Code's standard permission prompts (headless: unapproved calls fail) |
+| `acceptEdits` | File edits auto-approved; the worker default |
+| `plan` | Native plan mode: read-only exploration, produces a plan, refuses edits |
+| `bypassPermissions` | Skip all permission checks |
+
+Plan mode headless behaves like plan mode in the terminal: the turn ends when Claude finishes the plan, and the plan text is the `result` — nothing executes. Because the worker resumes sessions, plan-then-execute is two calls against the same `session_id`:
+
+```bash
+# 1. plan (read-only)
+iii trigger claude::run --timeout-ms 600000 \
+  --json '{"prompt":"Plan how to add rate limiting to the REST API. Do not implement.","cwd":"/path/to/repo","permission_mode":"plan"}'
+
+# 2. execute the plan with full context, same conversation
+iii trigger claude::run --timeout-ms 600000 \
+  --json '{"session_id":"<from-step-1>","prompt":"Implement the plan.","permission_mode":"acceptEdits","cwd":"/path/to/repo"}'
+```
+
+The approval step is whatever sits between the two calls — a human reading the plan, another worker, or a trigger.
+
 ## Configuration
 
 ```yaml
