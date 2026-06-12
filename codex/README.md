@@ -132,7 +132,7 @@ By default every new thread starts with the iii runtime context: a system-prompt
 ```bash
 # the agent answers this by querying the live engine itself
 iii trigger codex::run --timeout-ms 300000 \
-  --json '{"prompt":"Which functions does the claude-code worker register? List the ids.","cwd":"/tmp"}'
+  --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
 
 The block is injected only on the first turn of a new thread (the thread persists it across resumes) and costs nothing on resumed turns. Turn it off per call with `"iii_context": false` or globally in `config.yaml`.
