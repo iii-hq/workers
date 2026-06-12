@@ -181,6 +181,7 @@ impl ChatPipeline {
                 max_output_tokens,
                 &settings,
                 &entry_handle,
+                &request_id,
                 sink,
             )
             .await;
@@ -197,6 +198,7 @@ impl ChatPipeline {
         max_output_tokens: u64,
         settings: &RouterSettings,
         inflight: &super::inflight::InflightEntry,
+        request_id: &str,
         sink: Arc<dyn FrameSink>,
     ) -> Result<ChatResponse, IIIError> {
         let pricing = model_meta.and_then(|m| m.pricing.clone());
@@ -227,18 +229,14 @@ impl ChatPipeline {
             let mut reader = channel.reader;
             inflight.set_closer(reader.closer());
 
-            let stream_input = json!({
-                "writer_ref": channel.writer_ref,
-                "system_prompt": call.system_prompt,
-                "model": call.model,
-                "messages": call.messages,
-                "tools": call.tools,
-                "response_format": call.response_format,
-                "thinking_level": call.thinking_level,
-                "max_output_tokens": max_output_tokens,
-                "provider_options": call.provider_options.as_ref().and_then(|o| o.get(provider)).cloned(),
-                "model_meta": model_meta,
-            });
+            let stream_input = build_stream_input(
+                call,
+                provider,
+                serde_json::to_value(&channel.writer_ref).expect("serializable writer_ref"),
+                max_output_tokens,
+                model_meta,
+                request_id,
+            );
 
             // The provider call runs concurrently with the relay; if it throws
             // pre-stream, closing the reader unblocks the loop immediately.
@@ -445,6 +443,61 @@ fn rand_unit() -> f64 {
     (Uuid::new_v4().as_u128() % 1000) as f64 / 1000.0
 }
 
+/// Build the per-attempt `provider::<id>::stream` payload (the wire shape of
+/// `types::router::ProviderStreamInput`). Optional fields are omitted, never
+/// null — provider-side schemas reject `null` where a string or array is
+/// expected. `resolution_key` is the request id: stable across retry attempts
+/// within a turn, fresh per turn, so providers can dedupe per-turn credential
+/// resolution.
+fn build_stream_input(
+    call: &ChatCall,
+    provider: &str,
+    writer_ref: Value,
+    max_output_tokens: u64,
+    model_meta: Option<&crate::types::model::Model>,
+    request_id: &str,
+) -> Value {
+    let mut input = serde_json::Map::new();
+    input.insert("writer_ref".into(), writer_ref);
+    input.insert("model".into(), Value::String(call.model.clone()));
+    input.insert("messages".into(), call.messages.clone());
+    input.insert("max_output_tokens".into(), json!(max_output_tokens));
+    input.insert(
+        "resolution_key".into(),
+        Value::String(request_id.to_string()),
+    );
+    insert_present(
+        &mut input,
+        "system_prompt",
+        call.system_prompt.clone().map(Value::String),
+    );
+    insert_present(&mut input, "tools", call.tools.clone());
+    insert_present(&mut input, "response_format", call.response_format.clone());
+    insert_present(&mut input, "thinking_level", call.thinking_level.clone());
+    insert_present(
+        &mut input,
+        "provider_options",
+        call.provider_options
+            .as_ref()
+            .and_then(|o| o.get(provider))
+            .cloned(),
+    );
+    insert_present(
+        &mut input,
+        "model_meta",
+        model_meta.and_then(|m| serde_json::to_value(m).ok()),
+    );
+    Value::Object(input)
+}
+
+fn insert_present(map: &mut serde_json::Map<String, Value>, key: &str, value: Option<Value>) {
+    if let Some(v) = value {
+        if !v.is_null() {
+            map.insert(key.to_string(), v);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +582,77 @@ mod tests {
             matches!(second, ReadEvent::Eof | ReadEvent::Timeout),
             "exactly one frame expected, got a second: {second:?}"
         );
+    }
+
+    /// Provider-side schemas reject `null` where a string or array is
+    /// expected, so absent options must be omitted keys, never null values.
+    /// `resolution_key` must always be present and stable across the retry
+    /// attempts of one request.
+    #[test]
+    fn stream_input_omits_absent_options_and_carries_resolution_key() {
+        let call: ChatCall = serde_json::from_value(json!({
+            "model": "claude-test",
+            "messages": [],
+        }))
+        .unwrap();
+        let writer_ref = json!({ "channel_id": "c", "access_key": "k", "direction": "write" });
+
+        let attempt1 = build_stream_input(
+            &call,
+            "anthropic",
+            writer_ref.clone(),
+            32_000,
+            None,
+            "req-1",
+        );
+        let attempt2 = build_stream_input(
+            &call,
+            "anthropic",
+            writer_ref.clone(),
+            32_000,
+            None,
+            "req-1",
+        );
+
+        let obj = attempt1.as_object().unwrap();
+        for absent in [
+            "system_prompt",
+            "tools",
+            "response_format",
+            "thinking_level",
+            "provider_options",
+            "model_meta",
+        ] {
+            assert!(
+                !obj.contains_key(absent),
+                "{absent} must be omitted, not null"
+            );
+        }
+        assert!(
+            obj.values().all(|v| !v.is_null()),
+            "no null values on the wire"
+        );
+        assert_eq!(obj["resolution_key"], json!("req-1"));
+        assert_eq!(obj["max_output_tokens"], json!(32_000));
+        assert_eq!(
+            attempt1["resolution_key"], attempt2["resolution_key"],
+            "resolution_key is stable across attempts of one request"
+        );
+
+        // Present options ride through, and provider_options narrows to this
+        // provider's slice.
+        let call: ChatCall = serde_json::from_value(json!({
+            "model": "claude-test",
+            "messages": [],
+            "system_prompt": "be brief",
+            "tools": [{ "name": "t", "description": "d", "parameters": {} }],
+            "thinking_level": "high",
+            "provider_options": { "anthropic": { "beta": true }, "openai": { "x": 1 } },
+        }))
+        .unwrap();
+        let input = build_stream_input(&call, "anthropic", writer_ref, 8192, None, "req-2");
+        assert_eq!(input["system_prompt"], json!("be brief"));
+        assert_eq!(input["thinking_level"], json!("high"));
+        assert_eq!(input["provider_options"], json!({ "beta": true }));
     }
 }
