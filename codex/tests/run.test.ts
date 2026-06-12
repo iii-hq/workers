@@ -130,6 +130,13 @@ describe('executeRun', () => {
     expect(capture.input).toBe('again');
   });
 
+  it('config-level iii_context: false disables the block for every turn', async () => {
+    const { capture } = await runTurn({ prompt: 'plain', session_id: 's1' }, fullTurn, {
+      iii_context: false,
+    });
+    expect(capture.input).toBe('plain');
+  });
+
   it('omits the context when disabled per turn', async () => {
     const { capture } = await runTurn({ prompt: 'plain', session_id: 's1', iii_context: false });
     expect(capture.input).toBe('plain');
