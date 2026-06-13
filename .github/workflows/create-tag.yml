@@ -20,6 +20,7 @@ on:
           - iii-lsp-vscode
           - image-resize
           - mcp
+          - provider-openai
           - session-manager
           - shell
           - storage

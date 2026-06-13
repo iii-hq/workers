@@ -1,0 +1,7 @@
+iii: v1
+name: provider-openai
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: provider-openai
+description: OpenAI Chat Completions provider worker; implements provider::openai::stream and provider::openai::refresh_models behind llm-router.
